@@ -28,6 +28,12 @@ NonemptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_lengt
 type Pointer = Annotated[str, StringConstraints(pattern=r"^(?:/(?:[^~/]|~[01])*)*$")]
 
 
+class StudioSavedTrainKey(StrictModel):
+    variant: str
+    step: str
+    row: str
+
+
 class DocumentReference(StrictModel):
     document: ProjectName
     pointer: Pointer | None = None
@@ -51,9 +57,14 @@ class ObjectiveDocumentReference[DocumentT](StrictModel):
     source: DocumentT
 
 
+class LoadedModelReference(StrictModel):
+    kind: Literal["loaded_model"]
+    source: DocumentReference
+
+
 type DocumentInputReference = Annotated[
     InitialModelReference[DocumentReference] | TaskDocumentReference[DocumentReference]
-    | ObjectiveDocumentReference[DocumentReference], Field(discriminator="kind"),
+    | ObjectiveDocumentReference[DocumentReference] | LoadedModelReference, Field(discriminator="kind"),
 ]
 
 

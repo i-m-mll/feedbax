@@ -744,6 +744,11 @@
         ]
       }
     },
+    "feedbax.contracts.project_inputs.StudioSavedTrainKey": {
+      "row": {},
+      "step": {},
+      "variant": {}
+    },
     "feedbax.contracts.report_document.ReportDocument": {
       "blocks": {
         "families": [
@@ -1013,6 +1018,9 @@
       },
       "numerical_settings": {
         "absent": {}
+      },
+      "source_runs": {
+        "absent": {}
       }
     },
     "feedbax.contracts.request_specs.ReportRequestSpec": {
@@ -1047,6 +1055,10 @@
           "reset"
         ]
       }
+    },
+    "feedbax.contracts.studio_figure.FigureRun": {
+      "key": {},
+      "request_id": {}
     },
     "feedbax.contracts.task_document.Cell": {
       "first_epoch": {},

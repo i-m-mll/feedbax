@@ -97,14 +97,19 @@ test('Initializes opens on the Model\'s components and descends to the states a 
 // Catches a link's problem named by a pointer or a document member no view shows, and a reveal that marks the Task as a
 // whole instead of the cell of the variable whose link it is.
 test('a link to a field the Model lacks is named and revealed at its variable\'s Initializes', async ({ page, request }) => {
-  const response = await request.post('/api/projects', { data: { name: 'missing-initializes' } });
-  expect(response.status()).toBe(201);
-  const { snapshot } = await response.json() as { snapshot: StudioProjectSnapshot };
+  const files = await fixture('ordinary-files', '2') as { kind: string; id: string; document?: { payload: Record<string, any> } }[];
+  const nowhere = JSON.stringify({ composites: [], element: {
+    kind: 'field', parent: { id: 'nowhere', kind: 'component' }, path: ['state', 'effector/position'],
+  } });
+  for (const file of files) {
+    const payload = file.document?.payload;
+    if (payload?.variables) payload.links = [{ model_field: nowhere, variable: 'start' }];
+  }
+  const { snapshot } = await seedManagedProject(request, files);
   await page.goto(`/?project=${snapshot.project_id}`);
-  await page.getByRole('button', { name: 'New Step', exact: true }).press('Enter');
-  await page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true }).press('Enter');
+  await mapStep(page, 'train').click();
   const reason = 'Initializes · start is linked to a field the Model does not have.';
-  await page.getByRole('button', { name: 'Problems 1', exact: true }).click();
+  await page.getByRole('button', { name: /^Problems/ }).click();
   await page.getByRole('dialog', { name: 'Problems', exact: true }).getByRole('button', { name: new RegExp(`^${reason}`) }).click();
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
   const cell = task.getByRole('combobox', { name: 'Initializes start', exact: true });
@@ -112,6 +117,29 @@ test('a link to a field the Model lacks is named and revealed at its variable\'s
   await expect(task.locator('[data-field="task:start:initializes"] [data-field-problem]'))
     .toHaveAttribute('data-app-tip', /start is linked to a field the Model does not have/);
   await expect(task.getByText(reason, { exact: true })).toHaveCount(0);
+});
+
+// Catches a new Train whose seeded Task links a field of a Model it does not read, which shows a Problem on a project
+// nobody has edited yet.
+test('a Train added to an empty project reads a Task and Model with no Problem between them', async ({ page, request }) => {
+  const response = await request.post('/api/projects', { data: { name: 'first-train' } });
+  expect(response.status()).toBe(201);
+  const { snapshot } = await response.json() as { snapshot: StudioProjectSnapshot };
+  const projectPath = `/api/projects/${snapshot.project_id}`;
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await page.getByRole('button', { name: 'New Step', exact: true }).press('Enter');
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true }).press('Enter');
+  await expect(page.getByRole('tab', { name: 'Task', exact: true })).toBeVisible();
+  const problems = async () => {
+    const { project, revision } = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
+    const [step] = Object.keys(project.steps ?? {});
+    const answer = await request.post(projectPath + '/authoring/trials', {
+      data: { revision, run: { variant: 'default', step, row: 'default' }, change: null },
+    });
+    expect(answer.ok(), await answer.text()).toBe(true);
+    return (await answer.json() as StudioTrialAuthoring).problems;
+  };
+  await expect.poll(problems).toEqual([]);
 });
 
 // Catches a link naming no variable that leaves its Model value with no row, or names its problem by the Task's links.

@@ -20,6 +20,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from feedbax.contracts.task_document import BLANK_TASK
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, ImportedModelProvenance, ModelFitReport
+from feedbax.contracts.project import LoadedModelDocument
+from feedbax.contracts.project_inputs import LoadedModelReference
 from feedbax.studio.library import first_train_task
 from feedbax.contracts.component import (
     ComponentDefinition,
@@ -418,6 +421,9 @@ from feedbax.contracts.studio_project import (
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
+from feedbax.contracts.studio_loaded_model import (
+    StudioLoadedModelExportRequest, StudioLoadedModelImportQuery, StudioLoadedModelImportResult,
+)
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.training_document import TrainingDocument
 from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
@@ -498,6 +504,13 @@ AUTHORED_CONTRACT_MODELS = (
     ObjectiveDocument,
     TrainingDocument,
     TrialDocuments,
+    ImportedModelProvenance,
+    LoadedModelDocument,
+    LoadedModelReference,
+    ModelFitReport,
+    StudioLoadedModelExportRequest,
+    StudioLoadedModelImportQuery,
+    StudioLoadedModelImportResult,
     StudioTrialAuthoring,
     StudioTrialAuthoringRequest,
     StudioCheckpointRuleEdit,
@@ -1427,6 +1440,7 @@ def generate() -> str:
         f"{authored_types}\n\n"
         f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
         f"export const blankTask = {json.dumps(BLANK_TASK.model_dump(mode='json'), indent=2)};\n\n"
+        f"export const loadedModelDocumentSchemaId = {json.dumps(LOADED_MODEL_SCHEMA_ID)};\n\n"
         f"export const firstTrainTask: Document = {json.dumps(first_train_task().model_dump(mode='json', by_alias=True), indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"
         f"{schemas}\n\n"

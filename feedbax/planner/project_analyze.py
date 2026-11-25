@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass, replace
 from graphlib import CycleError, TopologicalSorter
 from types import MappingProxyType
@@ -37,6 +37,7 @@ from feedbax.contracts.operation import (
     DatasetInputPort, DatasetOutputPort, DatasetPort, WholeDimensions, require_dataset_fields, require_dataset_port,
 )
 from feedbax.contracts.project import Document, Payload, json_pointer_parts
+from feedbax.contracts.project_inputs import StudioSavedTrainKey
 from feedbax.planner.project_plan import (
     ElementKey,
     LabelName,
@@ -57,6 +58,7 @@ from feedbax.contracts.request_specs import (
     RequestSpec,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_variation
+from feedbax.contracts.studio_figure import FigureRun
 from feedbax.plugins.declarations import missing_declaration
 
 if TYPE_CHECKING:
@@ -268,6 +270,28 @@ class _Lowerer:
             return self.upstream.get(key)
         return next((element for element in self.elements.get(key.name, ()) if element.key == key), None)
 
+    def _figure_runs(self, bindings: tuple[PlannedInput, ...]) -> tuple[FigureRun, ...]:
+        """Follow each dataset to the project rows that supply it."""
+        def origins(binding: PlannedInput) -> Iterator[tuple[RunKey, str]]:
+            reference = binding.member.reference
+            if not isinstance(reference, ProductRef) or binding.producer is None:
+                return
+            producer = self._producer(binding)
+            if producer is not None:
+                upstream = tuple(
+                    source for group in producer.inputs.values() for member in group for source in origins(member)
+                )
+                if upstream:
+                    yield from upstream
+                    return
+            if producer is not None or reference.request_id.startswith("evaluate:") and reference.role == "states":
+                yield binding.producer, reference.request_id
+
+        return tuple(
+            FigureRun(key=StudioSavedTrainKey.model_validate(run, from_attributes=True), request_id=request)
+            for run, request in dict.fromkeys(source for binding in bindings for source in origins(binding))
+        )
+
     def _input(
         self,
         source: DatasetSource,
@@ -435,10 +459,13 @@ class _Lowerer:
     ) -> None:
         if isinstance(spec, RenderRequestSpec):
             printed = _printed_labels(spec.document)
-            spec = spec.model_copy(update={"names": {
-                label: {value_id: name.printed for value_id, name in values.items()}
-                for label, values in sorted(names.items()) if label in printed
-            }})
+            spec = spec.model_copy(update={
+                "names": {
+                    label: {value_id: name.printed for value_id, name in values.items()}
+                    for label, values in sorted(names.items()) if label in printed
+                },
+                "source_runs": {role: self._figure_runs(bindings) for role, bindings in inputs.items()},
+            })
         encoded = encode_request(
             spec, {role: tuple(binding.request_member for binding in bindings) for role, bindings in inputs.items()}
         )

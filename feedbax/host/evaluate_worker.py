@@ -313,6 +313,7 @@ def rollout_dataset(
     import numpy as np
 
     from feedbax.contracts.authored_canonical import canonical_sha256
+    from feedbax.contracts.dataset import TrialFigureTime
     from feedbax.dataset import Dataset, Variable
     from feedbax.persistence.evaluation_trial_records import trial_dataset_fields
     from feedbax.contracts.task_document import TaskDocument
@@ -349,6 +350,7 @@ def rollout_dataset(
     variables.update(trial_fields)
     state_coordinates.update(trial_coordinates)
     time = np.arange(paired.execution.task.n_steps + 1, dtype=np.float64) * graph.period_seconds
+    trial_time = TrialFigureTime()
     variation = params.condition_id()
     attrs = {
         "state_sampling": "reset_and_post_transition",
@@ -382,9 +384,9 @@ def rollout_dataset(
             "condition": Variable(np.asarray([variation]), ("condition",)),
             "trial": Variable(np.asarray(params.trials), ("trial",)),
             **state_coordinates,
-            "state_time": Variable(time, ("state_time",), units="s"),
-            "transition_start": Variable(time[:-1], ("transition",), units="s"),
-            "transition_end": Variable(time[1:], ("transition",), units="s"),
+            "state_time": Variable(time, ("state_time",), units="s", trial_time=trial_time),
+            "transition_start": Variable(time[:-1], ("transition",), units="s", trial_time=trial_time),
+            "transition_end": Variable(time[1:], ("transition",), units="s", trial_time=trial_time),
         },
         attrs=attrs,
         schema_id=params.states_schema,
@@ -470,7 +472,7 @@ def _checkpoint_dataset(datasets, *, axis="checkpoint"):
             if any(not np.array_equal(value, values[0]) for value in values[1:]):
                 raise CannotRun("/inputs/subject/checkpoint", f"selected checkpoints differ in coordinate {name}")
             array = values[0]
-        return Variable(array, field.dims, units=field.units, quantity=field.quantity, frame=field.frame)
+        return Variable.from_field(array, field, field.dims)
 
     coords = {name: join(name, field) for name, field in base.coords.items()}
     if any(graph is not None for graph in member_graphs):

@@ -13,10 +13,12 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.code_validity import AttemptProvenance
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, OpeningObservation, OpeningStep, TargetId
 from feedbax.contracts.expression_values import TextSpan
+from feedbax.contracts.loaded_model import ImportedModelProvenance
 from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import SelectedAxisValueProblem, StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
+from feedbax.contracts.project_inputs import StudioSavedTrainKey as StudioSavedTrainKey
 from feedbax.contracts.project_sources import SourceKind
 from feedbax.contracts.project_sweep import SweepException
 from feedbax.contracts.studio_place import StudioPlace, definition_place, path_parts
@@ -87,12 +89,6 @@ class StudioSavedTrainAttempt(StrictModel):
     stopped_checkpoint: int | None = Field(default=None, gt=0, exclude_if=lambda value: value is None)
 
 
-class StudioSavedTrainKey(StrictModel):
-    variant: str
-    step: str
-    row: str
-
-
 class StudioEvaluationCheckpointGap(StrictModel):
     update: int = Field(gt=0)
     reason: Literal["checkpoint_unavailable"]
@@ -142,6 +138,7 @@ class StudioSavedEvaluationResult(StrictModel):
     trials: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
+    loaded_model: ImportedModelProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
     size_bytes: int = Field(ge=0)
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
     provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
