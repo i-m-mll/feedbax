@@ -55,6 +55,7 @@ from feedbax.contracts.request_specs import (
     EvaluationRequestSpec,
     RenderRequestSpec,
     RequestSpec,
+    SynthesisRequestSpec,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_variation
 from feedbax.contracts.rollout_dataset import common_rollout_port
@@ -195,10 +196,10 @@ def _member_ids(requests: list[Mapping[str, MemberLabel]], names: LabelNames) ->
 
 
 @dataclass(frozen=True)
-class EvaluateSource:
+class DatasetStepSource:
     spec: RequestSpec
     name: LabelName
-    port: DatasetPort | None
+    ports: Mapping[str, DatasetPort]
     step_label: str
 
 
@@ -210,7 +211,7 @@ class _Lowerer:
         document_pointers: Mapping[str, str],
         documents: Mapping[str, Document],
         step_inputs: Mapping[str, tuple[PlannedInput, ...]],
-        evaluations: Mapping[RunKey, EvaluateSource],
+        datasets: Mapping[RunKey, DatasetStepSource],
         upstream: Mapping[ElementKey, PlannedElement],
         operations: OperationRegistry,
         figure_templates: FigureTemplateRegistry | None,
@@ -220,7 +221,7 @@ class _Lowerer:
         self.document_pointers = document_pointers
         self.documents = documents
         self.step_inputs = step_inputs
-        self.evaluations = evaluations
+        self.datasets = datasets
         self.upstream = upstream
         self.operations = operations
         self.declarations: Mapping[str, AnalyzeInput] = {}
@@ -312,8 +313,13 @@ class _Lowerer:
         for binding in inputs:
             reference = binding.member.reference
             assert isinstance(reference, ProductRef) and binding.producer is not None
-            producer = self.evaluations[binding.producer]
+            producer = self.datasets[binding.producer]
             evaluation = producer.spec
+            if isinstance(evaluation, SynthesisRequestSpec):
+                if (port := producer.ports.get(reference.role)) is None:
+                    raise _ElementIssue(path, f"{producer.step_label} declares no Dataset product {reference.role!r}.")
+                ports.append(port)
+                continue
             if (
                 not isinstance(evaluation, EvaluationRequestSpec)
                 or evaluation.evaluation_type != ROLLOUT_TYPE
@@ -325,10 +331,10 @@ class _Lowerer:
                 schema = RolloutParameters.model_validate(evaluation.params).states_schema
             except ValidationError as error:
                 raise _ElementIssue(path, f"Invalid saved Evaluate parameters: {error}") from error
-            ports.append(producer.port or DatasetPort(schema_ids=(schema,)))
+            ports.append(producer.ports.get(reference.role) or DatasetPort(schema_ids=(schema,)))
         port = common_rollout_port(ports)
         if len(port.schema_ids) != 1:
-            raise _ElementIssue(path, "Selected Evaluate states must use the same dataset schema.")
+            raise _ElementIssue(path, "Selected datasets must use the same dataset schema.")
         entries = self._entries(inputs, path)
         return inputs, port.model_copy(update={"coordinates": _fields(entries, path) | port.coordinates}), entries
 
@@ -428,7 +434,7 @@ class _Lowerer:
                     names.setdefault(axis, {}).setdefault(
                         coord.value_id, LabelName(coord.value_id, sweep_value_name(axis, coord), kind="row"),
                     )
-                if binding.producer is None or (evaluation := self.evaluations.get(binding.producer)) is None:
+                if binding.producer is None or (evaluation := self.datasets.get(binding.producer)) is None:
                     continue
                 spec, name = evaluation.spec, evaluation.name
                 if isinstance(spec, EvaluationRequestSpec) and spec.evaluation_type == ROLLOUT_TYPE:
@@ -704,7 +710,7 @@ def lower_analyze(
     documents: Mapping[str, Document],
     document_problems: tuple[ProjectDiagnostic, ...],
     step_inputs: Mapping[str, tuple[PlannedInput, ...]],
-    evaluations: Mapping[RunKey, EvaluateSource],
+    datasets: Mapping[RunKey, DatasetStepSource],
     upstream: Mapping[ElementKey, PlannedElement],
     operations: OperationRegistry,
     *,
@@ -713,7 +719,7 @@ def lower_analyze(
     dict[ElementKey, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
 ]:
     lower = _Lowerer(
-        key, document_ids, document_pointers, documents, step_inputs, evaluations, upstream, operations,
+        key, document_ids, document_pointers, documents, step_inputs, datasets, upstream, operations,
         figure_templates,
     )
     lower.problems.extend(document_problems)

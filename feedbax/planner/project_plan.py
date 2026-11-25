@@ -1438,9 +1438,12 @@ def _synthesis_request(
             raise _PayloadProblems(tuple(("task", problem.reason) for problem in resolved))
         documents = TrialDocuments(
             model=authored.model, task=None, python_task=resolved.selection(), objective=authored.objective,
+            input_bindings=authored.input_bindings,
         )
     else:
-        documents = TrialDocuments(model=authored.model, task=authored_task, objective=authored.objective)
+        documents = TrialDocuments(
+            model=authored.model, task=authored_task, objective=authored.objective, input_bindings=authored.input_bindings,
+        )
     try:
         method = methods.resolve(authored.method)
     except KeyError as error:
@@ -3872,23 +3875,28 @@ class _Compiler:
         inputs: Mapping[str, tuple[PlannedInput, ...]],
         resolved: SelectedRunDefinition | ResolvedStep,
     ) -> PlannedAnalyzeRun:
-        from feedbax.planner.project_analyze import EvaluateSource, lower_analyze
+        from feedbax.planner.project_analyze import DatasetStepSource, lower_analyze
 
         assert self.operations is not None
-        evaluations = {
-            source.producer: EvaluateSource(
-                request_identity.decode_request(
-                    self.requests[producer.request_id], self.documents.__getitem__,
-                ).spec,
-                LabelName(source.producer.row, self.rows[source.producer].label, kind="row"),
-                cast(PlannedRun, self.rows[source.producer]).dataset_port,
-                member_name(self.variants[source.producer.variant].steps, source.producer.step),
-            )
-            for sources in inputs.values() for source in sources
-            if source.producer is not None
-            and isinstance(producer := source.member.reference, ProductRef)
-            and producer.request_id.startswith("evaluate:")
-        }
+        datasets: dict[RunKey, DatasetStepSource] = {}
+        for sources in inputs.values():
+            for source in sources:
+                reference = source.member.reference
+                if source.producer is None or source.producer in datasets or not isinstance(reference, ProductRef):
+                    continue
+                if reference.request_id.partition(":")[0] not in {"evaluate", "synthesize"}:
+                    continue
+                spec = request_identity.decode_request(self.requests[reference.request_id], self.documents.__getitem__).spec
+                row = cast(PlannedRun, self.rows[source.producer])
+                if isinstance(spec, SynthesisRequestSpec):
+                    assert self.synthesis_methods is not None
+                    ports = self.synthesis_methods.resolve(spec.method).declaration.outputs
+                else:
+                    ports = {"states": row.dataset_port} if row.dataset_port is not None else {}
+                datasets[source.producer] = DatasetStepSource(
+                    spec, LabelName(row.key.row, row.label, kind="row"), ports,
+                    member_name(self.variants[row.key.variant].steps, row.key.step),
+                )
         elements, encoded, problems, figures = lower_analyze(
             key,
             resolved.payload,
@@ -3897,7 +3905,7 @@ class _Compiler:
             self.variants[key.variant].documents,
             tuple(replace(problem, row=key.row, variant=key.variant) for problem in resolved.document_problems),
             inputs,
-            evaluations,
+            datasets,
             {
                 producer: self.rows[producer.run].elements[producer]
                 for sources in inputs.values() for source in sources
@@ -4256,8 +4264,9 @@ class _Compiler:
         if reference.unresolved:
             target = reference.element or reference.step
             return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, f"Unresolved target {member_display_name(target)}.", name)
-        if role.operation_outputs and reference.element is not None and reference.product is not None:
-            role = replace(role, producer_kind="analyze", product_role=reference.product)
+        synthesis_dataset = role.operation_outputs and reference.element is None and reference.product is not None
+        if role.operation_outputs and reference.product is not None:
+            role = replace(role, producer_kind="synthesize" if synthesis_dataset else "analyze", product_role=reference.product)
         element_input = role.producer_kind == "analyze"
         if element_input:
             if reference.element is None or reference.product != role.product_role:
@@ -4265,7 +4274,7 @@ class _Compiler:
                     ResolutionCode.BAD_REFERENCE, path,
                     f"declare a render element and its {role.product_role!r} product", name,
                 )
-        elif reference.element is not None or reference.product is not None:
+        elif not synthesis_dataset and (reference.element is not None or reference.product is not None):
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, path,
                 "this input selects a step row without an element or product", name,
@@ -4396,7 +4405,7 @@ class _Compiler:
             self.diagnostics.extend(map(rule_problem, problems[1:]))
             return rule_problem(problems[0])
         self.diagnostics.extend(map(rule_problem, problems))
-        if product_role == "model" and (best is not None or conditions):
+        if (product_role == "model" or synthesis_dataset) and (best is not None or conditions):
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.where", "Metric conditions and Best require a Train step.", name,
             )
@@ -4444,7 +4453,7 @@ class _Compiler:
                     del named["source"]
                     label = requests[0][1].label if requests and requests[0][1] is not None else None
                     named["element"] = LabelName(reference.element, label, kind="element", card=run.key.step)
-                elif role.producer_kind != "evaluate":
+                elif role.producer_kind != "evaluate" and not synthesis_dataset:
                     labels = {}
             except ValueError as error:
                 return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)

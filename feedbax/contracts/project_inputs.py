@@ -284,8 +284,8 @@ class StepReference(StrictModel):
 
     @model_validator(mode="after")
     def _check_product(self) -> StepReference:
-        if (self.element is None) != (self.product is None):
-            raise ValueError("element and product must be declared together")
+        if self.element is not None and self.product is None:
+            raise ValueError("An element reference must name its product.")
         return self
 
 

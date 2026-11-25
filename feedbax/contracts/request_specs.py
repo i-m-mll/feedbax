@@ -102,7 +102,6 @@ class SynthesisRequestSpec(RequestSpec):
     def _numerical_precision(self) -> SynthesisRequestSpec:
         if self.numerical_settings.floating_point_bits != 64:
             raise ValueError("Synthesize requires 64-bit floating point.")
-        self.trial_documents = self.trial_documents.with_matching_input_ids()
         return self
 
 

@@ -705,7 +705,7 @@ class ProjectPlanService:
     @contextmanager
     def _operation_dataset(self, project: str, revision: str, job_id: str, role: str) -> Iterator[Dataset]:
         store, receipt = self._saved_light_receipt(project, revision, job_id, role)
-        if not receipt.request.id.startswith("analyze:"):
+        if not receipt.request.id.startswith(("analyze:", "synthesize:")):
             raise JobNotFound(job_id)
         try:
             product, = receipt.products[role]

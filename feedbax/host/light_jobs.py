@@ -129,6 +129,7 @@ def _typed_operation_input(port, members) -> bool:
         isinstance(member.reference, ProductRef) and (
             member.reference.request_id.startswith("analyze:")
             or member.reference.request_id.startswith("evaluate:") and member.reference.role == "states"
+            or member.reference.request_id.startswith("synthesize:") and member.reference.role != "model"
         )
         for member in members
     )
@@ -211,6 +212,7 @@ def validate_light_requirements(request: DecodedRequest, definition: LightDefini
                 isinstance(member.reference, ProductRef) and (
                     member.reference.request_id.startswith("analyze:")
                     or member.reference.role == "states" and member.reference.request_id.startswith("evaluate:")
+                    or member.reference.request_id.startswith("synthesize:") and member.reference.role != "model"
                 )
                 for member in members
             )

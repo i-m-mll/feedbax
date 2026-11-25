@@ -1,25 +1,36 @@
 """A synthesis method fills the shipped graph's declared model parameters."""
 
+from dataclasses import asdict, replace
+from base64 import b64decode
+
 import jax
 import numpy as np
 from fastapi.testclient import TestClient
 
 from feedbax.application.composition import load_application
+from feedbax.builtins.synthesis import ConstantParametersSettings, constant_parameters
+from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.effective_success import success_content_ref
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
 from feedbax.contracts.model_origin import ModelProductKey, SynthesizedModelOrigin
+from feedbax.contracts.operation import DatasetPort, JaxOperation
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import SynthesisRequestSpec, TrialDocuments
 from feedbax.examples import load_shipped_projects
 from feedbax.host.synthesis import PreparedSynthesis, synthesize_model
+from feedbax.host import light_jobs, light_worker
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import decode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.effective_success import SuccessView
+from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE, read_model_tree
 from feedbax.planner.project_plan import RunKey, compile_project
+from feedbax.plugins.declarations import DistributionSource, callable_declaration
+from feedbax.synthesis import synthesis_method
+from feedbax.synthesis.methods import SynthesisMethodRegistry
+from feedbax.dataset import Dataset, Variable
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.app import create_app
 from tests.support.host import job_row, token, wait_until
@@ -36,6 +47,7 @@ def synthesis_project():
             "model": {"document": "point-mass"},
             "task": {"document": "simple-reaches-task"},
             "objective": {"document": "simple-reaches-objective"},
+            "input_bindings": {"target_pos": "target_pos"},
             "method": "feedbax.constant_parameters",
         }}},
         "baseline": evaluate,
@@ -62,6 +74,9 @@ def test_synthesize_and_evaluate_plan_from_authored_documents():
     before = {run.key: run.request_id for run in plan.runs}
     assert len(changed.runs) == len(before)
     assert all(run.request_id != before[run.key] for run in changed.runs)
+    del raw["steps"]["synthesize"]["base"]["inline"]["input_bindings"]
+    refused = compile_project(Project.model_validate(raw)).row(synthesis.key)
+    assert any("needs a Task signal" in problem.detail for problem in refused.problems)
 
 
 def test_served_synthesis_documents_bind_in_trials_and_model_view(host, tmp_path, monkeypatch):
@@ -69,6 +84,9 @@ def test_served_synthesis_documents_bind_in_trials_and_model_view(host, tmp_path
     raw = synthesis_project()
     project = "synthesis-authoring"
     raw["documents"]["extra-model"] = raw["documents"]["point-mass"]
+    signals = raw["documents"]["simple-reaches-task"]["payload"]["signals"]
+    signal = next(value for value in signals if value["id"] == "target_pos")
+    signals.append(signal | {"id": "alternate_target", "name": "Alternate target"})
     _save_project(ProjectFolderService(tmp_path), project, Project.model_validate(raw))
     route = f"/api/projects/{project}"
     run = {"variant": "default", "step": "synthesize", "row": "default"}
@@ -107,6 +125,12 @@ def test_served_synthesis_documents_bind_in_trials_and_model_view(host, tmp_path
                 "op": "replace", "path": "/base/inline",
                 "value": raw["steps"]["synthesize"]["base"]["inline"] | {role: {"document": document}},
             }]
+        binding = client.post(f"{route}/authoring/trials", json=body | {
+            "change": {"kind": "binding", "input_id": "target_pos", "signal_id": "alternate_target"},
+        })
+        assert binding.status_code == 200, binding.text
+        assert binding.json()["input_bindings"] == {"target_pos": "alternate_target"}
+        assert binding.json()["files"][0]["patches"][0]["value"]["input_bindings"] == {"target_pos": "alternate_target"}
 
 
 def test_saved_synthesize_model_runs_evaluation_train_start_and_export(host, tmp_path, monkeypatch):
@@ -186,6 +210,7 @@ def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):
             "model": project.documents["point-mass"].payload,
             "task": project.documents["simple-reaches-task"].payload,
             "objective": project.documents["simple-reaches-objective"].payload,
+            "input_bindings": {"target_pos": "target_pos"},
         }),
         method="feedbax.constant_parameters",
         settings={"value": 0.125},
@@ -218,3 +243,81 @@ def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):
         problems = synthesize_model(restricted, registry=registry, artifacts=artifacts)
     assert isinstance(problems, tuple) and problems
     assert all(problem.model_address is not None and "parameters" in problem.path for problem in problems)
+
+
+def test_analyze_reads_a_declared_synthesis_dataset(tmp_path, monkeypatch):
+    schema = "feedbax.synthesis.test.v1"
+    port = DatasetPort(
+        schema_ids=(schema,), coordinates={"sample": FieldDescriptor(dims=("sample",))},
+        variables={"value": FieldDescriptor(dims=("sample",))},
+    )
+
+    @synthesis_method(
+        settings=ConstantParametersSettings, numerical=JaxOperation(backend="cpu", floating_point_bits=64),
+        outputs={"diagnostic": port},
+    )
+    def synthesize_with_diagnostic(problem, settings):
+        dataset = Dataset.from_arrays(
+            {"value": Variable(np.array([1., 3.]), ("sample",))},
+            coords={"sample": Variable(np.array([0, 1]), ("sample",))}, schema_id=schema,
+        )
+        result = constant_parameters(problem, settings)
+        return replace(result, datasets={"diagnostic": dataset})
+
+    methods = SynthesisMethodRegistry()
+    key = "feedbax.test_diagnostic"
+    methods.register_declaration(
+        synthesize_with_diagnostic, callable_declaration(synthesize_with_diagnostic),
+        key=key, source=DistributionSource("feedbax", "feedbax", "test"),
+    )
+    methods.seal()
+    registry = replace(load_application().bundle, synthesis_methods=methods)
+    monkeypatch.setattr(light_jobs, "operation_application", lambda: registry)
+    monkeypatch.setattr(light_worker, "operation_application", lambda: registry)
+
+    raw = synthesis_project()
+    raw["steps"]["synthesize"]["base"]["inline"]["method"] = key
+    raw["steps"]["plot"] = {
+        "kind": "analyze", "inputs": {"diagnostic": {"step": "synthesize", "product": "diagnostic"}},
+        "base": {"inline": {
+            "inputs": {"diagnostic": {"kind": "dataset"}},
+            "views": {"result": {"inputs": {"data": {"input": "diagnostic"}}, "figure": {
+                "data": ["data"], "layout": [{"name": "values", "row": 1, "col": 1}],
+                "layers": [{"name": "values", "role": "data", "panel": "values", "mark": "line",
+                            "encode": {"x": "sample", "y": "value"}}],
+            }}},
+        }},
+    }
+    plan = compile_project(Project.model_validate(raw), operations=registry.operations, synthesis_methods=methods)
+    assert not plan.diagnostics, plan.diagnostics
+    element, = plan.elements.values()
+    (binding,) = element.inputs["data"]
+    source_id = binding.member.reference.request_id
+    assert binding.member.reference.role == "diagnostic"
+
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
+
+    def request(id_):
+        decoded = decode_request(plan.requests[id_], plan.documents.__getitem__)
+        from feedbax.contracts.request_identity import encode_request
+
+        return decoded, store_request(store, encode_request(decoded.spec, decoded.inputs))
+
+    source, source_object = request(source_id)
+    role, provider = light_jobs.validate_light_request(source)
+    with jax.enable_x64():
+        products = light_worker._compute_products(store, source, {}, "synthesized", role, provider)
+    published = light_jobs.publish_light_success(
+        light_jobs.LightDelivery(project_id="test", manifest_root=store.root, request=source_object).model_dump(mode="json"),
+        "synthesized", source_id, {}, products, provider=asdict(provider.source),
+    )
+    assert set(products) == {"model", "diagnostic"}
+
+    render, render_object = request(element.request_id)
+    from feedbax.contracts.artifact_custody import ContentObjectRef
+    from feedbax.contracts.strict_json import strict_json_loads
+
+    _, inputs = SuccessView(store).bind(render_object, origins={source_id: ContentObjectRef.model_validate(published)})
+    output = strict_json_loads(light_worker.render_saved_figure(store, render, inputs))
+    y = output["data"][0]["y"]
+    np.testing.assert_equal(np.frombuffer(b64decode(y["bdata"]), dtype=y["dtype"]), [1.0, 3.0])

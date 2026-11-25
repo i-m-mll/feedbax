@@ -15,7 +15,6 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.planner.project_plan import RunKey, SelectedRunDefinition
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.trial_bindings import selected_signal_id
-from feedbax.contracts.training import matching_input_ids
 
 if TYPE_CHECKING:
     from feedbax.project_folder import ProjectFolder
@@ -109,7 +108,7 @@ def selected_model_and_task(
         definition = plan.selected_definitions.get(key)
     if definition is None or (model := selected_model(definition, body.document)) is None:
         return None
-    managed, prefix = trial_document_slots(definition.payload)
+    managed, _ = trial_document_slots(definition.payload)
     if managed.get("python_task") is not None:
         source = _trial_document("python_task", managed["python_task"], PythonTaskSelection)
     elif managed.get("task") is not None:
@@ -117,14 +116,10 @@ def selected_model_and_task(
     else:
         source = None
     objective = managed.get("objective")
-    selected = _trial_document("model", model, ModelDocument)
-    bindings = managed.get("input_bindings", {})
-    if not prefix:
-        bindings = bindings | matching_input_ids(selected, source, bindings)
     return (
-        selected, model_task_signals(source, folders.python_tasks),
+        _trial_document("model", model, ModelDocument), model_task_signals(source, folders.python_tasks),
         _trial_document("objective", objective, ObjectiveDocument) if objective is not None else None,
-        bindings, source,
+        managed.get("input_bindings", {}), source,
     )
 
 
