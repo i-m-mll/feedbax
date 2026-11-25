@@ -285,17 +285,24 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
         response = client.patch(BASE, json={"revision": revision, "files": edited["files"]})
         assert response.status_code == 200, response.text
 
+    field = folders.read(PROJECT).project.steps["other"].sweep.axes["run"]
+    origin = {"step": "other", "axis": "run", "set": field.set, "entry": entry, "variable": "onset"}
     for row in _rows(folders, "other"):
         read = selected(row)
         for variables in (read["variables"], read["task"]["variables"]):
             assert any(item["id"] == variable["id"] for item in variables) == (row == f"run={entry}")
+        assert [item["set_entry"] for item in read["variables"] if "set_entry" in item] == (
+            [origin] if row == f"run={entry}" else []
+        )
     set_expression(f"run={entry}", "onset", "0.04 s")
     assert selected(f"run={entry}")["task"]["variables"][-1]["value"]["value"] == 0.04
     _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
     read = selected("default")
     for variables in (read["variables"], read["task"]["variables"]):
         assert len([item for item in variables if item["name"] == f"{entry} · Onset"]) == 1
-    scoped = next(item["id"] for item in read["variables"] if item["name"] == f"{entry} · Onset")
+    projected = next(item for item in read["variables"] if item["name"] == f"{entry} · Onset")
+    assert projected["set_entry"] == origin
+    scoped = projected["id"]
     set_expression("default", scoped, "0.07 s")
     field = folders.read(PROJECT).project.steps["other"].set_fields["run"]
     project = folders.read(PROJECT).project
