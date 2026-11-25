@@ -11,21 +11,21 @@ from tests.support.managed_train_fixture import managed_evaluation_step, managed
 
 # Request identities for the shipped point-mass Task, with its signal labels projected by ID.
 # These witnesses hold the same changes expressed on the Evaluate step or in its Model and Task documents.
-FEE = "train:8d8d2d1fa72a44162040459972acc90a0599ef5ff7d9fb08bc9ecf6c40594b23"
-DEFAULT = "evaluate:a26c3206ad32dd581a8c14d17219d8ba5a90fc92bb12dfb07ec3336196482119"
-FIELD_CHANGED = "evaluate:f4b1e53097d9f25fa2a42123f1eed48acd3927ef527d3f7726fd8653c30689ea"
-ATTACHMENT_ADDED = "evaluate:4c139b6baa83c6c41e68bea0c45a3cfc28c44a74a90b2f169931afd30af6be77"
-FEWER_CONDITIONS = "evaluate:29a1c6c556faf512665101434ebb5f2688e1a7f7c99d6bceefd59c150f5c75ab"
+FEE = "train:7ee0aec47e9eb5d0408a91707503e31114c55bf912e95406f206bd654db1bbe4"
+DEFAULT = "evaluate:7c6fad3f13cb972b160877409c34fda69843e13141ffdaf788250959b0289647"
+FIELD_CHANGED = "evaluate:36403904c6fbf41fda182a0997b17ef9afb0bb92f6034ab11ab1217c60775884"
+ATTACHMENT_ADDED = "evaluate:fb014cda6d2da4cb22047330a52f6013a32f812d968fbae93e78d45b5ece424b"
+FEWER_CONDITIONS = "evaluate:cf113fef428b1da3687724da139629c6d83249e1e8500fab110a06b2c71033da"
 SWEPT_PUSHED = (
     ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
-     "evaluate:2931116d3359564263ba0d566422013e2100150efc9ea470aa9e531836c58f71"),
+     "evaluate:dcf3f064b759cc1bfc8cc90b3f6f76b6af6947a432b708e288456a53967fa04a"),
     ("trained==abb0ffe5124ac74b8d431462660c668b987dd969c5bf76fc07a20894a2b46eea",
-     "evaluate:cd547494d9a606d6a5087d7c5de87f0c1f33ddb36a629618fab8811a6dc38298"),
+     "evaluate:26c6ab856a6094343bbcbb74ed40ef5d75fae9d3316a0ecaf3fd4bac061a3216"),
 )
 NEAREST_SHARED = {
-    "fee": "train:3cd016c0ddf2f4077faef9904870609863ceaf1b139c361b7002796c1e9dc93e",
+    "fee": "train:4e5dbd251fb8ae4d207e7a6223b5daec96cdb92517047cbbe3a0b734ed92318b",
     "other": FEE,
-    "check": "evaluate:6de59798cd541434fce97b71bf178409f00614ac3dcd93c8e1d414d0de93d4ab",
+    "check": "evaluate:a2dc720dec386e1fd5951caece29c1570d6f7589a5ce512d34fe54676127552c",
 }
 UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 

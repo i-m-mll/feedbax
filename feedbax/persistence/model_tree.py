@@ -10,6 +10,7 @@ from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_GRAPH_PATH,
     MODEL_TREE_MANIFEST_PATH,
+    ModelInputArray,
     ModelReplica,
     ModelReplicaManifest,
     SemanticModelEncoding,
@@ -47,6 +48,7 @@ class ModelTreeReplica:
 class ModelTree:
     graph: GraphSpec
     replicas: tuple[ModelTreeReplica, ...]
+    input_arrays: dict[str, ModelInputArray]
     assets: tuple[tuple[str, ContentObjectRef], ...]
     members: dict[str, ContentObjectRef]
 
@@ -66,6 +68,8 @@ def read_model_tree(
     manifest = strict_model_validate_json(ModelReplicaManifest, raw)
     if raw != canonical_json_v2_bytes(manifest.model_dump(mode="json")):
         raise ModelTreeLayoutError("/model", "semantic model manifest is not canonical")
+    if manifest.input_arrays.keys() - graph.input_bindings.keys():
+        raise ModelTreeLayoutError("/model/input_arrays", "input prototypes name missing graph inputs")
 
     assets = tuple(model_asset_refs(graph))
     arrays = tuple(model_replica_array_path(index) for index in range(len(manifest.replicas)))
@@ -86,4 +90,4 @@ def read_model_tree(
         ModelTreeReplica(replica, members[path])
         for replica, path in zip(manifest.replicas, arrays, strict=True)
     )
-    return ModelTree(graph, replicas, assets, members)
+    return ModelTree(graph, replicas, manifest.input_arrays, assets, members)

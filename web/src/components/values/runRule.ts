@@ -1,8 +1,9 @@
-/** What a run rule can name: the axes of the runs it reads, and the results a lowest or highest term ranks by. */
+/** What a run rule can name: the axes of the runs it reads, and the final metrics it compares or ranks by. */
 export interface RuleVocabulary {
   /** Each axis, with its values as a rule writes them (`0`, `fast`, `"a b"`). */
   readonly axes: Readonly<Record<string, readonly string[]>>;
-  /** The result names, where the rule may rank; none where it is resolved before its runs have results. */
+  /** The final metrics the producer's training method declares, where the rule may read results; none where it is
+   * resolved before its runs have results. */
   readonly metrics?: readonly string[];
 }
 
@@ -17,8 +18,13 @@ const ruleName = /^[a-zA-Z_](?:[a-zA-Z0-9_-]*[a-zA-Z0-9_])?$/;
 const reserved = new Set(['true', 'false', 'and', 'or', 'not', 'lowest', 'highest', 'per']);
 const ranks = new Set(['lowest', 'highest']);
 const operators = ['=', '!=', '>=', '<=', '>', '<'] as const;
-const comparison = /^([a-zA-Z_][\w-]*)(==|!=|<=|>=|=|<|>)(.*)$/s;
-const partialOperator = /^([a-zA-Z_][\w-]*)([!<>=]+)$/;
+/** A final metric is a number, which a rule orders against a threshold. */
+const metricOperators = ['<', '<=', '>', '>='] as const;
+const named = String.raw`([a-zA-Z_][\w-]*|"[^"]*")`;
+const comparison = new RegExp(`^${named}(==|!=|<=|>=|=|<|>)(.*)$`, 's');
+const partialOperator = new RegExp(`^${named}([!<>=]+)$`);
+/** The name a word writes: its text, or the text inside its quotes. */
+const spelled = (word: string) => word.startsWith('"') ? word.slice(1, -1) : word;
 
 /** A name as a rule writes it: bare when it is a rule name, else quoted. */
 export function ruleWord(name: string) {
@@ -41,8 +47,9 @@ function words(text: string): string[] {
 }
 
 /**
- * What can follow the caret in `rule`: an axis name, then its operators, then its values; `lowest` and `highest`
- * where the rule may rank, and after them a result name, then `per` and axes. A result name never starts a comparison.
+ * What can follow the caret in `rule`: an axis name, then its operators, then its values; where the rule may read
+ * results, a metric name, then the operators that order it, and `lowest` and `highest`, with a metric name after them,
+ * then `per` and axes.
  */
 export function ruleCompletions(rule: string, caret: number, { axes, metrics }: RuleVocabulary): RuleCompletion[] {
   const before = rule.slice(0, caret);
@@ -68,18 +75,24 @@ export function ruleCompletions(rule: string, caret: number, { axes, metrics }: 
     if (per === 'per' && !rest.length) return offer(word.split(',').at(-1)!, names);
     if (per === undefined && 'per'.startsWith(word) && word) return offer(word, ['per']);
   }
+  const isAxis = (name: string) => Object.prototype.hasOwnProperty.call(axes, name);
+  const isMetric = (name: string) => !isAxis(name) && !!metrics?.includes(name);
   const compared = comparison.exec(word);
-  if (compared && compared[1] in axes) {
+  if (compared && isAxis(compared[1])) {
     const [, name, operator, rest] = compared;
     const fragment = operator === '=' ? rest.split(/,|\.\./).at(-1)! : rest;
     return offer(fragment, axes[name]);
   }
   const partial = partialOperator.exec(word);
-  if (partial && partial[1] in axes) return offer(partial[2], operators);
-  if (word in axes) {
+  if (partial && isAxis(partial[1])) return offer(partial[2], operators);
+  if (partial && isMetric(spelled(partial[1]))) return offer(partial[2], metricOperators);
+  if (compared && isMetric(spelled(compared[1]))) return [];
+  const follow = (choices: readonly string[]) => {
     const start = before.length;
-    return operators.map((operator) => ({ text: before + operator + after, caret: start + operator.length, label: operator }));
-  }
-  if (word && !/^[a-zA-Z_][\w-]*$/.test(word)) return [];
-  return offer(word, [...names, ...metrics ? [...ranks] : []]);
+    return choices.map((operator) => ({ text: before + operator + after, caret: start + operator.length, label: operator }));
+  };
+  if (isAxis(word)) return follow(operators);
+  if (isMetric(spelled(word)) && word === ruleWord(spelled(word))) return follow(metricOperators);
+  if (word && !/^(?:[a-zA-Z_][\w-]*|"[^"]*)$/.test(word)) return [];
+  return [...offer(word, names), ...metrics ? [...offer(word, metrics, ruleWord), ...offer(word, [...ranks])] : []];
 }

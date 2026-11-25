@@ -118,7 +118,7 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
   ];
   return <RuleField label={label} value={rule} disabled={disabled} count={count} pinned={pinned} clauses={lines}
     vocabulary={{ axes: Object.fromEntries(Object.entries(source.ruleAxes ?? {}).map(([axis, values]) => [axis, Object.values(values)])),
-      metrics: ranked ? source.ruleMetrics ?? [] : undefined }}
+      metrics: ranked ? checked.data?.metric_names ?? [] : undefined }}
     problem={shownProblem} picked={shownPicks}
     commands={commands} onPickEnd={endPick} onDraft={setDraft} onCommit={(written) => {
       const { rule: _written, clauses: saved, ...rest } = terms;
