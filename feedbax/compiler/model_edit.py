@@ -733,9 +733,15 @@ class ModelEditDraft:
         item[key] = value
         self.changed.append(address)
 
+    def require_physical_placement(self, address: ModelAddress, graph: Record, component: Record) -> None:
+        if graph["physical_domain"] is not None:
+            if reason := self.component_problem(component, graph["physical_domain"]):
+                raise _Refusal(address, reason)
+
     def add_component(self, command: edits.AddComponent) -> None:
         _, graph = self.graph(command.graph)
         component = command.component.model_dump(mode="json")
+        self.require_physical_placement(command.graph, graph, component)
         key = command.id or _id(graph)
         for kind, members in (("component", "components"), ("wire", "wires"), ("physical_connection", "connections")):
             if key in graph.get(members, {}):
@@ -830,6 +836,7 @@ class ModelEditDraft:
             raise _Refusal(address, "destination graph cannot hold physical connections")
         ids: dict[str, str] = {}
         for old, component in data["components"].items():
+            self.require_physical_placement(address, graph, component)
             key = _id(graph)
             graph["components"][key] = component
             ids[old] = key
