@@ -409,7 +409,7 @@ def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambi
     original = {"owner": "inputs", "port": "old"}
     replacement = {"owner": "inputs", "port": "new"}
     dangling = {"owner": "inputs", "port": "missing"}
-    attachments = [{"kind": "intervention", "id": "transform", "operation": "scale", "fields": {"factor": 2}}]
+    attachments = [{"kind": "intervention", "id": "transform", "operation": "scale", "operands": {"factor": {"kind": "value", "value": 2}}}]
     wires = {
         "hold": {"source": original, "target": destination, "attachments": attachments},
         "dangling": {"source": dangling, "target": {"owner": "outputs", "port": "spare"}},

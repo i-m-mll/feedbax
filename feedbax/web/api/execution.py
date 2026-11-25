@@ -6,12 +6,14 @@ from collections import defaultdict
 
 import jax
 import jax.numpy as jnp
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
+from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.contracts.base import StrictModel
 from feedbax.compiler.model_anchors import anchored_outputs
 from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ValueBase
+from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument
@@ -87,11 +89,41 @@ _DTYPES = {ValueBase.BOOLEAN: jnp.bool_, ValueBase.INTEGER: jnp.int32, ValueBase
 
 
 @router.post("/task-trials/sample", response_model=TaskTrialSampleResponse)
-async def sample_task_trials(
-    payload: TaskTrialSampleRequest,
+def sample_task_trials(
+    payload: TaskTrialSampleRequest | StudioRunTaskTrialSampleRequest,
     request: Request,
+    response: Response,
 ) -> TaskTrialSampleResponse:
     bundle = request.app.state.bootstrap_state.bundle
+    if isinstance(payload, TaskTrialSampleRequest):
+        return _sample_trials(payload, bundle)
+
+    from feedbax.planner.project_plan import RunKey
+    from feedbax.web.api.projects import _project_response
+    from feedbax.web.services.trial_authoring import read_run_trial_sample
+
+    def sample_selected() -> TaskTrialSampleResponse:
+        key = RunKey(payload.run.variant, payload.run.step, payload.run.row)
+        documents, graph = read_run_trial_sample(
+            request.app.state.project_folders, payload.project_id, payload.revision, key, bundle,
+        )
+        selected = documents.task_source
+        standalone = TaskTrialSampleRequest(
+            model=documents.model,
+            task=selected if isinstance(selected, TaskDocument) else None,
+            python_task=selected if isinstance(selected, PythonTaskSelection) else None,
+            input_bindings=documents.input_bindings, objective=documents.objective,
+            evaluation_trials=payload.evaluation_trials, nominal=payload.nominal,
+            seed=payload.seed, count=payload.count, aggregate=payload.aggregate,
+        )
+        return _sample_trials(standalone, bundle, graph_override=graph)
+
+    return _project_response(response, sample_selected)
+
+
+def _sample_trials(
+    payload: TaskTrialSampleRequest, bundle: ApplicationRegistryBundle, *, graph_override: GraphSpec | None = None,
+) -> TaskTrialSampleResponse:
     selected = payload.task if payload.task is not None else payload.python_task
     assert selected is not None
     task_id = selected.id if isinstance(selected, TaskDocument) else selected.type
@@ -114,7 +146,8 @@ async def sample_task_trials(
         ))
     preview = preview_trial_source(
         payload.model, selected, bundle.components, bundle.expression_functions,
-        python_tasks=bundle.python_tasks, input_bindings=payload.input_bindings, nominal=payload.nominal,
+        python_tasks=bundle.python_tasks, input_bindings=payload.input_bindings,
+        graph_override=graph_override, nominal=payload.nominal,
     )
     if isinstance(preview, tuple):
         return unavailable(*preview)
@@ -124,7 +157,8 @@ async def sample_task_trials(
         resolved = resolve_trial_execution(
             payload.model, selected, bundle.components, bundle.expression_functions,
             python_tasks=bundle.python_tasks, input_bindings=payload.input_bindings,
-            objective=payload.objective, objective_use=ObjectiveUse.PREVIEW, nominal=payload.nominal,
+            objective=payload.objective, objective_use=ObjectiveUse.PREVIEW,
+            graph_override=graph_override, nominal=payload.nominal,
         )
         if isinstance(resolved, tuple):
             return unavailable(*resolved)

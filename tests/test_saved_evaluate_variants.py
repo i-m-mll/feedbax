@@ -238,7 +238,7 @@ def test_timed_intervention_uses_the_exact_trained_checkpoint(host, tmp_path):
         read_changed_model(raw, name, [{
             "op": "add", "owner": owner, "after": None,
             "attachment": {
-                "kind": "intervention", "id": "pulse", "operation": "add", "fields": {"value": [0.5, 0.0]},
+                "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
                 "window": {"spans": [{
                     "kind": "interval",
                     "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
