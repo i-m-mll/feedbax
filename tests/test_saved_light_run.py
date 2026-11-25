@@ -506,8 +506,8 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
             "time": {}, "x_axis": "x", "y_axis": "y",
         }
         assert [run.model_dump() for run in product.layout.meta.runs["speed"]] == [
-            {"key": address("conditions", rows[key]), "request_id": request}
-            for key, request in zip(order, evaluation_ids, strict=True)
+            {"job_id": by_request[request]["id"], "request_id": request}
+            for request in evaluation_ids
         ]
         assert [trace.meta.model_dump() for trace in product.data] == [
             {"layer": "trial-speed", "group": {"condition": condition, "trial": trial}}
