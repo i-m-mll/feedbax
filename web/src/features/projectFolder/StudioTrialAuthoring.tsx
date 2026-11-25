@@ -385,7 +385,8 @@ function TermWindow({ view, term, index, commit, labelId }: {
   view: TrialView; term: ObjectiveTerm; index: number; commit?: Commit; labelId?: string;
 }) {
   const epochs = term.epochs ?? [];
-  const changed = changedAt(view, 'objective', termPath(index) + '/epochs', commit);
+  const path = termPath(index) + '/epochs';
+  const changed = changedAt(view, 'objective', path, commit);
   return <Combobox className="w-full" aria-labelledby={labelId} aria-label={labelId ? undefined : studioName('window')}
     items={view.epochs.map(({ id, name }) => ({ value: id, label: name }))}
     checked={epochs} text="" tokens disabled={!commit}
@@ -394,7 +395,7 @@ function TermWindow({ view, term, index, commit, labelId }: {
       const next = view.epochs.map(({ id }) => id)
         .filter((id) => id === epoch ? !epochs.includes(id) : epochs.includes(id));
       void commit?.(studioAccessibleName('set', studioName('window')),
-        { kind: 'objective', edits: [{ op: 'add', path: termPath(index) + '/epochs', value: next }] });
+        { kind: 'objective', edits: [write(path, next, has(term, 'epochs'))] });
     }} />;
 }
 

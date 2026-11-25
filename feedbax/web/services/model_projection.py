@@ -188,7 +188,12 @@ def model_projection(folders, project_id, body, bundle):
             continue
         leaves = table.at_port(port.address)
         if not leaves or leaves[0].path:
-            ports.append(port.model_copy(update={"readers": tuple(readers.get(port.address.to_text(), ()))}))
+            base = table.structured_base(port.address)
+            ports.append(ModelPortProjection(
+                address=port.address,
+                type=port.type.model_copy(update={"base": base}) if base is not None else port.type,
+                readers=tuple(readers.get(port.address.to_text(), ())),
+            ))
         for leaf in leaves:
             ports.append(ModelPortProjection(
                 address=leaf.address, type=leaf.signal_type,
