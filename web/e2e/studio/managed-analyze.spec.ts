@@ -199,7 +199,8 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
 
   await tab(page, 'Figures').click();
   await figures.getByRole('button', { name: 'velocity_summary', exact: true }).click();
-  await expect(figures.getByText('Not run', { exact: true })).toBeVisible();
+  await expect(figures.getByText('Waiting', { exact: true })).toBeVisible();
+  await expect(inspector.getByRole('status')).toContainText('Waiting for analyze.');
   const caption = inspector.getByRole('textbox', { name: 'Caption', exact: true });
   const captioned = await edit(async () => { await caption.fill('Velocity by condition'); await caption.press('Enter'); });
   expect(graph(captioned).views?.velocity_summary.figure).toMatchObject({ caption: 'Velocity by condition' });
