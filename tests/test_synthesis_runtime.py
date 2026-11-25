@@ -2,6 +2,7 @@
 
 import jax
 import numpy as np
+from fastapi.testclient import TestClient
 
 from feedbax.application.composition import load_application
 from feedbax.contracts.model_address import ModelAddress
@@ -20,6 +21,7 @@ from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE, read_model_tree
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.app import create_app
 from tests.support.host import job_row, token, wait_until
 from tests.support.managed_train_fixture import managed_evaluation_step
 from tests.test_canonical_evaluate_admission import _save_project
@@ -60,6 +62,51 @@ def test_synthesize_and_evaluate_plan_from_authored_documents():
     before = {run.key: run.request_id for run in plan.runs}
     assert len(changed.runs) == len(before)
     assert all(run.request_id != before[run.key] for run in changed.runs)
+
+
+def test_served_synthesis_documents_bind_in_trials_and_model_view(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    raw = synthesis_project()
+    project = "synthesis-authoring"
+    raw["documents"]["extra-model"] = raw["documents"]["point-mass"]
+    _save_project(ProjectFolderService(tmp_path), project, Project.model_validate(raw))
+    route = f"/api/projects/{project}"
+    run = {"variant": "default", "step": "synthesize", "row": "default"}
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        revision = client.get(route).json()["revision"]
+        body = {"revision": revision, "run": run}
+        response = client.post(f"{route}/authoring/trials", json=body)
+        assert response.status_code == 200, response.text
+        view = response.json()
+        assert view["model"] == "point-mass" and view["task_document"] == "simple-reaches-task"
+        assert view["objective_document"] == "simple-reaches-objective" and not view["problems"]
+        assert view["epoch_instances"]
+        response = client.post(f"{route}/model/projection", json=body | {"document": "point-mass"})
+        assert response.status_code == 200, response.text
+        assert response.json()["task_signals"]
+        response = client.get(f"{route}/train-runs", params={"revision": revision, "window_map": True})
+        assert response.status_code == 200, response.text
+        window = response.json()["window_map"]
+        selected = next(row for row in window["rows"] if row["key"] == run)
+        assert selected["evaluation_conditions"]
+        step = next(step for step in window["steps"] if step["step_id"] == run["step"])
+        assert step["document_ids"] == {
+            "payload.model": "point-mass", "payload.task": "simple-reaches-task",
+            "payload.objective": "simple-reaches-objective",
+        }
+        for role, document in (
+            ("model", "extra-model"), ("task", "delayed-reaches-task"), ("objective", "delayed-reaches-objective"),
+        ):
+            response = client.post(f"{route}/authoring/trials", json=body | {
+                "change": {"kind": "select_document", "role": role, "document": document},
+            })
+            assert response.status_code == 200, response.text
+            files = response.json()["files"]
+            assert len(files) == 1 and files[0]["address"] == {"kind": "step", "id": "synthesize"}, response.json()
+            assert files[0]["patches"] == [{
+                "op": "replace", "path": "/base/inline",
+                "value": raw["steps"]["synthesize"]["base"]["inline"] | {role: {"document": document}},
+            }]
 
 
 def test_saved_synthesize_is_admitted_and_owns_a_model_product(host, tmp_path):

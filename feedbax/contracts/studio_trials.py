@@ -168,7 +168,7 @@ class StudioTaskChoice(StrictModel):
 
 
 class StudioTrialObjectiveSource(StrictModel):
-    kind: Literal["train", "own"]
+    kind: Literal["train", "synthesize", "own"]
     step: ProjectName
 
 

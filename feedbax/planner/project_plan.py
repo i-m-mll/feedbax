@@ -3586,13 +3586,17 @@ class _Compiler:
         evaluated = None
         if row.kind == "evaluate" and (subject := inputs.get("subject")) is not None and subject.producer is not None:
             own = lowered.document_ids
-            trained = self.rows[subject.producer].document_ids
-            if (named := own.get(EVALUATION_MODEL)) is not None and (model := trained.get(EVALUATION_MODEL)) is not None:
+            producer = self.rows[subject.producer]
+            upstream = producer.document_ids
+            if producer.kind == "synthesize":
+                upstream = {f"payload.trial_documents.{name}": document for name in ("model", "task")
+                            if (document := upstream.get(f"payload.{name}")) is not None}
+            if (named := own.get(EVALUATION_MODEL)) is not None and (model := upstream.get(EVALUATION_MODEL)) is not None:
                 evaluated = named, model
             slots = {EVALUATION_MODEL: (EVALUATION_MODEL,), EVALUATION_TASK: (EVALUATION_TASK, "payload.trial_documents.python_task")}
             inherited = {
-                path: trained[path] for slot, paths in slots.items() if slot not in own
-                for path in paths if path in trained
+                path: upstream[path] for slot, paths in slots.items() if slot not in own
+                for path in paths if path in upstream
             }
             followed = frozenset(inherited.values()) - lowered.document_uses
             lowered = replace(

@@ -47,6 +47,7 @@ def preview_plan(
         operations=folders.operations, components=folders.components, functions=folders.functions,
         python_tasks=folders.python_tasks, figure_templates=folders.figure_templates,
         training_methods=folders.training_methods,
+        synthesis_methods=folders.synthesis_methods,
     )
 
 
