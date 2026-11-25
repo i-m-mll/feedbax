@@ -156,10 +156,14 @@ export function TaskVariables({ variables, sets = [], unstarted = [], selected, 
   </Table>;
 }
 
-/** A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts. */
+/**
+ * A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts, and on the
+ * row beneath it the condition a trial meets to receive one.
+ */
 function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: StudioCommand }; drawn: boolean }) {
   const { toSweep, weigh } = set;
-  return <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
+  return <>
+  <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
     <MenuItem disabled={!toSweep.enabled} onClick={() => toSweep.invoke()}>{toSweep.title}</MenuItem> }}>
     <TableRowHeader className="font-mono">{set.set}</TableRowHeader>
     <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
@@ -181,7 +185,15 @@ function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: St
     </TableCell>
     {drawn && <TableCell />}
     <TableCell />
-  </TableRow>;
+  </TableRow>
+  {set.condition && <TableRow>
+    <TableRowHeader><span className="sr-only">{set.set}</span></TableRowHeader>
+    <TableCell className="text-shell-muted">{studioName('condition')}</TableCell>
+    <TableFieldCell><ValueField form="cell" model={set.condition} /></TableFieldCell>
+    {drawn && <TableCell />}
+    <TableCell />
+  </TableRow>}
+  </>;
 }
 
 /** An entry's weight in parts, or its `side` where entries co-occur, edited where it is drawn; its refusal is marked beside it. */
