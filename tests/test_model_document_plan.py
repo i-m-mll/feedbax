@@ -267,6 +267,70 @@ def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_pat
         assert projected.json()["delay_steps"][ModelAddress.model_validate(owner).to_text()] == delay_steps
 
 
+def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    model = raw["documents"]["point-mass"]["payload"]
+    model["interior"]["components"]["cell"]["fields"].pop("input_size", None)
+    pulse = {
+        "kind": "intervention", "id": "pulse", "operation": "add", "fields": {"value": [0.5, 0.0]},
+        "window": {"spans": [{
+            "kind": "interval", "start": {"anchor": {"kind": "trial", "edge": "start"}},
+            "end": {"offset": {"value": 2, "unit": "st"}},
+        }]},
+    }
+    model["interior"]["wires"]["drive"]["attachments"] = [pulse]
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "window", Project.model_validate(raw))
+    url = "/api/projects/window"
+    owner = {"composites": [], "element": {
+        "kind": "attachment", "parent": {"kind": "wire", "id": "drive"}, "id": "pulse",
+    }}
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        snapshot = client.get(url).json()
+        body = {"revision": snapshot["revision"], "document": "point-mass", "owner": owner,
+                "run": {"variant": "default", "step": "train", "row": "default"}}
+        response = client.post(url + "/model/fields", json=body)
+        assert response.status_code == 200, response.text
+        fields = {tuple(field["address"]["element"]["path"]): field for field in response.json()["fields"]}
+        offset = fields["window", "spans", 0, "start", "offset"]
+        assert offset["text"] == "0 st" and offset["can_sweep"]
+        assert fields["fields", "value"]["structure"]["value"]["function"] == "vector"
+        edit = {"address": offset["address"], "edit": {"kind": "text", "text": "0.02 s"}}
+        value = client.post(url + "/model/fields", json=body | edit).json()
+        assert value["command"]["operation"]["value"] == {"value": 0.02, "unit": "s"}
+        applied = client.post(url + "/model/edit", json={
+            "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+            "document": "point-mass", "command": value["command"],
+        })
+        assert applied.status_code == 200, applied.text
+        snapshot = applied.json()["result"]["snapshot"]
+        body["revision"] = snapshot["revision"]
+        fields = client.post(url + "/model/fields", json=body).json()["fields"]
+        shown = next(field for field in fields if field["address"] == offset["address"])
+        assert shown["text"] == "0.02 s" and shown["conversion"] == {"value": 2.0, "unit": "st"}
+        response = client.post(url + "/model/fields", json=body | {
+            "address": offset["address"], "edit": {"kind": "text", "text": "0.02 s, 0.04 s"},
+        })
+        assert response.status_code == 200, response.text
+        prepared = response.json()
+        assert not prepared["problems"], prepared
+        saved = client.patch(url, json={"revision": snapshot["revision"], "files": prepared["files"]})
+        assert saved.status_code == 200, saved.text
+        plan = folders.read_plan("window", revision=None).plan
+        assert len(plan.runs) == 2 and all(run.admission_problem is None for run in plan.runs), (
+            plan.diagnostics, tuple(run.problems for run in plan.runs),
+        )
+        values = set()
+        for run in plan.runs:
+            documents = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.trial_documents
+            attachment = documents.model.interior.wires["drive"].attachments[0]
+            start = attachment.window.spans[0].start.offset
+            assert start.unit == "s"
+            values.add(start.value)
+        assert values == {0.02, 0.04}
+
+
 def test_addressed_field_range_sample_and_row_provenance(tmp_path):
     raw = _model_project()
     raw["steps"].pop("baseline")

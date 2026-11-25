@@ -693,6 +693,11 @@ class ModelEditDraft:
             and type(value) in {int, float, bool}
         ):
             value = prior | {"value": value}
+        elif (
+            prior is None and address.element.path[:2] == ("window", "spans")
+            and address.element.path[-1] == "offset" and type(value) in {int, float}
+        ):
+            value = {"value": value, "unit": "st"}
         item[key] = value
         self.changed.append(address)
 
