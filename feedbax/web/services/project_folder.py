@@ -130,7 +130,7 @@ class ProjectFolderService(ProjectFolder):
         from feedbax.contracts.model_edit import TaskSignalSource
         from feedbax.compiler.model_edit import review_model_connections
         from feedbax.compiler.model_ports import ModelRegistryPorts
-        from feedbax.project_model_selection import matched_task_inputs, selected_model, selected_model_and_task, task_signal
+        from feedbax.project_model_selection import matched_task_inputs, selected_model_and_task, task_signal
         from feedbax.web.services.model_projection import evaluate_projection
         from feedbax.web.services.trial_scope import selection_scope
 
@@ -160,8 +160,10 @@ class ProjectFolderService(ProjectFolder):
                     if body.rows or body.axes:
                         selection_scope(snapshot.project, plan, key, tuple(body.rows), body.axes or None)
                     definition = plan.selected_definitions.get(key)
-                    if definition is not None and selected_model(definition, body.document) is not None:
-                        model, task, _, overrides = selected_model_and_task(self, project_id, selection, definition=definition)
+                    if definition is not None:
+                        paired = selected_model_and_task(self, project_id, selection, definition=definition)
+                        if paired is not None:
+                            model, task, _, overrides = paired
             authority = ModelRegistryPorts(components)
             offered = None
             if task_source is not None:

@@ -50,6 +50,12 @@ class StudioProjectRevision(StrictModel):
     presentation_revision: Sha256
 
 
+class StudioProjectPlanChanged(StrictModel):
+    """The subscribed folder's saved plan may have changed since its last read."""
+
+    project_id: ProjectName
+
+
 class AuthoredFileAddress(StrictModel):
     kind: Literal["document", "step", "variant", "presentation", "declaration"]
     id: ProjectName

@@ -2,8 +2,10 @@ import {
   StudioEventResetSchema,
   StudioEventWatermarkSchema,
   StudioJobEventSchema,
+  StudioProjectPlanChangedSchema,
   StudioProjectRevisionSchema,
   type StudioJobEvent,
+  type StudioProjectPlanChanged,
   type StudioProjectRevision,
 } from '@/generated/studioContracts';
 import { reconnectDelay } from '@/api/backoff';
@@ -34,6 +36,7 @@ type Broadcast =
   | { type: 'reset'; cursor: number }
   | { type: 'event'; event: StudioJobEvent; cursor: number }
   | { type: 'machines-changed' }
+  | { type: 'project-plan-changed'; change: StudioProjectPlanChanged }
   | { type: 'folder-revision'; revision: StudioProjectRevision }
   | { type: 'seen'; jobId: string };
 
@@ -194,6 +197,9 @@ class JobStreamHub {
       case 'machines-changed':
         this.toJobs({ type: 'machines-changed' });
         break;
+      case 'project-plan-changed':
+        this.toFolders(message, message.change.project_id);
+        break;
       case 'folder-revision':
         this.toFolders({ type: 'folder-revision', revision: message.revision }, message.revision.project_id);
         break;
@@ -322,6 +328,9 @@ class JobStreamHub {
     }));
     stream.addEventListener('project_revision', read((data) => {
       this.publish({ type: 'folder-revision', revision: StudioProjectRevisionSchema.parse(data) });
+    }));
+    stream.addEventListener('project_plan_changed', read((data) => {
+      this.publish({ type: 'project-plan-changed', change: StudioProjectPlanChangedSchema.parse(data) });
     }));
     stream.addEventListener('machines_changed', () => {
       if (this.source === stream) this.publish({ type: 'machines-changed' });

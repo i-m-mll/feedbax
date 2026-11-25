@@ -77,6 +77,7 @@ class StudioMethodPlace(StrictModel):
 class StudioAnalysisPlace(StrictModel):
     part: Literal["analysis"]
     element: str
+    name: str
 
 
 class StudioInputPlace(StrictModel):
@@ -128,6 +129,7 @@ def definition_place(
     document: Callable[[str], str | None],
     *,
     element: str | None = None,
+    element_name: str | None = None,
     member: ModelAddress | None = None,
     variable: str | None = None,
     start: StudioTaskStart | None = None,
@@ -143,7 +145,7 @@ def definition_place(
     where its field lives.
     """
     if element is not None:
-        return StudioAnalysisPlace(part="analysis", element=element)
+        return StudioAnalysisPlace(part="analysis", element=element, name=element_name or element)
     parts = tuple(parts)
     if parts[:1] == ("inputs",) and len(parts) > 1:
         role, rest = parts[1], parts[2:]
