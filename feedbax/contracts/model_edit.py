@@ -357,6 +357,7 @@ class ModelProjection(StrictModel):
 
     ports: tuple[ModelPortProjection, ...] = ()
     physical_ports: tuple[ModelPhysicalPortProjection, ...] = ()
+    delay_steps: dict[str, int | None] = Field(default_factory=dict)
     task_signals: tuple[ModelTaskSignal, ...] = ()
     task_inputs: tuple[ModelTaskInput, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
