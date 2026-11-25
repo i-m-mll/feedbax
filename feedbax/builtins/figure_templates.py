@@ -66,6 +66,6 @@ def SpeedByTrial(settings: SpeedByTrialSettings) -> FigureDocument:
             "select": {"checkpoint": {"index": settings.checkpoint_index}},
             "group": ["condition", "trial"],
             "encode": {"x": "state_time", "y": "speed"},
-            "style": {"label": "{condition} · Trial {trial}"},
+            "style": {"label": "{condition} · Trial {trial:d}"},
         }],
     })

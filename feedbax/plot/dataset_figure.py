@@ -12,6 +12,7 @@ from typing import Any, assert_never
 import numpy as np
 import plotly.graph_objects as go
 from plotly.colors import qualitative
+from pydantic import JsonValue
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor, TrialFigureTime
@@ -253,10 +254,42 @@ class _TrialTrace:
     options: TrialMeanOptions
 
 
+@dataclass(frozen=True)
+class _MeanLegend:
+    layer: str
+    group: dict[str, Label]
+    parts: dict[str, str]
+    traces: list[go.Scatter]
+
+
+def _by_value_label(value: JsonValue) -> str:
+    if isinstance(value, float):
+        return f"{value:.3g}"
+    if isinstance(value, list):
+        return "[" + ", ".join(map(_by_value_label, value)) + "]"
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{key}: {_by_value_label(item)}" for key, item in value.items()) + "}"
+    return value if isinstance(value, str) else canonical_json_v2_bytes(value).decode()
+
+
+def _label_means(legends: list[_MeanLegend]) -> None:
+    values: dict[str, set[bytes]] = defaultdict(set)
+    for legend in legends:
+        for name, value in legend.group.items():
+            values[name].add(canonical_json_v2_bytes(value))
+    for legend in legends:
+        label = " · ".join(text for name, text in legend.parts.items() if len(values[name]) > 1) or legend.layer
+        # Distinct groups may round to the same label. Keep their legend controls independent.
+        legend_group = canonical_json_v2_bytes([label, legend.group]).decode()
+        for trace in legend.traces:
+            trace.update(name=label, legendgroup=legend_group)
+
+
 def _trial_traces(
     layer: FigureLayer,
     rows: list[_TrialTrace],
     mean: TrialMeanSelection,
+    legends: list[_MeanLegend],
 ) -> list[go.Scatter]:
     """Draw an aligned thin trace for each trial and a summary for each clock condition."""
     nontrial: dict[tuple[tuple[str, Label], ...], list[_TrialTrace]] = defaultdict(list)
@@ -269,13 +302,16 @@ def _trial_traces(
             raise ValueError("Plotted trials disagree on the available By and Align choices.")
         by_trial = {row.record.id: row for row in cohort}
         is_time = cohort[0].channels["x"].field.trial_time is not None
+        by_labels = {choice.id: choice.label for choice in options.by}
         for condition in align_trials((row.record for row in cohort), options, mean):
             color = by_trial[condition.trials[0].record.id].color
             series = []
             group = dict(coordinates)
+            parts = {name: str(cohort[0].group[name]) for name in group if cohort[0].group[name] is not None}
             for name, value in condition.values.items():
                 key = f"task/{name}" if name == "trial" or name in group else name
                 group[key] = canonical_json_v2_bytes(value).decode() if isinstance(value, (list, dict)) else value
+                parts[key] = f"{by_labels[name]}={_by_value_label(value)}"
             for trial in condition.trials:
                 row = by_trial[trial.record.id]
                 x, y = row.channels["x"], row.channels["y"]
@@ -307,15 +343,12 @@ def _trial_traces(
             x_mean, y_mean = np.asarray(summary.mean).T
             if is_time:
                 x_mean = time
-            labels = {choice.id: choice.label for choice in options.by}
-            label_parts = [str(cohort[0].group[name]) for name, _ in coordinates if cohort[0].group[name] is not None]
-            label_parts.extend(f"{labels[name]}={value}" for name, value in condition.values.items())
-            label = " · ".join(label_parts) or layer.name
             alpha = layer.style.band_alpha if isinstance(layer, BandLayer) else BandStyle().band_alpha
+            summary_traces = []
             for name, values in (("upper", summary.upper), ("lower", summary.lower), ("mean", summary.mean)):
                 center = name == "mean"
-                traces.append(go.Scatter(
-                    name=label, legendgroup=label, showlegend=center and layer.style.showlegend,
+                summary_traces.append(go.Scatter(
+                    showlegend=center and layer.style.showlegend,
                     x=x_mean.tolist(), y=(y_mean if center else np.asarray(values)[:, 1]).tolist(), mode="lines",
                     line=(
                         {"color": color, "dash": layer.style.line_dash, "width": layer.style.line_width}
@@ -326,6 +359,8 @@ def _trial_traces(
                     hoverinfo=None if center else "skip",
                     meta=FigureTraceMeta(layer=layer.name, group=group).model_dump(mode="json"),
                 ))
+            traces.extend(summary_traces)
+            legends.append(_MeanLegend(layer.name, group, parts, summary_traces))
     return traces
 
 def render(
@@ -351,6 +386,7 @@ def render(
     inferred_labels: dict[str, dict[str, str]] = {}
     panel_times: dict[str, TrialFigureTime | None] = {}
     mean_panel_times: dict[str, TrialFigureTime] = {}
+    mean_legends: list[_MeanLegend] = []
     for layer in figure.layers:
         source = sources[layer.role]
         before = len(traces[layer.panel])
@@ -358,10 +394,13 @@ def render(
             selection = _selected(source, layer.select, {})
             clock = None
             trial_rows: list[_TrialTrace] = []
-            if mean is not None and "trial" in layer.group:
-                if recorded_trials is None or layer.role not in recorded_trials:
-                    raise ValueError(f"No retained trial clock for data role {layer.role!r}.")
-                clock = FigureTrialSource(source.dataset, recorded_trials[layer.role], source.read)
+            trial_dimension = None
+            if "trial" in layer.group:
+                trial_dimension = coordinate_dimension(source.descriptor.coords["trial"], source.descriptor.dimensions)
+                if mean is not None:
+                    if recorded_trials is None or layer.role not in recorded_trials:
+                        raise ValueError(f"No retained trial clock for data role {layer.role!r}.")
+                    clock = FigureTrialSource(source.dataset, recorded_trials[layer.role], source.read)
             for group, positions in _groups(source, layer.group, selection):
                 channels = {}
                 for channel, encoding in layer_encodings(layer):
@@ -371,6 +410,8 @@ def render(
                         raise ValueError(f"channel {channel!r}: {error}") from error
                 _check_samples(channels)
                 printed = {name: source.printed(name, value) for name, value in group.items()}
+                if trial_dimension is not None:
+                    printed["trial"] = positions[trial_dimension][0] + 1
                 color = layer.style.color or next(colors)
                 if clock is not None:
                     record, options = clock.project(positions)
@@ -387,7 +428,7 @@ def render(
                     layer.panel, {axis: channels[axis].label for axis in ("x", "y")}
                 )
             if mean is not None and trial_rows:
-                traces[layer.panel].extend(_trial_traces(layer, trial_rows, mean))
+                traces[layer.panel].extend(_trial_traces(layer, trial_rows, mean, mean_legends))
                 if trial_rows[0].channels["x"].field.trial_time is not None:
                     mean_panel_times[layer.panel] = TrialFigureTime(zero_epoch=mean.align)
         except CannotRun:
@@ -397,6 +438,7 @@ def render(
         if len(traces[layer.panel]) == before:
             raise ValueError(f"Layer {layer.name!r} has no plotted groups.")
 
+    _label_means(mean_legends)
     return assemble_figure_grid(
         canvas, figure.layout, figure.view, traces, inferred_labels,
         panel_times=panel_times | mean_panel_times, runs=runs,
