@@ -68,7 +68,7 @@ def test_relate_uses_the_root_output_and_edits_only_the_objective(project):
     assert not ModelAddress.from_text(hand.reference).composites
     assert target.reference == "target"
     assert related_term.weight == LiteralValue(value=1)
-    assert not related_term.epochs
+    assert related_term.window is None
 
 
 def test_term_added_from_a_component_port_uses_its_root_output(project):
