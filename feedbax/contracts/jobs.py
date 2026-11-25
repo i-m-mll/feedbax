@@ -286,6 +286,7 @@ class StudioSavedLightResult(StrictModel):
     revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     products: dict[str, str]
+    """Product URLs by role. An Analyze operation's URL reads the product's DatasetDescriptor."""
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
     provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
 
