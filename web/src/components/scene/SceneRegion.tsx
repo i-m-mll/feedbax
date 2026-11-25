@@ -343,7 +343,8 @@ function RelateEnds({ ends, project, drag, refusal, onPointerDown, onRelate }: {
   return <g data-scene-relate>
     {drag?.moved && from && <line x1={from[0]} y1={from[1]} x2={drag.pointer[0]} y2={drag.pointer[1]} stroke="var(--text-primary)"
       strokeWidth={1.5} strokeDasharray="6 4" pointerEvents="none" vectorEffect="non-scaling-stroke" />}
-    {ends.map((end) => {
+    {/* An anchor is drawn last, so that where a task place coincides with it, a press starts at the anchor. */}
+    {[...ends].sort((left, right) => Number(left.place.kind === 'anchor') - Number(right.place.kind === 'anchor')).map((end) => {
       const [x, y] = project(end.point);
       const candidate = drag?.moved && !end.reason && end.key !== drag.from.key;
       return <g key={end.key} role="button" tabIndex={end.reason ? -1 : 0} aria-disabled={end.reason ? true : undefined}
