@@ -390,6 +390,8 @@
     "collapseAll": "Collapse All",
     "expandAll": "Expand All",
     "lock": "Lock",
+    "pin": "Pin",
+    "unpin": "Unpin",
     "unlock": "Unlock",
     "initial": "Initial",
     "clearLink": "Clear Link",
