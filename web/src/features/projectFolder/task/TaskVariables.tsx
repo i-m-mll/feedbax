@@ -1,5 +1,5 @@
 import { appTip } from '@window-shell/browser/tooltip';
-import { Activity } from 'lucide-react';
+import { Activity, Layers } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { studioAccessibleName, studioName, studioReason, studioValueType } from '@/components/activity/studioVocabulary';
 import { ChangeMark } from '@/components/ui/ChangeMark';
@@ -41,6 +41,13 @@ export function LevelMark({ variable }: { variable: Pick<TaskVariable, 'level'> 
   if (variable.level !== 'step') return null;
   return <span role="img" aria-label={studioName('perStep')} {...appTip(studioName('perStep'))}
     className="inline-flex shrink-0 text-shell-muted [&_svg]:size-[1em]"><Activity aria-hidden="true" /></span>;
+}
+
+/** The mark of a variable the selected Set entry adds, named by the entry. */
+function EntryMark({ entry }: { entry?: string }) {
+  if (entry === undefined) return null;
+  return <span role="img" aria-label={studioAccessibleName('setEntry', entry)} {...appTip(studioAccessibleName('setEntry', entry))}
+    className="inline-flex shrink-0 text-shell-muted [&_svg]:size-[1em]"><Layers aria-hidden="true" /></span>;
 }
 
 const columns: readonly TableColumn[] = [{ least: '5rem', greatest: '16rem' }, { least: '6rem' }, { least: '8rem' }];
@@ -127,6 +134,7 @@ export function TaskVariables({ variables, sets = [], unstarted = [], selected, 
               onCommit={(name) => { if (edits.rename) settle(variable.id, edits.rename(variable.id, name)); }} />
             {refusal && <FieldProblem reason={refusal} />}
             <LevelMark variable={variable} />
+            <EntryMark entry={variable.entry} />
           </span>
         </TableFieldCell>
         <TableFieldCell {...appTip(studioValueType(variable.valueType))}>

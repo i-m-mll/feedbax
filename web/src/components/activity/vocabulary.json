@@ -163,6 +163,7 @@
     "duplicateRun": "Duplicate Run",
     "removeValue": "Remove Value",
     "removeEntry": "Remove Entry",
+    "setEntry": "Set Entry",
     "addEntry": "Add Entry",
     "split": "Split",
     "merge": "Merge",
