@@ -71,8 +71,10 @@ describe('Studio project folder HTTP contracts', () => {
       .mockResolvedValueOnce(Response.json(distinct));
     vi.stubGlobal('fetch', fetch);
 
-    expect(await createProjectFolder()).toEqual(document());
-    expect(fetch).toHaveBeenNthCalledWith(1, '/api/projects', expect.objectContaining({ method: 'POST' }));
+    expect(await createProjectFolder({ name: 'reaches' })).toEqual(document());
+    expect(fetch).toHaveBeenNthCalledWith(1, '/api/projects', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ name: 'reaches' }),
+    }));
     expect(await renameProjectFolder('reaches', { revision, name: 'renamed' })).toEqual(renamed);
     expect(fetch).toHaveBeenNthCalledWith(2, '/api/projects/reaches/rename', expect.objectContaining({
       method: 'POST', body: JSON.stringify({ revision, name: 'renamed' }),

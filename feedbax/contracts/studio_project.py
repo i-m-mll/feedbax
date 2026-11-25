@@ -143,12 +143,28 @@ class StudioProjectDocument(StrictModel):
 class StudioProjectListEntry(StrictModel):
     project_id: ProjectName
     name: ProjectName
+    folder: str
     modified: AwareDatetime
     """When the most recently modified authored project file was saved."""
+    step_count: int = Field(ge=0)
 
 
 class StudioProjectList(StrictModel):
     projects: list[StudioProjectListEntry]
+
+
+class StudioProjectNew(StrictModel):
+    name: ProjectName
+    example: ProjectName | None = None
+
+
+class StudioProjectExample(StrictModel):
+    id: ProjectName
+    name: str
+
+
+class StudioProjectExamples(StrictModel):
+    examples: list[StudioProjectExample]
 
 
 class StudioProjectRename(StrictModel):
