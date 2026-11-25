@@ -63,7 +63,8 @@ import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
 import { stepDocument } from './documentPayload';
-import type { SceneRelate } from '@/components/scene/SceneRegion';
+import type { SceneMarking, SceneRelate } from '@/components/scene/SceneRegion';
+import { reasonOf } from '@/components/values/fieldModel';
 import { useManagedProjectDetails, useRecordedTerms, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
 import { declaredEvaluation, FigureClockContext } from './figureClock';
@@ -799,10 +800,16 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       setFieldFocus({ key: crypto.randomUUID(), step: step.id, target: measureAnchor(answer.term) });
       return undefined;
     } : undefined;
+  const taskDocument = trial.view && 'variables' in trial.view.task ? trial.view.task_document ?? step?.id : undefined;
+  const marking = useMemo((): SceneMarking | undefined => trial.commit && taskDocument ? {
+    document: taskDocument,
+    mark: async (variable, marker) => reasonOf(await trial.commit!(studioAccessibleName('set', studioName('marker')),
+      { kind: 'structure', changes: [{ op: 'set_variable_marker', id: variable, marker }] })),
+  } : undefined, [trial.commit, taskDocument]);
   const detailInputs = {
-    editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, relate,
+    editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, relate, marking,
     variantId: variant, evaluation: selectedEvaluation, sceneTrial: trialClock.scene, checkpoints: evaluationReplay.checkpoints,
-    namedRun, documentScopes, planCurrent: plans.current, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm, askStore,
+    namedRun, documentScopes, planCurrent: plans.current, elements, trial: trial.view, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm, askStore,
     drawerSections,
     openModelProblems: (element: ModelAddress, opener: HTMLElement) => {
       const owner = modelProblems?.find((problem) => {
@@ -835,11 +842,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }
     const clocked = slot === clockSlot;
     return {
-      ...detailInputs, step: subject.step, stepId: subject.step.id, focus: null, selection: null, evaluation: subject.evaluation, relate: undefined,
+      ...detailInputs, step: subject.step, stepId: subject.step.id, focus: null, selection: null, evaluation: subject.evaluation, relate: undefined, marking: undefined,
       sceneTrial: clocked ? trialClock.scene : restTrial, checkpoints: clocked ? evaluationReplay.checkpoints : undefined,
       namedRun: undefined, documentScopes: { graph: undefined, task: undefined }, valueEditing: false, evaluateScope: undefined,
       stored: subject.stored, modelProblems: [], selectedSweepValues: new Map<string, Set<string>>(), fieldRows: undefined,
-      fieldAxes: undefined,
+      fieldAxes: undefined, trial: subject.trial,
     };
   }
   const primary = useManagedProjectDetails({ ...slotDetailInputs('primary'), activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden',
@@ -2013,20 +2020,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               const picker = pickDocument('task', value.task_document ?? undefined, documentScopes.task);
               const unfed = unfedTasks(value);
               const variable = selectedVariable(selected);
+              const entry = step && sets.entryTask(step);
               return {
                 padded: true,
                 picker: picker && { ...picker, documents: picker.documents.map((entry) => ({ ...entry, problem: unfed.get(entry.key) })) },
                 body: withProblem('variables' in value.task
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
-                    <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
+                    <TrialTaskDocument view={value} commit={commit} runs={runs} entry={entry} selected={selected} select={choose(document)}
                       toSweep={step && ((axis) => sets.toSweep(step.id, axis))}
                       weigh={step && ((axis) => sets.fieldWeight(step.id, axis))}
                       drawn={drawnVariables(trialClock.trial)} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
-                inspector: termInspector || (variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
+                inspector: termInspector || (variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} entry={entry} id={variable.id} />
                   : selected && 'variables' in value.task && inGrid(selected)
                     ? <TrialGridInspector view={value} commit={commit} runs={runs} selected={selected} shown={trialClock.trial} />
                     : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} shown={trialClock.trial} />),

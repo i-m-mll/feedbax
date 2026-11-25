@@ -200,9 +200,17 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expectAnalyzeSources(await plan(created.revision));
 
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  /** Searches the Library and places the item: Tab reaches the first match, the arrows the others. */
   async function place(label: string) {
     await typeValue(page, drawer.getByRole('textbox', { name: 'Search Library', exact: true }), label);
-    return edit(() => activate(page, drawer.getByRole('option', { name: label, exact: true })));
+    const options = drawer.getByRole('option');
+    const option = drawer.getByRole('option', { name: label, exact: true });
+    await tabTo(page, options.and(drawer.locator('[tabindex="0"]')));
+    for (let index = await options.count(); index > 0 && !await option.evaluate((element) => element === element.ownerDocument.activeElement); index -= 1) {
+      await page.keyboard.press('ArrowDown');
+    }
+    await expect(option).toBeFocused();
+    return edit(() => page.keyboard.press('Enter'));
   }
   const selectElement = (name: string) => activate(page, analysis.getByRole('group', { name: 'Select ' + name, exact: true }));
   await place('Aligned velocity');
