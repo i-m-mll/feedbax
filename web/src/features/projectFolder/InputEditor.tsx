@@ -121,11 +121,12 @@ export function InputEditor({ label, role, binding, self, steps, project, output
 }) {
   const labelId = useId();
   const [adding, setAdding] = useState(false);
-  const producer = role.producer;
-  const producers = producer ? steps.filter(({ id, kind }) => kind === producer.kind && id !== self) : [];
-  const offered = producer?.operation_outputs ? outputs : [];
+  const source = (step: string) => role.producers.find(({ kind }) => steps.some(({ id, kind: candidate }) =>
+    id === step && candidate === kind));
+  const producers = steps.filter(({ id, kind }) => id !== self && role.producers.some((entry) => entry.kind === kind));
+  const offered = role.producers.some((entry) => entry.operation_outputs) ? outputs : [];
   const stepGroups: ReferenceGroup[] = [
-    ...producer ? [stepGroup(producers)] : [],
+    ...role.producers.length ? [stepGroup(producers)] : [],
     ...offered.length ? [{ label: studioName('operations'), choices: offered.map(outputChoice) }] : [],
   ];
   const documentGroups = role.documents.length ? [documentGroup(project, role.documents)] : [];
@@ -148,9 +149,9 @@ export function InputEditor({ label, role, binding, self, steps, project, output
     const step = steps.find(({ id }) => id === reference.step);
     return step ? stepChoice(step) : { id: stepChoiceId(reference.step), label: reference.step };
   };
-  const readsCheckpoint = producer?.product === 'checkpoint';
-  const added = (reference: Pick<StepReference, 'step' | 'element' | 'product'>): StepReference => readsCheckpoint
-    ? { ...reference, checkpoint: selections?.[0]?.checkpoint ?? 'last' } : reference;
+  const readsCheckpoint = ({ step }: StepReference) => source(step)?.product === 'checkpoint';
+  const added = (reference: Pick<StepReference, 'step' | 'element' | 'product'>): StepReference => readsCheckpoint(reference)
+    ? { ...reference, checkpoint: selections?.find(readsCheckpoint)?.checkpoint ?? 'last' } : reference;
   const choose = (index: number | 'new', choice: ReferenceChoice) => {
     if (!onChange) return;
     if (absent && choice.id === absent.id) return onChange({ kind: 'absent' });
@@ -172,8 +173,11 @@ export function InputEditor({ label, role, binding, self, steps, project, output
     ...only || !role.gathers ? documentGroups : [],
     ...stepGroups,
   ];
-  const rules: readonly SelectionCheckpoint[] = !readsCheckpoint || !selections ? []
-    : checkpoint?.groups ?? selectionCheckpoints(selections) ?? [];
+  const checkpointSelections = (selections ?? []).flatMap((reference, index) =>
+    readsCheckpoint(reference) ? [{ reference, index }] : []);
+  const rules: readonly SelectionCheckpoint[] = checkpoint?.groups ?? (
+    selectionCheckpoints(checkpointSelections.map(({ reference }) => reference)) ?? []
+  ).map((group) => ({ ...group, selections: group.selections.map((index) => checkpointSelections[index].index) }));
   const sharedRule = selections && selections.length > 1 && rules.length === 1 && rules[0].selections.length === selections.length
     ? rules[0] : undefined;
   const rows: { value: ReferenceChoice | null; reference?: StepReference }[] = selections

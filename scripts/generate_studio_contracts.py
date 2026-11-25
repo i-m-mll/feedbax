@@ -446,7 +446,8 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.set_document import SetDocument, SetEntry
 from feedbax.contracts.window import Window
 from feedbax.contracts.training_document import TrainingDocument
-from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
+from feedbax.contracts.request_specs import DocumentTrainingConfig, SynthesisRequestSpec, TrainContinuation, TrialDocuments
+from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import (
     StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialRelate,
@@ -529,6 +530,8 @@ AUTHORED_CONTRACT_MODELS = (
     Window,
     TrainingDocument,
     TrialDocuments,
+    SynthesisRequestSpec,
+    SynthesisStepPayload,
     ImportedModelProvenance,
     LoadedModelDocument,
     LoadedModelReference,

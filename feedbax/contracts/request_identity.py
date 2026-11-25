@@ -44,6 +44,7 @@ from feedbax.contracts.request_specs import (
     RenderRequestSpec,
     ReportRequestSpec,
     RequestSpec,
+    SynthesisRequestSpec,
     TrialDocuments,
 )
 from feedbax.contracts.strict_json import strict_json_loads
@@ -69,6 +70,7 @@ DOCUMENT_TRAIN_REQUEST = RequestDescriptor(
 
 REQUEST_KINDS: Mapping[RequestKind, RequestDescriptor] = {
     "train": DOCUMENT_TRAIN_REQUEST,
+    "synthesize": RequestDescriptor(SynthesisRequestSpec, ("settings",)),
     "evaluate": RequestDescriptor(EvaluationRequestSpec),
     "analyze": RequestDescriptor(AnalysisRequestSpec),
     "render": RequestDescriptor(RenderRequestSpec),
@@ -297,7 +299,7 @@ def encode_request(
     if match is None:
         raise ValueError(f"Unknown request spec model: {type(spec).__name__}")
     kind, descriptor = match
-    if isinstance(spec, DocumentTrainingRequestSpec):
+    if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)):
         canonical_trial = spec.trial_documents.without_signal_labels()
         if canonical_trial is not spec.trial_documents:
             spec = spec.model_copy(update={"trial_documents": canonical_trial})
@@ -327,9 +329,9 @@ def encode_request(
         spec, descriptor.spec_type, pins, projected_fields=projected_fields,
     )
     train_task = None
+    if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)) and trial is None:
+        omit_model_display_names(projection["trial_documents"]["model"])
     if descriptor is DOCUMENT_TRAIN_REQUEST:
-        if trial is None:
-            omit_model_display_names(projection["trial_documents"]["model"])
         if capture_train_task:
             train_task = _encoded_train_task(projection) if trial is None else (
                 trial.task if not _may_spell_unsafe_integer(projection) else None
@@ -425,11 +427,11 @@ def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> Decode
         if sha256_bytes(document) != digest:
             raise ValueError(f"Invalid request document bytes for {name}")
         spec_payload[name] = _read_object(document)
-    if descriptor is DOCUMENT_TRAIN_REQUEST:
+    if descriptor.spec_type in (DocumentTrainingRequestSpec, SynthesisRequestSpec):
         try:
             restore_model_display_names(spec_payload["trial_documents"]["model"])
         except (AttributeError, KeyError, TypeError) as error:
-            raise ValueError("Invalid stored managed Train model projection") from error
+            raise ValueError("Invalid stored managed model projection") from error
     restored = decode(spec_payload, descriptor.spec_type, fields)
     spec = descriptor.spec_type.model_validate_json(json.dumps(restored))
     encoded = encode_request(spec, inputs)

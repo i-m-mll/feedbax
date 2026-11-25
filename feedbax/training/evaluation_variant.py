@@ -250,7 +250,7 @@ def resolve_evaluation_variant(
                         raise ValueError(f"retained owner {node.type!r} has no qualified declaration")
                     declared = next((value for value in owner.values if value.symbol == parameter), None)
                     if declared is not None:
-                        if declared.kind == "learned":
+                        if declared.kind == "parameter":
                             raise ValueError("M2 Evaluate preserves retained learned values")
                         if not _finite_float32(patch.value):
                             raise ValueError("expected a finite scalar for a declared source value")

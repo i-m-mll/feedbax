@@ -9,6 +9,7 @@ from feedbax.analysis.operations import OperationRegistry
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.plot.templates import FigureTemplateRegistry
+from feedbax.synthesis.methods import SynthesisMethodRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
 
@@ -24,6 +25,7 @@ class ApplicationRegistryBundle:
 
     components: ComponentRegistry
     training_methods: TrainingMethodRegistry
+    synthesis_methods: SynthesisMethodRegistry
     operations: OperationRegistry
     expression_functions: FunctionRegistry
     python_tasks: PythonTaskRegistry
@@ -33,13 +35,14 @@ class ApplicationRegistryBundle:
     def declaration_registries(self) -> tuple[DeclarationRegistry, ...]:
         return (
             self.components._components, self.python_tasks._declarations,
-            self.training_methods._declarations, self.operations._entries,
+            self.training_methods._declarations, self.synthesis_methods._declarations, self.operations._entries,
             self.figure_templates._declarations,
         )
 
     def seal(self) -> None:
         self.components.seal()
         self.training_methods.seal()
+        self.synthesis_methods.seal()
         self.operations.seal()
         self.expression_functions.seal()
         self.python_tasks.seal()
@@ -76,6 +79,7 @@ class BootstrapState:
 
 COMPONENTS = RegistryKey("components", "components", ComponentRegistry)
 TRAINING_METHODS = RegistryKey("training_methods", "training_methods", TrainingMethodRegistry)
+SYNTHESIS_METHODS = RegistryKey("synthesis_methods", "synthesis_methods", SynthesisMethodRegistry)
 OPERATIONS = RegistryKey("operations", "operations", OperationRegistry)
 EXPRESSION_FUNCTIONS = RegistryKey("expression_functions", "expression_functions", FunctionRegistry)
 PYTHON_TASKS = RegistryKey("python_tasks", "python_tasks", PythonTaskRegistry)
@@ -93,6 +97,7 @@ def empty_application_registry_bundle(
     return ApplicationRegistryBundle(
         components=components,
         training_methods=TrainingMethodRegistry(),
+        synthesis_methods=SynthesisMethodRegistry(),
         operations=OperationRegistry(),
         expression_functions=expression_functions,
         python_tasks=PythonTaskRegistry(),

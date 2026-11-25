@@ -11,8 +11,8 @@ class ObservedReadout(Linear):
     component_options = replace(Linear.component_options, instantaneous=False)
     model_facts = ModelFacts(
         values=(
-            ModelValue("transform", "layer.weight", "learned"),
-            ModelValue("offset", "layer.bias", "learned"),
+            ModelValue("transform", "layer.weight", "parameter"),
+            ModelValue("offset", "layer.bias", "parameter"),
         ),
         states=(StateValue("last", (), "1", "unit", ("output",)),),
     )
