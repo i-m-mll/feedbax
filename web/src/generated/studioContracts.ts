@@ -3913,6 +3913,15 @@ export type SetEntryParts = {
   "off"?: WeightPart;
 };
 
+export type SetEntryTask = {
+  "kind": "set_entry_task";
+  "step": string;
+  "axis": string;
+  "entry": string;
+  "task_variables"?: Array<Variable> | null;
+  "task_links"?: Array<Link> | null;
+};
+
 export type SetFieldWeight = {
   "kind": "set_field_weight";
   "step": string;
@@ -3952,6 +3961,7 @@ export type SetToField = {
   "kind": "set_to_field";
   "step": string;
   "axis": string;
+  "condition"?: Expression | null;
 };
 
 export type SetToSweep = {
@@ -3994,6 +4004,7 @@ export type Signal = {
   "cells": Array<Cell>;
   "absent"?: Expression | null;
   "window"?: Window | null;
+  "intervention"?: string | null;
 };
 
 export type SignalSpace = "point" | "free";
@@ -4868,13 +4879,14 @@ export type StudioSetEditRequest = {
   "revision": string;
   "selection"?: StudioRunSelection | null;
   "store_choice"?: string | null;
-  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | SetFieldWeight | RemoveAxisValue | AddSetEntry;
+  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | SetFieldWeight | RemoveAxisValue | AddSetEntry | SetEntryTask;
 };
 
 export type StudioSetField = {
   "axis": string;
   "set": string;
   "sampling": SetTrialSampling;
+  "condition"?: Expression | null;
   "entries": Array<StudioSetFieldEntry>;
 };
 
@@ -5256,6 +5268,7 @@ export type TrialDocuments = {
 export type TrialSetField = {
   "axis": SetAxis;
   "sampling": SetTrialSampling;
+  "condition"?: Expression | null;
 };
 
 export type UnresolvedValue = {
@@ -12357,6 +12370,17 @@ export const SetEntryPartsSchema: z.ZodType<SetEntryParts> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetEntryParts>;
 
+export const SetEntryTaskSchema: z.ZodType<SetEntryTask> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("set_entry_task"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "entry": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "task_variables": z.union([z.array(VariableSchema), z.null()]).optional(),
+    "task_links": z.union([z.array(LinkSchema), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<SetEntryTask>;
+
 export const SetFieldWeightSchema: z.ZodType<SetFieldWeight> = z.lazy(() =>
   z.object({
     "kind": z.literal("set_field_weight"),
@@ -12407,6 +12431,7 @@ export const SetToFieldSchema: z.ZodType<SetToField> = z.lazy(() =>
     "kind": z.literal("set_to_field"),
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "condition": z.union([ExpressionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<SetToField>;
 
@@ -12465,6 +12490,7 @@ export const SignalSchema: z.ZodType<Signal> = z.lazy(() =>
     "cells": z.array(CellSchema),
     "absent": z.union([ExpressionSchema, z.null()]).optional(),
     "window": z.union([WindowSchema, z.null()]).optional(),
+    "intervention": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Signal>;
 
@@ -13597,7 +13623,7 @@ export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.laz
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "selection": z.union([StudioRunSelectionSchema, z.null()]).optional(),
     "store_choice": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]).optional(),
-    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, SetFieldWeightSchema, RemoveAxisValueSchema, AddSetEntrySchema]),
+    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, SetFieldWeightSchema, RemoveAxisValueSchema, AddSetEntrySchema, SetEntryTaskSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEditRequest>;
 
@@ -13606,6 +13632,7 @@ export const StudioSetFieldSchema: z.ZodType<StudioSetField> = z.lazy(() =>
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "set": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "sampling": SetTrialSamplingSchema,
+    "condition": z.union([ExpressionSchema, z.null()]).optional(),
     "entries": z.array(StudioSetFieldEntrySchema),
   }).strict()
 ) as unknown as z.ZodType<StudioSetField>;
@@ -14093,6 +14120,7 @@ export const TrialSetFieldSchema: z.ZodType<TrialSetField> = z.lazy(() =>
   z.object({
     "axis": SetAxisSchema,
     "sampling": SetTrialSamplingSchema,
+    "condition": z.union([ExpressionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<TrialSetField>;
 

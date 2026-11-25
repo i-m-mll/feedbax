@@ -29,6 +29,7 @@ from feedbax.contracts.computation_validity import (
     StartsChanged,
     UnidentifiedCall,
 )
+from feedbax.runtime.delay import DelayLayout
 from feedbax.validity.computation import (
     _canonical_asm,
     argument_signature,
@@ -200,14 +201,25 @@ def test_argument_identity_includes_values_tree_weak_type_and_placement():
     )
 
 
+def test_static_delay_digest_distinguishes_tree_types_with_identical_leaf_layouts():
+    prototype = jax.ShapeDtypeStruct((2,), jnp.float32)
+    list_delay = DelayLayout.from_prototype([prototype], 2)
+    tuple_delay = DelayLayout.from_prototype((prototype,), 2)
+    assert list_delay.leaves == tuple_delay.leaves
+    assert argument_signature((), static=list_delay) != argument_signature((), static=tuple_delay)
+
+
 def test_equinox_argument_digest_survives_a_new_worker_hash_seed():
     snippet = """
 import equinox as eqx
 import jax
+from feedbax.runtime.delay import DelayLayout
+from feedbax.runtime.state import CartesianState
 from feedbax.validity.computation import capture_arguments, pytree_operands
 
 linear = eqx.nn.Linear(2, 1, key=jax.random.key(7))
-arrays, static = pytree_operands(linear)
+delay = DelayLayout.from_prototype(CartesianState(), 2)
+arrays, static = pytree_operands((linear, delay))
 print(capture_arguments(arrays, static=static).sha256)
 """
     digests = [

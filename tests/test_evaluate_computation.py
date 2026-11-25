@@ -290,6 +290,7 @@ def test_managed_rollout_relowers_without_compiling_and_detects_changed_scoring(
     dataset, total, *_ = result
     assert int(dataset.data("objective/coverage/effort").item()) == 2
     assert total == dataset.data("objective/total").item()
+    np.testing.assert_allclose(dataset.data("objective/trial_loss").mean(axis=-1), dataset.data("objective/total"))
     previous = execution.snapshot()
     assert previous is not None and isinstance(previous.prefix, EvaluatePrefix)
     assert tuple(output.slot for output in previous.prefix.outputs) == ("/initial/0",)

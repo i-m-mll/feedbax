@@ -658,6 +658,13 @@ def _pairing(plan, key, bundle, *, definition=None):
     step = plan.steps[key.variant, key.step]
     if step.kind == "train":
         documents = TrialDocuments.model_validate(definition.payload.get("trial_documents"))
+        run = next((item for item in plan.runs if item.key == key), None)
+        if run is not None and run.train is not None and run.train.task != documents.task_source:
+            encoded = plan.requests.get(run.request_id)
+            if encoded is not None:
+                spec = decode_request(encoded, plan.documents.__getitem__).spec
+                if isinstance(spec, DocumentTrainingRequestSpec) and isinstance(run.train.task, TaskDocument):
+                    documents = spec.trial_documents.model_copy(update={"task": run.train.task})
         return documents, _project(documents, bundle), None
     if step.kind == "evaluate":
         return _evaluate_documents(plan, key, definition, bundle)
@@ -1374,11 +1381,8 @@ def trial_authoring(
     for path, site in projected.fields.items():
         if path[1:2] == ("validation_trials",):
             continue
-        value = expression(path)
-        if _epoch_end_field(path, "condition") and value is None:
-            continue
         fields.extend(_trial_fields(
-            path, site, value, bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
+            path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
         ))
     field_problems = [
         problem for field in fields for problem in field.problems

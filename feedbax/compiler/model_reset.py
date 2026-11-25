@@ -155,6 +155,7 @@ class ModelResetPlan:
         self, graph: Graph, inits: Mapping[str, Any], *,
         key: PRNGKeyArray,
         inputs: dict[str, PyTree] | Callable[[dict[str, PyTree]], dict[str, PyTree]] | None = None,
+        input_series: bool = False, reset_values: Mapping[str, PyTree] | None = None,
     ) -> PreparedModelReset:
         """Apply a single trial's values and seed reset outputs and cycle carry."""
         writes = []
@@ -211,9 +212,10 @@ class ModelResetPlan:
         state = graph.state_consistency_update(state)
         outputs = graph.initial_outputs(graph.state_view(state))
         seed_inputs = inputs(outputs) if callable(inputs) else inputs
-        return PreparedModelReset(
-            state, outputs, graph.initial_cycle_port_values(state, inputs=seed_inputs, key=reset_key(key)),
+        carry = graph.initial_cycle_port_values(
+            state, inputs=seed_inputs, key=reset_key(key), input_series=input_series, reset_values=reset_values,
         )
+        return PreparedModelReset(state, outputs, carry)
 
 
 def resolve_model_reset(
