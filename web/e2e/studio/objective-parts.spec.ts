@@ -105,3 +105,18 @@ test('with the Inspector open, an unnamed term shows its name and its Enabled ch
   await expect.poll(async () => ((await terms())[0] as Term & { enabled?: boolean }).enabled).toBe(false);
   expect(await labels()).toEqual(order);
 });
+
+// Catches an inspector that keeps showing the previous step's selected term after another step is chosen on the map,
+// here an Evaluate scored by that same Objective.
+test("choosing another step shows that step, not the last step's selected term", async ({ page, request }) => {
+  const { table, inspector } = await open(page, request);
+  await page.getByRole('button', { name: 'New Step', exact: true }).click();
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Evaluate', exact: true }).click();
+  await expect(mapStep(page, 'evaluate')).toBeVisible();
+  await mapStep(page, 'train').click();
+  await table.getByRole('textbox', { name: 'Measure', exact: true }).click();
+  const term = inspector.getByRole('combobox', { name: 'Function', exact: true });
+  await expect(term).toBeVisible();
+  await mapStep(page, 'evaluate').click();
+  await expect(term).toHaveCount(0);
+});
