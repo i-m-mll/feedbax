@@ -17,7 +17,7 @@ from feedbax.compiler.model_signals import (
 )
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
 from feedbax.compiler.model_edit import model_graph_problems
-from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts
+from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts, WIRED_VECTOR_INPUT_TYPES
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, PlanarDynamicsSpec, SolverConfigSpec
 from feedbax.contracts.acausal_interface import (
     PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
@@ -25,7 +25,9 @@ from feedbax.contracts.acausal_interface import (
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec
+from feedbax.contracts.graph import (
+    ComponentSpec, DerivedDimensionRuleSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec,
+)
 from feedbax.contracts.model_address import (
     AttachmentElement, ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource, SignalTarget,
 )
@@ -36,7 +38,7 @@ from feedbax.contracts.model_document import (
     PhysicalInterior, ProbeAttachment, SignalInput, SignalType,
 )
 from feedbax.contracts.project import json_pointer_parts
-from feedbax.contracts.time_units import length_steps
+from feedbax.contracts.time_units import TimeValue, length_steps, time_in_seconds
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.runtime.task_data_roles import task_data_role
 from feedbax.compiler.model_reset import ModelResetPlan, resolve_model_reset
@@ -99,8 +101,8 @@ def model_tau_seconds(tau: object, period: float) -> float:
     time = LiteralValue.model_validate(tau) if isinstance(tau, dict) else LiteralValue(value=tau, unit="st")
     if time.unit not in {"st", "s"} or type(time.value) not in {float, int} or time.value <= 0:
         raise ValueError("Tau requires a positive value in seconds or steps")
-    value = time.value * (period if time.unit == "st" else 1)
-    if not isfinite(value) or value <= 0:
+    value = time_in_seconds(TimeValue(value=time.value, unit=time.unit), period)
+    if value <= 0:
         raise ValueError("Tau does not resolve to a positive finite duration")
     return value
 
@@ -419,6 +421,7 @@ class _Lower:
         nodes, subgraphs = {}, {}
         input_bindings, output_bindings = {}, {}
         wires = []
+        derived_dimensions = []
         input_sources = {}
         sampled_outputs = {}
         output_names = {port.id: port.id if path else port.name for port in ports.outputs}
@@ -692,9 +695,17 @@ class _Lower:
                 if any(w.target_node == b.component and w.target_port == b.port for w in wires):
                     raise self.problem(path, "wire", "target port already has a driver", id=key)
                 transform(source, wire.attachments, key, at, finish=(b.component, b.port), signal=signal)
+                if b.port == "input" and target.type in WIRED_VECTOR_INPUT_TYPES:
+                    if "input_size" in target.params:
+                        raise self.problem(
+                            path, "field", "The input wire determines this width",
+                            parent={"kind": "component", "id": b.component}, path=("fields", "input_size"),
+                        )
+                    derived_dimensions.append(DerivedDimensionRuleSpec(node=b.component, param="input_size", port=b.port))
         return GraphSpec(
             step_seconds=self.period if not path else None,
             nodes=nodes, wires=wires, input_ports=list(input_bindings), output_ports=list(output_names.values()),
+            derived_dimensions=derived_dimensions,
             input_bindings=input_bindings, output_bindings=output_bindings, subgraphs=subgraphs or None,
         )
 

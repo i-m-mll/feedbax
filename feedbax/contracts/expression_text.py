@@ -509,6 +509,8 @@ def _printed(node: Expression, names: Mapping[str, str]) -> tuple[str, int]:
         case UnresolvedValue(text=text):
             return text, _ATOM
         case LiteralValue(value=value, unit=unit):
+            if unit == "st" and type(value) is float and value.is_integer():
+                value = int(value)
             text = str(value).lower() + ("°" if unit == "°" else f" {unit}" if unit else "")
             return text, _UNARY if text.startswith("-") else _ATOM
         case NameValue(reference=reference):
