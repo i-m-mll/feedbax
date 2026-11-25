@@ -2,7 +2,6 @@
 
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { Agent } from 'node:http';
@@ -108,50 +107,7 @@ export default defineConfig({
     appearanceBoot(),
     react(isWalkthrough ? { babel: { plugins: [sourceStamps] } } : {}),
     isWalkthrough ? mandibleInterfaceNotes() : [],
-    isDesktop ? desktopResources() : VitePWA({
-      registerType: 'autoUpdate',
-      workbox: {
-        skipWaiting: true,
-        navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/gallery\.html/],
-        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-        runtimeCaching: [
-          {
-            // Project state, job snapshots, and event streams must reach the live service.
-            urlPattern: /^https?:\/\/[^/]+\/api\/(?:graphs|projects|jobs|submissions|events|sessions|provider\/health)(?:[/?].*)?$/i,
-            handler: 'NetworkOnly',
-          },
-          {
-            // Training status, probes, etc. can tolerate brief staleness
-            urlPattern: /^https?:\/\/.*\/api\/.*/i,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'api-cache',
-              expiration: {
-                maxEntries: 50,
-                maxAgeSeconds: 60 * 60, // 1 hour
-              },
-            },
-          },
-        ],
-      },
-      manifest: {
-        name: 'Feedbax Studio',
-        short_name: 'Feedbax',
-        description: 'Neural network model builder and training environment',
-        theme_color: '#18181b',
-        background_color: '#f4f5f7',
-        display: 'standalone',
-        icons: [
-          {
-            src: '/icon.svg',
-            sizes: 'any',
-            type: 'image/svg+xml',
-            purpose: 'any maskable',
-          },
-        ],
-      },
-    }),
+    isDesktop ? desktopResources() : [],
   ],
   resolve: {
     alias: {

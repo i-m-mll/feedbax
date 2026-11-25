@@ -30,6 +30,5 @@ export default defineConfig({
     launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
     trace: 'off',
     actionTimeout: 5_000,
-    serviceWorkers: 'block',
   },
 });
