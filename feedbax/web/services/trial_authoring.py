@@ -63,10 +63,10 @@ from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFol
 from feedbax.web.services.set_authoring import trial_set_fields
 from feedbax.web.services.store_choice import EditStore, all_readers_store, choose_store
 from feedbax.studio.selection import StoredEdit
-from feedbax.studio.numeric_fields import project_numeric_field
+from feedbax.studio.numeric_fields import project_numeric_field, time_conversion
 from feedbax.web.services.trial_fields import (
     TrialFieldSweep, at, held_expression_file, index_pointer, numeric_nodes, routes_to_sweep, site_expression, trial_field_sweep,
-    trial_field_sweep_edit,
+    trial_field_sweep_edit, trial_time_use,
 )
 from feedbax.web.services.trial_scope import (
     authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, lit_steps, preview_stored, scoped_file,
@@ -1136,7 +1136,7 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
     ]
 
 
-def _trial_fields(path, site: Site, expression, functions, sweep, row, problems, name_paths) -> list[StudioTrialField]:
+def _trial_fields(path, site: Site, expression, functions, sweep, row, problems, name_paths, period) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
 
@@ -1151,9 +1151,10 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
         swept = sweep((*path, *inner), site, label or _field_label(path))
         if swept is None:
             continue
+        current = at(expression, inner)
         view = project_numeric_field(
-            StudioTrialField, swept.field, swept.axis, functions, row, at(expression, inner).value,
-            path=pointer(tuple(map(str, (*path, *inner)))),
+            StudioTrialField, swept.field, swept.axis, functions, row, current.value,
+            period=period, effective_unit=current.unit, path=pointer(tuple(map(str, (*path, *inner)))),
         )
         if inner:
             fields.append(view)
@@ -1175,6 +1176,7 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
     return [StudioTrialField(
         path=pointer(tuple(map(str, path))), label=_field_label(path), site=projection, text=text,
         structure=value_structure(expression, site, functions) if shown else None,
+        conversion=time_conversion(expression, period, trial_time_use(path[0], path[1:])),
         problems=marks,
     ), *fields]
 
@@ -1332,6 +1334,8 @@ def trial_authoring(
             return None
         return _field_sweep(project, plan, key, definition, path, site, label)
 
+    clock = documents.model.step_seconds
+    period = clock if isinstance(clock, float) else None
     fields = []
     for path, site in projected.fields.items():
         if path[1:2] == ("validation_trials",):
@@ -1340,7 +1344,7 @@ def trial_authoring(
         if path[0] == "task" and path[1:2] == ("epochs",) and path[3:] == ("end", "condition") and value is None:
             continue
         fields.extend(_trial_fields(
-            path, site, value, bundle.expression_functions, sweep, row, projected.problems, output_paths,
+            path, site, value, bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
         ))
     field_problems = [
         problem for field in fields for problem in field.problems
@@ -1361,7 +1365,7 @@ def trial_authoring(
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
         epoch_instances=list(projected.epoch_instances),
-        period_seconds=documents.model.step_seconds if isinstance(documents.model.step_seconds, float) else None,
+        period_seconds=period,
         n_steps=compiled.n_steps if compiled else None,
         batch_size=_batch_size(step.kind, definition.payload),
         reads_model=compiled.reads_model if compiled else False,

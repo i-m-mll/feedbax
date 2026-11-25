@@ -392,6 +392,24 @@ def test_document_trial_and_objective_match_reference(kind, functions, reference
         )
 
 
+@pytest.mark.parametrize(
+    ("authored", "bounds"), [("0.025 s", (3, 3)), ("U(0.025 s, 0.045 s)", (3, 5))],
+)
+def test_epoch_lengths_pair_exact_decimal_half_steps_once(functions, authored, bounds):
+    task = TaskDocument(
+        id="clock", variables=(), signals=(),
+        epochs=(Epoch(id="move", name="move", end=Length(length=expression(authored))),),
+    )
+    compiled = compile_task(task, functions, model=PORTLESS)
+    assert isinstance(compiled, DocumentTask), compiled
+    assert (compiled.step_counts[0].least, compiled.step_counts[0].greatest) == bounds
+    key = jr.key(77)
+    lengths = jax.vmap(lambda trial: compiled.init(TaskParameters(), key, trial)[0].epochs.ends[0])(
+        jr.split(key, 48),
+    )
+    assert set(lengths.tolist()) == set(range(bounds[0], bounds[1] + 1))
+
+
 def test_zero_length_and_delayed_distribution(functions, references):
     _, zero = example("delayed", functions, zero=True)
     key = jr.key(5)
