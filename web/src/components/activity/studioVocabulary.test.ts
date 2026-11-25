@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { StudioProjectWindowMapProblem } from '@/generated/studioContracts';
-import { studioProblemName } from './studioVocabulary';
+import { studioBytes, studioProblemName } from './studioVocabulary';
 
 const problem = (document_path: string | null): StudioProjectWindowMapProblem => ({
   code: 'invalid_payload', path: 'payload.trial_documents.model', detail: 'Invalid.', variant: null, step: 'train', row: null,
@@ -17,5 +17,13 @@ describe('studioProblemName', () => {
   it('names a problem about a whole document by its place', () => {
     expect(studioProblemName(problem(null))).toBe('Model');
     expect(studioProblemName(problem(''))).toBe('Model');
+  });
+});
+
+describe('studioBytes', () => {
+  it('reads a size as a short number and a spaced unit, carrying to the next unit on rounding', () => {
+    expect(studioBytes(470_996).replace(/\s/g, ' ')).toBe('471 kB');
+    expect(studioBytes(999_999).replace(/\s/g, ' ')).toBe('1 MB');
+    expect(studioBytes(812).replace(/\s/g, ' ')).toBe('812 B');
   });
 });

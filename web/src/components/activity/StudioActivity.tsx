@@ -31,6 +31,8 @@ function isLive(job: StudioActivityJob) {
   return liveStatuses.has(job.status);
 }
 
+const activityTime = (job: StudioActivityJob) => job.ended_at_ms ?? job.submitted_at_ms;
+
 function coordinateValue(value: unknown) {
   return typeof value === 'string' ? value : JSON.stringify(value);
 }
@@ -59,7 +61,7 @@ function ActivityRun({
   /** Who submitted the run, when it was not this Studio: a run from the command line says so. */
   const client = job.actor?.client === 'studio' ? undefined : job.actor ?? undefined;
   /** When the run ended, or while it is live, when it was submitted. */
-  const time = job.ended_at_ms ?? job.submitted_at_ms;
+  const time = activityTime(job);
 
   /** Runs a row's request; a command made on the row meanwhile is held until it is done. */
   const execute = (command: () => Promise<void>) => holdWhile(async () => {
@@ -257,21 +259,18 @@ export function StudioActivityPane(props: StudioActivityPaneProps) {
 }
 
 /**
- * Activity's runs grouped by project: the window's own project first, then the others in the order
- * of their most recent activity. The snapshot lists jobs in the order of their latest change.
+ * Activity's runs grouped by project, newest first: the window's own project first, then the others
+ * in the order of their most recent activity.
  */
-function activityGroups(jobs: readonly StudioActivityJob[], visible: readonly StudioActivityJob[], ownProject: string | null) {
-  const latest = new Map<string, number>();
-  jobs.forEach((job, index) => latest.set(job.project_id, index));
+export function activityGroups(visible: readonly StudioActivityJob[], ownProject: string | null) {
   const runs = new Map<string, StudioActivityJob[]>();
-  for (const job of visible) runs.set(job.project_id, [...(runs.get(job.project_id) ?? []), job]);
-  const rank = (projectId: string) => projectId === ownProject ? Infinity : latest.get(projectId) ?? -1;
+  for (const job of [...visible].sort((a, b) => activityTime(b) - activityTime(a) || a.job_id.localeCompare(b.job_id))) {
+    runs.set(job.project_id, [...(runs.get(job.project_id) ?? []), job]);
+  }
+  const rank = (projectId: string) => projectId === ownProject ? Infinity : activityTime(runs.get(projectId)![0]);
   return [...runs]
     .sort(([a], [b]) => rank(b) - rank(a))
-    .map(([projectId, group]) => ({
-      projectId,
-      runs: group.sort((a, b) => a.label.localeCompare(b.label) || a.job_id.localeCompare(b.job_id)),
-    }));
+    .map(([projectId, group]) => ({ projectId, runs: group }));
 }
 
 function ActivityProject({ name, children }: PropsWithChildren<{ name: string }>) {
@@ -295,7 +294,7 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultS
   const selected = jobs.find((job) => job.job_id === selection);
   const ownProject = useStudioJobsProject();
   const visible = jobs.filter((job) => isLive(job) || !job.seen || job === selected);
-  const groups = activityGroups(jobs, visible, ownProject);
+  const groups = activityGroups(visible, ownProject);
   const machine = snapshot.data?.sessions.find((session) => session.id === 'local');
   const remoteMachines = snapshot.data?.sessions.filter((session): session is StudioRemoteSession => 'name' in session) ?? [];
   const machineByJob = new Map(remoteMachines.flatMap((session) => session.job_ids.map((id) => [id, session.name] as const)));

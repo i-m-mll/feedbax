@@ -2,6 +2,7 @@ import type { HTMLAttributes } from 'react';
 import { StatusMark } from '@/components/ui/StatusMark';
 import type { StoreTransferProgress, StudioActivityJob } from '@/generated/studioContracts';
 import {
+  studioBytes,
   studioName,
   studioFormat,
   studioReason,
@@ -32,14 +33,12 @@ export function StudioRunReason({ job }: { job: StudioActivityJob }) {
   );
 }
 
-const bytes = new Intl.NumberFormat(undefined, { style: 'unit', unit: 'byte', unitDisplay: 'narrow' });
-
 export function StudioCollectionProgress({ progress }: { progress?: StoreTransferProgress | null }) {
   return <div className="space-y-1">
     <progress aria-label={studioRunStatus('collecting')} value={progress?.verified_bytes} max={progress?.total_bytes} />
     {progress && <div className="text-xs text-shell-muted">
       {studioName('verifiedBytes')} {studioFormat('ofCount', {
-        count: bytes.format(progress.verified_bytes), total: bytes.format(progress.total_bytes),
+        count: studioBytes(progress.verified_bytes), total: studioBytes(progress.total_bytes),
       })}
     </div>}
   </div>;
