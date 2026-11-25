@@ -68,6 +68,7 @@ class TermTrace(NamedTuple):
 class ObjectiveResult(NamedTuple):
     loss: jax.Array
     terms: Mapping[str, TermValue]
+    trial_losses: jax.Array
 
 
 class ObjectiveUse(Enum):
@@ -133,19 +134,13 @@ class ObjectiveExecutor(eqx.Module):
 
     def __call__(self, states, trial_specs: Trial, model: ObjectiveInputs):
         """Expose the same batch values as a loss tree."""
-        return TermTree.branch(
-            self.label,
-            {
-                key: TermTree.leaf(key, term.value)
-                for key, term in self.evaluate(
-                    states,
-                    trial_specs,
-                    run_key=model.run_key,
-                    trial_keys=model.trial_keys,
-                    parameters=model.parameters,
-                ).terms.items()
-            },
+        result = self.evaluate(
+            states, trial_specs, run_key=model.run_key, trial_keys=model.trial_keys, parameters=model.parameters,
         )
+        return TermTree.branch(self.label, {
+            key: TermTree.leaf(key, term.value, weight=term.covered / max(result.trial_losses.size, 1))
+            for key, term in result.terms.items()
+        })
 
     def evaluate(self, retained, trials, *, run_key, trial_keys, parameters=None):
         values = jax.vmap(
@@ -157,7 +152,7 @@ class ObjectiveExecutor(eqx.Module):
                 parameters=parameters,
             )
         )(retained, trials, trial_keys)
-        return _reduce_trials(values)
+        return _reduce_trials(values, trial_keys.shape[0])
 
     def point_operands(self) -> dict[str, TermPoints]:
         return {term.id: measure_points(term.measure.checked) for term in self.terms if isinstance(term, _Term)}
@@ -168,7 +163,8 @@ class ObjectiveExecutor(eqx.Module):
                 kept, trial, run_key, key, parameters=parameters, observed_points=observed_points,
             )
         )(retained, trials, trial_keys)
-        return _reduce_trials({term: trace.reduced for term, trace in traces.items()}), traces
+        values = {term: trace.reduced for term, trace in traces.items()}
+        return _reduce_trials(values, trial_keys.shape[0]), traces
 
     def evaluate_trial(
         self,
@@ -303,16 +299,16 @@ def _weight_trace(weight: Evaluation, selected: jax.Array) -> Evaluation:
     return Evaluation(jnp.broadcast_to(weight.value, selected.shape), selected & weight.defined)
 
 
-def _reduce_trials(values):
+def _reduce_trials(values, batch_size: int) -> ObjectiveResult:
+    trial_losses = jnp.zeros((batch_size,))
     reduced = {}
     for name, (value, covered) in values.items():
+        contribution = jnp.where(covered, value, 0)
         count = jnp.count_nonzero(covered)
-        reduced[name] = TermValue(
-            jnp.sum(jnp.where(covered, value, 0)) / jnp.maximum(count, 1), count,
-        )
-    return ObjectiveResult(
-        sum((term.value for term in reduced.values()), jnp.asarray(0.0)), reduced,
-    )
+        trial_losses = trial_losses + contribution
+        reduced[name] = TermValue(contribution.sum() / jnp.maximum(count, 1), count)
+    loss = trial_losses.sum() / max(batch_size, 1)
+    return ObjectiveResult(loss, reduced, trial_losses)
 
 
 def _reduce(values, mask, reduction):
