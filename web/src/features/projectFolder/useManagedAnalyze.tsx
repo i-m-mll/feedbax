@@ -41,8 +41,8 @@ import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditSnapshot } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
 import { savedRunId, stepSourceRows } from './projectWindowPlan';
-import { placeElement, type Reveal } from './projectWindowProblems';
-import { ChangeRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
+import { placeElement, placedField, type Reveal } from './projectWindowProblems';
+import { ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName, keyOfLabel } from './generatedName';
@@ -387,11 +387,20 @@ export function useManagedAnalyze({
       return { id: JSON.stringify([target, role]), source: from, target, label: label === from ? undefined : label };
     }));
   const landed = refusal?.scope === scope ? refusal : undefined;
+  const elementProblems = diagnostics.filter((item) => selected && placeElement(item.place) === selected);
+  /** The fields the inspector draws for the selected element, by the pointer a Problem names one with. */
+  const drawnFields = new Set([
+    ...roles.map(({ name }) => authoredPointer(['inputs', name])),
+    ...(definition?.param_schema ?? []).map(({ name }) => authoredPointer(['params', name])),
+  ]);
+  const fieldProblem = (field: string) => elementProblems.find((item) => placedField(item) === field)?.detail;
   const roleRefusal = (element: string, role: string) =>
-    landed && Array.isArray(landed.at) && landed.at[0] === element && landed.at[1] === role ? landed.reason : undefined;
+    landed && Array.isArray(landed.at) && landed.at[0] === element && landed.at[1] === role ? landed.reason
+      : element === selected ? fieldProblem(authoredPointer(['inputs', role])) : undefined;
   const selectedCommands = selected && (operation || figure) ? elementCommands(selected)
     : chosenElements.length ? [splitCommand(chosenElements)] : [];
-  const selectedProblems = diagnostics.filter((item) => selected && placeElement(item.place) === selected);
+  /** The selected element's Problems that are not drawn on one of its fields. */
+  const selectedProblems = elementProblems.filter((item) => !drawnFields.has(placedField(item) ?? ''));
   const selectedElement = selected ? planned.get(selected) : undefined;
   const mapped = selectedElement && selectedElement.requests.length > 1;
   const chosenMember = chosenRequest?.scope === scope && chosenRequest.element === selected ? chosenRequest.member : undefined;
@@ -459,7 +468,6 @@ export function useManagedAnalyze({
     </p>}
     {mapped && selected && <ElementRequests requests={selectedElement.requests} selected={chosenMember}
       onSelect={(member) => setChosenRequest(member === undefined ? undefined : { scope, element: selected, member })} />}
-    {selectedPlan?.changed && <ChangeRow change={selectedPlan.changed} />}
     {operation && definition && key && <div className="grid gap-1">
       <SettingsForm key={selected} schema={definition.parameter_json_schema} value={operation.params ?? {}}
         projected={(path) => {
@@ -470,6 +478,7 @@ export function useManagedAnalyze({
           { options: options.map((option) => ({ value: option, label: catalog?.variable_names?.[option] ?? option })) }) : undefined;
         }}
         changed={(path) => changedAt(['operations', selected, 'params', ...path])}
+        reason={(path) => fieldProblem(authoredPointer(['params', ...path]))}
         write={canEdit ? writeParameter : undefined} />
     </div>}
     {figure && selected && selectedFigure && <label className="grid gap-1">

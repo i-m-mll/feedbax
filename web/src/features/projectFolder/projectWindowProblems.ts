@@ -112,3 +112,8 @@ export function placeMember(place: StudioPlace | null | undefined) {
 export function placeElement(place: StudioPlace | null | undefined) {
   return place?.part === 'analysis' ? place.element : undefined;
 }
+
+/** The field of its analysis element a Problem is about, as a pointer within the element. */
+export function placedField(problem: { place?: StudioPlace | null }) {
+  return problem.place?.part === 'analysis' ? problem.place.field ?? undefined : undefined;
+}
