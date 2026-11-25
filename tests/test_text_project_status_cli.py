@@ -161,7 +161,9 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
 
     def invalid_siblings(document):
         document["operations"]["unused"] = document["operations"]["align"] | {"operation": "feedbax.unknown"}
-        document["views"]["bad"] = document["views"]["profile"] | {"figure": {"document": "bad-figure"}}
+        document["views"]["bad"] = document["views"]["profile"] | {
+            "label": "Saved comparison", "figure": {"document": "bad-figure"},
+        }
 
     _edit(root, files, "velocity-analysis", invalid_siblings)
     monkeypatch.setattr(
@@ -194,7 +196,8 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     assert step.status_counts == {"cannot_run": 1}
     assert any(
         (problem.place, problem.document_path)
-        == (StudioAnalysisPlace(part="analysis", element="bad"), "payload.layers.0.style.band_alpha")
+        == (StudioAnalysisPlace(part="analysis", element="bad", name="Saved comparison"),
+            "payload.layers.0.style.band_alpha")
         for problem in mounted.problems
     )
     assert any(element.name == "profile" and element.status == "waiting" for element in mounted.analysis_elements)
