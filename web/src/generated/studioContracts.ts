@@ -3123,6 +3123,7 @@ export type FieldDescriptor = {
   "dims": Array<Name>;
   "units"?: string | null;
   "quantity"?: string | null;
+  "label"?: string | null;
   "frame"?: string | null;
   "trial_time"?: TrialFigureTime | null;
   "inline_values"?: Array<JsonValue> | null;
@@ -11046,6 +11047,7 @@ export const FieldDescriptorSchema: z.ZodType<FieldDescriptor> = z.lazy(() =>
     "dims": z.array(NameSchema),
     "units": z.union([z.string(), z.null()]).optional(),
     "quantity": z.union([z.string(), z.null()]).optional(),
+    "label": z.union([z.string(), z.null()]).optional(),
     "frame": z.union([z.string(), z.null()]).optional(),
     "trial_time": z.union([TrialFigureTimeSchema, z.null()]).optional(),
     "inline_values": z.union([z.array(jsonValueSchema), z.null()]).optional(),
