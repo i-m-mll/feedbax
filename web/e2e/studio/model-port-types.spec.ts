@@ -7,7 +7,8 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const opacity = (handle: Locator) => handle.evaluate((element) => Number(getComputedStyle(element).opacity));
 
-// Catches a stored wire whose type mismatch is listed in Problems but shown nowhere on the canvas or the inspector.
+// Catches a stored wire whose type mismatch is listed in Problems but shown nowhere on the canvas or the inspector, and
+// a port's Problem mark whose text no hover shows.
 test('a drag dims the input that states another type yet still stores a wire to it, and a port shows its type', async ({ page, request }) => {
   const files = await fixture('ordinary-files', '2');
   const modelFile = files.find((file: { id: string }) => file.id === 'point-mass');
@@ -46,7 +47,10 @@ test('a drag dims the input that states another type yet still stores a wire to 
   const { result } = await (await edited).json() as ModelEditResponse;
   if (result.status !== 'applied') throw new Error(JSON.stringify(result));
   // The stored wire's Problem is on the input it does not fit, and on the wire's and that port's inspectors.
-  await expect(command.locator('..').getByRole('img', { name: 'Problems', exact: true })).toHaveAccessibleDescription(/does not fit/);
+  const mark = command.locator('..').getByRole('img', { name: 'Problem', exact: true });
+  await expect(mark).toHaveAccessibleDescription(/does not fit/);
+  // The mark's hover tip shows its Problem, which is otherwise read only by a screen reader.
+  await expect(mark).toHaveAttribute('data-app-tip', /does not fit/);
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await command.click();
   await expect(inspector.getByText(/does not fit/)).toBeVisible();
@@ -72,7 +76,7 @@ test("a port's + asks for a term on that port, and a refusal lands on the port",
   await page.keyboard.press('Meta+2');
   await port.hover();
   await port.getByRole('button', { name: 'Add Term command', exact: true }).click();
-  await expect(port.getByRole('img', { name: 'Problems', exact: true })).toHaveAccessibleDescription('The Objective reads no signal here.');
+  await expect(port.getByRole('img', { name: 'Problem', exact: true })).toHaveAccessibleDescription('The Objective reads no signal here.');
   await expect(model.getByRole('alert')).toHaveCount(0);
   expect(relates.map(({ change }) => change)).toEqual([{
     kind: 'relate', first: { kind: 'port', address: { composites: [], element: { kind: 'port', end: { owner: 'outputs', port: 'command' } } } },
@@ -101,7 +105,7 @@ test("a struct port's + offers its fields, and the one chosen is related", async
   expect(response.ok(), await response.text()).toBe(true);
   const { change } = response.request().postDataJSON() as StudioTrialAuthoringRequest;
   expect(change).toMatchObject({ kind: 'relate', first: { kind: 'port', address: { element: { kind: 'field', path: ['pos'] } } } });
-  await expect(port.getByRole('img', { name: 'Problems', exact: true })).toHaveCount(0);
+  await expect(port.getByRole('img', { name: 'Problem', exact: true })).toHaveCount(0);
 });
 
 // Catches the Inputs card reordering its task signals when one of them is wired and becomes a Model input.

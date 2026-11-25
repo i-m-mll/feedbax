@@ -219,3 +219,17 @@ test('the playhead of Speed by trial over 64 trials holds 60 Hz in playback @res
   expect(updates.length).toBeGreaterThanOrEqual(0.9 * frames.length);
   expect(p95).toBeLessThanOrEqual(1000 / 60 * 1.2);
 });
+
+// Catches a window reopened on the Figures view that draws no figure and offers no trial clock until a figure is
+// pressed, since the selection that chose the figure is not kept across a reopen.
+test('a window reopened on the Figures view draws its figure on the clock without a press', { tag: '@round' }, async ({ page, request, studio }) => {
+  test.setTimeout(120_000);
+  await speedFigure(page, request, studio.home, 'figure-reopen');
+  await showFigure(page);
+  await expect(trialPicker(page)).toHaveText('trial 1 of 64');
+  await page.reload();
+  const plot = panel(page, 'Figures').locator('.js-plotly-plot');
+  await expect.poll(() => plot.evaluate((node) => (node as unknown as { data?: unknown[] }).data?.length)).toBe(64);
+  await expect(trialPicker(page)).toHaveText('trial 1 of 64');
+  await expect(page.locator('[data-figure-playhead]')).toHaveCount(1);
+});

@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { Lock, Unlock, ChevronsDownUp } from 'lucide-react';
 import { appTip } from '@window-shell/browser/tooltip';
+import { FieldProblem } from '@/components/ui/FieldProblem';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { StudioCanvas, type CanvasViewport, type CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
@@ -161,7 +162,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
           }} />
       </form>}
       {data.headline && <span>{data.headline}</span>}
-      {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
+      {data.problem && <FieldProblem reason={data.problem} />}
       {data.change && <ChangeMark className="nodrag nopan" {...data.change} />}
     </CardHead>
     {ports.map(({ port, key, reason, available, problem, verdict }) => {
@@ -224,7 +225,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
           onClick={(event) => { event.stopPropagation(); addTerm(event.currentTarget.getBoundingClientRect()); }}>+</Button>}
         {!data.collapsed && port.mark && <span role="img" aria-label={studioName(port.mark)}
           {...appTip(studioName(port.mark))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
-        {!data.collapsed && problem && <span role="img" aria-description={problem} aria-label={studioName('problems')}>◆</span>}
+        {!data.collapsed && problem && <FieldProblem reason={problem} />}
         {!data.collapsed && change && <ChangeMark className="nodrag nopan" {...change} />}
         {!data.collapsed && reason && verdict === 'refused' && <span className="studio-model-port-reason" role="status">{reason}</span>}
       </div>;
@@ -316,7 +317,7 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
           data.moveWaypoint?.(index, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
         }} onPointerCancel={() => setMoving(undefined)} />)}
       <div className="studio-model-attachments nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${mid.x}px, ${mid.y}px)` }}>
-        {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
+        {data.problem && <FieldProblem reason={data.problem} />}
         {data.bundleCount && <span className="rounded-row border border-shell-divider bg-shell-chrome px-1 text-xs">{data.bundleCount}</span>}
         {data.change && <ChangeMark {...data.change} />}
         {data.attachments?.map((attachment) => <span key={attachment.id} className="contents">
