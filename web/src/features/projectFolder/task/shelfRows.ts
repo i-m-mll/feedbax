@@ -4,7 +4,7 @@ import type { ShelfBar, ShelfRow, ShelfSegment } from '@/components/timeline/She
 import type { NamedElementAddress } from '@/features/projectWindow/elementSelection';
 import { viewGlyphs } from '@/features/projectWindow/ProjectWindow';
 import type { EpochBounds } from './taskModel';
-import type { Problem, TrialAggregate, TrialRecord } from '@/generated/studioContracts';
+import type { Problem, TrialAggregate, TrialMean, TrialRecord } from '@/generated/studioContracts';
 import { signalSteps } from './trialSample';
 
 /**
@@ -157,4 +157,29 @@ export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSecond
       bars: shareBars(aggregate.terms?.[term]?.steps ?? [], stepSeconds), problems: aggregate.terms?.[term]?.problems,
     })),
   ];
+}
+
+/**
+ * Under Mean, the epochs row on time from Align's epoch: each epoch instance from its mean start to its mean end over
+ * every trial of every condition, with a whisker from where its end falls least to greatest.
+ */
+export function meanRows(task: ShelfTask, mean: TrialMean): ShelfRow[] {
+  const pooled = new Map<string, { epoch: string; label: string; trials: number; start: number; end: number; least: number; greatest: number }>();
+  for (const condition of mean.conditions) {
+    const trials = Object.keys(condition.trials).length;
+    for (const { epoch, label, occurrence, start, end } of condition.epochs) {
+      const key = `${epoch}:${occurrence}`;
+      const prior = pooled.get(key);
+      pooled.set(key, prior ? {
+        ...prior, trials: prior.trials + trials, start: prior.start + start.mean * trials, end: prior.end + end.mean * trials,
+        least: Math.min(prior.least, end.lower), greatest: Math.max(prior.greatest, end.upper),
+      } : { epoch, label, trials, start: start.mean * trials, end: end.mean * trials, least: end.lower, greatest: end.upper });
+    }
+  }
+  const segments = [...pooled].flatMap(([key, { epoch, label, trials, start, end, least, greatest }]): ShelfSegment[] =>
+    trials > 0 && end > start ? [{
+      key, name: label, start: start / trials, end: end / trials, selects: named(task.document, `epoch:${epoch}`),
+      ...greatest > least && { spread: { least, greatest } },
+    }] : []).sort((a, b) => a.start - b.start);
+  return [{ kind: 'segments', key: 'epochs', name: studioName('epochs'), segments }];
 }

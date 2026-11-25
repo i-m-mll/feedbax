@@ -1,5 +1,6 @@
-import { useId, useLayoutEffect, useMemo, useRef, type PointerEvent, type SVGProps } from 'react';
-import { AudioWaveform, Boxes, Circle, Layers, RectangleHorizontal, Variable, Waypoints } from 'lucide-react';
+import { useId, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type SVGProps } from 'react';
+import { AudioWaveform, Boxes, Circle, Layers, MousePointer2, RectangleHorizontal, Spline, Variable, Waypoints } from 'lucide-react';
+import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { IconButton } from '@/components/ui/Button';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { Inspector } from '@/components/ui/Inspector';
@@ -9,6 +10,7 @@ import { ValueField } from '@/components/values/ValueField';
 import { rawField } from '@/components/values/adapters/raw';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { ElementAddress } from '@/features/projectWindow/elementSelection';
+import type { StudioRelatePort } from '@/generated/studioContracts';
 import { Menu, MenuCheckboxItem, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { Select } from '@/components/ui/Select';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
@@ -17,7 +19,8 @@ import { useElementSize } from '@/hooks/useElementSize';
 import { WORKSPACE_SVG_HEIGHT, WORKSPACE_SVG_WIDTH, fitScale, niceScaleLength, sceneBounds, shapePoints, type ScenePoint } from './planarProjection';
 import {
   fittedCamera, sceneElements, sceneLayers, zoomScene,
-  type Scene, type SceneCamera, type SceneElement, type SceneLayer, type SceneShape, type SceneView,
+  type Scene, type SceneCamera, type SceneElement, type SceneEnd, type SceneEndPlace, type SceneLayer, type SceneShape,
+  type SceneTool, type SceneView,
 } from './sceneView';
 
 /** The window's selection as the Scene sees it: the key of the selected element, and a choice of one by its address. */
@@ -99,15 +102,39 @@ function ElementDrawing({ element, active, project }: {
   </>;
 }
 
+/** Where a Relate ends besides another place: a fixed point of the world. */
+export type SceneRelateEnd = SceneEndPlace | { kind: 'point'; position: ScenePoint };
+
+/**
+ * Writes the term relating `first` to `second`, or on `first` alone, a Scene place or a Model port; answers why when the
+ * edit is refused.
+ */
+export type SceneRelate = (first: SceneEndPlace | StudioRelatePort, second?: SceneRelateEnd) => Promise<string | undefined>;
+
 type SceneDrawingProps = SceneSelection & {
   camera: SceneCamera;
   onCameraChange: (camera: SceneCamera) => void;
   hiddenLayers: ReadonlySet<SceneLayer>;
   fitToSlot?: boolean;
+  tool?: SceneTool;
+  onRelate?: SceneRelate;
+  /** The term whose relations are drawn heavier. */
+  selectedTerm?: string;
 };
 
+/** A Relate drag: the end it started at, where the pointer is, and the end it is over. */
+interface RelateDrag {
+  from: SceneEnd;
+  pointer: ScenePoint;
+  over?: SceneEnd;
+  moved: boolean;
+}
+
+/** How near, in canvas units, the pointer must be to a place for a drag to end at it. */
+const endReach = 12;
+
 function SceneDrawingCanvas({
-  scene, camera, onCameraChange, hiddenLayers, selected, onSelect, fitToSlot = false,
+  scene, camera, onCameraChange, hiddenLayers, selected, onSelect, fitToSlot = false, tool = 'select', onRelate, selectedTerm,
 }: SceneDrawingProps & { scene: Scene }) {
   const gridId = useId();
   const { ref: canvas, width, height } = useElementSize<SVGSVGElement>(fitToSlot);
@@ -118,6 +145,7 @@ function SceneDrawingCanvas({
     ...sceneElements(scene).flatMap((element) => element.possible ?? []),
     ...scene.rest.flatMap(shapePoints),
     ...scene.tracks.flatMap((track) => track.points),
+    ...scene.means.flatMap((path) => [...path.lower, ...path.upper]),
   ]), [scene]);
   const fit = fitScale(bounds, viewportWidth, viewportHeight);
   const autoFit = !fitToSlot || camera === fittedCamera;
@@ -132,13 +160,44 @@ function SceneDrawingCanvas({
     viewportWidth / 2 + (x - center[0]) * scale + camera.pan.x,
     viewportHeight / 2 - (y - center[1]) * scale + camera.pan.y,
   ];
+  const unproject = ([x, y]: ScenePoint): ScenePoint => [
+    center[0] + (x - viewportWidth / 2 - camera.pan.x) / scale,
+    center[1] - (y - viewportHeight / 2 - camera.pan.y) / scale,
+  ];
+  const relating = tool === 'relate' && onRelate !== undefined;
+  const [drag, setDrag] = useState<RelateDrag>();
+  const [refusal, setRefusal] = useState<{ end: string; reason: string }>();
+  /** The pointer's place in the canvas's coordinates. */
+  const canvasPoint = (event: PointerEvent<Element>, svg: SVGSVGElement): ScenePoint => {
+    const rect = svg.getBoundingClientRect();
+    const ratio = Math.min(rect.width / viewportWidth, rect.height / viewportHeight);
+    return [
+      (event.clientX - rect.left - (rect.width - viewportWidth * ratio) / 2) / ratio,
+      (event.clientY - rect.top - (rect.height - viewportHeight * ratio) / 2) / ratio,
+    ];
+  };
+  const endAt = (pointer: ScenePoint) => scene.ends.find((end) => {
+    const [x, y] = project(end.point);
+    return Math.hypot(x - pointer[0], y - pointer[1]) <= endReach;
+  });
+  const relate = (first: SceneEnd, second?: SceneRelateEnd) => {
+    setRefusal(undefined);
+    void onRelate?.(first.place, second).then((reason) => { if (reason) setRefusal({ end: first.key, reason }); });
+  };
+  const beginRelate = (event: PointerEvent<SVGGElement>, end: SceneEnd) => {
+    if (event.button !== 0 || end.reason) return;
+    event.stopPropagation();
+    const svg = event.currentTarget.ownerSVGElement!;
+    svg.setPointerCapture(event.pointerId);
+    setDrag({ from: end, pointer: canvasPoint(event, svg), moved: false });
+  };
   const meters = niceScaleLength(90 / Math.max(scale, 1));
   const drawn = sceneElements(scene)
     .filter((element) => elementPoints(element).length > 0 && !hiddenLayers.has(element.layer))
     .sort((left, right) => drawOrder[left.layer] - drawOrder[right.layer]);
 
   const beginPan = (event: PointerEvent<SVGSVGElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || drag) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const ratio = Math.min(rect.width / viewportWidth, rect.height / viewportHeight);
     if (!(ratio > 0)) return;
@@ -147,6 +206,12 @@ function SceneDrawingCanvas({
   };
 
   const movePan = (event: PointerEvent<SVGSVGElement>) => {
+    if (drag) {
+      const pointer = canvasPoint(event, event.currentTarget);
+      const moved = drag.moved || Math.hypot(pointer[0] - project(drag.from.point)[0], pointer[1] - project(drag.from.point)[1]) > endReach;
+      setDrag({ ...drag, pointer, moved, over: moved ? endAt(pointer) : undefined });
+      return;
+    }
     const gesture = pan.current;
     if (!gesture) return;
     const dx = event.clientX - gesture.start[0];
@@ -169,12 +234,20 @@ function SceneDrawingCanvas({
       onPointerDown={beginPan}
       onPointerMove={movePan}
       onPointerUp={(event) => {
+        if (drag) {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          setDrag(undefined);
+          if (!drag.moved) relate(drag.from);
+          else if (!drag.over) relate(drag.from, { kind: 'point', position: unproject(drag.pointer) });
+          else if (drag.over.key !== drag.from.key && !drag.over.reason) relate(drag.from, drag.over.place);
+          return;
+        }
         if (!pan.current) return;
         if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
         if (!pan.current.moved) onSelect(null);
         pan.current = null;
       }}
-      onPointerCancel={() => { pan.current = null; }}
+      onPointerCancel={() => { pan.current = null; setDrag(undefined); }}
       onWheel={(event) => onCameraChange(zoomScene(camera, event.deltaY > 0 ? 0.9 : 1.1))}
     >
       <defs>
@@ -198,6 +271,22 @@ function SceneDrawingCanvas({
           </g>;
         })}
       </g>
+      <g pointerEvents="none" aria-hidden="true">
+        {scene.means.map((path, index) => {
+          const spread = path.lower.map((low, at) => {
+            const [[x0, y0], [x1, y1]] = [project(low), project(path.upper[at])];
+            return `M${x0},${y0}H${x1}V${y1}H${x0}Z`;
+          }).join('');
+          return <g key={index}>
+            <path data-scene-spread d={spread} fill="var(--studio-scene-outline)" fillOpacity={0.12} stroke="none" />
+            {path.drawn > 0 && <polyline data-scene-mean fill="none" stroke="var(--studio-scene-outline)"
+              points={path.points.slice(0, path.drawn).map((point) => project(point).join(',')).join(' ')}
+              strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
+            {path.head && <circle data-scene-cursor cx={project(path.head)[0]} cy={project(path.head)[1]} r={3}
+              fill="var(--studio-scene-outline)" />}
+          </g>;
+        })}
+      </g>
       {drawn.map((element) => {
         const mark = element.problem && project(elementPoints(element)[0]);
         return (
@@ -209,6 +298,21 @@ function SceneDrawingCanvas({
           </g>
         );
       })}
+      <g pointerEvents="none" aria-hidden="true">
+        {parallelRelations(scene.relations.map(({ term, ends: [a, b] }) => ({ term, ends: [project(a), project(b)] as const }))).map(({ term, ends }, index) => {
+          const [[x1, y1], [x2, y2]] = ends;
+          return <line key={index} data-scene-relation={term} x1={x1} y1={y1} x2={x2} y2={y2} stroke="var(--text-primary)"
+            strokeWidth={term === selectedTerm ? 2.5 : 1.5} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />;
+        })}
+        {scene.places.map(({ term, point }, index) => {
+          const [x, y] = project(point);
+          const size = term === selectedTerm ? 6 : 4.5;
+          return <path key={index} data-scene-place={term} d={`M ${x - size} ${y - size} L ${x + size} ${y + size} M ${x - size} ${y + size} L ${x + size} ${y - size}`}
+            stroke="var(--text-primary)" strokeWidth={term === selectedTerm ? 2.5 : 1.5} vectorEffect="non-scaling-stroke" />;
+        })}
+      </g>
+      {relating && <RelateEnds ends={scene.ends} project={project} drag={drag} refusal={refusal} onPointerDown={beginRelate}
+        onRelate={(end) => relate(end)} />}
       <g transform={`translate(28 ${viewportHeight - 32})`} pointerEvents="none" aria-hidden="true">
         <path d={`M 0 -5 V 5 M 0 0 H ${meters * scale} M ${meters * scale} -5 V 5`} stroke="var(--text-primary)" strokeWidth={2} />
         <text y={-9} className="fill-shell-muted text-xs font-medium">
@@ -217,6 +321,52 @@ function SceneDrawingCanvas({
       </g>
     </svg>
   );
+}
+
+/**
+ * Relate's places: each is pressable, and a drag from one marks every place it could end at, draws the line to the
+ * pointer, and gives the reason beside a place it cannot end at. A refused edit's reason is beside the place it began.
+ */
+function RelateEnds({ ends, project, drag, refusal, onPointerDown, onRelate }: {
+  ends: readonly SceneEnd[];
+  project: (point: ScenePoint) => ScenePoint;
+  drag: RelateDrag | undefined;
+  refusal: { end: string; reason: string } | undefined;
+  onPointerDown: (event: PointerEvent<SVGGElement>, end: SceneEnd) => void;
+  onRelate: (end: SceneEnd) => void;
+}) {
+  const reasonBeside = (end: SceneEnd, reason: string) => {
+    const [x, y] = project(end.point);
+    return <text key={`${end.key} reason`} x={x + endReach + 4} y={y + 4} className="fill-shell-muted text-xs" pointerEvents="none">{reason}</text>;
+  };
+  const from = drag && project(drag.from.point);
+  return <g data-scene-relate>
+    {drag?.moved && from && <line x1={from[0]} y1={from[1]} x2={drag.pointer[0]} y2={drag.pointer[1]} stroke="var(--text-primary)"
+      strokeWidth={1.5} strokeDasharray="6 4" pointerEvents="none" vectorEffect="non-scaling-stroke" />}
+    {/* An anchor is drawn last, so that where a task place coincides with it, a press starts at the anchor. */}
+    {[...ends].sort((left, right) => Number(left.place.kind === 'anchor') - Number(right.place.kind === 'anchor')).map((end) => {
+      const [x, y] = project(end.point);
+      const candidate = drag?.moved && !end.reason && end.key !== drag.from.key;
+      return <g key={end.key} role="button" tabIndex={end.reason ? -1 : 0} aria-disabled={end.reason ? true : undefined}
+        aria-label={studioAccessibleName('relate', end.name)} data-scene-end={end.key}
+        className={end.reason ? 'cursor-not-allowed' : 'cursor-crosshair focus-visible:outline focus-visible:outline-2 focus-visible:outline-shell-accent'}
+        onPointerDown={(event) => onPointerDown(event, end)}
+        onKeyDown={(event) => {
+          if (!end.reason && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault();
+            onRelate(end);
+          }
+        }}>
+        <circle cx={x} cy={y} r={endReach} fill="transparent" />
+        {candidate && <circle data-scene-candidate cx={x} cy={y} r={drag.over?.key === end.key ? endReach : endReach - 3}
+          fill="none" stroke="var(--text-primary)" strokeWidth={drag.over?.key === end.key ? 2 : 1} vectorEffect="non-scaling-stroke" />}
+        {end.reason && <circle cx={x} cy={y} r={endReach - 3} fill="none" stroke="var(--studio-scene-faint)" strokeWidth={1}
+          strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
+      </g>;
+    })}
+    {drag?.over?.reason && reasonBeside(drag.over, drag.over.reason)}
+    {!drag && refusal && ends.filter((end) => end.key === refusal.end).map((end) => reasonBeside(end, refusal.reason))}
+  </g>;
 }
 
 export function SceneCanvas({ view, ...drawing }: SceneDrawingProps & { view: SceneView }) {
@@ -248,6 +398,13 @@ export function sceneContents(view: SceneView): { navigable: boolean; layers: re
     navigable: placed.length > 0 || view.scene.tracks.some((track) => track.points.length > 0),
     layers: sceneLayers.filter((layer) => present.has(layer)),
   };
+}
+
+/** The strip's tools, of which the one in use is pressed. */
+export function SceneTools({ tool, commands }: { tool: SceneTool; commands: Readonly<Record<SceneTool, StudioCommand>> }) {
+  const icons = { select: <MousePointer2 />, relate: <Spline /> } satisfies Record<SceneTool, unknown>;
+  return <>{(['select', 'relate'] as const).map((id) => <IconButton key={id} label={commands[id].label} icon={icons[id]}
+    {...commandAttributes(commands[id], 'right')} pressed={tool === id} disabled={!commands[id].enabled} onClick={commands[id].invoke} />)}</>;
 }
 
 export function SceneLayers({ layers, hidden, onToggle }: {
@@ -343,4 +500,25 @@ export function SceneElementInspector({ scene, selected }: { scene: Scene; selec
       })} />)}
     </Inspector>
   );
+}
+
+type Segment = readonly [ScenePoint, ScenePoint];
+
+/** Pixels between relations drawn between the same two places. */
+const relationGap = 6;
+
+/** Relations between the same two places, side by side across their common line rather than drawn over each other. */
+function parallelRelations<T extends { ends: Segment }>(relations: readonly T[]): T[] {
+  const key = ([a, b]: Segment) => [a, b].map(([x, y]) => `${Math.round(x)},${Math.round(y)}`).sort().join(' ');
+  const groups = new Map<string, number[]>();
+  relations.forEach((relation, index) => groups.set(key(relation.ends), [...groups.get(key(relation.ends)) ?? [], index]));
+  return relations.map((relation, index) => {
+    const group = groups.get(key(relation.ends))!;
+    const [[x1, y1], [x2, y2]] = relation.ends;
+    const length = Math.hypot(x2 - x1, y2 - y1);
+    if (group.length < 2 || !length) return relation;
+    const shift = (group.indexOf(index) - (group.length - 1) / 2) * relationGap;
+    const [dx, dy] = [(y1 - y2) / length * shift, (x2 - x1) / length * shift];
+    return { ...relation, ends: [[x1 + dx, y1 + dy], [x2 + dx, y2 + dy]] satisfies Segment };
+  });
 }

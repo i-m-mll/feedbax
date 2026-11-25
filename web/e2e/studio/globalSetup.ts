@@ -26,7 +26,8 @@ function keepOnly(root: string, key: string) {
 
 /** Builds the production frontend once per distinct source tree and shares it with every worker. */
 export default function globalSetup() {
-  const key = inputHash(web, ['.', ':!e2e']);
+  // The frontend also builds the vendored window-shell, a submodule whose files the web tree's listing omits.
+  const key = inputHash(web, ['.', ':!e2e']) + inputHash(join(repo, 'vendor', 'window-shell'), ['browser']);
   const dist = join(cache, key);
   if (!existsSync(join(dist, 'index.html'))) {
     const staging = `${dist}.${process.pid}`;

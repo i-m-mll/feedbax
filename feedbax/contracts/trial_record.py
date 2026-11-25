@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field, JsonValue
 
 from feedbax.contracts.expression_values import Problem
 from feedbax.contracts.jobs import JobReceipt
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.studio_scene import ScenePoint
+from feedbax.contracts.trial_clock import TrialMean, TrialMeanOptions
 
 
 class TaskTimelineCue(BaseModel):
@@ -14,6 +17,37 @@ class TaskTimelineCue(BaseModel):
     start: int
     end: int
     outcome: int
+
+
+class TrialAnchorPlace(BaseModel):
+    kind: Literal["anchor"]
+    address: ModelAddress
+
+
+class TrialVariablePlace(BaseModel):
+    kind: Literal["variable"]
+    id: str
+
+
+class TrialSignalPlace(BaseModel):
+    kind: Literal["signal"]
+    id: str
+
+
+class TrialComputedPlace(BaseModel):
+    kind: Literal["computed"]
+    samples: list[ScenePoint | None]
+    """World point at each trial step, or null where the expression is undefined."""
+
+
+type TrialPlace = Annotated[
+    TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | TrialComputedPlace, Field(discriminator="kind")
+]
+
+
+class TrialRelation(BaseModel):
+    first: TrialPlace
+    second: TrialPlace
 
 
 class TrialTerm(BaseModel):
@@ -28,6 +62,8 @@ class TrialTerm(BaseModel):
     """The weighted measure at each step, when recorded."""
     value: float | None = None
     """The reduced value for the entire recorded trial, when covered."""
+    relations: list[TrialRelation] = Field(default_factory=list)
+    places: list[TrialPlace] = Field(default_factory=list)
 
 
 class TrialStateTrack(BaseModel):
@@ -49,6 +85,8 @@ class TrialRecord(BaseModel):
     """Recorded world-frame state tracks, keyed by state Model address."""
     configurations: dict[str, JsonValue] = Field(default_factory=dict)
     """Recorded configuration state histories, keyed by state Model address."""
+    observations: dict[str, JsonValue] = Field(default_factory=dict)
+    """Post-step values read by reported terms, keyed by their Model origin addresses."""
 
 
 class TrialRecords(BaseModel):
@@ -115,3 +153,5 @@ class StudioTrialReplayResponse(BaseModel):
     """Model address of the declared primary position, if available."""
     receipt: JobReceipt
     drawn: Annotated[TrialRecords | TrialAggregate, Field(discriminator="kind")]
+    mean_options: TrialMeanOptions | None = Field(default=None, exclude_if=lambda value: value is None)
+    mean: TrialMean | None = Field(default=None, exclude_if=lambda value: value is None)

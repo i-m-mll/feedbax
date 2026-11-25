@@ -17,8 +17,9 @@ async function files() {
 }
 
 // Catches a To Field that leaves the axis's runs on the card or shows no variable for the Set in the Task view, a
-// Value that drops an entry or None, and a To Sweep that does not restore the axis's runs.
-test('To Field moves a Set into the run as a variable of the Task, and To Sweep moves it back', async ({ page, request }) => {
+// Value that drops an entry or None, a weight typed at its entry that is not stored at that entry, and a To Sweep that
+// does not restore the axis's runs.
+test('To Field moves a Set into the run as a variable of the Task, its weights are edited there, and To Sweep moves it back', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await files());
   const card = page.locator('[data-map-step="train"]');
@@ -37,7 +38,17 @@ test('To Field moves a Set into the run as a variable of the Task, and To Sweep 
 
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
-  await expect(row.getByRole('listitem')).toHaveText(['Light1', 'Mid1', 'Heavy1', 'None1']);
+  await expect(row.getByRole('listitem')).toHaveText(['Light', 'Mid', 'Heavy', 'None']);
+  const weights = () => row.getByRole('textbox').evaluateAll((fields) => fields.map((field) => (field as HTMLInputElement).value));
+  await expect.poll(weights).toEqual(['1', '1', '1', '1']);
+
+  await row.getByRole('textbox', { name: 'Weight Heavy', exact: true }).fill('3');
+  await row.getByRole('textbox', { name: 'Weight Heavy', exact: true }).press('Enter');
+  await row.getByRole('textbox', { name: 'Weight None', exact: true }).fill('0');
+  await row.getByRole('textbox', { name: 'Weight None', exact: true }).press('Enter');
+  await expect.poll(async () => (await step()).set_fields?.load?.sampling)
+    .toEqual({ kind: 'weighted', weights: { heavy: 3 }, none: 0 });
+  await expect.poll(weights).toEqual(['1', '1', '3', '0']);
 
   await row.hover();
   await row.getByRole('button', { name: 'Variable loads', exact: true }).click();

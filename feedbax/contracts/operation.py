@@ -1,6 +1,6 @@
 """Portable discovery of operations and their typed ports."""
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue
@@ -17,6 +17,28 @@ class DatasetPort(StrictModel):
     variables: dict[str, FieldDescriptor] = Field(default_factory=dict)
     selected_variables: dict[str, FieldDescriptor] = Field(default_factory=dict)
     coordinates: dict[str, FieldDescriptor] = Field(default_factory=dict)
+    optional_dimensions: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
+    """Declared scientific axes preserved when present in the bound dataset."""
+
+    def for_dimensions(self, dimensions: Collection[str]) -> "DatasetPort":
+        absent = set(self.optional_dimensions) - set(dimensions)
+        if not absent:
+            return self
+
+        def fitted(fields: dict[str, FieldDescriptor]) -> dict[str, FieldDescriptor]:
+            return {
+                name: field.model_copy(update={"dims": tuple(dim for dim in field.dims if dim not in absent)})
+                for name, field in fields.items()
+            }
+
+        return self.model_copy(update={
+            "variables": fitted(self.variables),
+            "selected_variables": fitted(self.selected_variables),
+            "coordinates": fitted({
+                name: field for name, field in self.coordinates.items()
+                if not field.dims or not absent.issuperset(field.dims)
+            }),
+        })
 
 
 class WholeDimensions(StrictModel):

@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 import fcntl
 from functools import lru_cache, partial
 import os
 from pathlib import Path
 import re
+from secrets import token_hex
+from shutil import rmtree
 import stat
 from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import Literal, Protocol, TYPE_CHECKING
-from uuid import uuid4
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
@@ -64,7 +66,7 @@ from feedbax.planner.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, c
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
-from feedbax.persistence.project_subject import terminal_train_reader
+from feedbax.persistence.project_subject import imported_model_reader, terminal_train_reader
 from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
     change_member_key, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
@@ -90,6 +92,8 @@ from feedbax.contracts.studio_project import (
     StudioMemberCommandResult,
     StudioPresentationWrite,
     StudioProjectDocument,
+    StudioProjectList,
+    StudioProjectListEntry,
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
     StudioProjectPatch,
@@ -452,7 +456,7 @@ def compile_saved_project(
     training_methods: TrainingMethodRegistry | None = None,
 ) -> SettledProjectPlan:
     """Compile exact authored bytes and reuse them only with matching input authority."""
-    readers = replace(readers, terminal_train=terminal_train_reader(store))
+    readers = replace(readers, terminal_train=terminal_train_reader(store), imported_model=imported_model_reader(store))
     semantic_root = project_semantic_root(text.project)
     source_runs = frozenset(source_runs)
     stamp = (
@@ -462,7 +466,7 @@ def compile_saved_project(
     )
     observations: dict[str, dict[str, object]] = {}
     observed_readers = {}
-    for kind in ("terminal_train", "figure_external"):
+    for kind in ("terminal_train", "imported_model", "figure_external"):
         if (reader := getattr(readers, kind)) is not None:
             observations[kind] = {}
             observed_readers[kind] = partial(_observe_plan_input, reader, observations[kind])
@@ -761,7 +765,7 @@ class _LockedProjectFolder:
 @contextmanager
 def _folder_lock(
     location: ProjectFolderLocation, *, write: bool = True, declaration: str | None = None,
-    verify_project: bool = False,
+    verify_project: bool = False, detach: Callable[[int], None] | None = None,
 ) -> Iterator[_LockedProjectFolder]:
     root = location.path
     with _project_directory_chain(root) as chain:
@@ -803,8 +807,42 @@ def _folder_lock(
                 _finish_patch_at(root, directory)
             yield _LockedProjectFolder(location, directory, check_folder)
             check_folder()
+            if detach is not None:
+                detach(chain[-2][1])
         finally:
             os.close(descriptor)
+
+
+def _delete_project_folder(location: ProjectFolderLocation, parent: int) -> None:
+    """Detach the verified directory before removing any of its contents."""
+    staging = f".studio-delete-{token_hex(16)}"
+    os.mkdir(staging, mode=0o700, dir_fd=parent)
+    empty = True
+    try:
+        staged = os.open(staging, directory_open_flags(error_factory=OSError), dir_fd=parent)
+        try:
+            rename_no_replace(
+                location.path.name, "project", source_dir_fd=parent, destination_dir_fd=staged,
+                error_factory=OSError, context="Studio project deletion",
+            )
+            empty = False
+            moved = os.stat("project", dir_fd=staged, follow_symlinks=False)
+            if not stat.S_ISDIR(moved.st_mode) or (moved.st_dev, moved.st_ino) != location.identity:
+                rename_no_replace(
+                    "project", location.path.name, source_dir_fd=staged, destination_dir_fd=parent,
+                    error_factory=OSError, context="restore replaced Studio project folder",
+                )
+                empty = True
+                raise ProjectFolderNotFound("The selected project folder was replaced")
+            rmtree("project", dir_fd=staged)
+            empty = True
+        finally:
+            os.close(staged)
+    finally:
+        # A failed restore or removal leaves recoverable files inside staging.
+        if empty:
+            os.rmdir(staging, dir_fd=parent)
+    os.fsync(parent)
 
 
 def check_revision(resource: _Resource, expected: str, current: str) -> None:
@@ -893,6 +931,7 @@ class ProjectFolder:
         figure_templates: FigureTemplateRegistry | None = None,
         local_folder: ProjectFolderLocation | None = None,
         training_methods: TrainingMethodRegistry | None = None,
+        load_examples: Callable[[], Mapping[str, Project]] = dict,
     ) -> None:
         self.root = root.resolve()
         self._local_folder = local_folder
@@ -902,6 +941,7 @@ class ProjectFolder:
         self.functions = functions
         self.python_tasks = python_tasks
         self.training_methods = training_methods
+        self._load_examples = load_examples
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: SavedPlanMemo())
         self._known_locations: dict[str, ProjectFolderLocation] = {}
         self._known_locations_lock = Lock()
@@ -1024,6 +1064,34 @@ class ProjectFolder:
     def open(self, project_id: str) -> StudioProjectDocument:
         return self._open_folder(self._folder(project_id))
 
+    def list_projects(self) -> StudioProjectList:
+        """List valid home projects without opening them or recovering pending writes."""
+        try:
+            children = tuple(self.root.iterdir())
+        except FileNotFoundError:
+            children = ()
+        except OSError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        projects = []
+        for child in children:
+            try:
+                if not child.is_dir(follow_symlinks=False):
+                    continue
+                location = ProjectFolderLocation.selected(child)
+                text = self._load(location.path)
+                stamps = (text_file_stamp(location.path / name, location.path) for name in text.files)
+                modified_ns = max(mtime_ns for _, _, _, _, mtime_ns, _ in stamps)
+                if ProjectFolderLocation.selected(child) != location:
+                    continue
+            except (OSError, ProjectFolderInvalid, ProjectReadError):
+                continue
+            projects.append(StudioProjectListEntry(
+                project_id=location.project_id, name=text.configuration.project,
+                folder=str(location.path), step_count=len(text.project.steps),
+                modified=datetime.fromtimestamp(modified_ns / 1_000_000_000, tz=timezone.utc),
+            ))
+        return StudioProjectList(projects=sorted(projects, key=lambda project: (project.name, project.project_id)))
+
     def represented_declaration(self, project_id: str, identity: tuple[int, int]) -> Path:
         location = self._folder(project_id)
         if location.identity != identity:
@@ -1102,16 +1170,38 @@ class ProjectFolder:
             folder.check()
             yield plan
 
-    def new(self) -> StudioProjectDocument:
-        return self._new_folder()[0]
+    def project_examples(self) -> Mapping[str, Project]:
+        return self._load_examples()
 
-    def _new_folder(self) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
-        project_id = f"untitled-{uuid4().hex}"
-        configuration = ProjectConfiguration(project=project_id, store="results")
+    def new(self, name: str, *, example: str | None = None) -> StudioProjectDocument:
+        if re.fullmatch(r"untitled-[0-9a-f]+", name, re.IGNORECASE):
+            raise ProjectFolderInvalid("Choose a name for the project.")
+        configuration = ProjectConfiguration(project=name, store="results")
+        project = Project()
+        if example is not None:
+            project = self.project_examples().get(example)
+            if project is None:
+                raise ProjectFolderNotFound(example)
         self.root.mkdir(parents=True, exist_ok=True)
-        write_new_project_folder(self.root / project_id, Project(), configuration, PresentationDocument())
+        destination = self.root / name
+        try:
+            write_new_project_folder(destination, project, configuration, PresentationDocument())
+        except FileExistsError as error:
+            raise ProjectFileExists(name) from error
+        except OSError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        return self._open_folder(ProjectFolderLocation.selected(destination))
+
+    def delete(self, project_id: str) -> None:
+        if not _CANONICAL_PROJECT_ID.fullmatch(project_id):
+            raise ProjectFolderNotFound(project_id)
         location = self._folder(project_id)
-        return self._open_folder(location), location
+        if location.path.parent != self.root:
+            raise ProjectFolderNotFound(project_id)
+        with _folder_lock(location, verify_project=True, detach=partial(_delete_project_folder, location)) as folder:
+            self._load(folder.path)
+        with self._known_locations_lock:
+            self._known_locations.pop(project_id, None)
 
     def rename(self, project_id: str, body: StudioProjectRename) -> StudioProjectDocument:
         with self._locked_folder(project_id) as folder:
@@ -1411,6 +1501,7 @@ class ProjectFolder:
         A document the edit creates gets the layout of its base, the edited layout when its base is the shown one.
         """
         from feedbax.contracts.model_edit import ModelEditAsked, ModelEditProblem, ModelEditState, ModelProjectionRequest, SetField
+        from feedbax.compiler.model_document import inspect_model_signals
         from feedbax.compiler.model_edit import ModelEditDraft, apply_model_edit
         from feedbax.compiler.model_ports import ModelRegistryPorts
         from feedbax.compiler.model_templates import instantiate_model_template
@@ -1445,6 +1536,10 @@ class ProjectFolder:
         )
         if isinstance(result, ModelEditProblem):
             return result
+        problems = result.problems
+        if result.state.document != state.document:
+            found = (*problems, *inspect_model_signals(result.state.document, components).problems)
+            problems = tuple({(item.address.to_text(), item.reason): item for item in found}.values())
         if body.store_choice is not None and result.state.document == state.document and not body.files:
             raise ProjectRevisionConflict("project", body.revision)
         if any(file.address.kind != "step" for file in body.files):
@@ -1505,7 +1600,7 @@ class ProjectFolder:
                 ), model_operation=True)
             if alone:
                 change = ModelEditChange(before, (payload, layout), model_edit_source(snapshot, body.document))
-        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created, result.problems, tuple(sweep_problems))
+        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created, problems, tuple(sweep_problems))
 
     def _write_model_change(
         self, snapshot: StudioProjectSnapshot, document: ProjectName,

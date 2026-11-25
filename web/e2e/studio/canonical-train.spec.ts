@@ -46,7 +46,7 @@ test('standalone Activity opens an existing run and hydrates its retained histor
 
 test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(48_000);
-  const created = await request.post('/api/projects');
+  const created = await request.post('/api/projects', { data: { name: 'canonical-successor' } });
   expect(created.status()).toBe(201);
   let { snapshot } = await created.json() as StudioProjectDocument;
   const id = snapshot.project_id;
@@ -188,7 +188,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
 test('Saved Train compares authenticated receipts after a partial run and stopped edit', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(65_000);
   await page.setViewportSize({ width: 1440, height: 900 });
-  const created = await request.post('/api/projects');
+  const created = await request.post('/api/projects', { data: { name: 'canonical-resume' } });
   expect(created.status()).toBe(201);
   let { snapshot } = await created.json() as StudioProjectDocument;
   const id = snapshot.project_id;
@@ -445,7 +445,9 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const childId = 'train-2';
   expect(snapshot.project.steps?.[childId]).toMatchObject({
     base: { step: 'train' },
-    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { rule: `learning-rate=${selected.map(({ coordinates }) => coordinates['learning-rate'].value).join(',')}` } } },
+    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { clauses: [{ 'learning-rate': selected.map(({ coordinates }) => ({
+      id: coordinates['learning-rate'].value_id, label: String(coordinates['learning-rate'].value),
+    })).sort((left, right) => left.id.localeCompare(right.id)) }] } } },
     deltas: [{ patches: [{ value: 'initialize_from' }] }],
   });
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
@@ -546,7 +548,9 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     base: { step: 'train' },
     inputs: { checkpoint: {
       step: 'train', checkpoint: 'last',
-      where: { rows: [{ key: rowKeys[0], variant: selected[0].key.variant, row: rowKeys[0] }] },
+      where: { clauses: [{ 'learning-rate': [{
+        id: selected[0].coordinates['learning-rate'].value_id, label: String(selected[0].coordinates['learning-rate'].value),
+      }] }] },
     } },
   });
   const reopened = await plan();
@@ -615,14 +619,16 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   await rail.getByRole('tab', { name: 'Runs', exact: true }).click();
   await openResultsSlot(page);
   const chartWidth = () => loss.evaluate((svg: SVGSVGElement) => svg.viewBox.baseVal.width);
+  const bottom = page.locator('.studio-window-bottom');
+  const row = await bottom.evaluate(({ clientHeight }) => clientHeight);
   await page.setViewportSize({ width: 620, height: 860 });
   await expect(page.getByRole('complementary', { name: 'Details Drawer' })).toBeHidden();
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toBeHidden();
   await expect(page.locator('.studio-window-slot__strip')).toHaveCount(0);
   await expect.poll(chartWidth).toBeLessThan(desktopWidth);
   await expect(loss.locator('polyline')).toHaveCount(1);
-  const bottom = page.locator('.studio-window-bottom');
-  await expect.poll(() => bottom.evaluate(({ clientHeight }) => clientHeight)).toBeLessThanOrEqual(40);
+  // A narrow bottom bar wraps its transport onto a second row, and no further.
+  await expect.poll(() => bottom.evaluate(({ clientHeight }) => clientHeight)).toBeLessThanOrEqual(2 * row);
   await captureStudioWindow(page, info, '04-narrow-results');
   const splitWidth = await chartWidth();
   await page.setViewportSize({ width: 520, height: 860 });

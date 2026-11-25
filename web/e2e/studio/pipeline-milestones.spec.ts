@@ -8,7 +8,7 @@ import { appendManagedFiles, authorLearningRateSweep, chooseSweepValue, enter, f
 import { runPythonProcess } from './fixtures/python';
 import { pick } from './fixtures/controls';
 import { conditionLabels } from '../../src/features/projectFolder/evaluateAuthoring';
-import { chooseStepKind, palette } from './fixtures/studioKeyboard';
+import { chooseStepKind, palette, startProject } from './fixtures/studioKeyboard';
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
 const runs = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true });
@@ -63,11 +63,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     page.on('request', (request) => {
       if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/projects') creates += 1;
     });
-    const creating = responseFor(page, '/api/projects');
-    await page.goto('/');
-    const created = await creating;
-    expect(created.status()).toBe(201);
-    const { snapshot, configuration } = await created.json() as StudioProjectDocument;
+    const { snapshot, configuration } = await startProject(page);
     const id = snapshot.project_id;
     await expect(page).toHaveURL(new RegExp('project=' + id + '$'));
     const { projectPath } = await appendManagedFiles(request, snapshot, await fixture('ordinary-files', '1200'));
@@ -352,7 +348,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   });
   expect(frozen).toMatchObject({
     step: 'train', checkpoint: 'last',
-    where: { rule: written, rows: expected.map(({ key: { variant, row } }, index) => ({ key: keys[index], variant, row })) },
+    where: { rule: written, bound_ranks: expected.map(({ key: { variant, row } }, index) => ({ key: keys[index], variant, row })) },
   });
   const staleFreeze = await request.post(projectPath + '/authoring/subset-to-rows', { data: preparedBody });
   expect(staleFreeze.status()).toBe(409);
@@ -387,7 +383,9 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const sourceRows = definition.window_map!.rows.filter(({ key }) => key.step === 'train');
   expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
   expect(sourceRows.map(({ key, member_key }) => member_key === key.row)).toEqual([true, true, true]);
-  const authoredRows = sourceRows.map(({ key: { variant, row }, member_key }) => ({ key: member_key, variant, row }));
+  const rates = sourceRows.map(({ coordinates }) => ({
+    id: coordinates['learning-rate'].value_id, label: String(coordinates['learning-rate'].value),
+  }));
   const conditionIds = sourceRows[0].evaluation_conditions!.slice(0, 2);
   expect(conditionIds).toHaveLength(2);
   await launchRows(page, projectPath, sourceRows.map(({ key }) => key));
@@ -402,12 +400,12 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   expect(response.status(), await response.text()).toBe(201);
   const authored = (await response.json() as StudioProjectDocument).snapshot.project.steps!.evaluate;
   expect(authored).toMatchObject({
-    inputs: { subject: { step: 'train', checkpoint: 'last', where: { rule: 'learning-rate=0.001,0.002' } } },
+    inputs: { subject: { step: 'train', checkpoint: 'last', where: { clauses: [{ 'learning-rate': rates.slice(0, 2).sort((left, right) => left.id.localeCompare(right.id)) }] } } },
     sweep: { axes: { subject: { input: 'subject' } } },
   });
   const rule = inspector.getByRole('combobox', { name: 'Runs', exact: true });
   const ruleRow = rule.locator('..');
-  await expect(rule).toHaveValue('learning-rate=0.001,0.002');
+  await expect(rule).toHaveValue('');
   await expect(ruleRow).toContainText('2/3');
   const trialSet = inspector.getByRole('region', { name: 'Trials', exact: true });
   await expect(inspector.getByRole('combobox', { name: 'Subject', exact: true })).toBeFocused();
@@ -448,7 +446,9 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(evaluated.locator('[data-map-focus="downstream"]')).toHaveCount(1);
 
   await select(page, 'evaluate');
-  await rule.fill('learning-rate=0.001,0.002,0.003');
+  await rule.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
+  for (const rate of rates) await chooseSweepValue(train, 'learning-rate', rate.label);
   const subsetEdit = edited('/inputs/subject/where');
   await rule.press('Enter');
   const savedSubset = await subsetEdit;
@@ -495,7 +495,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   expect(secondCreated.status(), await secondCreated.text()).toBe(201);
   const { snapshot: withSecond } = await secondCreated.json() as StudioProjectDocument;
   expect(withSecond.project.steps!['evaluate-2'].inputs?.subject).toMatchObject({
-    where: { rows: [authoredRows[0], authoredRows[2]] },
+    where: { clauses: [{ 'learning-rate': [rates[0], rates[2]].sort((left, right) => left.id.localeCompare(right.id)) }] },
   });
   await expect(ruleRow).toContainText('Rows2/3');
   await expect(trialSet.getByRole('combobox')).toHaveText('Every Condition');
@@ -520,14 +520,14 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const rows = initial.window_map!.rows.filter(({ key }) => key.step === 'evaluate');
   expect(train).toHaveLength(6);
   expect(rows).toHaveLength(4);
-  expect(initial.window_map?.problems).toHaveLength(4);
-  expect(initial.window_map?.problems.every(({ step, path, code }) =>
-    step === 'evaluate' && path === '/inputs/subject' && code === 'cannot_run')).toBe(true);
+  // Every Evaluate row waits on its unrun Train subject, which is not a problem with the Evaluate.
+  expect(initial.window_map?.problems).toEqual([]);
   expect(rows.map(({ coordinates }) => [coordinates['learning-rate'].label, coordinates.task.label])).toEqual([
     ['Slow', 'Short Task'], ['Slow', 'Long Task'], ['Fast', 'Short Task'], ['Fast', 'Long Task'],
   ]);
   const evaluation = initial.window_map!.evaluations!;
   expect(evaluation.map(({ trials }) => trials.length)).toEqual([2, 3, 2, 3]);
+  expect(evaluation.map(({ status, reason }) => [status, reason])).toEqual(Array(4).fill(['waiting', 'Waiting for train.']));
 
   const pivot = primary(page).getByRole('table', { name: 'Pivot', exact: true });
   // The subject is told apart by the learning-rate its runs carry, and the one seed they share tells nothing apart.
@@ -540,7 +540,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   });
   await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
   await expect(pivot.getByRole('rowheader')).toHaveText(['Slow', 'Fast']);
-  await expect(pivot.getByRole('button', { name: /Can't run$/ })).toHaveCount(4);
+  await expect(pivot.getByRole('button', { name: /Waiting$/ })).toHaveCount(4);
 
   await select(page, 'train');
   await launchRows(page, projectPath, train.map(({ key }) => key));

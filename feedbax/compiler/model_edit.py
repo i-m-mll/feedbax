@@ -6,12 +6,14 @@ from collections import Counter
 from collections.abc import Callable, Iterator, MutableMapping
 from dataclasses import dataclass
 from functools import cache
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 from uuid import uuid4
 
 from pydantic import ValidationError
 
 from feedbax.contracts import model_edit as edits
+from feedbax.contracts.acausal import EquationsDomain
+from feedbax.contracts.expression_values import ValueType
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import AddModelAttachment, ChangeModelAttachment, ModelAttachmentDifference
 from feedbax.contracts.model_document import (
@@ -26,6 +28,10 @@ from feedbax.contracts.model_document import (
 )
 from feedbax.compiler.model_differences import structural_differences
 
+if TYPE_CHECKING:
+    from feedbax.compiler.model_signals import ModelSignalTable
+
+
 type Record = dict[str, Any]
 type Direction = Literal["input", "output", "physical"]
 
@@ -36,6 +42,14 @@ _EMPTY_BOUNDARY_PORT = "__new_port__"
 class Port:
     type: SignalType | str | None
     reads_state_only: bool = False
+
+
+def conserving_port_type(port: Port, domain: str | None) -> str | None:
+    if isinstance(port.type, str):
+        return port.type
+    if port.type is None and domain in get_args(EquationsDomain):
+        return domain
+    return None
 
 
 type LeafPorts = Callable[[Record, Direction, str], Port | None]
@@ -87,61 +101,6 @@ def _signal(source: Record, target: Record, attachments: list | None = None) -> 
     return {"source": source, "target": target, "attachments": attachments or []}
 
 
-def _same_port(left: SignalType | str | None, right: SignalType | str | None) -> bool:
-    if left is None or right is None:
-        return True
-    if isinstance(left, str) or isinstance(right, str):
-        return left == right
-    if left.unit is not None and right.unit is not None and left.unit != right.unit:
-        return False
-    if left.base and right.base and left.base != right.base:
-        from feedbax.compiler.graph_schema import _dtypes_compatible
-        from feedbax.contracts.value_schema import ValueSchema
-
-        aliases = {"real": "float", "integer": "int", "boolean": "bool"}
-
-        def schema(value: SignalType, dtype: str) -> ValueSchema:
-            return ValueSchema(
-                id="port", label="Port", kind="signal", dtype=dtype,
-                shape=list(value.shape) if value.shape is not None else None,
-            )
-
-        a, b = (aliases.get(value, value) for value in (left.base, right.base))
-        generic_numeric = any(
-            generic in {"int", "float"} and (
-                concrete.startswith(generic)
-                or generic == "int" and concrete.startswith("uint")
-                or generic == "float" and concrete.startswith("bfloat")
-            )
-            for generic, concrete in ((a, b), (b, a))
-        )
-        if not generic_numeric and not _dtypes_compatible(schema(left, a), schema(right, b)):
-            return False
-    if left.shape is None or right.shape is None:
-        return True
-    return len(left.shape) == len(right.shape) and all(
-        not (isinstance(a, int) and isinstance(b, int) and a != b)
-        for a, b in zip(left.shape, right.shape)
-    )
-
-
-def _signal_mismatch(output: Port, input_port: Port) -> str | None:
-    if _same_port(output.type, input_port.type):
-        return None
-
-    def describe(value: SignalType | str | None) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        return " ".join(part for part in (
-            value.base, str(list(value.shape)) if value.shape is not None else None, value.unit,
-        ) if part)
-
-    left, right = describe(output.type), describe(input_port.type)
-    return f"{left} ≠ {right}" if left and right else "Signal types are incompatible"
-
-
 def _target_key(end: Record) -> tuple[str, str | None, str]:
     return end["owner"], end.get("component"), end["port"]
 
@@ -172,11 +131,6 @@ def _signal_end_name(owner: Record, graph: Record, end: Record, direction: Direc
     return _port_name(component, direction, end["port"]) if "ports" in component else end["port"]
 
 
-def _signal_end_label(owner: Record, graph: Record, end: Record, direction: Direction) -> str:
-    card = graph["components"][end["component"]]["name"] if end["owner"] == "component" else end["owner"].title()
-    return f"{card} · {_signal_end_name(owner, graph, end, direction)}"
-
-
 def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Record:
     names = {item["name"] for item in _port_list(owner, direction)}
     base = name
@@ -184,9 +138,8 @@ def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Rec
     while name in names:
         suffix += 1
         name = f"{base} {suffix}"
-    value = {"id": uuid4().hex, "name": name, "type": (
-        port.type.model_dump(mode="json") if isinstance(port.type, SignalType) else port.type
-    )}
+    type_ = SignalType() if direction == "output" else port.type
+    value = {"id": uuid4().hex, "name": name, "type": type_.model_dump(mode="json") if isinstance(type_, SignalType) else type_}
     _port_list(owner, direction).append(value)
     return value
 
@@ -261,11 +214,8 @@ class ModelEditDraft:
                 return None
             if component["kind"] == "leaf":
                 port = self.leaf_ports(component, direction, end["port"])
-                domain = graph["physical_domain"]
-                if port is not None and port.type is None and direction == "physical" and domain in {
-                    "translational", "rotational",
-                }:
-                    return Port(domain)
+                if port is not None and port.type is None and direction == "physical":
+                    return Port(conserving_port_type(port, graph["physical_domain"]))
                 return port
         port = _listed_port(component, direction, end["port"])
         if port is None:
@@ -377,7 +327,7 @@ class ModelEditDraft:
             ) for item in wire["attachments"]),
         ) for key, wire in incoming)
         return edits.ModelConnectionVerdict(
-            target=target, reason=None, problem=_signal_mismatch(output, input_port), replaced=replaced,
+            target=target, reason=None, replaced=replaced,
         )
 
     def closes_loop(
@@ -649,6 +599,32 @@ class ModelEditDraft:
         self.connect(graph_address, source, _component(created.element.id, command.input_port))
         self.changed.append(address)
 
+    def insert_physical_component(self, command: edits.InsertComponentOnPhysicalConnection) -> None:
+        address = command.address
+        owner, graph = self.context(address)
+        element = address.element
+        if element.kind != "physical_connection" or element.id not in graph.get("connections", {}):
+            raise _Refusal(address, "Physical connection does not exist")
+        if command.a_port == command.b_port:
+            raise _Refusal(address, "Insertion requires two distinct conserving ports")
+        connection = graph["connections"][element.id]
+        graph_address = _address(address.composites, "graph")
+        self.add_component(edits.AddComponent(
+            op="add_component", graph=graph_address, component=command.component, position=command.position, id=command.id,
+        ))
+        created = self.changed[-1]
+        assert created.element.kind == "component"
+        if command.flipped:
+            self.flipped[created.to_text()] = True
+        a = _component(created.element.id, command.a_port)
+        b = _component(created.element.id, command.b_port)
+        if self.port(owner, graph, b, "physical") is None or self.port(owner, graph, connection["b"], "physical") is None:
+            raise _Refusal(address, "Physical endpoints must be distinct local ports")
+        old_a = connection["a"]
+        connection["a"] = b
+        self.physical(graph_address, {"a": old_a, "b": a})
+        self.changed.append(address)
+
     def field_slot(self, address: ModelAddress, *, functions=None, attachment=None):
         owner, graph = self.context(address)
         field = address.element
@@ -701,9 +677,15 @@ class ModelEditDraft:
         item[key] = value
         self.changed.append(address)
 
+    def require_physical_placement(self, address: ModelAddress, graph: Record, component: Record) -> None:
+        if graph["physical_domain"] is not None:
+            if reason := self.component_problem(component, graph["physical_domain"]):
+                raise _Refusal(address, reason)
+
     def add_component(self, command: edits.AddComponent) -> None:
         _, graph = self.graph(command.graph)
         component = command.component.model_dump(mode="json")
+        self.require_physical_placement(command.graph, graph, component)
         key = command.id or _id(graph)
         for kind, members in (("component", "components"), ("wire", "wires"), ("physical_connection", "connections")):
             if key in graph.get(members, {}):
@@ -798,6 +780,7 @@ class ModelEditDraft:
             raise _Refusal(address, "destination graph cannot hold physical connections")
         ids: dict[str, str] = {}
         for old, component in data["components"].items():
+            self.require_physical_placement(address, graph, component)
             key = _id(graph)
             graph["components"][key] = component
             ids[old] = key
@@ -1111,10 +1094,6 @@ class ModelEditDraft:
             target_known, input_port = port(target, "input", at)
             if (source_known and output is None) or (target_known and input_port is None):
                 yield problem(at, "Wire does not name a local source and target port")
-            elif output is not None and input_port is not None and (reason := _signal_mismatch(output, input_port)):
-                source_name = _signal_end_label(owner, graph, source, "output")
-                target_name = _signal_end_label(owner, graph, target, "input")
-                yield problem(at, f"{source_name} → {target_name}: {reason}")
             if targets[_target_key(target)] > 1:
                 yield problem(at, "More than one wire drives this input")
             if reason := _attachment_problem(wire["attachments"]):
@@ -1129,7 +1108,7 @@ class ModelEditDraft:
             right_known, b = port(right, "physical", at)
             if left == right or (left_known and a is None) or (right_known and b is None):
                 yield problem(at, "Physical endpoints must be distinct local ports")
-            elif a is not None and b is not None and not _same_port(a.type, b.type):
+            elif a is not None and b is not None and a.type is not None and b.type is not None and a.type != b.type:
                 yield problem(at, f"Physical port types differ: {a.type} and {b.type}")
             if ends[frozenset((_target_key(left), _target_key(right)))] > 1:
                 yield problem(at, "These physical ports are connected more than once")
@@ -1217,8 +1196,13 @@ def review_model_connections(
     next_input: Callable[[Record], tuple[str, str, int] | None],
     library: tuple[Record, ...] = (),
     task_signal: edits.ModelTaskSignal | None = None,
+    task_type: ValueType | None = None,
+    signals: ModelSignalTable | None = None,
 ) -> edits.ModelConnectionReview:
+    from feedbax.compiler.model_signals import ModelSignalTable
+
     address = review.graph
+    table = signals if signals is not None else ModelSignalTable()
 
     def available(component: Record) -> dict[tuple[Direction, str], Port]:
         try:
@@ -1246,6 +1230,24 @@ def review_model_connections(
     source_reason = _task_input_reason(owner, task_signal) if task_signal is not None else None
     if review.grow_source and not grow_source:
         source_reason = "Choose an empty port on the root Inputs card"
+
+    def verdict_for(current: Record, target: Record) -> edits.ModelConnectionVerdict:
+        offered = edit.port(owner, current, target, "input") if grow_source else output
+        verdict = edit.connection_verdict(
+            address, owner, current, None if grow_source else source, offered, target, source_reason,
+        )
+        if verdict.reason is not None:
+            return verdict
+        required = edit.port(owner, current, target, "input")
+        assert offered is not None and isinstance(offered.type, SignalType)
+        assert required is not None and isinstance(required.type, SignalType)
+        problem = table.connection_problem(
+            address.composites,
+            review.source if not (grow_source or isinstance(review.source, edits.TaskSignalSource)) else None,
+            verdict.target, task_type or offered.type, required.type,
+        )
+        return verdict.model_copy(update={"problem": problem})
+
     targets = [_card("outputs", port["id"]) for port in owner["ports"]["outputs"]]
     growing = []
     for id_, component in graph["components"].items():
@@ -1255,7 +1257,7 @@ def review_model_connections(
                 port, parameter, count = growth
                 trial = {**component, "port_counts": {**component["port_counts"], parameter: count}}
                 trial_graph = {**graph, "components": {**graph["components"], id_: trial}}
-                growing.append(edit.connection_verdict(address, owner, trial_graph, source, output, _component(id_, port)))
+                growing.append(verdict_for(trial_graph, _component(id_, port)))
         else:
             inputs = (port["id"] for port in component["ports"]["inputs"])
         targets.extend(_component(id_, port) for port in inputs)
@@ -1272,13 +1274,9 @@ def review_model_connections(
             target=_card("outputs", _EMPTY_BOUNDARY_PORT), growing=True,
             reason=source_reason or ("Source must be a local output or a port of the inputs card" if output is None else None),
         ))
-    return edits.ModelConnectionReview(targets=tuple(growing) + tuple(
-        edit.connection_verdict(
-            address, owner, graph, None if grow_source else source,
-            edit.port(owner, graph, target, "input") if grow_source else output, target, source_reason,
-        )
-        for target in targets
-    ), library=tuple(choices))
+    return edits.ModelConnectionReview(
+        targets=tuple(growing) + tuple(verdict_for(graph, target) for target in targets), library=tuple(choices),
+    )
 
 
 def apply_model_edit(
@@ -1399,6 +1397,8 @@ def apply_model_edit(
                 edit.connect(primary, left, right)
             case edits.ConnectPhysical(graph=primary, connection=connection):
                 edit.physical(primary, connection.model_dump(mode="json"))
+            case edits.InsertComponentOnPhysicalConnection(address=primary):
+                edit.insert_physical_component(operation)
             case edits.AddPort(graph=primary):
                 edit.add_port(operation)
             case edits.RemovePort(address=primary):

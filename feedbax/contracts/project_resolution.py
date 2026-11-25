@@ -16,7 +16,7 @@ from pydantic_core import to_json, to_jsonable_python
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
@@ -40,7 +40,9 @@ from feedbax.contracts.project import (
     member_display_name,
     member_name,
 )
-from feedbax.contracts.project_inputs import InitialModelReference, InputBinding, ObjectiveDocumentReference, TaskDocumentReference
+from feedbax.contracts.project_inputs import (
+    InitialModelReference, InputBinding, LoadedModelReference, ObjectiveDocumentReference, SelectedAxisValueProblem, TaskDocumentReference,
+)
 from feedbax.contracts.project_sources import (
     SourceList,
     SourceObject,
@@ -127,6 +129,7 @@ class ProjectDiagnostic:
     blocked_by: RunKey | None = None
     """For ``blocked_input``, the producer row that cannot run."""
     span: TextSpan | None = None
+    selection_value: SelectedAxisValueProblem | None = None
 
 
 @dataclass(frozen=True)
@@ -233,6 +236,7 @@ class BaseReaders:
     row: Callable[[ResolvedStep, str], SelectedRow | None] | None = None
     figure_external: Callable[[str], bytes | None] | None = None
     terminal_train: Callable[[str], TerminalTrainSource | None] | None = None
+    imported_model: Callable[[str], ModelDocument] | None = None
 
 
 def _at_sweep_origin(problem: ProjectDiagnostic, source: ValueSource) -> ProjectDiagnostic:
@@ -1234,7 +1238,7 @@ class _Resolver:
         input_documents = {}
         input_problems = []
         for role, value in state.inputs.items():
-            if not isinstance(value, (InitialModelReference, TaskDocumentReference, ObjectiveDocumentReference)):
+            if not isinstance(value, (InitialModelReference, LoadedModelReference, TaskDocumentReference, ObjectiveDocumentReference)):
                 continue
             reference = value.source
             path = f"inputs.{role}"

@@ -20,6 +20,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from feedbax.contracts.task_document import BLANK_TASK
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, ImportedModelProvenance, ModelFitReport
+from feedbax.contracts.project import LoadedModelDocument
+from feedbax.contracts.project_inputs import LoadedModelReference
 from feedbax.studio.library import first_train_task
 from feedbax.contracts.component import (
     ComponentDefinition,
@@ -56,9 +59,14 @@ from feedbax.contracts.execution_target import (
     SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnreachableTarget,
 )
 from feedbax.contracts.analysis_document import AnalysisDocument
+from feedbax.contracts.dataset import TrialFigureTime
+from feedbax.contracts.studio_figure import (
+    FigureLayoutMeta, FigurePanelMeta, FigureProduct, FigureRun, FigureTraceMeta, PlotlyLayout, PlotlyTrace,
+)
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
 from feedbax.contracts.studio_scene import (
+    SceneAnchorGeometry,
     SceneLinkGeometry,
     SceneMuscleGeometry,
     ScenePlanarGeometry,
@@ -285,6 +293,7 @@ from feedbax.contracts.model_edit import (
     ModelLibraryConnection,
     ModelAddedElement,
     ModelPortProjection,
+    ModelPhysicalPortProjection,
     ModelProjection,
     ModelProjectionRequest,
     ModelRemovedElement,
@@ -305,6 +314,7 @@ from feedbax.contracts.model_edit import (
     CollapseGraph,
     FlipComponent,
     InsertComponentOnWire,
+    InsertComponentOnPhysicalConnection,
     MoveWireAttachment,
     MovePort,
     PasteComponents,
@@ -320,12 +330,30 @@ from feedbax.contracts.studio_refinements import (
     CROSS_FIELD_REFINEMENTS,
     REGISTERED_CONSTRAINT_VALIDATORS,
 )
+from feedbax.contracts.trial_clock import (
+    StudioSavedFigureMeanRequest,
+    TrialBoundarySummary,
+    TrialClockAlignment,
+    TrialClockChoice,
+    TrialClockSpan,
+    TrialMean,
+    TrialMeanCondition,
+    TrialMeanEpoch,
+    TrialMeanOptions,
+    TrialMeanSelection,
+    TrialSeriesSummary,
+)
 from feedbax.contracts.trial_record import (
     TaskEpochShare,
     TaskSignalAggregate,
     TaskTimelineCue,
     TaskVariableRange,
     TrialAggregate,
+    TrialAnchorPlace,
+    TrialComputedPlace,
+    TrialRelation,
+    TrialSignalPlace,
+    TrialVariablePlace,
     StudioTrialReplayResponse,
     TrialRecord,
     TrialStateTrack,
@@ -388,6 +416,9 @@ from feedbax.contracts.studio_project import (
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
     StudioProjectDocument,
+    StudioProjectExamples,
+    StudioProjectList,
+    StudioProjectNew,
     StudioProjectPatch,
     StudioProjectPatchBatch,
     StudioProjectFilePatch,
@@ -396,11 +427,16 @@ from feedbax.contracts.studio_project import (
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
+from feedbax.contracts.studio_loaded_model import (
+    StudioLoadedModelExportRequest, StudioLoadedModelImportQuery, StudioLoadedModelImportResult,
+)
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.training_document import TrainingDocument
 from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
-from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
+from feedbax.contracts.studio_trials import (
+    StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialRelate,
+)
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from feedbax.contracts.studio_subset import (
     StudioRunRuleCheck, StudioRunRuleRequest, StudioSubsetToRowsEdit, StudioSubsetToRowsRequest,
@@ -476,8 +512,18 @@ AUTHORED_CONTRACT_MODELS = (
     ObjectiveDocument,
     TrainingDocument,
     TrialDocuments,
+    ImportedModelProvenance,
+    LoadedModelDocument,
+    LoadedModelReference,
+    ModelFitReport,
+    StudioLoadedModelExportRequest,
+    StudioLoadedModelImportQuery,
+    StudioLoadedModelImportResult,
     StudioTrialAuthoring,
     StudioTrialAuthoringRequest,
+    StudioTrialRelate,
+    StudioRelatePoint,
+    StudioRelatePort,
     StudioCheckpointRuleEdit,
     StudioCheckpointRuleRequest,
     StudioSubsetToRowsEdit,
@@ -514,6 +560,9 @@ AUTHORED_CONTRACT_MODELS = (
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
     StudioProjectDocument,
+    StudioProjectExamples,
+    StudioProjectList,
+    StudioProjectNew,
     StudioProjectWindowMap,
     StudioProjectPatch,
     StudioProjectPatchBatch,
@@ -594,6 +643,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     CollapseGraph,
     FlipComponent,
     InsertComponentOnWire,
+    InsertComponentOnPhysicalConnection,
     MoveWireAttachment,
     RouteWire,
     SetModelAttachment,
@@ -617,6 +667,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelLibraryConnection,
     ModelConnectionReview,
     ModelPortProjection,
+    ModelPhysicalPortProjection,
     ModelAddedElement,
     ModelRemovedElement,
     ModelRewiredElement,
@@ -726,6 +777,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     DomainTheme,
     DomainMeta,
     DomainDiagnostic,
+    SceneAnchorGeometry,
     SceneLinkGeometry,
     SceneMuscleGeometry,
     ScenePlanarGeometry,
@@ -740,7 +792,31 @@ MODEL_TYPES: list[type[BaseModel]] = [
     DocumentTrainingConfig,
     TrainContinuation,
     TaskTimelineCue,
+    TrialBoundarySummary,
+    TrialClockAlignment,
+    TrialClockChoice,
+    TrialClockSpan,
+    TrialMean,
+    TrialMeanCondition,
+    TrialMeanEpoch,
+    TrialMeanOptions,
+    TrialMeanSelection,
+    TrialSeriesSummary,
+    StudioSavedFigureMeanRequest,
+    TrialFigureTime,
+    FigureTraceMeta,
+    FigurePanelMeta,
+    FigureRun,
+    FigureLayoutMeta,
+    PlotlyTrace,
+    PlotlyLayout,
+    FigureProduct,
     StudioTrialReplayResponse,
+    TrialAnchorPlace,
+    TrialComputedPlace,
+    TrialRelation,
+    TrialSignalPlace,
+    TrialVariablePlace,
     TrialRecord,
     TrialStateTrack,
     TrialRecords,
@@ -898,6 +974,8 @@ CONTRACT_MODEL_NAMES = [
     "StudioSceneGeometryResponse",
     "StudioErrorReport",
     "StudioTrialReplayResponse",
+    "StudioSavedFigureMeanRequest",
+    "FigureProduct",
     "PenzaiBuilderListResponse",
     "PenzaiInspectorResponse",
     "PenzaiNodeRequest",
@@ -1187,6 +1265,8 @@ def emit_interface(model: type[BaseModel]) -> str:
         annotation = hints[name]
         optional = "?" if not field.is_required() else ""
         lines.append(f"  {name}{optional}: {ts_type(annotation)};")
+    if model.model_config.get("extra") == "allow":
+        lines.append("  [property: string]: unknown;")
     lines.append("}")
     return "\n".join(lines)
 
@@ -1209,10 +1289,13 @@ def emit_schema(model: type[BaseModel]) -> str:
         if not field.is_required():
             schema = f"{schema}.optional()"
         lines.append(f"      {json.dumps(name)}: {schema},")
+    extras = (
+        ".catchall(jsonValueSchema)" if model.model_config.get("extra") == "allow" else ".strict()"
+    )
     lines.extend(
         [
             "    })",
-            "    .strict()",
+            f"    {extras}",
         ]
     )
     refinements = CROSS_FIELD_REFINEMENTS.get(model.__name__, ())
@@ -1374,6 +1457,7 @@ def generate() -> str:
         f"{authored_types}\n\n"
         f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
         f"export const blankTask = {json.dumps(BLANK_TASK.model_dump(mode='json'), indent=2)};\n\n"
+        f"export const loadedModelDocumentSchemaId = {json.dumps(LOADED_MODEL_SCHEMA_ID)};\n\n"
         f"export const firstTrainTask: Document = {json.dumps(first_train_task().model_dump(mode='json', by_alias=True), indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"
         f"{schemas}\n\n"

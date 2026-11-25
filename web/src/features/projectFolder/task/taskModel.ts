@@ -30,15 +30,21 @@ export interface VariableInitializes {
   toggle?(id: string): Promise<string | undefined> | void;
 }
 
-/** A Model value no variable initializes, at the foot of Variables with its type fixed and its name empty. */
-export interface UninitializedStart extends ModelStart {
+/**
+ * A Model value no variable initializes that the Task has a problem with, at the foot of Variables: the Model needs it,
+ * or a link names no variable.
+ */
+export interface UnstartedValue extends ModelStart {
   /** The `data-field` a revealed problem of the value focuses. */
   readonly anchor: string;
-  /** Why the Task cannot start the value as it stands: the Model needs it, or a link names no variable. */
-  readonly reason?: string;
+  readonly reason: string;
   /** The type's name. */
   readonly type: string;
   readonly valueType: ValueType;
+  /** The Task's variables whose type fits the value, by id. */
+  readonly variables: readonly { readonly id: string; readonly name: string }[];
+  /** Makes the variable initialize the value; a refusal's reason, or nothing once made. */
+  initialize?(variable: string): Promise<string | undefined>;
 }
 
 export interface TaskVariable {
@@ -57,13 +63,24 @@ export interface TaskVariable {
   readonly initializes?: VariableInitializes;
 }
 
+/** Which part of a co-occurring entry's weight: of trials that receive it, or of those that do not. */
+export type WeightSide = 'on' | 'off';
+
+/** An entry's weight in parts: one number, or its on and off parts where entries co-occur. */
+export type SetEntryWeight = number | Readonly<Record<WeightSide, number>>;
+
+/** A weight's edit as it ended: stored, not written because Apply To was dismissed, or refused with its reason. */
+export type WeightEdit = { readonly kind: 'stored' } | { readonly kind: 'kept' } | { readonly kind: 'refused'; readonly reason: string };
+
 /** A Set the step's trials apply: a variable whose values are the Set's entries, each with its weight in parts. */
 export interface TaskSetVariable {
   /** The sweep axis the Set was moved out of, which names the variable. */
   readonly axis: string;
   readonly set: string;
   /** Each entry, then None where a trial may receive no entry, with its weight in parts when the trials are drawn. */
-  readonly entries: readonly { readonly id: string | null; readonly label: string; readonly parts?: string }[];
+  readonly entries: readonly { readonly id: string | null; readonly label: string; readonly weight?: SetEntryWeight }[];
+  /** Sets one part of an entry's weight (`side` where entries co-occur). */
+  readonly weigh?: (entry: string | null, side: WeightSide | undefined, weight: number) => Promise<WeightEdit>;
 }
 
 /**
@@ -123,8 +140,6 @@ export interface TaskSignal {
 export interface TaskDocumentView {
   readonly kind: 'document';
   readonly variables: readonly TaskVariable[];
-  /** The paired Model's values no variable initializes. */
-  readonly starts?: readonly UninitializedStart[];
   readonly epochs: readonly TaskEpoch[];
   readonly repeats: readonly TaskRepeat[];
   readonly signals: readonly TaskSignal[];

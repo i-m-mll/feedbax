@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from math import isfinite
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 
 import numpy as np
+from jax import ShapeDtypeStruct
 
 from feedbax.component_registry import ComponentRegistry
-from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
+from feedbax.compiler.resolution import resolve_graph_parameters
+from feedbax.compiler.model_signals import (
+    ModelSignalTable, ResolvedSignalLeaf, boundary_signal_port, resolve_model_signals, task_data_value_type,
+)
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
 from feedbax.compiler.model_edit import model_graph_problems
-from feedbax.compiler.model_ports import ModelRegistryPorts
+from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, PlanarDynamicsSpec, SolverConfigSpec
 from feedbax.contracts.acausal_interface import (
     PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
@@ -23,13 +27,13 @@ from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec
 from feedbax.contracts.model_address import (
-    ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource,
+    ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource, SignalTarget,
 )
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.model_edit import ModelGraphProblem
 from feedbax.contracts.model_document import (
     DelayAttachment, GraphInterior, InterventionAttachment, ModelDocument, ModelPorts,
-    PhysicalInterior, ProbeAttachment, SignalInput,
+    PhysicalInterior, ProbeAttachment, SignalInput, SignalType,
 )
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.runtime.task_data_roles import task_data_role
@@ -47,6 +51,48 @@ class ModelCompilationProblem(ValueError):
         self.problems = (ModelGraphProblem(address=address, reason=detail), *related)
 
 
+_DTYPES = {ValueBase.BOOLEAN: np.bool_, ValueBase.INTEGER: np.int32, ValueBase.REAL: np.float32}
+
+
+def declared_model_input_prototypes(model: ModelDocument) -> dict[str, ShapeDtypeStruct]:
+    prototypes = {}
+    for port in model.ports.inputs:
+        shape = port.type.shape
+        if shape is None or any(type(size) is not int or size <= 0 for size in shape):
+            continue
+        base = port.type.base
+        dtype = np.bool_ if base in ("bool", "boolean") else np.int32 if base in ("int", "int32", "integer") else np.float32
+        prototypes[port.name] = ShapeDtypeStruct(shape, dtype)
+    return prototypes
+
+
+def model_input_prototypes(
+    graph: GraphSpec, model: ModelDocument, task_inputs: Mapping[str, ValueType],
+) -> dict[tuple[str, str], ShapeDtypeStruct]:
+    supplied = declared_model_input_prototypes(model)
+    supplied.update({port: ShapeDtypeStruct(value.shape, _DTYPES[value.base]) for port, value in task_inputs.items()})
+    return {target: supplied[port] for port, target in graph.input_bindings.items() if port in supplied}
+
+
+def inspect_model_signals(
+    model: ModelDocument, components: ComponentRegistry, task_inputs: Mapping[str, ValueType] | None = None,
+) -> ModelSignalTable:
+    """Resolve authored signal facts for Studio reads even when the whole Model cannot run."""
+    supplied = task_inputs or {}
+    try:
+        lowered = lower_model_document(model, components, supplied_inputs=frozenset(supplied))
+    except ValueError as error:
+        table = resolve_model_signals(model, None, components, task_inputs=supplied)
+        diagnostics = error.problems if isinstance(error, ModelCompilationProblem) else (
+            ModelGraphProblem(address=ModelAddress.at_stored_path(()), reason=str(error)),
+        )
+        problems = {(problem.address.to_text(), problem.reason): problem for problem in (*diagnostics, *table.problems)}
+        return replace(table, problems=tuple(problems.values()))
+    prototypes = model_input_prototypes(lowered.graph, model, supplied)
+    resolution = resolve_graph_parameters(lowered.graph, prototypes, components, allow_incomplete=True)
+    return resolve_model_signals(model, resolution, components, task_inputs=supplied)
+
+
 def model_tau_seconds(tau: object, period: float) -> float:
     time = LiteralValue.model_validate(tau) if isinstance(tau, dict) else LiteralValue(value=tau, unit="st")
     if time.unit not in {"st", "s"} or type(time.value) not in {float, int} or time.value <= 0:
@@ -59,6 +105,16 @@ def model_tau_seconds(tau: object, period: float) -> float:
 
 def _generated(role: str, *parts: str) -> str:
     return "_model_" + role + "_" + sha256(canonical_json_v2_bytes(list(parts))).hexdigest()
+
+
+def _named_physical_elements(
+    interior: PhysicalInterior, ids: tuple[str, ...] = (), names: tuple[str, ...] = (),
+) -> Iterator[tuple[str, str]]:
+    for key, component in interior.components.items():
+        path, title = (*ids, key), (*names, component.name)
+        yield ".".join(path), ".".join(title)
+        if component.kind == "composite" and isinstance(component.interior, PhysicalInterior):
+            yield from _named_physical_elements(component.interior, path, title)
 
 
 @dataclass(frozen=True)
@@ -155,6 +211,22 @@ class _Lower:
                     return _Signal((2,), units="m/s")
         return _Signal(shape, component.fields.get("dtype", "float32"), units)
 
+    def destination_shape(
+        self, interior: GraphInterior, ports: ModelPorts, end: SignalTarget,
+    ) -> tuple[int, ...] | None:
+        """Read the input contract when the wire's source does not state a reset shape."""
+        if end.owner == "outputs":
+            declared = next((port.type for port in ports.outputs if port.id == end.port), None)
+        elif (component := interior.components.get(end.component)) is None:
+            return None
+        elif component.kind == "composite":
+            declared = next((port.type for port in component.ports.inputs if port.id == end.port), None)
+        else:
+            port = ModelRegistryPorts(self.components).port(component.model_dump(mode="json"), "input", end.port)
+            declared = port.type if port is not None else None
+        shape = declared.shape if isinstance(declared, SignalType) else None
+        return tuple(shape) if shape is not None and all(type(size) is int for size in shape) else None
+
     def has_reset_output(self, node: ComponentSpec, child, port: str) -> bool:
         if isinstance(child, AcausalGraphSpec):
             return self.state_only_output(node, child, port)
@@ -227,7 +299,7 @@ class _Lower:
                     raise self.problem(path, "component", "component is unavailable in this physical interior", id=name)
                 self.plugins.add(definition.owner)
                 if is_acausal_type(component.type, "BoundaryPort"):
-                    raise self.problem(path, "component", "declare conserving interfaces on the composite port list", id=name)
+                    raise self.problem(path, "component", BOUNDARY_PORT_PLACEMENT_REASON, id=name)
                 fields = self.parameters(component, path, name)
                 nodes[name] = ComponentSpec(type=component.type, revision=component.revision, params=fields)
             if component.attachments.sources or component.attachments.sinks:
@@ -371,6 +443,7 @@ class _Lower:
                     child = self.physical(component.interior, component.ports, scope, substeps=substeps)
                     report = compile_acausal_authoring_report(
                         child, node_path=list(scope), component_registry=self.components,
+                        element_names=dict(_named_physical_elements(component.interior)),
                     )
                     if issue := next((item for item in report.diagnostics if item.severity == "error"), None):
                         detail = issue.message
@@ -592,6 +665,8 @@ class _Lower:
                 self.source_signal(interior, ports, a)
                 if any(isinstance(item, DelayAttachment) for item in wire.attachments) else None
             )
+            if signal is not None and signal.shape is None:
+                signal = replace(signal, shape=self.destination_shape(interior, ports, b))
             if b.owner == "outputs":
                 external = output_names.get(b.port)
                 if external is None:
@@ -704,11 +779,6 @@ class _Lower:
                     (), "port", f"task has no compatible signal named {port.name!r}",
                     end={"owner": "inputs", "port": port.id},
                 )
-            if not self._compatible_task_signal(port, item):
-                raise self.problem(
-                    (), "port", f"task signal {port.name!r} does not match the root input type",
-                    end={"owner": "inputs", "port": port.id},
-                )
             self.origins[("task_binding_spec", "bindings", str(len(result)))] = self.address(
                 (), "port", end={"owner": "inputs", "port": port.id},
             )
@@ -717,19 +787,6 @@ class _Lower:
                 target_node_id=node, target_port=port_id, role=task_data_role(item),
             ))
         return binding.model_copy(update={"bindings": result})
-
-    @staticmethod
-    def _compatible_task_signal(port: SignalInput, item) -> bool:
-        expected = item.expected_shape
-        shape = expected[1:] if expected and expected[0] == "time" else expected
-        return not (
-            port.type.unit is not None and item.units is not None and port.type.unit != item.units
-            or port.type.shape is not None and shape is not None and (
-                len(port.type.shape) != len(shape)
-                or any(type(a) is int and type(b) is int and a != b for a, b in zip(port.type.shape, shape))
-            )
-        )
-
 
 @dataclass(frozen=True)
 class LoweredModelDocument:
@@ -742,19 +799,31 @@ class LoweredModelDocument:
     def interface(
         self, model: ModelDocument, components: ComponentRegistry,
         *, input_prototypes: Mapping[tuple[str, str], object] | None = None,
+        task_inputs: Mapping[str, ValueType] | None = None,
     ) -> ResolvedModelInterface:
         """Project resolved sample types for task and objective pairing."""
         prototypes = (
             prototypes_from_task_bindings(self.task) if self.task is not None else {}
         ) | dict(input_prototypes or {})
         resolution = resolve_graph_parameters(self.graph, prototypes, components)
+        legacy_inputs = {
+            item.label: value for item in self.task.exposed_data
+            if item.bindable and (value := task_data_value_type(item)) is not None
+        } if self.task is not None else {}
+        table = resolve_model_signals(model, resolution, components, task_inputs=legacy_inputs | (task_inputs or {}))
+        for port in model.ports.inputs:
+            incoming = legacy_inputs.get(port.name)
+            if incoming is not None and (leaf := table.at(boundary_signal_port((), "inputs", port.id))) is not None:
+                if not leaf.accepts(incoming):
+                    raise ModelCompilationProblem(leaf.address, f"Task signal {port.name!r} does not fit the Model input")
         return ResolvedModelInterface(
             _Lower(model, components).period,
-            _scoped_ports(model, resolution, "inputs"),
-            _scoped_ports(model, resolution, "outputs"),
+            _scoped_ports(model, table, "inputs"),
+            _scoped_ports(model, table, "outputs"),
             self.links,
             self.plugins,
             resolve_model_reset(resolution, components),
+            table,
         )
 
     def source_address(self, path: str) -> ModelAddress | None:
@@ -777,6 +846,11 @@ class ResolvedModelInterface:
     links: tuple[ResolvedModelLink, ...]
     plugins: tuple[str, ...]
     reset: ModelResetPlan = ModelResetPlan()
+    signals: ModelSignalTable = field(default_factory=ModelSignalTable)
+
+    @property
+    def readable_leaves(self) -> tuple[ResolvedSignalLeaf, ...]:
+        return self.signals.readable_leaves
 
 
 class ResolvedModelInput(ScopedValue):
@@ -801,42 +875,21 @@ class ResolvedModelLink:
 
 
 def _scoped_ports(
-    model: ModelDocument, resolved: GraphParameterResolution, direction: str,
+    model: ModelDocument, table: ModelSignalTable, direction: str,
 ) -> tuple[ScopedValue, ...]:
     results = []
     for port in getattr(model.ports, direction):
-        address = ModelAddress.model_validate({
-            "composites": [],
-            "element": {"kind": "port", "end": {"owner": direction, "port": port.id}},
-        })
-        if direction == "inputs":
-            target = resolved.graph.input_bindings.get(port.name)
-            proto = resolved.node_inputs.get(target)
-            if proto is None and port.default is not None:
-                proto = resolved.node_outputs.get((_generated("input", port.id), "output"))
+        address = boundary_signal_port((), direction, port.id)
+        if isinstance(port, SignalInput):
+            leaf = table.at(address)
         else:
-            proto = resolved.graph_outputs.get(port.name)
-        shape = getattr(proto, "shape", None)
-        dtype = getattr(getattr(proto, "dtype", None), "kind", None)
-        if shape is None or dtype not in {"b", "i", "u", "f"}:
+            leaves = table.at_port(address)
+            if any(item.path and item.type is not None for item in leaves):
+                continue
+            leaf = table.at(address)
+        if leaf is None or leaf.type is None:
             raise ModelCompilationProblem(address, f"Cannot resolve the numeric sample type of {port.name!r}")
-        unit = UNITS.get(port.type.unit or "")
-        if unit is None:
-            raise ModelCompilationProblem(address, f"Unknown expression unit {port.type.unit!r}")
-        base = ValueBase.BOOLEAN if dtype == "b" else ValueBase.REAL if dtype == "f" else ValueBase.INTEGER
-        if any(size <= 0 for size in shape) or (
-            port.type.shape is not None and (
-                len(shape) != len(port.type.shape) or any(
-                    type(declared) is int and actual != declared
-                    for actual, declared in zip(shape, port.type.shape)
-                )
-            )
-        ):
-            raise ModelCompilationProblem(address, f"Resolved shape of {port.name!r} conflicts with its port")
-        value = ScopedValue(
-            id=address.to_text(), name=port.name, level=Level.STEP,
-            type=ValueType(base=base, shape=tuple(shape), dimensions=unit.dimensions),
-        )
+        value = ScopedValue(id=address.to_text(), name=port.name, level=Level.STEP, type=leaf.type)
         results.append(
             ResolvedModelInput(**value.model_dump(), required=port.default is None)
             if isinstance(port, SignalInput) else value

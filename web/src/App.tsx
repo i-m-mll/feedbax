@@ -1,19 +1,20 @@
 import { lazy, Suspense, useLayoutEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { createProjectFolder, openProjectFolder } from '@/api/projectFolders';
+import { openProjectFolder } from '@/api/projectFolders';
 import { shownError } from '@/api/shownErrors';
 import { StudioJobsProvider } from '@/hooks/useStudioJobs';
 import { StudioActivityPane } from '@/components/activity/StudioActivity';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
-import { PendingProjectWindow, ProjectWindowPalette } from '@/features/projectWindow/ProjectWindow';
+import { ProjectlessWindow, ProjectWindowPalette } from '@/features/projectWindow/ProjectWindow';
+import { StartPage } from '@/features/projectWindow/StartPage';
 
 const StudioProjectWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
-function ProjectEntry({ requestedId }: { requestedId: string | null }) {
+function ProjectEntry({ requestedId }: { requestedId: string }) {
   const project = useQuery({
     queryKey: ['studio-entry-project', requestedId],
-    queryFn: () => requestedId ? openProjectFolder(requestedId) : createProjectFolder(),
+    queryFn: () => openProjectFolder(requestedId),
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     staleTime: Infinity,
@@ -28,7 +29,7 @@ function ProjectEntry({ requestedId }: { requestedId: string | null }) {
 
   if (project.data) return (
     <StudioJobsProvider key={id} projectId={project.data.snapshot.project_id}>
-      <Suspense fallback={<PendingProjectWindow />}>
+      <Suspense fallback={<ProjectlessWindow pending />}>
         <StudioProjectWorkspace document={project.data} />
       </Suspense>
     </StudioJobsProvider>
@@ -39,7 +40,7 @@ function ProjectEntry({ requestedId }: { requestedId: string | null }) {
       <Button onClick={() => void project.refetch()}>{studioName('retry')}</Button>
     </main>
   );
-  return <PendingProjectWindow />;
+  return <ProjectlessWindow pending />;
 }
 
 export default function App({ projectId, activity }: { projectId: string | null; activity?: boolean }) {
@@ -49,6 +50,11 @@ export default function App({ projectId, activity }: { projectId: string | null;
         <h1 className="mb-2 font-medium">{studioName('activity')}</h1>
         <StudioActivityPane standalone projectNames={new Map()} onOpenRun={async () => false} onClose={() => {}} />
       </main>
+    </StudioJobsProvider>
+  );
+  if (projectId === null) return (
+    <StudioJobsProvider projectId={null}>
+      <ProjectWindowPalette><StartPage /></ProjectWindowPalette>
     </StudioJobsProvider>
   );
   return <ProjectWindowPalette><ProjectEntry requestedId={projectId} /></ProjectWindowPalette>;

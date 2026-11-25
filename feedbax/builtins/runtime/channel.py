@@ -24,8 +24,9 @@ import feedbax._vendor.jax_cookbook.tree as jtree
 from feedbax.contracts.component_history import Change, History
 from feedbax._vendor.jax_cookbook import identity
 from feedbax.contracts.component import PortType
-from feedbax.contracts.portable import ComponentOptions, Ports
-from feedbax.runtime.graph import Component, GraphNode
+from feedbax.contracts.model_values import ModelFacts, StateReset, StateValue
+from feedbax.contracts.portable import ComponentOptions, PassedSignal, Ports
+from feedbax.runtime.graph import Component, GraphNode, TrialStateProblem
 from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 from feedbax.runtime.prototypes import (
     array_prototype,
@@ -320,7 +321,9 @@ class SignalChannel(GraphNode):
     """A noisy delay line."""
 
     ports: ClassVar[Ports] = Ports(
-        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+        output_leaves={("output",): PassedSignal(("input",), "type")},
     )
 
     input_ports: ClassVar = tuple(ports.inputs)
@@ -436,11 +439,17 @@ class Channel(SignalChannel, Component):
     """Delay a signal by a fixed number of steps, optionally adding noise."""
 
     component_history = History(Change(2, identity=True))
+    model_facts = ModelFacts(states=(
+        StateValue("output", ("output",), "1", "unit", ("output",), reset=StateReset(), subtree=True),
+        StateValue("queue", ("queue",), "1", "unit", ("output",), subtree=True),
+        StateValue("noise", ("noise",), "1", "unit", ("output",), subtree=True),
+    ))
     ports: ClassVar = SignalChannel.ports
 
     config: ClassVar[type[BaseModel]] = _ChannelConfig
 
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        reset_outputs=("output",),
         output_prototype_fn=stateful_passthrough_output_prototype,
         build_output_prototypes={"resolved_input_proto": "output"},
     )
@@ -454,6 +463,13 @@ class Channel(SignalChannel, Component):
 
     def change_input(self, input_proto: PyTree[Array]) -> "Channel":
         return type(self).from_config(self.configuration(), resolved_input_proto=input_proto)
+
+    def finalize_trial_state(
+        self, state: State, explicit: frozenset[tuple[str, ...]],
+    ) -> tuple[State, tuple[TrialStateProblem, ...]]:
+        if ("output",) in explicit:
+            state = self.fill_history(state, state.get(self.state_index).output)
+        return state, ()
 
 
 def toggle_channel_noise(tree: ModelT, enabled: Optional[bool] = None) -> ModelT:

@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, field_serializer
 
 from feedbax.contracts.project_sweep import SetEntryParts, SetTrialSampling
 from feedbax.contracts.base import StrictModel
@@ -17,9 +17,11 @@ from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_scene import ScenePoint
 from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, TaskDocument
 from feedbax.contracts.task_structure import TaskStructureChange
+from feedbax.contracts.trial_record import TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace
 
 
 class StudioTrialField(StudioFieldView):
@@ -103,6 +105,27 @@ class StudioTrialStructureEdit(StrictModel):
     changes: list[TaskStructureChange] = Field(min_length=1)
 
 
+class StudioRelatePort(StrictModel):
+    kind: Literal["port"]
+    address: ModelAddress
+
+
+class StudioRelatePoint(StrictModel):
+    kind: Literal["point"]
+    position: ScenePoint
+
+
+class StudioTrialRelate(StrictModel):
+    kind: Literal["relate"]
+    first: Annotated[
+        TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | StudioRelatePort, Field(discriminator="kind")
+    ]
+    second: Annotated[
+        TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | StudioRelatePort | StudioRelatePoint,
+        Field(discriminator="kind"),
+    ] | None = None
+
+
 class StudioTrialStepScope(StrictModel):
     kind: Literal["step"]
     chosen_steps: list[ProjectName] = Field(default_factory=list)
@@ -113,7 +136,7 @@ class StudioTrialAuthoringRequest(StrictModel):
     run: StudioSavedTrainKey
     change: Annotated[
         StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument
-        | StudioTrialExpressionEdit | StudioTrialStructureEdit,
+        | StudioTrialExpressionEdit | StudioTrialStructureEdit | StudioTrialRelate,
         Field(discriminator="kind"),
     ] | None = None
     store_choice: Sha256 | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -199,6 +222,7 @@ class StudioTrialAuthoring(StrictModel):
     resets: list[StudioTrialReset]
     fields: list[StudioTrialField]
     problems: list[Problem]
+    related_term: str | None = Field(default=None, exclude_if=lambda value: value is None)
     files: list[StudioProjectFilePatch]
     created: list[CreateNamedDocument] = Field(default_factory=list)
     """Documents the edit creates, written before ``files``, which may name them."""
@@ -206,3 +230,8 @@ class StudioTrialAuthoring(StrictModel):
         default=None, min_length=1, exclude_if=lambda value: value is None,
     )
     """An unanswered edit. No files or documents are proposed until the caller chooses a store."""
+
+    @field_serializer("task", "objective")
+    def _authored_document(self, document: TaskDocument | PythonTaskSelection | ObjectiveDocument | None):
+        # The editor uses field presence to choose between add and replace.
+        return document.model_dump(mode="json", exclude_unset=True) if document is not None else None

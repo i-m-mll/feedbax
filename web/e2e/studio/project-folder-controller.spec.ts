@@ -54,8 +54,8 @@ async function outsideWrite(root: string, batch: number) {
   await rename(replacement, path);
 }
 
-test('the focused File Rename command follows the declaration and refuses a stale dialog', async ({ page, request, studio }, info) => {
-  const created = await request.post('/api/projects');
+test('File Rename marks invalid names and refuses a stale dialog', async ({ page, request, studio }, info) => {
+  const created = await request.post('/api/projects', { data: { name: 'rename-validation' } });
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot, configuration } = await created.json();
   const projectId = snapshot.project_id;
@@ -91,7 +91,14 @@ test('the focused File Rename command follows the declaration and refuses a stal
   const submit = dialog.getByRole('button', { name: 'Rename', exact: true });
   await chooseRename();
   await expect(name).toHaveValue(configuration.project);
+  await name.fill('Reaching (test)');
+  await submit.click();
+  await expect(name).toHaveAttribute('aria-invalid', 'true');
+  await expect(name).toHaveAccessibleDescription(/names use letters, digits, underscores, and hyphens/);
+  await expect(name).toHaveValue('Reaching (test)');
+  expect(await readFile(declaration)).toEqual(bytes);
   await name.fill('stale-draft');
+  await expect(name).not.toHaveAttribute('aria-invalid', 'true');
   const outside = join(root, 'outside.feedbax');
   await rename(declaration, outside);
   await expect(submit).toBeDisabled();
@@ -176,7 +183,7 @@ test('M2 managed commands preserve edits, identity and names across Rename and r
   const blank = await page.evaluate(async () => {
     const entry = '/src/features/projectFolder/openProjectEditor.ts';
     const folder = await import(entry) as typeof import('../../src/features/projectFolder/openProjectEditor');
-    const session = await folder.newProjectEditor();
+    const session = await folder.newProjectEditor('managed-commands');
     const original = session.editor.getSnapshot();
     const renamed = await session.editor.rename('blank-name');
     session.close();
@@ -317,7 +324,7 @@ test('M2 managed New authors a Train with named trial documents', async ({ page,
   const { id, folderName } = await page.evaluate(async (file) => {
     const entry = '/src/features/projectFolder/openProjectEditor.ts';
     const folder = await import(entry) as typeof import('../../src/features/projectFolder/openProjectEditor');
-    const session = await folder.newProjectEditor();
+    const session = await folder.newProjectEditor('named-train');
     (window as unknown as Probe).folderEditor = session;
     const result = await session.editor.createFile(file);
     return { id: result.snapshot.project_id, folderName: result.configuration.project };

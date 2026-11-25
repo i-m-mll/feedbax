@@ -36,12 +36,10 @@ def _raw():
     over["sweep"] = {"axes": {"model": {"input": "subject"}}}
     raw["steps"]["over"] = over
     pair = deepcopy(over)
-    pair["inputs"]["subject"]["where"] = {"rows": [
-        {"key": key, "variant": "default", "row": row} for key, row in (("a", "rate=r1"), ("b", "rate=r3"))
-    ]}
+    pair["inputs"]["subject"]["where"] = {"clauses": [{"rate": [{"id": value, "label": value} for value in ("r1", "r3")]}]}
     raw["steps"]["pair"] = pair
-    one = deepcopy(raw["steps"]["baseline"])
-    one["inputs"]["subject"] |= {"step": "five", "row": "rate=r2"}
+    one = deepcopy(over)
+    one["inputs"]["subject"]["where"] = {"clauses": [{"rate": [{"id": "r2", "label": "r2"}]}]}
     raw["steps"]["one"] = one
     return raw
 
@@ -138,7 +136,7 @@ def test_duplicate_run_selected_by_a_carried_coordinate_is_conditioned_on_it(stu
     assert row in after and "run" not in after[row].coordinates
 
 
-def test_duplicate_run_keeps_every_run_and_every_reader_of_it(studio):
+def test_duplicate_run_also_widens_readers_of_its_axis_values(studio):
     folders, client = studio
     readers = ("pair", "one", "over")
     before = {step: _runs(folders, step) for step in ("five", *readers)}
@@ -148,8 +146,9 @@ def test_duplicate_run_keeps_every_run_and_every_reader_of_it(studio):
     after = {step: _runs(folders, step) for step in ("five", *readers)}
     assert len(after["five"]) == 10 and before["five"].items() <= after["five"].items()
     assert set(after["five"].values()) == set(before["five"].values())
-    assert {step: after[step] for step in ("pair", "one")} == {step: before[step] for step in ("pair", "one")}
-    assert before["over"].items() <= after["over"].items() and len(after["over"]) == 10
+    for step in readers:
+        assert before[step].items() <= after[step].items()
+        assert len(after[step]) == 2 * len(before[step])
     assert {step: folders.read(PROJECT).project.steps[step] for step in readers} == authored
 
 
@@ -283,6 +282,54 @@ def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
     _set_edit(folders, client, {"kind": "set_to_sweep", "step": "other", "axis": "run"})
     assert _runs(folders, "other") == sweep
     assert not folders.read(PROJECT).project.steps["other"].set_fields
+
+
+@pytest.mark.parametrize(("sampling", "edits", "weights", "variants"), [
+    (
+        {"kind": "weighted", "weights": {"nominal": 3}, "none": 4},
+        [{"entry": "heavy", "weight": 2}, {"entry": None, "weight": 0}],
+        {None: 0, "heavy": 2, "nominal": 3},
+        True,
+    ),
+    (
+        {"kind": "cooccurring", "weights": {"heavy": {"off": 3}, "nominal": {"on": 4}}},
+        [{"entry": "heavy", "part": "on", "weight": 2}],
+        {"heavy": {"on": 2, "off": 3}, "nominal": {"on": 4, "off": 1}},
+        False,
+    ),
+])
+def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_path, sampling, edits, weights, variants):
+    raw = document_project(authored_documents())
+    raw["documents"]["loads"] = {
+        "schema": "feedbax.set_document.v1", "payload": {"entries": {"heavy": {}, "nominal": {}}},
+    }
+    raw["steps"]["train"]["set_fields"] = {"load": {"axis": {"set": "loads"}, "sampling": sampling}}
+    raw["steps"]["other"] = deepcopy(raw["steps"]["train"])
+    if variants:
+        raw["sweep"] = {"rows": {"base": {}, "compare": {"from": "base"}}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    before = folders.read(PROJECT)
+    train, other = (_runs(folders, step) for step in ("train", "other"))
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        for edit in edits:
+            result = _set_edit(folders, client, {
+                "kind": "set_field_weight", "step": "train", "axis": "load", **edit,
+            }, store="whole_step" if variants else None)
+            assert [file["address"] for file in result["files"]] == [{"kind": "step", "id": "train"}]
+        saved = folders.read(PROJECT)
+        reply = client.post(f"{BASE}/authoring/trials", json={
+            "revision": saved.revision,
+            "run": {"variant": "base" if variants else "default", "step": "train", "row": "default"},
+        })
+        assert reply.status_code == 200, reply.text
+        (field,) = reply.json()["set_fields"]
+        assert {item["entry"]: item["weight"] for item in field["entries"]} == weights
+
+    assert saved.project.documents["loads"] == before.project.documents["loads"]
+    assert saved.project.steps["other"] == before.project.steps["other"]
+    assert _runs(folders, "train") != train
+    assert _runs(folders, "other") == other
 
 
 def test_required_set_can_be_emptied_and_repaired(tmp_path):

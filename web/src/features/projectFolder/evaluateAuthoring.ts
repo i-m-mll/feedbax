@@ -259,7 +259,7 @@ export function ordinaryEvaluation(step: Step): { subjects: EvaluationSubject[];
   const subjects: EvaluationSubject[] = [];
   for (const [index, reference] of selections.entries()) {
     if ((editableCheckpointRule(reference.checkpoint) === undefined && !axes.some((axis) => 'checkpoint_rule' in axis)) ||
-        reference.row != null || reference.variants != null) return undefined;
+        reference.variants != null) return undefined;
     const where = reference.where ?? {};
     const terms = 'subset' in where ? undefined : where;
     subjects.push({ reference, terms, where: listed ? `/inputs/subject/${index}/where` : '/inputs/subject/where' });
@@ -289,7 +289,7 @@ export async function createEvaluation(
 ) {
   const { saved } = editor.getSnapshot();
   if (saved.revision !== projection.revision || stopped && saved.project.sweep) throw new ProjectEditConflictError();
-  const { step, members, where } = trainSourceSubset(source, plan, projection, !!saved.project.sweep);
+  const { step, members, where } = trainSourceSubset(source, plan, projection);
   if (stopped && (
     members.length !== 1 || members[0].id !== stopped.runId ||
     !projection.rows.find(({ key }) => savedRunId(key) === stopped.runId)?.attempts.some(
@@ -315,15 +315,23 @@ export async function createEvaluation(
   return id;
 }
 
-/** What an Evaluate step's subject reads: an initial Model document, or checkpoints of Train steps. */
-export type AuthoredSubject =
-  | { kind: 'document'; document: string; task?: string; objective?: string }
-  | { kind: 'steps'; selections: StepReference[] };
+/** How a document subject reads its document: as an initial Model, or as a Loaded Model with its weights. */
+export type SubjectDocumentKind = 'initial_model' | 'loaded_model';
 
-/** The subject an edit points an Evaluate step at: an initial Model document, or one Train step's checkpoint. */
-export type EvaluateSubject =
-  | { kind: 'document'; document: string; task?: string; objective?: string }
-  | { kind: 'step'; step: string };
+/** A document an Evaluate step evaluates, on the Task and Objective it declares. */
+export interface DocumentSubject {
+  readonly kind: 'document';
+  readonly reads: SubjectDocumentKind;
+  readonly document: string;
+  readonly task?: string;
+  readonly objective?: string;
+}
+
+/** What an Evaluate step's subject reads: an initial Model or Loaded Model document, or checkpoints of Train steps. */
+export type AuthoredSubject = DocumentSubject | { kind: 'steps'; selections: StepReference[] };
+
+/** The subject an edit points an Evaluate step at: a document, or one Train step's checkpoint. */
+export type EvaluateSubject = DocumentSubject | { kind: 'step'; step: string };
 
 export function evaluateSubject(step: Step): AuthoredSubject | undefined {
   const inputs = step.inputs ?? {};
@@ -332,21 +340,23 @@ export function evaluateSubject(step: Step): AuthoredSubject | undefined {
     const parsed = binding as { kind?: string; source?: { document?: unknown } } | null | undefined;
     return parsed?.kind === kind && typeof parsed.source?.document === 'string' ? parsed.source.document : undefined;
   };
-  const document = source(subject, 'initial_model');
-  if (document !== undefined) {
-    return { kind: 'document', document, task: source(inputs.task, 'task'), objective: source(inputs.objective, 'objective') };
+  for (const reads of ['initial_model', 'loaded_model'] as const) {
+    const document = source(subject, reads);
+    if (document !== undefined) {
+      return { kind: 'document', reads, document, task: source(inputs.task, 'task'), objective: source(inputs.objective, 'objective') };
+    }
   }
   const selections = stepSelections(subject);
   return selections ? { kind: 'steps', selections } : undefined;
 }
 
-const documentReference = (kind: 'initial_model' | 'task' | 'objective', document: string) =>
+const documentReference = (kind: SubjectDocumentKind | 'task' | 'objective', document: string) =>
   ({ kind, source: { document } }) as const;
 
 /**
  * The edits that point an Evaluate step's subject at `next`. A checkpoint subject reads its Task and Objective from
- * its Train step and fans out over the subject's members; an initial Model subject declares its Task and Objective
- * and has no subject or checkpoint axis.
+ * its Train step and fans out over the subject's members; a document subject declares its Task and Objective and has
+ * no subject or checkpoint axis.
  */
 export function evaluateSubjectEdits(step: Step, next: EvaluateSubject): ProjectValueEdit[] {
   const current = evaluateSubject(step);
@@ -368,9 +378,10 @@ export function evaluateSubjectEdits(step: Step, next: EvaluateSubject): Project
   }
   const edits: ProjectValueEdit[] = [];
   if (current?.kind === 'document') {
-    if (current.document !== next.document) edits.push(set('/inputs/subject/source/document', true, next.document));
+    if (current.reads !== next.reads) edits.push(set('/inputs/subject', true, documentReference(next.reads, next.document)));
+    else if (current.document !== next.document) edits.push(set('/inputs/subject/source/document', true, next.document));
   } else {
-    edits.push(set('/inputs/subject', 'subject' in inputs, documentReference('initial_model', next.document)));
+    edits.push(set('/inputs/subject', 'subject' in inputs, documentReference(next.reads, next.document)));
     const axes = Object.entries(step.sweep?.axes ?? {});
     const kept = axes.filter(([, axis]) => !axis || !('input' in axis && axis.input === 'subject') && !('checkpoint_rule' in axis));
     const { axes: _axes, ...rest } = step.sweep ?? {};

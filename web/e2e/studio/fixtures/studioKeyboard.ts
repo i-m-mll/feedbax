@@ -1,7 +1,7 @@
-import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { studioName } from '../../../src/components/activity/studioVocabulary';
 import type { ProjectWindowView } from '../../../src/features/projectWindow/projectWindowState';
-import type { StudioProjectSnapshot } from '../../../src/generated/studioContracts';
+import type { StudioProjectDocument, StudioProjectSnapshot } from '../../../src/generated/studioContracts';
 import { popupListbox } from './controls';
 
 export async function tabTo(page: Page, target: Locator, limit = 100) {
@@ -94,11 +94,8 @@ export async function number(page: Page, target: Locator, value: string) {
   await page.keyboard.press('Enter');
 }
 
-/**
- * Chooses `label` in a Select of the control layer by keyboard: open, walk from the first option, Enter; `store` is the
- * Apply To choice when the edit reaches beyond the selection.
- */
-export async function chooseOption(page: Page, select: Locator, label: string | RegExp, store?: string) {
+/** Submits a Select's option by keyboard. A scoped edit can ask where to store it after submission. */
+export async function submitOption(page: Page, select: Locator, label: string | RegExp) {
   await expect(select).toBeEnabled();
   await tabTo(page, select);
   await page.keyboard.press('ArrowDown');
@@ -114,6 +111,11 @@ export async function chooseOption(page: Page, select: Locator, label: string | 
   await expect(option).toHaveAttribute('data-highlighted');
   await page.keyboard.press('Enter');
   await expect(listbox).toBeHidden();
+}
+
+/** Chooses the option and waits for the field to show it, taking an Apply To choice when supplied. */
+export async function chooseOption(page: Page, select: Locator, label: string | RegExp, store?: string) {
+  await submitOption(page, select, label);
   if (store) await activateMenuItem(page, page.getByRole('menu', { name: 'Apply To', exact: true }).getByRole('menuitem', { name: store, exact: true }));
   await expect(select).toHaveText(label);
 }
@@ -134,4 +136,31 @@ export async function chooseOutlineRow(page: Page, row: Locator, name: string) {
   await tabTo(page, tree.locator('[role="treeitem"][tabindex="0"]'));
   await page.keyboard.type(name.split(' ')[0]);
   await expect(row).toHaveAttribute('aria-selected', 'true');
+}
+
+/**
+ * Makes a named project with the start page's New Project, which opens the new project's window, and returns the
+ * project as its window opened it. The creating response's body is gone once the page navigates, so it is read again.
+ */
+export async function startProject(page: Page): Promise<StudioProjectDocument> {
+  await page.goto('/');
+  await page.getByRole('dialog', { name: 'Studio', exact: true }).getByRole('button', { name: 'New Project', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New Project', exact: true });
+  await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill(testProjectName());
+  const creation = page.waitForResponse((response) => response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === '/api/projects');
+  await dialog.getByRole('button', { name: 'New Project', exact: true }).click();
+  expect((await creation).status()).toBe(201);
+  await page.waitForURL(/[?&]project=/);
+  const id = new URL(page.url()).searchParams.get('project')!;
+  const opened = await page.request.get(`/api/projects/${encodeURIComponent(id)}/open`);
+  expect(opened.ok(), await opened.text()).toBe(true);
+  return await opened.json() as StudioProjectDocument;
+}
+
+let projectSequence = 0;
+
+export function testProjectName() {
+  const title = test.info().title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 55).replace(/^-|-$/g, '');
+  return `test-${title}-${++projectSequence}`;
 }

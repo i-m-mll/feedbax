@@ -2,26 +2,59 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field as dataclass_field
 from copy import copy
 from functools import lru_cache
 from types import UnionType
 from typing import Annotated, Union, get_args, get_origin
 import inspect
-from typing import TYPE_CHECKING, Any, ClassVar, get_type_hints
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_type_hints
 from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, ConfigDict, create_model
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
-from feedbax.contracts.model_values import ModelFacts
+from feedbax.contracts.expression_values import SignalSpace
+from feedbax.contracts.model_values import ModelFacts, SignalLeafPath
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from feedbax.contracts.component_history import History
     from feedbax.contracts.component_presentation import PresentationOverride
+
+
+@dataclass(frozen=True)
+class SignalProperties:
+    unit: str | None = None
+    space: SignalSpace | None = None
+
+
+@dataclass(frozen=True)
+class StateSignal:
+    symbol: str
+
+
+@dataclass(frozen=True)
+class PassedSignal:
+    source: SignalLeafPath
+    keeps: Literal["identity", "type"]
+
+
+type OutputSignal = SignalProperties | StateSignal | PassedSignal
+type OutputSignals = Mapping[SignalLeafPath, OutputSignal]
+
+
+def signal_leaf_declaration(declarations: OutputSignals, path: SignalLeafPath) -> OutputSignal | None:
+    exact = declarations.get(path)
+    if exact is not None:
+        return exact
+    for size in range(len(path) - 1, -1, -1):
+        ancestor = declarations.get(path[:size])
+        if isinstance(ancestor, PassedSignal):
+            return PassedSignal((*ancestor.source, *path[size:]), ancestor.keeps)
+    return None
 
 
 @dataclass(frozen=True)
@@ -32,6 +65,10 @@ class Ports:
     outputs: Mapping[str, PortType]
     dynamic: DynamicPortPolicy | None = None
     required_inputs: tuple[str, ...] = ()
+    input_leaves: Mapping[SignalLeafPath, SignalProperties] = dataclass_field(default_factory=dict)
+    output_leaves: OutputSignals | Callable[[Mapping[str, Any]], OutputSignals] = dataclass_field(
+        default_factory=dict
+    )
 
     def __post_init__(self):
         for names in (self.inputs, self.outputs):
@@ -49,6 +86,15 @@ class Ports:
     @property
     def types(self):
         return PortTypeSpec(inputs=dict(self.inputs), outputs=dict(self.outputs))
+
+    def output_leaf(
+        self, path: SignalLeafPath, params: Mapping[str, Any],
+    ) -> OutputSignal | None:
+        """Resolve a port-first path, including a pass of an entire subtree."""
+        return signal_leaf_declaration(self.declared_outputs(params), path)
+
+    def declared_outputs(self, params: Mapping[str, Any]) -> OutputSignals:
+        return self.output_leaves(params) if callable(self.output_leaves) else self.output_leaves
 
 
 @dataclass(frozen=True)

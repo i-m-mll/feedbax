@@ -8,6 +8,7 @@ import { studioAccessibleName, studioName, studioRunStatus } from '@/components/
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button } from '@/components/ui/Button';
+import { carryKind } from '@/components/ui/carry';
 import { Dialog } from '@/components/ui/Dialog';
 import { Inspector } from '@/components/ui/Inspector';
 import { KeyField } from '@/components/ui/KeyField';
@@ -22,7 +23,7 @@ import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
   type ParamSchema, type PresentationPosition, type StudioAnalyzeChange, type StudioProjectSnapshot,
-  type StudioSavedTrainKey, type StudioSavedTrainRuns, type SubsetTerms,
+  type StudioSavedTrainKey, type StudioSavedTrainRuns, type SubsetTerms, type TrialMeanSelection,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { ManagedDocumentCanvas, type CanvasNode } from './ManagedDocumentCanvas';
@@ -34,10 +35,9 @@ import { heldElementKeys } from './analysisElements';
 import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
 import { SelectionRule } from './SelectionRule';
-import { changedSelections, stepSelections } from './selectionEdits';
-import { InputEditor } from './InputEditor';
+import { changedSelections, selectionProblems, stepSelections, withSubsetTerms } from './selectionEdits';
+import { documentBinding, InputEditor } from './InputEditor';
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
-import { selectionProblems } from './selectionEdits';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
 import { savedRunId, stepSourceRows } from './projectWindowPlan';
@@ -45,18 +45,21 @@ import { placeElement, type Reveal } from './projectWindowProblems';
 import { ChangeRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
-import { generatedName } from './generatedName';
+import { generatedName, keyOfLabel } from './generatedName';
 import type { GestureFailures } from './refusals';
 
 type Source = OperationElement['inputs'][string];
 type RefusalPlace = 'dialog' | readonly [string, string] | { readonly key: string };
 
-const operationDragType = 'application/x-feedbax-operation';
+const operationCarry = carryKind<LibraryItem>('operation');
 const figureItem = 'velocity_summary';
+const summaryTemplate = 'feedbax.VelocitySummary';
 
 export function useManagedAnalyze({
-  editor, key, projection, wholeStep, chosen, focusedView, reveal, savePosition, selection, sections, steps, failures, selectStep,
+  editor, key, projection, wholeStep, chosen, focusedView, reveal, savePosition, selection, sections, steps, failures, selectStep, mean,
 }: {
+  /** The clock's Mean, which every figure draws while it is picked. */
+  mean?: TrialMeanSelection;
   editor: ProjectEditController;
   /** The steps an edit of the shown document is made for, when other steps read it too; the step alone otherwise. */
   chosen?: ReadonlySet<string>;
@@ -168,7 +171,11 @@ export function useManagedAnalyze({
     return `${shownCard}/${shownName(source, cardAnalysis(card)?.operations?.[source])}.${product}`;
   }
   const selectedInput = selected ? declarations[selected] : undefined;
-  const inputRoles = useAuthoringCatalog().data?.analyze_inputs;
+  const authoringCatalog = useAuthoringCatalog().data;
+  const inputRoles = authoringCatalog?.analyze_inputs;
+  const figureEntries = authoringCatalog?.registries.figure_templates?.entries;
+  const figureTemplates = useMemo(() => figureEntries?.filter((entry) => 'settings_schema' in entry)
+    .filter(({ key }) => key !== summaryTemplate) ?? [], [figureEntries]);
   const inputRole = selectedInput && inputRoles?.[selectedInput.kind];
   const armed = usePick(selection);
   const canvasPick = useMemo(() => armed && document ? {
@@ -363,9 +370,16 @@ export function useManagedAnalyze({
   const mapped = selectedElement && selectedElement.requests.length > 1;
   const chosenMember = chosenRequest?.scope === scope && chosenRequest.element === selected ? chosenRequest.member : undefined;
   /** The request whose status and result the inspector shows: the element's own, or the chosen one of a mapped element. */
-  const selectedPlan = mapped
-    ? selectedElement.requests.find((request) => requestMember(request) === chosenMember)
-    : selectedElement?.requests[0];
+  const planOf = (name: string, member: string | undefined) => {
+    const element = planned.get(name);
+    return element && element.requests.length > 1
+      ? element.requests.find((request) => requestMember(request) === member)
+      : element?.requests[0];
+  };
+  const selectedPlan = selected ? planOf(selected, chosenMember) : undefined;
+  /** The figure the Figures view draws: the selected one, else the first, so a window reopened there draws it. */
+  const shownFigure = figure ? selected : Object.keys(figures)[0];
+  const shownPlan = shownFigure && planOf(shownFigure, shownFigure === selected ? chosenMember : undefined);
   const shownStatus = selectedPlan ?? selectedElement;
   function writeParameter(path: readonly string[], value: JsonValue) {
     if (!operation || !selected) return;
@@ -392,27 +406,21 @@ export function useManagedAnalyze({
         const where = reference.where ?? {};
         const problems = selectionProblems(cardProblems, key.step, key.variant, selected, index, listed);
         const write = (terms: SubsetTerms) => {
-          const next = { ...reference, where: terms };
+          const next = withSubsetTerms(reference, terms);
           bind(selected, listed ? changedSelections(stepSelections(binding)!, { kind: 'replace', index, reference: next }) : next);
         };
         return {
           problems,
           runs: source && projection && !('subset' in where) && <SelectionRule
             scope={{ project: saved.project_id, revision: projection.revision, variant: key.variant }} source={source}
-            rule={where.rule ?? ''} pinned={where.rows?.map(({ key: row }) => row)} planned={subset} picking={selection}
+            terms={where} planned={subset} picking={selection}
             disabled={!canBind} problem={problems.rule}
-            pick={{ rows: stepSourceRows(projection, source.id, key.variant), onCommit: write }}
-            onCommit={(rule) => {
-              const { rule: _written, ...rest } = where;
-              write(rule ? { ...rest, rule } : rest);
-            }} />,
+            pick={{ rows: stepSourceRows(projection, source.id, key.variant) }} onCommit={write} />,
         };
       }}
       onChange={canBind ? (gesture) => {
         if (gesture.kind === 'select') bind(selected, gesture.binding);
-        else if (gesture.kind === 'document') bind(selected, inputRole.documents[0] === 'task'
-          ? { kind: 'task', source: { document: gesture.document } }
-          : { kind: 'initial_model', source: { document: gesture.document } });
+        else if (gesture.kind === 'document') bind(selected, documentBinding(gesture.role, gesture.document));
       } : undefined} />}
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
@@ -457,7 +465,10 @@ export function useManagedAnalyze({
       },
     })),
     { id: figureItem, name: humanizeLabel(figureItem), group: studioName('figures'), glyph: <ChartLine /> },
-  ] : [], [catalog]);
+    ...figureTemplates.map((entry) => ({
+      id: entry.key, name: entry.label, group: studioName('figures'), glyph: <ChartLine />, terms: entry.key,
+    })),
+  ] : [], [catalog, figureTemplates]);
   function selectElement(id: string | null, extend = false) {
     setInspected(undefined);
     element.onSelect(id, extend);
@@ -466,6 +477,10 @@ export function useManagedAnalyze({
   function place(id: string, point?: PresentationPosition) {
     if (id === figureItem) addFigure(point);
     else if (definitions.has(id)) addOperation(id, point);
+    else if (figureTemplates.some(({ key }) => key === id)) {
+      const stem = keyOfLabel(id.split('.').at(-1)!.replace(/([a-z0-9])([A-Z])/g, '$1-$2'));
+      add('views', stem, { figure: { template: id }, inputs: {} }, point);
+    }
   }
   const libraryInspector = shownItem && <Inspector name={shownItem.name} type={shownItem.group}>
     {definitions.get(shownItem.id)?.description && <p className="text-shell-muted">{definitions.get(shownItem.id)!.description}</p>}
@@ -475,7 +490,7 @@ export function useManagedAnalyze({
   </Inspector>;
   const drawer = <Drawer>
     <LibraryList sections={sections} section="analysis.library" name={studioName('library')} searchName="searchLibrary"
-      state={catalogState} items={library} selected={shownItem?.id} dragType={canEdit ? operationDragType : undefined}
+      state={catalogState} items={library} selected={shownItem?.id} carried={canEdit ? operationCarry : undefined}
       onInspect={(id) => setInspected({ scope, id })}
       onPlace={canEdit ? (id) => place(id) : undefined} />
   </Drawer>;
@@ -483,7 +498,7 @@ export function useManagedAnalyze({
     const caption = figureDefinition(name, view.figure)?.caption;
     const result = planned.get(name);
     return <li key={name} className="flex items-center gap-2">
-      <Button pressed={selected === name} onClick={() => selectElement(name)}>{shown(name)}</Button>
+      <Button pressed={shownFigure === name} onClick={() => selectElement(name)}>{shown(name)}</Button>
       {caption && <span>{caption}</span>}
       {result && <span>{studioRunStatus(result.status)}</span>}
     </li>;
@@ -497,14 +512,14 @@ export function useManagedAnalyze({
         <ManagedDocumentCanvas key={scope} selectedIds={element.selectedIds} onSelect={selectElement} items={items} connections={connections} viewportRef={canvas}
           positions={positions} pick={canvasPick}
           openAt={canEdit ? (point) => open('add', point) : undefined} placing={!!opened?.point}
-          drop={canEdit ? { type: operationDragType, place } : undefined}
+          drop={canEdit ? { kind: operationCarry, place } : undefined}
           rememberPoint={(point) => { cursor.current = point ? { scope, point } : undefined; }} />
       </div></CanvasStrip>,
       drawer, inspector: libraryInspector || inspector,
     },
     figures: { body: <>{figureList}
-      {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
-        history={selectedPlan} name={selected} />}
+      {shownFigure && shownPlan && <SavedFigureResult key={JSON.stringify([scope, shownFigure])}
+        history={shownPlan} name={shownFigure} project={saved.project_id} revision={saved.revision} mean={mean} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
     commands: document && focusedView === 'analysis' ? [addCommand, removeCommand, ...selectedCommands, ...viewport]
       : document && focusedView === 'figures' ? [addCommand, removeCommand, ...selectedCommands] : [],

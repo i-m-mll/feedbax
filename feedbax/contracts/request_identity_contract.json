@@ -126,6 +126,13 @@
       },
       "shape": {
         "absent": []
+      },
+      "space": {
+        "absent": null,
+        "values": [
+          "free",
+          "point"
+        ]
       }
     },
     "feedbax.contracts.figure_document.BandEncodings": {
@@ -674,6 +681,13 @@
       },
       "shape": {
         "absent": null
+      },
+      "space": {
+        "absent": null,
+        "values": [
+          "free",
+          "point"
+        ]
       },
       "unit": {
         "absent": null

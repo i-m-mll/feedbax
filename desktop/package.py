@@ -141,18 +141,23 @@ def native_binary_hashes() -> dict[str, str]:
     }
 
 
-def build_native(timeout: int) -> None:
-    clean_revision()
-    inputs = native_inputs()
+def ensure_icons() -> None:
+    """Generate the gitignored app icons from `web/public/icon.svg` unless they are current."""
     icons = DESKTOP / "src-tauri" / "icons"
     stamp = icons / "source.txt"
-    icon_source = inputs["desktop_icon_sha256"] + "\n"
-    if not all((icons / name).is_file() for name in ("icon.png", "icon.icns", "source.txt")) or stamp.read_text() != icon_source:
-        icons.mkdir(parents=True, exist_ok=True)
-        source = icons / "source.svg"
-        source.write_bytes(desktop_icon_source())
-        run(*TAURI, "icon", source, "--output", icons, cwd=DESKTOP)
-        stamp.write_text(icon_source)
+    icon_source = hashlib.sha256(desktop_icon_source()).hexdigest() + "\n"
+    if all((icons / name).is_file() for name in ("icon.png", "icon.icns", "source.txt")) and stamp.read_text() == icon_source:
+        return
+    icons.mkdir(parents=True, exist_ok=True)
+    source = icons / "source.svg"
+    source.write_bytes(desktop_icon_source())
+    run(*TAURI, "icon", source, "--output", icons, cwd=DESKTOP)
+    stamp.write_text(icon_source)
+
+
+def build_native(timeout: int) -> None:
+    clean_revision()
+    ensure_icons()
     run(*TAURI, "build", "--target", TARGET, "--no-bundle", "--ci", "--", "--locked",
         cwd=DESKTOP, env=native_environment(), timeout=timeout)
     run("cargo", "build", "--release", "--locked", "--target", TARGET,
@@ -490,6 +495,7 @@ def package(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("icons")
     native = sub.add_parser("native")
     native.add_argument("--timeout", type=int, default=55)
     bundle = sub.add_parser("bundle")
@@ -501,6 +507,9 @@ def main() -> None:
     bundle.add_argument("--numerical-manifest", type=Path, required=True)
     bundle.add_argument("--runpod-uv", type=Path, required=True)
     args = parser.parse_args()
+    if args.action == "icons":
+        ensure_icons()
+        return
     if sys.platform != "darwin" or platform.machine() != "arm64":
         parser.error("packaging requires macOS on Apple Silicon")
     SCRATCH.mkdir(exist_ok=True)

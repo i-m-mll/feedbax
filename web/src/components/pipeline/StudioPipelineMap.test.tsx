@@ -150,7 +150,7 @@ function chooseValue(card: ReturnType<typeof within>, sweep: string, value: stri
   fireEvent.click(screen.getByRole('menuitem', { name: value }), { metaKey: extend });
 }
 
-it('folds the sweeps after the first two into one mark per cell, named after the axis labels', () => {
+it('folds the sweeps after the first two into one mark per cell, named after the axis labels', async () => {
   const step: PlanStepView = {
     ...train,
     sweeps: [...train.sweeps, curl],
@@ -172,9 +172,20 @@ it('folds the sweeps after the first two into one mark per cell, named after the
   );
   expect(card.getByRole('button', { name: aggregate('seed 1 · rate 0.003') }).getAttribute('aria-pressed')).toBe('mixed');
 
-  const dataTransfer = { effectAllowed: 'none', setData: vi.fn() };
-  fireEvent.dragStart(labels[2], { dataTransfer });
-  fireEvent.drop(labels[1], { dataTransfer });
+  // Dragging curl onto rate's place draws them exchanged, and the marks regrouped, before the release saves the order.
+  labels.forEach((label, index) => {
+    vi.spyOn(label, 'getBoundingClientRect').mockReturnValue(new DOMRect(index * 50, 0, 40, 16));
+  });
+  const pointer = { pointerId: 1, button: 0 };
+  fireEvent.pointerDown(labels[2], { ...pointer, clientX: 110, clientY: 8 });
+  fireEvent.pointerMove(window, { ...pointer, clientX: 70, clientY: 8 });
+  expect(card.getAllByRole('button', { name: /^Sweep / }).map((label) => label.textContent))
+    .toEqual(['↓\u00a0seed', '→\u00a0curl', '(rate\u00a0×3)']);
+  expect(card.getAllByRole('gridcell')).toHaveLength(4);
+  expect(presentationChanged).not.toHaveBeenCalled();
+  fireEvent.pointerUp(window, { ...pointer, clientX: 70, clientY: 8 });
+  // The release's own click is swallowed within its task; the next click is the person's.
+  await new Promise((resolve) => setTimeout(resolve));
   expect(presentationChanged).toHaveBeenLastCalledWith(train.id, { sweepOrder: [seed.id, curl.id, rate.id] });
   expect(card.getAllByRole('button', { name: /^Sweep / }).map((label) => label.textContent))
     .toEqual(['↓\u00a0seed', '→\u00a0curl', '(rate\u00a0×3)']);
@@ -321,4 +332,30 @@ it('marks a drawer row with its worst state, and choosing the mark selects those
   expect(onSelectionChange).toHaveBeenCalledWith({
     selection: { kind: 'rows', stepId: train.id, runIds: [runs[0].id, runs[1].id] }, focus: null,
   });
+});
+
+it('lights the lineage of every selected run, not only the last one clicked', () => {
+  const probe = { id: 'probe', label: 'probe', values: [{ id: 'x', label: 'x' }, { id: 'y', label: 'y' }] };
+  const evaluate: PlanStepView = {
+    id: 'probes', label: 'probes', kind: 'evaluate', sweeps: [probe],
+    runs: probe.values.map((value): PlanRunView => ({
+      id: `probe-${value.id}`, label: value.label, values: { probe: value.id }, status: 'not_run', state: 'not_run', results: [],
+    })),
+    inputs: [{ id: 'model', label: 'Model', sourceStepId: train.id }],
+    statusCounts: { not_run: 2 },
+  };
+  mapWithState({
+    steps: [train, evaluate],
+    edges: [
+      { from: { stepId: train.id, runId: 'mid-first' }, to: { stepId: evaluate.id, runId: 'probe-x' } },
+      { from: { stepId: train.id, runId: 'mid-second' }, to: { stepId: evaluate.id, runId: 'probe-y' } },
+    ],
+  });
+  const card = within(screen.getByRole('article', { name: studioAccessibleName('train', train.label) }));
+  const probes = within(screen.getByRole('article', { name: studioAccessibleName('evaluate', evaluate.label) }));
+  fireEvent.click(card.getByRole('button', { name: mark('seed 1 · rate 0.003') }));
+  fireEvent.click(card.getByRole('button', { name: mark('seed 2 · rate 0.003') }), { metaKey: true });
+  for (const value of ['x', 'y']) {
+    expect(probes.getByRole('button', { name: mark(`probe ${value}`) }).getAttribute('data-map-focus')).toBe('downstream');
+  }
 });

@@ -139,18 +139,23 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
     assert second.record.key_schedule.scoped_node_order == resolve_signal_schedule(lowered).order
 
     def run(graph, signal):
+        requests = (GraphTraceRequest("graph_output", "result", port="result"),)
+        if graph is second.graph:
+            requests += (GraphTraceRequest("port", "first scale", node="a", port="output", scope=(group,)),)
         outputs, _, trace = graph.rollout_with_trace(
             {"signal": signal}, graph.init_state(key=jax.random.key(5)), n_steps=signal.size,
             key=jax.random.key(5),
-            trace=(GraphTraceRequest("graph_output", "result", port="result"),),
+            trace=requests,
         )
-        return outputs["result"], trace["result"]
+        return outputs["result"], trace
 
     signal = jnp.arange(1, 5, dtype=jnp.float32)
     for graph in (first.graph, second.graph):
         output, trace = run(graph, signal)
         np.testing.assert_array_equal(output, expected)
-        np.testing.assert_array_equal(trace, output)
+        np.testing.assert_array_equal(trace["result"], output)
+        if graph is second.graph:
+            np.testing.assert_array_equal(trace["first scale"], np.asarray(expected) / 4)
         derivative = jax.grad(lambda data: run(graph, data)[0].sum())(signal)
         np.testing.assert_array_equal(derivative, gradient)
 
@@ -1068,7 +1073,7 @@ def test_model_projection_keeps_the_declared_input_size_after_wiring(tmp_path, s
         def projected_type(view, end):
             return next(
                 item["type"] for item in view["ports"]
-                if not item["address"]["composites"] and item["address"]["element"]["end"] == end
+                if not item["address"]["composites"] and item["address"]["element"].get("end") == end
             )
 
         if source == "task":
@@ -1079,7 +1084,7 @@ def test_model_projection_keeps_the_declared_input_size_after_wiring(tmp_path, s
             snapshot = folders.read("nested")
             model = snapshot.project.documents[document].payload
             task_port = next(port for port in model["ports"]["inputs"] if port["name"] == "target_pos")
-            task_type = {"base": "float", "shape": [2], "unit": "m"}
+            task_type = {"base": "real", "shape": [2], "unit": "m"}
             assert task_port["type"] == task_type
             assert projected_type(projection(snapshot), {"owner": "inputs", "port": task_port["id"]}) == task_type
 

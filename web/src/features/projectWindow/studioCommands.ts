@@ -53,6 +53,8 @@ const shortcuts = {
   modelCut: primary('X'),
   modelPaste: primary('V'),
   leave: primary('ArrowUp'),
+  selectTool: { key: 'V' },
+  relate: { key: 'R' },
 } satisfies Partial<Record<StudioNameId, Shortcut>>;
 
 const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
@@ -71,11 +73,11 @@ const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
 };
 
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
-  'check' | 'accept' | 'newStep' | 'newSweep' | 'duplicateStep' | 'duplicateRun' | 'removeValue' | 'addEntry' | 'split' | 'merge' | 'saveSet' | 'inlineSet' | 'toField' | 'toSweep' | 'changeKey' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
-  'pivot' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
+  'check' | 'accept' | 'newStep' | 'newSweep' | 'duplicateStep' | 'duplicateRun' | 'export' | 'removeValue' | 'addEntry' | 'split' | 'merge' | 'saveSet' | 'inlineSet' | 'toField' | 'toSweep' | 'changeKey' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
+  'pivot' | 'pin' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
-  'fitView' | 'zoomIn' | 'zoomOut' | 'rename';
+  'fitView' | 'zoomIn' | 'zoomOut' | 'rename' | 'projects';
 
 const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'check', 'accept', 'newStep', 'newSweep', 'pivot',
@@ -92,8 +94,8 @@ const selectionCommands = new Set<StudioCommandId>([
  */
 const viewCommands = new Set<StudioCommandId>([
   ...projectWindowViews, 'commandPalette', 'settings', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer',
-  'showInspector', 'splitDetails', 'switchSlot', 'back', 'forward', 'nextRegion', 'previousRegion', 'activity', 'problems',
-  'fitView', 'zoomIn', 'zoomOut', 'enter', 'leave',
+  'showInspector', 'splitDetails', 'switchSlot', 'pin', 'back', 'forward', 'nextRegion', 'previousRegion', 'activity', 'problems',
+  'fitView', 'zoomIn', 'zoomOut', 'enter', 'leave', 'selectTool', 'relate',
 ]);
 
 function commandShortcut(id: StudioCommandId): Shortcut | undefined {
@@ -203,6 +205,12 @@ export function commandAttributes(command: StudioCommand, placement?: 'bottom' |
     'aria-description': command.reason,
     ...appTip(command.shortcut ? `${label} · ${shortcutLabel(command.shortcut)}` : label, placement),
   };
+}
+
+/** A command's attributes for a control whose accessible name says more than the command's, such as a count. */
+export function commandTip(command: StudioCommand, placement?: 'bottom' | 'right') {
+  const { 'aria-label': _, ...attributes } = commandAttributes(command, placement);
+  return attributes;
 }
 
 const punctuation: Record<string, string> = {

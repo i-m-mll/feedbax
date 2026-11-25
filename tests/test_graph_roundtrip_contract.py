@@ -76,7 +76,6 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
     ("feedbax.PIDDiscrete", "output_limit"): 2.0,
     ("feedbax.LinearStateSpace", "initial_state"): [0.1, 0.2, 0.3, 0.4],
     ("feedbax.StructuralLinearStateSpace", "initial_state"): [0.1, 0.2, 0.3, 0.4],
-    ("feedbax.AssembleFeedback", "layout"): {"list": [None]},
     ("feedbax.AffineFeedbackController", "bias"): [0.25],
     ("feedbax.AffineFeedbackController", "feedforward"): [0.5],
     ("feedbax.Channel", "noise_role"): "motor_command",
@@ -87,8 +86,6 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
     ("feedbax.DynamicsMatrixPerturb", "mass"): 1.25,
     ("feedbax.LinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("feedbax.StructuralLinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
-    ("feedbax.StateFeedbackSelector", "expected_state_dim"): 4,
-    ("feedbax.StateFeedbackSelector", "output_size"): 4,
     ("feedbax.ConstantInput", "arrays"): [0.25, -0.5],
     ("feedbax.NetworkClamp", "unit_spec"): [0.25, None],
     ("feedbax.NetworkConstantInput", "unit_spec"): [0.25, None],
@@ -117,14 +114,6 @@ _VALUES: dict[tuple[str, str], Any] = {
     ("feedbax.DelayedReaches", "target_visible_from_start"): True,
     ("feedbax.DelayedReaches", "target_on_epochs"): [0, 2],
     ("feedbax.SelectState", "paths"): ["effector.force"],
-    ("feedbax.StateFeedbackSelector", "state_slices"): {
-        "position": {"start": 1, "stop": 3},
-        "velocity": {"start": 3, "stop": 5},
-    },
-    ("feedbax.StateFeedbackSelector", "channels"): [
-        {"slice": "position", "transform": "negate"},
-        {"slice": "velocity", "transform": "identity"},
-    ],
     ("feedbax.StructuralLinearStateSpace", "delta_A"): {
         "schema_id": "feedbax.spec.component_param.array_value",
         "schema_version": "feedbax.spec.component_param.array_value.v1",
@@ -204,8 +193,6 @@ def _contextualize_params(
             params["noise_model"] = "signal_dependent_plus_additive"
         if param_name == "include_zero_noise_terms":
             params["noise_std"] = 0.0
-    elif component_type == "feedbax.AssembleFeedback" and param_name == "n_inputs":
-        params["layout"] = {"tuple": [None] * params["n_inputs"]}
     elif component_type == "feedbax.AffineValueComposer" and param_name == "output_block_size":
         size = int(params["output_block_size"])
         params["gain_init"] = [[0.0] for _ in range(size)]
@@ -223,9 +210,6 @@ def _contextualize_params(
     ):
         payload_field = _INTERVENTION_PAYLOAD_FIELDS[component_type]
         params[payload_field] = deepcopy(_NONE_VALUES[component_type, payload_field])
-    elif component_type == "feedbax.StateFeedbackSelector" and param_name == "output_size":
-        params["channels"] = [{"slice": "position", "transform": "identity"}]
-        params["output_size"] = 2
     return params
 
 
@@ -268,7 +252,7 @@ def _single_node_spec(
         point_mass = registry.get("feedbax.PointMass")
         assert point_mass is not None and point_mass.builder is not None
         prototypes[("node", "state")] = point_mass.builder({"dt": 0.01}).state_index.init
-    elif component_type == "feedbax.Demux":
+    elif component_type == "feedbax.Split":
         prototypes[("node", "input")] = jnp.zeros(sum(params["sizes"]))
     elif component_type == "feedbax.AffineValueComposer":
         block_size = int(params["output_block_size"])

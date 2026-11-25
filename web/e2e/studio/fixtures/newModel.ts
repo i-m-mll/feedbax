@@ -1,11 +1,9 @@
 import { expect, type Locator, type Page } from '@playwright/test';
-import { palette, post } from './studioKeyboard';
+import { palette, startProject } from './studioKeyboard';
 
 /** Creates a project with one new Train and returns its focused Model panel. */
 export async function newModel(page: Page) {
-  const creation = post(page, '/api/projects');
-  await page.goto('/');
-  expect((await creation).status()).toBe(201);
+  await startProject(page);
   await palette(page, 'newStep', 'New Step');
   await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');

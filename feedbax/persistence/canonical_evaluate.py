@@ -18,13 +18,14 @@ from feedbax.contracts.jobs import (
     JobReceipt, StudioEvaluationCheckpoint, StudioEvaluationCheckpointGap,
     StudioEvaluationObjectivePoint, StudioEvaluationObjectiveSeries, StudioEvaluationObjectiveTerm,
 )
+from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelProvenance, ImportedModelSource
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
     load_manifest_bytes,
 )
 from feedbax.contracts.model_input import (
-    INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, document_input_object,
+    INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, document_input_object, read_document_input,
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project_sources import pointer
@@ -43,11 +44,13 @@ from feedbax.contracts.rollout import (
     rollout_objective_sha256,
 )
 from feedbax.contracts.semantic_values import model_state_address, semantic_key
-from feedbax.contracts.trial_record import StudioTrialReplayResponse, TrialAggregate, TrialRecord, TrialRecords
-from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_position_track, read_trial_record
+from feedbax.contracts.trial_clock import TrialMeanSelection
+from feedbax.contracts.trial_record import StudioTrialReplayResponse, TrialAggregate, TrialRecords
+from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_trial_record
 from feedbax.persistence.checkpoint_selection import selected_coordinates
 from feedbax.persistence.best_selection import completion_score
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.project_subject import imported_model_provenance, read_imported_model
 
 if TYPE_CHECKING:
     from feedbax.dataset import Dataset
@@ -71,7 +74,8 @@ class EvaluationRequestBinding(StrictModel):
                 raise ValueError("Evaluate requires a model subject")
         elif (
             self.checkpoint is not None or self.terminal is not None
-            or self.initial_model.media_type != INITIAL_MODEL_MEDIA_TYPE or self.initial_model.tree
+            or self.initial_model.media_type not in {INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE}
+            or self.initial_model.tree
         ):
             raise ValueError("Initial Evaluate requires one immutable Model input")
         return self
@@ -153,23 +157,29 @@ def decode_rollout_request(
 
 
 def initial_evaluation_references(decoded: DecodedRequest) -> dict[str, ContentRef]:
-    required = {"subject": INITIAL_MODEL_MEDIA_TYPE, "task": TASK_INPUT_MEDIA_TYPE}
+    required = {
+        "subject": {INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE},
+        "task": {TASK_INPUT_MEDIA_TYPE},
+    }
     if "objective" in decoded.inputs:
-        required["objective"] = OBJECTIVE_INPUT_MEDIA_TYPE
+        required["objective"] = {OBJECTIVE_INPUT_MEDIA_TYPE}
     if decoded.inputs.keys() != required.keys():
         raise CannotRun("/inputs", "initial Evaluate requires a Model and Task, with an optional Objective")
     refs = {}
-    for role, media_type in required.items():
+    for role, media_types in required.items():
         members = decoded.inputs[role]
         content = members[0].reference
-        if len(members) != 1 or not isinstance(content, ContentRef) or content.tree or content.media_type != media_type:
+        if len(members) != 1 or not isinstance(content, ContentRef) or content.tree or content.media_type not in media_types:
             raise CannotRun(f"/inputs/{role}", "requires one immutable document of the declared kind")
         refs[role] = content
     return refs
 
 
 def initial_evaluation_provenance(refs: dict[str, ContentRef]) -> Provenance:
-    kinds = {"subject": "ModelDocument", "task": "TaskDocument", "objective": "ObjectiveDocument"}
+    kinds = {
+        "subject": "LoadedModel" if refs["subject"].media_type == IMPORTED_MODEL_MEDIA_TYPE else "ModelDocument",
+        "task": "TaskDocument", "objective": "ObjectiveDocument",
+    }
     return Provenance(parents=[
         ParentRef(kind=kinds[role], id=ref.sha256, role=role, metadata={"sha256": ref.sha256, "size_bytes": ref.size})
         for role, ref in refs.items()
@@ -177,21 +187,36 @@ def initial_evaluation_provenance(refs: dict[str, ContentRef]) -> Provenance:
 
 
 def verify_initial_rollout(
-    manifest: EvaluationRunManifest, refs: dict[str, ContentRef],
+    store: ImmutableArtifactBlobProvider, manifest: EvaluationRunManifest, refs: dict[str, ContentRef],
 ) -> ResolvedInitialRollout:
     binding = ResolvedRolloutBinding.model_validate(manifest.metadata["effective_binding"])
     (member,) = binding.members
     objective = refs.get("objective")
     params = RolloutParameters.model_validate(EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline).params)
+    loaded, _ = verified_imported_subject(store, refs["subject"])
     if (
         not isinstance(member, ResolvedInitialRollout) or member.initial_model != refs["subject"].sha256
         or manifest.input_training_runs or manifest.provenance != initial_evaluation_provenance(refs)
         or "placement" in manifest.metadata or binding.digest() != manifest.metadata.get("effective_binding_sha256")
         or binding.objective != (objective.sha256 if objective is not None else None)
+        or manifest.loaded_model != loaded or member.replica_ids != (loaded.replicas if loaded else ())
         or (binding.seed, binding.trial_policy, member.trials) != (params.seed, params.trial_policy, params.trials)
     ):
         raise ValueError("Initial rollout manifest differs from its exact document subject")
     return member
+
+
+def verified_imported_subject(
+    store: ImmutableArtifactBlobProvider, subject: ContentRef, *, verify_bytes: bool = False,
+) -> tuple[ImportedModelProvenance | None, tuple[ContentObjectRef, ...]]:
+    if subject.media_type != IMPORTED_MODEL_MEDIA_TYPE:
+        return None, ()
+    source = read_document_input(subject, store)
+    assert isinstance(source, ImportedModelSource)
+    _, tree = read_imported_model(store, source, verify_bytes=verify_bytes)
+    return imported_model_provenance(source, tree), (
+        source.model, source.weights.descriptor, *tree.members.values(),
+    )
 
 
 def best_bound_rank(subject: BestRank, binding: dict, *, verify_metrics: bool = False) -> int:
@@ -333,6 +358,9 @@ def decode_evaluation_manifest(
         or projection.params != spec.params
         or projection.inputs != manifest.provenance.parents
         or projection.training_run_ids != [item.id for item in manifest.input_training_runs]
+        or (manifest.loaded_model is not None) != (
+            isinstance(subject, ContentRef) and subject.media_type == IMPORTED_MODEL_MEDIA_TYPE
+        )
     ):
         raise ValueError("Evaluate result differs from its canonical request and declared inputs.")
     return manifest, subject
@@ -354,7 +382,7 @@ def verify_evaluation_receipt(
         refs = initial_evaluation_references(decode_request(store.get_object(request), _unexpected_document))
         for content in refs.values():
             store.verify_object(document_input_object(content))
-        verify_initial_rollout(manifest, refs)
+        verify_initial_rollout(store, manifest, refs)
         return manifest, subject
     if "terminal" in binding:
         from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance
@@ -468,8 +496,11 @@ class EvaluationResult:
 
     def replay(
         self, trial: str | None = None, *, checkpoint: int | None = None, aggregate: bool = False,
+        mean: TrialMeanSelection | None = None,
     ) -> StudioTrialReplayResponse:
         """Read trial records at one exact preserved Evaluate checkpoint."""
+        if mean is not None and trial is not None:
+            raise CannotRun("/mean", "Mean requires all recorded trials")
         with self.open_states() as dataset:
             descriptor = dataset.descriptor
             update_axis = next((axis for axis in ("update", "checkpoint") if axis in descriptor.dimensions), None)
@@ -491,36 +522,38 @@ class EvaluationResult:
             indices = range(len(trials)) if trial is None else (trials.index(trial),)
             if descriptor.dimensions["condition"] != 1:
                 raise ValueError("The retained trial has more than one condition.")
-            state_time = dataset.data("state_time").tolist()
+            state_time = dataset.data("state_time")
             n_steps = len(state_time) - 1
             selection = (*selected, 0)
             raw_layout = descriptor.attrs.get("trial_record")
-            if raw_layout is not None:
-                layout = RecordedTrialLayout.model_validate(raw_layout)
-                position_key = next(iter(layout.positions), None)
-                records = [
-                    read_trial_record(dataset, trials[index], (*selection, index), layout)
-                    for index in indices
-                ]
-            else:
-                legacy_position = descriptor.attrs.get("scene_position")
-                position_key = legacy_position if isinstance(legacy_position, str) else None
-                records = [
-                    _legacy_trial_record(dataset, trials[index], (*selection, index), position_key)
-                    for index in indices
-                ]
+            if raw_layout is None:
+                raise ValueError("The retained result has no trial record.")
+            layout = RecordedTrialLayout.model_validate(raw_layout)
+            position_key = next(iter(layout.positions), None)
+            records = [
+                read_trial_record(dataset, trials[index], (*selection, index), layout)
+                for index in indices
+            ]
+            mean_options = layout.mean_options() if trials else None
+            mean_result = None
+            if mean is not None and mean_options is not None:
+                from feedbax.execution.trial_clock import mean_trial_paths
+
+                mean_result = mean_trial_paths(records, state_time, mean_options, mean)
 
             drawn: TrialRecords | TrialAggregate = TrialRecords(kind="trials", trials=records)
-            if aggregate and raw_layout is not None:
+            if aggregate:
                 from feedbax.execution.trial_record import aggregate_trials
 
                 drawn = aggregate_trials(records, n_steps)
             return StudioTrialReplayResponse(
                 n_steps=n_steps,
-                state_time=state_time,
+                state_time=state_time.tolist(),
                 position=model_state_address(position_key).to_text() if position_key is not None else None,
                 receipt=self.receipt,
                 drawn=drawn,
+                mean_options=mean_options,
+                mean=mean_result,
             )
 
     def objective_series(self, requested: list[int], *, objective: ObjectiveDocument) -> StudioEvaluationObjectiveSeries:
@@ -571,19 +604,6 @@ class EvaluationResult:
             lineage=lineage, condition=condition, trials=list(params.trials), seed=params.seed,
             objective=objective_hash, requested=requested, points=points, gaps=gaps,
         )
-
-
-def _legacy_trial_record(
-    dataset: Dataset, trial: str, selection: tuple[int, ...], position: str | None,
-) -> TrialRecord:
-    """Old results still expose the one position path they recorded for playback."""
-    states = (
-        {model_state_address(position).to_text(): read_position_track(dataset, position, selection)}
-        if position is not None else {}
-    )
-    return TrialRecord(
-        id=trial, inits={}, inputs={}, present={}, variables={}, variable_defined={}, timeline=[], states=states,
-    )
 
 
 def _objective_checkpoint(parent: ParentRef) -> StudioEvaluationCheckpoint:

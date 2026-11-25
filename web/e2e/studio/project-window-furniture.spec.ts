@@ -102,6 +102,14 @@ test('a library tip moves to the next item the pointer rests on', async ({ page,
   await details.getByRole('button', { name: 'Equinox', exact: true }).click();
   const rows = details.getByRole('listbox', { name: 'Equinox', exact: true }).getByRole('option');
   const tip = page.locator('[role=presentation][data-side]');
+  // Unfolding the group scrolls it into view, and a card stays shut while its region scrolls.
+  let resting: number | undefined;
+  await expect.poll(async () => {
+    const y = (await rows.first().boundingBox())!.y;
+    const still = y === resting;
+    resting = y;
+    return still;
+  }).toBe(true);
   for (const index of [0, 1]) {
     const row = rows.nth(index);
     await row.hover();

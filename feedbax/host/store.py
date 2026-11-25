@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 from uuid import uuid4
 
+from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import RequestObject, TerminalTrainSubject
 from feedbax.contracts.execution_target import SessionTarget, attempt_target
@@ -818,6 +819,7 @@ class Store:
                     from feedbax.contracts.model_input import read_document_input
                     from feedbax.persistence.canonical_evaluate import (
                         BoundEvaluationJobInput, decode_rollout_request, initial_evaluation_references,
+                        verified_imported_subject,
                     )
 
                     try:
@@ -834,6 +836,7 @@ class Store:
                             raise ValueError("Initial Evaluate differs from its canonical request.")
                         for content in initial_evaluation_references(view.read_request(request)).values():
                             read_document_input(content, view.store)
+                        verified_imported_subject(view.store, launch.canonical_request.initial_model, verify_bytes=True)
                     except (OSError, TypeError, ValueError, KeyError) as error:
                         results.append({
                             "run_key": run_key, "job_id": None, "disposition": "rejected",
@@ -1489,6 +1492,7 @@ class Store:
         self, *, record_keys: list[str] | None = None, checkpoint_progress_root: str | None = None,
         checkpoint_objective_root: str | None = None, terminal_train: tuple[str, list[str]] | None = None,
         checkpoint_admission: tuple[str, list[str]] | None = None,
+        attempt_addresses: tuple[str, list[str]] | None = None,
         **filters,
     ) -> dict:
         snapshot = {"cursor": self.event_head, "oldest_cursor": 0, "jobs": self.jobs(**filters)}
@@ -1528,7 +1532,34 @@ class Store:
             snapshot.update(
                 checkpoint_differences=differences, checkpoint_producers=producers, finished_checkpoints=held,
             )
+        if attempt_addresses is not None:
+            if (project := filters.get("project")) is None:
+                raise HostError("invalid_request", "Attempt addresses require one project.")
+            snapshot["attempt_addresses"] = self._attempt_addresses(project, *attempt_addresses)
         return snapshot
+
+    def _attempt_addresses(self, project: str, root: str, addresses: list[str]) -> dict[str, list[str]]:
+        """Read which authored rows were given each exact attempt, including attached aliases."""
+        result: dict[str, list[str]] = {}
+        for job, address in self.db.execute(
+            """
+            SELECT DISTINCT j.id, run.key
+            FROM submission_projects p
+            JOIN submissions s ON s.id=p.submission
+            JOIN json_each(s.response, '$.record.runs') run
+            JOIN json_each(s.response, '$.items') item ON json_extract(item.value, '$.run_key')=run.key
+            JOIN jobs j ON j.id=json_extract(item.value, '$.job_id')
+            WHERE p.project=? AND j.project=p.project
+              AND json_extract(s.response, '$.record.project')=p.project
+              AND json_extract(s.response, '$.record.command.store')=?
+              AND json_extract(j.data, '$.manifest_root')=?
+              AND j.request=json_extract(run.value, '$.request_id')
+              AND run.key IN (SELECT value FROM json_each(?))
+            """,
+            (project, root, root, dump(addresses)),
+        ):
+            result.setdefault(job, []).append(address)
+        return result
 
     @inspect_without_recording()
     def _terminal_train_for_anchor(self, anchor: str) -> TerminalTrainSubject | None:
@@ -1827,6 +1858,30 @@ class Store:
             )
             members.append(member | {"publication_cursor": cursor})
         return missing, members
+
+    def checkpoint_for_export(self, *, job_id: str, project: str, manifest_root: str, update: int) -> dict | None:
+        """Authenticate a checkpoint on the named attempt's exact recovery lineage."""
+        coordinates = finite_coordinates((update,))
+        attempt = self.get(job_id)
+        if (
+            attempt is None or attempt["project"] != project or not attempt["request"].startswith("train:")
+            or json.loads(attempt["data"]).get("manifest_root") != manifest_root
+        ):
+            return None
+        path = [attempt]
+        while path[-1]["continues"] is not None:
+            ancestor = self.get(path[-1]["continues"])
+            if ancestor is None or (ancestor["project"], ancestor["request"]) != (project, attempt["request"]):
+                raise HostError("checkpoint_unavailable", "The selected Train lineage is incomplete.")
+            path.append(ancestor)
+        read = self._completion_candidate(
+            path[-1]["id"], CheckpointSelection(coordinates, requires_catalog=False), tip=job_id, observe=True,
+        )
+        if read.binding is not None:
+            return read.binding["checkpoint_selection"]["members"][0]["checkpoint"]
+        if read.rejections:
+            raise HostError("checkpoint_unavailable", read.rejections[-1].message)
+        return None
 
     def _series_closure(self, attempt: sqlite3.Row, path: tuple[sqlite3.Row, ...]) -> dict | None:
         if attempt["state"] == "succeeded":

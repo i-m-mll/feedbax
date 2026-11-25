@@ -22,9 +22,19 @@ export type Port = {
 export type Registry = ReadonlyMap<string, ComponentDefinition>;
 type ModelAttachment = NonNullable<ModelWire['attachments']>[number];
 
-export function portTypeLabel({ type }: Port) {
+/** The kind, size and unit of a port's type, as its card shows it beside the port's name; a real value's kind goes unsaid. */
+export function portTypeName({ type }: Port) {
   if (typeof type === 'string') return humanizeLabel(type);
-  return [type.base, type.shape?.length ? `[${type.shape.join(', ')}]` : null, type.unit].filter(Boolean).join(' ');
+  if (type.space) return [studioName(type.space === 'point' ? 'pointType' : 'vectorType'), type.unit].filter(Boolean).join(' ');
+  return [type.base !== 'real' && type.base && humanizeLabel(type.base), shapeText(type), type.unit].filter(Boolean).join(' ');
+}
+
+const shapeText = (type: SignalType) => type.shape?.length ? `[${type.shape.join(', ')}]` : null;
+
+export function portTypeLabel(port: Port) {
+  const { type } = port;
+  if (typeof type === 'string') return humanizeLabel(type);
+  return [type.space ? portTypeName(port) : type.unit, type.base, shapeText(type)].filter(Boolean).join(' ');
 }
 
 export function addressKey(address: ModelAddress) {
@@ -66,13 +76,59 @@ export function isTemplate(definition: ComponentDefinition) {
   return !!definition.is_composite && !!definition.template_kind;
 }
 
-/** Whether the Library offers `definition` in a graph of `domain`; of the composites, only templates, in a causal graph. */
-export function accepts(definition: ComponentDefinition, domain: PhysicalInterior['physical_domain'] | null) {
-  if (definition.is_composite && !isTemplate(definition)) return false;
-  if (!domain) return definition.domain === 'feedbax.domain.causal';
-  if (definition.is_composite) return false;
-  return definition.domain === 'feedbax.domain.acausal' ||
-    ((domain === 'planar_multibody' || domain === 'spatial_multibody') && definition.domain === 'feedbax.domain.mechanics');
+export type EquationsDomain = NonNullable<ComponentDefinition['equations_domains']>[number];
+type Domain = PhysicalInterior['physical_domain'] | null;
+
+/**
+ * A row of the Library: a definition placed as itself, or, for a definition that starts Equations composites, a new
+ * composite of one of its domains.
+ */
+export type LibraryEntry = {
+  readonly id: string;
+  readonly name: string;
+  readonly group: string;
+  readonly definition: ComponentDefinition;
+  readonly equations?: EquationsDomain;
+};
+
+/** Whether `definition`'s conserving ports all fit `domain`: a port that states no domain fits any. */
+function conservesIn(definition: ComponentDefinition, domain: Domain) {
+  const types = definition.port_types;
+  return [...Object.values(types?.inputs ?? {}), ...Object.values(types?.outputs ?? {})]
+    .every((type) => type.kind !== 'conserving' || !type.physical_domain || type.physical_domain === domain);
+}
+
+/**
+ * The Library's rows in a graph of `domain`. A causal graph holds causal definitions, templates and new Equations
+ * composites; an Equations interior holds the elements whose conserving ports are of its domain, and an Equations
+ * composite of the same domain.
+ */
+export function libraryEntries(definitions: readonly ComponentDefinition[], domain: Domain): LibraryEntry[] {
+  return definitions.flatMap((definition): LibraryEntry[] => {
+    const own = { id: definition.name, name: shortName(definition.name), definition };
+    const domains = definition.equations_domains ?? [];
+    if (domains.length) {
+      return domains.filter((each) => !domain || each === domain).map((equations) => ({
+        id: `${definition.name}:${equations}`, name: humanizeLabel(equations), group: studioName('equations'), definition, equations,
+      }));
+    }
+    if (definition.is_composite && !isTemplate(definition)) return [];
+    const group = isTemplate(definition) ? studioName('templates') : definition.category;
+    if (!domain) return definition.domain === 'feedbax.domain.causal' ? [{ ...own, group }] : [];
+    if (definition.is_composite) return [];
+    const mechanics = domain === 'planar_multibody' || domain === 'spatial_multibody';
+    if (mechanics) return definition.domain === 'feedbax.domain.acausal' || definition.domain === 'feedbax.domain.mechanics'
+      ? [{ ...own, group }] : [];
+    return definition.domain === 'feedbax.domain.acausal' && conservesIn(definition, domain) ? [{ ...own, group }] : [];
+  });
+}
+
+/** The component an entry places while its add is pending, and, for a new Equations composite, the one it sends. */
+export function newEquations(entry: LibraryEntry & { equations: EquationsDomain }): CompositeComponent {
+  return {
+    kind: 'composite', name: entry.name, ports: { inputs: [], outputs: [], physical: [] },
+    interior: { physical_domain: entry.equations, components: {}, wires: {}, connections: {} },
+  };
 }
 
 function signalType(type: PortType | undefined): SignalType {
@@ -172,7 +228,7 @@ export function fieldAddress(address: ModelAddress, ...path: (string | number)[]
 
 export function graphKind(component: CompositeComponent) {
   const domain = component.interior.physical_domain;
-  return domain === 'planar_multibody' || domain === 'spatial_multibody' ? 'Mechanics' : domain ? 'Equations' : 'Graph';
+  return domain === 'planar_multibody' || domain === 'spatial_multibody' ? 'Mechanics' : domain ? studioName('equations') : 'Graph';
 }
 
 type Element = ModelAddress['element'];

@@ -11,6 +11,7 @@ import { ScrollFade, type ScrollFadeProps } from './ScrollFade';
 import {
   clearDrag, dragTarget, drawDrag, fitColumns, memberOrder, startDrag, type Drag, type DragAxis,
 } from './tableLayout';
+import { followPress, type Point } from './pointerPress';
 
 /** A row or column that can be dragged to another place: its id, and its handle's accessible name. */
 export interface TableMember {
@@ -64,6 +65,8 @@ export interface TableProps extends TableHTMLAttributes<HTMLTableElement> {
   columns: readonly TableColumn[];
   /** How many leading columns stay in place while the rest scroll: those up to and including a row's name. */
   held?: number;
+  /** The last column stays in place at the trailing edge while the rest scroll, as an on-off check that must stay reachable. */
+  heldEnd?: boolean;
   /** A row added at the foot of the last held column (the name column), or of the first column when none is held. */
   addRow?: TableAdd;
   /** A column added at the trailing end of the header, as wide as its control; `TableAddColumn` draws it. */
@@ -92,8 +95,6 @@ const defaultGreatest = '24rem';
 const marginWidth = '1.25rem';
 /** The add column's bounds: its control and the cell's padding. */
 const addBounds = { least: '0px', greatest: '4rem' };
-/** How far the pointer moves before a press on a handle is a drag. */
-const slop = 3;
 
 /**
  * A table whose columns fit their content between their bounds: in a box narrower than their sum it scrolls on its
@@ -101,7 +102,7 @@ const slop = 3;
  * outside their cells; while one is dragged the others are drawn where they will be, and the order is written once,
  * on release. Each row's menu is drawn over the trailing end of its name cell.
  */
-export function Table({ columns, held = 0, addRow, addColumn, moveRow, moveColumn, box, className, style, children, ...props }: TableProps) {
+export function Table({ columns, held = 0, heldEnd = false, addRow, addColumn, moveRow, moveColumn, box, className, style, children, ...props }: TableProps) {
   const table = useRef<HTMLTableElement>(null);
   const probe = useRef<HTMLSpanElement>(null);
   const widths = useRef<number[]>([]);
@@ -143,7 +144,8 @@ export function Table({ columns, held = 0, addRow, addColumn, moveRow, moveColum
     offsets.forEach((offset, index) => table.current!.style.setProperty(`--held-left-${index + 1}`, `${offset}px`));
     table.current.parentElement?.style.setProperty('--fade-inset-left',
       `${widths.current.slice(0, shown).reduce((sum, width) => sum + width, 0)}px`);
-  }, [JSON.stringify(bounds), shown]);
+    table.current.parentElement?.style.setProperty('--fade-inset-right', `${heldEnd ? widths.current.at(-1) ?? 0 : 0}px`);
+  }, [JSON.stringify(bounds), shown, heldEnd]);
 
   useLayoutEffect(() => {
     fit();
@@ -176,65 +178,47 @@ export function Table({ columns, held = 0, addRow, addColumn, moveRow, moveColum
     const move = axis === 'rows' ? moves.current.moveRow : moves.current.moveColumn;
     if (event.button !== 0 || !element || !move || drag.current) return;
     event.preventDefault();
-    const coordinate = (pointer: { clientX: number; clientY: number }) => axis === 'rows' ? pointer.clientY : pointer.clientX;
-    const origin = coordinate(event);
-    const pointer = event.pointerId;
-    let started = false;
-    const onMove = (moved: PointerEvent) => {
-      if (moved.pointerId !== pointer) return;
-      const at = coordinate(moved);
-      if (!started) {
-        if (Math.abs(at - origin) < slop) return;
-        if (holding.current) {
-          clearDrag(element, false);
-          holding.current = undefined;
-        }
-        drag.current = startDrag(element, axis, id, pointer, origin);
-        started = !!drag.current;
-        if (!started) return finish();
-      }
-      const current = drag.current!;
-      current.target = dragTarget(current, at);
-      drawDrag(element, current, at);
-    };
-    const onUp = (released: PointerEvent) => {
-      if (released.pointerId !== pointer) return;
-      const current = drag.current;
-      finish();
-      if (!current) return;
-      const at = coordinate(released);
-      current.target = dragTarget(current, at);
-      if (current.target === current.from) {
-        clearDrag(element, true);
-        return;
-      }
-      drawDrag(element, current, at, true);
-      const token = Date.now();
-      holding.current = { axis, order: memberOrder(element, axis).join('\n'), token };
-      const release = () => {
-        if (holding.current?.token !== token) return;
+    const coordinate = ({ x, y }: Point) => axis === 'rows' ? y : x;
+    followPress(event, (_, from) => {
+      if (holding.current) {
+        clearDrag(element, false);
         holding.current = undefined;
-        clearDrag(element, true);
+      }
+      drag.current = startDrag(element, axis, id, event.pointerId, coordinate(from));
+      if (!drag.current) return undefined;
+      return {
+        move(at) {
+          const current = drag.current!;
+          current.target = dragTarget(current, coordinate(at));
+          drawDrag(element, current, coordinate(at));
+        },
+        release(at) {
+          const current = drag.current!;
+          drag.current = undefined;
+          current.target = dragTarget(current, coordinate(at));
+          if (current.target === current.from) {
+            clearDrag(element, true);
+            return;
+          }
+          drawDrag(element, current, coordinate(at), true);
+          const token = Date.now();
+          holding.current = { axis, order: memberOrder(element, axis).join('\n'), token };
+          const release = () => {
+            if (holding.current?.token !== token) return;
+            holding.current = undefined;
+            clearDrag(element, true);
+          };
+          // A move that is written commits its new order soon after it settles; one that is not leaves the order as it
+          // was, and its members slide back. Two frames let the commit land first.
+          void Promise.resolve(move(current.members[current.from].id, current.target))
+            .finally(() => requestAnimationFrame(() => requestAnimationFrame(release)));
+        },
+        cancel() {
+          drag.current = undefined;
+          clearDrag(element, true);
+        },
       };
-      // A move that is written commits its new order soon after it settles; one that is not leaves the order as it
-      // was, and its members slide back. Two frames let the commit land first.
-      void Promise.resolve(move(current.members[current.from].id, current.target))
-        .finally(() => requestAnimationFrame(() => requestAnimationFrame(release)));
-    };
-    const onCancel = (cancelled: PointerEvent) => {
-      if (cancelled.pointerId !== pointer) return;
-      finish();
-      clearDrag(element, true);
-    };
-    function finish() {
-      drag.current = undefined;
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onCancel);
-    }
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onCancel);
+    }, { distance: (from, at) => Math.abs(coordinate(at) - coordinate(from)) });
   }, []);
 
   const sortableColumns = columns.some(({ sortable }) => sortable);
@@ -249,7 +233,7 @@ export function Table({ columns, held = 0, addRow, addColumn, moveRow, moveColum
     <ScrollFade ref={ref} axis={axis} className={clsx('studio-table-box relative', boxClassName)} {...boxProps} style={boxStyle}>
       <span ref={probe} aria-hidden="true" className="pointer-events-none invisible absolute left-0 top-0 h-0" />
       <Shape.Provider value={shape}>
-        <table ref={table} data-held={shown || undefined}
+        <table ref={table} data-held={shown || undefined} data-held-end={heldEnd || undefined}
           className={clsx('studio-table table-fixed border-separate border-spacing-0 text-shell-foreground', className)}
           style={style as CSSProperties}
           onPointerMove={sortableColumns ? (event) => {

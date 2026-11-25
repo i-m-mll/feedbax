@@ -59,7 +59,7 @@ def test_an_evaluate_of_an_unadmissible_train_keeps_its_own_problem():
         term["enabled"] = False
     controller = _model_controller(raw)
     controller["components"]["passthrough"] = {
-        "kind": "leaf", "name": "Passthrough", "type": "feedbax.Gain", "fields": {"gain": 1.0},
+        "kind": "leaf", "name": "Passthrough", "type": "feedbax.Activation", "fields": {"activation": "identity"},
     }
     original = controller["wires"]["read"]
     original["target"], output = _end("passthrough", "input"), original["target"]

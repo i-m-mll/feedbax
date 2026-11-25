@@ -1,24 +1,30 @@
+import { ChevronDown } from 'lucide-react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useStore } from 'zustand';
 import { Shelf, type ShelfRow } from '@/components/timeline/Shelf';
 import { ClockGroup, type ClockTimeline } from '@/components/timeline/ClockGroup';
 import { useTimeAxisStore } from '@/components/timeline/timeAxis';
 import {
-  aggregates, defaultTrialClock, sampleCount, setSize, shelfOpen, shownPick, usePlayhead, type PlayheadStore, type TrialClock, type TrialOffer,
-  type TrialPick,
+  aggregates, averages, defaultTrialClock, meanSelection, sampleCount, setSize, shelfOpen, shownPick, usePlayhead, type MeanChoice,
+  type PlayheadStore, type TrialClock, type TrialOffer, type TrialPick,
 } from '@/components/timeline/trialClock';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
+import { Menu, MenuCheckboxItem, MenuContent, MenuTrigger } from '@/components/ui/Menu';
+import { Select } from '@/components/ui/Select';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { studioRegionIssue, StudioRegion } from '@/components/activity/StudioRegion';
 import type { SceneTrial } from '@/components/scene/trialScene';
 import { frameAt } from '@/components/timeline/trialClock';
-import type { Problem, StudioSavedEvaluationRow, TaskDocument, TrialRecord } from '@/generated/studioContracts';
+import type {
+  Problem, StudioSavedEvaluationRow, TaskDocument, TrialMean, TrialMeanOptions, TrialRecord,
+} from '@/generated/studioContracts';
 import { selectElement, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { showProjectWindowView, type ProjectWindowState, type ProjectWindowView } from '@/features/projectWindow/projectWindowState';
+import { clockRun, type FigureClock } from './figureClock';
 import { recordedTrials, useSavedEvaluationScene, type StoredModel } from './managedProjectDetails';
 import type { TrialView } from './StudioTrialAuthoring';
-import { batchRows, nominalRows, trialRows, trialTermRows, type ShelfTask } from './task/shelfRows';
+import { batchRows, meanRows, nominalRows, trialRows, trialTermRows, type ShelfTask } from './task/shelfRows';
 import { shelfTask, taskDocumentOf, useNominalTrial, useTaskBatch, useTaskSamples } from './task/taskTrials';
 import type { TrialShown, TrialsUnavailable } from './task/trialSample';
 
@@ -82,10 +88,12 @@ function useShown(pick: TrialPick | undefined, clock: TrialClock, offer: TrialOf
         switch (showing.kind) {
           case 'one': return recorded && { kind: 'one', index: showing.index, count: offer.recorded, record: recorded.picked };
           case 'all': return replay.aggregate.data && { kind: 'all', count: offer.recorded, aggregate: replay.aggregate.data };
+          case 'mean': return undefined;
         }
       case 'samples':
         switch (showing.kind) {
           case 'one': return one(samples.data, showing.index, count);
+          case 'mean': return undefined;
           case 'all': {
             const drawn = batch.data;
             return !drawn || drawn.kind === 'problems' ? drawn : { kind: 'all', count, aggregate: drawn };
@@ -97,8 +105,8 @@ function useShown(pick: TrialPick | undefined, clock: TrialClock, offer: TrialOf
     : pick?.showing.kind === 'all' ? replay.aggregate : undefined;
   const shown = read();
   const drawnSamples = possibleShown && Array.isArray(samples.data) ? samples.data : noRecords;
-  const possible = pick?.trials === 'recorded' ? recorded && pick.showing.kind === 'all' ? recorded.records : noRecords : drawnSamples;
-  const picked = pick?.trials === 'recorded' ? recorded?.picked
+  const possible = pick?.trials === 'recorded' ? recorded && pick.showing.kind !== 'one' ? recorded.records : noRecords : drawnSamples;
+  const picked = pick?.showing.kind === 'mean' ? undefined : pick?.trials === 'recorded' ? recorded?.picked
     : pick?.showing.kind === 'all' ? drawnSamples[pick.showing.index] : shown?.kind === 'one' ? shown.record : undefined;
   return { shown, query, possible, picked };
 }
@@ -109,7 +117,9 @@ const noRecords: readonly TrialRecord[] = [];
  * The shelf's rows for what is shown: the nominal trial as its definition draws it, with each drawn length's spread, and
  * its terms as its record has them once it is read; one trial as its record has it; the aggregate's shares.
  */
-function rowsOf(task: ShelfTask, pick: TrialPick, shown: TrialShown | TrialsUnavailable | undefined, stepSeconds: number): ShelfRow[] | undefined {
+function rowsOf(task: ShelfTask, pick: TrialPick, shown: TrialShown | TrialsUnavailable | undefined, stepSeconds: number,
+  mean: TrialMean | undefined): ShelfRow[] | undefined {
+  if (pick.showing.kind === 'mean') return mean && meanRows(task, mean);
   if (pick.trials === 'nominal') {
     return [...nominalRows(task), ...shown?.kind === 'one' ? trialTermRows(task, shown.record, stepSeconds) : []];
   }
@@ -119,6 +129,53 @@ function rowsOf(task: ShelfTask, pick: TrialPick, shown: TrialShown | TrialsUnav
     case 'one': return trialRows(task, shown.record, stepSeconds);
     case 'all': return batchRows(task, shown.aggregate, stepSeconds);
   }
+}
+
+/**
+ * Under Mean, the time from Align's epoch over which some trial has a record, which the figures draw every trial over,
+ * and the times every trial's samples are at, on that axis.
+ */
+function meanTimeline(mean: TrialMean, stateTime: readonly number[]): Omit<ClockTimeline, 'bands'> | undefined {
+  const alignments = mean.conditions.flatMap((condition) => Object.values(condition.trials));
+  if (!alignments.length) return undefined;
+  const start = Math.min(...alignments.map(({ span }) => span.start));
+  const end = Math.max(...alignments.map(({ span }) => span.end));
+  const times = new Set(alignments.flatMap(({ origin, span }) => stateTime.map((time) => Math.round((time - origin) * 1e9) / 1e9)
+    .filter((time) => time >= span.start - 1e-9 && time <= span.end + 1e-9)));
+  return { start, duration: end - start, frameTimes: [...times].sort((a, b) => a - b) };
+}
+
+/**
+ * Mean's two fields: By, the discrete task variables whose values make a condition (all of them unless chosen; none
+ * pools every trial), and Align, the epoch whose start is zero (the trial's start unless chosen).
+ */
+/** Align's entry for the trial's start, which no epoch's stable ID can be. */
+const trialStart = '#trial-start';
+
+function MeanFields({ options, choice, onChange }: {
+  options: TrialMeanOptions; choice: MeanChoice; onChange(choice: MeanChoice): void;
+}) {
+  const by = choice.by ?? options.by.map(({ id }) => id);
+  const byText = options.by.filter(({ id }) => by.includes(id)).map(({ label }) => label).join(', ') || studioName('none');
+  return <>
+    <Menu modal={false}>
+      <MenuTrigger render={<Button variant="ghost" className="min-w-0 max-w-48 gap-1 px-1" />} aria-label={studioAccessibleName('meanBy', byText)}>
+        <span className="text-shell-muted">{studioName('meanBy')}</span><span className="truncate">{byText}</span>
+        <ChevronDown aria-hidden="true" />
+      </MenuTrigger>
+      <MenuContent side="top" aria-label={studioName('meanBy')}>
+        {options.by.map(({ id, label }) => <MenuCheckboxItem key={id} checked={by.includes(id)}
+          onCheckedChange={(checked) => {
+            const next = options.by.map((option) => option.id).filter((option) => option === id ? checked : by.includes(option));
+            onChange({ ...choice, by: next.length === options.by.length ? null : next });
+          }}>{label}</MenuCheckboxItem>)}
+      </MenuContent>
+    </Menu>
+    <span aria-hidden="true" className="pl-1 text-shell-muted">{studioName('meanAlign')}</span>
+    <Select aria-label={studioName('meanAlign')} value={choice.align ?? trialStart} className="min-w-0 max-w-32"
+      items={[{ value: trialStart, label: studioName('trialStart') }, ...options.align.map(({ id, label }) => ({ value: id, label }))]}
+      onValueChange={(align) => onChange({ ...choice, align: align === trialStart ? null : align })} />
+  </>;
 }
 
 const frames = (steps: number, stepSeconds: number) => Array.from({ length: steps + 1 }, (_, step) => step * stepSeconds);
@@ -141,26 +198,32 @@ export function useTrialClock({
   };
   const pick = shownPick(clock, offer);
   const replay = useSavedEvaluationScene(projectId, revision, evaluation,
-    pick?.trials === 'recorded' ? pick.showing : undefined, playhead);
+    pick?.trials === 'recorded' ? pick.showing : undefined, { by: clock.mean.by && [...clock.mean.by], align: clock.mean.align }, playhead);
+  const averaging = pick?.showing.kind === 'mean';
+  const mean = averaging ? replay.mean : undefined;
   const recordedTrial = replay.read.kind === 'read' ? replay.read : undefined;
   const { shown, query, possible, picked } = useShown(pick, clock, offer, view, stored, replay, sceneVisible);
   const drawn = view && taskDocument ? shelfTask(view, taskDocument, objectiveDocument) : undefined;
-  const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument, pick, clock.seed]));
-  const [time, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
+  const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument]));
+  const [heldTime, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
   const stateTime = pick?.trials === 'recorded' ? recordedTrial?.stateTime : undefined;
-  const replayTimeline = stateTime && stateTime.length > 1 && stateTime[stateTime.length - 1] > 0
-    ? { duration: stateTime[stateTime.length - 1], frameTimes: [...stateTime] } : null;
+  const replayTimeline = averaging ? mean && recordedTrial ? meanTimeline(mean, recordedTrial.stateTime) ?? null : null
+    : stateTime && stateTime.length > 1 && stateTime[stateTime.length - 1] > 0
+      ? { start: 0, duration: stateTime[stateTime.length - 1], frameTimes: [...stateTime] } : null;
   /** A recorded trial's step is its run's; any other trial's is the step's Model's. */
-  const step = replayTimeline ? replayTimeline.frameTimes[1] : period;
-  const rows = pick && (drawn && step != null ? rowsOf(drawn, pick, shown, step) : shown && []);
+  const step = replayTimeline && stateTime ? stateTime[1] : period;
+  const rows = pick && (drawn && step != null ? rowsOf(drawn, pick, shown, step, mean) : shown && []);
   const epochs = rows?.find((row) => row.kind === 'segments');
   const timeline: ClockTimeline = replayTimeline
-    ? { duration: replayTimeline.duration, frameTimes: replayTimeline.frameTimes, bands: [] }
+    ? { ...replayTimeline, bands: [] }
     : {
+      start: 0,
       duration: drawn?.duration ?? 0,
       frameTimes: view?.n_steps && period != null ? frames(view.n_steps, period) : [],
       bands: epochs?.kind === 'segments' ? epochs.segments : [],
     };
+  /** The playhead is kept across trials of one time axis, so it is brought within the shown trial's time. */
+  const time = timeline.duration > 0 ? Math.min(Math.max(heldTime, timeline.start), timeline.start + timeline.duration) : heldTime;
   const selected = useStore(elements, (current) => current.selection);
   const axis = useTimeAxisStore();
   const change = (next: TrialClock) => setWindowState((current) => ({ ...current, clock: next }));
@@ -175,14 +238,22 @@ export function useTrialClock({
     ? <Button key={at} variant="bare" size="content" align="start" className="block underline-offset-2 hover:underline"
       onClick={() => choose(problem)}>{problem.reason}</Button>
     : <span key={at} className="block">{problem.reason}</span>);
-  /** The set One and All show: the picked set, or the samples when the nominal trial is picked. */
+  /** The set One, All and Mean show: the picked set, or the samples when the nominal trial is picked. */
   const batchSet = pick?.trials === 'nominal' ? 'samples' : pick?.trials;
   const showingAll = !!batchSet && aggregates(batchSet) && setSize(batchSet, clock, offer) > 0 && <SegmentedControl
-    aria-label={studioName('trials')} value={pick?.showing.kind === 'all' ? 'all' : 'one'}
-    items={[{ value: 'one', label: studioName('oneTrial') }, { value: 'all', label: studioName('allTrials') }]}
+    aria-label={studioName('trials')} value={pick?.showing.kind ?? 'one'}
+    items={[
+      { value: 'one', label: studioName('oneTrial') }, { value: 'all', label: studioName('allTrials') },
+      { value: 'mean', label: studioName('mean'), disabled: !averages(batchSet) },
+    ]}
     onValueChange={(kind) => change({
       ...clock, picked: { trials: batchSet, showing: { kind, index: pick?.trials === batchSet ? pick.showing.index : 0 } },
     })} />;
+  const showing = showingAll && <div className="flex min-w-0 items-center gap-1">
+    {showingAll}
+    {averaging && replay.meanOptions && <MeanFields options={replay.meanOptions} choice={clock.mean}
+      onChange={(next) => change({ ...clock, mean: next })} />}
+  </div>;
   const trails = pick?.trials === 'recorded' && <Button variant="ghost" pressed={clock.trails}
     onClick={() => change({ ...clock, trails: !clock.trails })}>{studioName('trails')}</Button>;
   const scene: SceneTrial = {
@@ -191,22 +262,40 @@ export function useTrialClock({
     trails: clock.trails,
     frame: frameAt(timeline.frameTimes, time),
     task: task && taskDocument ? { document: taskDocument, value: task } : undefined,
+    ...mean && recordedTrial && { mean: { value: mean, time, stateTime: recordedTrial.stateTime } },
     ...pick?.trials === 'recorded' && replay.read.kind === 'failed' && { failure: replay.read },
+  };
+  const recordedPick = pick?.trials === 'recorded' ? pick : undefined;
+  const pickedTrial = recordedPick && recorded.ids[recordedPick.showing.index];
+  const pickedKind = recordedPick?.showing.kind;
+  /** Under Mean the time is measured from Align's epoch and no single trial is drawn. */
+  const figure: FigureClock = {
+    time, setTime, epoch: averaging ? clock.mean.align : null, run: recordedPick && clockRun(evaluation),
+    picked: pickedTrial === undefined || !pickedKind || pickedKind === 'mean' ? undefined : { trial: pickedTrial, kind: pickedKind },
+    pickTrial: (trial) => {
+      const index = recorded.ids.indexOf(trial);
+      const kind = pickedKind === 'all' ? 'all' : 'one';
+      if (index >= 0) change({ ...clock, picked: { trials: 'recorded', showing: { kind, index } } });
+    },
   };
   return {
     replay,
+    /** What a figure draws from the clock. */
+    figure,
     /** What the Scene draws: the shown trial at the playhead's frame, the trials it may be, and the task. */
     scene,
     /** What the Variables table and the Inspector show, when it can be drawn. */
     trial: shown?.kind === 'problems' ? undefined : shown,
-    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} onChange={change}
+    /** The Mean every figure draws, while Mean is picked. */
+    mean: meanSelection(clock),
+    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} recordedOutOfDate={recorded.outOfDate} onChange={change} showing={showing || undefined}
       timeline={timeline} time={time} onTimeChange={setTime} axis={axis} shelfOpen={open}
       onShelfChange={(next) => shelfView && change({ ...clock, shelf: { ...clock.shelf, [shelfView]: next } })} />,
     shelf: pick && open && timeline.duration > 0 && (rows
-      ? <Shelf rows={rows} duration={timeline.duration} stepSeconds={replayTimeline ? undefined : period ?? undefined} time={time}
+      ? <Shelf rows={rows} start={timeline.start} duration={timeline.duration} stepSeconds={replayTimeline ? undefined : period ?? undefined} time={time}
         onTimeChange={setTime} axis={axis} selected={selected} onSelect={(address) => selectElement(elements, address)}
         unavailable={unavailable || undefined}
-        trailing={(showingAll || trails) && <div className="flex items-center gap-1">{showingAll}{trails}</div>} />
+        trailing={trails || undefined} />
       : <StudioRegion state={query?.error
         ? { kind: 'failed', issue: studioRegionIssue('shelf', query.error), retry: () => { void query.refetch(); } }
         : { kind: 'loading' }} />),

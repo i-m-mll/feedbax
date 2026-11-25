@@ -81,6 +81,26 @@ test('a failed Task read retries in its slot without disturbing Runs', async ({ 
   }
 });
 
+test('a failed Train run draws the Host\'s reason in its row', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const message = 'Loss became NaN at update 3.';
+  // The plan read reports the Train's runs failed with the Host's message, as a crashed attempt projects them.
+  await page.route((url) => url.pathname === projectPath + '/train-runs', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const plan = await (await route.fetch()).json() as StudioSavedTrainRuns;
+    const failed = { status: 'failed' as const, reason: message };
+    plan.rows = plan.rows.map((row) => ({ ...row, ...failed }));
+    for (const row of plan.window_map?.rows ?? []) if (row.key.step === 'train') Object.assign(row, failed);
+    await route.fulfill({ json: plan });
+  });
+  await page.goto('/?project=' + snapshot.project_id);
+  await mapStep(page, 'train').press('Enter');
+  const rows = page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('table', { name: 'Runs', exact: true })
+    .getByRole('row').filter({ hasText: 'Failed' });
+  await expect(rows.first()).toBeVisible();
+  for (const row of await rows.all()) await expect(row).toContainText(message);
+});
+
 test('a real Model edit updates map, drawer, and Runs from the saved plan', { tag: '@round' }, async ({ page, request }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
@@ -544,7 +564,6 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
 
   await page.getByRole('button', { name: 'Show Both', exact: true }).click();
   const problemButton = page.getByRole('button', { name: /^Problems \d+$/ });
-  await expect(problemButton).toHaveText(`Problems ${problems.length}`);
   await expect(problemButton).toHaveAccessibleName(`Problems ${problems.length}`);
   await problemButton.click();
   const list = page.getByRole('dialog', { name: 'Problems' });

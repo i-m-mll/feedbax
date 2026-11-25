@@ -4,7 +4,11 @@ from collections.abc import Callable
 from functools import cache
 from pathlib import Path
 
+from feedbax.contracts.loaded_model import ImportedModelProvenance, ImportedModelSource, decode_imported_model_document
+from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project_resolution import TerminalTrainSource
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.model_tree import ModelTree, read_model_tree
 
 
 def terminal_train_reader(store_path: Path) -> Callable[[str], TerminalTrainSource | None]:
@@ -30,3 +34,37 @@ def terminal_train_reader(store_path: Path) -> Callable[[str], TerminalTrainSour
         return TerminalTrainSource(decoded.id, terminal, decoded.spec)
 
     return read
+
+
+def imported_model_reader(store_path: Path) -> Callable[[str], ModelDocument]:
+    @cache
+    def provider():
+        from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+        return ImmutableArtifactBlobProvider(store_path)
+
+    def read(source_json: str) -> ModelDocument:
+        return read_imported_model(provider(), ImportedModelSource.model_validate_json(source_json))[0]
+
+    return read
+
+
+def read_imported_model(
+    store: ImmutableArtifactBlobProvider, source: ImportedModelSource, *, verify_bytes: bool = False,
+) -> tuple[ModelDocument, ModelTree]:
+    model = decode_imported_model_document(store.get_object(source.model))
+    tree = read_model_tree(store, source.weights, source.encoding)
+    for member in tree.members.values():
+        if verify_bytes:
+            store.verify_object(member)
+        else:
+            with store.open_owned_object(member):
+                pass  # Observe custody and size without reading tensor data during Plan.
+    return model, tree
+
+
+def imported_model_provenance(source: ImportedModelSource, tree: ModelTree) -> ImportedModelProvenance:
+    return ImportedModelProvenance(
+        kind="imported", model_revision=source.model.sha256, weights_sha256=source.weights.descriptor.sha256,
+        replicas=tuple(member.descriptor.id for member in tree.replicas),
+    )

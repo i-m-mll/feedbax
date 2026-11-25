@@ -7,8 +7,10 @@ import pytest
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_sweep import CHECKPOINT_RULE_TARGET
+from feedbax.examples import load_shipped_projects
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
+from tests.support.managed_train_fixture import managed_evaluation_step
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_evaluate_documents import MASS, _based, _data, _model, _reads, _with_mass
 from tests.test_saved_update_series import definition
@@ -109,6 +111,97 @@ def _duplicate_ports(studio):
     assert [(port["id"], port["name"]) for port in ports] == [("vector", "Vector"), ("scalar", "Vector")]
     assert {problem["address"]["element"]["end"]["port"] for problem in edit["problems"]
             if problem["address"]["element"]["kind"] == "port"} == {"vector", "scalar"}
+
+
+def _typed_signal_project():
+    project = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    project["steps"] = {"simple-reaches": project["steps"]["simple-reaches"]}
+    project["steps"]["check"] = managed_evaluation_step("simple-reaches")
+    model = project["documents"]["point-mass"]["payload"]
+    for key, leaf in (("position", "pos"), ("velocity", "vel")):
+        model["interior"]["components"][key] = {
+            "kind": "leaf", "name": key, "type": "feedbax.SelectState", "fields": {"paths": [leaf]},
+        }
+        model["interior"]["wires"][f"select-{key}"] = {
+            "source": {"owner": "component", "component": "plant", "port": "effector"},
+            "target": {"owner": "component", "component": key, "port": "state"},
+        }
+    model["ports"]["inputs"][0]["type"] = {"shape": [2]}
+    model["interior"]["components"]["point_receiver"] = {
+        "kind": "composite", "name": "Point receiver",
+        "ports": {"inputs": [
+            {"id": "in", "name": "Point", "type": {"shape": [2], "space": "point"}},
+            {"id": "free", "name": "Free", "type": {"shape": [2], "space": "free"}},
+        ]},
+        "interior": {},
+    }
+    return project
+
+
+def _incompatible_signal_space(studio):
+    document = "point-mass"
+    run = studio.run("simple-reaches")
+    source = {"owner": "component", "component": "velocity", "port": "output"}
+    target = {"owner": "component", "component": "point_receiver", "port": "in"}
+    review = studio.post("/model/connections", document=document, run=run, graph=_GRAPH, source=source)
+    verdict = next(item for item in review["targets"] if item["target"] == target)
+    assert verdict["reason"] is None and "point" in verdict["problem"] and "free" in verdict["problem"]
+
+    root_source = {"owner": "inputs", "port": "target_pos"}
+    from_task = studio.post("/model/connections", document=document, run=run, graph=_GRAPH, source=root_source)
+    free = next(item for item in from_task["targets"] if item["target"] == {**target, "port": "free"})
+    assert free["reason"] is None and "expected free space, received point space" in free["problem"]
+    evaluate = studio.post("/model/projection", document=document, run=studio.run("check"), evaluate_scope={"kind": "step"})
+    assert any(port["readers"] == ["effector_position"] for port in evaluate["ports"])
+
+    edit = studio.model_edit(document, {"operation": {
+        "op": "connect", "graph": _GRAPH, "source": source, "target": target,
+    }})
+    [wire] = edit["changed"]
+    [problem] = edit["problems"]
+    assert problem["address"] == wire and "point" in problem["reason"] and "free" in problem["reason"]
+    saved = studio.reopen(edit["snapshot"], "document", document)
+    persisted = saved["project"]["documents"][document]["payload"]["interior"]["wires"][wire["element"]["id"]]
+    assert (persisted["source"], persisted["target"]) == (source, target)
+
+    projection = studio.post("/model/projection", revision=saved["revision"], document=document, run=run)
+    assert projection["problems"] == [problem]
+    ports = {ModelAddress.model_validate(port["address"]).to_text(): port for port in projection["ports"]}
+
+    def port_at(end, *path):
+        element = {"kind": "port", "end": end}
+        if path:
+            element = {"kind": "field", "parent": element, "path": path}
+        return ports[ModelAddress.model_validate({"composites": [], "element": element}).to_text()]
+
+    root_effector = {"owner": "outputs", "port": "effector"}
+    assert port_at(root_effector)["type"] == {"base": "state"}
+    hand = port_at(root_effector, "pos")
+    assert hand["type"] == {"base": "real", "shape": [2], "unit": "m", "space": "point"}
+    assert hand["readers"] == ["effector_position"]
+    effector = {"owner": "component", "component": "plant", "direction": "output", "port": "effector"}
+    assert port_at(effector, "pos")["readers"] == ["effector_position"]
+    assert port_at(effector, "vel")["readers"] == ["effector_final_velocity"]
+    assert port_at(effector)["readers"] == ["effector_position", "effector_final_velocity"]
+
+    current = _Studio(studio.client, studio.folders)
+    grown = current.model_edit(document, {"operation": {
+        "op": "connect", "graph": _GRAPH, "source": source,
+        "target": {"owner": "outputs", "port": "__new_port__"}, "grow_target": True,
+    }})
+    output = next(address["element"]["end"] for address in grown["changed"] if address["element"]["kind"] == "port")
+
+    def output_type(revision):
+        view = studio.post("/model/projection", revision=revision, document=document, run=run)
+        return next(port["type"] for port in view["ports"]
+                    if port["address"]["element"] == {"kind": "port", "end": output})
+
+    assert output_type(grown["snapshot"]["revision"]) == {"base": "real", "shape": [2], "unit": "m/s", "space": "free"}
+    current = _Studio(studio.client, studio.folders)
+    rewired = current.model_edit(document, {"operation": {
+        "op": "connect", "graph": _GRAPH, "source": {**source, "component": "position"}, "target": output,
+    }})
+    assert output_type(rewired["snapshot"]["revision"]) == {"base": "real", "shape": [2], "unit": "m", "space": "point"}
 
 
 def _invalid_model_field(studio):
@@ -253,6 +346,7 @@ def _change_key(studio):
 
 @pytest.mark.parametrize(("seed", "witness"), [
     pytest.param(_graph_project, _incompatible_wire, id="incompatible-wire"),
+    pytest.param(_typed_signal_project, _incompatible_signal_space, id="incompatible-space"),
     pytest.param(_graph_project, _duplicate_ports, id="duplicate-port-label"),
     pytest.param(_data, _invalid_model_field, id="invalid-model-field"),
     pytest.param(_rule_project, _bad_run_rule, id="bad-run-rule"),

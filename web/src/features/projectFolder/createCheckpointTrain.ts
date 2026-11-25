@@ -1,10 +1,10 @@
-import { valuesRule } from '@/components/values/runRule';
 import type { PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import type { PlanView } from '@/features/pipeline/planView';
 import { selectedRuns } from '@/features/pipeline/selection';
 import type { Step, StepReference, StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
-import { planVariants, savedRunId, sharedRowTerms, stepSourceRows } from './projectWindowPlan';
+import { planVariants, selectedRowTerms, stepSourceRows } from './projectWindowPlan';
+import { authoredSubset } from './selectionEdits';
 import { generatedName, holds } from './generatedName';
 
 const initializationPath = 'checkpoint_initialization';
@@ -28,7 +28,6 @@ export function trainSourceSubset(
   source: PipelineMapStepSource,
   view: PlanView,
   projection: StudioSavedTrainRuns,
-  sharedProject: boolean,
 ) {
   const { stepId, selection } = source;
   const step = view.steps.find(({ id }) => id === stepId);
@@ -38,19 +37,9 @@ export function trainSourceSubset(
   if (!variant || !members.length || members.some((member) => member.variant !== variant)) throw new ProjectEditConflictError();
   let where: SubsetTerms | undefined;
   if (selection) {
-    const selected = new Set(members.map(({ id }) => id));
-    if (selection.kind === 'values') {
-      where = { rule: valuesRule(step.ruleAxes ?? {},
-        Object.fromEntries(selection.terms.map(({ sweepId, valueIds }) => [sweepId, valueIds]))) };
-    } else if (sharedProject) {
-      where = sharedRowTerms(step, members);
-      if (!where) throw new ProjectEditConflictError();
-    } else {
-      const rows = stepSourceRows(projection, stepId, variant).filter((row) =>
-        selected.has(savedRunId({ ...row, step: stepId })));
-      if (rows.length !== selected.size) throw new ProjectEditConflictError();
-      where = { rows };
-    }
+    const terms = selectedRowTerms(stepSourceRows(projection, stepId, variant), new Set(members.map(({ id }) => id)));
+    if (!terms) throw new ProjectEditConflictError();
+    where = authoredSubset(terms);
   }
   return { step, members, where };
 }
@@ -61,7 +50,7 @@ export async function createCheckpointTrain(
   view: PlanView,
   projection: StudioSavedTrainRuns,
 ) {
-  const { step, where } = trainSourceSubset(source, view, projection, !!editor.getSnapshot().saved.project.sweep);
+  const { step, where } = trainSourceSubset(source, view, projection);
   const id = generatedName('train', holds(editor.getSnapshot().saved.project.steps));
   await editor.createFile({
     kind: 'step', id,

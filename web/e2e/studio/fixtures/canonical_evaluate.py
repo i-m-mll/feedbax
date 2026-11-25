@@ -94,6 +94,53 @@ def seed_eight_trials(home: str, project_id: str):
     return _seed(home, project_id, raw)
 
 
+def seed_sixty_four_trials(home: str, project_id: str):
+    """The evaluation project with a task of 64 validation trials, each target moved a little, which the baseline records."""
+    raw = _evaluation_project()
+    task = raw["documents"]["task"]["payload"]
+    trials = task["validation_trials"]
+    task["validation_trials"] = [
+        deepcopy(trials[index % len(trials)]) | {"variables": trials[index % len(trials)]["variables"] | {
+            "target": [value + 0.001 * (index // len(trials)) for value in trials[index % len(trials)]["variables"]["target"]],
+        }}
+        for index in range(64)
+    ]
+    return _seed(home, project_id, raw)
+
+
+def _mean_conditions_project():
+    """The eight-trial evaluation project with its last four trials catch trials, so that By has two conditions."""
+    raw = _evaluation_project()
+    task = raw["documents"]["task"]["payload"]
+    task["validation_trials"] = task["validation_trials"][:8]
+    for trial in task["validation_trials"][4:]:
+        trial["variables"]["catch"] = True
+    return raw
+
+
+def seed_mean_conditions(home: str, project_id: str):
+    return _seed(home, project_id, _mean_conditions_project())
+
+
+def seed_mean_figure(home: str, project_id: str):
+    """The two-condition project with an Analyze of the baseline that draws Speed by trial."""
+    raw = _mean_conditions_project()
+    raw["documents"]["analysis"] = {"schema": "feedbax.analysis_document.v1", "payload": {
+        "inputs": {"states": {"kind": "dataset"}},
+        "operations": {"speed": {
+            "operation": "feedbax.trial_speed",
+            "params": {"velocity": "/v1/model/state/plant/effector~1velocity"},
+            "inputs": {"states": {"input": "states"}},
+        }},
+        "views": {"by_trial": {
+            "figure": {"template": "feedbax.SpeedByTrial"},
+            "inputs": {"speed": {"element": "speed", "product": "speed"}},
+        }},
+    }}
+    raw["steps"]["analyze"] = {"kind": "analyze", "base": {"document": "analysis"}, "inputs": {"states": {"step": "baseline"}}}
+    return _seed(home, project_id, raw)
+
+
 def seed_step_rename(home: str, project_id: str):
     """Train, an Evaluate reading it, a Train-scoped project sweep target, a group and an arranged sweep order."""
     raw = _evaluation_project()
@@ -320,7 +367,9 @@ def observe(home: str, project: str, revision: str, trial_index: str):
 if __name__ == "__main__":
     action, *args = sys.argv[1:]
     print(json.dumps({
-        "seed": seed, "seed-eight-trials": seed_eight_trials, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
+        "seed": seed, "seed-eight-trials": seed_eight_trials, "seed-sixty-four-trials": seed_sixty_four_trials,
+        "seed-mean-conditions": seed_mean_conditions,
+        "seed-mean-figure": seed_mean_figure, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
         "series-files": series_files, "seed-series-variants": seed_series_variants,
         "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
         "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,

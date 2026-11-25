@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
 from feedbax.compiler.model_document import lower_model_document
+from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON
 from feedbax.component_registry import ComponentRegistry
 from feedbax.component_registry.declarations import DeclaredComponent
+from feedbax.contracts.acausal import EquationsDomain
+from feedbax.contracts.acausal_interface import is_acausal_type
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.graph import GraphSpec, WireSpec
 from feedbax.contracts.model_address import ComponentPortEnd, InputBoundaryEnd, OutputBoundaryEnd
@@ -26,7 +31,11 @@ def with_model_placement_reason(
 ) -> ComponentDefinition:
     """Annotate a Library definition with any intrinsic reason it cannot be placed in a Model."""
     declaration = registry.declaration_record(definition.name).value
-    if not isinstance(declaration.template_graph, GraphSpec) and declaration.name != "feedbax.AcausalSystem":
+    if declaration.name == "feedbax.AcausalSystem":
+        return definition.model_copy(update={"equations_domains": get_args(EquationsDomain)})
+    if is_acausal_type(declaration.name, "BoundaryPort"):
+        return definition.model_copy(update={"placement_reason": BOUNDARY_PORT_PLACEMENT_REASON})
+    if not isinstance(declaration.template_graph, GraphSpec):
         return definition
     try:
         _template_component(declaration, registry, None)

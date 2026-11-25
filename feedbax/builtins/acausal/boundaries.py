@@ -1,12 +1,15 @@
 """Typed descriptors for acausal graph interfaces."""
 
-from dataclasses import dataclass
-from typing import Literal
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from typing import Any, Literal
 
 from feedbax.contracts.portable import (
     ComponentOwner,
     ComponentOptions,
+    OutputSignals,
     Ports,
+    SignalProperties,
     validate_configuration,
 )
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
@@ -33,13 +36,39 @@ class ActuationInput(ComponentOwner):
     units: str | None = None
 
 
+_SENSOR_SIGNALS = {
+    "position": SignalProperties("m", "point"),
+    "velocity": SignalProperties("m/s", "free"),
+    "force": SignalProperties("N", "free"),
+    "torque": SignalProperties("N*m"),
+    "angle": SignalProperties("rad"),
+    "angular_velocity": SignalProperties("rad/s"),
+}
+
+
+def _sensor_signals(params: Mapping[str, Any]) -> OutputSignals:
+    quantity = params["quantity"]
+    unit = params.get("units")
+    if quantity == "effector":
+        return {
+            ("y", "pos"): _SENSOR_SIGNALS["position"],
+            ("y", "vel"): _SENSOR_SIGNALS["velocity"],
+            ("y", "force"): _SENSOR_SIGNALS["force"],
+        }
+    declared = _SENSOR_SIGNALS.get(quantity, SignalProperties())
+    return {("y",): replace(declared, unit=unit)} if unit is not None else {("y",): declared}
+
+
 @dataclass
 class SensorOutput(ComponentOwner):
     """Acausal measurement exposed as a causal signal output."""
 
     __post_init__ = validate_configuration
     component_options = ComponentOptions(domain=ACAUSAL_DOMAIN_ID)
-    ports = Ports({"flange": conserving_port_type()}, {"y": signal_port_type()})
+    ports = Ports(
+        {"flange": conserving_port_type()}, {"y": signal_port_type()},
+        output_leaves=_sensor_signals,
+    )
     port_name: str = "y"
     order: int = 0
     quantity: Literal[

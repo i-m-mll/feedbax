@@ -25,7 +25,7 @@ const shapes: Record<string, Step> = {
   'a sweep without a subject axis': evaluate({ subject: [{ step: 'train', checkpoint: 'last' }, { step: 'train_b' }] },
     { axes: { mass: { path: 'payload.mass', values: [1, 2] } } }),
   'a where': evaluate({ subject: { step: 'train', checkpoint: 'last', where: {
-    rule: 'seed=0', rows: [{ key: 'seed=0', variant: 'default', row: 'seed=0' }],
+    clauses: [{ seed: [{ id: '0', label: '0' }] }],
   } } }, { axes: subjectAxis }),
   'a named subset': evaluate({ subject: [{ step: 'train', checkpoint: 'last', where: { subset: 'best' } }, { step: 'train_b' }] },
     { axes: subjectAxis }),
@@ -43,7 +43,7 @@ function project(step: Step): ProjectEditContent {
 function subjectEdits(step: Step): Record<string, ProjectValueEdit[]> {
   const edits: Record<string, ProjectValueEdit[]> = {
     'point at a Train step': evaluateSubjectEdits(step, { kind: 'step', step: 'train_b' }),
-    'point at an initial Model': evaluateSubjectEdits(step, { kind: 'document', document: 'arm', task: 'reach', objective: undefined }),
+    'point at an initial Model': evaluateSubjectEdits(step, { kind: 'document', reads: 'initial_model', document: 'arm', task: 'reach', objective: undefined }),
     'wire a Train step': connection(project(step).steps, 'train_c', 'evaluate')?.edits ?? [],
   };
   const selections: StepReference[] = stepSelections(step.inputs?.subject) ?? [];

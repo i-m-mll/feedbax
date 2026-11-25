@@ -1,6 +1,6 @@
 import {
   BarChart3, Columns2, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Settings, Settings2, Target, Workflow, X,
+  Map as SceneIcon, PanelBottom, PanelTop, Pin, Rows2, Settings, Settings2, Target, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
 import { StudioLogo } from '../../components/StudioLogo';
@@ -9,6 +9,7 @@ import {
   type CSSProperties, type Dispatch, type ReactNode, type SetStateAction,
 } from 'react';
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
+import { shellHost } from '@window-shell/browser/titlebar';
 import { canvasViewportIcons } from '@/components/canvas/CanvasStrip';
 import type { CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
@@ -33,7 +34,7 @@ import { StudioCommandPalette } from './StudioCommandPalette';
 import { StudioConnectionStatus } from './StudioConnectionStatus';
 import { StudioSettings } from './StudioSettings';
 import { useWindowCommands } from './heldGestures';
-import { bindStudioCommand, commandAttributes, commandInContext, keyHandled, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
+import { bindStudioCommand, commandAttributes, commandInContext, commandTip, keyHandled, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
 import { nativeOwnsShortcut, useStudioNativeMenu } from './studioNativeMenu';
 import { useStudioTitleBar } from './studioTitleBar';
 import { appearanceCommands } from '@/appearance/appearanceCommands';
@@ -49,12 +50,20 @@ export interface ProjectWindowViewRegion {
   padded?: boolean;
 }
 
+/** A slot's pin: its command and, while pinned, its step's name and, when that is not the selected step, its views. */
+export interface SlotPinning {
+  readonly command: StudioCommand;
+  readonly pinned?: { readonly label: string; readonly views?: ViewOffer };
+}
+
 export interface ProjectWindowProps {
   state: ProjectWindowState;
   onStateChange: Dispatch<SetStateAction<ProjectWindowState>>;
   projectName: string;
   saveStatus?: ReactNode;
   views: ViewOffer;
+  /** Each slot's pin, in split view. */
+  pins?: Readonly<Partial<Record<ProjectWindowSlot, SlotPinning>>>;
   renderView: (view: ProjectWindowView, slot: ProjectWindowSlot) => ProjectWindowViewRegion;
   map: ReactNode;
   mapDrawer: ReactNode;
@@ -149,7 +158,7 @@ function usePaletteState() {
 }
 
 export function ProjectWindow({
-  state, onStateChange, projectName, saveStatus, views, renderView, map, mapDrawer, compactMap,
+  state, onStateChange, projectName, saveStatus, views, pins, renderView, map, mapDrawer, compactMap,
   onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, shelf, failure, problems, activity,
   projectSettings,
 }: ProjectWindowProps) {
@@ -179,10 +188,16 @@ export function ProjectWindow({
   const moveFocus = (region: WindowRegion) => setRequestedFocus({ region });
   useLayoutEffect(() => installTooltips(), []);
 
-  const availableViews = views.available;
-  const primaryView = projectWindowSlotView(state, 'primary', availableViews);
-  const secondaryView = projectWindowSlotView(state, 'secondary', availableViews);
+  const offers = {
+    primary: pins?.primary?.pinned?.views ?? views,
+    secondary: pins?.secondary?.pinned?.views ?? views,
+  };
+  const primaryView = projectWindowSlotView(state, 'primary', offers.primary.available);
+  const secondaryView = projectWindowSlotView(state, 'secondary', offers.secondary.available);
   const focusedSlot = secondaryView && state.focusedSlot === 'secondary' ? 'secondary' : 'primary';
+  /** The views the rail offers: those of the focused slot's step. */
+  const focusedOffer = offers[focusedSlot];
+  const availableViews = focusedOffer.available;
   const shownViews = { primary: primaryView, secondary: secondaryView };
   const regions = {
     primary: primaryView ? renderView(primaryView, 'primary') : null,
@@ -360,6 +375,9 @@ export function ProjectWindow({
     setPaletteScope((open) => open ? null : scope);
   });
   const settings = bindStudioCommand('settings', toggleSettings);
+  /** In a browser the start page is the project list; the desktop app opens projects from its own start window. */
+  const projects = projectName && shellHost() !== 'native'
+    ? bindStudioCommand('projects', () => window.location.assign(window.location.pathname)) : undefined;
   const viewportIds = new Set<StudioCommand['id']>(mapCommands?.map(({ id }) => id));
   const separator = mode === 'map' ? '100%' : `${mode === 'both' ? fit.mapHeight.size : compactMapHeight}px`;
   const viewportCommands = fullMapVisible && (mapHasFocus || !commands.some(({ id }) => viewportIds.has(id)))
@@ -370,7 +388,7 @@ export function ProjectWindow({
     back, forward, ...tabCommands,
     bindStudioCommand('nextRegion', () => cycleRegion(1)),
     bindStudioCommand('previousRegion', () => cycleRegion(-1)),
-    settings, ...appearanceCommands(),
+    settings, ...projects ? [projects] : [], ...appearanceCommands(),
   ];
   const shortcutCommands = useRef({ palette, paletteCommands, paletteScope });
   shortcutCommands.current = { palette, paletteCommands, paletteScope };
@@ -448,7 +466,13 @@ export function ProjectWindow({
             })} />
         </div>
         <div className="shell-frame__cell studio-window-bar__project" data-separated="">
-          <h1 className="min-w-0 truncate text-base font-normal">{projectName}</h1>
+          <h1 className="min-w-0 truncate text-base font-normal">
+            {projects
+              ? <Button variant="ghost" className="max-w-full px-1 text-base" {...commandTip(projects)} onClick={projects.invoke}>
+                <span className="truncate">{projectName}</span>
+              </Button>
+              : projectName}
+          </h1>
           {saveStatus}
           {variant}
         </div>
@@ -520,7 +544,7 @@ export function ProjectWindow({
               const view = command.id;
               if (!command.enabled) {
                 return <WindowButton key={view} command={command} icon={viewGlyphs[view]} tab={{ id: tabId(view), tabbable: false }}
-                  reason={views.absent[view]} />;
+                  reason={focusedOffer.absent[view]} />;
               }
               const selected = !settingsOpen && shownViews[focusedSlot] === view;
               return (
@@ -572,8 +596,12 @@ export function ProjectWindow({
                     focusSlot(slot);
                   }}>
                   <SlotHeader view={view} icon={split ? viewGlyphs[view] : undefined} picker={region.picker}
-                    trailing={split ? <WindowButton command={closeCommand(slot)} icon={X} />
-                      : <WindowButton command={splitCommand} icon={Columns2} />}>
+                    step={split ? pins?.[slot]?.pinned?.label : undefined}
+                    trailing={split ? <>
+                      {pins?.[slot] && <WindowButton command={pins[slot].command} icon={Pin}
+                        pressed={!!pins[slot].pinned} />}
+                      <WindowButton command={closeCommand(slot)} icon={X} />
+                    </> : <WindowButton command={splitCommand} icon={Columns2} />}>
                     {region.header}
                   </SlotHeader>
                   <ScrollFade key={view} axis="both" className="studio-window-slot__body" data-padded={region.padded ? '' : undefined}>
@@ -621,9 +649,11 @@ export function ProjectWindow({
             <WindowButton command={drawer} pressed={detailsDrawerVisible} controls={ids.detailsDrawer} />
           </div>
           <div className="studio-window-bottom__clock">{clock}</div>
-          <div className="studio-window-bottom__right">
+          <div className="studio-window-bottom__notice">
             <StudioConnectionStatus />
             {failure}
+          </div>
+          <div className="studio-window-bottom__right">
             {problems}
             {activity}
             <WindowButton command={inspector} pressed={inspectorVisible} controls={ids.inspector} />
@@ -636,12 +666,16 @@ export function ProjectWindow({
 
 const loadingRegion = <StudioRegion state={{ kind: 'loading' }} />;
 
-/** The window before its project has loaded: its regions loading, its bottom bar reporting the connection. */
-export function PendingProjectWindow() {
+/**
+ * The window with no project: its regions loading while one is `pending`, else empty, and its bottom bar reporting
+ * the connection.
+ */
+export function ProjectlessWindow({ pending }: { pending: boolean }) {
   const [state, setState] = useState<ProjectWindowState>(defaultProjectWindowState);
+  const region = pending ? loadingRegion : null;
   return (
     <ProjectWindow state={state} onStateChange={setState} projectName="" views={noViews}
-      renderView={() => ({ body: loadingRegion })} map={loadingRegion} mapDrawer={loadingRegion}
-      compactMap={loadingRegion} commands={[]} />
+      renderView={() => ({ body: region })} map={region} mapDrawer={region}
+      compactMap={region} commands={[]} />
   );
 }

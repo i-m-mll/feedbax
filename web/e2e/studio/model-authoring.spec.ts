@@ -1,11 +1,11 @@
 import { expect, test } from './fixtures/studio';
 import { type Locator, type Page } from '@playwright/test';
 import {
-  firstTrainTask, type ModelDocument, type StudioJobSubmission, type StudioProjectDocument, type StudioSavedTrainRuns,
+  type ModelDocument, type StudioJobSubmission, type StudioSavedTrainRuns,
   type TaskDocument,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep } from './fixtures/canonicalTrain';
-import { post, readSaved } from './fixtures/studioKeyboard';
+import { post, readSaved, startProject } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -44,11 +44,7 @@ async function drag(page: Page, from: Locator, to: Locator | { x: number; y: num
  */
 test('authors a Model with the pointer and trains it @round', async ({ page, request }) => {
   test.setTimeout(58_000);
-  const creation = post(page, '/api/projects');
-  await page.goto('/');
-  const created = await creation;
-  expect(created.status()).toBe(201);
-  const { snapshot } = await created.json() as StudioProjectDocument;
+  const { snapshot } = await startProject(page);
   const projectPath = '/api/projects/' + snapshot.project_id;
   const runsPath = projectPath + '/train-runs';
   const saved = () => readSaved(request, projectPath);
@@ -152,11 +148,9 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   await tab('Model').click();
   await expect(outputs.getByRole('img', { name: 'Objective', exact: true })).toHaveCount(1);
 
-  // The shipped task starts the effector through a link to the shipped Model's plant; Initializes re-points it here.
-  const shipped = rootPayload(firstTrainTask) as unknown as TaskDocument;
-  const [{ model_field: shippedLink }] = shipped.links ?? [];
-  const plantLink = JSON.stringify({ ...JSON.parse(shippedLink), element: {
-    ...JSON.parse(shippedLink).element, parent: { id: plant, kind: 'component' },
+  // Simple reaches starts nothing until `start` is chosen to initialize this Model's point mass.
+  const plantLink = JSON.stringify({ composites: [], element: {
+    kind: 'field', parent: { id: plant, kind: 'component' }, path: ['state', 'effector/position'],
   } });
   const links = async () => {
     const { project } = await saved();
@@ -169,9 +163,6 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   await initializes.click();
   await page.keyboard.type('effector position');
   await page.getByRole('option', { name: 'PointMass · effector · position', exact: true }).click();
-  await expect.poll(links).toContainEqual({ model_field: plantLink, variable: 'start' });
-  // The shipped link is still listed, under the id it names, and choosing it again removes it.
-  await page.getByRole('option', { name: 'plant · effector · position', exact: true }).click();
   await page.keyboard.press('Escape');
   await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
 

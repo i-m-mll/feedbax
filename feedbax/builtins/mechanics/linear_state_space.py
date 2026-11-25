@@ -13,6 +13,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.contracts.component_history import Change, History
 from feedbax.contracts.component import PortType
+from feedbax.contracts.model_values import ModelFacts, StateReset, StateValue, TrialParameter
 from feedbax.runtime.graph import Component
 from feedbax.contracts.portable import Ports, ConfigBinding, ComponentOptions
 from typing import Annotated
@@ -132,7 +133,7 @@ def linear_state_space_output_prototype(
 ) -> dict[str, Any]:
     """Return LinearStateSpace effector/state prototypes from matrices and slices."""
 
-    a_matrix = jnp.asarray(params["A"])
+    a_matrix = jnp.asarray(params["A"], dtype=float)
     b_matrix = jnp.asarray(params["B"])
     state_dim = int(a_matrix.shape[0])
     pos_start, pos_stop = (int(value) for value in params.get("pos_slice", [0, 2]))
@@ -155,6 +156,7 @@ _DEFAULT_A = (
     (0.0, 0.0, 0.0, 1.0),
 )
 _DEFAULT_B = ((0.0, 0.0), (0.0, 0.0), (0.01, 0.0), (0.0, 0.01))
+_PLANT_STATE = StateValue("vector", ("vector",), "1", "unit", ("state",), reset=StateReset())
 
 
 def _drop_label(params):
@@ -186,6 +188,7 @@ class LinearStateSpace(Component):
     """
 
     component_history = History(Change(2, migrate=_materialize_dt))
+    model_facts = ModelFacts(states=(_PLANT_STATE,))
     ports = Ports(
         inputs={"force": PortType(dtype="vector"), "epsilon": PortType(dtype="vector")},
         outputs={"effector": PortType(dtype="state"), "state": PortType(dtype="vector")},
@@ -250,15 +253,8 @@ class LinearStateSpace(Component):
             force=force,
         )
 
-    def _next_vector(
-        self,
-        current: LinearStateSpaceState,
-        force: Array,
-        epsilon: Array,
-        *,
-        transition: Array,
-    ) -> Array:
-        return transition @ current.vector + self.B @ force + self.B_w @ epsilon
+    def _transition(self, state: State) -> Array:
+        return self.A
 
     def __call__(
         self,
@@ -274,7 +270,7 @@ class LinearStateSpace(Component):
             dtype=self.A.dtype,
         )
 
-        vector = self._next_vector(current, force, epsilon, transition=self.A)
+        vector = self._transition(state) @ current.vector + self.B @ force + self.B_w @ epsilon
         next_state = LinearStateSpaceState(vector=vector)
         state = state.set(self.state_index, next_state)
         return {
@@ -319,6 +315,11 @@ class StructuralLinearStateSpace(LinearStateSpace):
     """
 
     component_history = History(Change(2, migrate=_drop_label), Change(3, migrate=_materialize_dt))
+    model_facts = ModelFacts(
+        states=(_PLANT_STATE,),
+        configuration_slots=("structural_params_index",),
+        trial_parameters=(TrialParameter("active", "boolean"), TrialParameter("scale", "real", dtype_from="state")),
+    )
     config_bindings = (
         *LinearStateSpace.config_bindings,
         ConfigBinding(
@@ -366,29 +367,6 @@ class StructuralLinearStateSpace(LinearStateSpace):
             raise ValueError("delta_A must have the same shape as A.")
         self.structural_params_index = StateIndex(params)
 
-    def __call__(
-        self,
-        inputs: dict[str, PyTree],
-        state: State,
-        *,
-        key: PRNGKeyArray,
-    ) -> tuple[dict[str, PyTree], State]:
-        del key
-        current: LinearStateSpaceState = state.get(self.state_index)
+    def _transition(self, state: State) -> Array:
         params: StructuralLinearDynamicsPerturbation = state.get(self.structural_params_index)
-        force = jnp.asarray(inputs["force"], dtype=self.A.dtype)
-        epsilon = jnp.asarray(
-            inputs.get("epsilon", jnp.zeros((self.B_w.shape[1],), dtype=self.A.dtype)),
-            dtype=self.A.dtype,
-        )
-        vector = (
-            structural_linear_transition(self.A, current.vector, params)
-            + self.B @ force
-            + self.B_w @ epsilon
-        )
-        next_state = LinearStateSpaceState(vector=vector)
-        state = state.set(self.state_index, next_state)
-        return {
-            "effector": self._effector(vector, force),
-            "state": vector,
-        }, state
+        return params.effective_transition(self.A)

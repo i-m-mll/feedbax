@@ -19,7 +19,7 @@ from feedbax.contracts.set_document import (
 )
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_sets import (
-    AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetToField, SetToSweep,
+    AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetFieldWeight, SetToField, SetToSweep,
     StudioAxisValue, StudioSetEdit, StudioSetEditRequest,
     StudioSetsOffered, StudioSetsOfferedRequest,
 )
@@ -84,6 +84,8 @@ def set_edit(folders, project_id: str, body: StudioSetEditRequest) -> StudioSetE
         stored = _apply_set(project, command)
     elif isinstance(command, SetToField | SetToSweep):
         stored = _move_set(project, command)
+    elif isinstance(command, SetFieldWeight):
+        stored = _set_field_weight(project, command)
     elif isinstance(command, AddSetEntry):
         stored, selected = _add_set_entry(project, command)
     else:
@@ -162,6 +164,7 @@ def _set_store(folders, project_id: str, project: Project, step: str, body: Stud
         (kind, label, ",".join(sorted(names)) or step, stored), alternatives,
         reader_steps=frozenset().union(*(set_readers(project, name) for name in names)),
         copies_selection=isinstance(command, DuplicateRun),
+        retain_equivalent=isinstance(command, SetFieldWeight),
     )
 
 
@@ -448,6 +451,41 @@ def _move_set(project: Project, command: SetToField | SetToSweep) -> StoredEdit:
     fields = file_value(address, raw, ("set_fields",), field_sets)
     sweep_file = _with_axes(address, raw, axes)
     return StoredEdit([fields.model_copy(update={"patches": [*fields.patches, *sweep_file.patches]})])
+
+
+def _set_field_weight(project: Project, command: SetFieldWeight) -> StoredEdit:
+    step = project.steps[command.step]
+    field = step.set_fields.get(command.axis)
+    if step.kind != "train" or field is None:
+        raise ProjectFolderInvalid(f"{command.axis} is not a Set field of {member_name(project.steps, command.step)}.")
+    entry, part, weight = command.entry, command.part, command.weight
+    if entry is not None:
+        try:
+            entries = read_set(project.documents.get, field.axis.set).entries
+        except ValueError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        if entry not in entries:
+            raise ProjectFolderInvalid("That Set entry is no longer available.")
+
+    address, raw = _step_raw(project, command.step)
+    path = ("set_fields", command.axis, "sampling")
+    sampling = raw["set_fields"][command.axis]["sampling"]
+    weights = sampling.get("weights", {})
+    if isinstance(field.sampling, WeightedSetTrials) and part is None:
+        if entry is None:
+            if field.sampling.none == weight:
+                return StoredEdit([])
+            return StoredEdit([file_value(address, raw, (*path, "none"), weight)])
+        if field.sampling.weights.get(entry, 1.0) == weight:
+            return StoredEdit([])
+        weights = weights | {entry: weight}
+    elif isinstance(field.sampling, CooccurringSetTrials) and entry is not None and part is not None:
+        if getattr(field.sampling.weights.get(entry, SetEntryParts()), part) == weight:
+            return StoredEdit([])
+        weights = weights | {entry: weights.get(entry, {}) | {part: weight}}
+    else:
+        raise ProjectFolderInvalid("This Set sampling has no weight at that entry and part.")
+    return StoredEdit([file_value(address, raw, (*path, "weights"), weights)])
 
 
 def _remove_value(project: Project, command: RemoveAxisValue) -> StoredEdit:

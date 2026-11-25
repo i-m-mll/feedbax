@@ -173,7 +173,7 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
     groups = saved.plan.subsets["default", "baseline", "subject"].rank_groups
     source_key = ("default", "baseline", "subject")
     before_origin = ValueSource("step", "baseline", "/inputs/subject/where/rule", step="baseline")
-    after_origin = ValueSource("step", "baseline", "/inputs/subject/where/rows", step="baseline")
+    after_origin = ValueSource("step", "baseline", "/inputs/subject/where/bound_ranks", step="baseline")
     root = folders.root / project
     baseline = tmp_path / "best.json"
     before_review = _rank_review(root, baseline, saved.plan, capsys)
@@ -265,7 +265,7 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
         service.subset_to_rows(project, body.model_copy(update={"attempts": attempts[1:]}))
     recipe = service.subset_to_rows(project, body)
     snapshot = folders.patch(project, StudioProjectPatchBatch(revision=recipe.revision, files=recipe.files))
-    rows = snapshot.project.steps["baseline"].inputs["subject"].where.rows
+    rows = snapshot.project.steps["baseline"].inputs["subject"].where.bound_ranks
     assert [(row.key, row.variant, row.row) for row in rows] == [
         (key, winner.variant, winner.row) for key, winner in expected.items()
     ]

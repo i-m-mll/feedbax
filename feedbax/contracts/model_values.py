@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
+
+from feedbax.contracts.expression_values import SignalSpace
 
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry
@@ -20,6 +22,9 @@ class ModelValue:
     kind: Literal["source", "learned"]
 
 
+type SignalLeafPath = tuple[str | int, ...]
+
+
 @dataclass(frozen=True)
 class StateValue:
     symbol: str
@@ -28,12 +33,15 @@ class StateValue:
     axis: Literal["xy", "unit", "muscle", "joint"]
     prototype: tuple[str, ...]
     """The resolved output port and path that provide the storage shape and dtype."""
-    frame: str | None = None
     aliases: tuple[tuple[str, ...], ...] = ()
     """Storage paths initialized with this value when they have no explicit initializer."""
     reset: StateReset | None = None
     configuration: bool = False
-    space: Literal["point"] | None = None
+    space: SignalSpace | None = None
+    subtree: bool = False
+    """Use the runtime signal's array leaves and axes below this storage path."""
+    output_leaves: tuple[SignalLeafPath, ...] = ()
+    """Port-first paths whose values equal this state after the step."""
 
 
 @dataclass(frozen=True)
@@ -48,6 +56,8 @@ class TrialParameter:
     name: str
     kind: Literal["real", "boolean"]
     units: str = "1"
+    dtype_from: str | None = None
+    """Output port whose array dtype the configuration scalar uses."""
 
 
 @dataclass(frozen=True)
@@ -101,11 +111,21 @@ class ModelOwnerProblem:
     path: tuple[str, ...]
     reason: str
 
+    @property
+    def occurrence(self) -> tuple[str, ...]:
+        return self.path[2::2]
+
 
 def model_owner_problem(
     graph: GraphSpec, use: Literal["checkpoint", "evaluate"], components: ComponentRegistry,
 ) -> ModelOwnerProblem | None:
     """Check a resolved graph's declared support before realizing its owners."""
+    return next(model_owner_problems(graph, use, components), None)
+
+
+def model_owner_problems(
+    graph: GraphSpec, use: Literal["checkpoint", "evaluate"], components: ComponentRegistry,
+) -> Iterator[ModelOwnerProblem]:
     from feedbax.contracts.model_occurrence import graph_leaf_occurrences
 
     for path, node, physical in graph_leaf_occurrences(graph):
@@ -128,8 +148,7 @@ def model_owner_problem(
             )
         else:
             reason = f"owner {node.type!r} has no typed model checkpoint owner for this revision"
-        return ModelOwnerProblem(
+        yield ModelOwnerProblem(
             ("graph", *(token for name in path[:-1] for token in ("subgraphs", name)), "nodes", path[-1]),
             reason,
         )
-    return None

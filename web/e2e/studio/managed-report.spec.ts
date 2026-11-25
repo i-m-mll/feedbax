@@ -20,7 +20,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   const blocks = document.getByRole('listitem');
   const report = (saved: StudioProjectSnapshot) => rootPayload(saved.project.documents?.report) as unknown as ReportDocument;
   const inputs = (saved: StudioProjectSnapshot) => saved.project.steps?.report.inputs;
-  const profile = { step: 'analyze', row: 'default', element: 'profile', product: 'figure' };
+  const profile = { step: 'analyze', element: 'profile', product: 'figure' };
   const comparison = { ...profile, element: 'comparison' };
   const requests = async (revision: string) => JSON.parse(await runProjectFixture(module, 'requests', home, project, revision));
 
@@ -72,7 +72,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   const map = await windowMap(created.revision);
   expect(map.problems.filter(({ step }) => step === 'report')).toEqual([]);
   expect(map.rows).toContainEqual(expect.objectContaining({
-    key: expect.objectContaining({ step: 'report' }), status: 'not_run',
+    key: expect.objectContaining({ step: 'report' }), status: 'waiting',
   }));
   for (const variant of ['base', 'compare']) {
     expect(map.edges).toContainEqual(expect.objectContaining({

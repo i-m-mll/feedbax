@@ -39,3 +39,33 @@ def VelocitySummary(settings: VelocitySummarySettings) -> FigureDocument:
             "style": {"label": "{condition}"},
         }],
     })
+
+
+class SpeedByTrialSettings(StrictModel):
+    checkpoint_index: Annotated[StrictInt, Field(ge=0)] = 0
+
+
+@figure_template(settings=SpeedByTrialSettings, label="Speed by trial")
+def SpeedByTrial(settings: SpeedByTrialSettings) -> FigureDocument:
+    """One speed curve for each recorded trial of the selected checkpoint."""
+    return FigureDocument.model_validate({
+        "data": ["speed"],
+        "view": {"hovermode": "x unified"},
+        "layout": [{
+            "name": "speed",
+            "row": 1,
+            "col": 1,
+            "title": "Speed by trial",
+            "axes_labels": {"x": "Time (s)", "y": "Speed (m/s)"},
+        }],
+        "layers": [{
+            "name": "trial-speed",
+            "mark": "line",
+            "panel": "speed",
+            "role": "speed",
+            "select": {"checkpoint": {"index": settings.checkpoint_index}},
+            "group": ["condition", "trial"],
+            "encode": {"x": "state_time", "y": "speed"},
+            "style": {"label": "{condition} · Trial {trial:d}"},
+        }],
+    })

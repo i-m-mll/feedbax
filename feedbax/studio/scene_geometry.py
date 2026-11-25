@@ -12,16 +12,18 @@ import numpy as np
 from pydantic import JsonValue
 
 from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
+from feedbax.compiler.model_anchors import geometry_address, portable_model_anchors
 from feedbax.compiler.model_document import lower_planar_scene_interior
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.domain import DomainDiagnostic
-from feedbax.contracts.model_address import ComponentElement, FieldElement, FieldPath, ModelAddress
+from feedbax.contracts.model_address import ComponentElement, ModelAddress
 from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, GraphInterior, LeafComponent, ModelDocument,
 )
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.studio_scene import (
+    SceneAnchorGeometry,
     SceneLinkGeometry,
     SceneMechanismGeometry,
     SceneMuscleGeometry,
@@ -37,7 +39,7 @@ from feedbax.runtime.graph import GraphNode, init_state_from_component
 
 
 type PoseValues = Mapping[str, JsonValue]
-type MechanismPose = Callable[[PoseValues], SceneMechanismGeometry]
+type MechanismPose = Callable[[PoseValues], tuple[SceneMechanismGeometry, list[SceneAnchorGeometry]]]
 
 
 def _read_model(project: Project, document_id: str) -> ModelDocument:
@@ -83,16 +85,6 @@ def _component_address(path: tuple[str, ...]) -> ModelAddress:
     )
 
 
-def _geometry_address(path: tuple[str, ...], field: FieldPath) -> ModelAddress:
-    return ModelAddress(
-        composites=path[:-1],
-        element=FieldElement(
-            kind="field", parent=ComponentElement(kind="component", id=path[-1]),
-            path=("geometry", *field),
-        ),
-    )
-
-
 def _state_key(path: tuple[str, ...], symbol: str) -> str:
     return ModelAddress.at_state(path[:-1], path[-1], symbol).to_text()
 
@@ -122,45 +114,47 @@ def _prepare_portable_geometry(
     if facts is None or not facts.states:
         return None
 
-    points = [state for state in facts.states if state.space == "point" and state.frame == "world"]
-    position = next(
-        (point for point in points if all(
-            other is point or other.fields in point.aliases for other in points
-        )),
-        None,
-    )
-    configurations = [state for state in facts.states if state.configuration]
     representation = declaration.representation
-    planar = representation is not None and any(
-        element.archetype == "planar_chain" for element in representation.elements
-    )
-    if not planar and (position is None or configurations):
+    if representation is None:
         return None
 
     resolved = registry.resolve_component_spec(
         component.type, component.fields, revision=component.revision,
     )
+    anchors = portable_model_anchors(path, resolved)
+    position = next((anchor.state for anchor in anchors if anchor.state is not None), None)
+    configurations = [state for state in facts.states if state.configuration]
+    planar = any(element.archetype == "planar_chain" for element in representation.elements)
+    if not planar and (position is None or configurations):
+        return None
+
     owner = resolved.meta.owner_class(**resolved.params)
     rest = owner.state_view(init_state_from_component(owner))
     address = _component_address(path)
     position_key = _state_key(path, position.symbol) if position is not None else None
     reference_position = attrgetter(".".join(position.fields))(rest) if position is not None else None
     if not planar and position is not None:
-        point = _geometry_address(path, ("point",))
-        keys = (position_key, *(
-            _state_key(path, companion.symbol) for companion in points
-            if position.fields in companion.aliases
-        ))
+        point_anchors = [
+            (
+                anchor, attrgetter(".".join(anchor.state.fields))(rest),
+                (anchor.signal.to_text(), *(
+                    _state_key(path, companion.symbol) for companion in facts.states
+                    if anchor.state.fields in companion.aliases
+                )),
+            )
+            for anchor in anchors if anchor.state is not None and anchor.signal is not None
+        ]
 
-        def pose_point(values: PoseValues) -> ScenePointGeometry:
-            supplied = next(
-                (value for key in keys if (value := values.get(key)) is not None),
-                None,
-            )
-            value = _pose_value(supplied, reference_position) if supplied is not None else reference_position
+        def pose_point(values: PoseValues):
+            posed = []
+            for anchor, reference, keys in point_anchors:
+                supplied = next((value for key in keys if (value := values.get(key)) is not None), None)
+                value = _pose_value(supplied, reference) if supplied is not None else reference
+                posed.append(SceneAnchorGeometry(address=anchor.address, signal=anchor.signal, position=_point(value)))
+            primary = posed[0]
             return ScenePointGeometry(
-                kind="point", address=address, name=component.name, point=point, position=_point(value),
-            )
+                kind="point", address=address, name=component.name, point=primary.address, position=primary.position,
+            ), posed
 
         return pose_point
 
@@ -175,13 +169,13 @@ def _prepare_portable_geometry(
     rest_endpoints = skeleton_owner.forward_kinematics(rest_skeleton).pos
     links = tuple(
         (
-            _geometry_address(path, ("body", index)), f"{component.name} link {index + 1}",
-            _geometry_address(path, ("joint", index)), f"{component.name} joint {index + 1}",
+            geometry_address(path, ("body", index)), f"{component.name} link {index + 1}",
+            geometry_address(path, ("joint", index)), f"{component.name} joint {index + 1}",
         )
         for index in range(len(rest_endpoints))
     )
 
-    def pose_chain(values: PoseValues) -> ScenePlanarGeometry:
+    def pose_chain(values: PoseValues):
         supplied = [
             (fields, reference, value) for key, fields, reference in layout
             if (value := values.get(key)) is not None
@@ -210,7 +204,10 @@ def _prepare_portable_geometry(
                     links, pairwise(posed), strict=True,
                 )
             ],
-        )
+        ), [
+            SceneAnchorGeometry(address=anchor.address, signal=anchor.signal, position=point)
+            for anchor, point in zip(anchors, posed, strict=True)
+        ]
 
     return pose_chain
 
@@ -253,7 +250,7 @@ def _prepare_native_geometry(
                 [compiled.site_ids[site] for site in binding.sites],
             ))
 
-    def pose_native(values: PoseValues) -> ScenePlanarGeometry:
+    def pose_native(values: PoseValues):
         qpos = native.qpos0
         if configuration_key in values:
             supplied = np.asarray(values[configuration_key])
@@ -280,7 +277,7 @@ def _prepare_native_geometry(
                 )
                 for muscle_address, name, sites in muscles
             ],
-        )
+        ), [SceneAnchorGeometry(address=link.joint, signal=None, position=link.pivot) for link in posed_links]
 
     return pose_native, diagnostics
 
@@ -328,7 +325,9 @@ def prepare_scene_geometry(
         frame = StudioSceneGeometryFrame(mechanisms=[], diagnostics=list(diagnostics))
         for path, pose in mechanisms:
             try:
-                frame.mechanisms.append(pose(values))
+                mechanism, anchors = pose(values)
+                frame.mechanisms.append(mechanism)
+                frame.anchors.extend(anchors)
             except ValueError as exc:
                 frame.diagnostics.append(_invalid_model(exc, path))
         frames.append(frame)

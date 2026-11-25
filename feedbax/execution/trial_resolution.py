@@ -6,7 +6,6 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 
 import jax
-import jax.numpy as jnp
 
 from feedbax.compiler.graph import (
     ExecutableGraph,
@@ -17,17 +16,20 @@ from feedbax.compiler.graph import (
     resolve_graph,
 )
 from feedbax.compiler.model_document import (
-    LoweredModelDocument, ModelCompilationProblem, ResolvedModelInterface, lower_model_document,
+    LoweredModelDocument, ModelCompilationProblem, ResolvedModelInterface, lower_model_document, model_input_prototypes,
 )
+from feedbax.compiler.model_document import declared_model_input_prototypes as declared_model_input_prototypes
 from feedbax.compiler.model_reset import ModelResetField
+from feedbax.compiler.model_signals import ModelMeasureScope, ResolvedSignalLeaf, model_measure_scope
 from feedbax.compiler.resolution import ParameterResolutionError, ParameterResolutionErrors
 from feedbax.contracts.graph import GraphSpec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ScopedValue, Site, ValueBase, ValueType
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_address import ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement
 from feedbax.contracts.model_document import GraphInterior, ModelDocument
+from feedbax.contracts.model_values import component_model_facts
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.contracts.trial_bindings import selected_signal_id
@@ -51,6 +53,7 @@ class PreparedTrialExecution:
     lowered: LoweredModelDocument
     task_source: TaskDocument | PythonTaskSelection
     resolution: GraphResolution
+    signal_scope: ModelMeasureScope
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,7 @@ class ResolvedTrialExecution:
     objective: ObjectiveExecutor | None
     lowered: LoweredModelDocument
     task_source: TaskDocument | PythonTaskSelection
+    signal_scope: ModelMeasureScope
 
     def realize(
         self,
@@ -74,11 +78,8 @@ class ResolvedTrialExecution:
         except GraphCompilationError as error:
             return _graph_problems(error)
         return PreparedTrialExecution(
-            executable, self.execution, self.objective, self.lowered, self.task_source, self.graph,
+            executable, self.execution, self.objective, self.lowered, self.task_source, self.graph, self.signal_scope,
         )
-
-
-_DTYPES = {ValueBase.BOOLEAN: jnp.bool_, ValueBase.INTEGER: jnp.int32, ValueBase.REAL: jnp.float32}
 
 
 @dataclass(frozen=True)
@@ -106,21 +107,6 @@ def evaluation_conditions(task: TaskDocument | PythonTaskSelection, registry: Py
     if isinstance(template, tuple):
         raise ValueError(template[0].reason)
     return template.condition_ids
-
-
-def declared_model_input_prototypes(model: ModelDocument) -> dict[str, jax.ShapeDtypeStruct]:
-    prototypes = {}
-    for port in model.ports.inputs:
-        shape = port.type.shape
-        if shape is None or any(type(size) is not int or size <= 0 for size in shape):
-            continue
-        base = port.type.base
-        dtype = (
-            jnp.bool_ if base in ("bool", "boolean") else
-            jnp.int32 if base in ("int", "int32", "integer") else jnp.float32
-        )
-        prototypes[port.name] = jax.ShapeDtypeStruct(shape, dtype)
-    return prototypes
 
 
 def pair_trial_source(
@@ -157,18 +143,9 @@ def pair_trial_source(
         if signal_id is not None and signal_id in signal_types:
             supplied_types[port.name] = signal_types[signal_id]
     supplied = frozenset(supplied_types)
-    declared_prototypes = declared_model_input_prototypes(model)
     try:
         lowered = lower_model_document(model, components, supplied_inputs=supplied)
-        prototypes = {
-            target: (
-                jax.ShapeDtypeStruct(value.shape, _DTYPES[value.base])
-                if (value := supplied_types.get(port)) is not None
-                else declared_prototypes[port]
-            )
-            for port, target in lowered.graph.input_bindings.items()
-            if port in supplied or port in declared_prototypes
-        }
+        prototypes = model_input_prototypes(lowered.graph, model, supplied_types)
         if graph_override is not None:
             if graph_override.input_bindings != lowered.graph.input_bindings:
                 return (Problem(
@@ -176,7 +153,7 @@ def pair_trial_source(
                     reason="The selected task changes which optional inputs use the trained model's defaults.",
                 ),)
             lowered = replace(lowered, graph=graph_override)
-        interface = lowered.interface(model, components, input_prototypes=prototypes)
+        interface = lowered.interface(model, components, input_prototypes=prototypes, task_inputs=supplied_types)
     except ModelCompilationProblem as error:
         return model_compilation_problems(error)
     except ParameterResolutionError as error:
@@ -202,7 +179,13 @@ def pair_trial_source(
             reason="The prepared Task's conditions differ from its registry declaration.",
         ),)
     bindings, problems = bind_task_inputs(interface, compiled.interface.signals, authored)
-    return TrialPair(interface, compiled, lowered, prototypes, bindings, (*links, *problems), task)
+    graph_problems = tuple(Problem(
+        code=ProblemCode.TYPE_MISMATCH,
+        reason=issue.reason,
+        path=("model", *issue.address.stored_path()),
+        model_address=issue.address,
+    ) for issue in interface.signals.problems)
+    return TrialPair(interface, compiled, lowered, prototypes, bindings, (*links, *problems, *graph_problems), task)
 
 
 def declared_model_outputs(model: ModelDocument) -> tuple[ScopedValue, ...]:
@@ -223,7 +206,7 @@ def declared_model_outputs(model: ModelDocument) -> tuple[ScopedValue, ...]:
         })
         outputs.append(ScopedValue(
             id=address.to_text(), name=port.name, level=Level.STEP,
-            type=ValueType(base=kind, shape=shape, dimensions=unit.dimensions),
+            type=ValueType(base=kind, shape=shape, dimensions=unit.dimensions, space=port.type.space),
         ))
     return tuple(outputs)
 
@@ -232,6 +215,7 @@ def declared_model_outputs(model: ModelDocument) -> tuple[ScopedValue, ...]:
 class PreviewTrialSource:
     task: TrialSource
     outputs: tuple[ScopedValue, ...]
+    signal_scope: ModelMeasureScope | None = None
 
 
 def preview_trial_source(
@@ -250,7 +234,8 @@ def preview_trial_source(
         nominal=nominal,
     )
     if isinstance(paired, TrialPair):
-        return PreviewTrialSource(paired.task, paired.model.outputs)
+        scope = model_measure_scope(model, paired.model.signals)
+        return PreviewTrialSource(paired.task, scope.names, scope)
     if any(problem.path[:1] != ("model",) for problem in paired):
         return tuple(problem for problem in paired if problem.path[:1] != ("links",))
     return compile_unpaired_task(model, task, functions, python_tasks=python_tasks, nominal=nominal)
@@ -331,6 +316,43 @@ def compile_trial_execution(
     return trial.realize(initialization_key=initialization_key, artifact_provider=artifact_provider)
 
 
+def _state_trace_path(origin: ModelAddress, graph: GraphSpec, components: ComponentRegistry) -> str | None:
+    state = origin.element
+    if not isinstance(state, FieldElement) or not isinstance(state.parent, ComponentElement):
+        return None
+    if len(state.path) != 2 or state.path[0] != "state":
+        return None
+    owner = graph
+    for node in origin.composites:
+        child = (owner.subgraphs or {}).get(node)
+        if not isinstance(child, GraphSpec):
+            return None
+        owner = child
+    node = owner.nodes[state.parent.id]
+    facts = component_model_facts(node, components)
+    if facts is None:
+        return None
+    return next((
+        ".".join((*origin.composites, state.parent.id, *slot.fields))
+        for slot in facts.states or () if slot.symbol == state.path[1] and not slot.subtree
+    ), None)
+
+
+def _signal_trace(
+    leaf: ResolvedSignalLeaf, selector: str, graph: GraphSpec, components: ComponentRegistry,
+) -> GraphTraceRequest:
+    if leaf.origin is not None and (state_path := _state_trace_path(leaf.origin, graph, components)) is not None:
+        return GraphTraceRequest("state_path", selector, path=state_path)
+    port = leaf.port.element
+    assert isinstance(port, PortElement)
+    scope, end = leaf.port.composites, port.end
+    if isinstance(end, ComponentPortAddress):
+        return GraphTraceRequest("port", selector, node=end.component, port=end.port, scope=scope, leaf=leaf.path)
+    if scope:
+        return GraphTraceRequest("port", selector, node=scope[-1], port=end.port, scope=scope[:-1], leaf=leaf.path)
+    return GraphTraceRequest("graph_output", selector, port=leaf.name, leaf=leaf.path)
+
+
 def resolve_trial_execution(
     model: ModelDocument,
     task: TaskDocument | PythonTaskSelection,
@@ -358,23 +380,27 @@ def resolve_trial_execution(
         ):
             return problems
         interface, compiled_task = pairing.model, pairing.task
+        signal_scope = model_measure_scope(model, interface.signals)
         scorer = None
-        observations = ()
+        observations: dict[str, GraphTraceRequest] = {}
+        origins: list[tuple[str, str]] = []
         if objective is not None:
             names = (
-                *interface.outputs,
+                *signal_scope.names,
                 *compiled_task.interface.variables,
                 *compiled_task.interface.signals,
             )
             scorer = compile_objective(objective, names, functions, task=compiled_task, use=objective_use)
             if not isinstance(scorer, ObjectiveExecutor):
                 return scorer
-            referenced = {name.id for name in scorer.names}
-            observations = tuple(
-                GraphTraceRequest("graph_output", output.id, port=output.name)
-                for output in interface.outputs
-                if output.id in referenced
-            )
+            for operand in scorer.names:
+                leaf = signal_scope.leaves.get(operand.id)
+                if leaf is None:
+                    continue
+                origin = (leaf.origin or leaf.address).to_text()
+                origins.append((operand.id, origin))
+                if origin not in observations:
+                    observations[origin] = _signal_trace(leaf, origin, pairing.lowered.graph, components)
         graph = resolve_graph(
             GraphDocument(graph=pairing.lowered.graph), components, pairing.prototypes,
         )
@@ -384,10 +410,11 @@ def resolve_trial_execution(
         return _graph_problems(error)
     return ResolvedTrialExecution(
         graph,
-        TrialExecution(compiled_task, interface.reset, pairing.input_bindings, observations),
+        TrialExecution(compiled_task, interface.reset, pairing.input_bindings, tuple(observations.values()), tuple(origins)),
         scorer,
         pairing.lowered,
         pairing.task_source,
+        signal_scope,
     )
 
 

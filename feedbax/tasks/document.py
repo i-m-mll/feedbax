@@ -356,6 +356,11 @@ def zero(base, shape) -> Expression:
     return CallValue(function="vector", args=(child,) * shape[0])
 
 
+def _compatible_task_signal(model: ResolvedModelInterface, port, offered: ValueType) -> bool:
+    leaf = model.signals.at(port.address)
+    return leaf.accepts(offered) if leaf is not None else port.type.accepts(offered)
+
+
 def bind_task_inputs(
     model: ResolvedModelInterface,
     signals: tuple[ScopedValue, ...],
@@ -381,7 +386,7 @@ def bind_task_inputs(
             problems.append(Problem(
                 code=ProblemCode.UNKNOWN_NAME, reason=reason, path=path, model_address=port.address,
             ))
-        elif not port.type.accepts(signal.type):
+        elif not _compatible_task_signal(model, port, signal.type):
             problems.append(Problem(
                 code=ProblemCode.TYPE_MISMATCH,
                 reason=f"Signal {signal.name!r} does not fit model input {port.name!r}.",

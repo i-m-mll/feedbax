@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import equinox as eqx
@@ -11,6 +11,7 @@ import jax
 
 from feedbax.contracts.computation_validity import ArgumentSignature, ComputationStart, ProgramIdentity
 from feedbax.contracts.rollout import trial_indices
+from feedbax.execution.trial_places import TrialPlacePlan
 from feedbax.tasks.document import TaskParameters
 from feedbax.validity.computation import (
     Operand, UnrecordableArguments, capture_arguments, capture_program, pytree_operands,
@@ -30,6 +31,7 @@ class RolloutScorer:
     objective: ObjectiveExecutor | None
     seed: int
     trials: tuple[str, ...]
+    places: TrialPlacePlan = field(default_factory=TrialPlacePlan)
 
     def __post_init__(self) -> None:
         trial_indices(self.trials, self.execution.task.condition_ids)
@@ -72,6 +74,7 @@ class RolloutKernel:
             return self.scorer.execution.evaluate(
                 model, objective, parameters,
                 key=key, trial_ids=self.scorer.trials, capture_state=self.capture_state,
+                observed_points=self.scorer.places.observations,
             )
 
         try:

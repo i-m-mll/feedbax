@@ -1,4 +1,4 @@
-"""The saved reaching evaluation's first two dataset operations."""
+"""Built-in operations over saved reaching evaluations."""
 
 from __future__ import annotations
 
@@ -23,8 +23,10 @@ from feedbax.contracts.rollout import RAW_STATES_SCHEMA, STATES_SCHEMA
 _MEMBER_AXES = ("checkpoint", "condition", "trial")
 _STATE_AXES = (*_MEMBER_AXES, "state_time")
 _SUMMARY_AXES = ("checkpoint", "condition", "state_time")
+_OPTIONAL_AXES = ("checkpoint",)
 _REACH_FRAME = "reach-aligned"
 _VELOCITY_SCHEMA = "feedbax.analysis.aligned_velocity.v1"
+_SPEED_SCHEMA = "feedbax.analysis.trial_speed.v1"
 _SUMMARY_SCHEMA = "feedbax.analysis.velocity_summary.v1"
 _VELOCITY_FIELDS = ("parallel_velocity", "lateral_velocity")
 
@@ -35,11 +37,13 @@ def _coordinate(name: str, *, units: str | None = None) -> FieldDescriptor:
 
 _STATE_COORDS = {name: _coordinate(name) for name in _MEMBER_AXES}
 _STATE_COORDS["state_time"] = _coordinate("state_time", units="s")
+_RECORDED_VELOCITY = FieldDescriptor(dims=(*_STATE_AXES, "xy"), units="m/s", frame="world")
 _STATES = DatasetPort(
     schema_ids=(RAW_STATES_SCHEMA, STATES_SCHEMA),
+    optional_dimensions=_OPTIONAL_AXES,
     selected_variables={
         "position": FieldDescriptor(dims=(*_STATE_AXES, "xy"), units="m", frame="world"),
-        "velocity": FieldDescriptor(dims=(*_STATE_AXES, "xy"), units="m/s", frame="world"),
+        "velocity": _RECORDED_VELOCITY,
         "target": FieldDescriptor(dims=(*_MEMBER_AXES, "transition", "xy"), units="m", frame="world"),
     },
     coordinates={
@@ -50,14 +54,28 @@ _STATES = DatasetPort(
 )
 _VELOCITY = DatasetPort(
     schema_ids=(_VELOCITY_SCHEMA,),
+    optional_dimensions=_OPTIONAL_AXES,
     variables={
         name: FieldDescriptor(dims=_STATE_AXES, units="m/s", frame=_REACH_FRAME)
         for name in _VELOCITY_FIELDS
     },
     coordinates=_STATE_COORDS,
 )
+_SPEED_STATES = DatasetPort(
+    schema_ids=_STATES.schema_ids,
+    optional_dimensions=_OPTIONAL_AXES,
+    selected_variables={"velocity": _RECORDED_VELOCITY},
+    coordinates=_STATE_COORDS,
+)
+_SPEED = DatasetPort(
+    schema_ids=(_SPEED_SCHEMA,),
+    optional_dimensions=_OPTIONAL_AXES,
+    variables={"speed": FieldDescriptor(dims=_STATE_AXES, units="m/s", frame="world")},
+    coordinates=_STATE_COORDS,
+)
 _SUMMARY = DatasetPort(
     schema_ids=(_SUMMARY_SCHEMA,),
+    optional_dimensions=_OPTIONAL_AXES,
     variables={
         **{
             name: FieldDescriptor(dims=_SUMMARY_AXES, units="m/s", frame=_REACH_FRAME)
@@ -92,6 +110,14 @@ class AlignedVelocityParameters(StrictModel):
     )
 
 
+class TrialSpeedParameters(StrictModel):
+    velocity: str = Field(
+        strict=True, min_length=1,
+        description="Retained reset-inclusive world velocity variable.",
+        json_schema_extra={"feedbax": {"static": True}},
+    )
+
+
 class VelocitySummaryParameters(StrictModel):
     variable: Literal["parallel_velocity", "lateral_velocity"] = Field(
         default="parallel_velocity",
@@ -107,16 +133,17 @@ class VelocitySummaryParameters(StrictModel):
 
 def _product(port: DatasetPort, source: Dataset, stacking: tuple[str, ...], arrays) -> Dataset:
     """The declared variables after the source's stacking dimensions, with every source coordinate they span."""
-    dims = {*stacking, *(dim for field in port.variables.values() for dim in field.dims)}
     descriptor = source.descriptor
+    port = port.for_dimensions(descriptor.dimensions)
+    dims = {*stacking, *(dim for field in port.variables.values() for dim in field.dims)}
     coords = {
-        name: Variable(source.data(name), field.dims, units=field.units, quantity=field.quantity, frame=field.frame)
+        name: Variable.from_field(source.data(name), field, field.dims)
         for name, field in descriptor.coords.items()
         if set(field.dims) <= dims
     }
     return Dataset.from_arrays(
         {
-            name: Variable(arrays[name], (*stacking, *field.dims), units=field.units, frame=field.frame)
+            name: Variable.from_field(arrays[name], field, (*stacking, *field.dims))
             for name, field in port.variables.items()
         },
         coords=coords,
@@ -146,7 +173,9 @@ def aligned_velocity(
         raise ValueError("Transition times must span successive reset-inclusive state samples.")
     if params.target_transition >= len(state_time) - 1:
         raise ValueError("target_transition is outside the retained transitions.")
-    members = (slice(None),) * (len(stacking) + len(_MEMBER_AXES))
+    members = (slice(None),) * (
+        len(stacking) + sum(dim in states.descriptor.dimensions for dim in _MEMBER_AXES)
+    )
     reset = np.asarray(states.data(params.position, (*members, 0)))
     goal = np.asarray(states.data(params.target, (*members, params.target_transition)))
     velocity = np.asarray(states.data(params.velocity))
@@ -161,6 +190,19 @@ def aligned_velocity(
         _VELOCITY, states, stacking,
         {"parallel_velocity": projected[..., 0], "lateral_velocity": projected[..., 1]},
     )
+
+
+@operation(settings=TrialSpeedParameters, label="Trial speed")
+def trial_speed(
+    states: Annotated[Dataset, _SPEED_STATES],
+    params: TrialSpeedParameters,
+) -> Annotated[Dataset, DatasetOutput("speed", _SPEED)]:
+    """Take the magnitude of each trial's recorded world velocity at each state sample."""
+    stacking = verify_dataset(states, _SPEED_STATES, params)
+    speed = np.linalg.norm(np.asarray(states.data(params.velocity)), axis=-1)
+    if not np.isfinite(speed).all():
+        raise ValueError("Trial speed requires finite velocity magnitudes.")
+    return _product(_SPEED, states, stacking, {"speed": speed})
 
 
 @partial(jax.jit, static_argnums=3)
@@ -185,7 +227,7 @@ def summarize_velocity(
 ) -> Annotated[Dataset, DatasetOutput("summary", _SUMMARY)]:
     """Summarize one velocity component over trials at each checkpoint, condition, and sample."""
     stacking = verify_dataset(velocity, _VELOCITY, params)
-    trial_axis = len(stacking) + _STATE_AXES.index("trial")
+    trial_axis = velocity.descriptor.variables[params.variable].dims.index("trial")
     values = np.asarray(velocity.data(params.variable))
     if values.shape[trial_axis] <= params.ddof:
         raise ValueError("Trial count must exceed ddof.")

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
 
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, EvaluateModelState,
@@ -14,6 +15,9 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
+from feedbax.contracts.studio_loaded_model import (
+    StudioLoadedModelExportRequest, StudioLoadedModelImportQuery, StudioLoadedModelImportResult,
+)
 from feedbax.contracts.studio_removed_runs import StudioRemovedRuns, StudioRemovedRunsRequest
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringCatalog,
@@ -30,6 +34,10 @@ from feedbax.contracts.studio_project import (
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
     StudioProjectDocument,
+    StudioProjectExample,
+    StudioProjectExamples,
+    StudioProjectList,
+    StudioProjectNew,
     StudioProjectPatch,
     StudioProjectPatchBatch,
     StudioProjectRename,
@@ -304,6 +312,16 @@ def read_scene_geometry(
     return _project_response(response, prepare)
 
 
+@router.get("/examples")
+def list_project_examples(request: Request, response: Response) -> StudioProjectExamples:
+    from feedbax.contracts.project import member_display_name
+
+    return _project_response(response, lambda: StudioProjectExamples(examples=[
+        StudioProjectExample(id=key, name=member_display_name(key))
+        for key in request.app.state.project_folders.project_examples()
+    ]))
+
+
 @router.get("/{project_id}", response_model_exclude_unset=True)
 def read_project(
     project_id: ProjectName, request: Request, response: Response
@@ -336,9 +354,9 @@ def replay_project(
 def review_model_connections(
     project_id: ProjectName, body: ModelConnectionReviewRequest, request: Request, response: Response,
 ) -> ModelConnectionReview:
-    components = request.app.state.bootstrap_state.bundle.components
+    bundle = request.app.state.bootstrap_state.bundle
     return _project_response(
-        response, lambda: request.app.state.project_folders.review_model_connections(project_id, body, components)
+        response, lambda: request.app.state.project_folders.review_model_connections(project_id, body, bundle)
     )
 
 
@@ -348,9 +366,9 @@ def read_model_projection(
 ) -> ModelProjection:
     from feedbax.web.services.model_projection import model_projection
 
-    components = request.app.state.bootstrap_state.bundle.components
+    bundle = request.app.state.bootstrap_state.bundle
     return _project_response(
-        response, lambda: model_projection(request.app.state.project_folders, project_id, body, components)
+        response, lambda: model_projection(request.app.state.project_folders, project_id, body, bundle)
     )
 
 
@@ -415,13 +433,53 @@ def put_project_presentation(
     )
 
 
+@router.get("")
+def list_projects(request: Request, response: Response) -> StudioProjectList:
+    return _project_response(response, request.app.state.project_folders.list_projects)
+
+
 @router.post("", status_code=201, response_model_exclude_unset=True)
-def new_project(request: Request, response: Response) -> StudioProjectDocument:
-    document = _project_response(response, request.app.state.project_folders.new)
+def new_project(body: StudioProjectNew, request: Request, response: Response) -> StudioProjectDocument:
+    document = _project_response(response, lambda: request.app.state.project_folders.new(body.name, example=body.example))
     response.headers["Location"] = request.url_for(
         "open_project", project_id=document.snapshot.project_id
     ).path
     return document
+
+
+@router.post(
+    "/{project_id}/loaded-models/import", status_code=201,
+    responses={422: {"model": StudioLoadedModelImportResult}},
+)
+def import_model_archive(
+    project_id: ProjectName, query: Annotated[StudioLoadedModelImportQuery, Query()],
+    raw: Annotated[bytes, Body(media_type="application/octet-stream")],
+    request: Request, response: Response,
+) -> StudioLoadedModelImportResult:
+    from feedbax.web.services.loaded_models import import_loaded_model
+
+    result = _project_response(response, lambda: import_loaded_model(request.app.state.project_folders, project_id, query, raw))
+    if result.root.status != "imported":
+        response.status_code = 422
+    return result
+
+
+@router.post("/{project_id}/loaded-models/export")
+def export_model_archive(
+    project_id: ProjectName, body: StudioLoadedModelExportRequest, request: Request, response: Response,
+) -> Response:
+    from feedbax.web.services.loaded_models import export_loaded_model
+
+    data = _project_response(response, lambda: export_loaded_model(request.app.state.project_plan, project_id, body))
+    filename = f"{body.key.step}-{body.completed_updates}.feedbax-model"
+    return Response(data, media_type="application/octet-stream", headers={
+        **_NO_STORE, "Content-Disposition": f'attachment; filename="{filename}"',
+    })
+
+
+@router.delete("/{project_id}", status_code=204)
+def delete_project(project_id: ProjectName, request: Request, response: Response) -> None:
+    _project_response(response, lambda: request.app.state.project_folders.delete(project_id))
 
 
 @router.get("/{project_id}/open", response_model_exclude_unset=True)

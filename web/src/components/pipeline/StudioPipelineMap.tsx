@@ -39,11 +39,12 @@ import { ListRow } from '@/components/ui/ListRow';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import { Menu, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { useElementSize } from '@/hooks/useElementSize';
-import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
+import type { PlanStepView, PlanView, RunAddress } from '@/features/pipeline/planView';
 import {
   extendsSelection,
   selectionButton,
   indexPlanLineage,
+  lineageRoots,
   selectedRuns,
   selectStep,
   type PipelineSelection,
@@ -110,7 +111,7 @@ export interface StudioPipelineMapProps {
   mode?: 'map' | 'line';
   drawerOpen?: boolean;
   presentation?: Readonly<Record<string, PipelineCardPresentation>>;
-  onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void;
+  onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void | Promise<unknown>;
   newStepCommand?: (source?: PipelineMapStepSource, subject?: string) => StudioCommand | undefined;
   newSweepCommand?: (stepId: string, subject?: string) => StudioCommand | undefined;
   /** The open menu of a step's sweepable fields, anchored at Add Sweep in its card's head. */
@@ -477,7 +478,7 @@ function sameHeights(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, numb
 function MapDiagram({
   layout,
   card,
-  primaryStep,
+  fullSteps,
   clearFocus,
   strongEdges,
   viewportRef,
@@ -486,8 +487,8 @@ function MapDiagram({
 }: {
   layout: MapLayout;
   card: (step: PlanStepView, compact: boolean) => ReactNode;
-  /** In compact density, the step whose card stays full. */
-  primaryStep?: string;
+  /** In compact density, the steps whose cards stay full: the primary step, and the step whose runs a rule is picking. */
+  fullSteps: ReadonlySet<string>;
   clearFocus: () => void;
   strongEdges: ReadonlySet<string>;
   viewportRef?: Ref<CanvasViewport>;
@@ -507,11 +508,11 @@ function MapDiagram({
     placePipelineMap(layout, ({ id }) => ({ width: mapCardWidth, height: fullHeights.current.get(id) ?? unmeasuredCardHeight })),
     visibleSize.current.width, visibleSize.current.height,
   );
-  const compactCard = (step: PlanStepView) => compact && step.id !== primaryStep;
+  const compactCard = (step: PlanStepView) => compact && !fullSteps.has(step.id);
   const placement: MapPlacement = useMemo(() => placePipelineMap(layout, ({ id }) => ({
-    width: compact && id !== primaryStep ? compactMapCardWidth : mapCardWidth,
+    width: compact && !fullSteps.has(id) ? compactMapCardWidth : mapCardWidth,
     height: heights.get(id) ?? unmeasuredCardHeight,
-  })), [layout, heights, compact, primaryStep]);
+  })), [layout, heights, compact, fullSteps]);
   const [geometry, setGeometry] = useState<{
     width: number; height: number; compact: boolean;
     paths: readonly { id: string; d: string }[];
@@ -729,7 +730,7 @@ export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newSte
 >) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const applySelection: ApplyMapSelection = (change) => onSelectionChange(change(state));
-  return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
+  return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(lineageRoots(state)) : null}
     focusedStepId={state.focus?.stepId} documentScope={documentScope} applySelection={applySelection}
     chooseStep={chooseMapStep(applySelection, onChooseStep)} rename={rename} enterStep={onEnterStep} stepMenu={stepMenu}
     newStep={newStepCommand?.() ?? unboundStudioCommand('newStep')} framed pending={pending} />;
@@ -855,6 +856,8 @@ export function StudioPipelineMap({
   const selectedSteps = state.selection?.kind === 'steps' ? state.selection.stepIds
     : state.selection ? [state.selection.stepId] : [];
   const primaryStep = activeStepId ?? selectedSteps[0];
+  const fullSteps = useMemo(() => new Set([primaryStep, choosing?.step].filter((id): id is string => !!id)),
+    [primaryStep, choosing?.step]);
   const firstStep = newStepCommand?.();
   function insertAt(target: EventTarget) {
     const card = target instanceof Element ? target.closest<HTMLElement>('[data-map-step]') : null;
@@ -866,16 +869,19 @@ export function StudioPipelineMap({
   const drawDrawer = drawerOpen && mode === 'map';
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const focus = state.focus;
-  const upstream = useMemo(() => focus ? lineage.upstream([focus]) : null, [lineage, focus]);
-  const downstream = useMemo(() => focus ? lineage.downstream([focus]) : null, [lineage, focus]);
+  const rootsKey = JSON.stringify(lineageRoots(state));
+  // Keyed by the runs themselves: the selection arrives as a new object on every change.
+  const roots = useMemo(() => JSON.parse(rootsKey) as RunAddress[], [rootsKey]);
+  const upstream = useMemo(() => focus ? lineage.upstream(roots) : null, [lineage, focus, roots]);
+  const downstream = useMemo(() => focus ? lineage.downstream(roots) : null, [lineage, focus, roots]);
   const related = useMemo(
-    () => drawDrawer && focus ? lineage.related(focus) : null,
-    [drawDrawer, lineage, focus],
+    () => drawDrawer && focus ? lineage.related(roots) : null,
+    [drawDrawer, lineage, focus, roots],
   );
   const ancestry = mapStepLineage(selectedSteps, layout.upstream, layout.downstream);
   const focusPairs = useMemo(
-    () => focus && upstream && downstream ? focusedMapEdgePairs(plan.edges, focus, upstream, downstream) : null,
-    [focus, upstream, downstream, plan.edges],
+    () => focus && upstream && downstream ? focusedMapEdgePairs(plan.edges, roots, upstream, downstream) : null,
+    [focus, roots, upstream, downstream, plan.edges],
   );
   const strongEdges = new Set(layout.edges.filter(({ from, to }) =>
     focusPairs ? focusPairs.has(mapEdgePair(from, to)) : !documentScope &&
@@ -922,7 +928,7 @@ export function StudioPipelineMap({
               stepMenu={stepMenu}
             />
           )}
-          <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus} primaryStep={primaryStep}
+          <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus} fullSteps={fullSteps}
             strongEdges={strongEdges} viewportRef={viewportRef} fitReady={fitReady} wiring={wiring}
             card={(step, compact) => (
               <StepCard

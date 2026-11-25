@@ -139,6 +139,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     service = ProjectPlanService(folders, jobs)
     projected = service.response(service.read(project, revision=plan.revision), include_window_map=True)
     results = {row.key.step: row for row in projected.window_map.evaluations}
+    curves = {}
     for step, expected, observed in (("baseline", [4, 1, 2, 6], [4, 2]), ("empty", [1, 5], [])):
         evaluation = results[step]
         assert evaluation.checkpoint_series.requested == expected
@@ -155,6 +156,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
 
             probe.setattr(ArrayContainerReader, "read_tensor", unexpected_tensor)
             curve = service.evaluation_objective(project, read)
+        curves[step] = curve
         assert curve.requested == expected
         assert curve.receipt == evaluation.result.receipt
         assert curve.lineage == [producer.job_id]
@@ -177,6 +179,12 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     raw["steps"]["empty"]["base"]["inline"]["params"]["seed"] += 1
     _save_project(folders, project, Project.model_validate(raw))
     new_plan = folders.read_plan(project, revision=None)
+    stale = next(row for row in service.read(project, revision=new_plan.revision).evaluations.values()
+                 if row.key.step == "empty")
+    assert stale.status == "stale" and stale.previous.revision == plan.revision
+    assert service.evaluation_objective(project, StudioSavedEvaluationRead(
+        revision=new_plan.revision, key=stale.key, job_id=stale.previous.job_id,
+    )) == curves["empty"]
     empty = next(run for run in new_plan.plan.runs if run.key.step == "empty")
     closure_manifest = canonical_manifest_path(
         "TrainingRunManifest", finished["outcome"]["receipt"]["manifest_id"], root=plan.store_path,

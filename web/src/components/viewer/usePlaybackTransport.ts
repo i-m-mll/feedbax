@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 
 export const SPEED_OPTIONS = [0.25, 0.5, 1, 1.5, 2, 4] as const;
 
-function boundedPosition(position: number, duration: number): number {
-  if (!Number.isFinite(position)) return 0;
-  return Math.max(0, Math.min(Math.max(duration, 0), position));
+function boundedPosition(position: number, start: number, end: number): number {
+  if (!Number.isFinite(position)) return start;
+  return Math.max(start, Math.min(Math.max(end, start), position));
 }
 
-function nextFramePosition(frameTimes: readonly number[], position: number, direction: -1 | 1): number {
-  if (frameTimes.length === 0) return 0;
+function nextFramePosition(frameTimes: readonly number[], position: number, direction: -1 | 1, start: number): number {
+  if (frameTimes.length === 0) return start;
   const sorted = [...frameTimes].sort((left, right) => left - right);
   if (direction > 0) {
     return sorted.find((time) => time > position + 1e-8) ?? sorted[sorted.length - 1];
@@ -16,16 +16,19 @@ function nextFramePosition(frameTimes: readonly number[], position: number, dire
   return [...sorted].reverse().find((time) => time < position - 1e-8) ?? sorted[0];
 }
 
+/** Playback of a span of time from `start` to `end`, in seconds. */
 export function usePlaybackTransport({
   position,
-  duration,
+  start,
+  end,
   speed,
   frameTimes,
   onPositionChange,
   enabled = true,
 }: {
   position: number;
-  duration: number;
+  start: number;
+  end: number;
   speed: number;
   frameTimes: readonly number[];
   onPositionChange: (position: number) => void;
@@ -34,8 +37,8 @@ export function usePlaybackTransport({
   const [playing, setPlaying] = useState(false);
   const [looping, setLooping] = useState(true);
   const lastFrameRef = useRef<number | null>(null);
-  const bounded = boundedPosition(position, duration);
-  const hasTimeline = enabled && duration > 0 && frameTimes.length > 0;
+  const bounded = boundedPosition(position, start, end);
+  const hasTimeline = enabled && end > start && frameTimes.length > 0;
 
   useEffect(() => {
     if (!playing || !hasTimeline) {
@@ -48,11 +51,11 @@ export function usePlaybackTransport({
       lastFrameRef.current = time;
       const deltaSeconds = Math.max(0, (time - last) / 1000);
       const next = bounded + deltaSeconds * speed;
-      if (next >= duration) {
+      if (next >= end) {
         if (looping) {
-          onPositionChange(0);
+          onPositionChange(start);
         } else {
-          onPositionChange(duration);
+          onPositionChange(end);
           setPlaying(false);
         }
       } else {
@@ -62,7 +65,7 @@ export function usePlaybackTransport({
     };
     rafId = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(rafId);
-  }, [bounded, duration, hasTimeline, looping, onPositionChange, playing, speed]);
+  }, [bounded, start, end, hasTimeline, looping, onPositionChange, playing, speed]);
 
   useEffect(() => {
     if (!hasTimeline) setPlaying(false);
@@ -70,9 +73,9 @@ export function usePlaybackTransport({
 
   const seek = (time: number) => {
     setPlaying(false);
-    onPositionChange(boundedPosition(time, duration));
+    onPositionChange(boundedPosition(time, start, end));
   };
-  const step = (direction: -1 | 1) => seek(nextFramePosition(frameTimes, bounded, direction));
+  const step = (direction: -1 | 1) => seek(nextFramePosition(frameTimes, bounded, direction, start));
   const togglePlay = () => setPlaying((current) => !current);
   const toggleLoop = () => setLooping((current) => !current);
 

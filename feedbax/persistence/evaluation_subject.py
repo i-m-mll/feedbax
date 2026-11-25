@@ -18,7 +18,7 @@ from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.persistence.canonical_evaluate import (
     decode_evaluation_manifest, evaluation_manifest_id, initial_evaluation_references, states_product, states_ref,
-    verify_initial_rollout,
+    verified_imported_subject, verify_initial_rollout,
 )
 from feedbax.persistence.array_container import open_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -287,7 +287,7 @@ def verify_initial_evaluation_states(
 ) -> None:
     from math import isfinite
 
-    member = verify_initial_rollout(manifest, refs)
+    member = verify_initial_rollout(store, manifest, refs)
     spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
     params = RolloutParameters.model_validate(spec.params)
     states = states_ref(manifest)
@@ -300,7 +300,10 @@ def verify_initial_evaluation_states(
         descriptor.validate_tensor_shapes({name: value.shape for name, value in reader.descriptor.tensors.items()})
         if (
             descriptor.schema_id != params.states_schema
-            or set(descriptor.dimensions).intersection(("checkpoint", "update", "replicate"))
+            or set(descriptor.dimensions).intersection(("checkpoint", "update"))
+            or (
+                descriptor.coords["replicate"].inline_values if "replicate" in descriptor.coords else ()
+            ) != (member.replica_ids if len(member.replica_ids) > 1 else ())
             or descriptor.coords["trial"].inline_values != member.trials
             or member.trials != params.trials
             or ("objective/total" in descriptor.variables) != should_score
@@ -308,7 +311,8 @@ def verify_initial_evaluation_states(
         ):
             raise ValueError("Initial Evaluate states differ from the accepted document rollout")
         if should_score:
-            total = float(reader.read_tensor("objective/total").item())
+            totals = reader.read_tensor("objective/total").ravel()
+            total = sum(float(value) for value in totals) / len(totals)
             if not isfinite(total) or manifest.summary_metrics["objective/total"] != total:
                 raise ValueError("Initial Evaluate summary differs from the retained objective")
 
@@ -330,8 +334,13 @@ def verify_evaluation_success_evidence(
             or manifest.metadata["canonical_request"] != success.request.object.model_dump(mode="json")
         ):
             raise ValueError("Accepted initial rollout differs from its Store success")
-        verify_initial_evaluation_states(store, manifest, initial_evaluation_references(decoded))
-        return (ref,)
+        refs = initial_evaluation_references(decoded)
+        verify_initial_evaluation_states(store, manifest, refs)
+        _, imported = verified_imported_subject(store, refs["subject"])
+        if visitors is not None:
+            for item in imported:
+                visitors.object(item)
+        return ref, *imported
     (bound,) = success.inputs["subject"]
     source = bound.evaluation_subject
     assert source is not None

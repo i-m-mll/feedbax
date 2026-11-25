@@ -31,9 +31,7 @@ def listed_best():
     steps = raw["steps"]
     steps["train_b"] = deepcopy(steps["train"]) | {"sweep": _rates({"d": 0.004, "e": 0.0005, "f": 0.0015})}
     best = {"rule": "lowest 2 train_loss"}
-    raw["documents"]["chosen"] = {"schema": "subset", "payload": {"rows": [
-        {"key": "chosen", "variant": "default", "row": "rate=b"},
-    ]}}
+    raw["documents"]["chosen"] = {"schema": "subset", "payload": {"clauses": [{"rate": [{"id": "b", "label": "b"}]}]}}
     steps["baseline"]["inputs"]["subject"] = [
         {"step": "train", "checkpoint": "last", "where": deepcopy(best)},
         {"step": "train_b", "checkpoint": "last", "where": deepcopy(best)},
@@ -58,7 +56,7 @@ def test_each_selection_ranks_its_own_step_by_name_and_records_its_subset():
     assert subsets["subject.2"].document == "chosen" and not subsets["subject.2"].ranks
     subjects = _subjects(plan)
     assert sorted(binding.member.key for binding in subjects.values()) == [
-        "chosen", "train/rank-1", "train/rank-2", "train_b/rank-1", "train_b/rank-2",
+        "rate=b", "train/rank-1", "train/rank-2", "train_b/rank-1", "train_b/rank-2",
     ]
     labels = {run.inputs["subject"].member.key: run.label for run in plan.runs if run.kind == "evaluate"}
     assert labels["train_b/rank-2"] == "subject=train_b, rank 2"
@@ -136,7 +134,7 @@ def test_to_rows_freezes_one_selection_and_leaves_the_others_measured(host, tmp_
     ))
     snapshot = folders.patch(project, StudioProjectPatchBatch(revision=edit.revision, files=edit.files))
     subject = snapshot.project.steps["baseline"].inputs["subject"]
-    assert [row.key for row in subject[0].where.rows] == first
+    assert [row.key for row in subject[0].where.bound_ranks] == first
     assert subject[1:] == Project.model_validate(listed_best()).steps["baseline"].inputs["subject"][1:]
 
     frozen = folders.read_plan(project, revision=None).plan

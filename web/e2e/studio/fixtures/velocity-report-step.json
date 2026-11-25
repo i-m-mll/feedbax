@@ -4,7 +4,6 @@
   "inputs": {
     "velocity_summary": {
       "step": "analyze",
-      "row": "default",
       "element": "profile",
       "product": "figure"
     }

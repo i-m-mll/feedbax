@@ -1,9 +1,10 @@
 import {
   StepReferenceSchema, type InputBinding, type JsonValue, type ProjectValueEdit, type StepReference,
-  type Step, type StepKind, type StudioProjectWindowMapProblem, type StudioSavedTrainKey, type TextSpan,
+  type SelectedAxisValue, type SelectedAxisValueProblem, type Step, type StepKind, type StudioProjectWindowMapProblem,
+  type StudioSavedTrainKey, type SubsetTerms, type TextSpan,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
-import { savedRunId } from './projectWindowPlan';
+import { savedRunId, storedClauses } from './projectWindowPlan';
 
 /** The step selections an input binds: one reference is a list of one; a binding of anything else has none. */
 export function stepSelections(binding: InputBinding | null | undefined): StepReference[] | undefined {
@@ -41,14 +42,42 @@ export function bindingEdit(
   };
 }
 
+/** An unconstrained selection has no rule to write. Explicit rank bindings can still name no ranks. */
+export function authoredSubset(terms: SubsetTerms): SubsetTerms | undefined {
+  return terms.rule || terms.clauses?.length || terms.bound_ranks != null ? terms : undefined;
+}
+
+export function withSubsetTerms(reference: StepReference, terms: SubsetTerms): StepReference {
+  const { where: _where, ...source } = reference;
+  const where = authoredSubset(terms);
+  return where ? { ...source, where } : source;
+}
+
 /** A plan's problem on a run rule, and the characters of the saved rule it is about. */
 export interface RuleProblem {
   readonly reason: string;
   readonly span?: TextSpan;
+  /** The selected axis value the rule names that no longer exists, and the axis's values that do. */
+  readonly value?: SelectedAxisValueProblem;
 }
 
 const ruleProblem = (problem: StudioProjectWindowMapProblem): RuleProblem =>
-  ({ reason: problem.detail, ...problem.span && { span: problem.span } });
+  ({ reason: problem.detail, ...problem.span && { span: problem.span }, ...problem.selection_value && { value: problem.selection_value } });
+
+/**
+ * `terms` with the missing value of `value`'s clause and axis replaced by `chosen`, or dropped where that clause already
+ * wants `chosen`.
+ */
+export function replacedAxisValue(terms: SubsetTerms, value: SelectedAxisValueProblem, chosen: SelectedAxisValue): SubsetTerms {
+  const clauses = terms.clauses ?? [];
+  const clause = clauses[value.clause_index];
+  if (!clause?.[value.axis]) throw new Error(`Selection has no clause ${value.clause_index} naming ${value.axis}.`);
+  const values = clause[value.axis];
+  const kept = values.flatMap((selected) => selected.id !== value.missing.id ? [selected]
+    : values.some(({ id }) => id === chosen.id) ? [] : [chosen]);
+  return { ...terms, clauses: storedClauses(clauses.map((each, index) =>
+    index === value.clause_index ? { ...each, [value.axis]: kept } : each)) };
+}
 
 /** A selection's problems, each on the field its path names. */
 export interface SelectionProblems {

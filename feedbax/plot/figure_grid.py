@@ -2,13 +2,16 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.contracts.figure_document import FigureDocumentView, FigurePanel
 from feedbax.contracts.figure_layout import DataDerivedAxisRange, FigureView, PanelAxis
+from feedbax.contracts.studio_figure import FigureLayoutMeta, FigurePanelMeta, FigureRun
 from feedbax.plot.ranges import calculate_array_minmax
 
 
@@ -121,6 +124,9 @@ def assemble_figure_grid(
     view: FigureDocumentView,
     traces: Mapping[str, Sequence[go.Scatter]],
     inferred_labels: Mapping[str, Mapping[str, str]],
+    *,
+    panel_times: Mapping[str, TrialFigureTime | None] = MappingProxyType({}),
+    runs: Mapping[str, tuple[FigureRun, ...]] = MappingProxyType({}),
 ) -> go.Figure:
     rows = max(panel.row for panel in panels)
     cols = max(panel.col for panel in panels)
@@ -133,20 +139,26 @@ def assemble_figure_grid(
         horizontal_spacing=view.horizontal_spacing, vertical_spacing=view.vertical_spacing,
     )
     axes = []
+    panel_meta = {}
     for panel in panels:
         for trace in traces[panel.name]:
             figure.add_trace(trace, row=panel.row, col=panel.col)
         subplot = figure.get_subplot(panel.row, panel.col)
         labels = inferred_labels.get(panel.name, {})
-        for dimension, layout, settings in (
-            ("x", subplot.xaxis, panel.x_axis),
-            ("y", subplot.yaxis, panel.y_axis),
-        ):
-            label = getattr(panel.axes_labels, dimension, None)
-            layout.title.text = label if label is not None else labels.get(dimension)
-            if settings is not None:
-                layout.update(**settings.model_dump(include={"type", "range"}, exclude_none=True))
-            axes.append(_Axis(panel, dimension, layout, settings))
+        x = _Axis(panel, "x", subplot.xaxis, panel.x_axis)
+        y = _Axis(panel, "y", subplot.yaxis, panel.y_axis)
+        for axis in (x, y):
+            label = getattr(panel.axes_labels, axis.dimension, None)
+            axis.layout.title.text = label if label is not None else labels.get(axis.dimension)
+            if axis.settings is not None:
+                axis.layout.update(**axis.settings.model_dump(include={"type", "range"}, exclude_none=True))
+            axes.append(axis)
+        panel_meta[panel.name] = FigurePanelMeta(
+            x_axis=x.reference, y_axis=y.reference, time=panel_times.get(panel.name),
+        )
     _set_derived_ranges(axes, traces)
     _set_view(figure, view)
+    figure.layout.meta = FigureLayoutMeta(panels=panel_meta, runs=dict(runs)).model_dump(
+        mode="json", exclude_none=True,
+    )
     return figure

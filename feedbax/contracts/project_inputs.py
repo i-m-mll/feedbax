@@ -51,14 +51,19 @@ class ObjectiveDocumentReference[DocumentT](StrictModel):
     source: DocumentT
 
 
+class LoadedModelReference(StrictModel):
+    kind: Literal["loaded_model"]
+    source: DocumentReference
+
+
 type DocumentInputReference = Annotated[
     InitialModelReference[DocumentReference] | TaskDocumentReference[DocumentReference]
-    | ObjectiveDocumentReference[DocumentReference], Field(discriminator="kind"),
+    | ObjectiveDocumentReference[DocumentReference] | LoadedModelReference, Field(discriminator="kind"),
 ]
 
 
-class SelectedRow(StrictModel):
-    """A saved input-member key and its exact producer address within a step."""
+class BoundRank(StrictModel):
+    """A measured rank settled on an exact producer run by To Rows."""
 
     key: Name
     variant: RowKey
@@ -75,22 +80,66 @@ def _require_row_list(rows: object) -> object:
     return rows
 
 
+class SelectedAxisValue(StrictModel):
+    id: AxisValueId
+    label: str
+    """The value's display name at selection time, used if the ID subsequently disappears."""
+
+
+type AxisSelectionClause = Annotated[
+    dict[ProjectName, Annotated[list[SelectedAxisValue], Field(min_length=1)]], Field(min_length=1),
+]
+
+
+class SelectedAxisValueProblem(StrictModel):
+    clause_index: int = Field(ge=0)
+    axis: ProjectName
+    missing: SelectedAxisValue
+    remaining: list[SelectedAxisValue]
+
+
+class SelectedAxisValueRefusal(RuleRefusal):
+    def __init__(self, index: int, problem: SelectedAxisValueProblem) -> None:
+        self.problem = problem
+        super().__init__(
+            f"clauses.{problem.clause_index}.{problem.axis}.{index}",
+            f"{problem.axis} no longer has {problem.missing.label!r}.",
+        )
+
+
 class SubsetTerms(StrictModel):
-    """Which runs of a step a selection reads: its run rule as written, and the runs To Rows pinned."""
+    """The written rule and selected axis values, with settled rank provenance for To Rows."""
 
     rule: str = ""
-    rows: list[SelectedRow] | None = Field(default=None, exclude_if=lambda rows: rows is None)
+    bound_ranks: list[BoundRank] | None = Field(default=None, exclude_if=lambda ranks: ranks is None)
+    clauses: Annotated[list[AxisSelectionClause], Field(min_length=1)] = Field(
+        default_factory=list, exclude_if=lambda clauses: not clauses,
+    )
+    """The union of these clauses. Each clause constrains only its named axes. Omit clauses to leave all axes free."""
 
-    _require_rows = field_validator(
-        "rows", mode="before", json_schema_input_type=list[SelectedRow]
-    )(_require_row_list)
-
-    @field_validator("rows")
+    @field_validator("bound_ranks")
     @classmethod
-    def _distinct_keys(cls, rows: list[SelectedRow] | None) -> list[SelectedRow] | None:
-        if rows is not None and len({row.key for row in rows}) != len(rows):
-            raise ValueError("row member keys must be distinct")
-        return rows
+    def _distinct_ranks(cls, ranks: list[BoundRank] | None) -> list[BoundRank] | None:
+        if ranks is not None and len({rank.key for rank in ranks}) != len(ranks):
+            raise ValueError("bound rank keys must be distinct")
+        return ranks
+
+    @field_validator("clauses")
+    @classmethod
+    def _canonical_clauses(cls, clauses: list[AxisSelectionClause]) -> list[AxisSelectionClause]:
+        canonical = {}
+        for clause in clauses:
+            ordered = {}
+            for axis, values in sorted(clause.items()):
+                by_id = {}
+                for value in sorted(values, key=lambda value: (value.id, value.label)):
+                    by_id.setdefault(value.id, value)
+                ordered[axis] = list(by_id.values())
+            identity = tuple((axis, tuple(value.id for value in values)) for axis, values in ordered.items())
+            labels = tuple(value.label for values in ordered.values() for value in values)
+            if identity not in canonical or labels < canonical[identity][0]:
+                canonical[identity] = (labels, ordered)
+        return [canonical[identity][1] for identity in sorted(canonical)]
 
 
 class SweepExceptionTerms(StrictModel):
@@ -113,34 +162,65 @@ class NamedSubset(StrictModel):
     unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
-def select_step_rows[Row](
+def select_step_rows[Row, Coordinate: SweepCoordinate](
     terms: SubsetTerms | None,
     rows: Iterable[Row],
     *,
     address: Callable[[Row], tuple[str, str]],
     member_key: Callable[[Row], str],
-    coordinates: Callable[[Row], Mapping[str, SweepCoordinate]],
+    coordinates: Callable[[Row], Mapping[str, Coordinate]],
+    coordinate_label: Callable[[Coordinate], str],
+    missing: Callable[[SelectedAxisValueRefusal], None],
     producer: str,
 ) -> tuple[tuple[tuple[str, Row], ...], RuleBest | None]:
-    """The keyed rows the rule chooses, in Plan order or in pinned order, and its Best term while it waits."""
+    """Select each matching producer row once and report the values of invalid clauses."""
     members = tuple(rows)
     if terms is None:
         return tuple((member_key(row), row) for row in members), None
     if isinstance(terms, StoreSubset):
         raise RuleRefusal("query", "store queries cannot select static step rows")
-    chosen = choose(terms.rule, members, coordinates=coordinates, producer=producer)
-    if terms.rows is None:
+    chosen_members = members
+    if terms.clauses:
+        indexed: dict[str, dict[str, tuple[Coordinate, set[int]]]] = {}
+        for position, row in enumerate(members):
+            for axis, value in coordinates(row).items():
+                _, positions = indexed.setdefault(axis, {}).setdefault(value.value_id, (value, set()))
+                positions.add(position)
+        matched: set[int] = set()
+        for clause_index, clause in enumerate(terms.clauses):
+            broken = False
+            constraint_matches = []
+            for axis, wanted in clause.items():
+                options = indexed.get(axis, {})
+                absent = [(index, value) for index, value in enumerate(wanted) if value.id not in options]
+                if absent:
+                    broken = True
+                    remaining = [
+                        SelectedAxisValue(id=option.value_id, label=coordinate_label(option))
+                        for option, _ in options.values()
+                    ]
+                    for index, value in absent:
+                        missing(SelectedAxisValueRefusal(index, SelectedAxisValueProblem(
+                            clause_index=clause_index, axis=axis, missing=value, remaining=remaining,
+                        )))
+                else:
+                    constraint_matches.append(set.union(*(options[value.id][1] for value in wanted)))
+            if not broken:
+                matched.update(set.intersection(*constraint_matches))
+        chosen_members = tuple(members[position] for position in sorted(matched))
+    chosen = choose(terms.rule, chosen_members, coordinates=coordinates, producer=producer)
+    if terms.bound_ranks is None:
         return tuple((member_key(row), row) for row in chosen.rows), chosen.best
     picked = set(map(id, chosen.rows))
     indices = {address(row): index for index, row in enumerate(members)}
-    selected = []
-    for row in terms.rows:
-        where = row.variant, row.row
+    selected: list[tuple[str, Row]] = []
+    for rank in terms.bound_ranks:
+        where = rank.variant, rank.row
         if where not in indices:
-            raise RuleRefusal("rows", f"unknown row address {row.variant}/{row.row}")
+            raise RuleRefusal("bound_ranks", f"unknown measured member {rank.variant}/{rank.row}")
         member = members[indices[where]]
         if id(member) in picked:
-            selected.append((row.key, member))
+            selected.append((rank.key, member))
     return tuple(selected), None
 
 
@@ -166,13 +246,13 @@ def select_sweep_exception_rows[Row](
     return tuple(row for row, row_id in zip(members, keys, strict=True) if id(row) in chosen and row_id in selected)
 
 
-def subset_to_rows(terms: SubsetTerms, bound_rows: Iterable[SelectedRow]) -> SubsetTerms:
-    """Pin a measured step subset to its exact keyed rows beside its rule."""
+def subset_to_rows(terms: SubsetTerms, bound_ranks: Iterable[BoundRank]) -> SubsetTerms:
+    """Settle a measured step subset on the producer run chosen for each rank."""
     if isinstance(terms, StoreSubset):
         raise RuleRefusal("query", "store subsets do not bind step row IDs")
     if not any(isinstance(term, RuleBest) for term in parse(terms.rule)):
         raise RuleRefusal("rule", "To Rows requires a lowest or highest term")
-    return SubsetTerms(rule=terms.rule, rows=list(bound_rows))
+    return terms.model_copy(update={"bound_ranks": list(bound_ranks)})
 
 
 class BestCheckpoint(StrictModel):
@@ -195,7 +275,6 @@ type CheckpointRule = (
 class StepReference(StrictModel):
     step: ProjectName
     where: SubsetTerms | NamedSubset | None = None
-    row: RowKey | None = None
     variants: Literal["all"] | list[RowKey] | None = None
     checkpoint: CheckpointRule | None = None
     element: ProjectName | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -203,9 +282,7 @@ class StepReference(StrictModel):
     unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
-    def _check_row_selector(self) -> StepReference:
-        if self.row is not None and self.where is not None:
-            raise ValueError("row is the shorthand for a single-row subset")
+    def _check_product(self) -> StepReference:
         if (self.element is None) != (self.product is None):
             raise ValueError("element and product must be declared together")
         return self

@@ -13,9 +13,11 @@ import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
 import clsx from 'clsx';
 import { Button, IconButton } from '@/components/ui/Button';
+import { carryKind } from '@/components/ui/carry';
 import { focusRing } from '@/components/ui/styles';
 import { Dialog } from '@/components/ui/Dialog';
 import { Menu, MenuContent, MenuGroup, MenuGroupLabel, MenuItem } from '@/components/ui/Menu';
+import { MentionRow } from '@/features/projectWindow/StudioProblems';
 import { Inspector, InspectorAddRow } from '@/components/ui/Inspector';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import { Select } from '@/components/ui/Select';
@@ -27,7 +29,7 @@ import { rawField } from '@/components/values/adapters/raw';
 import type { ChangeSource, FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
-import type {
+import type { PhysicalInterior,
   AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateModelRequest, JsonValue,
   RemoveModelAttachment, SetField,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelConnectionVerdict, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, ModelProjection,
@@ -40,8 +42,8 @@ import { editedElement } from '@/components/ui/ChoiceMenu';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
 import { attachmentFields, componentFields, delayText, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
 import {
-  accepts, addressKey, isTemplate, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
-  holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, withRemoved, type Component, type Port,
+  addressKey, isTemplate, libraryEntries, newEquations, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
+  holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, withRemoved, type Component, type LibraryEntry, type Port,
 } from './modelGraph';
 import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
@@ -80,6 +82,8 @@ type Props = {
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
   projectionRun?: StudioSavedTrainKey;
+  /** Writes a term on the port at `address` into the Objective of `projectionRun`'s step; answers with a refusal. */
+  relate?: (address: ModelAddress) => Promise<string | undefined>;
   path: readonly string[];
   /** Sets the path shown in `document`, the shown Model when absent. */
   setPath(path: string[], document?: string): void;
@@ -89,7 +93,9 @@ type Props = {
   exceptions?: ExceptionMentions;
 };
 const sourceAttachment = '@source';
-const componentDragType = 'application/x-feedbax-component';
+const componentCarry = carryKind<LibraryItem>('component');
+/** The id of the card a Library drag draws where it would be placed. */
+const carriedCard = 'carried:library';
 const emptyPath: string[] = [];
 const inputCard = '@inputs';
 const outputCard = '@outputs';
@@ -168,8 +174,8 @@ function attachmentName(item: Attachment) {
   return item.kind === 'probe' ? item.name : studioName(item.kind === 'delay' ? 'delay' : item.operation.toLowerCase() === 'clamp' ? 'clamp' : 'scale');
 }
 
-function searchable(definition: ComponentDefinition, query: string) {
-  return (shortName(definition.name) + ' ' + definition.category).toLowerCase().includes(query.toLowerCase().trim());
+function searchable({ name, group }: Pick<LibraryEntry, 'name' | 'group'>, query: string) {
+  return (name + ' ' + group).toLowerCase().includes(query.toLowerCase().trim());
 }
 
 function signalFits(source: Port, target: Port) {
@@ -182,33 +188,27 @@ function signalFits(source: Port, target: Port) {
     typeof axis !== 'number' || typeof shape[index] !== 'number' || axis === shape[index]));
 }
 
-/** The Library group a definition is listed under: a template's is Templates, whatever its category. */
-function libraryGroup(definition: ComponentDefinition) {
-  return isTemplate(definition) ? studioName('templates') : definition.category;
-}
-
-function LeafChoices({ definitions, query, choose, disabled }: {
-  definitions: readonly ComponentDefinition[]; query: string; choose(definition: ComponentDefinition): void; disabled: boolean;
+function LeafChoices({ entries, query, choose, disabled }: {
+  entries: readonly LibraryEntry[]; query: string; choose(entry: LibraryEntry): void; disabled: boolean;
 }) {
   const categoryId = useId();
-  const groups = new Map<string, ComponentDefinition[]>();
-  for (const definition of definitions) {
-    if (!searchable(definition, query)) continue;
-    const category = libraryGroup(definition);
-    const group = groups.get(category) ?? [];
-    if (!groups.has(category)) groups.set(category, group);
-    group.push(definition);
+  const groups = new Map<string, LibraryEntry[]>();
+  for (const entry of entries) {
+    if (!searchable(entry, query)) continue;
+    const group = groups.get(entry.group) ?? [];
+    if (!groups.has(entry.group)) groups.set(entry.group, group);
+    group.push(entry);
   }
   return <>{[...groups].map(([category, items], index) => <section key={category} aria-labelledby={`${categoryId}-${index}`} className="space-y-0.5">
     <h3 id={`${categoryId}-${index}`} className="px-2 pt-1 text-xs text-shell-muted">{category}</h3>
-    {items.map((definition) => <Button key={definition.name} variant="ghost" align="start" className="w-full"
-      aria-label={studioAccessibleName('add', shortName(definition.name))} disabled={disabled || !!definition.placement_reason}
-      aria-description={definition.placement_reason ?? undefined}
-      onClick={() => choose(definition)}>{shortName(definition.name)}</Button>)}
+    {items.map((entry) => <Button key={entry.id} variant="ghost" align="start" className="w-full"
+      aria-label={studioAccessibleName('add', entry.name)} disabled={disabled || !!entry.definition.placement_reason}
+      aria-description={entry.definition.placement_reason ?? undefined}
+      onClick={() => choose(entry)}>{entry.name}</Button>)}
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, relate, path, setPath, sections, openProblems, exceptions }: Props) {
   const selected = useModelSelection(state, model?.id);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -235,7 +235,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }, [plan, planCurrent, saved.revision, fieldChosenSteps]);
   const [modelIssue, setIssue] = useState<{ document: string; address?: ModelAddress; reason: string }>();
   const issue = modelIssue?.document === model?.id ? modelIssue : undefined;
-  const [libraryItem, setLibraryItem] = useState<ComponentDefinition>();
+  const [libraryItem, setLibraryItem] = useState<LibraryEntry>();
   const [search, setSearch] = useState<ModelPosition>();
   const [searchSource, setSearchSource] = useState<Port>();
   const [searchLibrary, setSearchLibrary] = useState<ModelConnectionReview['library']>();
@@ -244,6 +244,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const [rename, setRename] = useState<string>();
   /** Where the interior Inputs card's empty handle opened the list of signals outside. */
   const [addPort, setAddPort] = useState<DOMRect>();
+  /** Where a struct port's Add Term opened the list of its readable fields. */
+  const [termFields, setTermFields] = useState<{ rect: DOMRect; port: string; fields: readonly { label: string; address: ModelAddress }[] }>();
   const [menu, setMenu] = useState<{ address: ModelAddress; x: number; y: number; point: ModelPosition }>();
   /** What each target of the connection being drawn would do, by target end. */
   const [review, setReview] = useState<{ source: Port; verdicts: ReadonlyMap<string, ModelConnectionVerdict> }>();
@@ -258,7 +260,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const readBody = evaluate && { ...evaluate, revision: saved.revision };
   /** The runs of the selected sweep values: a Model edit is stored on them, and their differences are drawn. */
   const valueRuns = !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
-  const projectionBody = model && { ...(projectionRun ? { run: projectionRun } : {}), document: model.id, revision: saved.revision, ...valueRuns };
+  const projectionBody = model && {
+    ...(evaluate ? { run: evaluate.run, evaluate_scope: evaluate.scope } : projectionRun ? { run: projectionRun } : {}),
+    document: model.id, revision: saved.revision, ...valueRuns,
+  };
   const projectionRunId = projectionRun && JSON.stringify(projectionRun);
   /** The runs whose Model the view shows: a review of a connection reviews that Model. */
   const shownSelection = evaluate ? { run: evaluate.run, evaluate_scope: evaluate.scope }
@@ -266,13 +271,30 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const projection = useQuery({
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
-    enabled: active && !!projectionBody && !evaluate,
+    enabled: active && !!projectionBody,
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], projectionBody) ? previous : undefined,
   });
-  const projectedPorts = useMemo(() => new Map(projection.data?.ports?.map(({ address, type }) => [addressKey(address), type])), [projection.data]);
+  const projectedPorts = useMemo(() => new Map<string, Port['type']>([...projection.data?.ports ?? [], ...projection.data?.physical_ports ?? []]
+    .map(({ address, type }) => [addressKey(address), type])), [projection.data]);
+  /** The numeric fields under each struct-valued port, by port: Add Term on such a port relates one of them. */
+  const readableFields = useMemo(() => {
+    const found = new Map<string, { path: readonly (string | number)[]; address: ModelAddress }[]>();
+    for (const { address, type } of projection.data?.ports ?? []) {
+      const { element } = address;
+      if (element.kind !== 'field' || element.parent.kind !== 'port' || typeof type === 'string') continue;
+      if (type.base !== 'real' && type.base !== 'integer') continue;
+      const key = addressKey(at(address, element.parent));
+      found.set(key, [...found.get(key) ?? [], { path: element.path, address }]);
+    }
+    return found;
+  }, [projection.data]);
+  /** A port read by a term of the selected step's Objective, itself or by a leaf under it, carries the Objective mark. */
   const markedPorts = useMemo(() => new Map([
     ...(projection.data?.task_inputs ?? []).map((address) => [addressKey(address), 'task'] as const),
-    ...(projection.data?.objective_ports ?? []).map((address) => [addressKey(address), 'objective'] as const),
+    ...(projection.data?.ports ?? []).filter(({ readers }) => readers?.length).map(({ address }) => {
+      const { element } = address;
+      return [addressKey(element.kind === 'field' && element.parent.kind === 'port' ? at(address, element.parent) : address), 'objective'] as const;
+    }),
   ]), [projection.data]);
   const attachments = useQuery({
     queryKey: ['model-evaluate-model', saved.project_id, readBody],
@@ -285,10 +307,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   /** What the shown document adds, removes and rewires from its base, then the selected value's from the document. */
   const marked = useMemo(() => {
     const found = new Map<string, MarkedDifference>();
-    for (const difference of projection.data?.base_differences ?? []) found.set(addressKey(difference.address), { difference, value: false });
+    for (const difference of evaluate ? [] : projection.data?.base_differences ?? []) {
+      found.set(addressKey(difference.address), { difference, value: false });
+    }
     if (hasValue) for (const difference of projection.data?.value_differences ?? []) found.set(addressKey(difference.address), { difference, value: true });
     return found;
-  }, [projection.data, hasValue]);
+  }, [projection.data, evaluate, hasValue]);
   const removed = useMemo(() => [...marked.values()].flatMap(({ difference }) =>
     difference.change === 'removed' ? [difference] : []), [marked]);
   /**
@@ -446,7 +470,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const ownNames = projectedLists.map((list) => new Set(list.map(({ id }) => id.split('.').at(-1)!)));
   const projectedNames = new Set([...ownNames[0] ?? []].filter((name) => ownNames.every((names) => names.has(name))));
   /** The project's Problems in the shown Model, the graph's own among them: the list Problems shows. */
-  const modelProblems = problems ?? [];
+  const modelProblems = [...new Map([...problems ?? [], ...projection.data?.problems ?? []]
+    .map((item) => [JSON.stringify([addressKey(item.address), item.reason]), item] as const)).values()];
   const addressedProblems = new Map<string, string>();
   for (const item of issue?.address ? [...modelProblems, { address: issue.address, reason: issue.reason }] : modelProblems) {
     let address = item.address;
@@ -456,6 +481,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     else if (address.element.kind === 'field') address = at(address, address.element.parent);
     if (address.element.kind === 'attachment') address = at(address, address.element.parent);
     addressedProblems.set(addressKey(address), item.reason);
+  }
+  /** A wire's problem is its target's: the input whose type the wire does not fit carries it. */
+  const targetProblems = new Map<string, string>();
+  for (const [id, wire] of Object.entries(drawnInterior?.wires ?? {})) {
+    const reason = addressedProblems.get(addressKey(at(graph, { kind: 'wire', id })));
+    if (reason) targetProblems.set(endKey(wire.target), reason);
   }
   const portMap = useMemo(() => {
     const ports = owner ? boundaryPorts(owner.ports) : emptyPorts;
@@ -468,8 +499,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const grow = (owner: 'inputs' | 'outputs'): Port => ({
       end: { owner, port: newPort }, direction: owner === 'inputs' ? 'output' : 'input', name: studioName('addPort'), type: {}, growing: true,
     });
+    /** The Inputs card lists the task's signals in the task's order, whether or not a port reads them yet. */
+    const signalOrder = (port: Port) => (projection.data?.task_signals ?? []).findIndex((signal) => signal.label === port.name);
+    const inputs = [...ports.filter((port) => idFor(port.end) === inputCard), ...unused]
+      .sort((a, b) => signalOrder(a) - signalOrder(b));
     const map = new Map<string, Port[]>([
-      [inputCard, [...ports.filter((port) => idFor(port.end) === inputCard), ...unused, ...currentPath.length ? [] : [grow('inputs')]]],
+      [inputCard, [...inputs, ...currentPath.length ? [] : [grow('inputs')]]],
       [outputCard, [...ports.filter((port) => idFor(port.end) === outputCard), grow('outputs')]],
     ]);
     for (const [id, component] of Object.entries(drawnInterior?.components ?? {})) {
@@ -482,15 +517,16 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }));
     return map;
   }, [owner, drawnInterior, registry, graph, projectedPorts, markedPorts, currentPath.length, projection.data]);
-  const definitions = useMemo(() => (registryQuery.data ?? []).filter((definition) => accepts(definition, physical)), [registryQuery.data, physical]);
-  const libraryItems = useMemo(() => definitions.map((definition): LibraryItem => ({
-    id: definition.name, name: shortName(definition.name), group: libraryGroup(definition), glyph: <Box />,
+  const entries = useMemo(() => libraryEntries(registryQuery.data ?? [], physical), [registryQuery.data, physical]);
+  const entryOf = useMemo(() => new Map(entries.map((entry) => [entry.id, entry])), [entries]);
+  const libraryItems = useMemo(() => entries.map(({ id, name, group, definition, equations }): LibraryItem => ({
+    id, name, group, glyph: <Box />,
     refusal: definition.placement_reason ?? undefined,
-    about: {
+    about: equations ? { description: '', inputs: [], outputs: [], parameters: [] } : {
       description: definition.description, inputs: definition.input_ports ?? [], outputs: definition.output_ports ?? [],
       parameters: (definition.param_schema ?? []).map(({ name }) => name),
     },
-  })), [definitions]);
+  })), [entries]);
   const persisted = model && positionsOf(saved, model.id);
   /**
    * Where each component without a saved position was first shown: it stays there, whatever is added or removed. A
@@ -569,8 +605,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           const shown = follow(result);
           if (result.clipboard) clipboard = result.clipboard;
           if (choose && result.changed.length) {
+            // A copy is selected as its cards, not the wires it brings between them.
             const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
-              : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
+              : operation.op === 'group' ? result.changed.slice(-1)
+                : operation.op === 'duplicate' || operation.op === 'paste'
+                  ? result.changed.filter(({ element }) => element.kind === 'component') : result.changed;
             setSelection(selection, shown);
           }
           return null;
@@ -744,7 +783,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       if (!(error instanceof DOMException && error.name === 'AbortError')) setIssue({ document: model.id, reason: shownError(error) });
     });
   }
-  function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
+  function add(entry: LibraryEntry, point?: ModelPosition, from?: Port, to?: string) {
     const occupied = nodes.map((node) => node.position);
     let index = 0;
     let available = positionAt(index);
@@ -753,8 +792,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
     const position = point ?? available;
     const source = from && wireEnd(from);
-    const component = registered(definition);
-    void place(drawn(definition), position, false, (id) => apply(studioName('addComponent'), {
+    const component = registered(entry);
+    void place(drawn(entry), position, false, (id) => apply(studioName('addComponent'), {
       op: 'add_component', graph, position, id,
       ...(source && to && (source.owner === 'inputs' || source.owner === 'component')
         ? { connect_from: source, connect_to_port: to } : {}),
@@ -772,12 +811,18 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       setPlacing((prior) => prior.filter((other) => other !== item));
     }
   }
-  /** The component an add or insert sends for `definition`: a template by its name, for the Service to instantiate. */
-  function registered(definition: ComponentDefinition) {
-    return isTemplate(definition) ? { kind: 'definition', definition: definition.name } as const : leaf(definition);
+  /**
+   * The component an add or insert sends for `entry`: a template by its name, for the Service to instantiate; a new
+   * Equations composite as itself.
+   */
+  function registered(entry: LibraryEntry) {
+    const { definition } = entry;
+    return isTemplate(definition) ? { kind: 'definition', definition: definition.name } as const : drawn(entry);
   }
-  /** The card drawn for `definition` while its add is pending: a template is drawn as a composite with its ports. */
-  function drawn(definition: ComponentDefinition): Component {
+  /** The card drawn for `entry` while its add is pending: a template is drawn as a composite with its ports. */
+  function drawn(entry: LibraryEntry): Component {
+    const { definition, equations } = entry;
+    if (equations) return newEquations({ ...entry, equations });
     if (!isTemplate(definition)) return leaf(definition);
     const ports = (names: readonly string[] | undefined) => (names ?? []).map((name) => ({ id: name, name, type: {} }));
     return {
@@ -800,23 +845,56 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     return !shape || !target?.shape || (shape.length === target.shape.length &&
       shape.every((axis, index) => typeof axis !== 'number' || axis === target.shape?.[index]));
   }
-  function insert(definition: ComponentDefinition, point: ModelPosition, edge: ModelEdge, flipped: boolean) {
-    const address = edge.data?.address;
-    if (!model || address?.element.kind !== 'wire') return;
+  /** The ports of a new `entry` that `edge` would run into and out of when it is split by one, or none if it cannot be. */
+  function insertion(entry: LibraryEntry, edge: ModelEdge, id = 'new') {
+    const { definition } = entry;
     const source = portAt(edge.source, edge.sourceHandle ?? null);
     const target = portAt(edge.target, edge.targetHandle ?? null);
-    const candidate = componentPorts('new', drawn(definition), registry).filter((port) => !port.growing && !port.taskSignal);
+    const candidate = componentPorts(id, drawn(entry), registry).filter((port) => !port.growing && !port.taskSignal);
     const inputs = candidate.filter((port) => port.direction === 'input');
     const outputs = candidate.filter((port) => port.direction === 'output');
     // A port whose type differs still receives the wire, which is stored with its Problem.
     const input = inputs.find((port) => source && matchesSource(definition, port.end.port, source)) ?? inputs[0];
     const output = outputs.find((port) => target && signalFits(port, target)) ?? outputs[0];
-    if (!input || !output) {
-      add(definition, point);
+    return input && output ? { input, output } : undefined;
+  }
+  /**
+   * The physical ports of a new `entry` that the two ends of the physical connection `edge` would join when it is split
+   * by one, `a` the source's end; or none if it cannot be.
+   */
+  function physicalInsertion(entry: LibraryEntry, edge: ModelEdge, id = 'new') {
+    const ends = [portAt(edge.source, edge.sourceHandle ?? null), portAt(edge.target, edge.targetHandle ?? null)];
+    const candidate = componentPorts(id, drawn(entry), registry).filter((port) => port.direction === 'physical');
+    const fits = (port: Port, end: Port | undefined) => !port.type || !end?.type || port.type === end.type;
+    const a = candidate.find((port) => fits(port, ends[0]));
+    const b = candidate.find((port) => port !== a && fits(port, ends[1]));
+    return a && b ? { a, b } : undefined;
+  }
+  function insert(entry: LibraryEntry, point: ModelPosition, edge: ModelEdge, flipped: boolean) {
+    const address = edge.data?.address;
+    if (!model || !address) return;
+    if (address.element.kind === 'physical_connection') {
+      const ports = physicalInsertion(entry, edge);
+      if (!ports) {
+        add(entry, point);
+        return;
+      }
+      const component = drawn(entry);
+      void place(component, point, flipped, (id) => apply(studioName('insertComponent'), {
+        op: 'insert_physical_component', address, component, position: point, flipped, id,
+        a_port: ports.a.end.port, b_port: ports.b.end.port,
+      }));
       return;
     }
-    const component = registered(definition);
-    void place(drawn(definition), point, flipped, (id) => apply(studioName('insertComponent'), {
+    if (address.element.kind !== 'wire') return;
+    const ports = insertion(entry, edge);
+    if (!ports) {
+      add(entry, point);
+      return;
+    }
+    const { input, output } = ports;
+    const component = registered(entry);
+    void place(drawn(entry), point, flipped, (id) => apply(studioName('insertComponent'), {
       op: 'insert_component', address, component, position: point, flipped, id,
       input_port: input.end.port, output_port: output.end.port,
     }));
@@ -1044,13 +1122,28 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         })),
         previewPort: (port) => setPreviewTarget(port?.direction === 'input' ? endKey(wireEnd(port)) : undefined),
         portProblems: new Map(ports.flatMap((port) => {
-          const reason = addressedProblems.get(addressKey(at(graph, { kind: 'port', end: port.end })));
+          const reason = addressedProblems.get(addressKey(at(graph, { kind: 'port', end: port.end })))
+            ?? (port.direction === 'input' ? targetProblems.get(endKey(wireEnd(port))) : undefined);
           return reason ? [[portId(port), reason] as const] : [];
         })),
         enter,
         renaming: !ghost && rename === key, endRename: () => setRename(undefined),
         rename: (name) => { void apply(studioName('rename'), { op: 'rename', address, name }).then((ok) => { if (ok) setRename(undefined); }); },
         addPort: !definition && id === inputCard && currentPath.length && editTopology && !locked ? setAddPort : undefined,
+        addTerm: relate && !ghost && id !== inputCard ? (port) => {
+          if (port.taskSignal || port.growing || port.direction === 'physical' || definition && port.direction !== 'output') return undefined;
+          const portAddress = at(graph, { kind: 'port', end: port.end });
+          const own = projectedPorts.get(addressKey(portAddress));
+          const numeric = typeof own === 'object' && (own.base === 'real' || own.base === 'integer');
+          const fields = numeric ? [] : readableFields.get(addressKey(portAddress)) ?? [];
+          const relateAt = (address: ModelAddress) => {
+            if (model) void relate(address).then((reason) => setIssue(reason ? { document: model.id, address: portAddress, reason } : undefined));
+          };
+          return (rect) => {
+            if (fields.length <= 1) relateAt(fields[0]?.address ?? portAddress);
+            else setTermFields({ rect, port: port.name, fields: fields.map(({ path, address }) => ({ label: [port.name, ...path].join('.'), address })) });
+          };
+        } : undefined,
       },
     };
   }
@@ -1059,6 +1152,26 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     .map(([id, component]) => makeCard(id, objects.length, component, true));
   const nodes = [makeCard(inputCard, 0), ...objects.map(([id, component], index) => makeCard(id, index, component)),
     ...ghostCards, ...placed.map(placingCard), makeCard(outputCard, 0)];
+  /** A connected physical port faces the cards it is connected to, so that no connection runs behind its own card. */
+  {
+    const place = new Map(nodes.map((node) => [node.id, node.position.x]));
+    const pull = new Map<string, Map<string, number>>();
+    const physicalConnections = (drawnInterior as Partial<PhysicalInterior> | undefined)?.connections ?? {};
+    for (const { a, b } of Object.values(physicalConnections)) {
+      for (const [self, other] of [[a, b], [b, a]] as const) {
+        const card = idFor(self), across = idFor(other);
+        const offset = (place.get(across) ?? 0) - (place.get(card) ?? 0);
+        const ports = pull.get(card) ?? new Map<string, number>();
+        pull.set(card, ports);
+        const key = `physical:${self.port}`;
+        ports.set(key, (ports.get(key) ?? 0) + Math.sign(offset));
+      }
+    }
+    for (const node of nodes) {
+      const ports = pull.get(node.id);
+      if (ports) node.data.portSides = new Map([...ports].filter(([, sum]) => sum).map(([key, sum]) => [key, sum < 0 ? 'left' : 'right']));
+    }
+  }
   /** How low each wire's ports sit on their cards, which orders the routes between the same cards. */
   const depths = new Map<string, number>();
   const bundled = new Map<string, ModelEdge>();
@@ -1259,7 +1372,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ];
   }
   const commands = [
-    bindStudioCommand('addComponent', () => openSearch(), { enabled: editTopology && (registryQuery.isPending || definitions.length > 0) }),
+    bindStudioCommand('addComponent', () => openSearch(), { enabled: editTopology && (registryQuery.isPending || entries.length > 0) }),
     ...(port?.direction === 'output' ? [bindStudioCommand('connectPorts', () => keyboardConnect(port),
       { enabled: editTopology && !locked })] : []),
     bindStudioCommand('modelSelectAll', () => setSelection(
@@ -1409,13 +1522,19 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           ? (await attempt(studioName('rename'), { op: 'rename', address, name: String(name).trim() }, false))?.reason
           : studioReason('takesText', studioName('name')),
       }) : undefined;
+      const reason = addressedProblems.get(addressKey(address))
+        ?? (port.direction === 'input' ? targetProblems.get(endKey(wireEnd(port))) : undefined);
       return <Inspector name={port.name} type={portTypeLabel(port)} attachments={attachmentsShown}>
+        {reason && <MentionRow name={port.name} detail={reason} placeShown={false} />}
         {rename && rows(addressKey(address), [rename])}
       </Inspector>;
     }
     const wire = address.element.kind === 'wire' ? interior?.wires?.[address.element.id] : undefined;
+    const reason = addressedProblems.get(addressKey(address));
     return <Inspector name={wire ? `${endLabel(wire.source)} → ${endLabel(wire.target)}` : studioName('wire')}
-      type={wire ? studioName('wire') : undefined} attachments={attachmentsShown} />;
+      type={wire ? studioName('wire') : undefined} attachments={attachmentsShown}>
+      {reason && <MentionRow name={studioName('wire')} detail={reason} placeShown={false} />}
+    </Inspector>;
   }
 
   /** What a removed element was, read-only. */
@@ -1438,9 +1557,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     return <Inspector name={ends ? `${endLabel(ends.source)} → ${endLabel(ends.target)}` : studioName('wire')} type={studioName('wire')} />;
   }
 
-  const inspector = libraryItem ? <Inspector name={shortName(libraryItem.name)} type={libraryItem.category}>
-    {libraryItem.description && <p className="text-shell-muted">{libraryItem.description}</p>}
-    {editTopology && <Button className="justify-self-start" onClick={() => add(libraryItem)}>{studioAccessibleName('add', shortName(libraryItem.name))}</Button>}
+  const inspector = libraryItem ? <Inspector name={libraryItem.name} type={libraryItem.group}>
+    {!libraryItem.equations && libraryItem.definition.description && <p className="text-shell-muted">{libraryItem.definition.description}</p>}
+    {editTopology && <Button className="justify-self-start" onClick={() => add(libraryItem)}>{studioAccessibleName('add', libraryItem.name)}</Button>}
   </Inspector> : !model ? null
     : components.length > 1 ? <Inspector name={studioFormat('elementCount', { count: components.length, name: studioName('components').toLowerCase() })}>
       {fieldRegion}
@@ -1511,8 +1630,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         clear();
       }
     }}>
-      {(issue || problem) && <p className="px-2 text-sm" role="alert">
-        {issue?.reason ?? problem?.reason}
+      {(issue && !issue.address || problem) && <p className="px-2 text-sm" role="alert">
+        {issue && !issue.address ? issue.reason : problem?.reason}
       </p>}
       {evaluate && !refused && <StudioRegion state={studioReadState(
         'model', attachments.data, attachments.error, () => { void attachments.refetch(); },
@@ -1542,26 +1661,37 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             setPreviewTarget(undefined);
             if (searching) openSearch(point, dragSource.current);
             dragSource.current = undefined;
-          }} onLibraryDrop={(type, point, edge, reversed) => {
+          }} libraryCarry={editTopology && !locked ? componentCarry : undefined}
+          previewLibrary={(type, point, edge, reversed) => {
+            const entry = entryOf.get(type);
+            if (!model || !entry) return undefined;
+            const kind = edge?.data?.address.element.kind;
+            const signal = kind === 'wire' ? insertion(entry, edge!, carriedCard) : undefined;
+            const conserving = kind === 'physical_connection' ? physicalInsertion(entry, edge!, carriedCard) : undefined;
+            const ends = signal ? [signal.input, signal.output] : conserving ? [conserving.a, conserving.b] : undefined;
+            const card = placingCard({ document: model.id, graph: graphId, id: carriedCard, component: drawn(entry), position: point,
+              flipped: !!ends && reversed });
+            if (!edge || !ends) return { cards: [card], wires: [] };
+            const into = (id: string, source: string, sourceHandle: string | null | undefined, target: string,
+              targetHandle: string | null | undefined): ModelEdge => ({
+              id, source, sourceHandle, target, targetHandle, type: edge.type, markerEnd: edge.markerEnd,
+              data: { address: edge.data!.address },
+            });
+            return { cards: [card], wires: [
+              into('carried:into', edge.source, edge.sourceHandle, carriedCard, portId(ends[0])),
+              into('carried:out', carriedCard, portId(ends[1]), edge.target, edge.targetHandle),
+            ] };
+          }}
+          onLibraryDrop={(type, point, edge, reversed) => {
             if (locked) return;
-            const definition = registry.get(type);
-            if (!definition || !definitions.includes(definition)) return;
-            if (edge) insert(definition, point, edge, reversed);
-            else add(definition, point);
-          }} onAttachmentDrop={(raw, edge) => {
-            if (!editTopology || locked || !edge.data) return;
-            let value: unknown;
-            try {
-              value = JSON.parse(raw);
-            } catch (error) {
-              if (error instanceof SyntaxError) return;
-              throw error;
-            }
-            if (typeof value !== 'object' || !value || !('document' in value) || value.document !== model.id || !('address' in value)) return;
-            const parsed = ModelAddressSchema.safeParse(value.address);
-            if (!parsed.success || parsed.data.element.kind !== 'attachment' || !inGraph(parsed.data, graph)) return;
-            const address = parsed.data;
-            const id = parsed.data.element.id;
+            const entry = entryOf.get(type);
+            if (!entry) return;
+            if (edge) insert(entry, point, edge, reversed);
+            else add(entry, point);
+          }} onAttachmentDrop={(location, edge) => {
+            const address = location.address;
+            if (!editTopology || locked || !edge.data || location.document !== model.id || address.element.kind !== 'attachment' || !inGraph(address, graph)) return;
+            const id = address.element.id;
             const destination = edge.data.address;
             const after = effective.get(addressKey(destination))?.filter((item) => item.id !== id).at(-1)?.id ?? null;
             void apply(studioName('moveAttachment'), { op: 'move_wire_attachment', address, destination, after })
@@ -1570,11 +1700,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       </div>
     </div> : null,
     drawer: model && <Drawer>
-      <LibraryList sections={sections} section="model.library" name={studioName('library')} searchName="searchLibrary"
+      {editTopology && <LibraryList sections={sections} section="model.library" name={studioName('library')} searchName="searchLibrary"
         state={studioReadState('library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); })}
-        items={libraryItems} selected={libraryItem?.name} dragType={editTopology ? componentDragType : undefined}
-        onInspect={(name) => setLibraryItem(registry.get(name))}
-        onPlace={editTopology ? (name) => { const item = registry.get(name); if (item) add(item); } : undefined} />
+        items={libraryItems} selected={libraryItem?.id} carried={componentCarry}
+        onInspect={(id) => setLibraryItem(entryOf.get(id))}
+        onPlace={(id) => { const entry = entryOf.get(id); if (entry) add(entry); }} />}
       <DrawerSection sections={sections} id="model.outline" name={studioName('outline')}>
         {outline && <Tree ref={outlineTree} aria-label={studioName('outline')} nodes={outline.nodes}
           selected={selected.flatMap((address) => outlineRow(address) ?? [])}
@@ -1616,13 +1746,21 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       <TextField data-dialog-autofocus aria-label={studioName('components')} leading={<Search />}
         value={searchText} onValueChange={setSearchText} />
       {searchSource ? searchLibrary?.flatMap(({ component, target_port: port }) => {
-        const item = registry.get(component);
-        return item && searchable(item, searchText) ?
-          <Button key={JSON.stringify([item.name, port])} variant="ghost" align="start" disabled={!editTopology}
-            onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</Button> : [];
+        const entry = entryOf.get(component);
+        return entry && searchable(entry, searchText) ?
+          <Button key={JSON.stringify([entry.id, port])} variant="ghost" align="start" disabled={!editTopology}
+            onClick={() => add(entry, search, searchSource, port)}>{entry.name} · {port}</Button> : [];
       })
-        : <LeafChoices definitions={definitions} query={searchText} choose={(item) => add(item, search)} disabled={!editTopology} />}
-    </Dialog> : addPort && model ? <Menu open onOpenChange={(open) => { if (!open) setAddPort(undefined); }}>
+        : <LeafChoices entries={entries} query={searchText} choose={(entry) => add(entry, search)} disabled={!editTopology} />}
+    </Dialog> : termFields ? <Menu open onOpenChange={(open) => { if (!open) setTermFields(undefined); }}>
+      <MenuContent aria-label={studioAccessibleName('addTerm', termFields.port)} anchor={{ getBoundingClientRect: () => termFields.rect }}>
+        {termFields.fields.map(({ label, address }) => <MenuItem key={label} onClick={() => {
+          setTermFields(undefined);
+          const port = address.element.kind === 'field' ? at(address, address.element.parent) : address;
+          if (model) void relate?.(address).then((reason) => setIssue(reason ? { document: model.id, address: port, reason } : undefined));
+        }}>{label}</MenuItem>)}
+      </MenuContent>
+    </Menu> : addPort && model ? <Menu open onOpenChange={(open) => { if (!open) setAddPort(undefined); }}>
       <MenuContent aria-label={studioName('addPort')} anchor={{ getBoundingClientRect: () => addPort }}>
         {outsideSignals().map(({ key, label, source, outerPath }) => <MenuItem key={key} onClick={() => {
           setAddPort(undefined);

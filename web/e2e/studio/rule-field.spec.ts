@@ -9,6 +9,9 @@ import { pick } from './fixtures/controls';
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
+/** A stored selection with its clauses as the Host reads them: none written is the one clause that reads every run. */
+const withDefaultClauses = (where: StepReference['where']) =>
+  where && !('subset' in where) ? { ...where, clauses: where.clauses ?? [{}] } : where;
 const runRows = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true }).getByRole('rowheader');
 
 async function select(page: Page, step: string) {
@@ -50,7 +53,7 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   const saved = saving();
   await rule.press('Enter');
   expect((await saved).ok()).toBe(true);
-  await expect.poll(async () => (await reads('evaluate', 'subject')).where).toEqual({ rule: 'seed=0..1' });
+  await expect.poll(async () => withDefaultClauses((await reads('evaluate', 'subject')).where)).toEqual({ rule: 'seed=0..1', clauses: [{}] });
   await expect(runRows(page)).toHaveCount(2);
 
   await page.reload();
@@ -61,7 +64,7 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   const kept = saving();
   await rule.press('Enter');
   expect((await kept).ok()).toBe(true);
-  await expect.poll(async () => (await reads('evaluate', 'subject')).where).toEqual({ rule: 'sed=0' });
+  await expect.poll(async () => withDefaultClauses((await reads('evaluate', 'subject')).where)).toEqual({ rule: 'sed=0', clauses: [{}] });
   await expect(rule).toHaveAttribute('aria-invalid', 'true');
   await expect(problem).toHaveAttribute('data-app-tip', /sed is not swept/);
 
@@ -106,6 +109,11 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   await expect(page.getByRole('menuitem', { name: 'To Rows', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
 
+  await rule.fill('');
+  await rule.press('Enter');
+  await expect.poll(async () => (await reads('evaluate', 'subject')).where).toBeUndefined();
+  await expect(runRows(page)).toHaveCount(4);
+
   await select(page, 'train');
   await card.getByRole('button', { name: 'New Step train', exact: true }).click();
   await chooseStepKind(page, 'Train');
@@ -116,8 +124,13 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   const started = saving();
   await rule.press('Enter');
   expect((await started).ok()).toBe(true);
-  await expect.poll(async () => (await reads('train-2', 'checkpoint')).where).toEqual({ rule: 'seed=3' });
+  await expect.poll(async () => withDefaultClauses((await reads('train-2', 'checkpoint')).where)).toEqual({ rule: 'seed=3', clauses: [{}] });
   await expect(runRows(page)).toHaveCount(1);
+
+  await rule.fill('');
+  await rule.press('Enter');
+  await expect.poll(async () => (await reads('train-2', 'checkpoint')).where).toBeUndefined();
+  await expect(runRows(page)).toHaveCount(4);
 });
 
 // Catches the new step's first field taking the keyboard when its form lands after the user has started writing the
@@ -154,7 +167,7 @@ test('a rule written before the new step\'s form lands keeps the keyboard and sa
     && new URL(response.url()).pathname === projectPath);
   await rule.press('Enter');
   expect((await started).ok()).toBe(true);
-  await expect.poll(async () => (await reads('train-2', 'checkpoint')).where).toEqual({ rule: 'seed=3' });
+  await expect.poll(async () => withDefaultClauses((await reads('train-2', 'checkpoint')).where)).toEqual({ rule: 'seed=3', clauses: [{}] });
 });
 
 // Catches a stored rule that chooses no run explained by a sentence under the Subject picker instead of on the rule
@@ -197,28 +210,30 @@ async function pickingProject(page: Page, request: APIRequestContext, axes: Reco
 
 // Catches a press on the card that selects the producer's runs instead of picking them, a rule that is not the picked
 // runs' own, and picks that are not saved on Enter.
-test('values picked on the producer\'s card write their rule, saved on Enter', async ({ page, request }) => {
+test('values picked on the producer\'s card pin their IDs on Enter', async ({ page, request }) => {
   const { rule, card, subject } = await pickingProject(page, request, { seed: { path: 'seed', values: [0, 1, 2, 3] } });
   await chooseSweepValue(card, 'seed', '0');
   await chooseSweepValue(card, 'seed', '2');
-  await expect(rule).toHaveValue('seed=0,2');
+  await expect(rule).toHaveValue('');
+  await expect(rule.locator('..')).toContainText('Rows');
   await expect(rule.locator('..')).toContainText('2/4');
   await expect(card.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(2);
   await expect(mapStep(page, 'evaluate')).toHaveAttribute('aria-pressed', 'true');
   await expect(rule).toBeFocused();
   await rule.press('Enter');
-  await expect.poll(subject).toEqual({ rule: 'seed=0,2' });
+  await expect.poll(subject).toMatchObject({ clauses: [{ seed: expect.arrayContaining([
+    { id: expect.stringMatching(/^value-/), label: '0' }, { id: expect.stringMatching(/^value-/), label: '2' },
+  ]) }] });
   await expect(runRows(page)).toHaveCount(2);
 });
 
-// Catches picked runs that no rule chooses written as a rule that chooses others too, and Escape saving the picks.
-test('runs picked that no rule chooses are pinned as rows, and Escape keeps the saved rule', async ({ page, request }) => {
+// Catches a diagonal pick that widens to the whole rectangle, and Escape saving the picks.
+test('diagonal picks save two clauses, and Escape keeps the saved rule', async ({ page, request }) => {
   const { rule, card, subject } = await pickingProject(page, request, {
     seed: { path: 'seed', values: [0, 1] }, batches: { path: 'training_config.n_batches', values: [2, 3] },
   });
   const mark = (seed: number, batches: number) => card.getByRole('button', { name: new RegExp(`seed ${seed} · batches ${batches}\\b`) });
   await mark(0, 2).click();
-  await expect(rule).toHaveValue('batches=2 seed=0');
   await page.keyboard.press('Escape');
   await expect(rule).toHaveValue('');
   expect(await subject()).toBeUndefined();
@@ -228,10 +243,17 @@ test('runs picked that no rule chooses are pinned as rows, and Escape keeps the 
   await mark(0, 2).click();
   await mark(1, 3).click();
   await expect(rule).toHaveValue('');
-  await expect(rule.locator('..')).toContainText('Rows');
+  for (const [seed, batches] of [[0, 2], [1, 3]]) await expect(mark(seed, batches)).toHaveAttribute('data-boxed', '');
+  await expect(card.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(2);
   await expect(rule.locator('..')).toContainText('2/4');
   await rule.press('Enter');
-  await expect.poll(async () => (await subject() as SubsetTerms | undefined)?.rows?.length).toBe(2);
-  expect((await subject() as SubsetTerms).rule).toBeUndefined();
+  const value = (label: string) => [{ id: expect.stringMatching(/^value-/), label }];
+  await expect.poll(subject).toEqual({ clauses: expect.arrayContaining([
+    { seed: value('0'), batches: value('2') }, { seed: value('1'), batches: value('3') },
+  ]) });
+  // Once saved, the field boxes the runs its clauses read on the producer's card: the picked two, not the rectangle.
+  await rule.focus();
+  await expect(card.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(2);
+  for (const [seed, batches] of [[0, 2], [1, 3]]) await expect(mark(seed, batches)).toHaveAttribute('data-boxed', '');
   await expect(runRows(page)).toHaveCount(2);
 });

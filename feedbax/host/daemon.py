@@ -31,6 +31,7 @@ from feedbax.host.protocol import (
     SessionCloseClaim, SessionStatus,
 )
 from feedbax.host.session import SessionFence
+from feedbax.host.source import host_source
 from feedbax.host.store import Store, StorePublicationPending
 
 LOG_LINE_LIMIT = 8192
@@ -41,7 +42,7 @@ SHUTDOWN_MODES = ("defer", "checkpoint", "force", "interrupt")
 RESERVE_BYTES = 2 * 1024 * 1024
 _SESSION_READS = {
     "ping", "events", "jobs_snapshot", "stopped_checkpoint", "checkpoint_producer", "jobs", "submissions",
-    "record_get", "record_get_many",
+    "record_get", "record_get_many", "checkpoint_for_export",
 }
 
 
@@ -84,6 +85,7 @@ class Host:
             raise OSError(f"Host state root must be on a local filesystem: {root}")
         self.lock = (root / "host.lock").open("a")
         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.source = host_source()
         self.session = SessionFence.load(root)
         if required_expiry_ms is not None:
             if self.session is None or self.session.state.expires_at != required_expiry_ms / 1000:
@@ -995,7 +997,7 @@ class Host:
                 if message.get("include_runtime") is True:
                     runtime = await asyncio.to_thread(_runtime_inventory)
                     identity["runtime"] = runtime.model_dump(mode="json")
-                return {"version": VERSION, "pid": os.getpid(), **identity}
+                return {"version": VERSION, "pid": os.getpid(), "source": dict(self.source), **identity}
             case "events":
                 return await self._events(**message)
             case "jobs_snapshot":
@@ -1004,6 +1006,8 @@ class Host:
                 return self.store.checkpoint_producer(**message)
             case "stopped_checkpoint":
                 return self.store.stopped_checkpoint(**message)
+            case "checkpoint_for_export":
+                return self.store.checkpoint_for_export(**message)
             case "admit" | "admit_with_completion":
                 result = self.store.admit(
                     **message, allow_completion=op == "admit_with_completion",

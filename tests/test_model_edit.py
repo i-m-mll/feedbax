@@ -57,7 +57,7 @@ def _bytes(state):
 
 
 @pytest.mark.parametrize(("scope", "grow_source"), [((), True), ((), False), (("outer",), False)])
-def test_boundary_growth_reviews_and_stores_a_typed_port(scope, grow_source):
+def test_boundary_growth_reviews_and_stores_a_port(scope, grow_source):
     state = _start()
     empty = {"owner": "inputs" if grow_source else "outputs", "port": "__new_port__"}
     source, target = (empty, _end("same", "in")) if grow_source else (_end("same", "out"), empty)
@@ -84,7 +84,8 @@ def test_boundary_growth_reviews_and_stores_a_typed_port(scope, grow_source):
     port = next(port for port in saved["ports"][empty["owner"]] if port["id"] == wire[side]["port"])
     assert port["id"] != empty["port"]
     assert port["name"] == ("in" if grow_source else "out")
-    assert port["type"] == SCALAR.type.model_dump(mode="json")
+    expected = SCALAR.type if grow_source else SignalType()
+    assert port["type"] == expected.model_dump(mode="json")
 
 
 def _start(deep_name="inner", *, decorated=False, fanout=False, default=False):
@@ -305,7 +306,7 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
 
 def test_batch_created_model_recovers_its_original_file_revision_after_undo(tmp_path):
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        response = client.post("/api/projects")
+        response = client.post("/api/projects", json={"name": "model-edits"})
         assert response.is_success, response.text
         empty = response.json()["snapshot"]
         url = f"/api/projects/{empty['project_id']}"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import ExitStack
 from dataclasses import asdict
 from functools import lru_cache
@@ -14,7 +15,7 @@ import numpy as np
 from feedbax.host.operation_runtime import run_operation
 from feedbax.contracts.artifact_custody import ContentRootRecord
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
-from feedbax.contracts.effective_success import Bindings, Product, Products, success_content_ref
+from feedbax.contracts.effective_success import Bindings, BoundMember, Product, Products, success_content_ref
 from feedbax.contracts.figure_document import PLOTLY_MEDIA_TYPE
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.request_identity import DecodedRequest
@@ -25,10 +26,13 @@ from feedbax.contracts.request_specs import (
     ReportRequestSpec,
 )
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.studio_figure import FigureRun
+from feedbax.contracts.trial_clock import TrialMeanOptions, TrialMeanSelection
 from feedbax.dataset import Dataset
 from feedbax.contracts.member_stack import labelled_members
 from feedbax.dataset_sweep import dataset_entries, stack_dataset_members
 from feedbax.persistence.completion import read_completion_bindings
+from feedbax.execution.trial_clock import TrialClockRecord
 from feedbax.host.io import append
 from feedbax.host.model_checkpoint_input import bind_managed_inputs
 from feedbax.host.light_jobs import (
@@ -44,7 +48,9 @@ from feedbax.host.light_jobs import (
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView
+from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_trial_clock
 from feedbax.plot.dataset_figure import render as render_figure
+from feedbax.plot.figure_trial_clock import FigureRecordedDataset
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import RegisteredOperation
@@ -104,6 +110,77 @@ def _dataset_inputs(
     return datasets
 
 
+def _figure_recorded_dataset(dataset: Dataset, member_keys: frozenset[str]) -> FigureRecordedDataset:
+    descriptor = dataset.descriptor
+
+    def read_trial(trial: str, indices: tuple[int, ...]) -> tuple[TrialClockRecord, TrialMeanOptions]:
+        layout = RecordedTrialLayout.model_validate(descriptor.attrs["trial_record"])
+        return read_trial_clock(dataset, trial, indices, layout), layout.mean_options()
+
+    return FigureRecordedDataset(dataset, member_keys, descriptor.variables["epoch_start"].dims[:-1], read_trial)
+
+
+def _recorded_figure_trials(
+    success: SuccessView, roles: set[str], bindings: Bindings, stack: ExitStack,
+) -> dict[str, list[FigureRecordedDataset]]:
+    """Find the exact source clocks, retaining the member keys of stacked Analyze inputs."""
+    opened: dict[str, Dataset] = {}
+
+    def recorded(member: BoundMember, keys: frozenset[str]) -> Iterator[tuple[str, frozenset[str]]]:
+        ref = dataset_member(member)
+        digest = ref.content.sha256
+        dataset = opened.get(digest)
+        if dataset is None:
+            dataset = stack.enter_context(open_stored_dataset(success.store, ref))
+            opened[digest] = dataset
+        keys = keys | {member.key}
+        descriptor = dataset.descriptor
+        if "trial_record" in descriptor.attrs and "epoch_start" in descriptor.variables:
+            yield digest, keys
+        elif member.selection is not None:
+            producer = success.read_receipt(member.selection.receipt)
+            for members in producer.inputs.values():
+                for parent in members:
+                    if parent.content.media_type == DATASET_MEDIA_TYPE:
+                        yield from recorded(parent, keys)
+
+    sources = {}
+    for role in roles:
+        by_digest: dict[str, frozenset[str]] = {}
+        for member in bindings[role]:
+            for digest, keys in recorded(member, frozenset()):
+                by_digest[digest] = by_digest.get(digest, frozenset()) | keys
+        sources[role] = [_figure_recorded_dataset(opened[digest], keys) for digest, keys in by_digest.items()]
+    return sources
+
+
+def render_saved_figure(
+    store: ImmutableArtifactBlobProvider,
+    request: DecodedRequest,
+    bindings: Bindings,
+    *,
+    mean: TrialMeanSelection | None = None,
+) -> bytes:
+    """Draw directly from exact bound datasets, with no publication or job submission."""
+    spec = request.spec
+    if not isinstance(spec, RenderRequestSpec):
+        raise ValueError("Expected a saved figure request.")
+    with ExitStack() as stack:
+        datasets = _dataset_inputs(store, request, bindings, stack)
+        success = SuccessView(store)
+        recorded = None
+        if mean is not None:
+            roles = {layer.role for layer in spec.document.layers if "trial" in layer.group}
+            recorded = _recorded_figure_trials(success, roles, bindings, stack)
+        figure = render_figure(
+            spec.document, datasets, names=spec.names, mean=mean, recorded_trials=recorded,
+            runs=figure_source_runs(success, bindings),
+        )
+        document = figure.to_json()
+        assert document is not None
+        return document.encode()
+
+
 def _retain_staged_object(
     store: ImmutableArtifactBlobProvider, content: ContentRef, attempt: str
 ) -> None:
@@ -114,6 +191,32 @@ def _retain_staged_object(
             targets=(light_staging_target(success_content_ref(content)),),
         )
     )
+
+
+def figure_source_runs(
+    view: SuccessView, bindings: Bindings,
+) -> dict[str, tuple[FigureRun, ...]]:
+    """Follow the figure's bound datasets to the runs that produced their source data."""
+    producers: dict[str, tuple[FigureRun, ...]] = {}
+
+    def lineage(member: BoundMember) -> tuple[FigureRun, ...]:
+        if member.selection is None or member.content.media_type != DATASET_MEDIA_TYPE:
+            return ()
+        ref = member.selection.receipt
+        if ref.sha256 not in producers:
+            receipt = view.read_receipt(ref)
+            sources = tuple(
+                run for group in receipt.inputs.values() for parent in group for run in lineage(parent)
+            )
+            producers[ref.sha256] = sources or (
+                FigureRun(job_id=receipt.attempt, request_id=receipt.request.id),
+            )
+        return producers[ref.sha256]
+
+    return {
+        role: tuple(sources.values()) for role, members in bindings.items()
+        if (sources := {run.job_id: run for member in members for run in lineage(member)})
+    }
 
 
 def _compute(
@@ -149,13 +252,7 @@ def _compute(
             name=role, content=content, descriptor={"descriptor_sha256": ref.descriptor_sha256}
         )
     if isinstance(spec, RenderRequestSpec):
-        with ExitStack() as stack:
-            figure = render_figure(
-                spec.document, _dataset_inputs(store, request, bindings, stack), names=spec.names,
-            )
-            document = figure.to_json()
-            assert document is not None
-            raw = document.encode()
+        raw = render_saved_figure(store, request, bindings)
         with store._exclusive_lock():
             ref = store.store_object(raw)
             content = ContentRef(

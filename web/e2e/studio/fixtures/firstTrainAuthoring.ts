@@ -1,11 +1,11 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import {
   firstTrainTask, type ModelDocument, type ObjectiveDocument, type StudioProjectSnapshot, type StudioSavedTrainRuns,
-  type StudioProjectDocument, type StudioTrialAuthoring, type TaskDocument,
+  type StudioTrialAuthoring, type TaskDocument,
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
 import { pick } from './controls';
-import { activate, activateMenuItem, number, palette, post, readSaved } from './studioKeyboard';
+import { activate, activateMenuItem, number, palette, post, readSaved, startProject } from './studioKeyboard';
 import { rootPayload } from './rootPayload';
 
 /** The Task document a first Train creates: simple reaches, named by its label. */
@@ -15,11 +15,7 @@ export async function authorFirstTrain(
   page: Page, request: APIRequestContext, totalUpdates: number,
   forceComparison?: { activation: 'softmax' },
 ) {
-  const creation = post(page, '/api/projects');
-  await page.goto('/');
-  const created = await creation;
-  expect(created.status()).toBe(201);
-  const { snapshot } = await created.json() as StudioProjectDocument;
+  const { snapshot } = await startProject(page);
   expect(snapshot.project.steps).toEqual({});
   expect(snapshot.project.documents).toEqual({});
   const projectPath = '/api/projects/' + snapshot.project_id;
@@ -148,13 +144,10 @@ export async function authorFirstTrain(
   await expect(nBatches).toBeEditable();
   await setNumber(batchSize, 4, (project) => config(project)?.batch_size);
 
-  // Simple reaches starts the effector where its `start` variable says, through a link to the shipped Model's
-  // `plant`. This Model's point mass has another id, so the link dangles and the Task says so; `start`'s Initializes
-  // re-points it.
+  // Simple reaches starts nothing until `start` is chosen to initialize this Model's point mass.
   const shipped = rootPayload(firstTrainTask) as unknown as TaskDocument;
-  const [{ model_field: shippedLink }] = shipped.links ?? [];
-  const plantLink = JSON.stringify({ ...JSON.parse(shippedLink), element: {
-    ...JSON.parse(shippedLink).element, parent: { id: plantId, kind: 'component' },
+  const plantLink = JSON.stringify({ composites: [], element: {
+    kind: 'field', parent: { id: plantId, kind: 'component' }, path: ['state', 'effector/position'],
   } });
   const problems = async () => {
     const { revision } = await savedProject();
@@ -165,7 +158,7 @@ export async function authorFirstTrain(
     return (await response.json() as StudioTrialAuthoring).problems;
   };
   const links = async () => (rootPayload((await savedProject()).project.documents?.[taskDocument]) as unknown as TaskDocument).links;
-  expect(await problems()).toEqual([expect.objectContaining({ path: ['links', shippedLink] })]);
+  expect(await links()).toEqual([]);
   await page.keyboard.press('Meta+3');
   const initializes = task.getByRole('combobox', { name: 'Initializes start', exact: true });
   const toggle = async (component: string) => {
@@ -175,8 +168,6 @@ export async function authorFirstTrain(
     await page.keyboard.press('Escape');
   };
   await toggle('PointMass');
-  await expect.poll(links).toEqual([{ model_field: shippedLink, variable: 'start' }, { model_field: plantLink, variable: 'start' }]);
-  await toggle('plant');
   await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
   expect(await problems()).toEqual([]);
   await page.keyboard.press('Meta+1');

@@ -10,8 +10,8 @@ const centre = async (locator: Locator) => {
 };
 
 // Catches a sample with no transport, a Play that moves the readout but not the shelf's playhead (or the reverse), a
-// scrubber whose track is not the shelf's time axis, a shelf that does not open in the Task view, and a shelf that the
-// Task view reopens after the user closed it there.
+// scrubber whose track is not the shelf's time axis, a playhead that returns to the start when All is picked, a shelf
+// that does not open in the Task view, and a shelf that the Task view reopens after the user closed it there.
 test('one clock plays every picked trial, its scrubber on the shelf\'s axis, and the shelf is the Task view\'s', async ({ page, request }) => {
   const { snapshot } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
   const footer = page.locator('footer.studio-window-bottom');
@@ -46,6 +46,10 @@ test('one clock plays every picked trial, its scrubber on the shelf\'s axis, and
   expect(Math.abs(track.x - span.x)).toBeLessThan(1);
   expect(Math.abs(track.width - span.width)).toBeLessThan(1);
 
+  await clock.getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'All', exact: true }).click();
+  await expect(picker).toHaveText('4 trials');
+  await expect(readout).toHaveText(new RegExp(`^${time.toFixed(2)} s /`));
+
   await shelfSwitch.click();
   await expect(shelf).toBeHidden();
   expect((await clock.locator('[data-clock-track]').boundingBox())!.x).toBeCloseTo(track.x, 0);
@@ -79,4 +83,27 @@ test('a link to a field the Model lacks does not stop a sample', async ({ page, 
   const variables = page.locator('[data-slot="primary"]').getByRole('table', { name: 'Variables', exact: true });
   await expect(variables.getByRole('columnheader', { name: 'Drawn', exact: true })).toBeVisible();
   await expect(shelf).not.toHaveAttribute('aria-disabled', 'true');
+});
+
+// Catches a scrubber that moves or resizes when the trial picker's label changes length, which also moves the shelf's
+// columns that follow its span.
+test('the scrubber\'s bounds do not depend on the trial picker\'s label', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
+  const clock = page.locator('footer.studio-window-bottom').getByRole('group', { name: 'Clock', exact: true });
+  const picker = clock.getByRole('button', { name: /^Trial / });
+  const track = clock.locator('[data-clock-track]');
+  const pick = async (name: string) => {
+    await picker.click();
+    await page.getByRole('radio', { name, exact: true }).click();
+    await expect(picker).toHaveText(name);
+    return (await track.boundingBox())!;
+  };
+
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  const short = await pick('nominal');
+  const long = await pick('sample 2 of 4');
+  expect(long.x).toBeCloseTo(short.x, 1);
+  expect(long.width).toBeCloseTo(short.width, 1);
 });

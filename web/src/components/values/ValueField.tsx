@@ -466,15 +466,17 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     }
     if (event.key === 'Enter' && draft !== undefined) {
       event.preventDefault();
-      const committed = draft;
-      saving.current = committed;
-      void submit({ kind: 'text', text: committed }).then((done) => {
-        if (saving.current === committed) saving.current = undefined;
-        if (!done) return;
-        setDraft((current) => current === committed ? undefined : current);
-        setPending(undefined);
-      });
+      commit(draft);
     }
+  }
+  function commit(committed: string) {
+    saving.current = committed;
+    void submit({ kind: 'text', text: committed }).then((done) => {
+      if (saving.current === committed) saving.current = undefined;
+      if (!done) return;
+      setDraft((current) => current === committed ? undefined : current);
+      setPending(undefined);
+    });
   }
 
   const markMenu = mark ? <KindMark model={model} kind={shownKind} readOnly={readOnly} open={menu}
@@ -495,9 +497,11 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
         if (chosen.current) enter(chosen.current);
         chosen.current = undefined;
       }}
-      onBlur={() => {
+      onBlur={(event) => {
         setDismissed(true);
-        if (draft === undefined) setPending(undefined);
+        if (draft === undefined) { setPending(undefined); return; }
+        const within = event.relatedTarget instanceof Node && event.currentTarget.parentElement?.contains(event.relatedTarget);
+        if (!within && draft !== saving.current) commit(draft);
       }}
       onKeyDown={onKeyDown} />
     {open && <CompletionList id={listId} anchor={input} items={offered.items} highlight={highlight} onChoose={accept} />}
@@ -505,15 +509,15 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
 }
 
 /**
- * A field's kind as a glyph that opens the menu of every kind its site takes, the present one checked. With one, the
- * glyph is only the kind.
+ * A field's kind as a glyph that opens the menu of every kind its site takes, the present one checked. With one, or
+ * on a field that cannot be changed, the glyph is only the kind.
  */
 function KindMark({ model, kind = model.kind, label = model.label, readOnly, open, onOpenChange, finalFocus, onChoose }: {
   model: FieldModel; kind?: ValueKind; label?: string; readOnly: boolean; open: boolean; onOpenChange(open: boolean): void;
   finalFocus: RefObject<HTMLInputElement>; onChoose(kind: ValueKind): void;
 }) {
   const offers = kindOffers(model);
-  if (offers.length < 2) {
+  if (offers.length < 2 || readOnly) {
     return <span role="img" aria-label={studioFieldKindLabel(label, kind)} {...appTip(studioFieldKindLabel(label, kind))}
       className="flex size-full items-center justify-center text-shell-muted">
       {kindGlyphs[kind]}
@@ -525,7 +529,7 @@ function KindMark({ model, kind = model.kind, label = model.label, readOnly, ope
       icon={kindGlyphs[kind]} />} />
     <MenuContent aria-label={studioFieldLabel('kinds', label)} finalFocus={finalFocus}>
       <MenuRadioGroup value={kind} onValueChange={(chosen: ValueKind) => { onOpenChange(false); onChoose(chosen); }}>
-        {offers.map((offer) => <MenuRadioItem key={offer.kind} value={offer.kind} disabled={readOnly || !offer.enabled}
+        {offers.map((offer) => <MenuRadioItem key={offer.kind} value={offer.kind} disabled={!offer.enabled}
           glyph={<span className="flex text-shell-muted">{kindGlyphs[offer.kind]}</span>}>{studioName(offer.kind)}</MenuRadioItem>)}
       </MenuRadioGroup>
     </MenuContent>

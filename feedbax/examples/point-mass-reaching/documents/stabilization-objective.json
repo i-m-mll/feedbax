@@ -16,7 +16,7 @@
               "args": [
                 {
                   "kind": "name",
-                  "reference": "{\"composites\":[],\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"hand\"},\"kind\":\"port\"}}"
+                  "reference": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"end\":{\"owner\":\"outputs\",\"port\":\"effector\"},\"kind\":\"port\"},\"path\":[\"pos\"]}}"
                 },
                 {
                   "kind": "name",
@@ -42,7 +42,7 @@
           "args": [
             {
               "kind": "name",
-              "reference": "{\"composites\":[],\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"velocity\"},\"kind\":\"port\"}}"
+              "reference": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"end\":{\"owner\":\"outputs\",\"port\":\"effector\"},\"kind\":\"port\"},\"path\":[\"vel\"]}}"
             }
           ]
         },

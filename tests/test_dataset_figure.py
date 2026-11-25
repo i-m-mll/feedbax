@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
 from feedbax.application.composition import load_application
 from feedbax.analysis.report_document import render as render_report
-from feedbax.contracts.dataset import DATASET_MEDIA_TYPE
+from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, TrialFigureTime
 from feedbax.contracts.effective_success import BoundMember, success_content_ref
 from feedbax.contracts.figure_document import (
     FigureDocument,
@@ -23,12 +23,81 @@ from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, ProductRef
 from feedbax.contracts.request_specs import RenderRequestSpec
+from feedbax.contracts.rollout import RAW_STATES_SCHEMA
+from feedbax.contracts.studio_figure import FigureProduct
 from feedbax.dataset import Dataset, Variable
 from feedbax.host.light_worker import _compute
 from feedbax.host.light_jobs import validate_light_request
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
 from feedbax.plot.dataset_figure import render
+
+
+def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_path):
+    bundle = load_application().bundle
+    template = bundle.figure_templates.resolve("feedbax.SpeedByTrial")
+    document = template.function(template.settings_model.model_validate({"checkpoint_index": 1}))
+    operation = bundle.operations.resolve("feedbax.trial_speed")
+    port = operation.value.definition.outputs["speed"]
+    validate_figure_bindings(document, {"speed": port})
+
+    time = np.array([0.0, 0.02, 0.07])
+    velocity = np.array([
+        [[[[0, 0], [1, 0], [2, 0]], [[0, 1], [0, 2], [0, 3]]]],
+        [[[[0, 0], [-3, 4], [5, -12]], [[-8, 15], [0, -3], [0, 0]]]],
+    ], dtype=np.float32)
+    condition = "d" * 64
+    trials = ('{"target":[0.2,0]}', '{"target":[0.1,0]}')
+    states = Dataset.from_arrays(
+        {"velocity": Variable(
+            velocity, ("checkpoint", "condition", "trial", "state_time", "xy"), units="m/s", frame="world",
+        )},
+        coords={
+            "checkpoint": Variable(np.array([31, 7]), ("checkpoint",)),
+            "condition": Variable(np.array([condition]), ("condition",)),
+            "trial": Variable(np.array(trials), ("trial",)),
+            "state_time": Variable(time, ("state_time",), units="s", trial_time=TrialFigureTime()),
+        },
+        schema_id=RAW_STATES_SCHEMA,
+    )
+    speed = operation.defining_object(states, operation.value.parameter_model.model_validate({"velocity": "velocity"}))
+    names = {"condition": {condition: "plant.mass=2"}}
+    figure = render(document, {"speed": speed}, names=names)
+    assert [trace.name for trace in figure.data] == ["plant.mass=2 · Trial 1", "plant.mass=2 · Trial 2"]
+    for trace, samples in zip(figure.data, ([0, 5, 13], [17, 3, 0]), strict=True):
+        np.testing.assert_array_equal(trace.x, time)
+        np.testing.assert_array_equal(trace.y, samples)
+
+    layer, = document.layers
+    selected = layer.model_copy(update={"select": layer.select | {"trial": trials[1]}})
+    single = render(document.model_copy(update={"layers": (selected,)}), {"speed": speed}, names=names)
+    trace, = single.data
+    assert trace.name == "plant.mass=2 · Trial 2"
+    assert trace.meta["group"]["trial"] == trials[1]
+
+    store = ImmutableArtifactBlobProvider(tmp_path)
+    ref = publish_dataset(store, speed)
+    encoded = encode_request(
+        RenderRequestSpec(document=document, names=names),
+        {"speed": (InputMember(
+            key="speed", reference=ProductRef(request_id="analyze:" + "a" * 64, role="speed"),
+        ),)},
+    )
+    request = decode_request(encoded.data, encoded.documents.__getitem__)
+    bindings = {"speed": (BoundMember(
+        key="speed", content=ref.content.model_copy(update={"media_type": DATASET_MEDIA_TYPE}),
+        descriptor={"descriptor_sha256": ref.descriptor_sha256},
+    ),)}
+    saved = _compute(store, request, bindings, "render-attempt", *validate_light_request(request))
+    product = store.get_object(success_content_ref(saved.content))
+    assert product == figure.to_json().encode()
+    parsed = FigureProduct.model_validate_json(product)
+    panel = parsed.layout.meta.panels["speed"]
+    assert panel.model_dump(exclude_none=True) == {"x_axis": "x", "y_axis": "y", "time": {}}
+    assert [trace.meta.model_dump() for trace in parsed.data] == [
+        {"layer": "trial-speed", "group": {"condition": condition, "trial": trial}}
+        for trial in trials
+    ]
 
 
 def test_velocity_report_references_the_saved_band_with_condition_order_and_physical_time(
@@ -82,6 +151,7 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
         assert high.showlegend is False and low.showlegend is False
 
     figure_bytes = figure.to_json().encode()
+    assert "time" not in figure.layout.meta["panels"]["velocity"]
     encoded = encode_request(
         RenderRequestSpec(document=document),
         {"summary": (InputMember(

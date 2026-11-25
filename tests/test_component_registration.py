@@ -781,10 +781,6 @@ def test_declared_parameter_model_owns_defaults_required_fields_and_constraints(
     registry = ComponentRegistry()
 
     assert registry.resolve_component_spec("feedbax.MatMul", {}).params == {}
-    selector = registry.resolve_component_spec("feedbax.StateFeedbackSelector", {})
-    assert selector.params["expected_state_dim"] is None
-    assert selector.params["state_slices"] is None
-
     assert registry.resolve_component_spec("feedbax.Gain", {}).params == {"gain": 1.0}
     with pytest.raises(ValueError, match="extra_forbidden"):
         registry.resolve_component_spec("feedbax.Gain", {"gain": 1.0, "scale": 2.0})

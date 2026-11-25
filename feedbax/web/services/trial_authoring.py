@@ -16,13 +16,15 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import stored_parts
 from feedbax.contracts.studio_scope import StoreKind
 from feedbax.compiler.model_reset import ModelResetField
+from feedbax.compiler.model_signals import model_measure_scope
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.project import (
-    RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
+    LoadedModelDocument, RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
 )
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, resolve_step
 from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
@@ -38,7 +40,8 @@ from feedbax.contracts.studio_trials import (
     StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialEpochInstance,
     StudioTrialExpressionEdit, StudioTrialField,
     StudioTrialInput, StudioTrialObjectiveSource,
-    StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope, StudioTrialStructureEdit,
+    StudioTrialOutput, StudioTrialRelate, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope,
+    StudioTrialStructureEdit,
 )
 from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, Rest, TaskDocument,
@@ -94,6 +97,7 @@ class _Projection:
     resets: tuple[ModelResetField, ...] = ()
     partial_task: TrialSource | None = None
     epoch_instances: tuple[StudioTrialEpochInstance, ...] = ()
+    output_paths: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _project(
@@ -147,7 +151,6 @@ def _project(
             fields.update(_unpaired_objective_sites(documents, signals))
         return _Projection(None, variables, signals, epochs, fields, problems, resets=tuple(resets))
     source = paired.task if paired is not None else partial.task
-    outputs = paired.model.outputs if paired is not None else partial.outputs
     variables, signals = source.interface.variables, source.interface.signals
     names = {epoch.id: epoch.name for epoch in epochs}
     epoch_instances = tuple(
@@ -158,7 +161,13 @@ def _project(
         StudioTrialEpoch(id=instance.id, name=instance.name, steps=instance.steps)
         for instance in {item.id: item for item in epoch_instances}.values()
     )
+    output_paths = {}
     if documents.objective is not None:
+        if paired is not None:
+            measures = model_measure_scope(documents.model, paired.model.signals)
+            outputs, output_paths = measures.names, measures.paths
+        else:
+            outputs = partial.outputs
         objective_sites = {} if show_objective else None
         objective = compile_objective(
             documents.objective, (*outputs, *variables, *signals), bundle.expression_functions,
@@ -171,7 +180,7 @@ def _project(
                               for problem in objective)
     return _Projection(
         paired, variables, signals, epochs, fields, problems, resets=tuple(resets),
-        partial_task=source if paired is None else None, epoch_instances=epoch_instances,
+        partial_task=source if paired is None else None, epoch_instances=epoch_instances, output_paths=output_paths,
     )
 
 
@@ -474,7 +483,13 @@ def _evaluation_task_path(definition):
 
 
 def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
-    model = ModelDocument.model_validate(definition.input_documents["subject"].payload)
+    subject = definition.input_documents["subject"]
+    if subject.schema_id == LOADED_MODEL_SCHEMA_ID:
+        model = definition.pinned_model
+        if model is None:
+            raise ProjectFolderInvalid("The selected Loaded Model is unavailable.")
+    else:
+        model = ModelDocument.model_validate(subject.payload)
     task = definition.input_documents["task"]
     if task.schema_id == PYTHON_TASK_SCHEMA_ID:
         source = PythonTaskSelection.model_validate(task.payload)
@@ -576,8 +591,8 @@ def _pairing(plan, key, bundle, *, definition=None):
     raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
 
 
-def _prepare_edits(body, folders, project_id, project, settled, key, bundle, definition, documents, projected):
-    change, scope = body.change, body.scope
+def _prepare_edits(body, folders, project_id, project, settled, key, bundle, definition, documents, projected, *, change):
+    scope = body.scope
     plan = settled.plan
     step = plan.steps[key.variant, key.step]
     expression = change if isinstance(change, StudioTrialExpressionEdit) else None
@@ -1154,12 +1169,28 @@ def trial_authoring(
             definition = _definition(plan, key)
         documents, projected, graph = _pairing(plan, key, bundle, definition=definition)
         stored, refused = StoredEdit([]), ()
+        related = None
         store_choices = None
         if body.store_choice is not None and body.change is None:
             raise ProjectFolderInvalid("A store choice requires the edit it was offered for.")
-        if body.change is not None:
+        if isinstance(change, StudioTrialRelate):
+            from feedbax.web.services.trial_relate import related_term
+
+            if projected.pair is None or documents.objective is None:
+                raise ProjectFolderInvalid("Relate needs a paired Model, Task, and Objective.")
+            term = related_term(change, documents.model, projected.pair, documents.objective, bundle.components)
+            raw = documents.objective.model_dump(mode="json", exclude_unset=True)
+            value = term.model_dump(mode="json")
+            edit = (
+                SetProjectValue(op="add", path="/terms/-", value=value)
+                if "terms" in raw else SetProjectValue(op="add", path="/terms", value=[value])
+            )
+            change = StudioTrialDocumentEdit(kind="objective", edits=[edit])
+            related = term.id
+        if change is not None:
             stored, refused, preview = _prepare_edits(
                 body, folders, project_id, snapshot.project, settled, key, bundle, definition, documents, projected,
+                change=change,
             )
             if isinstance(refused, list):
                 store_choices, refused = refused, ()
@@ -1189,6 +1220,9 @@ def trial_authoring(
     objective_source = StudioTrialObjectiveSource(kind="own", step=key.step) if documents.objective is not None else None
     if isinstance(documents, _InitialTrialDocuments):
         model_document = definition.document_ids.get("inputs.subject")
+        subject = definition.input_documents["subject"]
+        if subject.schema_id == LOADED_MODEL_SCHEMA_ID:
+            model_document = LoadedModelDocument.model_validate(subject.payload).model.document
         objective_path = "inputs.objective"
         objective_document = definition.document_ids.get(objective_path)
     task_source = None
@@ -1214,7 +1248,7 @@ def trial_authoring(
                     task_field_sources[target[-1]] = source
     row = next((item for item in plan.rows if item.key == key), None)
     output_paths = {_output_address(port.id).to_text(): (port.name,)
-                    for port in documents.model.ports.outputs}
+                    for port in documents.model.ports.outputs} | projected.output_paths
 
     def expression(path):
         document = _field_document(documents, path[0])
@@ -1276,6 +1310,7 @@ def trial_authoring(
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
         fields=fields, problems=[*projected.problems, *field_problems, *refused],
+        related_term=related if stored.files or stored.created else None,
         files=stored.files, created=list(stored.created),
         store_choices=store_choices,
     )

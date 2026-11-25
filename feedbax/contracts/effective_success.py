@@ -20,6 +20,7 @@ from feedbax.contracts.execution_target import AttemptTarget
 from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
 from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE
+from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE
 from feedbax.contracts.rollout import ResolvedRolloutBinding, ResolvedRolloutMember
 from feedbax.contracts.request_identity import DecodedRequest, decode_request, effective_binding_id
 from feedbax.contracts.request_refs import (
@@ -236,8 +237,8 @@ class Success(ReferenceValue):
         if projected or self.evaluation_manifest is not None:
             inputs = self.inputs
             subject = inputs.get("subject", ())
-            initial = len(subject) == 1 and subject[0].content.media_type == INITIAL_MODEL_MEDIA_TYPE
-            roles = {"subject": INITIAL_MODEL_MEDIA_TYPE, "task": TASK_INPUT_MEDIA_TYPE}
+            initial = len(subject) == 1 and subject[0].content.media_type in {INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE}
+            roles = {"subject": subject[0].content.media_type, "task": TASK_INPUT_MEDIA_TYPE} if initial else {}
             if "objective" in inputs:
                 roles["objective"] = OBJECTIVE_INPUT_MEDIA_TYPE
             if initial:

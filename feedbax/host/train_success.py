@@ -81,7 +81,9 @@ def publish_train_success(
                 or committed.continuation.provenance != _occurrence(pointer)
                 or committed.recovery != recovery
                 or (collected is not None and committed.inputs != collected.inputs)
-                or (collected is None and (predecessor is None) != (not committed.inputs))
+                or (collected is None and bool(committed.inputs) != (
+                    predecessor is not None or binding.get("imported_model") is not None
+                ))
             ):
                 raise ValueError("Published Train attempt differs from the accepted result")
             if predecessor is not None:
@@ -94,6 +96,8 @@ def publish_train_success(
                         and bound.selection.occurrence != _occurrence(completion["checkpoint"]["pointer"]))
                 ):
                     raise ValueError("Published Train inputs differ from the delivered checkpoint")
+            elif binding.get("imported_model") is not None and committed.inputs != bind_train_inputs(view, request, None):
+                raise ValueError("Published Train inputs differ from the delivered Loaded Model")
             view.ensure_published_run_ref(existing, committed)
             return existing.model_dump(mode="json")
         bindings = collected.inputs if collected is not None else bind_train_inputs(view, request, predecessor)
@@ -163,11 +167,18 @@ def bind_train_inputs(view: SuccessView, request: RequestObject, predecessor: tu
     decoded = view.read_request(request)
     if not decoded.inputs and predecessor is None:
         return {}
-    if predecessor is None or decoded.inputs.keys() != {"checkpoint"}:
+    if decoded.inputs.keys() != {"checkpoint"}:
         raise ValueError("Train result lacks its exact predecessor binding")
-    completion, outcome = predecessor
     (member,) = decoded.inputs["checkpoint"]
     reference = member.reference
+    if isinstance(reference, ContentRef) and predecessor is None:
+        from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE
+
+        if reference.media_type == IMPORTED_MODEL_MEDIA_TYPE:
+            return {"checkpoint": (view.resolve(decoded, member, None),)}
+    if predecessor is None:
+        raise ValueError("Train result lacks its exact predecessor binding")
+    completion, outcome = predecessor
     if not isinstance(reference, ProductRef) or reference.request_id != completion["request_id"]:
         raise ValueError("Train result names a different predecessor request")
     ref = view.attempt_ref(completion["producer_job_id"])
