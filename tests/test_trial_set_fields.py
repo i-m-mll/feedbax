@@ -302,6 +302,9 @@ def test_set_free_twin_keeps_trial_values_and_matches_the_unmodified_train():
     plain_ctx = context(plain_request, plain)
     union_ctx = context(union_request, union)
     baseline, baseline_keys = plain_ctx.sample_trials(key=key)
+    assert plain_ctx.n_steps == union_ctx.n_steps == baseline.inputs["target_pos"].shape[1]
+    assert plain.executable.graph.input_shapes["reach_target"] == (2,)
+    assert union.executable.graph.input_shapes["reach_target"] == (2,)
     plain_twin, plain_keys = plain_ctx.sample_trials(key=key, set_fields=False)
     perturbed, perturbed_keys = union_ctx.sample_trials(key=key)
     twin, keys = union_ctx.sample_trials(key=key, set_fields=False)

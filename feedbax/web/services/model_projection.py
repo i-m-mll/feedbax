@@ -175,7 +175,7 @@ def evaluate_projection(folders, project_id, body, bundle):
         return model, (), None, {}
     if definition.document_ids.get("inputs.subject") == body.document:
         model = documents.model
-    return model, model_task_signals(folders, documents.task_source), documents.objective, documents.input_bindings
+    return model, model_task_signals(documents.task_source, folders.python_tasks), documents.objective, documents.input_bindings
 
 
 def model_projection(folders, project_id, body, bundle):

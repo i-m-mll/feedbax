@@ -385,6 +385,8 @@ class Graph(GraphNode):
     inherited_period: float | None = field(default=None, static=True, repr=False)
     parameter_constraints: tuple[object, ...] = field(default_factory=tuple, static=True)
     component_bindings: dict[str, ComponentBinding] = field(default_factory=dict, static=True)
+    input_shapes: dict[str, tuple[int, ...]] = field(default_factory=dict, static=True, repr=False)
+    """Resolved single-sample shapes of array-valued external inputs."""
 
     @property
     def period_seconds(self) -> float | None:

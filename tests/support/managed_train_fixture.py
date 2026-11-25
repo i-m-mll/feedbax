@@ -26,7 +26,6 @@ def managed_train_project(*, batches: int = 2, scenario: str = "simple-reaches")
     # Every leaf in this smaller Model has a semantic checkpoint representation.
     for name in ("hand-feedback", "feedback"):
         del interior["components"][name]
-    interior["components"]["cell"]["fields"]["input_size"] = 2
     interior["wires"] = {
         name: interior["wires"][name] for name in ("target", "decode", "drive", "command")
     }

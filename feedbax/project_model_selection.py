@@ -18,6 +18,7 @@ from feedbax.contracts.trial_bindings import selected_signal_id
 
 if TYPE_CHECKING:
     from feedbax.project_folder import ProjectFolder
+    from feedbax.tasks.registry import PythonTaskRegistry
 
 
 def task_signal(item: ScopedValue) -> ModelTaskSignal:
@@ -29,12 +30,14 @@ def task_signal(item: ScopedValue) -> ModelTaskSignal:
     ))
 
 
-def model_task_signals(folders: ProjectFolder, source: TaskDocument | PythonTaskSelection | None) -> tuple[ScopedValue, ...]:
+def model_task_signals(
+    source: TaskDocument | PythonTaskSelection | None, python_tasks: PythonTaskRegistry | None,
+) -> tuple[ScopedValue, ...]:
     from feedbax.application.composition import application_python_tasks
     from feedbax.execution.trial_resolution import resolve_python_task
 
     if isinstance(source, PythonTaskSelection):
-        template = resolve_python_task(source, folders.python_tasks or application_python_tasks())
+        template = resolve_python_task(source, python_tasks or application_python_tasks())
         if not isinstance(template, tuple):
             return tuple(ScopedValue(id=name, name=name, type=type_, level=Level.STEP)
                          for name, type_ in template.signals.items())
@@ -98,7 +101,7 @@ def selected_model_and_task(
         source = None
     objective = managed.get("objective")
     return (
-        _trial_document("model", model, ModelDocument), model_task_signals(folders, source),
+        _trial_document("model", model, ModelDocument), model_task_signals(source, folders.python_tasks),
         _trial_document("objective", objective, ObjectiveDocument) if objective is not None else None,
         managed.get("input_bindings", {}),
     )
