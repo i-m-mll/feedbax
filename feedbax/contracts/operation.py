@@ -20,6 +20,13 @@ class DatasetPort(StrictModel):
     optional_dimensions: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
     """Declared scientific axes preserved when present in the bound dataset."""
 
+    @property
+    def dimensions(self) -> frozenset[str]:
+        return frozenset(
+            dimension for fields in (self.variables, self.coordinates)
+            for field in fields.values() for dimension in field.dims
+        )
+
     def for_dimensions(self, dimensions: Collection[str]) -> "DatasetPort":
         absent = set(self.optional_dimensions) - set(dimensions)
         if not absent:
@@ -108,6 +115,7 @@ def require_dataset_port(actual: DatasetPort, expected: DatasetPort, *, fields: 
     if not set(actual.schema_ids) <= set(expected.schema_ids):
         raise ValueError(f"Requires dataset schemas {expected.schema_ids}, got {actual.schema_ids}.")
     if fields:
+        expected = expected.for_dimensions(actual.dimensions)
         require_dataset_fields(actual.variables, expected.variables)
         require_dataset_fields(actual.coordinates, expected.coordinates)
 
