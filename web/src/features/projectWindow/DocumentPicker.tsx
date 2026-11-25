@@ -20,7 +20,7 @@ export interface DocumentPickerModel {
   readonly name: string;
   /** The documents the step can read, each after the document it is based on, at its depth below its root. */
   readonly documents: readonly PickerDocument[];
-  /** What New can start from, when it offers more than an empty document; `create` takes the chosen one's key. */
+  /** What New offers beside Blank, for a role that has templates; `create` takes the chosen one's key. */
   readonly templates?: readonly PickerTemplate[];
   readonly count?: { readonly lit: number; readonly users: number };
   /** Why the last document chosen, or the last change to the shown one, was not taken. */

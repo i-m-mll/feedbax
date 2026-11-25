@@ -24,10 +24,7 @@ test('the Variables table names, types and values a new task\'s variables, and s
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   await header.getByRole('button', { name: /^Task Document / }).click();
-  const create = page.getByRole('menu', { name: 'Task Document', exact: true }).getByRole('menuitem', { name: 'New', exact: true });
-  // New offers Blank beside the shipped tasks once the authoring catalog is read; before that it makes a blank task.
-  await expect(create).toHaveAttribute('aria-haspopup', 'menu');
-  await create.click();
+  await page.getByRole('menu', { name: 'Task Document', exact: true }).getByRole('menuitem', { name: 'New', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Blank', exact: true }).click();
   await page.keyboard.press('Escape');
   const task = async () => {
