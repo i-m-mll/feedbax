@@ -191,7 +191,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expect(created.project.steps?.analyze).toMatchObject({
     kind: 'analyze', base: { document: 'analysis' }, inputs: { states: {
       step: evaluateStep,
-      where: { clauses: paired ? [{}] : [{ mass: [{ id: 'heavy', label: expect.any(String) }] }] },
+      ...(!paired && { where: { clauses: [{ mass: [{ id: 'heavy', label: expect.any(String) }] }] } }),
     } },
   });
   function expectAnalyzeSources(projection: StudioProjectWindowMap) {
@@ -600,9 +600,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   const { snapshot: paired } = await created.json() as StudioProjectDocument;
   await expect(page.getByRole('tabpanel', { name: 'Analysis', exact: true })).toBeVisible();
   expect(paired.project.steps?.analyze).toMatchObject({
-    kind: 'analyze', inputs: { states: { step: 'conditions', where: {
-      clauses: [{}],
-    } } },
+    kind: 'analyze', inputs: { states: { step: 'conditions' } },
   });
   expect(paired.project.sweep).toEqual(initial.project.sweep);
   await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('Aligned velocity');

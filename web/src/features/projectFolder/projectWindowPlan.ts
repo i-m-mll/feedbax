@@ -61,7 +61,7 @@ export function selectedRowTerms(rows: readonly StudioProjectWindowMapRow[], pic
     product[axis] = [...chosen.values()].sort((left, right) => compareIds(left.id, right.id));
     outside = stillOutside;
   }
-  if (!outside.length) return { clauses: [product] };
+  if (!outside.length) return Object.keys(product).length ? { clauses: [product] } : {};
 
   const clauses = new Map<string, AxisSelectionClause>();
   for (const { values } of selected) {

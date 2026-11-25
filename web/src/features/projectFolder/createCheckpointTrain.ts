@@ -4,6 +4,7 @@ import { selectedRuns } from '@/features/pipeline/selection';
 import type { Step, StepReference, StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { planVariants, selectedRowTerms, stepSourceRows } from './projectWindowPlan';
+import { authoredSubset } from './selectionEdits';
 import { generatedName, holds } from './generatedName';
 
 const initializationPath = 'checkpoint_initialization';
@@ -36,8 +37,9 @@ export function trainSourceSubset(
   if (!variant || !members.length || members.some((member) => member.variant !== variant)) throw new ProjectEditConflictError();
   let where: SubsetTerms | undefined;
   if (selection) {
-    where = selectedRowTerms(stepSourceRows(projection, stepId, variant), new Set(members.map(({ id }) => id)));
-    if (!where) throw new ProjectEditConflictError();
+    const terms = selectedRowTerms(stepSourceRows(projection, stepId, variant), new Set(members.map(({ id }) => id)));
+    if (!terms) throw new ProjectEditConflictError();
+    where = authoredSubset(terms);
   }
   return { step, members, where };
 }
