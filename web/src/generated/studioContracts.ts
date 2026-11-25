@@ -1124,6 +1124,12 @@ export interface ModelProjectionRequest {
   evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
 }
 
+export interface ModelTaskInput {
+  composites: string[];
+  element: GraphElement | InputsElement | OutputsElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
+  signal_id: string;
+}
+
 export interface ModelTaskSignal {
   id: string;
   label: string;
@@ -7785,6 +7791,16 @@ export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjectionRequest>;
+
+export const ModelTaskInputSchema: z.ZodType<ModelTaskInput> = z.lazy(() =>
+  z
+    .object({
+      "composites": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$"))),
+      "element": z.union([GraphElementSchema, InputsElementSchema, OutputsElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema, FieldElementSchema]),
+      "signal_id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelTaskInput>;
 
 export const ModelTaskSignalSchema: z.ZodType<ModelTaskSignal> = z.lazy(() =>
   z
