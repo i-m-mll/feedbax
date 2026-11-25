@@ -87,11 +87,16 @@ export function Section({
 }
 
 /**
- * Heights for the open sections of a stack, given each one's content height and the height they share: each takes an equal
- * share, one whose content is shorter takes only its content and gives the rest to those that overflow, and what nothing
- * needs goes to the last.
+ * An open section's body: its content's height and, for a list, the heights at which the body ends on a row's bottom
+ * edge, ascending and ending at the content's own.
  */
-export function shareHeight(contents: readonly number[], available: number): number[] {
+export interface FoldBody {
+  content: number;
+  stops?: readonly number[];
+}
+
+/** Each takes an equal share of `available`; one whose content is shorter takes only its content, giving the rest to the others. */
+function fill(contents: readonly number[], available: number) {
   const heights = contents.map(() => 0);
   let remaining = Math.max(0, available);
   let active = contents.map((_, index) => index);
@@ -100,7 +105,7 @@ export function shareHeight(contents: readonly number[], available: number): num
     const fitting = active.filter((index) => contents[index] <= share);
     if (!fitting.length) {
       for (const index of active) heights[index] = share;
-      return heights;
+      return { heights, remaining: 0 };
     }
     for (const index of fitting) {
       heights[index] = contents[index];
@@ -108,23 +113,76 @@ export function shareHeight(contents: readonly number[], available: number): num
     }
     active = active.filter((index) => contents[index] > share);
   }
-  if (heights.length) heights[heights.length - 1] += remaining;
-  return heights;
+  return { heights, remaining };
+}
+
+/**
+ * Heights for the open sections of a stack, given their bodies and the height they share: each takes an equal share,
+ * one whose content is shorter takes only its content and gives the rest to those that overflow. A list that overflows
+ * shows whole rows: its height ends on a row, and what that frees goes row by row first to the lists it lets show all
+ * their rows, then to the lists that show least, then to bodies that are not lists. What nothing needs goes to the
+ * last, unless the last is a list it would cut into; it is then the `rest`, a gap below the last.
+ */
+export function shareHeight(bodies: readonly FoldBody[], available: number): { heights: number[]; rest: number } {
+  const contents = bodies.map(({ content }) => content);
+  const { heights } = fill(contents, available);
+  const listed = (index: number) => bodies[index].stops !== undefined;
+  const short = (index: number) => heights[index] < contents[index];
+  bodies.forEach(({ stops }, index) => {
+    if (stops && short(index)) heights[index] = stops.filter((stop) => stop <= heights[index]).at(-1) ?? 0;
+  });
+  let free = Math.max(0, available) - heights.reduce((sum, height) => sum + height, 0);
+  for (;;) {
+    const next = (index: number) => bodies[index].stops!.find((stop) => stop > heights[index])!;
+    const growing = bodies.map((_, index) => index)
+      .filter((index) => listed(index) && short(index) && next(index) - heights[index] <= free)
+      .sort((a, b) => Number(next(b) === contents[b]) - Number(next(a) === contents[a]) || heights[a] - heights[b]);
+    if (!growing.length) break;
+    const [index] = growing;
+    free -= next(index) - heights[index];
+    heights[index] = next(index);
+  }
+  const plain = bodies.map((_, index) => index).filter((index) => !listed(index) && short(index));
+  const grown = fill(plain.map((index) => contents[index] - heights[index]), free);
+  plain.forEach((index, at) => { heights[index] += grown.heights[at]; });
+  free = plain.length ? grown.remaining : free;
+  const last = heights.length - 1;
+  if (last < 0) return { heights, rest: 0 };
+  if (listed(last) && short(last)) return { heights, rest: free };
+  heights[last] += free;
+  return { heights, rest: 0 };
+}
+
+/** Where a list's body can end: on the bottom edge of each row but the last, and at the end of its content. */
+function stopsOf(content: HTMLElement): readonly number[] | undefined {
+  const top = content.getBoundingClientRect().top;
+  const bottoms = [...content.querySelectorAll('[data-list-row]')]
+    .map((row) => row.getBoundingClientRect())
+    .filter(({ height }) => height > 0)
+    .map(({ bottom }) => bottom - top);
+  if (!bottoms.length) return undefined;
+  // The last row ends the list with the content's own end, so its padding is never all that scrolls.
+  const end = content.getBoundingClientRect().height;
+  return [...new Set([...bottoms.slice(0, -1).filter((bottom) => bottom < end), end])].sort((a, b) => a - b);
 }
 
 function layout(stack: HTMLElement) {
-  const open: { body: HTMLElement; content: number }[] = [];
+  const open: { section: HTMLElement; body: HTMLElement; fold: FoldBody }[] = [];
   let fixed = 0;
   for (const section of stack.children) {
     if (!(section instanceof HTMLElement) || section.dataset.section !== 'drawer') continue;
     const body = section.querySelector<HTMLElement>(':scope > [data-section-body]');
     if (!body) continue;
+    section.style.removeProperty('margin-bottom');
     fixed += section.offsetHeight - body.offsetHeight;
+    const content = body.firstElementChild as HTMLElement | null;
     if (section.dataset.open === undefined) body.style.removeProperty('height');
-    else open.push({ body, content: (body.firstElementChild as HTMLElement | null)?.offsetHeight ?? 0 });
+    else open.push({ section, body, fold: content
+      ? { content: content.getBoundingClientRect().height, stops: stopsOf(content) } : { content: 0 } });
   }
-  const heights = shareHeight(open.map(({ content }) => content), stack.clientHeight - fixed);
+  const { heights, rest } = shareHeight(open.map(({ fold }) => fold), stack.clientHeight - fixed);
   open.forEach(({ body }, index) => { body.style.height = `${heights[index]}px`; });
+  if (rest > 0) open.at(-1)!.section.style.marginBottom = `${rest}px`;
 }
 
 /**
