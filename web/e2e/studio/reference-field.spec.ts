@@ -52,10 +52,12 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
     { kind: 'document', id: 'analysis', document: analysis },
     { kind: 'step', id: 'analyze', step: { kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
   ]);
+  // A document is offered by its label, the name the Model and Task views give it.
   const models = Object.entries(initial.project.documents ?? {}).filter(([, { schema }]) => schema === 'feedbax.spec.model')
-    .map(([id]) => id);
+    .map(([id, { label }]) => ({ id, name: label ?? id }));
   const tasks = Object.entries(initial.project.documents ?? {})
-    .filter(([, { schema }]) => schema === 'feedbax.spec.python_task' || schema === 'feedbax.spec.task_document').map(([id]) => id);
+    .filter(([, { schema }]) => schema === 'feedbax.spec.python_task' || schema === 'feedbax.spec.task_document')
+    .map(([id, { label }]) => label ?? id);
   expect(models.length).toBeGreaterThan(0);
 
   await page.goto('/?project=' + encodeURIComponent(project));
@@ -65,12 +67,12 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   const subject = inputs.getByRole('combobox', { name: 'Subject', exact: true });
   await expect(subject).toHaveText('train');
 
-  const toDocument = await saved(page, project, () => pick(subject, models[0]));
+  const toDocument = await saved(page, project, () => pick(subject, models[0].name));
   expect(toDocument.project.steps!.baseline.inputs).toMatchObject({
-    subject: { kind: 'initial_model', source: { document: models[0] } },
+    subject: { kind: 'initial_model', source: { document: models[0].id } },
     task: { kind: 'task', source: { document: expect.any(String) } },
   });
-  await expect(subject).toHaveText(models[0]);
+  await expect(subject).toHaveText(models[0].name);
   await expect(inputs.getByRole('combobox', { name: 'Task', exact: true })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
@@ -92,7 +94,7 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   const policy = inspector.getByRole('combobox', { name: 'Policy', exact: true });
   await policy.click();
   const listbox = page.getByRole('listbox');
-  await expect(listbox.getByRole('option')).toHaveText([...models, 'train']);
+  await expect(listbox.getByRole('option')).toHaveText([...models.map(({ name }) => name), 'train']);
   await page.keyboard.press('Escape');
   const bound = await saved(page, project, () => pick(policy, 'train'));
   expect(bound.project.steps!.analyze.inputs?.policy).toEqual({ step: 'train', checkpoint: 'last' });

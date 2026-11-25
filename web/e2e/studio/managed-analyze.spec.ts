@@ -12,7 +12,8 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-test('places the installed Speed by trial figure from the Analyze Library', async ({ page, request, studio }) => {
+// Catches a placed figure that reads its key ("speed-by-trial") on its card while the Library names it "Speed by trial".
+test('places the installed Speed by trial figure from the Analyze Library under the Library name', async ({ page, request, studio }) => {
   const project: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'speed-library',
   ));
@@ -41,8 +42,10 @@ test('places the installed Speed by trial figure from the Analyze Library', asyn
   expect(saved.ok(), await saved.text()).toBe(true);
   const after = await saved.json() as StudioProjectSnapshot;
   expect(rootPayload(after.project.documents?.analysis)).toMatchObject({
-    views: { 'speed-by-trial': { figure: { template: 'feedbax.SpeedByTrial' } } },
+    views: { 'speed-by-trial': { label: 'Speed by trial', figure: { template: 'feedbax.SpeedByTrial' } } },
   });
+  await expect(page.getByRole('tabpanel', { name: 'Analysis', exact: true })
+    .getByRole('group', { name: 'Select Speed by trial', exact: true })).toBeVisible();
 });
 
 test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@round' }, async ({ page, request, studio }, info) => {
