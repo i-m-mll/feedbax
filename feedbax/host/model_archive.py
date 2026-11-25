@@ -20,7 +20,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.artifact_custody import (
     ArtifactBlobCustodyError, ContentLeaseRecord, ContentRetentionTarget, ContentTree, ContentTreeFile, ContentTreeRef,
 )
-from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.canonical_json import CanonicalJsonError, canonical_json_v2_bytes
 from feedbax.contracts.graph import GraphSpec, WireSpec
 from feedbax.contracts.loaded_model import (
     ImportedModelSource, ModelFitProblem, ModelFitReport, ModelGraphFitProblem, encode_imported_model_document,
@@ -214,6 +214,11 @@ def _fit_model(
 ) -> ModelFitReport | None:
     problems: list[ModelFitProblem] = []
     fitted: tuple[GraphSpec, Graph, tuple[tuple[str, ...], ...]] | None = None
+    lowered = None
+    try:
+        supplied = canonical_json_v2_bytes(_comparable_graph(weights.graph).model_dump(mode="json"))
+    except CanonicalJsonError as error:
+        raise _ArchiveReadError("/graph.json", str(error)) from error
     try:
         # Bundled bindings only select which declared optional inputs are exposed.
         # Topology and every prototype are derived from the selected Model.
@@ -242,14 +247,13 @@ def _fit_model(
     except GraphCompilationError as error:
         for diagnostic in error.record.diagnostics:
             path = diagnostic.source_anchor.authored_path
-            address = lowered.source_address(path)
+            address = lowered.source_address(path) if lowered is not None else None
             problems.append(ModelGraphFitProblem(
                 kind="unresolved_model", address=address.to_text() if address else path,
                 detail=diagnostic.observed_condition,
             ))
     else:
         expected = canonical_json_v2_bytes(_comparable_graph(graph).model_dump(mode="json"))
-        supplied = canonical_json_v2_bytes(_comparable_graph(weights.graph).model_dump(mode="json"))
         if expected != supplied:
             path = next(iter(diff(strict_json_loads(expected), strict_json_loads(supplied))))
             problems.append(ModelGraphFitProblem(
