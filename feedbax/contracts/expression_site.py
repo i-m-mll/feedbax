@@ -66,16 +66,10 @@ def project_site(
     value: Expression | None = None,
     *,
     name_paths: Mapping[str, tuple[str, ...]] = MappingProxyType({}),
+    defer_parts: bool = False,
 ) -> SiteProjection:
     """Derive the editor's menu and completion from the same declarations as check."""
-    scope = {name.name for name in site.names}
-    offered = tuple(
-        entry
-        for entry in functions.definitions()
-        if entry.level <= site.finest
-        and set(entry.implicit_names) - {"T"} <= scope
-        and not (site.structural and entry.random)
-    )
+    offered = _offered_functions(site, functions)
     kinds = [FieldKind.VALUE, FieldKind.SWEEP, FieldKind.FORMULA]
     if any(entry.display_class == FunctionClass.DRAW for entry in offered):
         kinds.append(FieldKind.DRAW)
@@ -85,17 +79,12 @@ def project_site(
         kinds.append(FieldKind.SHAPE)
     if any(item.level <= site.finest and site.expected.accepts(item.type) for item in site.names):
         kinds.append(FieldKind.LINK)
-    parts = (
-        _expression_parts(value, site, functions, offered)
-        if value is not None
-        else (
-            ExpressionPartSite(
-                path=(),
-                functions=tuple(entry.id for entry in offered),
-                names=tuple(name.id for name in site.names if name.level <= site.finest),
-            ),
+    parts = ()
+    if not defer_parts:
+        parts = (
+            (_blank_part(site, offered),) if value is None
+            else _expression_parts(value, site, functions, offered)
         )
-    )
     return SiteProjection(
         site=site,
         kinds=tuple(kinds),
@@ -103,6 +92,35 @@ def project_site(
         parts=parts,
         name_paths={name.id: name_paths[name.id] for name in site.names if name.id in name_paths},
     )
+
+
+def _offered_functions(site: Site, functions: FunctionRegistry) -> tuple[FunctionInfo, ...]:
+    scope = {name.name for name in site.names}
+    return tuple(
+        entry
+        for entry in functions.definitions()
+        if entry.level <= site.finest
+        and set(entry.implicit_names) - {"T"} <= scope
+        and not (site.structural and entry.random)
+    )
+
+
+def _blank_part(site: Site, offered: tuple[FunctionInfo, ...]) -> ExpressionPartSite:
+    return ExpressionPartSite(
+        path=(),
+        functions=tuple(entry.id for entry in offered),
+        names=tuple(name.id for name in site.names if name.level <= site.finest),
+    )
+
+
+def project_expression_part(
+    site: Site, functions: FunctionRegistry, value: Expression | None, part: NodePath,
+) -> ExpressionPartSite | None:
+    """Project only the opened part, with the same eligibility as an eager site."""
+    offered = _offered_functions(site, functions)
+    if value is None:
+        return None if part else _blank_part(site, offered)
+    return next(iter(_expression_parts(value, site, functions, offered, selected=part)), None)
 
 
 def _replace_part(tree: Expression, path: NodePath, value: Expression) -> Expression:
@@ -136,10 +154,13 @@ def _with_function(node: Expression, info: FunctionInfo, finest: Level) -> Expre
 
 def _expression_parts(
     tree: Expression, site: Site, functions: FunctionRegistry, offered: tuple[FunctionInfo, ...],
+    *, selected: NodePath | None = None,
 ) -> tuple[ExpressionPartSite, ...]:
     """Check a replacement with its enclosing expression so sibling constraints still apply."""
     nodes = tuple(walk(tree))
     by_path = dict(nodes)
+    if selected is not None and selected not in by_path:
+        return ()
     invalid_scope = scope_problems(site, ())
     recheck, local, insensitive = _checker(site, functions, reusable=frozenset(id(node) for _, node in nodes))
     original = (
@@ -191,7 +212,7 @@ def _expression_parts(
             ),
             names=fitted_names(path),
         )
-        for path, node in nodes
+        for path, node in (nodes if selected is None else ((selected, by_path[selected]),))
     )
 
 

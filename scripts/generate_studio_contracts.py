@@ -401,7 +401,7 @@ from feedbax.web.models.trajectory import (
     TrajectoryMetadata,
 )
 from feedbax.contracts.expression_values import FieldTextResult, Problem
-from feedbax.contracts.expression_site import SiteProjection
+from feedbax.contracts.expression_site import ExpressionPartSite, SiteProjection
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
 from feedbax.contracts.time_units import TimeValue
 from feedbax.contracts.studio_field import (
@@ -544,6 +544,7 @@ AUTHORED_CONTRACT_MODELS = (
     StudioTrialAuthoring,
     StudioTrialAuthoringRequest,
     StudioTrialExpressionMenuRequest,
+    ExpressionPartSite,
     StudioTrialRelate,
     StudioRelatePoint,
     StudioRelatePort,

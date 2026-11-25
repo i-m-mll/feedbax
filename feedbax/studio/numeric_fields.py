@@ -169,7 +169,8 @@ def _sample_axis(value: SweepSample, field: NumericField, functions: FunctionReg
 def project_numeric_field[View: StudioFieldView](
     view_type: type[View], field: NumericField, axis: FieldSweeps | None,
     functions: FunctionRegistry, selected: PlannedRow | None, effective: object, *, held: Sequence[object] = (),
-    period: float | None = None, effective_unit: str | None = None, scoped: bool = False, **address,
+    period: float | None = None, effective_unit: str | None = None, scoped: bool = False,
+    defer_parts: bool = False, **address,
 ) -> View:
     """The field as the selected runs have it; ``scoped`` says they are not the whole step, as for the edit.
 
@@ -177,7 +178,7 @@ def project_numeric_field[View: StudioFieldView](
     those values as its members.
     """
     own = not scoped or bool(axis and axis.for_selection)
-    site = project_site(field.site, functions)
+    site = project_site(field.site, functions, defer_parts=defer_parts)
     site = site.model_copy(update={"kinds": tuple(kind for kind in site.kinds if kind in _STORED_KINDS)})
     view = axis.view() if axis else None
     coordinate = selected.coordinates.get(view.id) if selected and view else None

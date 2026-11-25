@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from feedbax.contracts.expression_registry import FunctionRegistry
     from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
+from feedbax.web.services.trial_expression_menus import TrialExpressionMenus
 
 
 class _ModelInverse(StrictModel):
@@ -75,6 +76,7 @@ class ProjectFolderService(ProjectFolder):
             load_examples=load_examples,
         )
         self._model_undo_key = token_bytes(32)
+        self.trial_expression_menus = TrialExpressionMenus()
 
     def open_selected_folder(self, folder: Path) -> StudioProjectDocument:
         """Open a folder selected through the private native control socket."""
