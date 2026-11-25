@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { StepReference, StudioProjectSnapshot, SubsetTerms } from '../../src/generated/studioContracts';
-import { chooseSweepValue, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseSweepValue, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { hold } from './fixtures/heldRequest';
 import { pick } from './fixtures/controls';
@@ -35,13 +35,13 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   const rule = inspector.getByRole('combobox', { name: 'Runs', exact: true });
   const ruleRow = rule.locator('..');
   const problem = ruleRow.getByRole('img', { name: 'Problem', exact: true });
-  const card = page.getByRole('article', { name: 'Train train', exact: true });
+  const card = mapCard(page, 'train');
   const saving = () => page.waitForResponse((response) => response.request().method() === 'PATCH'
     && new URL(response.url()).pathname === projectPath);
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await select(page, 'train');
-  await card.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await card.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
   await expect(rule).toHaveValue('');
   await expect(ruleRow).toContainText('4/4');
@@ -115,7 +115,7 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   await expect(runRows(page)).toHaveCount(4);
 
   await select(page, 'train');
-  await card.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await card.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Train');
   await expect(mapStep(page, 'train-2')).toHaveAttribute('aria-pressed', 'true');
   await expect(runRows(page)).toHaveCount(4);
@@ -145,13 +145,13 @@ test('a rule written before the new step\'s form lands keeps the keyboard and sa
     ((await (await request.get(projectPath)).json() as StudioProjectSnapshot).project.steps![step].inputs![role] as StepReference);
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const rule = inspector.getByRole('combobox', { name: 'Runs', exact: true });
-  const card = page.getByRole('article', { name: 'Train train', exact: true });
+  const card = mapCard(page, 'train');
   const form = `${projectPath}/authoring/train/train-2`;
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await select(page, 'train');
   const held = await hold(page, form, (_, sent) => sent.method() === 'POST');
-  await card.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await card.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Train');
   await held.sent;
   await rule.fill('seed=3');
@@ -195,10 +195,10 @@ async function pickingProject(page: Page, request: APIRequestContext, axes: Reco
   train.sweep = { axes };
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const rule = page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('combobox', { name: 'Runs', exact: true });
-  const card = page.getByRole('article', { name: 'Train train', exact: true });
+  const card = mapCard(page, 'train');
   await page.goto(`/?project=${snapshot.project_id}`);
   await select(page, 'train');
-  await card.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await card.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
   await expect(mapStep(page, 'evaluate')).toHaveAttribute('aria-pressed', 'true');
   await rule.click({ button: 'right' });
@@ -212,8 +212,8 @@ async function pickingProject(page: Page, request: APIRequestContext, axes: Reco
 // runs' own, and picks that are not saved on Enter.
 test('values picked on the producer\'s card pin their IDs on Enter', async ({ page, request }) => {
   const { rule, card, subject } = await pickingProject(page, request, { seed: { path: 'seed', values: [0, 1, 2, 3] } });
-  await chooseSweepValue(card, 'seed', '0');
-  await chooseSweepValue(card, 'seed', '2');
+  await chooseSweepValue(card, 'Seed', '0');
+  await chooseSweepValue(card, 'Seed', '2');
   await expect(rule).toHaveValue('');
   await expect(rule.locator('..')).toContainText('Rows');
   await expect(rule.locator('..')).toContainText('2/4');
@@ -232,7 +232,7 @@ test('diagonal picks save two clauses, and Escape keeps the saved rule', async (
   const { rule, card, subject } = await pickingProject(page, request, {
     seed: { path: 'seed', values: [0, 1] }, batches: { path: 'training_config.n_batches', values: [2, 3] },
   });
-  const mark = (seed: number, batches: number) => card.getByRole('button', { name: new RegExp(`seed ${seed} · batches ${batches}\\b`) });
+  const mark = (seed: number, batches: number) => card.getByRole('button', { name: new RegExp(`Seed ${seed} · Batches ${batches}\\b`) });
   await mark(0, 2).click();
   await page.keyboard.press('Escape');
   await expect(rule).toHaveValue('');

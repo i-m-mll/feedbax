@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping, Sequence
 import json
 
 from feedbax.contracts.jobs import StudioProjectWindowMapAxis, StudioProjectWindowMapAxisValue
-from feedbax.contracts.project_sweep import SweepCoordinate, SweepInputCoordinate, sweep_value_name
+from feedbax.contracts.project_sweep import SweepCoordinate, SweepInputCoordinate, sweep_axis_name, sweep_value_labels
 from feedbax.contracts.run_rule import value_text
 from feedbax.planner.project_plan import PlannedRow, RunKey
 
@@ -54,17 +54,20 @@ def gather_axes(
         if all(kind == "number" for kind, _ in order):
             order.sort(key=lambda identity: identity[1])
         keys = Counter(key for coordinates in values.values() for key in {item.value_id for item in coordinates})
+        displayed = []
         for identity in order:
             stored = {item.value_id for item in values[identity]}
             (key,) = stored if len(stored) == 1 else (None,)
             ids[axis, identity] = key if key is not None and keys[key] == 1 else _gathered_id(identity)
-        axes.append(StudioProjectWindowMapAxis(id=axis, values=[
-            StudioProjectWindowMapAxisValue(
-                id=ids[axis, identity], label=sweep_value_name(axis, values[identity][0]),
-                rule=value_text(values[identity][0]),
-            )
-            for identity in order
-        ]))
+            coordinate = values[identity][0]
+            label, value_label = sweep_value_labels(axis, coordinate)
+            displayed.append(StudioProjectWindowMapAxisValue(
+                id=ids[axis, identity], label=label, value_label=value_label, rule=value_text(coordinate),
+            ))
+        axes.append(StudioProjectWindowMapAxis(
+            id=axis, label=sweep_axis_name(axis, (item for matches in values.values() for item in matches)),
+            values=displayed,
+        ))
     return axes, {at: ids[at[1], identity] for at, identity in identities.items()}
 
 

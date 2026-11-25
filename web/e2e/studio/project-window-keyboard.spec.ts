@@ -1,7 +1,7 @@
 import { expect, firstJobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { firstTrainTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioActivityJob, type StudioJobSubmission, type StudioProjectDocument, type StudioProjectSnapshot, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StudioTrialReplayResponse } from '../../src/generated/studioContracts';
-import { enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
+import { drawnRunLabel, enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject, sweepLabel, mapCard } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
 import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
@@ -63,7 +63,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(model.locator('.react-flow')).toBeVisible();
   await expect(model.locator('[data-boundary="true"]')).toHaveCount(2);
   await expect(model.getByRole('button', { name: 'Model Document Model', exact: true })).toBeVisible();
-  const card = page.getByRole('article', { name: 'Train train', exact: true });
+  const card = mapCard(page, 'train');
   await expect(card.locator('[data-status-mark="cannot_run"]')).toBeVisible();
 
   const undo = post(page, replayPath);
@@ -131,7 +131,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const { saved, projectPath, savedProject, plan } = await authorFirstTrain(page, request, totalUpdates);
   const runsPath = projectPath + '/train-runs';
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
-  const train = page.getByRole('article', { name: 'Train train', exact: true });
+  const train = mapCard(page, 'train');
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
   await activateMenuItem(page, page.getByRole('menuitemradio', { name: 'Sweep', exact: true }));
@@ -144,7 +144,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
   const [selected] = sourceRows;
   await page.keyboard.press('Control+Meta+2');
-  await activate(page, sweepLabel(train, 'learning-rate'));
+  await activate(page, sweepLabel(train, 'Learning rate'));
   const slow = page.getByRole('menuitem', { name: '0.001', exact: true });
   await activateMenuItem(page, slow);
   await expect(train.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(1);
@@ -222,11 +222,11 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   await page.keyboard.press('Control+Meta+2');
   await activate(page, mapStep(page, 'train'));
-  await activate(page, sweepLabel(train, 'learning-rate'));
+  await activate(page, sweepLabel(train, 'Learning rate'));
   await activateMenuItem(page, slow);
   await expect(train.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(1);
   const creating = post(page, projectPath + '/files');
-  await activate(page, train.getByRole('button', { name: 'New Step train', exact: true }));
+  await activate(page, train.getByRole('button', { name: 'New Step Train', exact: true }));
   await chooseStepKind(page, 'Evaluate', true);
   const createdEvaluate = await creating;
   expect(createdEvaluate.status(), await createdEvaluate.text()).toBe(201);
@@ -259,7 +259,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await page.reload();
   await activate(page, mapStep(page, 'evaluate'));
   await page.keyboard.press('Meta+1');
-    await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(pending.key.step) }));
+    await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(drawnRunLabel(projection.window_map!, pending.key)) }));
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('button', { name: /^Select Made From / })).toContainText('1 of 3');
@@ -323,7 +323,7 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await page.keyboard.press('Meta+2');
   const modelView = page.getByRole('tabpanel', { name: 'Model', exact: true });
   const count = modelView.locator('.studio-window-slot__header').getByRole('button', { name: /^Model Document / });
-  const card = (step: string) => page.getByRole('article', { name: `Train ${step}`, exact: true });
+  const card = (step: string) => mapCard(page, step);
   await expect(modelView).toBeFocused();
   await expect(count).not.toContainText(' of ');
   await expect(modelView.locator('header').first()).toContainText(model.id);
@@ -550,7 +550,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   test.setTimeout(55_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const runsPath = `${projectPath}/train-runs`;
-  const card = page.getByRole('article', { name: 'Train train', exact: true });
+  const card = mapCard(page, 'train');
   await page.goto(`/?project=${snapshot.project_id}`);
   await expect(mapStep(page, 'train')).toBeVisible();
   await page.keyboard.press('Meta+1');
@@ -569,9 +569,9 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await expect(mapStep(page, 'train')).toBeVisible();
   await page.keyboard.press('Control+Meta+2');
   const value = (name: string) => page.getByRole('menuitem', { name, exact: true });
-  await activate(page, sweepLabel(card, 'learning-rate'));
+  await activate(page, sweepLabel(card, 'Learning rate'));
   await activateMenuItem(page, value('0.001'));
-  await activate(page, sweepLabel(card, 'learning-rate'));
+  await activate(page, sweepLabel(card, 'Learning rate'));
   await activateMenuItem(page, value('0.003'), 'Shift+Enter');
   await expect(card.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(2);
   const marks = card.getByRole('grid', { name: 'Runs' });
@@ -589,7 +589,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await expect(card.locator('[data-status-mark="succeeded"]')).toHaveCount(2, { timeout: firstJobTimeout });
   await expect(card.locator('[data-status-mark="not_run"]')).toHaveCount(1);
 
-  await expect(card.getByRole('button', { name: 'New Step train' })).toHaveAttribute('data-command-id', 'newStep');
+  await expect(card.getByRole('button', { name: 'New Step Train' })).toHaveAttribute('data-command-id', 'newStep');
   const create = post(page, `${projectPath}/files`);
   await palette(page, 'newStep', 'New Step');
   const train = page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true });

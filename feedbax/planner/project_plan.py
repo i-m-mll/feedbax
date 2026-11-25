@@ -27,7 +27,7 @@ from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelSource
-from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
+from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
 from feedbax.contracts.matrix_core import apply_override_patch_in_place, apply_value_patch_in_place
 from feedbax.contracts.manifest import OverridePatch
@@ -2220,30 +2220,37 @@ class _Compiler:
                 return tuple(ModelEditDraft(ModelEditState(document=model), lambda _: {}) for _, model in model_sites())
 
             @cache
-            def field_unit(path: str) -> str | None:
+            def field_presentation(path: str) -> tuple[str | None, str | None]:
                 target = model_field_target(path)
                 if target is None:
-                    return None
+                    return None, None
+                label = None
+                match target.address.element:
+                    case FieldElement(parent=AttachmentElement(), path=("operands", str(operand), "value")):
+                        label = member_display_name(operand)
                 options = {
                     draft.field_unit(target.address, functions=self.functions) for draft in model_drafts()
                 }
-                return options.pop() if len(options) == 1 else None
+                return label, options.pop() if len(options) == 1 else None
 
-            def with_units(row: ExpandedRow) -> ExpandedRow:
-                units: dict[str, set[str]] = {}
+            def with_field_presentation(row: ExpandedRow) -> ExpandedRow:
+                styles: dict[str, set[tuple[str | None, str | None]]] = {}
                 for path, origin in row.patch_origins.items():
                     if origin[0] not in {"sweep_value", "set_entry"}:
                         continue
                     axis = origin[1]
                     coordinate = row.coordinates.get(axis)
-                    if coordinate is not None and type(coordinate.value) in (int, float) and (unit := field_unit(path)):
-                        units.setdefault(axis, set()).add(unit)
-                if not units:
+                    if coordinate is not None and type(coordinate.value) in (int, float):
+                        style = field_presentation(path)
+                        if style != (None, None):
+                            styles.setdefault(axis, set()).add(style)
+                if not styles:
                     return row
                 coordinates = dict(row.coordinates)
-                for axis, choices in units.items():
+                for axis, choices in styles.items():
                     if len(choices) == 1:
-                        coordinates[axis] = replace(coordinates[axis], unit=choices.pop())
+                        (label, unit), = choices
+                        coordinates[axis] = replace(coordinates[axis], axis_label=label, unit=unit)
                 choices = axis_coordinates(coordinates, row.input_axes, row.kept_axes)
                 assert sweep is not None
                 label = sweep_row_name(
@@ -2285,7 +2292,7 @@ class _Compiler:
                     checkpoint_subject=kind == "evaluate",
                     exception_matches=exception_matches, sets=sets,
                 )
-                rows = tuple(with_units(row) for row in rows)
+                rows = tuple(with_field_presentation(row) for row in rows)
                 if self.source_sweeps is not None:
                     axes = sweep.axes if sweep is not None else {}
                     roles = {axis.input for axis in axes.values() if isinstance(axis, InputAxis)}

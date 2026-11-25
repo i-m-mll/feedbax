@@ -362,6 +362,8 @@ class StudioProjectWindowMapAxisValue(StrictModel):
 
     id: str
     label: str
+    value_label: str
+    """The label under the axis heading, including the value's unit when present."""
     rule: str
     """The value as a run rule writes it."""
 
@@ -370,12 +372,14 @@ class StudioProjectWindowMapAxis(StrictModel):
     """An axis a step's runs carry, with its values in order: numbers by number, other values as the runs give them."""
 
     id: str
+    label: str
     values: list[StudioProjectWindowMapAxisValue]
 
 
 class StudioProjectWindowMapStep(StrictModel):
     variant: str
     step_id: str
+    label: str
     kind: StepKind
     group: str | None
     inputs: list[StudioProjectWindowMapInput]

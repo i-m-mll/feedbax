@@ -4,8 +4,7 @@ import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { blankTask, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import {
-  captureStudioWindow, chooseSweepValue, enter, fixture, mapStep, runProjectFixture, seedManagedProject,
-} from './fixtures/canonicalTrain';
+  captureStudioWindow, chooseSweepValue, enter, fixture, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 import { tabTo } from './fixtures/studioKeyboard';
 
@@ -110,7 +109,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   expect(host.ok(), await host.text()).toBe(true);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
-  const card = page.getByRole('article', { name: 'Train train' });
+  const card = mapCard(page, 'train');
   const drawer = page.getByRole('navigation', { name: 'Steps' });
   const table = page.getByRole('table', { name: 'Runs' });
   const status = page.getByRole('log', { name: 'Status', exact: true });
@@ -120,7 +119,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const activityRow = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem').filter({
-    has: page.getByRole('button', { name: 'Train train', exact: true }),
+    has: page.getByRole('button', { name: 'Train Train', exact: true }),
   });
   await expect(table.getByText('Not run', { exact: true })).toBeVisible();
   await expect(runButton).toBeEnabled();
@@ -583,7 +582,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await close.press('Escape');
   await expect(problemButton).toBeFocused();
 
-  const broken = page.getByRole('article', { name: 'Train broken' });
+  const broken = mapCard(page, 'broken');
   const scoped = broken.getByRole('button', { name: "1 Can't run", exact: true });
   await scoped.press('Enter');
   await expect(list.getByRole('listitem')).toHaveCount(brokenProblems.length);
@@ -600,7 +599,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await expect(inspector.locator(':focus')).toHaveCount(1);
   await expect(broken.locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
 
-  const rowless = page.getByRole('article', { name: 'Train rowless' });
+  const rowless = mapCard(page, 'rowless');
   await rowless.getByRole('button', { name: "Can't run", exact: true }).click();
   await expect(list.getByRole('listitem')).toHaveCount(1);
   await list.getByRole('button', { name: 'Base · Absent base', exact: true }).click();
@@ -614,7 +613,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
   await expect(empty.locator(':scope > header')).toContainText('empty-model');
   await expect(emptyReason).toBeFocused();
-  await expect(page.getByRole('article', { name: 'Train empty' }).locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
+  await expect(mapCard(page, 'empty').locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
 
   await page.setViewportSize({ width: 520, height: 860 });
   await problemButton.click();
@@ -637,7 +636,7 @@ test('a run whose own exception is refused dims its definition views with the pr
   await page.goto('/?project=' + snapshot.project_id);
   const card = page.locator('[data-map-step="train"]');
   await mapStep(page, 'train').click();
-  await chooseSweepValue(card, 'rate', '0.001');
+  await chooseSweepValue(card, 'Rate', '0.001');
   for (const name of ['Task', 'Objective', 'Training']) {
     const tab = page.getByRole('tab', { name, exact: true });
     await expect(tab).toHaveAttribute('aria-disabled', 'true');
@@ -647,7 +646,7 @@ test('a run whose own exception is refused dims its definition views with the pr
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
   expect(reads).not.toContain('rate=rate-0');
 
-  await chooseSweepValue(card, 'rate', '0.01');
+  await chooseSweepValue(card, 'Rate', '0.01');
   for (const name of ['Model', 'Objective']) {
     await expect(page.getByRole('tab', { name, exact: true })).not.toHaveAttribute('aria-disabled', 'true');
   }

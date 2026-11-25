@@ -4725,12 +4725,14 @@ export type StudioProjectWindowMap = {
 
 export type StudioProjectWindowMapAxis = {
   "id": string;
+  "label": string;
   "values": Array<StudioProjectWindowMapAxisValue>;
 };
 
 export type StudioProjectWindowMapAxisValue = {
   "id": string;
   "label": string;
+  "value_label": string;
   "rule": string;
 };
 
@@ -4833,6 +4835,7 @@ export type StudioProjectWindowMapRow = {
 export type StudioProjectWindowMapStep = {
   "variant": string;
   "step_id": string;
+  "label": string;
   "kind": StepKind;
   "group": string | null;
   "inputs": Array<StudioProjectWindowMapInput>;
@@ -13599,6 +13602,7 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
 export const StudioProjectWindowMapAxisSchema: z.ZodType<StudioProjectWindowMapAxis> = z.lazy(() =>
   z.object({
     "id": z.string(),
+    "label": z.string(),
     "values": z.array(StudioProjectWindowMapAxisValueSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapAxis>;
@@ -13607,6 +13611,7 @@ export const StudioProjectWindowMapAxisValueSchema: z.ZodType<StudioProjectWindo
   z.object({
     "id": z.string(),
     "label": z.string(),
+    "value_label": z.string(),
     "rule": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapAxisValue>;
@@ -13731,6 +13736,7 @@ export const StudioProjectWindowMapStepSchema: z.ZodType<StudioProjectWindowMapS
   z.object({
     "variant": z.string(),
     "step_id": z.string(),
+    "label": z.string(),
     "kind": StepKindSchema,
     "group": z.union([z.string(), z.null()]),
     "inputs": z.array(StudioProjectWindowMapInputSchema),

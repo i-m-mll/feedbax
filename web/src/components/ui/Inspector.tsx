@@ -7,7 +7,7 @@ import { Menu, MenuContent, MenuTrigger } from './Menu';
 export interface InspectorProps {
   /** The element's name. */
   name: ReactNode;
-  /** The element's type, left out when it would repeat the name. */
+  /** The element's type; it is not shown when it repeats the name. */
   type?: ReactNode;
   /** The element's fields, as rows. */
   children?: ReactNode;
@@ -23,7 +23,7 @@ export function Inspector({ name, type, children, attachments, className }: Insp
     <section aria-labelledby={title} className={clsx('grid min-w-0 content-start gap-2 p-2 text-sm', className)}>
       <header className="grid min-h-row min-w-0 content-center">
         <span id={title} className="min-w-0 break-words font-medium">{name}</span>
-        {type ? <span className="min-w-0 break-words text-shell-muted">{type}</span> : null}
+        {type && type !== name ? <span className="min-w-0 break-words text-shell-muted">{type}</span> : null}
       </header>
       {children ? <div className="grid min-w-0 gap-1">{children}</div> : null}
       {attachments ? <div className="grid min-w-0 border-t border-shell-divider pt-1">{attachments}</div> : null}

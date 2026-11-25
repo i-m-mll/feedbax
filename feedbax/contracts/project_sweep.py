@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from fractions import Fraction
@@ -523,6 +523,7 @@ class SweepCoordinate:
     value_id: str
     label: str | None = None
     value: JsonValue = None
+    axis_label: str | None = field(default=None, kw_only=True)
     unit: str | None = field(default=None, kw_only=True)
     explicit_null: bool = field(default=False, kw_only=True)
 
@@ -1116,19 +1117,32 @@ def coordinate_text(coordinate: SweepCoordinate) -> str:
     return str(value) if isinstance(value, (int, float, str)) else coordinate.value_id
 
 
-def sweep_value_name(axis: str, coordinate: SweepCoordinate) -> str:
-    """Present a run choice by its name, or print a swept value in its authored unit."""
+def sweep_axis_name(axis: str, coordinates: Iterable[SweepCoordinate]) -> str:
+    """Use the addressed field's name when the coordinates agree on it."""
+    names = {coordinate.axis_label for coordinate in coordinates if coordinate.axis_label is not None}
+    return member_display_name(axis, names.pop() if len(names) == 1 else None)
+
+
+def sweep_value_labels(axis: str, coordinate: SweepCoordinate) -> tuple[str, str]:
+    """Return the full label and the value label shown under an axis heading."""
     if coordinate.label is not None:
-        return coordinate.label
+        return coordinate.label, coordinate.label
     value = coordinate.value
     unit = coordinate.unit
     if isinstance(value, dict) and isinstance(value.get("unit"), str) and "value" in value:
         unit = value["unit"]
         value = value["value"]
     if value is None and not coordinate.explicit_null:
-        return member_display_name(coordinate.value_id)
+        name = member_display_name(coordinate.value_id)
+        return name, name
     text = value if isinstance(value, str) else canonical_json_v2_bytes(_generated_key_value(value)).decode()
-    return " ".join(part for part in (member_display_name(axis), text, unit) if part)
+    value_label = " ".join(part for part in (text, unit) if part)
+    axis_name = sweep_axis_name(axis, (coordinate,))
+    return " ".join(part for part in (axis_name, value_label) if part), value_label
+
+
+def sweep_value_name(axis: str, coordinate: SweepCoordinate) -> str:
+    return sweep_value_labels(axis, coordinate)[0]
 
 
 def sweep_row_name(values: Iterator[tuple[str, SweepCoordinate]]) -> str | None:

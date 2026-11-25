@@ -1,7 +1,7 @@
 import { studioFormat, studioOpeningStage, studioOpeningStep, type StudioResultState } from '@/components/activity/studioVocabulary';
 import { statusCounted } from '@/components/ui/StatusMark';
 import {
-  runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanSweepView, type PlanView,
+  runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanSweepValueView, type PlanSweepView, type PlanView,
 } from '@/features/pipeline/planView';
 import type {
   AxisSelectionClause, Project, SelectedAxisValue, StudioProjectWindowMapProblem, StudioProjectWindowMapRow, StudioSavedLightResult,
@@ -121,8 +121,8 @@ function savedResult(result: { request_id: string; job_id: string; validity?: Pl
 const noChecks: ReadonlySet<string> = new Set();
 
 /**
- * The value an optional axis gives the runs it keeps beside their copies: the axis's first mark, labelled with the
- * axis's name, as the copies' values are named after it. It is no value of the authored axis, so no edit names it.
+ * The value an optional axis gives the runs it keeps beside their copies: the axis's first mark, which the Service
+ * lists and names with the copies. It is no value of the authored axis, so no edit names it.
  */
 export const unvalued = '';
 
@@ -152,6 +152,9 @@ function determined(axis: string, known: readonly string[], runs: readonly PlanR
   }
   return true;
 }
+
+/** An axis's name and its values by ID. */
+type NamedAxis = { readonly label: string; readonly values: ReadonlyMap<string, PlanSweepValueView> };
 
 /** An axis of a step's runs: one of their coordinates, the step that made each run's input, or an input's members. */
 export type StepAxis = PlanSweepView & (
@@ -205,8 +208,12 @@ export function drawnAxes(axes: readonly StepAxis[], runs: readonly PlanRunView[
       label: [axis, ...rest].map(({ label }) => label).join(' · '),
       values: axis.values.map((value) => {
         const run = runs.find(({ values }) => values[axis.id] === value.id);
-        return { id: value.id, label: [value.label, ...rest.map((other) =>
-          other.values.find(({ id }) => id === run?.values[other.id])?.label ?? '')].join(' · ') };
+        const others = rest.map((other) => other.values.find(({ id }) => id === run?.values[other.id]));
+        return {
+          id: value.id,
+          label: [value.label, ...others.map((other) => other?.label ?? '')].join(' · '),
+          valueLabel: [value.valueLabel, ...others.map((other) => other?.valueLabel ?? '')].join(' · '),
+        };
       }),
     }];
   });
@@ -245,16 +252,13 @@ export function projectWindowPlan(
     subjects.set(evaluation.bound_subject.key, evaluation.bound_subject);
   }
   const sourceRows = new Map(map?.rows.map((row) => [savedRunId(row.key), row]));
-  const stepRowCounts = new Map<string, number>();
-  for (const { key } of map?.rows ?? []) {
-    const step = JSON.stringify([key.variant, key.step]);
-    stepRowCounts.set(step, (stepRowCounts.get(step) ?? 0) + 1);
-  }
-  /** A step's only run is named by its step: the row key of a step without a sweep distinguishes nothing. */
+  const stepNames = new Map(map?.steps.filter(({ variant }) => variant === scope).map(({ step_id, label }) => [step_id, label]));
+  /** A step's name: the Service's, or while no plan has been read, its authored label or key. */
+  const stepName = (id: string) => stepNames.get(id) ?? shownName(id, project.steps?.[id]);
+  /** A run's name: the Service's, or its step's when the step has only that run. */
   const rowName = (id: string, fallback: string) => {
     const row = sourceRows.get(id);
-    if (!row) return fallback;
-    return stepRowCounts.get(JSON.stringify([row.key.variant, row.key.step])) === 1 ? row.key.step : row.label;
+    return row ? row.label ?? stepName(row.key.step) : fallback;
   };
   const stepSources = new Map(map?.steps.filter(({ variant }) => variant === scope).map(({ step_id, inputs }) =>
     [step_id, inputs.find(({ id }) => id === 'subject')?.source_step_id]));
@@ -269,9 +273,10 @@ export function projectWindowPlan(
   const models = new Map((map?.edges ?? []).flatMap(({ from_key, to_key }) =>
     to_key.variant === scope && gathered.get(to_key.step)?.has(from_key.step)
       ? [[savedRunId(to_key), from_key.step] as const] : []));
-  /** Each step's axes as the window map gathers them, each value's label by its ID. */
+  /** Each step's axes as the window map gathers them: each axis's name, and its values' names by ID. */
   const sweepsByStep = new Map(map?.steps.filter(({ variant }) => variant === scope).map(({ step_id, axes }) =>
-    [step_id, new Map(axes?.map(({ id, values }) => [id, new Map(values.map((value) => [value.id, value.label]))]))]));
+    [step_id, new Map(axes?.map(({ id, label, values }): [string, NamedAxis] => [id, { label, values: new Map(values.map((value) =>
+      [value.id, { id: value.id, label: value.label, valueLabel: value.value_label }])) }]))]));
   /** Each gathered Evaluate step's model axis, its Train steps' names by ID. */
   const modelsByStep = new Map<string, Map<string, string>>();
   const runsByStep = new Map<string, PlanRunView[]>();
@@ -291,8 +296,7 @@ export function projectWindowPlan(
     if (groups.length) {
       const sweeps = sweepsByStep.get(producer);
       return groups.map(({ coordinates, ranks }) => {
-        const label = Object.entries(coordinates).map(([axis, value]) =>
-          `${axis} ${sweeps?.get(axis)?.get(value) ?? value}`).join(' · ');
+        const label = Object.entries(coordinates).map(([axis, value]) => sweeps?.get(axis)?.values.get(value)?.label ?? value).join(' · ');
         return { label, members: ranks.map((id, index) => {
           const bound = subjectsByStep.get(consumer)?.get(id);
           const rank = index + 1;
@@ -319,14 +323,12 @@ export function projectWindowPlan(
   }
   for (const row of map?.rows ?? []) {
     if (row.key.variant !== scope) continue;
-    let sweeps = sweepsByStep.get(row.key.step);
-    if (!sweeps) sweepsByStep.set(row.key.step, sweeps = new Map());
     const values: Record<string, string> = {};
     const model = models.get(savedRunId(row.key));
     if (model !== undefined && !(gatheredModelAxis in row.coordinates)) {
       let entries = modelsByStep.get(row.key.step);
       if (!entries) modelsByStep.set(row.key.step, entries = new Map());
-      entries.set(model, shownName(model, project.steps?.[model]));
+      entries.set(model, stepName(model));
       values[gatheredModelAxis] = model;
     }
     for (const [sweep, coordinate] of Object.entries(row.coordinates)) values[sweep] = coordinate.axis_value;
@@ -338,8 +340,6 @@ export function projectWindowPlan(
     }
     for (const axis of optionalAxes(project, row.key.step)) {
       if (axis in row.coordinates || axis in (row.input_axes ?? {}) || !kept.get(JSON.stringify([row.key.step, axis]))?.has(row.key.row)) continue;
-      const entries = sweeps.get(axis) ?? new Map<string, string>();
-      sweeps.set(axis, new Map([[unvalued, axis], ...entries]));
       values[axis] = unvalued;
     }
     const id = savedRunId(row.key);
@@ -372,10 +372,10 @@ export function projectWindowPlan(
     /** A run's own problems; the run it waits on is its link, `blockedBy`. */
     const problems = rowProblems?.filter(({ code }) => code !== 'blocked_input');
     addRun(row.key.step, {
-      id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label), status: row.status, reason, variant: row.key.variant,
+      id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label ?? stepName(row.key.step)), status: row.status, reason, variant: row.key.variant,
       problems,
       blockedBy: blocking ? { stepId: blocking.step, label: studioFormat('stepRun', {
-        step: shownName(blocking.step, project.steps?.[blocking.step]),
+        step: stepName(blocking.step),
         run: sourceRows.get(savedRunId(blocking))?.label ?? blocking.row,
       }) } : undefined,
       change: change && row.status === 'stale' ? change : undefined,
@@ -398,10 +398,10 @@ export function projectWindowPlan(
    * The authored axes of a step that no planned run has a value on and that have a Problem, such as a required Set left
    * with no entries: each is drawn with no values, where its Problem is marked and repaired.
    */
-  function unplannedAxes(step: string): [string, Map<string, string>][] {
+  function unplannedAxes(step: string): [string, NamedAxis][] {
     const planned = sweepsByStep.get(step);
-    return Object.keys(project.steps?.[step]?.sweep?.axes ?? {}).flatMap((axis): [string, Map<string, string>][] =>
-      planned?.has(axis) || !axisProblems(map, step, axis, scope).length ? [] : [[axis, new Map()]]);
+    return Object.keys(project.steps?.[step]?.sweep?.axes ?? {}).flatMap((axis): [string, NamedAxis][] =>
+      planned?.has(axis) || !axisProblems(map, step, axis, scope).length ? [] : [[axis, { label: axis, values: new Map() }]]);
   }
   const steps = source.map(({ id, kind, group, projected }): PlanStepView => {
     const inputs = projected?.inputs.map((input): PlanStepView['inputs'][number] => ({
@@ -430,16 +430,18 @@ export function projectWindowPlan(
     const carries = carriesByStep.get(id);
     const modelAxis = modelsByStep.get(id);
     return {
-      id, label: shownName(id, project.steps?.[id]), kind, group,
+      id, label: stepName(id), kind, group,
       documentIds: projected?.document_ids,
       documentUses: projected?.document_uses,
       inputs,
       sweeps: drawnAxes([
-        ...modelAxis ? [[gatheredModelAxis, modelAxis] as const] : [], ...sweepsByStep.get(id) ?? [],
+        ...modelAxis ? [[gatheredModelAxis, { label: gatheredModelAxis, values: new Map([...modelAxis].map(([model, name]) =>
+          [model, { id: model, label: name, valueLabel: name }])) }] as const] : [],
+        ...sweepsByStep.get(id) ?? [],
         ...unplannedAxes(id),
-      ].map(([axis, values]): StepAxis => {
+      ].map(([axis, { label, values }]): StepAxis => {
         const read = project.steps?.[id]?.sweep?.axes?.[axis];
-        const view = { id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })) };
+        const view = { id: axis, label: read && 'set' in read ? read.set : label, values: [...values.values()] };
         const carried = carries?.get(axis);
         return carried ? { ...view, kind: 'input', carries: carried }
           : axis === gatheredModelAxis && modelAxis ? { ...view, kind: 'step' } : { ...view, kind: 'coordinate' };

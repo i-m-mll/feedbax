@@ -339,7 +339,7 @@ it('does not widen a selected Train row to an unselected variant', async () => {
     window_map: {
       variants,
       steps: variants.map((variant) => ({
-        variant, step_id: 'train', kind: 'train', group: null, inputs: [],
+        variant, step_id: 'train', label: 'Train', kind: 'train', group: null, inputs: [],
         document_ids: {}, status_counts: { not_run: 1 },
       })),
       rows: rows.map(({ key, label, status }) => ({

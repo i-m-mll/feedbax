@@ -5,8 +5,8 @@ import type { AxeResults, Result } from 'axe-core';
 function findings(results: Result[]) {
   return results.map(({ id, impact, nodes }) => ({
     id, impact,
-    nodes: nodes.map(({ target, failureSummary, any, all }) => ({
-      target, failureSummary,
+    nodes: nodes.map(({ target, html, failureSummary, any, all }) => ({
+      target, html, failureSummary,
       checks: [...any, ...all].map(({ id, data, message }) => ({ id, data, message })),
     })),
   }));
@@ -30,7 +30,7 @@ export async function scanStudio(page: Page, info: TestInfo, name: string) {
     }, null, 2),
     contentType: 'application/json',
   });
-  expect.soft(violations.map(({ id, nodes }) => ({ id, targets: nodes.map(({ target }) => target) })), name).toEqual([]);
+  expect.soft(violations.map(({ id, nodes }) => ({ id, nodes: nodes.map(({ html }) => html) })), name).toEqual([]);
 }
 
 export async function expectVisibleFocus(control: Locator) {

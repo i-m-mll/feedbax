@@ -30,7 +30,7 @@ import { ManagedDocumentCanvas, type CanvasNode } from './ManagedDocumentCanvas'
 import {
   choosePick, useNamedSelection, usePick, type ElementSelectionStore,
 } from '@/features/projectWindow/elementSelection';
-import { shownName, type PlanStepView } from '@/features/pipeline/planView';
+import { outputName, shownName, type PlanStepView } from '@/features/pipeline/planView';
 import { heldElements } from './analysisElements';
 import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
@@ -176,7 +176,7 @@ export function useManagedAnalyze({
   const cardOutputs = steps.filter((other) => other.kind === 'analyze' && other.id !== key?.step).flatMap((card) =>
     Object.entries(cardAnalysis(card.id)?.operations ?? {}).flatMap(([element, value]) =>
       Object.keys(definitions.get(value.operation)?.outputs ?? {}).map((product) => ({
-        step: card.id, element, product, name: `${card.label}/${shownName(element, value)}.${product}`,
+        step: card.id, element, product, name: outputName(card.label, shownName(element, value), product),
       }))));
   /** A role bound to another card's operation output is shown by the card and the output. */
   function boundName(role: string) {
@@ -185,7 +185,7 @@ export function useManagedAnalyze({
     const { step: card, element: source, product } = bound as { step: string; element?: string | null; product?: string | null };
     if (!source || !product) return role;
     const shownCard = steps.find(({ id }) => id === card)?.label ?? card;
-    return `${shownCard}/${shownName(source, cardAnalysis(card)?.operations?.[source])}.${product}`;
+    return outputName(shownCard, shownName(source, cardAnalysis(card)?.operations?.[source]), product);
   }
   const selectedInput = selected ? declarations[selected] : undefined;
   const authoringCatalog = useAuthoringCatalog().data;
@@ -443,7 +443,7 @@ export function useManagedAnalyze({
       (current) => save(current, label, set(['views', selected, 'figure'], next as JsonValue)), canEdit, [selected, layersPlace],
     ) : undefined} />;
   const inspector = selected && (operation || figure || selectedInput) && <Inspector name={shown(selected)}
-    type={operation ? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}
+    type={operation ? definition?.label ?? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}
     attachments={layers}>
     {(operation || figure) && <KeyField value={selected} name={shown(selected)}
       editing={namingNow?.field === 'key' && namingNow.element === selected}

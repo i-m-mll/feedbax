@@ -30,7 +30,7 @@ test('the map card draws one sweep in a line, its head as glyph and name, and th
   expect(new Set(tops).size).toBe(1);
 
   await expect(card.locator('.studio-card__head')).toHaveText('train');
-  await chooseSweepValue(card, 'batch-size', '4');
+  await chooseSweepValue(card, 'Batch size', '4');
   await expect(card.locator('[id$="-status"]')).toHaveCount(0);
   await expect(card.getByText(/\d+ of \d+/)).toHaveCount(0);
 
@@ -114,7 +114,7 @@ test('choosing one value of a sweep selects and boxes only its row or column', a
       return [boxed, await mark.getAttribute('aria-pressed') === 'true'];
     }));
   };
-  for (const [sweep, middle] of [['n-batches', '20'], ['batch-size', '4']]) {
+  for (const [sweep, middle] of [['N batches', '20'], ['Batch size', '4']]) {
     await chooseSweepValue(card, sweep, middle);
     const cells = await boxedAndPressed();
     expect(cells.filter(([boxed]) => boxed)).toHaveLength(3);

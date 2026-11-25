@@ -28,6 +28,7 @@ from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetDescriptor
 from feedbax.contracts.effective_success import (
     RequestObject, Success, read_effective_request, read_success_request, success_content_ref,
 )
+from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.expression_values import Expression
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
@@ -444,7 +445,8 @@ class ProjectPlanRead:
             variants=[variant for variant in plan.variants if includes(variant)],
             steps=[
                 StudioProjectWindowMapStep(
-                    variant=variant, step_id=step_id, kind=step.kind, group=step.group,
+                    variant=variant, step_id=step_id, label=member_display_name(step_id, step.label),
+                    kind=step.kind, group=step.group,
                     inputs=list(inputs(variant, step_id)),
                     document_ids=document_ids.get((variant, step_id), {}),
                     document_uses=sorted(document_uses[variant, step_id]),

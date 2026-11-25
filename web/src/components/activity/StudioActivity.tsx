@@ -36,10 +36,6 @@ function isLive(job: StudioActivityJob) {
 
 const activityTime = (job: StudioActivityJob) => job.ended_at_ms ?? job.submitted_at_ms;
 
-function coordinateValue(value: unknown) {
-  return typeof value === 'string' ? value : JSON.stringify(value);
-}
-
 function ActivityRun({
   job,
   selected,
@@ -60,7 +56,6 @@ function ActivityRun({
   const [failure, setFailure] = useState<string | null>(null);
   const { Icon, tint, name } = studioStep(job.kind);
   const live = isLive(job);
-  const coordinates = Object.entries(job.coordinates);
   /** Who submitted the run, when it was not this Studio: a run from the command line says so. */
   const client = job.actor?.client === 'studio' ? undefined : job.actor ?? undefined;
   /** When the run ended, or while it is live, when it was submitted. */
@@ -126,15 +121,9 @@ function ActivityRun({
       <time className="block text-xs tabular-nums text-shell-muted" dateTime={new Date(time).toISOString()}>
         {studioDateTime(time)}
       </time>
-      {(coordinates.length > 0 || client || machine) && (
+      {(client || machine) && (
         <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-shell-muted">
           {machine && <div className="flex gap-1"><dt>{studioName('machine')}</dt><dd>{machine}</dd></div>}
-          {coordinates.map(([axis, value]) => (
-            <div key={axis} className="flex gap-1">
-              <dt>{axis}</dt>
-              <dd className="tabular-nums">{coordinateValue(value)}</dd>
-            </div>
-          ))}
           {client && <div className="flex gap-1">
             <dt>{studioName('client')}</dt>
             <dd>{studioName(client.client)}</dd>
