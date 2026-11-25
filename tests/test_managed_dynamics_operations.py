@@ -1,5 +1,7 @@
 """Read PCA and equilibrium products of a trained saved example in Studio."""
 
+from base64 import b64decode
+
 import numpy as np
 from fastapi.testclient import TestClient
 
@@ -128,5 +130,6 @@ def test_analyze_saved_activity_and_fixed_points_of_trained_example(host, tmp_pa
         traces = expect(client.get(products["figure"]))["data"]
         assert len(traces) == len(trajectories)
         for trace, points in zip(traces, trajectories, strict=True):
-            np.testing.assert_allclose(trace["x"], points[:, 0])
-            np.testing.assert_allclose(trace["y"], points[:, 1])
+            for axis, projected in zip(("x", "y"), points[:, :2].T, strict=True):
+                encoded = trace[axis]
+                np.testing.assert_allclose(np.frombuffer(b64decode(encoded["bdata"]), dtype=encoded["dtype"]), projected)
