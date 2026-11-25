@@ -1,4 +1,4 @@
-"""Publish fitted native weights beside their Model and export retained Train members."""
+"""Publish fitted native weights and export retained model products."""
 
 from uuid import uuid4
 
@@ -17,6 +17,7 @@ from feedbax.contracts.studio_loaded_model import (
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectCreateFile
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.protocol import HostError
+from feedbax.jobs import plan_attempt_key
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
@@ -79,7 +80,23 @@ def export_loaded_model(
 ) -> bytes:
     key = RunKey(body.key.variant, body.key.step, body.key.row)
     view = plans.read(project, revision=body.revision, source_runs=(key,))
-    run = next((row for row in view.settled.plan.runs if row.key == key and row.kind == "train"), None)
+    run = next((row for row in view.settled.plan.runs if row.key == key), None)
+    if run is not None and run.kind == "synthesize":
+        if body.completed_updates is not None:
+            raise ProjectFolderInvalid("A Synthesize model has no completed-update coordinate.")
+        attempts = (*view.attempts_by_run.get(key, ()), *view.jobs.by_address.get(plan_attempt_key(key), ()))
+        attempt = next((item for item in attempts if item.job_id == body.job_id and item.light_success is not None), None)
+        if attempt is None or attempt.light_success.request.id.partition(":")[0] != "synthesize":
+            raise ProjectFolderNotFound("The selected attempt does not belong to this Synthesize row.")
+        model, = attempt.light_success.products["model"]
+        tree = success_content_ref(model.content)
+        assert isinstance(tree, ContentTreeRef)
+        store = ImmutableArtifactBlobProvider(view.settled.store_path)
+        return _archive_bytes(store, tree, SemanticModelEncoding.model_validate(model.descriptor))
+    if body.completed_updates is None:
+        raise ProjectFolderInvalid("Choose a completed Train update to export.")
+    if run is not None and run.kind != "train":
+        run = None
     attempts = () if run is None else (*view.attempts_by_run.get(key, ()), *view.previous_train_attempts(run))
     attempt = next((item for item in attempts if item.job_id == body.job_id), None)
     if attempt is None:

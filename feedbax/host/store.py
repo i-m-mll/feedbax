@@ -411,7 +411,8 @@ class Store:
                 raise ValueError("Collected Resume differs from its original Train request")
             inputs = original.inputs
         else:
-            inputs = bind_train_inputs(view, request, self._train_predecessor(row, payload))
+            synthesized = ContentObjectRef.model_validate(binding["model_receipt"]) if "model_receipt" in binding else None
+            inputs = bind_train_inputs(view, request, self._train_predecessor(row, payload), synthesized=synthesized)
         from feedbax.contracts.manifest import TrainingRunManifest, canonical_manifest_path, load_manifest_bytes
         from feedbax.host.job_completion import _read_exact, training_metric_file
 

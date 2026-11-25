@@ -471,7 +471,8 @@ def export_model_archive(
     from feedbax.web.services.loaded_models import export_loaded_model
 
     data = _project_response(response, lambda: export_loaded_model(request.app.state.project_plan, project_id, body))
-    filename = f"{body.key.step}-{body.completed_updates}.feedbax-model"
+    name = body.key.step if body.completed_updates is None else f"{body.key.step}-{body.completed_updates}"
+    filename = f"{name}.feedbax-model"
     return Response(data, media_type="application/octet-stream", headers={
         **_NO_STORE, "Content-Disposition": f'attachment; filename="{filename}"',
     })

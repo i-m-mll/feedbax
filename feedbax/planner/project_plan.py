@@ -136,6 +136,7 @@ from feedbax.contracts.request_refs import (
     UpdateCadence,
     UpdateSeriesMember,
     best_rank_key,
+    is_synthesized_model_product,
 )
 from feedbax.contracts.request_specs import (
     DocumentTrainingConfig,
@@ -1564,6 +1565,11 @@ def _encode_row(
                 and spec.checkpoint_initialization != "initialize_from"
             ):
                 raise ValueError("/inputs/checkpoint: a Loaded Model supports only initialize_from.")
+            if (start := inputs.get("checkpoint")) is not None and is_synthesized_model_product(start.member.reference):
+                if spec.checkpoint_initialization != "initialize_from":
+                    raise ValueError("/inputs/checkpoint: a Synthesize model supports only initialize_from.")
+                if spec.training_config.replicates != 1:
+                    raise ValueError("/training_config/replicates: A Synthesize model contains one replica.")
             if training_methods is None:
                 raise ValueError("Train requires the installed method catalog.")
             try:

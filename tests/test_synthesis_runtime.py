@@ -109,12 +109,18 @@ def test_served_synthesis_documents_bind_in_trials_and_model_view(host, tmp_path
             }]
 
 
-def test_saved_synthesize_is_admitted_and_owns_a_model_product(host, tmp_path):
+def test_saved_synthesize_model_runs_evaluation_train_start_and_export(host, tmp_path, monkeypatch):
     registry = load_application().bundle
     jobs = JobService(host, registry)
     folders = ProjectFolderService(tmp_path / "projects")
     project = "synthesized-reaching"
-    _save_project(folders, project, Project.model_validate(synthesis_project()))
+    raw = synthesis_project()
+    shipped = load_shipped_projects()["point-mass-reaching"]
+    train = shipped.steps["simple-reaches"].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    train["base"]["inline"]["checkpoint_initialization"] = "initialize_from"
+    train["inputs"] = {"checkpoint": {"step": "synthesize"}}
+    raw["steps"]["refine"] = train
+    _save_project(folders, project, Project.model_validate(raw))
     plan = folders.read_plan(project, revision=None)
     synthesis = RunKey("default", "synthesize", "default")
     (admitted,) = jobs.admit_plan(folders, plan, run_keys=(synthesis,), token=token("synthesize")).items
@@ -152,6 +158,25 @@ def test_saved_synthesize_is_admitted_and_owns_a_model_product(host, tmp_path):
     with result.open_states() as dataset:
         assert "checkpoint" not in dataset.descriptor.dimensions
         assert dataset.descriptor.dimensions["trial"] > 0
+
+    refine = RunKey("default", "refine", "default")
+    (trained,) = jobs.admit_plan(folders, plan, run_keys=(refine,), token=token("train-synthesis")).items
+    assert trained.disposition == "admitted", trained
+    job = wait_until(lambda: (job if (job := job_row(host, trained.job_id)) and job["outcome"] is not None else None))
+    assert job["state"] == "succeeded", job["outcome"]
+    (start,) = SuccessView(store).read_attempt(trained.job_id).receipt.inputs["checkpoint"]
+    assert start.content == product.content and start.selection.receipt == view.attempt_ref(admitted.job_id)
+
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    with TestClient(create_app(projects_dir=folders.root, automatic_run="off")) as client:
+        route = f"/api/projects/{project}/loaded-models/export"
+        body = {"revision": plan.revision, "key": {"variant": "default", "step": "synthesize", "row": "default"},
+                "job_id": admitted.job_id}
+        archive = client.post(route, json=body)
+        assert archive.status_code == 200, archive.text
+        assert archive.content[:2] == b"PK"
+        assert archive.headers["content-disposition"] == 'attachment; filename="synthesize.feedbax-model"'
+        assert client.post(route, json=body | {"completed_updates": 2}).status_code == 422
 
 
 def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):
