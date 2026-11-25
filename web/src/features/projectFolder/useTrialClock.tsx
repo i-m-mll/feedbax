@@ -265,7 +265,7 @@ export function useTrialClock({
     trial: shown?.kind === 'problems' ? undefined : shown,
     /** The Mean every figure draws, while Mean is picked. */
     mean: meanSelection(clock),
-    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} onChange={change} showing={showing || undefined}
+    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} recordedOutOfDate={recorded.outOfDate} onChange={change} showing={showing || undefined}
       timeline={timeline} time={time} onTimeChange={setTime} axis={axis} shelfOpen={open}
       onShelfChange={(next) => shelfView && change({ ...clock, shelf: { ...clock.shelf, [shelfView]: next } })} />,
     shelf: pick && open && timeline.duration > 0 && (rows

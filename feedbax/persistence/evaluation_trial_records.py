@@ -5,14 +5,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import LENGTH, Level
+from feedbax.contracts.expression_values import LENGTH, DrawValue, Level, ValueBase
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import model_state_address, semantic_key
 from feedbax.contracts.studio_place import path_parts
+from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanOptions
 from feedbax.contracts.trial_record import TaskTimelineCue, TrialRecord, TrialStateTrack, TrialTerm
+from feedbax.execution.trial_clock import TrialClockRecord
 from feedbax.execution.trial_record import trial_weight_values
 
 if TYPE_CHECKING:
+    from feedbax.contracts.task_document import TaskDocument
     from feedbax.dataset import Dataset, Variable
     from feedbax.execution.trial_execution import TrialEvaluation
     from feedbax.runtime.raw_state import RawStateLayout
@@ -25,6 +28,13 @@ class RecordedTrialLayout(StrictModel):
     epochs: tuple[tuple[str, str], ...]
     positions: tuple[str, ...]
     configurations: tuple[str, ...]
+    discrete_variables: tuple[TrialClockChoice, ...] = ()
+
+    def mean_options(self) -> TrialMeanOptions:
+        return TrialMeanOptions(
+            by=list(self.discrete_variables),
+            align=[TrialClockChoice(id=epoch, label=label) for epoch, label in dict(self.epochs).items()],
+        )
 
 
 def _task_field(facet: str, name: str) -> str:
@@ -39,7 +49,7 @@ def _term_field(facet: str, name: str) -> str:
 
 def trial_dataset_fields(
     task: TrialSource, evaluated: TrialEvaluation, layout: RawStateLayout, *,
-    leading: tuple[str, ...], labels: dict[str, str],
+    leading: tuple[str, ...], labels: dict[str, str], document: TaskDocument | None = None,
 ) -> tuple[dict[str, Variable], dict[str, Variable], RecordedTrialLayout]:
     import numpy as np
 
@@ -94,10 +104,49 @@ def trial_dataset_fields(
             put(_term_field("weight_defined", name), defined, transition_axes)
         put(_term_field("trial_coverage", name), trace.covered, trial_axes)
         put(_term_field("trial_values", name), np.where(trace.covered, trace.reduced.value, 0.0), trial_axes)
+    choices = {
+        variable.id for variable in document.variables
+        if isinstance(variable.value, DrawValue) and variable.value.family == "choice"
+    } if document is not None else set()
     return fields, coords, RecordedTrialLayout(
         epochs=tuple((epoch, labels.get(epoch, epoch)) for epoch in task.epochs),
         positions=tuple(value.key for value in layout.values if value.position),
         configurations=tuple(value.key for value in layout.values if value.configuration),
+        discrete_variables=tuple(
+            TrialClockChoice(id=value.id, label=value.name)
+            for value in task.interface.variables
+            if value.level < Level.STEP and (value.type.base != ValueBase.REAL or value.id in choices)
+        ),
+    )
+
+
+def read_trial_timeline(
+    dataset: Dataset, selection: tuple[int, ...], layout: RecordedTrialLayout,
+) -> list[TaskTimelineCue]:
+    return [
+        TaskTimelineCue(epoch=epoch, label=label, start=start, end=end, outcome=outcome)
+        for (epoch, label), start, end, outcome in zip(
+            layout.epochs,
+            dataset.data("epoch_start", selection).tolist(),
+            dataset.data("epoch_end", selection).tolist(),
+            dataset.data("epoch_outcome", selection).tolist(),
+            strict=True,
+        )
+    ]
+
+
+def read_trial_clock(
+    dataset: Dataset, trial_id: str, selection: tuple[int, ...], layout: RecordedTrialLayout,
+) -> TrialClockRecord:
+    """Read only the discrete variables and epoch boundaries used by the clock."""
+    return TrialClockRecord(
+        id=trial_id,
+        values={
+            choice.id: dataset.data(_task_field("variable", choice.id), selection).tolist()
+            for choice in layout.discrete_variables
+        },
+        timeline=read_trial_timeline(dataset, selection, layout),
+        state_time=dataset.data("state_time"),
     )
 
 
@@ -111,16 +160,6 @@ def read_trial_record(
         if len(parts) == 4 and parts[:2] == ("v1", "task"):
             _, _, facet, key = parts
             groups.setdefault(facet, {})[key] = dataset.data(path, selection).tolist()
-    timeline = [
-        TaskTimelineCue(epoch=epoch, label=label, start=start, end=end, outcome=outcome)
-        for (epoch, label), start, end, outcome in zip(
-            layout.epochs,
-            dataset.data("epoch_start", selection).tolist(),
-            dataset.data("epoch_end", selection).tolist(),
-            dataset.data("epoch_outcome", selection).tolist(),
-            strict=True,
-        )
-    ]
     term_names = (
         path_parts("/" + path)[-1] for path in dataset.descriptor.variables if path.startswith("objective/steps/")
     )
@@ -144,7 +183,8 @@ def read_trial_record(
     return TrialRecord(
         id=trial_id, inits=groups.get("initial", {}), inputs=groups.get("output", {}),
         present=groups.get("presence", {}), variables=groups.get("variable", {}),
-        variable_defined=groups.get("variable_defined", {}), timeline=timeline, terms=terms,
+        variable_defined=groups.get("variable_defined", {}), timeline=read_trial_timeline(dataset, selection, layout),
+        terms=terms,
         states={
             model_state_address(name).to_text(): read_position_track(dataset, name, selection)
             for name in layout.positions

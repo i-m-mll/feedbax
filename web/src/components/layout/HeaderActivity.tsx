@@ -2,9 +2,9 @@ import { Activity, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef } from 'react';
 import { StudioActivityPane, useStudioActivityCount, type ActivityResultState } from '@/components/activity/StudioActivity';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
-import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
+import { commandTip, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { StudioActivityJob } from '@/generated/studioContracts';
-import { Button, IconButton } from '@/components/ui/Button';
+import { IconButton } from '@/components/ui/Button';
 
 export function HeaderActivity({
   open,
@@ -40,20 +40,15 @@ export function HeaderActivity({
 
   return (
     <div className="relative">
-      <Button
-        variant="ghost"
+      <IconButton
         ref={trigger}
-        {...(command && commandAttributes(command))}
-        aria-label={studioAccessibleName('activity', running || undefined)}
+        {...(command && commandTip(command))}
+        label={studioAccessibleName('activity', running || undefined)}
+        icon={<Activity aria-hidden="true" />}
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         onClick={onToggle}
-        className="font-medium"
-      >
-        <Activity aria-hidden="true" />
-        {studioName('activity')}
-        {running > 0 && <span className="tabular-nums">{running}</span>}
-      </Button>
+      />
       {open && (
         <section
           id={panelId}

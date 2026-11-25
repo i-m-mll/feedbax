@@ -1,9 +1,9 @@
 import { TriangleAlert, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
-import { studioChangeDetail, studioName, studioPlaceName, studioProblemName, studioRunReason } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioChangeDetail, studioName, studioPlaceName, studioProblemName, studioRunReason } from '@/components/activity/studioVocabulary';
 import type { StudioDefinitionChange, StudioProjectWindowMapProblem, StudioSavedTrainChange } from '@/generated/studioContracts';
-import { commandAttributes, type StudioCommand } from './studioCommands';
+import { commandTip, type StudioCommand } from './studioCommands';
 import { Button, IconButton } from '@/components/ui/Button';
 
 /** A reason that names a place: pressed, it reveals the place. Every list of problems and changes draws this row. */
@@ -130,12 +130,10 @@ export function StudioProblems({ command, count, open, opener, onOpen, onClose, 
         event.stopPropagation();
         closeAndRestore();
       }}>
-      <Button ref={trigger} variant="ghost" {...commandAttributes(command)} aria-label={undefined} aria-haspopup="dialog"
-        aria-expanded={open} aria-controls={open ? id : undefined}
-        onClick={(event) => onOpen(event.currentTarget)} className="font-medium">
-        <TriangleAlert aria-hidden="true" />
-        {studioName('problems')} <span className="tabular-nums">{count}</span>
-      </Button>
+      <IconButton ref={trigger} {...commandTip(command)} label={studioAccessibleName('problems', count)}
+        icon={<TriangleAlert aria-hidden="true" />} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined}
+        onClick={(event) => onOpen(event.currentTarget)}
+        className={count ? 'text-shell-status-failure' : 'text-shell-muted'} />
       {open && (
         <section ref={panel} id={id} role="dialog" aria-labelledby={`${id}-title`}
           className="absolute bottom-full right-0 z-50 mb-2 grid w-[34rem] gap-3 overflow-auto rounded-shell-control border border-shell-divider bg-shell-chrome p-4 text-shell-foreground shadow-xl">
