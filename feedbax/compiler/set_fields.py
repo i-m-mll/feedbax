@@ -8,19 +8,26 @@ from dataclasses import dataclass
 from hashlib import sha256
 from itertools import product
 
+from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.expression_values import (
     CallValue, DrawValue, Expression, LiteralValue, NameValue, ValueBase, ValueType,
 )
 from feedbax.contracts.model_address import (
-    ComponentElement, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress, SignalSource,
+    AttachmentElement, ComponentElement, ComponentPortAddress, ComponentPortEnd, FieldElement, InputBoundaryEnd,
+    ModelAddress, PortElement, SignalSource, WireElement,
 )
+from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.model_document import (
-    InterventionAttachment, LeafComponent, ModelDocument, ModelWire, SignalInput, SignalType,
+    CompositeComponent, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
+    SignalInput, SignalType,
 )
 from feedbax.contracts.project import Document, apply_differences
 from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, TrialSetField
-from feedbax.contracts.set_document import read_set
-from feedbax.contracts.task_document import Cell, Link, SetVariableChoices, Signal, TaskDocument, ValidationTrial, Variable
+from feedbax.contracts.set_document import SetEntry, read_set
+from feedbax.contracts.task_document import (
+    Cell, Link, SetVariableChoices, Signal, TaskAdditions, TaskDocument, ValidationTrial, Variable, add_to_task,
+)
 from feedbax.contracts.window import Window
 
 
@@ -48,6 +55,46 @@ _BOOL = ValueType(base=ValueBase.BOOLEAN)
 _INT = ValueType(base=ValueBase.INTEGER)
 
 
+def _entry_scope(axis: str, entry: str, source: SetEntry) -> SetEntry:
+    refs = {variable.id: _id(axis, entry, variable.id) for variable in source.task_variables}
+
+    def rename(value):
+        if isinstance(value, dict):
+            if value.get("kind") == "name" and isinstance(reference := value.get("reference"), str) and reference in refs:
+                return value | {"reference": refs[reference]}
+            return {key: rename(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rename(item) for item in value]
+        return value
+
+    renamed = rename(source.model_dump(mode="json"))
+    for variable in renamed.get("task_variables", ()):
+        variable["id"] = refs[variable["id"]]
+        variable["name"] = f"{entry} · {variable['name']}"
+    for link in renamed.get("task_links", ()):
+        link["variable"] = refs.get(link["variable"], link["variable"])
+    return SetEntry.model_validate(renamed)
+
+
+def _attachment_links(
+    model: ModelDocument, links: tuple[Link, ...], components: ComponentRegistry,
+) -> tuple[ModelDocument, tuple[Link, ...]]:
+    writes, remaining = [], []
+    for link in links:
+        try:
+            address = ModelAddress.from_text(link.model_field)
+        except ValueError:
+            remaining.append(link)
+            continue
+        at = address.element
+        if isinstance(at, FieldElement) and isinstance(at.parent, AttachmentElement) and at.path[0] in {"fields", "window"}:
+            value = NameValue(reference=link.variable).model_dump(mode="json")
+            writes.append(SetField(op="set_field", address=address, value=value))
+        else:
+            remaining.append(link)
+    return resolve_effective_model(model, components, tuple(writes)), tuple(remaining)
+
+
 @dataclass(frozen=True)
 class _Alternative:
     axis: str
@@ -62,14 +109,20 @@ class _Alternative:
 
 
 class _Union:
-    def __init__(self, model: ModelDocument, task: TaskDocument):
+    def __init__(
+        self, model: ModelDocument, task: TaskDocument, registry: ComponentRegistry, *, scope: tuple[str, ...] = (),
+    ):
         self.model = model
         self.task = task
+        self.registry = registry
+        self.scope = scope
         self.variables = list(task.variables)
         self.signals = list(task.signals)
+        self.links = list(task.links)
         self.inputs = list(model.ports.inputs)
         self.components = dict(model.interior.components)
         self.wires = dict(model.interior.wires)
+        self.port_attachments = model.interior.attachments
         self.alternatives: dict[str, list[_Alternative]] = defaultdict(list)
         self.conditions: list[tuple[dict[str, int], ...]] = []
         self.curl_activation: dict[str, tuple[bool, list[Expression]]] = {}
@@ -91,6 +144,30 @@ class _Union:
         self.inputs.append(SignalInput(id=gate_id, name=gate_id, type=SignalType(base="bool", shape=())))
         return InputBoundaryEnd(owner="inputs", port=gate_id)
 
+    def operands(self, attachment: InterventionAttachment, context: str) -> InterventionAttachment:
+        fields = dict(attachment.fields)
+        for key, value in fields.items():
+            reference = _task_reference(value)
+            if reference is None:
+                continue
+            variable = next((variable for variable in self.variables if variable.id == reference), None)
+            if variable is None:
+                raise ValueError(f"Intervention {attachment.id!r} links to missing Task variable {reference!r}.")
+            id = _id(*self.scope, context, attachment.id, key)
+            self.signals.append(Signal(
+                id=id, name=id, type=variable.type,
+                cells=(Cell(id=id, first_epoch=self.task.epochs[0].id, last_epoch=self.task.epochs[-1].id,
+                            value=NameValue(reference=reference)),),
+            ))
+            self.inputs.append(SignalInput(
+                id=id, name=id, type=SignalType(base=variable.type.base.value, shape=variable.type.shape),
+            ))
+            address = ModelAddress(
+                composites=self.scope, element=PortElement(kind="port", end=InputBoundaryEnd(owner="inputs", port=id)),
+            )
+            fields[key] = NameValue(reference=address.to_text()).model_dump(mode="json")
+        return attachment.model_copy(update={"fields": fields}) if fields != attachment.fields else attachment
+
     def added_components(self, alt: _Alternative, model: ModelDocument, added_wires: set[str]):
         nominal = self.model.interior
         added_nodes = model.interior.components.keys() - nominal.components.keys()
@@ -109,11 +186,21 @@ class _Union:
                 raise alt.problem(f"Added wire {id!r} conflicts with another entry.")
             self.wires[id] = wire
 
-    def entry(self, axis: str, placement: TrialSetField, entry: str, predicate: Expression, differences) -> None:
+    def entry(self, axis: str, placement: TrialSetField, entry: str, predicate: Expression, authored: SetEntry) -> None:
         set_name = placement.axis.set
         cooccurring = isinstance(placement.sampling, CooccurringSetTrials)
         try:
-            variant = ModelDocument.model_validate(apply_differences(self.model.model_dump(mode="json"), differences))
+            source = _entry_scope(axis, entry, authored)
+            variant = ModelDocument.model_validate(
+                apply_differences(self.model.model_dump(mode="json"), source.differences),
+            )
+            variant, links = _attachment_links(variant, source.task_links, self.registry)
+            task = add_to_task(
+                self.task.model_copy(update={"variables": tuple(self.variables), "links": tuple(self.links)}),
+                (TaskAdditions(task_variables=source.task_variables, task_links=links),),
+            )
+            self.variables = list(task.variables)
+            self.links = list(task.links)
         except ValueError as error:
             raise SetFieldProblem(axis, set_name, entry, str(error)) from error
         before, after = self.model.interior, variant.interior
@@ -200,7 +287,7 @@ class _Union:
         except ValueError as error:
             raise SetFieldProblem(axis, placement.axis.set, None, str(error)) from error
         for entry, gate in zip(by_id, gates, strict=True):
-            self.entry(axis, placement, entry, gate, entries[entry].differences)
+            self.entry(axis, placement, entry, gate, entries[entry])
 
     def route(
         self, id: str, source: SignalSource, chain, active_source: SignalSource, active_chain,
@@ -221,18 +308,79 @@ class _Union:
         return _component_port(switch_id, "output")
 
     def attach(self, id: str, source, chain, attachment: InterventionAttachment, alt: _Alternative):
-        context = _id(id, alt.axis, alt.entry, attachment.id)
+        context = _id(*self.scope, id, alt.axis, alt.entry, attachment.id)
         if chain:
             stem = _id(context, "stem")
             self.components[stem] = LeafComponent(kind="leaf", name=stem, type="feedbax.Input")
             self.wires[stem] = ModelWire(source=source, target=_component_port(stem, "input"), attachments=chain)
             source = _component_port(stem, "output")
-        segment = attachment.model_copy(update={"window": None})
+        segment = self.operands(attachment, context).model_copy(update={"window": None})
         return self.route(context, source, (), source, (segment,), alt, attachment.window)
+
+    def source_chain(self, end: SignalSource, attachments):
+        if not _needs_task(attachments):
+            return attachments
+        owner = _id(end.owner, getattr(end, "component", ""), end.port)
+        affected = tuple(id for id, wire in self.wires.items() if wire.source == end)
+        source, chain = end, ()
+        for attachment in attachments:
+            if isinstance(attachment, InterventionAttachment) and attachment.window is not None:
+                representative = ModelWire(source=end, target=_component_port(owner, "input"))
+                alt = _Alternative("", "", attachment.id, LiteralValue(value=True), False, representative)
+                source = self.attach(owner, source, chain, attachment, alt)
+                chain = ()
+            else:
+                if isinstance(attachment, InterventionAttachment):
+                    attachment = self.operands(attachment, owner)
+                chain = (*chain, attachment)
+        if source == end:
+            return chain
+        if chain:
+            out = _id(*self.scope, owner, "source")
+            self.components[out] = LeafComponent(kind="leaf", name=out, type="feedbax.Input")
+            self.wires[out] = ModelWire(source=source, target=_component_port(out, "input"), attachments=chain)
+            source = _component_port(out, "output")
+        for key in affected:
+            self.wires[key] = self.wires[key].model_copy(update={"source": source})
+        return ()
+
+    def source_ports(self):
+        for name, child in tuple(self.components.items()):
+            if child.attachments.sources:
+                chains = {
+                    port: self.source_chain(_component_port(name, port), chain)
+                    for port, chain in child.attachments.sources.items()
+                }
+                self.components[name] = child.model_copy(update={
+                    "attachments": child.attachments.model_copy(update={"sources": chains}),
+                })
+        if self.port_attachments.sources:
+            chains = {
+                port: self.source_chain(InputBoundaryEnd(owner="inputs", port=port), chain)
+                for port, chain in self.port_attachments.sources.items()
+            }
+            self.port_attachments = self.port_attachments.model_copy(update={"sources": chains})
+
+    def child_graphs(self):
+        for name, child in tuple(self.components.items()):
+            if not isinstance(child, CompositeComponent) or not isinstance(child.interior, GraphInterior):
+                continue
+            if not _has_interventions(child):
+                continue
+            branch = self.model.model_copy(update={"interior": child.interior, "ports": child.ports})
+            task = self.task.model_copy(update={"variables": tuple(self.variables), "signals": tuple(self.signals)})
+            model, task = _Union(branch, task, self.registry, scope=(*self.scope, name)).finish()
+            self.signals = list(task.signals)
+            self.components[name] = child.model_copy(update={"interior": model.interior, "ports": model.ports})
+            for port in model.ports.inputs[len(child.ports.inputs):]:
+                self.inputs.append(port)
+                self.wires[_id(*self.scope, name, port.id)] = ModelWire(
+                    source=InputBoundaryEnd(owner="inputs", port=port.id), target=_component_port(name, port.id),
+                )
 
     def finish(self) -> tuple[ModelDocument, TaskDocument]:
         for id in sorted(self.alternatives.keys() | {
-            id for id, wire in self.model.interior.wires.items() if _has_window(wire)
+            id for id, wire in self.model.interior.wires.items() if _needs_task(wire.attachments)
         }):
             alternatives = self.alternatives[id]
             base = self.model.interior.wires[id]
@@ -255,6 +403,8 @@ class _Union:
                             source = self.attach(id, source, chain, attachment, alt)
                             chain = ()
                         else:
+                            if isinstance(attachment, InterventionAttachment):
+                                attachment = self.operands(attachment, id)
                             chain = (*chain, attachment)
             else:
                 if len(alternatives) > 1 and (
@@ -267,9 +417,13 @@ class _Union:
                     source = self.route(id, source, chain, alt.wire.source, alt.wire.attachments, alt)
                     chain = ()
             self.wires[id] = base.model_copy(update={"source": source, "attachments": chain})
+        self.source_ports()
+        self.child_graphs()
         model = self.model.model_copy(update={
             "ports": self.model.ports.model_copy(update={"inputs": tuple(self.inputs)}),
-            "interior": self.model.interior.model_copy(update={"components": self.components, "wires": self.wires}),
+            "interior": self.model.interior.model_copy(update={
+                "components": self.components, "wires": self.wires, "attachments": self.port_attachments,
+            }),
         })
         cohort = self.task.validation_trials
         if self.conditions:
@@ -277,7 +431,7 @@ class _Union:
                 ValidationTrial(variables=row.variables | _combine_conditions(selected), epoch_steps=row.epoch_steps)
                 for row in cohort for selected in product(*self.conditions)
             )
-        links = list(self.task.links)
+        links = self.links
         for node, (base, selectors) in self.curl_activation.items():
             enabled = selectors[0]
             for selector in selectors[1:]:
@@ -306,8 +460,59 @@ def _has_window(wire: ModelWire) -> bool:
     return any(isinstance(item, InterventionAttachment) and item.window is not None for item in wire.attachments)
 
 
-def has_trial_windows(model: ModelDocument) -> bool:
-    return any(_has_window(wire) for wire in model.interior.wires.values())
+def _task_reference(value) -> str | None:
+    if not isinstance(value, dict) or value.get("kind") != "name":
+        return None
+    reference = NameValue.model_validate(value).reference
+    try:
+        ModelAddress.from_text(reference)
+    except ValueError:
+        return reference
+    return None
+
+
+def _needs_task(attachments) -> bool:
+    return any(
+        isinstance(attachment, InterventionAttachment)
+        and (attachment.window is not None or any(_task_reference(value) is not None for value in attachment.fields.values()))
+        for attachment in attachments
+    )
+
+
+def model_interventions(
+    model: ModelDocument | CompositeComponent, scope: tuple[str, ...] = (),
+):
+    """The attachment addresses and operations authored on wires and source ports."""
+    for name, wire in model.interior.wires.items():
+        for item in wire.attachments:
+            if isinstance(item, InterventionAttachment):
+                yield ModelAddress(composites=scope, element=AttachmentElement(
+                    kind="attachment", id=item.id, parent=WireElement(kind="wire", id=name),
+                )), item
+    for port, chain in model.interior.attachments.sources.items():
+        for item in chain:
+            if isinstance(item, InterventionAttachment):
+                yield ModelAddress(composites=scope, element=AttachmentElement(
+                    kind="attachment", id=item.id,
+                    parent=PortElement(kind="port", end=InputBoundaryEnd(owner="inputs", port=port)),
+                )), item
+    for name, component in model.interior.components.items():
+        for port, chain in component.attachments.sources.items():
+            for item in chain:
+                if isinstance(item, InterventionAttachment):
+                    yield ModelAddress(composites=scope, element=AttachmentElement(
+                        kind="attachment", id=item.id, parent=PortElement(
+                            kind="port", end=ComponentPortAddress(
+                                owner="component", component=name, direction="output", port=port,
+                            ),
+                        ),
+                    )), item
+        if isinstance(component, CompositeComponent):
+            yield from model_interventions(component, (*scope, name))
+
+
+def _has_interventions(model: ModelDocument | CompositeComponent) -> bool:
+    return any(_needs_task((item,)) for _, item in model_interventions(model))
 
 
 def _insertions(base: ModelWire, variant: ModelWire) -> list[tuple[int, InterventionAttachment]] | None:
@@ -327,11 +532,23 @@ def _insertions(base: ModelWire, variant: ModelWire) -> list[tuple[int, Interven
 
 def lower_trial_sets(
     model: ModelDocument, task: TaskDocument, fields: Mapping[str, TrialSetField],
-    read: Callable[[str], Document | None],
+    read: Callable[[str], Document | None], components: ComponentRegistry,
 ) -> tuple[ModelDocument, TaskDocument]:
-    union = _Union(model, task)
+    model, links = _attachment_links(model, task.links, components)
+    task = task.model_copy(update={"links": links}) if links != task.links else task
+    union = _Union(model, task, components)
     for axis, placement in sorted(fields.items()):
         if placement.axis.where is not None:
             raise SetFieldProblem(axis, placement.axis.set, None, "Trial Set placements apply to all runs of the step.")
         union.placement(axis, placement, read)
     return union.finish()
+
+
+def lower_trial_interventions(
+    model: ModelDocument, task: TaskDocument, components: ComponentRegistry,
+) -> tuple[ModelDocument, TaskDocument]:
+    base, links = _attachment_links(model, task.links, components)
+    if not _has_interventions(base):
+        return model, task
+    paired = task.model_copy(update={"links": links}) if links != task.links else task
+    return _Union(base, paired, components).finish()

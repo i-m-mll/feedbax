@@ -565,6 +565,7 @@ class ExpandedRow:
     input_axes: Mapping[str, SweepInputCoordinate] = field(default_factory=dict)
     """Each input axis's value on this row, its member, which ``coordinates`` holds only as the member's own
     coordinates."""
+    task_additions: tuple[TaskAdditions, ...] = ()
 
     def inherited_id(self, axes: tuple[str, ...]) -> str | None:
         """Project generated choices onto the inherited axes, or keep an authored row ID.
@@ -590,6 +591,7 @@ class _AxisChoice:
     member: SweepInputMember | None = None
     patch_authors: Mapping[str, str] = field(default_factory=dict)
     origin: PatchOrigin | None = None
+    task_additions: TaskAdditions | None = None
 
 
 @dataclass(frozen=True)
@@ -1027,6 +1029,7 @@ def _choices(
                         SweepCoordinate(key, value.label, value.value),
                         _patches(value),
                         patch_authors=value._patch_authors,
+                        task_additions=_task_additions(value),
                     )
                     for key, value in values.items()
                     if value is not None
@@ -1152,7 +1155,7 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
         authors.update(choice.patch_authors)
     return ExpandedRow(
         row_id, ", ".join(labels) or None, coordinates, patches, bindings, origins, authors, axis_value_ids,
-        input_axes,
+        input_axes, tuple(choice.task_additions for choice in selection.values() if choice.task_additions is not None),
     )
 
 
@@ -1255,13 +1258,23 @@ def _planned_choices(
     return {name: _choices(name, axis, inputs, integer_site, plan.sets) for name, axis in plan.axes.items()}
 
 
+def _task_additions(value: AxisValue) -> TaskAdditions | None:
+    if value.task_variables or value.task_links:
+        return TaskAdditions(task_variables=value.task_variables, task_links=value.task_links)
+    return None
+
+
 def _explicit_rows(rows: Mapping[str, Row]) -> Iterator[ExpandedRow]:
     for name, row in rows.items():
         patches = _patches(row)
         origins: dict[str, PatchOrigin] = {
             path: ("row", row._patch_sources[path]) for path in patches
         }
-        yield ExpandedRow(name, row.label, {}, patches, {}, origins, row._patch_authors)
+        additions = _task_additions(row)
+        yield ExpandedRow(
+            name, row.label, {}, patches, {}, origins, row._patch_authors,
+            task_additions=(additions,) if additions is not None else (),
+        )
 
 
 def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow]) -> tuple[bool, ...]:
