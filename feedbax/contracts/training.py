@@ -50,6 +50,11 @@ class TrialDocuments(StrictModel):
         if self.task is None or not self.task.signals:
             return self
         bindings = self.resolved_signal_bindings({signal.name: signal.id for signal in self.task.signals})
+        signal_ids = {signal.id for signal in self.task.signals}
+        for port in self.model.ports.inputs:
+            default = port.name if port.name in signal_ids else None
+            if bindings[port.id] == default:
+                del bindings[port.id]
         if bindings == self.input_bindings and all(signal.name == signal.id for signal in self.task.signals):
             return self
         signals = tuple(
