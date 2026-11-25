@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 
@@ -23,7 +24,7 @@ from feedbax.execution.trial_resolution import (
 from feedbax.planner.project_plan import compile_project
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
-from feedbax.training.method_runtime import TrainingLoop, initialize_method
+from feedbax.training.method_runtime import TrainingContext, TrainingLoop, initialize_method
 from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from tests.test_document_train_pair import authored_documents, document_project
@@ -249,3 +250,81 @@ def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
             delta, expected, rtol=1e-5, atol=1e-6,
         )
     assert starts == {15, 30, 45}
+
+
+
+def test_set_free_twin_keeps_trial_values_and_matches_the_unmodified_train():
+    authored = authored_documents()
+    functions, _, _, _ = authored
+    raw = document_project(authored)
+
+    def training(data):
+        plan = compile_project(Project.model_validate(data))
+        assert not plan.diagnostics, plan.diagnostics
+        run, = plan.runs
+        assert run.admission_problem is None, run.problems
+        request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        documents = request.trial_documents
+        prepared = compile_trial_execution(
+            documents.model, documents.task, ComponentRegistry(), functions,
+            python_tasks=application_python_tasks(), objective=documents.objective,
+            input_bindings=documents.input_bindings, initialization_key=model_initialization_key(4),
+        )
+        assert isinstance(prepared, PreparedTrialExecution), prepared
+        return request, prepared
+
+    plain_request, plain = training(raw)
+    for bank, vector in (("choice-bank", [1.0, 0.0]), ("switch-bank", [0.0, 2.0])):
+        raw["documents"][bank] = {
+            "schema": "feedbax.set_document.v1",
+            "payload": {"entries": {"pulse": {"differences": {
+                "/interior/wires/effector-wire/attachments": {"value": [{
+                    "kind": "intervention", "id": bank, "operation": "add", "fields": {"value": vector},
+                }]},
+            }}}},
+        }
+    raw["steps"]["train"]["set_fields"] = {
+        "choice": {"axis": {"set": "choice-bank"}, "sampling": {"kind": "listed"}},
+        "switch": {"axis": {"set": "switch-bank"}, "sampling": {
+            "kind": "cooccurring", "weights": {"pulse": {"on": 1, "off": 0}},
+        }},
+    }
+    union_request, union = training(raw)
+    key = jr.key(7)
+    parameters = TaskParameters(variables={"catch": jnp.asarray(False)})
+
+    def context(request, prepared):
+        return TrainingContext(
+            request.settings, jnp.uint32(0), 0, jr.key(1), jr.key(2),
+            prepared.execution, prepared.objective, parameters, 8,
+        )
+
+    plain_ctx = context(plain_request, plain)
+    union_ctx = context(union_request, union)
+    baseline, baseline_keys = plain_ctx.sample_trials(key=key)
+    plain_twin, plain_keys = plain_ctx.sample_trials(key=key, set_fields=False)
+    perturbed, perturbed_keys = union_ctx.sample_trials(key=key)
+    twin, keys = union_ctx.sample_trials(key=key, set_fields=False)
+    for other in (baseline_keys, plain_keys, perturbed_keys):
+        np.testing.assert_array_equal(jr.key_data(keys), jr.key_data(other))
+    switch_ids = perturbed.variables.keys() - baseline.variables.keys()
+    assert len(switch_ids) == 2 and "choice" in switch_ids
+    for name in switch_ids:
+        np.testing.assert_array_equal(perturbed.variables[name], 1)
+        np.testing.assert_array_equal(twin.variables[name], 0)
+        assert twin.variables[name].dtype == perturbed.variables[name].dtype
+    assert perturbed.variables["choice"].dtype.kind == "i"
+    assert all(perturbed.variables[name].dtype.kind == "b" for name in switch_ids - {"choice"})
+    np.testing.assert_array_equal(twin.variables["catch"], False)
+    for trial in (plain_twin, perturbed, twin):
+        for field in ("variables", "inits", "inputs", "present", "variable_defined"):
+            for name, expected in (getattr(baseline, field) or {}).items():
+                np.testing.assert_array_equal(getattr(trial, field)[name], expected)
+        for actual, expected in zip(trial.epochs, baseline.epochs, strict=True):
+            np.testing.assert_array_equal(actual, expected)
+
+    (plain_output,) = plain_ctx.rollout(plain.executable.graph, baseline, keys).values()
+    (twin_output,) = union_ctx.rollout(union.executable.graph, twin, keys).values()
+    (perturbed_output,) = union_ctx.rollout(union.executable.graph, perturbed, keys).values()
+    np.testing.assert_array_equal(twin_output, plain_output)
+    assert np.any(np.asarray(perturbed_output) != plain_output)
