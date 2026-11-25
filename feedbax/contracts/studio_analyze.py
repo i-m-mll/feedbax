@@ -65,7 +65,7 @@ class StudioAnalyzeAuthoring(StrictModel):
     states: DatasetPort | None
     """The port common to the saved states the step's ``states`` input reads; none when it has no such input."""
     sources: dict[ProjectName, dict[ProjectName, list[DatasetSource]]]
-    """Compatible dataset sources by analysis element and input role."""
+    """Compatible inputs and outputs of plannable operations, by receiving element and role."""
     variables: dict[str, dict[str, list[str]]]
     """Each operation's parameter choices: the matching variables of a dataset selector, and the bound label
     dimensions of a parameter that lists the dimensions a port takes whole."""
@@ -77,3 +77,4 @@ class StudioAnalyzeAuthoring(StrictModel):
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
     created: list[CreateNamedDocument] = Field(default_factory=list)
     problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
+    """Problems in this run's authoring catalog, with field pointers relative to their analysis elements."""

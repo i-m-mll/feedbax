@@ -10,6 +10,7 @@ from pydantic import Field
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.project_inputs import Pointer
 from feedbax.contracts.project_sources import pointer
 
 
@@ -78,6 +79,8 @@ class StudioAnalysisPlace(StrictModel):
     part: Literal["analysis"]
     element: str
     name: str
+    field: Pointer | None = Field(default=None, exclude_if=lambda value: value is None)
+    """Pointer within the named element, such as /params/ddof or /inputs/states."""
 
 
 class StudioInputPlace(StrictModel):
