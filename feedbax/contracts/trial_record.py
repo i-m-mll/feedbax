@@ -138,7 +138,7 @@ class TrialAggregate(BaseModel):
     signals: dict[str, TaskSignalAggregate]
     variables: dict[str, TaskVariableRange]
     terms: dict[str, TrialTermAggregate] = Field(default_factory=dict)
-    intervention_windows: dict[str, list[float]] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    interventions: dict[str, list[float]] = Field(default_factory=dict, exclude_if=lambda value: not value)
     """Per step, the share of trials in which each intervention is active, keyed by its Model address."""
 
 

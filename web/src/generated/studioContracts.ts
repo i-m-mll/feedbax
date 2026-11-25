@@ -2257,6 +2257,7 @@ export interface TrialMeanShelf {
   epochs: TrialMeanEpoch[];
   signals: Record<string, number[]>;
   terms: Record<string, TrialMeanTermShare>;
+  interventions?: Record<string, number[]>;
 }
 
 export interface TrialMeanTermShare {
@@ -2435,7 +2436,7 @@ export interface TrialAggregate {
   signals: Record<string, TaskSignalAggregate>;
   variables: Record<string, TaskVariableRange>;
   terms?: Record<string, TrialTermAggregate>;
-  intervention_windows?: Record<string, number[]>;
+  interventions?: Record<string, number[]>;
 }
 
 export interface StudioRunTaskTrialSampleRequest {
@@ -10107,6 +10108,7 @@ export const TrialMeanShelfSchema: z.ZodType<TrialMeanShelf> = z.lazy(() =>
       "epochs": z.array(TrialMeanEpochSchema),
       "signals": z.record(z.string(), z.array(z.number().finite())),
       "terms": z.record(z.string(), TrialMeanTermShareSchema),
+      "interventions": z.record(z.string(), z.array(z.number().finite())).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialMeanShelf>;
@@ -10399,7 +10401,7 @@ export const TrialAggregateSchema: z.ZodType<TrialAggregate> = z.lazy(() =>
       "signals": z.record(z.string(), TaskSignalAggregateSchema),
       "variables": z.record(z.string(), TaskVariableRangeSchema),
       "terms": z.record(z.string(), TrialTermAggregateSchema).optional(),
-      "intervention_windows": z.record(z.string(), z.array(z.number().finite())).optional(),
+      "interventions": z.record(z.string(), z.array(z.number().finite())).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialAggregate>;
