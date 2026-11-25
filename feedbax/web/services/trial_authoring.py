@@ -1193,7 +1193,7 @@ def _changed_runs(before, after) -> frozenset[RunKey]:
     def values(plan):
         return {
             row.key: (
-                (definition.payload, definition.input_documents)
+                (definition.payload, definition.input_documents, definition.task_additions)
                 if (definition := plan.selected_definitions.get(row.key)) is not None else None,
                 row.document_ids, row.coordinates, row.train,
             )

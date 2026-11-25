@@ -304,6 +304,48 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
     assert source["task_variables"][0]["value"]["value"] == 0.07
 
 
+def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
+    from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
+
+    raw = document_project(authored_documents(), evaluation=True)
+    variable = {
+        "id": "onset", "name": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
+        "value": {"kind": "literal", "value": 0.03, "unit": "s"},
+    }
+    raw["documents"]["entry-set"] = {
+        "schema": SET_DOCUMENT_SCHEMA_ID, "payload": {"entries": {"ordinary": {}, "pulse": {"task_variables": [variable]}}},
+    }
+    raw["steps"]["baseline"]["sweep"] = {"axes": {"window": {"set": "entry-set"}}}
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        folders = client.app.state.project_folders
+        _save_project(folders, PROJECT, Project.model_validate(raw))
+        before = _runs(folders, "baseline")
+        assert set(before) == {"window=ordinary", "window=pulse"}
+        revision = folders.read(PROJECT).revision
+
+        def author(row, change=None):
+            body = {"revision": revision, "run": {"variant": "default", "step": "baseline", "row": row}}
+            if change is not None:
+                body["change"] = change
+            response = client.post(f"{BASE}/authoring/trials", json=body)
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        for row in before:
+            read = author(row)
+            for projected in (read["variables"], read["task"]["variables"]):
+                assert any(item["id"] == "onset" for item in projected) == (row == "window=pulse")
+        edit = author("window=pulse", {
+            "kind": "expression", "path": "/task/variables/onset/value", "edit": {"kind": "text", "text": "0.04 s"},
+        })
+        assert edit["files"] and not edit.get("store_choices"), edit
+        saved = client.patch(BASE, json={"revision": revision, "files": edit["files"]})
+        assert saved.status_code == 200, saved.text
+        after = _runs(folders, "baseline")
+        assert after["window=ordinary"] == before["window=ordinary"]
+        assert after["window=pulse"] != before["window=pulse"]
+
+
 @pytest.mark.parametrize("condition", [None, {"kind": "literal", "value": True, "unit": None}])
 def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio, condition):
     folders, client = studio
