@@ -553,10 +553,7 @@ class _Lower:
                         steps = length_steps(delay, self.period)
                     except ValueError as error:
                         raise self.problem(path, "field", str(error), parent=origin, path=("delay",)) from error
-                    if signal is None or signal.shape is None:
-                        raise self.problem(path, "attachment", "delay has no resolved reset shape", parent=at, id=attachment.id)
-                    if signal.dtype not in ("float32", "float64"):
-                        raise self.problem(path, "attachment", "delay requires a real floating-point reset", parent=at, id=attachment.id)
+                    signal = signal or _Signal()
                     initial = self.numeric_field(attachment.initial, path, origin, ("initial",))
                     reset_output = None
                     if isinstance(initial, dict):
@@ -568,22 +565,24 @@ class _Lower:
                         except ValueError as error:
                             raise self.problem(path, "attachment", str(error), parent=at, id=attachment.id) from error
                         unit = UNITS.get(signal.units or "")
-                        if unit is None or any(size <= 0 for size in signal.shape):
+                        if signal.shape is not None and (unit is None or any(size <= 0 for size in signal.shape)):
                             raise self.problem(
                                 path, "attachment", "delay Initial requires a resolved numeric value type",
                                 parent=at, id=attachment.id,
                             )
-                        self.links.append(ResolvedModelLink(
-                            address=self.address(path, "field", parent=origin, path=("initial",)),
-                            value=reference,
-                            type=ValueType(base=ValueBase.REAL, shape=signal.shape, dimensions=unit.dimensions),
-                        ))
+                        if signal.shape is not None:
+                            self.links.append(ResolvedModelLink(
+                                address=self.address(path, "field", parent=origin, path=("initial",)),
+                                value=reference,
+                                type=ValueType(base=ValueBase.REAL, shape=signal.shape, dimensions=unit.dimensions),
+                            ))
                         initial = 0
-                    limit = float(np.finfo(signal.dtype).max)
-                    if type(initial) not in (int, float) or not -limit <= initial <= limit:
+                    if type(initial) not in (int, float) or not isfinite(initial):
                         raise self.problem(path, "attachment", "delay Initial requires a qualified numeric value", parent=at, id=attachment.id)
+                    dtype = signal.dtype if signal.dtype in ("float32", "float64") else None
                     reset = ModelDelayCarry(
-                        shape=signal.shape, dtype=signal.dtype, units=signal.units,
+                        shape=signal.shape if dtype is not None else None,
+                        dtype=dtype or _model_float_dtype(), units=signal.units,
                         steps=steps, initial=initial, reset_output=reset_output,
                         model_delay_id=attachment.id, model_wire_id=key,
                     ).model_dump(mode="json")
@@ -700,7 +699,8 @@ class _Lower:
                 if reset is not None:
                     relay = _generated("output", b.port)
                     add_generated(relay, "feedbax.Input", {}, origin=at)
-                    emit(output, (relay, "input"), key, at, reset=reset)
+                    origin = {"kind": "attachment", "parent": at, "id": reset["model_delay_id"]}
+                    emit(output, (relay, "input"), key, origin, reset=reset)
                     output = (relay, "output")
                 output_bindings[external] = output
             else:
