@@ -776,7 +776,18 @@ def test_equations_edits_store_and_run_like_a_direct_document(
         assert library.status_code == 200, library.text
         entries = {row["name"]: row for row in library.json()["data"]["components"]}
         assert set(entries["feedbax.AcausalSystem"]["equations_domains"]) == {"translational", "rotational"}
+        assert "composite port list" in entries["feedbax.BoundaryPort"]["placement_reason"]
         project.edit({"op": "add_component", "graph": root, "position": position, "id": "equations", "component": shell})
+        revision = project.snapshot()["revision"]
+        incompatible = "TorsionalSpring" if domain == "translational" else "LinearSpring"
+        for type_, reason in (("BoundaryPort", "composite port list"), (incompatible, "requires a")):
+            refused = project.model_edit({
+                "op": "add_component", "graph": inner, "position": position, "component": leaf(type_),
+            })
+            assert refused.status_code == 200, refused.text
+            assert refused.json()["result"]["status"] == "refused"
+            assert reason in refused.text
+            assert project.snapshot()["revision"] == revision
         project.edit({"op": "add_port", "graph": inner, "direction": "physical", "port": free})
         for key, component in leaves.items():
             if key != "spring":
@@ -858,3 +869,27 @@ def test_equations_edits_store_and_run_like_a_direct_document(
     assert remaining["connections"] == {key: edge for key, edge in edited["connections"].items() if edge not in (
         routed, added_edge, spring_ground,
     )}
+
+
+def test_equations_balance_diagnostic_uses_authored_names():
+    from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.contracts.model_document import ModelDocument
+
+    model = ModelDocument.model_validate({
+        "step_seconds": 0.01, "ports": {},
+        "interior": {"components": {"equations": {
+            "kind": "composite", "name": "Equations", "ports": {},
+            "interior": {"physical_domain": "translational", "components": {
+                "43f0f537": {"kind": "leaf", "type": "feedbax.LinearSpring", "name": "Hand spring"},
+            }},
+        }}},
+    })
+    with pytest.raises(ModelCompilationProblem, match="unbalanced") as error:
+        lower_model_document(model, ComponentRegistry())
+
+    detail = str(error.value)
+    assert "Hand spring" in detail
+    assert "43f0f537" not in detail
+    assert "equations=" in detail and "unknowns=" in detail
+    assert error.value.address.composites == ("equations",)
