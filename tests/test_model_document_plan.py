@@ -1442,7 +1442,10 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
         assert folders.read("nested").project.documents == project.documents
         assert "model_attachments" not in (tmp_path / "nested" / "steps/baseline.json").read_text()
         address = added["changed"][0]
-        changed = edit(client, {"op": "change", "address": address, "attachment": attachment | {"fields": {"factor": 0.25}}})
+        changed = edit(client, {
+            "op": "change", "address": address,
+            "attachment": attachment | {"operands": {"factor": {"kind": "value", "value": 0.25}}},
+        })
         assert changed["status"] == "applied", changed
         updated = requests()
         assert {key for key in updated if updated[key] != result[key]} == {selected}
