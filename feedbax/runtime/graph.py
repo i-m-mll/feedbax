@@ -36,6 +36,7 @@ from feedbax.runtime._graph_key_schedule import (
 )
 from feedbax.runtime._rollout import scan_rollout, select_step_inputs
 from feedbax.runtime._signal_schedule import ScopedPort, SignalSchedule
+from feedbax.runtime.delay import DelayLayout
 from feedbax.runtime.selectors import Selection, select
 
 _NESTED_CYCLE_NODE = "__nested__"
@@ -52,14 +53,17 @@ def _is_nested_cycle_key(key: tuple[str, str]) -> bool:
 
 
 def _cycle_sample(wire: Wire, carry: PyTree) -> PyTree:
-    initializer = wire.recurrent_initializer or {}
-    return carry[0] if "model_delay_id" in initializer and initializer.get("steps", 1) > 1 else carry
+    layout = wire.delay_layout
+    return jt.map(lambda leaf: leaf[0], carry) if layout is not None and layout.steps > 1 else carry
 
 
 def _advance_cycle(wire: Wire, carry: PyTree, sample: PyTree) -> PyTree:
-    initializer = wire.recurrent_initializer or {}
-    if "model_delay_id" in initializer and initializer.get("steps", 1) > 1:
-        return jnp.concatenate((carry[1:], jnp.expand_dims(sample, 0)), axis=0)
+    layout = wire.delay_layout
+    if layout is not None and layout.steps > 1:
+        return jt.map(
+            lambda history, value: jnp.concatenate((history[1:], jnp.expand_dims(value, 0)), axis=0),
+            carry, sample,
+        )
     return sample
 
 
@@ -247,6 +251,7 @@ class Wire(Module):
     temporality: str = field(default="instant", static=True)
     recurrent_initializer: Optional[dict] = field(default=None, static=True)
     id: str | None = field(default=None, static=True)
+    delay_layout: DelayLayout | None = field(default=None, static=True, repr=False)
 
     @property
     def is_recurrent(self) -> bool:
@@ -1395,17 +1400,17 @@ class Graph(GraphNode):
             initializer = wire.recurrent_initializer or {}
             if "model_delay_id" in initializer:
                 delay = ModelDelayCarry.model_validate(initializer)
+                layout = wire.delay_layout
+                if layout is None:
+                    raise ValueError(f"{wire} Delay has no resolved signal layout")
                 if delay.reset_output is None:
-                    value = jnp.full(delay.shape, delay.initial, dtype=delay.dtype)
+                    init_values[target_key] = layout.filled(delay.initial)
                 else:
                     end = delay.reset_output
                     outputs = self.nodes[end.component].initial_outputs(node_states.get(end.component))
                     if end.port not in outputs:
                         raise ValueError(f"{wire} reset output {end.component}.{end.port} is unavailable")
-                    value = jnp.asarray(outputs[end.port], dtype=delay.dtype)
-                    if value.shape != delay.shape:
-                        raise ValueError(f"{wire} reset output shape {value.shape} differs from {delay.shape}")
-                init_values[target_key] = jnp.broadcast_to(value, delay.carry_shape)
+                    init_values[target_key] = layout.seeded(outputs[end.port])
                 continue
             if initializer.get("kind") == "state_output" and (
                 "source_node" in initializer or "source_port" in initializer
@@ -1906,6 +1911,7 @@ class Graph(GraphNode):
             old_wire.temporality,
             old_wire.recurrent_initializer,
             id=old_wire.id if recurrent else derived_wire_id(old_wire.id, node_name, "incoming"),
+            delay_layout=old_wire.delay_layout,
         )
         outgoing = Wire(
             node_name, output_port, target_node, target_port,
