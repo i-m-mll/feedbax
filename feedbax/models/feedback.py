@@ -17,10 +17,10 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.builtins.runtime.channel import Channel, ChannelSpec, ChannelState, SignalChannel, _noise_model
+from feedbax.builtins.runtime.components import Concatenate
 from feedbax.builtins.runtime.feedback import (
     FEEDBACK_INPUT,
     FEEDBACK_OUTPUT,
-    AssembleFeedback,
     SelectState,
     StateSelection,
     StateSelector,
@@ -33,10 +33,6 @@ from feedbax.runtime.noise import Normal
 from feedbax.builtins.runtime.trial_history import trial_history_plan
 
 T = TypeVar("T")
-
-
-def _tree_sum_n_features(tree: PyTree[Array]) -> int:
-    return jt.reduce(lambda x, y: x + y, jt.map(lambda x: x.shape[-1], tree))
 
 
 class SimpleFeedbackState(Module):
@@ -93,8 +89,9 @@ class SimpleFeedback(Graph):
             is_leaf=lambda value: isinstance(value, ChannelSpec),
         )
         example_state = mechanics.state_index.init
-        nodes: dict[str, Component] = {"feedback_values": AssembleFeedback(layout)}
-        for (selector_name, channel_name), spec in zip(feedback_node_names(len(specs)), specs):
+        names = feedback_node_names(len(specs))
+        nodes: dict[str, Component] = {"feedback_values": Concatenate(n_inputs=len(specs))}
+        for (selector_name, channel_name), spec in zip(names, specs, strict=True):
             selector_type = SelectState if isinstance(spec.where, StateSelector) else StateSelection
             nodes[selector_name] = selector_type(spec.where)
             channel_type = Channel if _noise_model(spec.noise_func) != "custom" else SignalChannel
@@ -147,7 +144,7 @@ class SimpleFeedback(Graph):
             output_bindings={"effector": FEEDBACK_OUTPUT},
             component_bindings=_component_bindings(net),
             state_consistency_fn=trial_history_plan(nodes, wires),
-            state_view_fn=feedback_state_view(nodes, wires),
+            state_view_fn=_FeedbackStateView(layout, tuple(channel for _, channel in names)),
         )
 
     @property
@@ -175,8 +172,8 @@ def feedback_state_view(
     output_bindings: Mapping[str, tuple[str, str]] | None = None,
 ) -> Callable[[dict[str, PyTree]], PyTree] | None:
     """Expose the state projection of the canonical feedback graph."""
-    assembly = nodes.get("feedback_values")
-    if not isinstance(assembly, AssembleFeedback):
+    concatenate = nodes.get("feedback_values")
+    if not isinstance(concatenate, Concatenate):
         if (
             set(nodes) == {"select", "channel"}
             and isinstance(nodes["select"], StateSelection)
@@ -187,11 +184,12 @@ def feedback_state_view(
         ):
             return _selected_channel_state
         return None
-    channel_names = tuple(channel for _, channel in feedback_node_names(len(assembly.input_ports)))
+    channel_names = tuple(channel for _, channel in feedback_node_names(concatenate.n_inputs))
     expected = feedback_wires(len(channel_names), force_filter="force_filter" in nodes)
     if not set(expected).issubset(wires):
         return None
-    return _FeedbackStateView(assembly.structure, channel_names)
+    layout = jt.structure(0 if len(channel_names) == 1 else tuple(0 for _ in channel_names))
+    return _FeedbackStateView(layout, channel_names)
 
 
 def _selected_channel_state(node_states: dict[str, PyTree]) -> PyTree:
