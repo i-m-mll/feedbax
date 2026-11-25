@@ -73,7 +73,8 @@ async function drawnFigure(page: Page) {
   const figures = panel(page, 'Figures');
   await figures.getByRole('button', { name: 'profile', exact: true }).click();
   const plot = figures.locator('.js-plotly-plot');
-  await expect(plot.locator('g.scatterlayer path.js-line')).toHaveCount(64);
+  await expect(plot.locator('svg.main-svg').first()).toBeVisible();
+  await expect.poll(() => plot.evaluate((node) => (node as unknown as { data?: unknown[] }).data?.length)).toBe(64);
   return plot;
 }
 
@@ -183,36 +184,34 @@ test('with the Scene pinned on an Evaluate and its Analyze selected, scrubbing m
   await expect(playhead).toHaveCount(0);
 });
 
-// Measures the playhead of a 64-trial figure during playback: it must move on nearly every frame.
+// Catches a playhead that redraws the figure's 64 traces to move, which cannot keep up with playback: it must move on
+// nearly every frame.
 test('the playhead of Speed by trial over 64 trials holds 60 Hz in playback @responsiveness', async ({ page, request, studio }, info) => {
   test.setTimeout(120_000);
   await speedFigure(page, request, studio.home, 'figure-clock-rate');
-  const plot = await showFigure(page);
+  await showFigure(page);
   const line = page.locator('[data-figure-playhead]');
   await expect(line).toHaveCount(1);
   const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
-  await clock.getByRole('button', { name: 'Loop', exact: true }).click();
-  await line.evaluate(() => {
-    const state = window as Window & { finishPlayheadSample?: () => number[] };
-    const node = document.querySelector<HTMLElement>('[data-figure-playhead]')!;
+  const duration = Number(await scrubber(page).getAttribute('max'));
+  expect(duration).toBeGreaterThanOrEqual(0.8);
+  await clock.getByRole('button', { name: 'Play', exact: true }).click();
+  // Sampled for 45 frames, which end before the trial does at any display rate of 60 Hz or more.
+  const { frames, updates } = await line.evaluate((node) => new Promise<{ frames: number[]; updates: number[] }>((done) => {
+    const frames: number[] = [];
     const updates: number[] = [];
     let last = node.style.transform;
-    let frame = requestAnimationFrame(function sample(time) {
+    requestAnimationFrame(function sample(time) {
+      frames.push(time);
       if (node.style.transform !== last) { updates.push(time); last = node.style.transform; }
-      frame = requestAnimationFrame(sample);
+      if (frames.length < 45) requestAnimationFrame(sample); else done({ frames, updates });
     });
-    state.finishPlayheadSample = () => { cancelAnimationFrame(frame); return updates; };
-  });
-  await clock.getByRole('button', { name: 'Play', exact: true }).click();
-  await plot.evaluate(() => new Promise<void>((done) => {
-    let frames = 120;
-    requestAnimationFrame(function wait() { if (--frames) requestAnimationFrame(wait); else done(); });
   }));
-  await clock.getByRole('button', { name: 'Pause', exact: true }).click();
-  const updates = await page.evaluate(() => (window as Window & { finishPlayheadSample?: () => number[] }).finishPlayheadSample!());
   const gaps = updates.slice(1).map((time, index) => time - updates[index]).sort((a, b) => a - b);
   const p95 = gaps[Math.ceil(gaps.length * 0.95) - 1];
-  await info.attach('figure-playhead-gaps', { body: JSON.stringify({ updates: updates.length, p95, maximum: gaps.at(-1) }), contentType: 'application/json' });
-  expect(updates.length).toBeGreaterThanOrEqual(100);
-  expect(p95).toBeLessThanOrEqual(20);
+  await info.attach('figure-playhead-gaps', {
+    body: JSON.stringify({ frames: frames.length, updates: updates.length, p95, maximum: gaps.at(-1) }), contentType: 'application/json',
+  });
+  expect(updates.length).toBeGreaterThanOrEqual(0.9 * frames.length);
+  expect(p95).toBeLessThanOrEqual(1000 / 60 * 1.2);
 });
