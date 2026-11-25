@@ -10,7 +10,7 @@ test('a continuation started from its Model keeps its definition and continues a
   const files = await fixture('ordinary-files', '2');
   const train = files.at(-1).step;
   train.sweep = { rows: { slow: {}, fast: { patches: { 'settings.optimizer.learning_rate.value': { value: 0.003 } } } } };
-  const model = files.find((file: { document?: { schema: string } }) => file.document?.schema === 'feedbax.spec.model').id;
+  const model = files.find((file: { document?: { schema: string } }) => file.document?.schema === 'feedbax.spec.model').document.label as string;
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   async function saved() {
     const response = await request.get(projectPath);

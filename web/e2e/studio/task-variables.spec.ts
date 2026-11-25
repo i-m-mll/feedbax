@@ -40,9 +40,13 @@ test('the Variables table names, types and values a new task\'s variables, and s
     await enter(table.getByRole('textbox', { name: 'Add Variable', exact: true }), name);
     await expect(row(name)).toBeVisible();
     if (type !== 'Number') {
+      // The Type shows its new value while it saves; the value is entered once the Type is stored.
+      const typed = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/authoring/trials') &&
+        (response.request().postData() ?? '').includes('"set_type"'));
       await row(name).getByRole('combobox', { name: 'Type', exact: true }).click();
       await page.getByRole('option', { name: type, exact: true }).click();
       await expect(row(name).getByRole('combobox', { name: 'Type', exact: true })).toHaveText(type);
+      expect((await typed).ok()).toBe(true);
     }
     await enter(value(name), text);
     await expect(value(name)).toHaveValue(text);

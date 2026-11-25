@@ -138,7 +138,7 @@ function Canvas({ items, connections, positions, selectedIds, onSelect, openAt, 
         openAt(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
       }
     }}>
-    <StudioCanvas nodes={drawnNodes} nodeTypes={nodeTypes} edges={shownEdges} fitNewContent lockAutoFit={placing || !!carried} viewportRef={viewportRef}
+    <StudioCanvas nodes={drawnNodes} nodeTypes={nodeTypes} edges={shownEdges} refit="always" lockAutoFit={placing || !!carried} viewportRef={viewportRef}
       zoomOnDoubleClick={!openAt} multiSelectionKeyCode={multiSelectionKeys}
       onNodeClick={pick ? (_, node) => {
         const id = nodes.find((item) => item.id === node.id)?.data.selectionId;

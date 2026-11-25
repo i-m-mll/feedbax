@@ -2,7 +2,7 @@ import type { ExceptionMentions } from '@/components/values/adapters/fieldView';
 import { documentPayload } from './documentPayload';
 import { conditionLabels } from './evaluateAuthoring';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchSavedEvaluationReplay } from '@/api/jobs';
 import type { MapDocumentScope } from '@/components/pipeline/StudioPipelineMap';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
@@ -228,7 +228,7 @@ function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements,
   model: StoredModel | undefined, scope: string, projectId: string, revision: string): ManagedProjectDetail {
   const visible = activeView === 'scene';
   const source = model && visible ? { document_id: model.id, revision } : null;
-  const { picked, possible, frame, task, trails, failure, mean } = sceneTrial;
+  const { picked, possible, frame, task, trails, failure, mean, reading } = sceneTrial;
   const recorded = useMemo(() => picked && recordedStates(picked), [picked]);
   const poses = useMemo(() => recorded ? [picked!.inits, ...recorded] : [picked?.inits ?? noStateValues], [picked, recorded]);
   const geometry = useSceneGeometry(projectId, source, poses);
@@ -246,9 +246,13 @@ function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements,
     select: bindStudioCommand('selectTool', () => setTool('select')),
     relate: bindStudioCommand('relate', () => setTool('relate')),
   };
-  const scene = useMemo(() => posed?.kind === 'ready' ? trialScene({
+  const read = useMemo(() => posed?.kind === 'ready' && !reading ? trialScene({
     posed: posed.geometry, rest: rest?.kind === 'ready' ? rest.geometry : undefined, task, picked, possible, frame, trails, mean,
-  }) : null, [posed, rest, task, picked, possible, frame, trails, mean]);
+  }) : null, [posed, rest, reading, task, picked, possible, frame, trails, mean]);
+  /** The last Scene drawn of this subject, which stays drawn while an edit or a new pick is read. */
+  const drawnLast = useRef<{ scope: string; scene: Scene }>();
+  useEffect(() => { if (read) drawnLast.current = { scope: sceneScope, scene: read }; });
+  const scene = read ?? (drawnLast.current?.scope === sceneScope ? drawnLast.current.scene : null);
   const view: SceneView = failure ?? (!posed ? { kind: 'empty' }
     : posed.kind === 'failed' ? {
       kind: 'failed', issue: studioRegionIssue('scene', posed.error),

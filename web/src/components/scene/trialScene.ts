@@ -271,6 +271,8 @@ export interface SceneTrial {
    */
   readonly mean?: { readonly value: TrialMean; readonly time: number; readonly stateTime: readonly number[] };
   readonly possible: readonly TrialRecord[];
+  /** Whether `picked`, `possible` or `mean` is still being read, so that what they draw is not yet known. */
+  readonly reading: boolean;
   readonly frame: number;
   readonly task: SceneTask | undefined;
   readonly trails: boolean;

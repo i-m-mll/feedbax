@@ -9,6 +9,7 @@ import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { baseChain, baseOf, documentPayload } from '../documentPayload';
+import { shownName } from '@/features/pipeline/planView';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
 import clsx from 'clsx';
@@ -245,7 +246,17 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   /** Where the interior Inputs card's empty handle opened the list of signals outside. */
   const [addPort, setAddPort] = useState<DOMRect>();
   /** Where a struct port's Add Term opened the list of its readable fields. */
-  const [termFields, setTermFields] = useState<{ rect: DOMRect; port: string; fields: readonly { label: string; address: ModelAddress }[] }>();
+  const [termFields, setTermFields] = useState<{ rect: DOMRect; port: ModelAddress; name: string; fields: readonly { label: string; address: ModelAddress }[] }>();
+  /** The port a term was just written on, by address key, whose Objective mark shows the add. */
+  const [termAdded, setTermAdded] = useState<string>();
+  /** Writes a term reading `address` on the port at `port`: its refusal lands on the port, its success on its mark. */
+  function relateOn(port: ModelAddress, address: ModelAddress) {
+    if (!model || !relate) return;
+    void relate(address).then((reason) => {
+      setIssue(reason ? { document: model.id, address: port, reason } : undefined);
+      if (!reason) setTermAdded(addressKey(port));
+    });
+  }
   const [menu, setMenu] = useState<{ address: ModelAddress; x: number; y: number; point: ModelPosition }>();
   /** What each target of the connection being drawn would do, by target end. */
   const [review, setReview] = useState<{ source: Port; verdicts: ReadonlyMap<string, ModelConnectionVerdict> }>();
@@ -1136,14 +1147,13 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           const own = projectedPorts.get(addressKey(portAddress));
           const numeric = typeof own === 'object' && (own.base === 'real' || own.base === 'integer');
           const fields = numeric ? [] : readableFields.get(addressKey(portAddress)) ?? [];
-          const relateAt = (address: ModelAddress) => {
-            if (model) void relate(address).then((reason) => setIssue(reason ? { document: model.id, address: portAddress, reason } : undefined));
-          };
           return (rect) => {
-            if (fields.length <= 1) relateAt(fields[0]?.address ?? portAddress);
-            else setTermFields({ rect, port: port.name, fields: fields.map(({ path, address }) => ({ label: [port.name, ...path].join('.'), address })) });
+            if (fields.length <= 1) relateOn(portAddress, fields[0]?.address ?? portAddress);
+            else setTermFields({ rect, port: portAddress, name: port.name, fields: fields.map(({ path, address }) => ({ label: [port.name, ...path].join('.'), address })) });
           };
         } : undefined,
+        termAdded: termAdded ? (port) => addressKey(at(graph, { kind: 'port', end: port.end })) === termAdded : undefined,
+        endTermAdded: () => setTermAdded(undefined),
       },
     };
   }
@@ -1570,7 +1580,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     : component && selection ? componentInspector(selection, component)
     : attachment && selection ? attachmentInspector(selection, attachment)
     : ownerAddress ? ownerInspector(ownerAddress)
-    : <Inspector name={currentPath.length ? owner && 'name' in owner ? String(owner.name) : model.id : model.id}
+    : <Inspector name={currentPath.length ? owner && 'name' in owner ? String(owner.name) : model.id : shownName(model.id, saved.project.documents?.[model.id])}
       type={currentPath.length ? undefined : studioName('model')}>
       {fieldRegion}
       {fields(projectedFields.length ? [] : modelFields(model.value,
@@ -1753,11 +1763,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       })
         : <LeafChoices entries={entries} query={searchText} choose={(entry) => add(entry, search)} disabled={!editTopology} />}
     </Dialog> : termFields ? <Menu open onOpenChange={(open) => { if (!open) setTermFields(undefined); }}>
-      <MenuContent aria-label={studioAccessibleName('addTerm', termFields.port)} anchor={{ getBoundingClientRect: () => termFields.rect }}>
+      <MenuContent aria-label={studioAccessibleName('addTerm', termFields.name)} anchor={{ getBoundingClientRect: () => termFields.rect }}>
         {termFields.fields.map(({ label, address }) => <MenuItem key={label} onClick={() => {
           setTermFields(undefined);
-          const port = address.element.kind === 'field' ? at(address, address.element.parent) : address;
-          if (model) void relate?.(address).then((reason) => setIssue(reason ? { document: model.id, address: port, reason } : undefined));
+          relateOn(termFields.port, address);
         }}>{label}</MenuItem>)}
       </MenuContent>
     </Menu> : addPort && model ? <Menu open onOpenChange={(open) => { if (!open) setAddPort(undefined); }}>

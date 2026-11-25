@@ -126,3 +126,31 @@ test('a class field the source shows with several classes draws only the paramet
   expect(adam.parts!.map(({ label }) => label)).toEqual(['Rate', 'B1']);
   expect(adam.value).toBe('adam');
 });
+
+// Catches a value the service projects (an Analyze operation's variable choice) losing the Changed mark of its path,
+// so a based document's changed choice reads as its base's and cannot be reset.
+test('a projected field keeps the Changed mark of its path and resets through it', async () => {
+  const reset: string[] = [];
+  const field = fromJsonSchema('velocity', { type: 'string' }, 'b', {
+    root: null,
+    projected: () => fromParamSchema({ name: 'velocity', type: 'str' }, 'b', () => undefined,
+      { options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] }),
+    changed: (path) => path.join('/') === 'velocity'
+      ? { from: { kind: 'base', document: 'base' }, reset: async () => { reset.push('velocity'); return undefined; } } : undefined,
+  });
+  expect(field.change?.from).toEqual({ kind: 'base', document: 'base' });
+  await field.commit!({ kind: 'reset' });
+  expect(reset).toEqual(['velocity']);
+});
+
+// Catches the path's mark replacing the one a projection draws itself, so a selected run's swept value loses its
+// Selected Value mark.
+test('a projected field that marks its own change keeps that mark', () => {
+  const projection = fromParamSchema({ name: 'rate', type: 'float' }, 0.0025, () => undefined);
+  const field = fromJsonSchema('rate', { type: 'number' }, 0.0025, {
+    root: null,
+    projected: () => ({ ...projection, change: { from: { kind: 'selected', text: '0.0025' } } }),
+    changed: () => ({ from: { kind: 'base', document: 'base' } }),
+  });
+  expect(field.change?.from).toEqual({ kind: 'selected', text: '0.0025' });
+});

@@ -129,7 +129,12 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
   path: readonly string[] = [key]): FieldModel {
   const anchor = context.anchor?.(path);
   const projection = context.projected?.(path);
-  if (projection) return { ...projection, path, anchor };
+  if (projection) {
+    // A projection that marks its own change (a selected run's value) keeps it; otherwise it takes its path's.
+    if (projection.change) return { ...projection, path, anchor };
+    const changed = context.changed?.(path);
+    return { ...projection, path, anchor, change: changed, commit: withReset(projection.commit, changed) };
+  }
   const field = { ...declaredField(key, property, value, context, path), path, anchor };
   return context.mixed?.(path) && field.type.kind !== 'group' ? { ...field, value: null, text: null } : field;
 }

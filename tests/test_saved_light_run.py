@@ -360,9 +360,14 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
             return expect(client.get(f"{path}/train-runs", params={"revision": revision, "window_map": True}))
 
         def replay(revision, job_id, step, code=200):
-            return expect(client.post(f"{path}/evaluate-replay", json={
-                "revision": revision, "job_id": job_id, "key": key(step), "trial": _TRIALS[0],
-            }), code)
+            def refuse_project_wide_read(**_):
+                pytest.fail("Replaying one saved attempt should not join the project's full job history.")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(client.app.state.job_service, "read_plan_attempts", refuse_project_wide_read)
+                return expect(client.post(f"{path}/evaluate-replay", json={
+                    "revision": revision, "job_id": job_id, "key": key(step), "trial": _TRIALS[0],
+                }), code)
 
         snapshot = expect(client.get(path))
         revision = snapshot["revision"]

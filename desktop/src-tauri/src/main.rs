@@ -3,6 +3,7 @@ mod activity_window;
 mod native_frame;
 #[cfg(target_os = "macos")]
 mod project_document;
+mod save_file;
 mod studio_menu;
 
 use feedbax_studio::{activity_control::OPEN_ACTIVITY, service, window_session};
@@ -1255,6 +1256,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             studio_menu::publish_studio_menu,
             studio_menu::studio_window_action,
+            save_file::save_studio_file,
             open_project_folder
         ])
         .on_window_event(|window, event| match event {

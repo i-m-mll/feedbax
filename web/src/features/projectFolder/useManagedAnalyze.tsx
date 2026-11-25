@@ -22,7 +22,7 @@ import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryL
 import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
-  type ParamSchema, type PresentationPosition, type StudioAnalyzeChange, type StudioProjectSnapshot,
+  type ParamSchema, type PresentationPosition, type StudioAnalyzeAuthoring, type StudioAnalyzeChange, type StudioProjectSnapshot,
   type StudioSavedTrainKey, type StudioSavedTrainRuns, type SubsetTerms, type TrialMeanSelection,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
@@ -31,14 +31,14 @@ import {
   choosePick, useNamedSelection, usePick, type ElementSelectionStore,
 } from '@/features/projectWindow/elementSelection';
 import { shownName, type PlanStepView } from '@/features/pipeline/planView';
-import { heldElementKeys } from './analysisElements';
+import { heldElements } from './analysisElements';
 import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
 import { SelectionRule } from './SelectionRule';
 import { changedSelections, selectionProblems, stepSelections, withSubsetTerms } from './selectionEdits';
 import { documentBinding, InputEditor } from './InputEditor';
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
-import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
+import { ProjectEditConflictError, type ProjectEditController, type ProjectEditSnapshot } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
 import { savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, type Reveal } from './projectWindowProblems';
@@ -49,6 +49,20 @@ import { generatedName, keyOfLabel } from './generatedName';
 import type { GestureFailures } from './refusals';
 
 type Source = OperationElement['inputs'][string];
+
+/**
+ * What the step's authoring catalog depends on: the step's shape (its base, sweep, deltas and states input, which the
+ * operations and their choices depend on) and the saved contents of the document it reads and its bases (which its
+ * Changed marks and input sources depend on).
+ */
+function catalogBasis({ saved, draft }: Pick<ProjectEditSnapshot, 'saved' | 'draft'>, stepId: string | undefined) {
+  const step = stepId ? draft.steps?.[stepId] : undefined;
+  if (step?.kind !== 'analyze') return { shape: undefined, basis: JSON.stringify([]) };
+  const shape = JSON.stringify([step.base, step.sweep, step.deltas, step.inputs?.states]);
+  const document = stepDocument(step.base);
+  const contents = document && baseChain(saved.project.documents, document).map((name) => saved.project.documents?.[name]);
+  return { shape, basis: JSON.stringify([shape, contents ?? null]) };
+}
 type RefusalPlace = 'dialog' | readonly [string, string] | { readonly key: string };
 
 const operationCarry = carryKind<LibraryItem>('operation');
@@ -100,18 +114,19 @@ export function useManagedAnalyze({
   /** The operation or figure whose label (on its canvas card) or key (in the inspector) is being edited. */
   const [naming, setNaming] = useState<{ scope: string; element: string; field: 'label' | 'key' }>();
   const cursor = useRef<{ scope: string; point: PresentationPosition }>();
-  /** What the operation catalog depends on. The document's own contents shape only its Changed marks, so an edit
-   * refetches the review but keeps editing enabled while it does. */
-  const catalogShape = step?.kind === 'analyze' ? JSON.stringify([step.base, step.sweep, step.deltas, step.inputs?.states])
-    : undefined;
-  const contents = document && JSON.stringify(baseChain(saved.project.documents, document)
-    .map((name) => saved.project.documents?.[name]));
+  const { shape: catalogShape, basis } = catalogBasis({ saved, draft }, key?.step);
+  /** The catalog an edit's own review answered with, which describes the document after the edit. */
+  const edited = useRef<{ landed: Promise<string>; value: { shape?: string; review: StudioAnalyzeAuthoring } }>();
   const authoring = useQuery({
-    queryKey: ['studio-analyze', saved.project_id, id, catalogShape, contents],
-    queryFn: async ({ signal }) => ({
-      shape: catalogShape,
-      review: await readStudioAnalyze(saved.project_id, { revision: saved.revision, key: key! }, signal),
-    }),
+    queryKey: ['studio-analyze', saved.project_id, id, basis],
+    queryFn: async ({ signal }) => {
+      const pending = edited.current;
+      if (pending && await pending.landed === basis) return pending.value;
+      return {
+        shape: catalogShape,
+        review: await readStudioAnalyze(saved.project_id, { revision: saved.revision, key: key! }, signal),
+      };
+    },
     enabled: !!document && !!key && key.variant === projection?.window_map?.variants[0],
     placeholderData: keepPreviousData,
     staleTime: 30_000,
@@ -220,14 +235,21 @@ export function useManagedAnalyze({
     const reviewed = await readStudioAnalyze(current.project_id, {
       revision: current.revision, key, change, chosen_steps: [...chosen ?? []],
     });
-    if (reviewed.document !== document) throw new ProjectEditConflictError();
     if (!reviewed.files?.length && !reviewed.created?.length) return;
-    const stored = editor.storeEdit(label, { files: reviewed.files ?? [], created: reviewed.created ?? [] }, {
-      reviewedRevision: current.revision,
-    });
-    await editor.flush();
-    const settled = await stored;
-    if (settled.status === 'refused') throw settled.error;
+    let land!: (basis: string) => void;
+    edited.current = { landed: new Promise((resolve) => { land = resolve; }), value: { shape: undefined, review: reviewed } };
+    try {
+      const stored = editor.storeEdit(label, { files: reviewed.files ?? [], created: reviewed.created ?? [] }, {
+        reviewedRevision: current.revision,
+      });
+      await editor.flush();
+      const settled = await stored;
+      if (settled.status === 'refused') throw settled.error;
+    } finally {
+      const after = catalogBasis(editor.getSnapshot(), key.step);
+      edited.current.value.shape = after.shape;
+      land(after.basis);
+    }
   }
   const set = (path: readonly string[], value: JsonValue): StudioAnalyzeChange => ({ kind: 'edit', edits: [
     ...path.slice(0, -1).map((_, index) => ({
@@ -245,12 +267,15 @@ export function useManagedAnalyze({
       catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
     } : undefined };
   }
-  function add(kind: 'operations' | 'views', stem: string, value: JsonValue, point?: PresentationPosition) {
+  /** Places an element named as the Library names what it is made from, numbered while another element shows that name. */
+  function add(kind: 'operations' | 'views', named: string, value: Readonly<Record<string, JsonValue>>, point?: PresentationPosition) {
     void perform(async (current) => {
-      const held = heldElementKeys(editor.getSnapshot().draft.documents, current.composed);
-      const name = generatedName(stem, (name) => name === 'states' || name in declarations || held.has(name));
-      const label = studioName(kind === 'operations' ? 'addOperation' : 'addFigure');
-      await save(current, label, set([kind, name], value));
+      const held = heldElements(editor.getSnapshot().draft.documents, current.composed);
+      const shownNames = new Set(held.values());
+      const label = generatedName(named, (label) => shownNames.has(label), ' ');
+      const name = generatedName(keyOfLabel(label) || kind,
+        (name) => name === 'states' || name in declarations || held.has(name));
+      await save(current, studioName(kind === 'operations' ? 'addOperation' : 'addFigure'), set([kind, name], { ...value, label }));
       setDialog(undefined);
       if (liveScope.current === scope) {
         setInspected(undefined);
@@ -262,10 +287,11 @@ export function useManagedAnalyze({
     }, canEdit, opened ? 'dialog' : undefined);
   }
   const addFigure = (point?: PresentationPosition) => {
-    if (catalog) add('views', figureItem, { figure: catalog.figure, inputs: {} }, point);
+    if (catalog) add('views', humanizeLabel(figureItem), { figure: catalog.figure, inputs: {} }, point);
   };
   const addOperation = (operation: string, point?: PresentationPosition) => {
-    add('operations', operation.split('.').at(-1)!, { operation, params: {}, inputs: {} }, point);
+    const entry = definitions.get(operation);
+    if (entry) add('operations', entry.label, { operation, params: {}, inputs: {} }, point);
   };
   const addCommand = bindStudioCommand('addComponent', () => {
     if (focusedView === 'figures') addFigure();
@@ -393,7 +419,7 @@ export function useManagedAnalyze({
       editing={namingNow?.field === 'key' && namingNow.element === selected}
       onEditingChange={(editing) => setNaming(editing ? { scope, element: selected, field: 'key' } : undefined)}
       onCommit={(key) => changeElementKey(selected, key)}
-      unavailable={(key) => keyUnavailable(key, (key) => heldElementKeys(draft.documents, saved.composed).has(key))}
+      unavailable={(key) => keyUnavailable(key, (key) => heldElements(draft.documents, saved.composed).has(key))}
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
     {selected && selectedInput && key && inputRole && <InputEditor label={humanizeLabel(selected)} role={inputRole}
       binding={step?.inputs?.[selected]} self={key.step} project={saved.project} steps={steps} picking={selection}
@@ -424,10 +450,12 @@ export function useManagedAnalyze({
       } : undefined} />}
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
+      sources={catalog?.document === document ? catalog.sources[selected] ?? {} : {}}
       refusal={(role) => roleRefusal(selected, role)} onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}
     {selectedProblems.map((problem) => <ProblemRow key={problem.path + problem.detail} problem={problem} />)}
     {shownStatus && <p role="status">{studioRunStatus(shownStatus.status)}
-      {shownStatus.reason && <span className="block text-shell-muted">{shownStatus.reason}</span>}
+      {shownStatus.status === 'failed' && shownStatus.reason
+        && <span className="block text-shell-muted">{shownStatus.reason}</span>}
     </p>}
     {mapped && selected && <ElementRequests requests={selectedElement.requests} selected={chosenMember}
       onSelect={(member) => setChosenRequest(member === undefined ? undefined : { scope, element: selected, member })} />}
@@ -438,7 +466,8 @@ export function useManagedAnalyze({
           const schema = path.length === 1 && definition.param_schema.find(({ name }) => name === path[0]);
           const options = schema && catalog?.variables[definition.key]?.[schema.name];
           return schema && options ? fromParamSchema(schema, operation.params?.[schema.name], canEdit
-            ? (value) => writeParameter(path, value) : undefined, { options }) : undefined;
+            ? (value) => writeParameter(path, value) : undefined,
+          { options: options.map((option) => ({ value: option, label: catalog?.variable_names?.[option] ?? option })) }) : undefined;
         }}
         changed={(path) => changedAt(['operations', selected, 'params', ...path])}
         write={canEdit ? writeParameter : undefined} />
@@ -477,9 +506,9 @@ export function useManagedAnalyze({
   function place(id: string, point?: PresentationPosition) {
     if (id === figureItem) addFigure(point);
     else if (definitions.has(id)) addOperation(id, point);
-    else if (figureTemplates.some(({ key }) => key === id)) {
-      const stem = keyOfLabel(id.split('.').at(-1)!.replace(/([a-z0-9])([A-Z])/g, '$1-$2'));
-      add('views', stem, { figure: { template: id }, inputs: {} }, point);
+    else {
+      const template = figureTemplates.find(({ key }) => key === id);
+      if (template) add('views', template.label, { figure: { template: id }, inputs: {} }, point);
     }
   }
   const libraryInspector = shownItem && <Inspector name={shownItem.name} type={shownItem.group}>

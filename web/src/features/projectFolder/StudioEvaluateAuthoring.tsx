@@ -16,7 +16,7 @@ import {
   type TrialDomain, type TrialSet,
 } from './evaluateAuthoring';
 import type { AuthoredProject } from './authoredEdits';
-import { documentChoice, documentGroup } from './referenceChoices';
+import { chosenDocument, documentChoice, documentGroup } from './referenceChoices';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import '@/components/values/valueField.css';
 
@@ -207,7 +207,7 @@ export function SubjectDocuments({ subject, project, onChoose }: {
   const labels = useId();
   return <>{(['task', 'objective'] as const).map((kind) => <FieldRow key={kind} label={studioName(kind)} labelId={`${labels}-${kind}`}>
     <ReferenceField label={studioName(kind)} aria-labelledby={`${labels}-${kind}`} groups={[documentGroup(project, kind)]}
-      value={subject[kind] === undefined ? null : documentChoice(kind, subject[kind]!)}
-      onChoose={onChoose && ((choice) => onChoose(kind, choice.label))} />
+      value={subject[kind] === undefined ? null : documentChoice(project, kind, subject[kind]!)}
+      onChoose={onChoose && ((choice) => { const document = chosenDocument(choice); if (document) onChoose(kind, document); })} />
   </FieldRow>)}</>;
 }
