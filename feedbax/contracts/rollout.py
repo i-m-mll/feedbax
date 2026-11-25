@@ -153,6 +153,7 @@ class ResolvedInitialRollout(StrictModel):
     model: Sha256
     task: Sha256
     trials: tuple[str, ...]
+    replica_ids: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
 
 
 def rollout_semantics(

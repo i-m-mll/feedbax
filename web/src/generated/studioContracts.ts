@@ -3287,7 +3287,7 @@ export type InputRole = {
   "required": boolean;
   "gathers": boolean;
   "producer": InputProducer | null;
-  "documents": Array<"model" | "task">;
+  "documents": Array<"model" | "task" | "loaded_model">;
   "checkpoint_sets": boolean;
 };
 
@@ -11257,7 +11257,7 @@ export const InputRoleSchema: z.ZodType<InputRole> = z.lazy(() =>
     "required": z.boolean(),
     "gathers": z.boolean(),
     "producer": z.union([InputProducerSchema, z.null()]),
-    "documents": z.array(z.union([z.literal("model"), z.literal("task")])),
+    "documents": z.array(z.union([z.literal("model"), z.literal("task"), z.literal("loaded_model")])),
     "checkpoint_sets": z.boolean(),
   }).strict()
 ) as unknown as z.ZodType<InputRole>;

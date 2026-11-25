@@ -210,7 +210,7 @@ class ReceiptClosure:
                     ):
                         raise ValueError(f"Unexpected producer evidence for {role}.{bound.key}")
                     elif closure.include_ancestry:
-                        for ref in success_content_objects(self.store, reference):
+                        for ref in success_content_objects(self.store, reference, visitors=visitors):
                             add(ref)
 
         return tuple(objects[digest] for digest in sorted(objects))

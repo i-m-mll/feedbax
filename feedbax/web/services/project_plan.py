@@ -1176,6 +1176,7 @@ def _saved_evaluation_result(
         placement=attempt.evaluation_placement if attempt.checkpoint_gaps is not None else None,
         bound_subject=_planned_bound(attempt.bound_subject, planned), validity=attempt.validity,
         provenance=attempt.provenance,
+        loaded_model=attempt.loaded_model,
     )
 
 def _subject_checkpoint_path(settled: SettledProjectPlan, run: PlannedRun, planned: PlannedInput) -> str:

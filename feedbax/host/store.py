@@ -819,6 +819,7 @@ class Store:
                     from feedbax.contracts.model_input import read_document_input
                     from feedbax.persistence.canonical_evaluate import (
                         BoundEvaluationJobInput, decode_rollout_request, initial_evaluation_references,
+                        verified_imported_subject,
                     )
 
                     try:
@@ -835,6 +836,7 @@ class Store:
                             raise ValueError("Initial Evaluate differs from its canonical request.")
                         for content in initial_evaluation_references(view.read_request(request)).values():
                             read_document_input(content, view.store)
+                        verified_imported_subject(view.store, launch.canonical_request.initial_model, verify_bytes=True)
                     except (OSError, TypeError, ValueError, KeyError) as error:
                         results.append({
                             "run_key": run_key, "job_id": None, "disposition": "rejected",

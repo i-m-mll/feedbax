@@ -22,8 +22,9 @@ from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.project import (
-    RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
+    LoadedModelDocument, RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
 )
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, resolve_step
 from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
@@ -482,7 +483,13 @@ def _evaluation_task_path(definition):
 
 
 def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
-    model = ModelDocument.model_validate(definition.input_documents["subject"].payload)
+    subject = definition.input_documents["subject"]
+    if subject.schema_id == LOADED_MODEL_SCHEMA_ID:
+        model = definition.pinned_model
+        if model is None:
+            raise ProjectFolderInvalid("The selected Loaded Model is unavailable.")
+    else:
+        model = ModelDocument.model_validate(subject.payload)
     task = definition.input_documents["task"]
     if task.schema_id == PYTHON_TASK_SCHEMA_ID:
         source = PythonTaskSelection.model_validate(task.payload)
@@ -1213,6 +1220,9 @@ def trial_authoring(
     objective_source = StudioTrialObjectiveSource(kind="own", step=key.step) if documents.objective is not None else None
     if isinstance(documents, _InitialTrialDocuments):
         model_document = definition.document_ids.get("inputs.subject")
+        subject = definition.input_documents["subject"]
+        if subject.schema_id == LOADED_MODEL_SCHEMA_ID:
+            model_document = LoadedModelDocument.model_validate(subject.payload).model.document
         objective_path = "inputs.objective"
         objective_document = definition.document_ids.get(objective_path)
     task_source = None
