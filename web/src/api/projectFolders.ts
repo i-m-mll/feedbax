@@ -51,6 +51,25 @@ export async function listProjectFolders(signal?: AbortSignal) {
   }
 }
 
+export async function listProjectExamples(signal?: AbortSignal) {
+  const path = `${projectsPath}/examples`;
+  try {
+    return parseContract('StudioProjectExamples', await requestJson(path, { signal, cache: 'no-store' })).examples;
+  } catch (error) {
+    throw asApiRequestError(error, path);
+  }
+}
+
+/** Deletes the project folder of the listed `id`. */
+export async function deleteProjectFolder(id: string, signal?: AbortSignal) {
+  const path = projectPath(id);
+  try {
+    await requestResponse(path, { method: 'DELETE', signal });
+  } catch (error) {
+    throw asApiRequestError(error, path);
+  }
+}
+
 export function createProjectFolder(body: StudioProjectNew, signal?: AbortSignal) {
   return readFolder('StudioProjectDocument', undefined, projectsPath, {
     method: 'POST', body: sentBody('StudioProjectNew', body, projectsPath), signal,

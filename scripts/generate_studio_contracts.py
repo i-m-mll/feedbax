@@ -66,6 +66,7 @@ from feedbax.contracts.studio_figure import (
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
 from feedbax.contracts.studio_scene import (
+    SceneAnchorGeometry,
     SceneLinkGeometry,
     SceneMuscleGeometry,
     ScenePlanarGeometry,
@@ -348,6 +349,11 @@ from feedbax.contracts.trial_record import (
     TaskTimelineCue,
     TaskVariableRange,
     TrialAggregate,
+    TrialAnchorPlace,
+    TrialComputedPlace,
+    TrialRelation,
+    TrialSignalPlace,
+    TrialVariablePlace,
     StudioTrialReplayResponse,
     TrialRecord,
     TrialStateTrack,
@@ -428,7 +434,9 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.training_document import TrainingDocument
 from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
-from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
+from feedbax.contracts.studio_trials import (
+    StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialRelate,
+)
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from feedbax.contracts.studio_subset import (
     StudioRunRuleCheck, StudioRunRuleRequest, StudioSubsetToRowsEdit, StudioSubsetToRowsRequest,
@@ -513,6 +521,9 @@ AUTHORED_CONTRACT_MODELS = (
     StudioLoadedModelImportResult,
     StudioTrialAuthoring,
     StudioTrialAuthoringRequest,
+    StudioTrialRelate,
+    StudioRelatePoint,
+    StudioRelatePort,
     StudioCheckpointRuleEdit,
     StudioCheckpointRuleRequest,
     StudioSubsetToRowsEdit,
@@ -766,6 +777,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     DomainTheme,
     DomainMeta,
     DomainDiagnostic,
+    SceneAnchorGeometry,
     SceneLinkGeometry,
     SceneMuscleGeometry,
     ScenePlanarGeometry,
@@ -800,6 +812,11 @@ MODEL_TYPES: list[type[BaseModel]] = [
     PlotlyLayout,
     FigureProduct,
     StudioTrialReplayResponse,
+    TrialAnchorPlace,
+    TrialComputedPlace,
+    TrialRelation,
+    TrialSignalPlace,
+    TrialVariablePlace,
     TrialRecord,
     TrialStateTrack,
     TrialRecords,

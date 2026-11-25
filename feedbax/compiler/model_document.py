@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from math import isfinite
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 
 import numpy as np
 
@@ -16,7 +16,7 @@ from feedbax.compiler.model_signals import (
 )
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
 from feedbax.compiler.model_edit import model_graph_problems
-from feedbax.compiler.model_ports import ModelRegistryPorts
+from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, PlanarDynamicsSpec, SolverConfigSpec
 from feedbax.contracts.acausal_interface import (
     PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
@@ -62,6 +62,16 @@ def model_tau_seconds(tau: object, period: float) -> float:
 
 def _generated(role: str, *parts: str) -> str:
     return "_model_" + role + "_" + sha256(canonical_json_v2_bytes(list(parts))).hexdigest()
+
+
+def _named_physical_elements(
+    interior: PhysicalInterior, ids: tuple[str, ...] = (), names: tuple[str, ...] = (),
+) -> Iterator[tuple[str, str]]:
+    for key, component in interior.components.items():
+        path, title = (*ids, key), (*names, component.name)
+        yield ".".join(path), ".".join(title)
+        if component.kind == "composite" and isinstance(component.interior, PhysicalInterior):
+            yield from _named_physical_elements(component.interior, path, title)
 
 
 @dataclass(frozen=True)
@@ -246,7 +256,7 @@ class _Lower:
                     raise self.problem(path, "component", "component is unavailable in this physical interior", id=name)
                 self.plugins.add(definition.owner)
                 if is_acausal_type(component.type, "BoundaryPort"):
-                    raise self.problem(path, "component", "declare conserving interfaces on the composite port list", id=name)
+                    raise self.problem(path, "component", BOUNDARY_PORT_PLACEMENT_REASON, id=name)
                 fields = self.parameters(component, path, name)
                 nodes[name] = ComponentSpec(type=component.type, revision=component.revision, params=fields)
             if component.attachments.sources or component.attachments.sinks:
@@ -390,6 +400,7 @@ class _Lower:
                     child = self.physical(component.interior, component.ports, scope, substeps=substeps)
                     report = compile_acausal_authoring_report(
                         child, node_path=list(scope), component_registry=self.components,
+                        element_names=dict(_named_physical_elements(component.interior)),
                     )
                     if issue := next((item for item in report.diagnostics if item.severity == "error"), None):
                         detail = issue.message

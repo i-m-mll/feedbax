@@ -12,7 +12,9 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.resolution import GraphParameterResolution
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.expression_values import DIMENSIONLESS, Dimensions, SignalSpace, ValueBase, ValueType
+from feedbax.contracts.expression_values import (
+    DIMENSIONLESS, Dimensions, Level, ScopedValue, SignalSpace, ValueBase, ValueType,
+)
 from feedbax.contracts.graph import StudioTaskDataSpec
 from feedbax.contracts.model_address import (
     ComponentPortAddress, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress, OutputBoundaryEnd,
@@ -71,6 +73,58 @@ class ModelSignalTable:
             )
 
         return tuple(leaf for leaves in self._ports.values() for leaf in leaves if output(leaf))
+
+
+@dataclass(frozen=True)
+class ModelMeasureScope:
+    names: tuple[ScopedValue, ...]
+    paths: dict[str, tuple[str, ...]]
+    leaves: dict[str, ResolvedSignalLeaf]
+
+
+def model_measure_scope(model: ModelDocument, signals: ModelSignalTable) -> ModelMeasureScope:
+    """Expose one name per readable output leaf, retaining IDs and display paths separately."""
+    owners: dict[tuple[str, ...], ModelDocument | CompositeComponent] = {(): model}
+    labels: dict[tuple[str, ...], tuple[str, ...]] = {(): ()}
+    names: list[ScopedValue] = []
+    paths: dict[str, tuple[str, ...]] = {}
+    leaves: dict[str, ResolvedSignalLeaf] = {}
+    used: set[str] = set()
+
+    def owner_at(scope: tuple[str, ...]) -> ModelDocument | CompositeComponent:
+        if scope not in owners:
+            parent = owner_at(scope[:-1])
+            owner = parent.interior.components[scope[-1]]
+            assert isinstance(owner, CompositeComponent)
+            owners[scope] = owner
+            labels[scope] = (*labels[scope[:-1]], owner.name)
+        return owners[scope]
+
+    ordered = sorted(signals.readable_leaves, key=lambda leaf: bool(
+        leaf.port.composites or isinstance(_port_element(leaf.port).end, ComponentPortAddress)
+    ))
+    for leaf in ordered:
+        if leaf.type is None:
+            continue
+        end = _port_element(leaf.port).end
+        scope = leaf.port.composites
+        owner = owner_at(scope)
+        prefix = labels[scope]
+        if isinstance(end, ComponentPortAddress):
+            prefix = (*prefix, owner.interior.components[end.component].name)
+        elif scope:
+            prefix = (*prefix, "Outputs")
+        path = (*prefix, leaf.name, *map(str, leaf.path))
+        address = leaf.address.to_text()
+        name = ".".join(path)
+        if name in used:
+            identity = ".".join((*scope, getattr(end, "component", end.port), end.port, *map(str, leaf.path)))
+            name = f"{name} [{identity}]"
+        used.add(name)
+        names.append(ScopedValue(id=address, name=name, type=leaf.type, level=Level.STEP))
+        paths[address] = path
+        leaves[address] = leaf
+    return ModelMeasureScope(tuple(names), paths, leaves)
 
 
 def boundary_signal_port(scope: tuple[str, ...], direction: str, port: str) -> ModelAddress:

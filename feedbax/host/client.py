@@ -363,6 +363,12 @@ class HostClient:
             "stopped_checkpoint", start_host=False, job_id=job_id, project=project, manifest_root=manifest_root,
         ))
 
+    def checkpoint_for_export(self, *, job_id: str, project: str, manifest_root: str, update: int) -> JsonObject | None:
+        return cast(JsonObject | None, self._call(
+            "checkpoint_for_export", start_host=False, job_id=job_id, project=project,
+            manifest_root=manifest_root, update=update,
+        ))
+
     def record_get(self, key: str) -> JsonObject | None:
         return cast(JsonObject | None, self._call("record_get", key=key))
 

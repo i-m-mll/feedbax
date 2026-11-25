@@ -45,6 +45,7 @@ import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
+type Relation = Extract<Change, { kind: 'relate' }>;
 /** The scope a change is made in. */
 export type TrialChangeScope = (change: Change) => StudioTrialAuthoringRequest['scope'] | undefined;
 /**
@@ -118,7 +119,8 @@ export function useTrialAuthoring(
     };
     return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) } };
   }, [data, authored, run]);
-  const commit: Commit | undefined = editable && run && query.data ? (name, change, removes) => {
+  /** Stores a change, answering with what the service made of it, or why the write was refused. */
+  const send = editable && run && query.data ? (name: string, change: Change, removes?: boolean) => {
     const committedFrom = document.activeElement;
     return editor.command(async (saved) => {
       const request = { revision: saved.revision, run, change, scope: scope(change) };
@@ -128,7 +130,7 @@ export function useTrialAuthoring(
         (answer) => answer.store_choices);
       if (!result) return undefined;
       if (result.files.length || result.created?.length) {
-        if (removes && !await confirmRemoval(filesRemoval(saved.project_id, saved.revision, result.files, editor.signal))) return;
+        if (removes && !await confirmRemoval(filesRemoval(saved.project_id, saved.revision, result.files, editor.signal))) return undefined;
         const documents = [result.model, result.task_document, result.objective_document];
         const stored = editor.storeEdit(name, result, {
           reviewedRevision: saved.revision,
@@ -143,10 +145,19 @@ export function useTrialAuthoring(
         // The commit settles once the view of what it stored is read, so its field never draws the value it replaced.
         await queryClient.prefetchQuery(trialAuthoringQuery(project, editor.getSnapshot().saved.revision, run));
       }
-      return undefined;
+      return result;
     }).catch(shownError);
   } : undefined;
-  return { view, error: query.error, retry: () => { void query.refetch(); }, commit };
+  const commit: Commit | undefined = send && (async (name, change, removes) => {
+    const answer = await send(name, change, removes);
+    return typeof answer === 'string' ? answer : undefined;
+  });
+  /** Writes the term on `first`, or relating it to `second`; answers with the new term's id, or why it was refused. */
+  const relate = send && (async (first: Relation['first'], second?: Relation['second']) => {
+    const answer = await send(studioName('relate'), { kind: 'relate', first, ...second && { second } });
+    return typeof answer === 'string' ? { refused: answer } : answer?.related_term ? { term: answer.related_term } : undefined;
+  });
+  return { view, error: query.error, retry: () => { void query.refetch(); }, commit, relate };
 }
 
 export function TrialTaskForm({ view, commit }: { view: TrialView; commit?: Commit }) {
@@ -321,7 +332,7 @@ function scoreOf(scores: TermScores, term: string) {
 export const weightAnchor = (term: string) => `objective:${term}:weight`;
 
 /** The anchor of a term's Measure, which a term just added puts the keyboard on. */
-const measureAnchor = (term: string) => `objective:${term}:measure`;
+export const measureAnchor = (term: string) => `objective:${term}:measure`;
 
 /** The runs the Objective is shown for: `selected` says the user chose them, whose swept values are marked as differing
  * from the step's; `values` are the chosen values of each sweep, and `choose` chooses one. */

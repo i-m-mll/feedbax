@@ -53,6 +53,8 @@ const shortcuts = {
   modelCut: primary('X'),
   modelPaste: primary('V'),
   leave: primary('ArrowUp'),
+  selectTool: { key: 'V' },
+  relate: { key: 'R' },
 } satisfies Partial<Record<StudioNameId, Shortcut>>;
 
 const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
@@ -93,7 +95,7 @@ const selectionCommands = new Set<StudioCommandId>([
 const viewCommands = new Set<StudioCommandId>([
   ...projectWindowViews, 'commandPalette', 'settings', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer',
   'showInspector', 'splitDetails', 'switchSlot', 'pin', 'back', 'forward', 'nextRegion', 'previousRegion', 'activity', 'problems',
-  'fitView', 'zoomIn', 'zoomOut', 'enter', 'leave',
+  'fitView', 'zoomIn', 'zoomOut', 'enter', 'leave', 'selectTool', 'relate',
 ]);
 
 function commandShortcut(id: StudioCommandId): Shortcut | undefined {

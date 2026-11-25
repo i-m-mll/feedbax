@@ -295,6 +295,7 @@ class ModelConnectionReviewRequest(ModelProjectionRequest):
 class ModelPortProjection(StrictModel):
     address: ModelAddress
     type: SignalType
+    readers: tuple[str, ...] = ()
 
 
 class ModelPhysicalPortProjection(StrictModel):
@@ -353,6 +354,7 @@ class ModelProjection(StrictModel):
     task_signals: tuple[ModelTaskSignal, ...] = ()
     task_inputs: tuple[ModelAddress, ...] = ()
     objective_ports: tuple[ModelAddress, ...] = ()
+    problems: tuple[ModelGraphProblem, ...] = ()
     resolved_model: ModelDocument | None = None
     base_differences: tuple[ModelStructuralDifference, ...] = ()
     value_differences: tuple[ModelStructuralDifference, ...] = ()
