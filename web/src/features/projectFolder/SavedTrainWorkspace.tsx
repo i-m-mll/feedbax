@@ -63,6 +63,7 @@ import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
 import { stepDocument } from './documentPayload';
+import type { SceneRelate } from '@/components/scene/SceneRegion';
 import { useManagedProjectDetails, useRecordedTerms, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
 import { drawnVariables } from './task/trialSample';
@@ -100,7 +101,7 @@ import {
   jsonPointerPath, StudioStepField, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
 import {
-  TrialSweepItems, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, type TrialRuns, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
+  TrialSweepItems, TrialObjectiveInspector, measureAnchor, TrialObjectiveOutline, TrialObjectiveTable, type TrialRuns, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
 } from './StudioTrialAuthoring';
 import { inGrid, TrialGridInspector } from './task/trialGrid';
@@ -744,8 +745,17 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       } },
     });
   }
+  const objectiveDocument = trial.view && (trial.view.objective_document ?? step?.id);
+  const relate: SceneRelate | undefined = step?.kind === 'train' && trial.relate && objectiveDocument &&
+    trial.view?.objective_source?.kind !== 'train' ? async (first, second) => {
+      const answer = await trial.relate!(first, second);
+      if (!answer || 'refused' in answer) return answer?.refused;
+      selectElement(elements, { document: objectiveDocument, element: { kind: 'named', id: answer.term, field: 'measure' } });
+      setFieldFocus({ key: crypto.randomUUID(), step: step.id, target: measureAnchor(answer.term) });
+      return undefined;
+    } : undefined;
   const detailInputs = {
-    editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
+    editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, relate,
     variantId: variant, evaluation: selectedEvaluation, sceneTrial: trialClock.scene, checkpoints: evaluationReplay.checkpoints,
     namedRun, documentScopes, planCurrent: plans.current, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm, askStore,
     drawerSections,
@@ -773,7 +783,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }
     const clocked = slot === clockSlot;
     return {
-      ...detailInputs, step: subject.step, stepId: subject.step.id, focus: null, selection: null, evaluation: subject.evaluation,
+      ...detailInputs, step: subject.step, stepId: subject.step.id, focus: null, selection: null, evaluation: subject.evaluation, relate: undefined,
       sceneTrial: clocked ? trialClock.scene : restTrial, checkpoints: clocked ? evaluationReplay.checkpoints : undefined,
       namedRun: undefined, documentScopes: { graph: undefined, task: undefined }, valueEditing: false, evaluateScope: undefined,
       stored: subject.stored, modelProblems: [], selectedSweepValues: new Map<string, Set<string>>(), fieldRows: undefined,
@@ -1980,8 +1990,18 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           if (view === 'model' || view === 'scene') {
             const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
             const picker = pickDocument('model', details[view].documentId, scope);
+            const first = selectedElements[0];
+            // A term the Scene's Relate wrote is selected there, and shown in its Inspector with its Measure focused.
+            const term = view === 'scene' && trial.view && first && !isModelAddress(first) && first.document === objectiveDocument &&
+              trial.view.objective?.terms?.some(({ id }) => id === first.element.id) ? first.element : undefined;
             return { ...details[view], picker: picker && { ...picker, refusal: picker.refusal ?? details[view].refusal },
-              header: details[view].path, body: withProblem(details[view].body) };
+              header: details[view].path, body: withProblem(details[view].body),
+              ...term && trial.view && { inspector: <FocusedFields className="contents"
+                request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
+                onFocused={() => setFieldFocus(undefined)}>
+                <TrialObjectiveInspector view={trial.view} commit={relate && trial.commit} selected={{ term: term.id, field: term.field }}
+                  shown={trialClock.trial} />
+              </FocusedFields> } };
           }
           if (!step) return { body: null };
           if (view === 'document') return { body: withProblem(report.body),

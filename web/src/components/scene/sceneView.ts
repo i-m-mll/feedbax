@@ -1,5 +1,6 @@
 import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
 import type { ElementAddress } from '@/features/projectWindow/elementSelection';
+import type { TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace } from '@/generated/studioContracts';
 import type { ScenePoint } from './planarProjection';
 
 /** A class of element the Scene draws, in Layers' order; Layers shows or hides each. */
@@ -44,12 +45,40 @@ export interface SceneGroup {
   readonly problem?: string;
 }
 
+/** A place an Objective term can be written on: an anchor of the Model, or a task variable or signal. */
+export type SceneEndPlace = TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace;
+
+/** A place Relate can start or end at, where it is at the playhead; one no signal reads says why it cannot. */
+export interface SceneEnd {
+  readonly key: string;
+  readonly name: string;
+  readonly place: SceneEndPlace;
+  readonly point: ScenePoint;
+  readonly reason?: string;
+}
+
+/** A term's relation, between its two ends at the playhead. */
+export interface SceneRelation {
+  readonly term: string;
+  readonly ends: readonly [ScenePoint, ScenePoint];
+}
+
+/** A term's lone place at the playhead. */
+export interface ScenePlace {
+  readonly term: string;
+  readonly point: ScenePoint;
+}
+
 export interface Scene {
   readonly groups: readonly SceneGroup[];
   /** The mechanisms at rest, drawn faint beneath a recorded pose. */
   readonly rest: readonly SceneShape[];
   /** Each recorded world-frame track, drawn as a path, the picked trial's last. */
   readonly tracks: readonly SceneTrack[];
+  readonly ends: readonly SceneEnd[];
+  /** The terms of the picked trial's Objective, drawn at the playhead. */
+  readonly relations: readonly SceneRelation[];
+  readonly places: readonly ScenePlace[];
   /** Under Mean, each condition's mean of each world-frame path, drawn over the tracks. */
   readonly means: readonly SceneMeanPath[];
 }
@@ -77,7 +106,7 @@ export interface SceneTrack {
   readonly picked: boolean;
 }
 
-export const emptyScene: Scene = { groups: [], rest: [], tracks: [], means: [] };
+export const emptyScene: Scene = { groups: [], rest: [], tracks: [], means: [], ends: [], relations: [], places: [] };
 
 export type SceneView =
   | { kind: 'drawn'; scene: Scene }
@@ -88,6 +117,9 @@ export type SceneView =
 export function sceneElements(scene: Scene) {
   return scene.groups.flatMap((group) => group.elements);
 }
+
+/** What a press on the Scene does: select an element, or relate places into an Objective term. */
+export type SceneTool = 'select' | 'relate';
 
 export interface SceneCamera {
   zoom: number;

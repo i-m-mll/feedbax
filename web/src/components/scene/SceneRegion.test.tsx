@@ -7,7 +7,7 @@ import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneContents } from './SceneRegion';
-import { fittedCamera, type Scene, type SceneElement, type SceneLayer, type SceneView } from './sceneView';
+import { fittedCamera, type Scene, type SceneElement, type SceneEnd, type SceneLayer, type SceneView } from './sceneView';
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -30,7 +30,7 @@ const scene: Scene = { groups: [{ key: elementKey(mechanism), address: mechanism
   element('upper', 'bodies', { kind: 'segment', points: [[0, 0], [0.2, 0.4]] }),
   element('shoulder', 'joints', { kind: 'point', point: [0, 0] }),
   element('flexor', 'muscles', { kind: 'path', points: [[0.05, 0], [0.15, 0.3]] }),
-] }], rest: [], tracks: [], means: [] };
+] }], rest: [], tracks: [], means: [], ends: [], relations: [], places: [] };
 
 const noLayersHidden = new Set<SceneLayer>();
 
@@ -78,4 +78,44 @@ describe('Scene regions', () => {
     expect(retry).toHaveBeenCalledOnce();
   });
 
+
+  // Catches a Relate that writes the wrong ends: a drag that does not end at the place it is released over, a fixed
+  // point placed elsewhere than where it is dropped, a click that relates two places, and an anchor no signal reads
+  // taken as an end.
+  it('relates the place a drag starts at to the place, or the world point, it ends at', () => {
+    const hand: SceneEnd = { key: 'hand', name: 'hand', point: [0, 0],
+      place: { kind: 'anchor', address: { composites: [], element: { kind: 'component', id: 'plant' } } } };
+    const target: SceneEnd = { key: 'target', name: 'target', point: [0.15, 0.3], place: { kind: 'variable', id: 'target' } };
+    const unread: SceneEnd = { ...hand, key: 'unread', name: 'elbow', point: [0.05, 0], reason: 'No signal reads elbow' };
+    const relate = vi.fn(async () => undefined);
+    vi.spyOn(SVGElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      { left: 0, top: 0, width: 860, height: 520, x: 0, y: 0, right: 860, bottom: 520, toJSON: () => ({}) });
+    Object.assign(Element.prototype, { setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture: () => true });
+    render(<SceneCanvas view={{ kind: 'drawn', scene: { ...scene, ends: [hand, target, unread] } }} selected={null} onSelect={vi.fn()}
+      camera={fittedCamera} onCameraChange={vi.fn()} hiddenLayers={noLayersHidden} tool="relate" onRelate={relate} />);
+    const canvas = screen.getByRole('group', { name: studioName('scene') });
+    const at = (end: SceneEnd) => {
+      const circle = canvas.querySelector(`[data-scene-end="${end.key}"] circle`)!;
+      return { clientX: Number(circle.getAttribute('cx')), clientY: Number(circle.getAttribute('cy')) };
+    };
+    const drag = (from: SceneEnd, to: { clientX: number; clientY: number }) => {
+      fireEvent.pointerDown(canvas.querySelector(`[data-scene-end="${from.key}"]`)!, { button: 0, pointerId: 1, ...at(from) });
+      fireEvent.pointerMove(canvas, { pointerId: 1, ...to });
+      fireEvent.pointerUp(canvas, { pointerId: 1, ...to });
+    };
+    drag(hand, at(target));
+    expect(relate).toHaveBeenLastCalledWith(hand.place, target.place);
+    const [, upperEnd] = [...canvas.querySelectorAll('[data-scene-layer="bodies"] circle')];
+    drag(target, { clientX: Number(upperEnd.getAttribute('cx')), clientY: Number(upperEnd.getAttribute('cy')) });
+    const [, dropped] = relate.mock.lastCall! as unknown as [unknown, { kind: string; position: [number, number] }];
+    expect(dropped.kind).toBe('point');
+    expect(dropped.position[0]).toBeCloseTo(0.2, 3);
+    expect(dropped.position[1]).toBeCloseTo(0.4, 3);
+    drag(hand, at(hand));
+    expect(relate).toHaveBeenLastCalledWith(hand.place, undefined);
+    relate.mockClear();
+    drag(unread, at(target));
+    drag(hand, at(unread));
+    expect(relate).not.toHaveBeenCalled();
+  });
 });

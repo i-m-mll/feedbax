@@ -1498,6 +1498,7 @@ class ProjectFolder:
         A document the edit creates gets the layout of its base, the edited layout when its base is the shown one.
         """
         from feedbax.contracts.model_edit import ModelEditAsked, ModelEditProblem, ModelEditState, ModelProjectionRequest, SetField
+        from feedbax.compiler.model_document import inspect_model_signals
         from feedbax.compiler.model_edit import ModelEditDraft, apply_model_edit
         from feedbax.compiler.model_ports import ModelRegistryPorts
         from feedbax.compiler.model_templates import instantiate_model_template
@@ -1532,6 +1533,10 @@ class ProjectFolder:
         )
         if isinstance(result, ModelEditProblem):
             return result
+        problems = result.problems
+        if result.state.document != state.document:
+            found = (*problems, *inspect_model_signals(result.state.document, components).problems)
+            problems = tuple({(item.address.to_text(), item.reason): item for item in found}.values())
         if body.store_choice is not None and result.state.document == state.document and not body.files:
             raise ProjectRevisionConflict("project", body.revision)
         if any(file.address.kind != "step" for file in body.files):
@@ -1592,7 +1597,7 @@ class ProjectFolder:
                 ), model_operation=True)
             if alone:
                 change = ModelEditChange(before, (payload, layout), model_edit_source(snapshot, body.document))
-        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created, result.problems, tuple(sweep_problems))
+        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created, problems, tuple(sweep_problems))
 
     def _write_model_change(
         self, snapshot: StudioProjectSnapshot, document: ProjectName,
