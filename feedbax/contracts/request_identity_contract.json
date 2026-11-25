@@ -189,6 +189,10 @@
         "absent": null
       }
     },
+    "feedbax.contracts.figure_document.ErrorBounds": {
+      "lower": {},
+      "upper": {}
+    },
     "feedbax.contracts.figure_document.FigureDocument": {
       "caption": {
         "absent": null
@@ -197,7 +201,10 @@
       "layers": {
         "families": [
           "feedbax.contracts.figure_document.BandLayer",
-          "feedbax.contracts.figure_document.LineLayer"
+          "feedbax.contracts.figure_document.LineLayer",
+          "feedbax.contracts.figure_document.PointsLayer",
+          "feedbax.contracts.figure_document.RuleLayer",
+          "feedbax.contracts.figure_document.SpanLayer"
         ]
       },
       "layout": {},
@@ -322,6 +329,148 @@
     "feedbax.contracts.figure_document.LineStyle": {
       "color": {
         "absent": null
+      },
+      "label": {
+        "absent": null
+      },
+      "line_dash": {
+        "absent": null,
+        "values": [
+          "dash",
+          "dashdot",
+          "dot",
+          "longdash",
+          "longdashdot",
+          "solid"
+        ]
+      },
+      "line_width": {
+        "absent": null
+      },
+      "showlegend": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.PointsEncodings": {
+      "error_y": {
+        "absent": null
+      },
+      "x": {},
+      "y": {}
+    },
+    "feedbax.contracts.figure_document.PointsLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "points"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.PointsStyle": {
+      "color": {
+        "absent": null
+      },
+      "label": {
+        "absent": null
+      },
+      "line_dash": {
+        "absent": null,
+        "values": [
+          "dash",
+          "dashdot",
+          "dot",
+          "longdash",
+          "longdashdot",
+          "solid"
+        ]
+      },
+      "line_width": {
+        "absent": null
+      },
+      "marker_size": {
+        "absent": null
+      },
+      "showlegend": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.RuleEncodings": {
+      "at": {},
+      "axis": {
+        "values": [
+          "x",
+          "y"
+        ]
+      }
+    },
+    "feedbax.contracts.figure_document.RuleLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "rule"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.SpanEncodings": {
+      "axis": {
+        "values": [
+          "x",
+          "y"
+        ]
+      },
+      "end": {},
+      "start": {}
+    },
+    "feedbax.contracts.figure_document.SpanLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "span"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.SpanStyle": {
+      "color": {
+        "absent": null
+      },
+      "fill_alpha": {
+        "absent": 0.15
       },
       "label": {
         "absent": null
