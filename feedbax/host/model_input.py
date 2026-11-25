@@ -163,4 +163,5 @@ def prepare_model_task(
         return model
     return PreparedModelTask(model, PreparedTrialExecution(
         model.executable, resolved.execution, resolved.objective, resolved.lowered, resolved.task_source, resolved.graph,
+        resolved.signal_scope,
     ))

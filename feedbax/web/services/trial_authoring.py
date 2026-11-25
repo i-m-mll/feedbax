@@ -16,6 +16,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import stored_parts
 from feedbax.contracts.studio_scope import StoreKind
 from feedbax.compiler.model_reset import ModelResetField
+from feedbax.compiler.model_signals import model_measure_scope
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
@@ -94,6 +95,7 @@ class _Projection:
     resets: tuple[ModelResetField, ...] = ()
     partial_task: TrialSource | None = None
     epoch_instances: tuple[StudioTrialEpochInstance, ...] = ()
+    output_paths: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _project(
@@ -147,7 +149,6 @@ def _project(
             fields.update(_unpaired_objective_sites(documents, signals))
         return _Projection(None, variables, signals, epochs, fields, problems, resets=tuple(resets))
     source = paired.task if paired is not None else partial.task
-    outputs = paired.model.outputs if paired is not None else partial.outputs
     variables, signals = source.interface.variables, source.interface.signals
     names = {epoch.id: epoch.name for epoch in epochs}
     epoch_instances = tuple(
@@ -158,7 +159,13 @@ def _project(
         StudioTrialEpoch(id=instance.id, name=instance.name, steps=instance.steps)
         for instance in {item.id: item for item in epoch_instances}.values()
     )
+    output_paths = {}
     if documents.objective is not None:
+        if paired is not None:
+            measures = model_measure_scope(documents.model, paired.model.signals)
+            outputs, output_paths = measures.names, measures.paths
+        else:
+            outputs = partial.outputs
         objective_sites = {} if show_objective else None
         objective = compile_objective(
             documents.objective, (*outputs, *variables, *signals), bundle.expression_functions,
@@ -171,7 +178,7 @@ def _project(
                               for problem in objective)
     return _Projection(
         paired, variables, signals, epochs, fields, problems, resets=tuple(resets),
-        partial_task=source if paired is None else None, epoch_instances=epoch_instances,
+        partial_task=source if paired is None else None, epoch_instances=epoch_instances, output_paths=output_paths,
     )
 
 
@@ -1214,7 +1221,7 @@ def trial_authoring(
                     task_field_sources[target[-1]] = source
     row = next((item for item in plan.rows if item.key == key), None)
     output_paths = {_output_address(port.id).to_text(): (port.name,)
-                    for port in documents.model.ports.outputs}
+                    for port in documents.model.ports.outputs} | projected.output_paths
 
     def expression(path):
         document = _field_document(documents, path[0])
