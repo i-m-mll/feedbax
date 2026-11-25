@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
-import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot, StudioSavedTrainRuns } from '@/generated/studioContracts';
+import type { AuthoredFileAddress, ProjectValueEdit, StudioAuthoringCatalog, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { addressKey, applyAuthoredEdits, declarationAddress, presentationAddress } from './authoredEdits';
 import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport, type StoredEdit } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
@@ -207,7 +207,10 @@ it('creates a Synthesize step whose payload names its documents and method, with
     } },
   });
   const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(initial);
-  await createSynthesize(editor, initial.revision, 'feedbax.constant_parameters');
+  const catalog = { registries: { synthesis_methods: { entries: [
+    { key: 'feedbax.constant_parameters', label: 'Constant parameters', settings_schema: {} },
+  ], origins: {} } } } as unknown as StudioAuthoringCatalog;
+  await createSynthesize(editor, initial.revision, catalog);
   expect(create).toHaveBeenCalledWith('New Step', [{ kind: 'step', id: 'synthesize-2', step: {
     kind: 'synthesize', base: { inline: {
       model: { document: 'a-model' }, task: { document: 'a-task' }, objective: { document: 'an-objective' },

@@ -5,7 +5,7 @@ import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSaved
 import { isRefusal, isServiceFailure, isUnanswered, landsOnGesture } from '@/api/request';
 import { isStudioDefect, shownError } from '@/api/shownErrors';
 import {
-  catalogEntries, prepareCheckpointRuleEdit, prepareSubsetToRows, prepareTrainStart, useAuthoringCatalog,
+  authoringCatalogQuery, prepareCheckpointRuleEdit, prepareSubsetToRows, prepareTrainStart, useAuthoringCatalog,
 } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
@@ -267,7 +267,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [machines, setMachines] = useState<Readonly<Record<string, string>>>({});
   const authoringCatalog = useAuthoringCatalog().data;
   const stepInputs = authoringCatalog?.step_inputs;
-  const synthesisMethod = catalogEntries(authoringCatalog, 'synthesis_methods')[0]?.key;
   const [machineQuote, setMachineQuote] = useState<StudioMachineQuote>();
   const [rename, setRename] = useState<{ name: string; revision: string }>();
   const projectNameProblemId = useId();
@@ -1609,10 +1608,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           const id = await createTrain(editor, revision);
           commandScope.selectCreatedStep(id, 'model');
         }),
-        ...synthesisMethod && { synthesize: () => void perform(async () => {
-          const id = await createSynthesize(editor, revision, synthesisMethod);
+        synthesize: () => void perform(async () => {
+          const id = await createSynthesize(editor, revision, await queries.ensureQueryData(authoringCatalogQuery));
           commandScope.selectCreatedStep(id, 'model');
-        }) },
+        }),
       }, enabled: applies };
     }
     const sourceStep = plan.steps.find(({ id }) => id === source.stepId);

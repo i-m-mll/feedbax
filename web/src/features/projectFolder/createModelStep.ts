@@ -1,7 +1,9 @@
 import { studioName } from '@/components/activity/studioVocabulary';
 import {
-  firstTrainTask, type Document, type JsonValue, type StudioProjectCreateFile, type StudioProjectSnapshot,
+  firstTrainTask, type Document, type JsonValue, type StudioAuthoringCatalog, type StudioProjectCreateFile,
+  type StudioProjectSnapshot,
 } from '@/generated/studioContracts';
+import { catalogEntries } from '@/api/studioAuthoring';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { blankDocuments, namedDocument } from './useProjectDocuments';
 import { trainingDocumentKeys } from './trainingDocument';
@@ -70,8 +72,13 @@ export async function createTrain(editor: ProjectEditController, reviewedRevisio
   return id;
 }
 
-/** Create a Synthesize step by `method` on the project's Model, Task and Objective, creating those that are missing. */
-export async function createSynthesize(editor: ProjectEditController, reviewedRevision: string, method: string) {
+/**
+ * Create a Synthesize step on the project's Model, Task and Objective, creating those that are missing, by the first
+ * synthesis method the catalog registers.
+ */
+export async function createSynthesize(editor: ProjectEditController, reviewedRevision: string, catalog: StudioAuthoringCatalog) {
+  const method = catalogEntries(catalog, 'synthesis_methods')[0]?.key;
+  if (!method) throw new Error('No synthesis method is registered.');
   const saved = reviewed(editor, reviewedRevision);
   const files: StudioProjectCreateFile['file'][] = [];
   const trial = trialDocuments(saved, documentBinder(saved, files));
