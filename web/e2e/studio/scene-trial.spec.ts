@@ -148,8 +148,8 @@ const meanPathCount = (mean: TrialMean) => mean.conditions
 // Catches Mean that does not reach the Service's Mean, a Scene that draws no mean path or spread per condition or
 // still poses the mechanism, a clock that stays on the trial's own time rather than Align's or does not reach the
 // earliest aligned trial, a mean path that is not the mean of the trials aligned to Align's epoch, By that does not
-// change the conditions, a By menu that Escape or opening Align leaves open, Align's label drawn over its value, and a
-// clock that overflows the bottom bar of a narrow window.
+// change the conditions, a By menu that Escape or opening Align leaves open, Align's label drawn over its value, a
+// clock that overflows the bottom bar of a narrow window, and an Evaluate bar whose buttons share the scrubber's line.
 test('Mean by condition aligned to an epoch draws one mean path with its spread per condition, on time from that epoch', { tag: '@round' }, async ({ page, studio }) => {
   test.setTimeout(80_000);
   await doneEvaluationScene(page, studio.home, 'seed-mean-conditions', 'scene-mean');
@@ -212,7 +212,11 @@ test('Mean by condition aligned to an epoch draws one mean path with its spread 
   expect(label.x + label.width).toBeLessThanOrEqual(value.x);
   await page.setViewportSize({ width: 900, height: 800 });
   await expect.poll(() => clock.evaluate((group) => [...group.querySelectorAll('*')]
-    .filter((node) => node.getBoundingClientRect().right > group.getBoundingClientRect().right + 0.5).length)).toBe(0);
+    .filter((node) => node.getBoundingClientRect().right > group.closest('footer')!.getBoundingClientRect().right + 0.5).length)).toBe(0);
+  const track = (await clock.locator('[data-clock-track]').boundingBox())!;
+  for (const button of await footer(page).getByRole('button').all()) {
+    expect((await button.boundingBox())!.y).toBeGreaterThanOrEqual(track.y + track.height);
+  }
 });
 
 // Catches a figure pane that draws its saved product under Mean, or asks for a Mean other than the clock's, a By menu
