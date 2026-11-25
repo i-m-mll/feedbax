@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Set
+from collections.abc import Iterator, Mapping, Set
 from dataclasses import dataclass
 from enum import Enum
 from typing import NamedTuple
@@ -13,14 +13,18 @@ import jax.numpy as jnp
 
 from feedbax.contracts.expression_values import (
     TIME,
+    Expression,
     Level,
+    NameValue,
     Problem,
     ProblemCode,
     ScopedValue,
     Site,
     ValueBase,
     ValueType,
+    walk,
 )
+from feedbax.contracts.model_address import FieldElement, ModelAddress, OutputBoundaryEnd, PortElement
 from feedbax.contracts.objective_document import (
     ObjectiveDocument as ObjectiveDocument,
     ObjectiveTerm as ObjectiveTerm,
@@ -341,6 +345,14 @@ def compile_objective(
             continue
         measure_refs = references(term.measure)
         weight_refs = references(term.weight)
+        if (missing_measure := measure_refs - measure_ids) or (weight_refs - weight_ids):
+            unpaired = (
+                *_unpaired_operands(term.measure, missing_measure, (*path, "measure")),
+                *_unpaired_operands(term.weight, weight_refs - weight_ids, (*path, "weight")),
+            )
+            if unpaired:
+                problems.extend(unpaired)
+                continue
         absent = set(term.epochs) - epoch_ids
         if use in (ObjectiveUse.INHERITED, ObjectiveUse.PREVIEW) and (
             absent or measure_refs - measure_ids or weight_refs - weight_ids
@@ -411,3 +423,24 @@ def compile_objective(
         period,
         task.n_steps,
     )
+
+
+def _unpaired_operands(
+    expression: Expression, missing: frozenset[str], path: tuple[str | int, ...],
+) -> Iterator[Problem]:
+    if not missing:
+        return
+    for location, node in walk(expression):
+        if not isinstance(node, NameValue) or node.reference not in missing or not node.reference.startswith("{"):
+            continue
+        try:
+            address = ModelAddress.from_text(node.reference)
+        except ValueError:
+            continue
+        element = address.element.parent if isinstance(address.element, FieldElement) else address.element
+        if not address.composites and isinstance(element, PortElement) and isinstance(element.end, OutputBoundaryEnd):
+            continue
+        yield Problem(
+            code=ProblemCode.OUT_OF_SCOPE, path=(*path, *location), model_address=address,
+            reason="This operand reads an interior signal that is unavailable in the paired Model.",
+        )

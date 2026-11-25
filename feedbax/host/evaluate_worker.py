@@ -346,6 +346,7 @@ def rollout_dataset(
     labels = {epoch.id: epoch.name for epoch in document.epochs} if document is not None else {}
     trial_fields, trial_coordinates, record_layout = trial_dataset_fields(
         paired.execution.task, evaluated, layout, leading=leading, labels=labels, document=document,
+        observation_origins=paired.execution.observation_origins,
     )
     variables.update(trial_fields)
     state_coordinates.update(trial_coordinates)

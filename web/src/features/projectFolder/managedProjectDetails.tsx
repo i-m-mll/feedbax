@@ -7,15 +7,15 @@ import { fetchSavedEvaluationReplay } from '@/api/jobs';
 import type { MapDocumentScope } from '@/components/pipeline/StudioPipelineMap';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands } from '@/components/canvas/StudioCanvas';
-import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneContents } from '@/components/scene/SceneRegion';
+import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, SceneTools, sceneContents, type SceneRelate } from '@/components/scene/SceneRegion';
 import { recordedStates, trialScene, type SceneTrial, type StateValues } from '@/components/scene/trialScene';
-import { emptyScene, fittedCamera, sceneElements, zoomScene, type Scene, type SceneCamera, type SceneLayer, type SceneView } from '@/components/scene/sceneView';
+import { emptyScene, fittedCamera, sceneElements, zoomScene, type Scene, type SceneCamera, type SceneLayer, type SceneTool, type SceneView } from '@/components/scene/sceneView';
 import { useSceneGeometry } from '@/components/scene/useSceneGeometry';
 import { isHttpConflict } from '@/api/request';
 import { studioRegionIssue, type StudioRegionIssue } from '@/components/activity/StudioRegion';
 import type { PlanStepView, RunAddress } from '@/features/pipeline/planView';
 import type { PipelineSelection } from '@/features/pipeline/selection';
-import type { StudioCommand } from '@/features/projectWindow/studioCommands';
+import { bindStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   DocumentReferenceSchema, ModelDocumentSchema,
   type EvaluateModelRequest, type ModelDocument, type StudioSavedEvaluationRow,
@@ -66,6 +66,8 @@ interface DetailInputs {
   readonly evaluation?: StudioSavedEvaluationRow;
   /** What the clock gives the Scene to draw. */
   readonly sceneTrial: SceneTrial;
+  /** Writes an Objective term from the Scene's places, where the step's Objective can be edited. */
+  readonly relate?: SceneRelate;
   /** The recorded checkpoints the Scene's trials can be read at, when there is a choice. */
   readonly checkpoints: ReturnType<typeof useSavedEvaluationScene>['checkpoints'];
   readonly namedRun?: StudioSavedTrainKey;
@@ -90,8 +92,6 @@ interface DetailInputs {
   readonly drawerSections: DrawerSections;
   readonly openModelProblems?: (element: ModelAddress, opener: HTMLElement) => void;
   readonly exceptions?: ExceptionMentions;
-  /** Writes a term on a Model port into the step's Objective; answers with a refusal. */
-  readonly relate?: (address: ModelAddress) => Promise<string | undefined>;
 }
 
 const rootModelPath: string[] = [];
@@ -189,15 +189,17 @@ export function useRecordedTerms(projectId: string, revision: string, evaluation
 /** The Scene's part of the window's selection: the key of the selected element the Scene draws, a field as its element. */
 function useSceneSelection(elements: ElementSelectionStore, scene: Scene | null) {
   const first = useStore(elements, (current) => current.selection[0]);
+  const named = first && !isModelAddress(first) ? first.element.id : undefined;
   const key = first && elementKey(isModelAddress(first) ? { ...first, address: selectedElement(first.address) } : first);
   const drawn = scene && (sceneElements(scene).some((element) => element.key === key) || scene.groups.some((group) => group.key === key));
   return {
     selected: drawn ? key! : null,
     onSelect: (address: ElementAddress | null) => elements.setState({ selection: address ? [address] : [] }),
+    selectedTerm: named,
   };
 }
 
-function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements, drawerSections }: DetailInputs,
+function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements, drawerSections, relate }: DetailInputs,
   model: StoredModel | undefined, scope: string, projectId: string, revision: string): ManagedProjectDetail {
   const visible = activeView === 'scene';
   const source = model && visible ? { document_id: model.id, revision } : null;
@@ -213,6 +215,12 @@ function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements,
   const camera = cameraState?.scope === sceneScope ? cameraState.value : fittedCamera;
   const onCameraChange = (value: SceneCamera) => setCamera({ scope: sceneScope, value });
   const hiddenLayers = layerState?.scope === sceneScope ? layerState.value : shownLayers;
+  const [chosenTool, setTool] = useState<SceneTool>('select');
+  const tool = relate ? chosenTool : 'select';
+  const tools = relate && {
+    select: bindStudioCommand('selectTool', () => setTool('select')),
+    relate: bindStudioCommand('relate', () => setTool('relate')),
+  };
   const scene = useMemo(() => posed?.kind === 'ready' ? trialScene({
     posed: posed.geometry, rest: rest?.kind === 'ready' ? rest.geometry : undefined, task, picked, possible, frame, trails,
   }) : null, [posed, rest, task, picked, possible, frame, trails]);
@@ -231,19 +239,21 @@ function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements,
   }), contents.navigable);
   return {
     documentId: model?.id,
-    commands: viewport,
-    body: source ? <CanvasStrip viewport={viewport} tools={<SceneLayers layers={contents.layers}
+    commands: tools ? [tools.select, tools.relate, ...viewport] : viewport,
+    body: source ? <CanvasStrip viewport={viewport} tools={<>{tools && <SceneTools tool={tool} commands={tools} />}<SceneLayers layers={contents.layers}
       hidden={hiddenLayers} onToggle={(layer) => {
         const next = new Set(hiddenLayers);
         if (next.has(layer)) next.delete(layer);
         else next.add(layer);
         setLayers({ scope: sceneScope, value: next });
-      }} />}>
+      }} /></>}>
       <div className="min-h-0 flex-1">
-        <SceneCanvas view={view} camera={camera} onCameraChange={onCameraChange} hiddenLayers={hiddenLayers} fitToSlot {...selection} />
+        <SceneCanvas view={view} camera={camera} onCameraChange={onCameraChange} hiddenLayers={hiddenLayers} fitToSlot tool={tool}
+          onRelate={relate} {...selection} />
       </div>
     </CanvasStrip> : null,
-    drawer: (scene || checkpoints) && <SceneDrawer sections={drawerSections} scene={scene ?? emptyScene} checkpoints={checkpoints} {...selection} />,
+    drawer: (scene || checkpoints) && <SceneDrawer sections={drawerSections} scene={scene ?? emptyScene} checkpoints={checkpoints}
+      selected={selection.selected} onSelect={selection.onSelect} />,
     inspector: scene && selection.selected ? <SceneElementInspector scene={scene} selected={selection.selected} /> : null,
   };
 }
@@ -295,7 +305,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
           : canEdit || selection?.kind === 'values' || selection?.kind === 'rows')
     )),
     projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
-    relate: input.step?.kind === 'train' && input.namedRun ? input.relate : undefined,
+    relate: input.relate && ((address) => input.relate!({ kind: 'port', address })),
     topologyApplies,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,

@@ -1025,9 +1025,9 @@ export interface ModelConnectionReviewRequest {
   document: string;
   rows?: string[];
   axes?: Record<string, string[]>;
+  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
   graph: ModelAddress;
   source: ComponentPortEnd | InputBoundaryEnd | TaskSignalSource;
-  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
   grow_source?: boolean;
 }
 
@@ -1106,7 +1106,6 @@ export interface ModelProjection {
   physical_ports?: ModelPhysicalPortProjection[];
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelAddress[];
-  objective_ports?: ModelAddress[];
   problems?: ModelGraphProblem[];
   resolved_model?: ModelDocument | null;
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
@@ -1120,6 +1119,7 @@ export interface ModelProjectionRequest {
   document: string;
   rows?: string[];
   axes?: Record<string, string[]>;
+  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
 }
 
 export interface ModelTaskSignal {
@@ -2326,6 +2326,7 @@ export interface TrialRecord {
   terms?: Record<string, TrialTerm>;
   states?: Record<string, TrialStateTrack>;
   configurations?: Record<string, JsonValue>;
+  observations?: Record<string, JsonValue>;
 }
 
 export interface TrialStateTrack {
@@ -7600,9 +7601,9 @@ export const ModelConnectionReviewRequestSchema: z.ZodType<ModelConnectionReview
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
+      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
       "graph": ModelAddressSchema,
       "source": z.union([z.union([ComponentPortEndSchema, InputBoundaryEndSchema]), TaskSignalSourceSchema]),
-      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
       "grow_source": z.boolean().optional(),
     })
     .strict()
@@ -7733,7 +7734,6 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "physical_ports": z.array(ModelPhysicalPortProjectionSchema).optional(),
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
       "task_inputs": z.array(ModelAddressSchema).optional(),
-      "objective_ports": z.array(ModelAddressSchema).optional(),
       "problems": z.array(ModelGraphProblemSchema).optional(),
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
@@ -7751,6 +7751,7 @@ export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
+      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjectionRequest>;
@@ -9850,6 +9851,7 @@ export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
       "terms": z.record(z.string(), TrialTermSchema).optional(),
       "states": z.record(z.string(), TrialStateTrackSchema).optional(),
       "configurations": z.record(z.string(), jsonValueSchema).optional(),
+      "observations": z.record(z.string(), jsonValueSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialRecord>;
