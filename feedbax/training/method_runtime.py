@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 
+from feedbax.contracts.expression_values import ValueBase
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
@@ -122,11 +123,20 @@ class TrainingContext[S: BaseModel]:
     _batch_size: int
 
     def sample_trials(
-        self, count: int | None = None, *, key: jax.Array | None = None,
+        self, count: int | None = None, *, key: jax.Array | None = None, set_fields: bool = True,
     ) -> tuple[Trial | PendingTrial, jax.Array]:
-        """Sample a batch whose trials and keys can be reused in several rollouts."""
+        """Sample a batch, optionally setting every Set field to its None entry."""
+        parameters = self._parameters
+        interface = self._execution.task.interface
+        if not set_fields and interface.set_choices:
+            set_ids = {identifier for identifier, _ in interface.set_choices}
+            pins = {
+                field.id: jnp.asarray(False if field.type.base == ValueBase.BOOLEAN else 0)
+                for field in interface.variables if field.id in set_ids
+            }
+            parameters = parameters._replace(variables={**(parameters.variables or {}), **pins})
         return self._execution.sample_trials(
-            self._parameters, run_key=self.run_key,
+            parameters, run_key=self.run_key,
             update_key=derive_key(self.key, "task-trials") if key is None else key,
             count=self._batch_size if count is None else count,
         )

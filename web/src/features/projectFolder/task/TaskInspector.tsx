@@ -62,9 +62,9 @@ export function TaskInspector({ view, selected, shown }: { view: TaskDocumentVie
         : `${round(value)} ${studioUnit('second')}`;
       return <Inspector name={<span className="font-mono">{epoch.name}</span>} type={studioName(selected.kind === 'end' ? 'end' : 'epoch')}>
         <ValueField model={epoch.end} />
-        <Fact label={studioName('length')}>
+        {epoch.bounds.ends !== 'length' && !epoch.end.reason && <Fact label={studioName('length')}>
           {least === greatest ? span(nominal) : `${span(least)} – ${span(greatest)}`}
-        </Fact>
+        </Fact>}
       </Inspector>;
     }
     case 'signal': case 'cell': {

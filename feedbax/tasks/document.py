@@ -37,6 +37,7 @@ from feedbax.contracts.task_document import (
     EpochEnd as EpochEnd,
     EpochSteps,
     Rest,
+    SetVariableChoices,
     Until,
     Link as Link,
     Signal as Signal,
@@ -64,6 +65,7 @@ class TaskInterface:
     links: tuple[tuple[str, str], ...]
     model_outputs: tuple[ScopedValue, ...] = ()
     epoch_conditions: tuple[tuple[str, str], ...] = ()
+    set_choices: tuple[tuple[str, SetVariableChoices], ...] = ()
 
 
 class Trial(NamedTuple):
@@ -1083,8 +1085,11 @@ def compile_task(
     )) & model_scope.keys()
     outputs = tuple(output for output in model.outputs if output.id in used_outputs)
     epoch_conditions = tuple((epoch.id, epoch.name) for epoch in document.epochs if isinstance(epoch.end, Until))
+    set_choices = tuple((item.id, item.set_choices) for item in document.variables if item.set_choices is not None)
     return DocumentTask(
-        TaskInterface(tuple(scope.values()), tuple(declared_signals), tuple(links.items()), outputs, epoch_conditions),
+        TaskInterface(
+            tuple(scope.values()), tuple(declared_signals), tuple(links.items()), outputs, epoch_conditions, set_choices,
+        ),
         n_steps,
         period,
         instance_ids,
