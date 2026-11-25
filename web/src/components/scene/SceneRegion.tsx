@@ -10,6 +10,7 @@ import { ValueField } from '@/components/values/ValueField';
 import { rawField } from '@/components/values/adapters/raw';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { ElementAddress } from '@/features/projectWindow/elementSelection';
+import type { StudioRelatePort } from '@/generated/studioContracts';
 import { Menu, MenuCheckboxItem, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { Select } from '@/components/ui/Select';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
@@ -104,8 +105,11 @@ function ElementDrawing({ element, active, project }: {
 /** Where a Relate ends besides another place: a fixed point of the world. */
 export type SceneRelateEnd = SceneEndPlace | { kind: 'point'; position: ScenePoint };
 
-/** Writes the term relating `first` to `second`, or on `first` alone; answers why when the edit is refused. */
-export type SceneRelate = (first: SceneEndPlace, second?: SceneRelateEnd) => Promise<string | undefined>;
+/**
+ * Writes the term relating `first` to `second`, or on `first` alone, a Scene place or a Model port; answers why when the
+ * edit is refused.
+ */
+export type SceneRelate = (first: SceneEndPlace | StudioRelatePort, second?: SceneRelateEnd) => Promise<string | undefined>;
 
 type SceneDrawingProps = SceneSelection & {
   camera: SceneCamera;

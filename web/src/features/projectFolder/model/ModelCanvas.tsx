@@ -21,7 +21,7 @@ import type { Point } from '@/components/ui/pointerPress';
 import type { LibraryItem } from '@/features/projectWindow/LibraryList';
 import { ChangeMark, type ChangeMarkProps } from '@/components/ui/ChangeMark';
 import { TextField } from '@/components/ui/TextField';
-import { portId, portTypeLabel, type Port } from './modelGraph';
+import { portId, portTypeLabel, portTypeName, type Port } from './modelGraph';
 import type { ModelLocation } from '@/features/projectWindow/elementSelection';
 import './modelCanvas.css';
 
@@ -65,6 +65,8 @@ export type ModelCardData = {
   headline?: string;
   /** Opens, at the empty handle, the list of signals outside that can be brought in as a new port. */
   addPort?: (anchor: DOMRect) => void;
+  /** Writes an Objective term on `port`, for a port a term can read. */
+  addTerm?: (port: Port) => (() => void) | undefined;
 };
 export type ModelCard = Node<ModelCardData, 'modelCard'>;
 export type ModelEdgeData = {
@@ -169,6 +171,8 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
       const physical = port.direction === 'physical';
       const interactive = !data.locked && !data.canPick;
       const connectable = interactive && (!physical || data.physicalConnections);
+      const addTerm = data.collapsed || data.canPick ? undefined : data.addTerm?.(port);
+      const typeName = portTypeName(port);
       return <div key={key} className="studio-model-port" data-collapsed={data.collapsed}
         data-direction={port.direction} data-side={location} data-hollow={!!port.taskSignal || !!port.growing}
         data-verdict={verdict}>
@@ -214,11 +218,15 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
             else if (!data.canPick) data.onPort(port);
           }} data-physical={physical} />
         {!data.collapsed && <span>{port.name}</span>}
+        {!data.collapsed && typeName && <span className="studio-model-port-type">{typeName}</span>}
+        {addTerm && <Button variant="bare" size="mark" className="studio-model-port-term nodrag nopan"
+          aria-label={studioAccessibleName('addTerm', port.name)} {...appTip(studioName('addTerm'))}
+          onClick={(event) => { event.stopPropagation(); addTerm(); }}>+</Button>}
         {!data.collapsed && port.mark && <span role="img" aria-label={studioName(port.mark)}
           {...appTip(studioName(port.mark))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
         {!data.collapsed && problem && <span role="img" aria-description={problem} aria-label={studioName('problems')}>◆</span>}
         {!data.collapsed && change && <ChangeMark className="nodrag nopan" {...change} />}
-        {!data.collapsed && reason && <span className="studio-model-port-reason" role="status">{reason}</span>}
+        {!data.collapsed && reason && verdict === 'refused' && <span className="studio-model-port-reason" role="status">{reason}</span>}
       </div>;
     })}
     {data.addPort && !data.collapsed && <div className="studio-model-port" data-hollow="true" data-side={data.flipped ? 'left' : 'right'}>
