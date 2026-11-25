@@ -64,6 +64,8 @@ HIGHEST: "highest"
         | unary
 ?unary: "-" unary -> negative
       | "+" unary -> positive
+      | power
+?power: indexed POW unary -> binary
       | indexed
 ?indexed: indexed "[" expr "]" -> index
         | atom
@@ -80,6 +82,7 @@ HIGHEST: "highest"
 CMP: "==" | "!=" | "<=" | ">=" | "<" | ">"
 ADD: "+" | "-" | "−"
 MUL: "*" | "/" | "·" | "%"
+POW: "**"
 NUMBER: /(?:[0-9]+(?:\.(?!\.)[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
 NAME: /NAME_PATTERN/
 UNIT: /UNIT_PATTERN/
@@ -95,6 +98,7 @@ _OPERATORS = {
     "·": "mul",
     "/": "div",
     "%": "mod",
+    "**": "pow",
     "==": "eq",
     "!=": "ne",
     "<": "lt",
@@ -491,7 +495,7 @@ _INFIX = {
 }
 """Each binary operator's precedence in the grammar, loosest first, and its spelling; a relation's operands are sums."""
 _PREFIX = {"not": (3, "not "), "neg": (7, "-"), "pos": (7, "+")}
-_UNARY, _INDEXED, _ATOM = 7, 8, 9
+_UNARY, _POWER, _INDEXED, _ATOM = 7, 8, 9, 10
 
 
 def _print(node: Expression, names: Mapping[str, str], least: int = 0) -> str:
@@ -519,6 +523,8 @@ def _printed(node: Expression, names: Mapping[str, str]) -> tuple[str, int]:
             if per == "run" or family not in _DRAW_SPELLINGS:
                 parts.append(f"per={per}")
             return f"{_DRAW_SPELLINGS.get(family, family)}({', '.join(parts)})", _ATOM
+        case CallValue(function="pow", args=(base, exponent), kwargs=kwargs) if not kwargs:
+            return f"{_print(base, names, _INDEXED)} ** {_print(exponent, names, _UNARY)}", _POWER
         case CallValue(function=function, args=(left, right), kwargs=kwargs) if function in _INFIX and not kwargs:
             precedence, symbol = _INFIX[function]
             first = precedence + 1 if precedence == _RELATION else precedence

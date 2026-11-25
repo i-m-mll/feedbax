@@ -169,8 +169,8 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
     assert ungrouped.state.document == model
 
     cycle = lower_model_document(grouped.state.document, registry).graph
-    first_cut = next(wire for wire in cycle.subgraphs[group].wires if wire.temporality == "recurrent")
-    first_cut.temporality = "instant"
+    first_cut = next(wire for wire in cycle.subgraphs[group].wires if wire.is_recurrent)
+    first_cut.recurrent_initializer = None
     upstream = next(wire for wire in cycle.wires if wire.source_node == flat.input_bindings["signal"][0])
     last = cycle.output_bindings["result"]
     upstream.source_node, upstream.source_port = last
@@ -1478,7 +1478,7 @@ def test_group_keeps_delay_on_a_crossing_gru_output():
     spec = decode_request(planned.requests[train.request_id], planned.documents.__getitem__).spec
     graph = _prepare_request(spec, registry).executable.resolved.graph
     resolved = graph.subgraphs["wrapper"].subgraphs["controller"]
-    (delay,) = [wire.recurrent_initializer for wire in resolved.wires if wire.temporality == "recurrent"]
+    (delay,) = [wire.recurrent_initializer for wire in resolved.wires if wire.is_recurrent]
     assert delay["shape"] == [controller["interior"]["components"]["cell"]["fields"]["hidden_size"]]
     assert delay["units"] == "1"
 

@@ -500,7 +500,6 @@ class _Lower:
             wires.append(WireSpec(
                 id=key, source_node=source[0], source_port=source[1],
                 target_node=target[0], target_port=target[1],
-                temporality="recurrent" if reset is not None else "instant",
                 recurrent_initializer=reset,
             ))
 
