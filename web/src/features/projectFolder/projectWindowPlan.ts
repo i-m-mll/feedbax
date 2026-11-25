@@ -451,7 +451,8 @@ export function projectWindowPlan(
     };
   });
   return {
-    steps,
+    // One order whichever source the steps come from, so the drawer and map do not reorder as the plan is read.
+    steps: steps.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true })),
     edges: (map?.edges ?? []).filter(({ from_key, to_key }) => from_key.variant === scope && to_key.variant === scope)
       .map(({ from_key, to_key }) => ({
         from: { stepId: from_key.step, runId: savedRunId(from_key) },
