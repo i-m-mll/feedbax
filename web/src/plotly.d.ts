@@ -29,4 +29,26 @@ declare module 'plotly.js-dist-min' {
   ): Promise<HTMLElement>;
 
   export function purge(root: HTMLElement): void;
+
+  export function restyle(root: HTMLElement, update: Record<string, unknown[]>, traces: number[]): Promise<HTMLElement>;
+
+  /** A drawn axis: its pixel offset and length in the plot, and its maps between data values and pixels from its offset. */
+  export interface FullAxis {
+    _offset: number;
+    _length: number;
+    l2p(value: number): number;
+    p2l(pixel: number): number;
+  }
+
+  export interface ClickPoint {
+    curveNumber: number;
+    y: unknown;
+  }
+
+  /** The plot element after `newPlot`, with the layout Plotly drew and its events. */
+  export interface PlotElement extends HTMLElement {
+    _fullLayout: Record<string, unknown>;
+    on(event: 'plotly_click', handler: (event: { points: ClickPoint[]; event: MouseEvent }) => void): void;
+    on(event: 'plotly_afterplot' | 'plotly_relayout', handler: () => void): void;
+  }
 }
