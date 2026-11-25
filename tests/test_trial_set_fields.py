@@ -2,14 +2,21 @@
 
 from dataclasses import replace
 
+import jax
 import jax.random as jr
 import numpy as np
 
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.application.composition import application_python_tasks
 from feedbax.component_registry import ComponentRegistry
-from feedbax.contracts.project import Project
+from feedbax.compiler.set_fields import lower_trial_sets
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.project import Project, RootDocument
+from feedbax.contracts.project_sweep import TrialSetField
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import TaskDocument
 from feedbax.execution.trial_resolution import (
     PreparedTrialExecution, PreviewTrialSource, compile_trial_execution, preview_trial_source,
 )
@@ -20,6 +27,120 @@ from feedbax.training.method_runtime import TrainingLoop, initialize_method
 from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from tests.test_document_train_pair import authored_documents, document_project
+
+
+def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
+    registry = ComponentRegistry()
+    functions, *_ = authored_documents()
+
+    def port(owner, id_, component=None):
+        return {"owner": owner, "port": id_} | ({"component": component} if component else {})
+
+    def wire(a, b):
+        return {"source": a, "target": b}
+
+    def address(kind, **fields):
+        return ModelAddress.model_validate({"composites": [], "element": {"kind": kind, **fields}}).to_text()
+
+    def choice(*values, unit=None):
+        return {"kind": "draw", "family": "choice", "args": [
+            {"kind": "literal", "value": value} | ({"unit": unit} if unit else {}) for value in values
+        ]}
+
+    command = port("component", "output", "drive")
+    effector = port("component", "effector", "plant")
+    model = ModelDocument.model_validate({
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [{"id": "drive", "name": "drive", "type": {"shape": [2]}}],
+            "outputs": [{"id": "force", "name": "force", "type": {"shape": [2]}},
+                        {"id": "effector", "name": "effector", "type": {}}],
+        },
+        "interior": {
+            "components": {
+                "drive": {"kind": "leaf", "name": "Drive", "type": "feedbax.Input"},
+                "plant": {"kind": "leaf", "name": "Plant", "type": "feedbax.PointMass"},
+            },
+            "wires": {
+                "input": wire(port("inputs", "drive"), port("component", "input", "drive")),
+                "force": wire(command, port("component", "force", "plant")),
+                "show-force": wire(command, port("outputs", "force")),
+                "motion": wire(effector, port("outputs", "effector")),
+            },
+        },
+    })
+    task = TaskDocument.model_validate({
+        "id": "trial", "variables": [],
+        "epochs": [{"id": "move", "name": "Move", "end": {"kind": "length", "length": {
+            "kind": "literal", "value": 10, "unit": "st",
+        }}}],
+        "signals": [{"id": "drive", "name": "drive", "type": {"base": "real", "shape": [2]},
+                     "cells": [{"id": "force", "first_epoch": "move", "last_epoch": "move", "value": {
+                         "kind": "call", "function": "vector",
+                         "args": [{"kind": "literal", "value": n} for n in (1.0, 0.0)],
+                     }}]}],
+    })
+    intervention = {"kind": "attachment", "id": "pulse", "parent": {"kind": "wire", "id": "input"}}
+    bank = RootDocument(schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"curl": {
+        "task_variables": [
+            {"id": "amp", "name": "Amplitude", "type": {"base": "real"}, "value": choice(1.0, 2.0)},
+            {"id": "onset", "name": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
+             "value": choice(0.02, 0.04, unit="s")},
+        ],
+        "task_links": [
+            {"variable": "amp", "model_field": address(
+                "field", parent={"kind": "component", "id": "curl"}, path=["fields", "scale"],
+            )},
+            {"variable": "onset", "model_field": address(
+                "field", parent=intervention, path=["window", "spans", 0, "start", "offset"],
+            )},
+        ],
+        "differences": {
+            "/interior/components/curl": {"value": {
+                "kind": "leaf", "name": "Curl", "type": "feedbax.CurlField", "fields": {"active": True},
+            }},
+            "/interior/wires/curl-input": {"value": wire(effector, port("component", "effector", "curl"))},
+            "/interior/wires/input/attachments": {"value": [{
+                "kind": "intervention", "id": "pulse", "operation": "add", "fields": {"value": {
+                    "kind": "name", "reference": address(
+                        "port", end=port("component", "force", "curl") | {"direction": "output"},
+                    ),
+                }},
+                "window": {"spans": [{
+                    "kind": "interval", "start": {
+                        "anchor": {"kind": "epoch", "epoch": "move", "edge": "start"},
+                        "offset": {"value": 0, "unit": "st"},
+                    }, "end": {"offset": {"value": 2, "unit": "st"}},
+                }]},
+            }]},
+        },
+    }}})
+    sampled = TrialSetField.model_validate({"axis": {"set": "bank"}, "sampling": {"kind": "weighted"}})
+    model, task = lower_trial_sets(model, task, {"bank": sampled}, {"bank": bank}.get, registry)
+    execution = compile_trial_execution(model, task, registry, functions, python_tasks=application_python_tasks())
+    assert isinstance(execution, PreparedTrialExecution), execution
+    parameters = TaskParameters()
+    trials, keys = execution.execution.sample_trials(parameters, run_key=jr.key(1), update_key=jr.key(2), count=16)
+    graph = execution.executable.graph
+
+    def rollout(trial, key):
+        inputs = {port: trial.inputs[signal] for port, signal in execution.execution.input_bindings}
+        reset = execution.execution.reset.prepare(graph, trial.inits, key=key, inputs=inputs)
+        return graph(inputs, reset.state, key=key, n_steps=10, cycle_init=reset.cycle_init)[0]
+
+    outputs = jax.vmap(rollout)(trials, keys)
+    velocity = np.asarray(outputs["effector"].vel)
+    input_velocity = np.concatenate((np.zeros_like(velocity[:, :1]), velocity[:, :-1]), axis=1)
+    names = {variable.name: variable.id for variable in task.variables}
+    amps = np.asarray(trials.variables[names["curl · Amplitude"]])
+    onset = np.rint(np.asarray(trials.variables[names["curl · Onset"]]) / 0.01).astype(int)
+    selected = np.asarray(trials.variables["bank"], dtype=bool)
+    assert set(onset) == {2, 4} and set(amps) == {1.0, 2.0} and set(selected) == {False, True}
+    steps = np.arange(10)
+    gate = selected[:, None] & (onset[:, None] <= steps) & (steps < onset[:, None] + 2)
+    curl = amps[:, None, None] * input_velocity[..., ::-1] * np.array([-1.0, 1.0])
+    expected = np.array([1.0, 0.0]) + np.where(gate[..., None], curl, 0.0)
+    np.testing.assert_allclose(outputs["force"], expected, atol=1e-6)
 
 
 def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
