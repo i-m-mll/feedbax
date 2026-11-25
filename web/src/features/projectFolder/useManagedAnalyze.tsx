@@ -23,7 +23,7 @@ import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
   type ParamSchema, type PresentationPosition, type StudioAnalyzeChange, type StudioProjectSnapshot,
-  type StudioSavedTrainKey, type StudioSavedTrainRuns, type SubsetTerms,
+  type StudioSavedTrainKey, type StudioSavedTrainRuns, type SubsetTerms, type TrialMeanSelection,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { ManagedDocumentCanvas, type CanvasNode } from './ManagedDocumentCanvas';
@@ -36,7 +36,7 @@ import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
 import { SelectionRule } from './SelectionRule';
 import { changedSelections, selectionProblems, stepSelections, withSubsetTerms } from './selectionEdits';
-import { InputEditor } from './InputEditor';
+import { documentBinding, InputEditor } from './InputEditor';
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
@@ -56,8 +56,10 @@ const figureItem = 'velocity_summary';
 const summaryTemplate = 'feedbax.VelocitySummary';
 
 export function useManagedAnalyze({
-  editor, key, projection, wholeStep, chosen, focusedView, reveal, savePosition, selection, sections, steps, failures, selectStep,
+  editor, key, projection, wholeStep, chosen, focusedView, reveal, savePosition, selection, sections, steps, failures, selectStep, mean,
 }: {
+  /** The clock's Mean, which every figure draws while it is picked. */
+  mean?: TrialMeanSelection;
   editor: ProjectEditController;
   /** The steps an edit of the shown document is made for, when other steps read it too; the step alone otherwise. */
   chosen?: ReadonlySet<string>;
@@ -411,9 +413,7 @@ export function useManagedAnalyze({
       }}
       onChange={canBind ? (gesture) => {
         if (gesture.kind === 'select') bind(selected, gesture.binding);
-        else if (gesture.kind === 'document') bind(selected, inputRole.documents[0] === 'task'
-          ? { kind: 'task', source: { document: gesture.document } }
-          : { kind: 'initial_model', source: { document: gesture.document } });
+        else if (gesture.kind === 'document') bind(selected, documentBinding(gesture.role, gesture.document));
       } : undefined} />}
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
@@ -512,7 +512,7 @@ export function useManagedAnalyze({
     },
     figures: { body: <>{figureList}
       {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
-        history={selectedPlan} name={selected} />}
+        history={selectedPlan} name={selected} project={saved.project_id} revision={saved.revision} mean={mean} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
     commands: document && focusedView === 'analysis' ? [addCommand, removeCommand, ...selectedCommands, ...viewport]
       : document && focusedView === 'figures' ? [addCommand, removeCommand, ...selectedCommands] : [],

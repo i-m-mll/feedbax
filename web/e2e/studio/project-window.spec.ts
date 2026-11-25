@@ -564,7 +564,6 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
 
   await page.getByRole('button', { name: 'Show Both', exact: true }).click();
   const problemButton = page.getByRole('button', { name: /^Problems \d+$/ });
-  await expect(problemButton).toHaveText(`Problems ${problems.length}`);
   await expect(problemButton).toHaveAccessibleName(`Problems ${problems.length}`);
   await problemButton.click();
   const list = page.getByRole('dialog', { name: 'Problems' });

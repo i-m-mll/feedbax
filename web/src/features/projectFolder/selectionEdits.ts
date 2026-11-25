@@ -4,7 +4,7 @@ import {
   type StudioSavedTrainKey, type SubsetTerms, type TextSpan,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
-import { savedRunId } from './projectWindowPlan';
+import { savedRunId, storedClauses } from './projectWindowPlan';
 
 /** The step selections an input binds: one reference is a list of one; a binding of anything else has none. */
 export function stepSelections(binding: InputBinding | null | undefined): StepReference[] | undefined {
@@ -75,7 +75,8 @@ export function replacedAxisValue(terms: SubsetTerms, value: SelectedAxisValuePr
   const values = clause[value.axis];
   const kept = values.flatMap((selected) => selected.id !== value.missing.id ? [selected]
     : values.some(({ id }) => id === chosen.id) ? [] : [chosen]);
-  return { ...terms, clauses: clauses.map((each, index) => index === value.clause_index ? { ...each, [value.axis]: kept } : each) };
+  return { ...terms, clauses: storedClauses(clauses.map((each, index) =>
+    index === value.clause_index ? { ...each, [value.axis]: kept } : each)) };
 }
 
 /** A selection's problems, each on the field its path names. */

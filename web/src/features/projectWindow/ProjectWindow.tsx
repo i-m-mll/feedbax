@@ -656,12 +656,16 @@ export function ProjectWindow({
 
 const loadingRegion = <StudioRegion state={{ kind: 'loading' }} />;
 
-/** The window before its project has loaded: its regions loading, its bottom bar reporting the connection. */
-export function PendingProjectWindow() {
+/**
+ * The window with no project: its regions loading while one is `pending`, else empty, and its bottom bar reporting
+ * the connection.
+ */
+export function ProjectlessWindow({ pending }: { pending: boolean }) {
   const [state, setState] = useState<ProjectWindowState>(defaultProjectWindowState);
+  const region = pending ? loadingRegion : null;
   return (
     <ProjectWindow state={state} onStateChange={setState} projectName="" views={noViews}
-      renderView={() => ({ body: loadingRegion })} map={loadingRegion} mapDrawer={loadingRegion}
-      compactMap={loadingRegion} commands={[]} />
+      renderView={() => ({ body: region })} map={region} mapDrawer={region}
+      compactMap={region} commands={[]} />
   );
 }

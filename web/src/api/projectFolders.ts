@@ -1,4 +1,4 @@
-import { asApiRequestError, requestJson, sentBody } from '@/api/request';
+import { asApiRequestError, requestJson, requestResponse, sentBody } from '@/api/request';
 import {
   parseContract,
   type ContractTypeMap,
@@ -8,6 +8,8 @@ import {
   type ModelFieldRequest,
   type ModelProjectionRequest,
   type ModelUndoRequest,
+  type StudioLoadedModelExportRequest,
+  type StudioLoadedModelImportQuery,
   type StudioMemberCommand,
   type StudioPresentationWrite,
   type StudioProjectCreateFile,
@@ -46,6 +48,25 @@ export async function listProjectFolders(signal?: AbortSignal) {
     return parseContract('StudioProjectList', await requestJson(projectsPath, { signal, cache: 'no-store' })).projects;
   } catch (error) {
     throw asApiRequestError(error, projectsPath);
+  }
+}
+
+export async function listProjectExamples(signal?: AbortSignal) {
+  const path = `${projectsPath}/examples`;
+  try {
+    return parseContract('StudioProjectExamples', await requestJson(path, { signal, cache: 'no-store' })).examples;
+  } catch (error) {
+    throw asApiRequestError(error, path);
+  }
+}
+
+/** Deletes the project folder of the listed `id`. */
+export async function deleteProjectFolder(id: string, signal?: AbortSignal) {
+  const path = projectPath(id);
+  try {
+    await requestResponse(path, { method: 'DELETE', signal });
+  } catch (error) {
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -154,3 +175,41 @@ export function readEvaluateModel(id: string, body: EvaluateModelRequest, signal
   return modelRequest(id, 'evaluate-model', 'EvaluateModelRequest', 'EvaluateModelState', body, signal);
 }
 
+
+/**
+ * Imports a model archive as a Loaded Model document named `query.name`, fitted to the Model `query.model`. A refusal
+ * the route reports in its result (the weights do not fit, the archive is unreadable) is an outcome, not an error.
+ */
+export async function importLoadedModel(id: string, query: StudioLoadedModelImportQuery, archive: Blob, signal?: AbortSignal) {
+  const path = `${projectPath(id)}/loaded-models/import?${new URLSearchParams(parseContract('StudioLoadedModelImportQuery', query))}`;
+  try {
+    const response = await requestResponse(path, {
+      method: 'POST', body: archive, signal, cache: 'no-store', headers: { 'Content-Type': 'application/octet-stream' },
+    }, [422]);
+    return parseContract('StudioLoadedModelImportResult', await response.json());
+  } catch (error) {
+    throw asApiRequestError(error, path);
+  }
+}
+
+/** The model a Train run's checkpoint holds, as an archive file and the name the service gives it. */
+export async function exportLoadedModel(id: string, body: StudioLoadedModelExportRequest, signal?: AbortSignal) {
+  const path = `${projectPath(id)}/loaded-models/export`;
+  try {
+    const response = await requestResponse(path, {
+      method: 'POST', body: sentBody('StudioLoadedModelExportRequest', body, path), signal, cache: 'no-store',
+    });
+    return { archive: await response.blob(), name: attachmentName(response.headers.get('Content-Disposition')) };
+  } catch (error) {
+    throw asApiRequestError(error, path);
+  }
+}
+
+/** The file name a `Content-Disposition: attachment` header gives. */
+export function attachmentName(disposition: string | null) {
+  const encoded = disposition?.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) return decodeURIComponent(encoded);
+  const plain = disposition?.match(/filename="?([^";]+)"?/i)?.[1];
+  if (!plain) throw new Error('The export names no file.');
+  return plain;
+}

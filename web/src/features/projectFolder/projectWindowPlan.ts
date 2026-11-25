@@ -61,17 +61,33 @@ export function selectedRowTerms(rows: readonly StudioProjectWindowMapRow[], pic
     product[axis] = [...chosen.values()].sort((left, right) => compareIds(left.id, right.id));
     outside = stillOutside;
   }
-  if (!outside.length) return Object.keys(product).length ? { clauses: [product] } : {};
+  if (!outside.length) return Object.keys(product).length ? { clauses: storedClauses([product]) } : {};
 
-  const clauses = new Map<string, AxisSelectionClause>();
-  for (const { values } of selected) {
-    const axes = Object.entries(values).sort(([left], [right]) => compareIds(left, right));
-    const clause = Object.fromEntries(axes.map(([axis, value]) => [axis, [pinValue(value)]]));
-    if (others.some(({ values }) => matches(values, clause))) return undefined;
-    const identity = JSON.stringify(axes.map(([axis, value]) => [axis, value.value_id]));
-    clauses.set(identity, clause);
-  }
-  return { clauses: [...clauses].sort(([left], [right]) => compareIds(left, right)).map(([, clause]) => clause) };
+  const clauses = selected.map(({ values }) =>
+    Object.fromEntries(Object.entries(values).map(([axis, value]) => [axis, [pinValue(value)]])));
+  if (clauses.some((clause) => others.some(({ values }) => matches(values, clause)))) return undefined;
+  return { clauses: storedClauses(clauses) };
+}
+
+/** The runs of `rows` a choice of clauses reads: those any clause matches on every axis it names. */
+export function clauseRuns(rows: readonly StudioProjectWindowMapRow[], clauses: readonly AxisSelectionClause[]): ReadonlySet<string> {
+  return new Set(rows.filter(({ coordinates, input_axes }) => clauses.some((clause) => Object.entries(clause).every(([axis, wanted]) =>
+    wanted.some(({ id }) => (input_axes?.[axis] ?? coordinates[axis])?.value_id === id)))).map(({ key }) => savedRunId(key)));
+}
+
+/** A clause in its stored order: axes by id, and each axis's values by id. */
+function canonicalClause(clause: AxisSelectionClause): AxisSelectionClause {
+  return Object.fromEntries(Object.keys(clause).sort(compareIds).map((axis) =>
+    [axis, [...clause[axis]].sort((left, right) => compareIds(left.id, right.id))]));
+}
+
+const clauseKey = (clause: AxisSelectionClause) =>
+  JSON.stringify(Object.entries(clause).map(([axis, values]) => [axis, values.map(({ id }) => id)]));
+
+/** Clauses as they are stored: each in canonical order, equal ones once, and in order of their axes' and values' ids. */
+export function storedClauses(clauses: readonly AxisSelectionClause[]): AxisSelectionClause[] {
+  const stored = new Map(clauses.map(canonicalClause).map((clause) => [clauseKey(clause), clause]));
+  return [...stored.keys()].sort(compareIds).map((key) => stored.get(key)!);
 }
 
 export function planVariants(saved: StudioSavedTrainRuns | undefined) {
@@ -83,11 +99,13 @@ export function bestRankGroups(subset: StudioProjectWindowMapSubset | null | und
   return subset?.ranks?.length ? [{ coordinates: {}, ranks: subset.ranks }] : [];
 }
 
+/** A clause as its line reads: each axis it constrains, with the values it wants. */
+export function clauseText(clause: AxisSelectionClause) {
+  return Object.entries(clause).map(([axis, values]) => `${axis}=${values.map(({ label }) => label).join(', ')}`).join(' ');
+}
+
 export function pinnedSelectionLabels(terms: SubsetTerms): string[] | undefined {
-  const clauses = (terms.clauses ?? []).flatMap((clause) => {
-    const axes = Object.entries(clause).map(([axis, values]) => `${axis}=${values.map(({ label }) => label).join(', ')}`);
-    return axes.length ? [axes.join(' ')] : [];
-  });
+  const clauses = (terms.clauses ?? []).flatMap((clause) => Object.keys(clause).length ? [clauseText(clause)] : []);
   return clauses.length ? clauses : terms.bound_ranks?.map(({ key }) => key);
 }
 

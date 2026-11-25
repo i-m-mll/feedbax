@@ -63,11 +63,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     page.on('request', (request) => {
       if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/projects') creates += 1;
     });
-    const creating = responseFor(page, '/api/projects');
-    await startProject(page);
-    const created = await creating;
-    expect(created.status()).toBe(201);
-    const { snapshot, configuration } = await created.json() as StudioProjectDocument;
+    const { snapshot, configuration } = await startProject(page);
     const id = snapshot.project_id;
     await expect(page).toHaveURL(new RegExp('project=' + id + '$'));
     const { projectPath } = await appendManagedFiles(request, snapshot, await fixture('ordinary-files', '1200'));
