@@ -1336,6 +1336,23 @@ def _trial_problems(
     return tuple(placed)
 
 
+def _set_condition_problems(problems: Iterable[RunProblem], origins: Mapping[str, str]) -> tuple[RunProblem, ...]:
+    """Report generated Task selection Problems on the authored Set condition."""
+    if not origins:
+        return tuple(problems)
+    placed = []
+    reported = set()
+    for problem in problems:
+        parts = json_pointer_parts(problem.path) if problem.path.startswith("/") else ()
+        if len(parts) > 3 and parts[:3] == ("trial_documents", "task", "variables") and (axis := origins.get(parts[3])):
+            if axis not in reported:
+                placed.append(replace(problem, path=pointer(("set_fields", axis, "condition"))))
+                reported.add(axis)
+        else:
+            placed.append(problem)
+    return tuple(placed)
+
+
 def _checkpoint_fit_problem(
     source: _TrainedSource, preparation: _TrainPreparation, spec: DocumentTrainingRequestSpec,
     components: ComponentRegistry,
@@ -2369,6 +2386,7 @@ class _Compiler:
                     None, (replace(source_problem, step=key.step, row=key.row, variant=key.variant),),
                     lowering_stamp, document_ids=document_ids, document_uses=document_uses,
                 )
+            condition_origins = {}
             if kind == "train":
                 trial = payload.get("trial_documents")
                 if (
@@ -2390,14 +2408,17 @@ class _Compiler:
                     trial = payload["trial_documents"]
                     try:
                         authored_task = TaskDocument.model_validate(trial.get("task"))
-                        model, task = lower_trial_sets(
+                        model, task, condition_origins = lower_trial_sets(
                             authored_model.model, authored_task, fields,
                             reader or self.variants[key.variant].documents.get,
+                            functions=self.functions or _builtin_expression_registry(),
                         )
                     except (SetFieldProblem, ValidationError) as error:
                         if isinstance(error, SetFieldProblem):
                             place = ("set_fields", error.axis)
-                            if error.entry is not None:
+                            if error.condition:
+                                place = (*place, "condition")
+                            elif error.entry is not None:
                                 place = (*place, "entries", error.entry)
                             problem = RunProblem(pointer(place), str(error))
                         else:
@@ -2463,7 +2484,9 @@ class _Compiler:
                 document_uses=document_uses,
                 model_source=lowered.model_source or authored_model,
                 train=train,
-                problems=self.locate_sweep_run_problems((*refusals, *lowered.problems), composition, key, row),
+                problems=self.locate_sweep_run_problems(
+                    (*refusals, *_set_condition_problems(lowered.problems, condition_origins)), composition, key, row,
+                ),
                 dataset_port=dataset_port,
             )
 

@@ -4,6 +4,7 @@ from dataclasses import replace
 
 import jax.random as jr
 import numpy as np
+import pytest
 
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.application.composition import application_python_tasks
@@ -20,6 +21,89 @@ from feedbax.training.method_runtime import TrainingLoop, initialize_method
 from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from tests.test_document_train_pair import authored_documents, document_project
+
+
+def _conditioned_project(sampling):
+    authored = authored_documents()
+    raw = document_project(authored)
+    task = raw["documents"]["task"]["payload"]
+    task["variables"].append({
+        "id": "trial-kind", "name": "trial_kind", "type": {"base": "integer"},
+        "value": {"kind": "draw", "family": "choice", "args": [
+            {"kind": "literal", "value": kind} for kind in range(3)
+        ]},
+    })
+    placements = {}
+    for kind, axis in enumerate(("reach", "hold")):
+        bank = f"{axis}-bank"
+        raw["documents"][bank] = {"schema": "feedbax.set_document.v1", "payload": {
+            "entries": {"first": {}, "second": {}},
+        }}
+        placements[axis] = {
+            "axis": {"set": bank}, "sampling": sampling,
+            "condition": {"kind": "call", "function": "eq", "args": [
+                {"kind": "name", "reference": "trial-kind"}, {"kind": "literal", "value": kind},
+            ]},
+        }
+    raw["steps"]["train"]["set_fields"] = placements
+    return authored[0], raw
+
+
+@pytest.mark.parametrize("sampling", [{"kind": "weighted", "none": 0}, {"kind": "cooccurring"}])
+def test_trial_set_conditions_select_none_and_preserve_the_eligible_draws(sampling):
+    functions, raw = _conditioned_project(sampling)
+
+    def sample():
+        plan = compile_project(Project.model_validate(raw))
+        assert not plan.diagnostics, plan.diagnostics
+        (run,) = plan.runs
+        assert run.admission_problem is None, run.problems
+        documents = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.trial_documents
+        compiled = compile_trial_execution(
+            documents.model, documents.task, ComponentRegistry(), functions, python_tasks=application_python_tasks(),
+            input_bindings=documents.input_bindings,
+        )
+        assert isinstance(compiled, PreparedTrialExecution), compiled
+        trials, _ = compiled.execution.sample_trials(TaskParameters(), run_key=jr.key(17), update_key=jr.key(31), count=120)
+        selected = {item.id: item.set_choices for item in documents.task.variables if item.set_choices is not None}
+        return trials.variables, selected
+
+    conditional, selected = sample()
+    for placement in raw["steps"]["train"]["set_fields"].values():
+        del placement["condition"]
+    unconditional, original = sample()
+    assert selected == original
+    kinds = np.asarray(conditional["trial-kind"])
+    assert set(kinds) == {0, 1, 2}
+    np.testing.assert_array_equal(kinds, unconditional["trial-kind"])
+    for variable, choices in selected.items():
+        active = kinds == ("reach-bank", "hold-bank").index(choices.set)
+        assert np.asarray(conditional[variable])[active].any()
+        np.testing.assert_array_equal(conditional[variable], np.where(active, unconditional[variable], 0))
+
+
+@pytest.mark.parametrize(("sampling", "condition", "reason"), [
+    ({"kind": "listed"}, {"kind": "literal", "value": True}, "Weighted or Co-occurring"),
+    ({"kind": "weighted"}, {"kind": "literal", "value": 2}, "Expected boolean"),
+    ({"kind": "weighted"}, {"kind": "name", "reference": "reach"}, "not in scope"),
+    ({"kind": "weighted"}, {"kind": "name", "reference": "step-flag"}, "at most trial values"),
+])
+def test_trial_set_condition_problem_names_the_placement(sampling, condition, reason):
+    _, raw = _conditioned_project(sampling)
+    raw["documents"]["task"]["payload"]["variables"].append({
+        "id": "step-flag", "name": "step_flag", "type": {"base": "boolean"},
+        "value": {"kind": "call", "function": "gt", "args": [
+            {"kind": "name", "reference": "time"}, {"kind": "literal", "value": 0, "unit": "s"},
+        ]},
+    })
+    raw["steps"]["train"]["set_fields"] = {
+        "reach": raw["steps"]["train"]["set_fields"]["reach"] | {"condition": condition},
+    }
+    plan = compile_project(Project.model_validate(raw))
+    (row,) = plan.rows
+    assert any(problem.path == "/set_fields/reach/condition" and reason in problem.detail for problem in row.problems), (
+        row.problems
+    )
 
 
 def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
