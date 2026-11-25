@@ -2972,6 +2972,15 @@ export type DataDerivedAxisRange = {
   "padding_fraction": number;
 };
 
+export type DatasetDescriptor = {
+  "schema_version"?: "feedbax.dataset.v1";
+  "dimensions": Record<string, DimensionSize>;
+  "variables": Record<string, FieldDescriptor>;
+  "coords"?: Record<string, FieldDescriptor>;
+  "attrs"?: Record<string, JsonValue>;
+  "schema_id"?: Name | null;
+};
+
 export type DatasetInputPort = {
   "schema_ids": Array<string>;
   "variables"?: Record<string, FieldDescriptor>;
@@ -3007,6 +3016,8 @@ export type DetachMember = {
 export type DifferencePointer = string;
 
 export type Differences = Record<string, SetDocumentValue | RemoveDocumentValue>;
+
+export type DimensionSize = number;
 
 export type Dimensions = {
   "length"?: number;
@@ -4438,6 +4449,13 @@ export type StudioNamedValueType = {
 export type StudioObjectivePlace = {
   "part": "objective";
   "document": string | null;
+};
+
+export type StudioOperationDatasetPage = {
+  "field": Name;
+  "offset": DimensionSize;
+  "total": DimensionSize;
+  "values": Array<JsonValue>;
 };
 
 export type StudioPlanRequest = {
@@ -11013,6 +11031,17 @@ export const DataDerivedAxisRangeSchema: z.ZodType<DataDerivedAxisRange> = z.laz
   }).strict()
 ) as unknown as z.ZodType<DataDerivedAxisRange>;
 
+export const DatasetDescriptorSchema: z.ZodType<DatasetDescriptor> = z.lazy(() =>
+  z.object({
+    "schema_version": z.literal("feedbax.dataset.v1").optional(),
+    "dimensions": z.record(NameSchema, DimensionSizeSchema),
+    "variables": z.record(NameSchema, FieldDescriptorSchema),
+    "coords": z.record(NameSchema, FieldDescriptorSchema).optional(),
+    "attrs": z.record(z.string(), jsonValueSchema).optional(),
+    "schema_id": z.union([NameSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DatasetDescriptor>;
+
 export const DatasetInputPortSchema: z.ZodType<DatasetInputPort> = z.lazy(() =>
   z.object({
     "schema_ids": z.array(z.string()).min(1),
@@ -11060,6 +11089,10 @@ export const DifferencePointerSchema: z.ZodType<DifferencePointer> = z.lazy(() =
 export const DifferencesSchema: z.ZodType<Differences> = z.lazy(() =>
   z.record(DifferencePointerSchema, z.union([SetDocumentValueSchema, RemoveDocumentValueSchema]))
 ) as unknown as z.ZodType<Differences>;
+
+export const DimensionSizeSchema: z.ZodType<DimensionSize> = z.lazy(() =>
+  z.number().int().safe().min(0)
+) as unknown as z.ZodType<DimensionSize>;
 
 export const DimensionsSchema: z.ZodType<Dimensions> = z.lazy(() =>
   z.object({
@@ -12977,6 +13010,15 @@ export const StudioObjectivePlaceSchema: z.ZodType<StudioObjectivePlace> = z.laz
   }).strict()
 ) as unknown as z.ZodType<StudioObjectivePlace>;
 
+export const StudioOperationDatasetPageSchema: z.ZodType<StudioOperationDatasetPage> = z.lazy(() =>
+  z.object({
+    "field": NameSchema,
+    "offset": DimensionSizeSchema,
+    "total": DimensionSizeSchema,
+    "values": z.array(jsonValueSchema).max(256),
+  }).strict()
+) as unknown as z.ZodType<StudioOperationDatasetPage>;
+
 export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =>
   z.object({
     "key": StudioSavedTrainKeySchema,
@@ -14260,6 +14302,8 @@ export const contractSchemas = {
   SampleValues: SampleValuesSchema,
   SiteProjection: SiteProjectionSchema,
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
+  DatasetDescriptor: DatasetDescriptorSchema,
+  StudioOperationDatasetPage: StudioOperationDatasetPageSchema,
   StudioAnalyzeRequest: StudioAnalyzeRequestSchema,
   StudioAuthoringCatalog: StudioAuthoringCatalogSchema,
   StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
@@ -14442,6 +14486,8 @@ export interface ContractTypeMap {
   SampleValues: SampleValues;
   SiteProjection: SiteProjection;
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;
+  DatasetDescriptor: DatasetDescriptor;
+  StudioOperationDatasetPage: StudioOperationDatasetPage;
   StudioAnalyzeRequest: StudioAnalyzeRequest;
   StudioAuthoringCatalog: StudioAuthoringCatalog;
   StudioAuthoringSurface: StudioAuthoringSurface;
