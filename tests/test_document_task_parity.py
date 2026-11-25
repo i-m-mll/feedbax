@@ -497,6 +497,56 @@ def test_objective_windows_reduce_defined_samples_with_history(functions):
     np.testing.assert_array_equal(derivative[1:], 0)
 
 
+def test_objective_power_ramp_and_five_step_lag(functions):
+    x = name("x", REAL)
+    age = name("age", TIME_TYPE)
+    horizon = name("horizon", TIME_TYPE, Level.TRIAL)
+    power = name("power", REAL, Level.TRIAL)
+    names = (x, age, horizon, power)
+    task = compile_task(
+        TaskDocument(
+            id="lag",
+            variables=(),
+            signals=(),
+            epochs=(
+                Epoch(id="lead", name="Lead", end=Length(length=expression("3 st"))),
+                Epoch(id="hold", name="Hold", end=Length(length=expression("5 st"))),
+            ),
+        ),
+        functions,
+        model=PORTLESS,
+    )
+    assert isinstance(task, DocumentTask), task
+    signal = expression("x", names)
+    lagged = expression("lag(x, 5)", names)
+    executor = compile_objective(
+        ObjectiveDocument(id="terms", terms=(
+            ObjectiveTerm(
+                id="ramp", measure=signal,
+                weight=expression("(age / horizon) ** power", names),
+                reduction=Reduction.SUM,
+            ),
+            ObjectiveTerm(id="lagged-measure", measure=lagged, reduction=Reduction.SUM, epochs=("hold",)),
+            ObjectiveTerm(
+                id="lagged-weight", measure=signal, weight=lagged, reduction=Reduction.SUM, epochs=("hold",),
+            ),
+        )),
+        names, functions, task=task,
+    )
+    assert isinstance(executor, ObjectiveExecutor), executor
+    key = jr.key(0)
+    trial = task.ahead(TaskParameters(), key, key)
+    terms = executor.trial_terms(
+        {"x": jnp.arange(1.0, 9.0), "age": jnp.arange(8.0), "horizon": 8.0, "power": 2.0},
+        trial, key, key,
+    )
+    assert float(terms["ramp"].reduced.value) == pytest.approx(924 / 64)
+    assert float(terms["lagged-measure"].reduced.value) == 1 + 2 + 3
+    assert float(terms["lagged-weight"].reduced.value) == 6 * 1 + 7 * 2 + 8 * 3
+    for term in ("lagged-measure", "lagged-weight"):
+        np.testing.assert_array_equal(terms[term].steps, [False] * 5 + [True] * 3)
+
+
 def test_inherited_objective_preserves_term_ids_without_observing_missing_values(functions):
     from feedbax.objectives.document import ObjectiveUse
 

@@ -22,6 +22,7 @@ from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTe
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_site import FieldKind, field_kind, project_site, read_field
 from feedbax.contracts.expression_text import ParsedField, print_field
+from feedbax.contracts.time_units import TimeValue, time_in_seconds, time_steps
 from feedbax.studio.authoring_sweeps import FieldSweeps, drop_axis, named_axis
 from feedbax.studio.value_structure import value_structure
 
@@ -209,12 +210,15 @@ def project_numeric_field[View: StudioFieldView](
     )
 
 
-def _conversion(field: NumericField, period: float | None) -> str | None:
+def _conversion(field: NumericField, period: float | None) -> TimeValue | None:
     if not field.duration or period is None or type(field.value) not in (int, float):
         return None
-    if field.unit == "s":
-        return f"{round(field.value / period)} st"
-    return f"{float(f'{field.value * period:.8g}'):g} s"
+    if field.unit not in ("s", "st"):
+        raise ValueError("A duration requires seconds or steps.")
+    time = TimeValue(value=field.value, unit=field.unit)
+    if time.unit == "s":
+        return TimeValue(value=time_steps(time, period), unit="st")
+    return TimeValue(value=time_in_seconds(time, period), unit="s")
 
 
 @dataclass(frozen=True)

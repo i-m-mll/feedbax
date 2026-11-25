@@ -1209,6 +1209,11 @@ export interface StudioSweepSampler {
   can_list: boolean;
 }
 
+export interface TimeValue {
+  value: number;
+  unit: "s" | "st";
+}
+
 export interface StudioFieldView {
   label: string;
   text: string;
@@ -1216,7 +1221,7 @@ export interface StudioFieldView {
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
-  conversion?: string | null;
+  conversion?: TimeValue | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -1233,7 +1238,7 @@ export interface ModelFieldView {
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
-  conversion?: string | null;
+  conversion?: TimeValue | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -1253,7 +1258,7 @@ export interface TrainFieldView {
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
-  conversion?: string | null;
+  conversion?: TimeValue | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -3113,6 +3118,11 @@ export type EpochSteps = {
   "greatest": number;
 };
 
+export type ErrorBounds = {
+  "lower": Name | VariableBinding;
+  "upper": Name | VariableBinding;
+};
+
 export type Expression = LiteralValue | NameValue | CallValue | DrawValue | UnresolvedValue;
 
 export type ExpressionPartSite = {
@@ -3150,7 +3160,7 @@ export type FigureDocument = {
   "schema_version"?: "feedbax.figure_document.v1";
   "data": Array<Name>;
   "layout": Array<FigurePanel>;
-  "layers": Array<LineLayer | BandLayer>;
+  "layers": Array<LineLayer | BandLayer | PointsLayer | RuleLayer | SpanLayer>;
   "theme"?: Name;
   "view"?: FigureDocumentView;
   "caption"?: string | null;
@@ -3550,6 +3560,32 @@ export type Payload = Record<string, JsonValue>;
 
 export type Pointer = string;
 
+export type PointsEncodings = {
+  "x": Name | VariableBinding;
+  "y": Name | VariableBinding;
+  "error_y"?: ErrorBounds | null;
+};
+
+export type PointsLayer = {
+  "name": Name;
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "points";
+  "encode": PointsEncodings;
+  "style"?: PointsStyle;
+};
+
+export type PointsStyle = {
+  "label"?: string | null;
+  "color"?: string | null;
+  "line_dash"?: "solid" | "dot" | "dash" | "longdash" | "dashdot" | "longdashdot" | null;
+  "line_width"?: number | null;
+  "showlegend"?: boolean | null;
+  "marker_size"?: number | null;
+};
+
 export type PrefixDrift = {
   "max_relative_loss": number | null;
   "relative_parameter_l2": number | null;
@@ -3737,6 +3773,22 @@ export type Row = {
   "from"?: string | null;
 };
 
+export type RuleEncodings = {
+  "axis": "x" | "y";
+  "at": Name | VariableBinding | number;
+};
+
+export type RuleLayer = {
+  "name": Name;
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "rule";
+  "encode": RuleEncodings;
+  "style"?: LineStyle;
+};
+
 export type RunBase = {
   "run": string;
 };
@@ -3921,6 +3973,32 @@ export type SourceDifference = {
 export type SourcePath = {
   "scope": string;
   "path": string;
+};
+
+export type SpanEncodings = {
+  "axis": "x" | "y";
+  "start": Name | VariableBinding | number;
+  "end": Name | VariableBinding | number;
+};
+
+export type SpanLayer = {
+  "name": Name;
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "span";
+  "encode": SpanEncodings;
+  "style"?: SpanStyle;
+};
+
+export type SpanStyle = {
+  "label"?: string | null;
+  "color"?: string | null;
+  "line_dash"?: "solid" | "dot" | "dash" | "longdash" | "dashdot" | "longdashdot" | null;
+  "line_width"?: number | null;
+  "showlegend"?: boolean | null;
+  "fill_alpha"?: number;
 };
 
 export type SplitCard = {
@@ -4952,7 +5030,7 @@ export type StudioTrialField = {
   "effective"?: string | null;
   "mixed"?: boolean;
   "unit"?: string | null;
-  "conversion"?: string | null;
+  "conversion"?: TimeValue | null;
   "site": SiteProjection;
   "sweep"?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   "selected_value"?: string | null;
@@ -7925,6 +8003,15 @@ export const StudioSweepSamplerSchema: z.ZodType<StudioSweepSampler> = z.lazy(()
     .strict()
 ) as unknown as z.ZodType<StudioSweepSampler>;
 
+export const TimeValueSchema: z.ZodType<TimeValue> = z.lazy(() =>
+  z
+    .object({
+      "value": z.number().finite(),
+      "unit": z.union([z.literal("s"), z.literal("st")]),
+    })
+    .strict()
+) as unknown as z.ZodType<TimeValue>;
+
 export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
   z
     .object({
@@ -7934,7 +8021,7 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
-      "conversion": z.string().nullable().optional(),
+      "conversion": TimeValueSchema.nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -7955,7 +8042,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
-      "conversion": z.string().nullable().optional(),
+      "conversion": TimeValueSchema.nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -7979,7 +8066,7 @@ export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
-      "conversion": z.string().nullable().optional(),
+      "conversion": TimeValueSchema.nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -11064,6 +11151,13 @@ export const EpochStepsSchema: z.ZodType<EpochSteps> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<EpochSteps>;
 
+export const ErrorBoundsSchema: z.ZodType<ErrorBounds> = z.lazy(() =>
+  z.object({
+    "lower": z.union([NameSchema, VariableBindingSchema]),
+    "upper": z.union([NameSchema, VariableBindingSchema]),
+  }).strict()
+) as unknown as z.ZodType<ErrorBounds>;
+
 export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
   z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema, UnresolvedValueSchema])
 ) as unknown as z.ZodType<Expression>;
@@ -11116,7 +11210,7 @@ export const FigureDocumentSchema: z.ZodType<FigureDocument> = z.lazy(() =>
     "schema_version": z.literal("feedbax.figure_document.v1").optional(),
     "data": z.array(NameSchema).min(1),
     "layout": z.array(FigurePanelSchema).min(1),
-    "layers": z.array(z.union([LineLayerSchema, BandLayerSchema])).min(1),
+    "layers": z.array(z.union([LineLayerSchema, BandLayerSchema, PointsLayerSchema, RuleLayerSchema, SpanLayerSchema])).min(1),
     "theme": NameSchema.optional(),
     "view": FigureDocumentViewSchema.optional(),
     "caption": z.union([z.string(), z.null()]).optional(),
@@ -11655,6 +11749,38 @@ export const PointerSchema: z.ZodType<Pointer> = z.lazy(() =>
   z.string().regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
 ) as unknown as z.ZodType<Pointer>;
 
+export const PointsEncodingsSchema: z.ZodType<PointsEncodings> = z.lazy(() =>
+  z.object({
+    "x": z.union([NameSchema, VariableBindingSchema]),
+    "y": z.union([NameSchema, VariableBindingSchema]),
+    "error_y": z.union([ErrorBoundsSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<PointsEncodings>;
+
+export const PointsLayerSchema: z.ZodType<PointsLayer> = z.lazy(() =>
+  z.object({
+    "name": NameSchema,
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("points"),
+    "encode": PointsEncodingsSchema,
+    "style": PointsStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<PointsLayer>;
+
+export const PointsStyleSchema: z.ZodType<PointsStyle> = z.lazy(() =>
+  z.object({
+    "label": z.union([z.string(), z.null()]).optional(),
+    "color": z.union([z.string(), z.null()]).optional(),
+    "line_dash": z.union([z.union([z.literal("solid"), z.literal("dot"), z.literal("dash"), z.literal("longdash"), z.literal("dashdot"), z.literal("longdashdot")]), z.null()]).optional(),
+    "line_width": z.union([z.number().finite().gt(0), z.null()]).optional(),
+    "showlegend": z.union([z.boolean(), z.null()]).optional(),
+    "marker_size": z.union([z.number().finite().gt(0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<PointsStyle>;
+
 export const PrefixDriftSchema: z.ZodType<PrefixDrift> = z.lazy(() =>
   z.object({
     "max_relative_loss": z.union([z.number().finite(), z.null()]),
@@ -11910,6 +12036,26 @@ export const RowSchema: z.ZodType<Row> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<Row>;
 
+export const RuleEncodingsSchema: z.ZodType<RuleEncodings> = z.lazy(() =>
+  z.object({
+    "axis": z.union([z.literal("x"), z.literal("y")]),
+    "at": z.union([NameSchema, VariableBindingSchema, z.number().finite()]),
+  }).strict()
+) as unknown as z.ZodType<RuleEncodings>;
+
+export const RuleLayerSchema: z.ZodType<RuleLayer> = z.lazy(() =>
+  z.object({
+    "name": NameSchema,
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("rule"),
+    "encode": RuleEncodingsSchema,
+    "style": LineStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<RuleLayer>;
+
 export const RunBaseSchema: z.ZodType<RunBase> = z.lazy(() =>
   z.object({
     "run": z.string().min(1),
@@ -12161,6 +12307,38 @@ export const SourcePathSchema: z.ZodType<SourcePath> = z.lazy(() =>
     "path": z.string().min(1),
   }).strict()
 ) as unknown as z.ZodType<SourcePath>;
+
+export const SpanEncodingsSchema: z.ZodType<SpanEncodings> = z.lazy(() =>
+  z.object({
+    "axis": z.union([z.literal("x"), z.literal("y")]),
+    "start": z.union([NameSchema, VariableBindingSchema, z.number().finite()]),
+    "end": z.union([NameSchema, VariableBindingSchema, z.number().finite()]),
+  }).strict()
+) as unknown as z.ZodType<SpanEncodings>;
+
+export const SpanLayerSchema: z.ZodType<SpanLayer> = z.lazy(() =>
+  z.object({
+    "name": NameSchema,
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("span"),
+    "encode": SpanEncodingsSchema,
+    "style": SpanStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<SpanLayer>;
+
+export const SpanStyleSchema: z.ZodType<SpanStyle> = z.lazy(() =>
+  z.object({
+    "label": z.union([z.string(), z.null()]).optional(),
+    "color": z.union([z.string(), z.null()]).optional(),
+    "line_dash": z.union([z.union([z.literal("solid"), z.literal("dot"), z.literal("dash"), z.literal("longdash"), z.literal("dashdot"), z.literal("longdashdot")]), z.null()]).optional(),
+    "line_width": z.union([z.number().finite().gt(0), z.null()]).optional(),
+    "showlegend": z.union([z.boolean(), z.null()]).optional(),
+    "fill_alpha": z.number().finite().min(0).max(1).optional(),
+  }).strict()
+) as unknown as z.ZodType<SpanStyle>;
 
 export const SplitCardSchema: z.ZodType<SplitCard> = z.lazy(() =>
   z.object({
@@ -13486,7 +13664,7 @@ export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
     "effective": z.union([z.string(), z.null()]).optional(),
     "mixed": z.boolean().optional(),
     "unit": z.union([z.string(), z.null()]).optional(),
-    "conversion": z.union([z.string(), z.null()]).optional(),
+    "conversion": z.union([TimeValueSchema, z.null()]).optional(),
     "site": SiteProjectionSchema,
     "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
     "selected_value": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),

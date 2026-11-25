@@ -13,6 +13,7 @@ from feedbax.contracts.expression_values import SignalSpace, UnresolvedValue
 from feedbax.contracts.model_address import ModelElementId, PhysicalEnd, SignalSource, SignalTarget
 from feedbax.contracts.request_identity_guard import IdentityAuthoredAlternative
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
+from feedbax.contracts.time_units import TimeValue
 
 MODEL_DOCUMENT_SCHEMA_ID = "feedbax.spec.model"
 MODEL_DOCUMENT_SCHEMA_VERSION = "feedbax.spec.model.v1"
@@ -28,9 +29,10 @@ class SignalType(StrictModel):
     space: SignalSpace | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
-class ModelTime(StrictModel):
-    value: Annotated[float, Field(gt=0, allow_inf_nan=False)]
-    unit: Literal["s", "st"]
+class ModelTime(TimeValue):
+    """A positive time, such as a Delay or a component's physical time constant."""
+
+    value: PositivePeriod
 
 
 class DelayAttachment(StrictModel):
