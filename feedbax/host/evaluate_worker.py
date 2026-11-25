@@ -384,6 +384,7 @@ def rollout_dataset(
             variables["objective/terms" + path] = Variable(expand(term.value), leading)
             variables["objective/coverage" + path] = Variable(expand(term.covered), leading)
         variables["objective/total"] = Variable(expand(evaluated.objective.loss), leading)
+        variables["objective/trial_loss"] = Variable(expand(evaluated.objective.trial_losses), (*leading, "trial"))
     document = variant.task if isinstance(variant.task, TaskDocument) else None
     labels = {epoch.id: epoch.name for epoch in document.epochs} if document is not None else {}
     trial_fields, trial_coordinates, record_layout = trial_dataset_fields(
