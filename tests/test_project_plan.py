@@ -359,13 +359,12 @@ def test_checkpoint_subset_pairs_surviving_ids_even_with_one_candidate():
     assert [row for row in plan.rows if row.key.step == "rewarm"] == rewarm
     assert [run.inputs["checkpoint"].producer for run in rewarm] == [run.key for run in flat]
 
-    del checkpoint["where"]
-    checkpoint["row"] = "seed=b"
+    checkpoint["where"] = {"axes": {"seed": [{"id": "b", "label": "b"}]}}
     explicit = compile_project(Project.model_validate(data), memo=memo)
     assert explicit == compile_project(Project.model_validate(data))
     assert not explicit.diagnostics
     flat = [run for run in explicit.runs if run.key.step == "flat"]
-    assert len(flat) == 5
+    assert {run.key.row for run in flat} == {"rate=fast--seed=b", "rate=slow--seed=b"}
     assert all(run.inputs["checkpoint"].producer.row == "seed=b" for run in flat)
 
 

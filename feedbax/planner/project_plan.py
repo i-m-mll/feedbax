@@ -3431,6 +3431,8 @@ class _Compiler:
             resolved = self.select_input(variant, name, template, role, active)
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
+                if resolved.selection_value is not None:
+                    return ()
                 continue
             members, _, subsets = resolved
             if isinstance(declaration, AnalyzeModelInput) and reference.checkpoint is None:
