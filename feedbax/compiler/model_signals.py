@@ -9,6 +9,7 @@ from typing import Literal
 import jax.tree_util as jtu
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.graph_schema import _component_port_dimension
 from feedbax.compiler.resolution import GraphParameterResolution
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.expression_units import UNITS
@@ -464,8 +465,19 @@ class _Resolve:
                     address = _component_port(scope, name, "input" if direction == "input" else "output", port)
                     selected = {path[1:]: item for path, item in declarations.items() if path[0] == port}
                     registered = SignalType(base=spec.dtype, shape=tuple(spec.shape) if spec.shape is not None else None) if spec else SignalType()
+                    prototype = prototypes.get((name, port))
+                    if direction == "input" and prototype is None:
+                        dimension = _component_port_dimension(
+                            component_type=node.type, node_params=node.params, port=port, direction="input",
+                        )
+                        if dimension is not None:
+                            dtype = node.params.get("dtype")
+                            registered = SignalType(
+                                base=dtype if _port_base(registered.base) is None and isinstance(dtype, str) else registered.base,
+                                shape=tuple(dimension["shape"]),
+                            )
                     leaf_port = self.port(
-                        address, port, prototypes.get((name, port)), registered, declarations=selected, states=states,
+                        address, port, prototype, registered, declarations=selected, states=states,
                         attachments=bool(component.attachments.sources.get(port)), makes_value=direction == "output",
                     )
                     if physical is not None and params is not None and isinstance(key := params.get("port_name"), str):
