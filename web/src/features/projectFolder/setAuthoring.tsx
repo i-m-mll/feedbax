@@ -9,7 +9,7 @@ import { shownName, type PlanRunView, type PlanStepView } from '@/features/pipel
 import { selectSweepValue, selectedRuns, type PipelineSelectionState } from '@/features/pipeline/selection';
 import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
 import { bindStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
-import type { Project, SetDocument, StudioSetEditRequest, StudioSetEdit } from '@/generated/studioContracts';
+import type { Project, SetDocument, SetVariableOrigin, StudioSetEditRequest, StudioSetEdit } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { documentPayload } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
@@ -145,31 +145,32 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     }).catch((error: unknown) => ({ kind: 'refused', reason: shownError(error) }));
   }
 
-  /**
-   * The one entry of a Set its sweep authors that the selected runs of `step` read, with the entry's own Task variables
-   * and links; none unless exactly one entry of one Set axis is selected.
-   */
-  function entryTask(step: PlanStepView): EntryTask | undefined {
+  /** The entry `entry` of the Set `set` that the step's axis `axis` reads, with its own Task variables and links. */
+  function entryTask({ step, axis, set, entry }: Omit<SetVariableOrigin, 'variable'>): EntryTask | undefined {
+    const stored = (documentPayload(project.documents, editor.getSnapshot().saved.composed, set) as SetDocument | undefined)?.entries[entry];
+    if (!stored) return undefined;
+    return {
+      key: JSON.stringify([step, axis, entry]),
+      label: stored.label || entry,
+      variables: stored.task_variables ?? [],
+      links: stored.task_links ?? [],
+      write: applies ? (name, change) => editor.command(async () => {
+        await store(name, { kind: 'set_entry_task', step, axis, entry, ...change });
+        return undefined;
+      }).catch((error: unknown) => shownError(error)) : undefined,
+    };
+  }
+
+  /** The one entry of a Set its sweep authors that the selected runs of `step` read; none unless exactly one is. */
+  function selectedEntry(step: PlanStepView): EntryTask | undefined {
     const runs = selectedRuns(step, state().selection);
     const chosen = Object.entries(project.steps?.[step.id]?.sweep?.axes ?? {}).flatMap(([axis, read]) => {
       if (!read || !('set' in read)) return [];
       const entries = new Set(runs.map((run) => run.values[axis]));
       const [entry] = entries;
-      return entries.size === 1 && entry !== undefined && entry !== unvalued ? [{ axis, set: read.set, entry }] : [];
+      return entries.size === 1 && entry !== undefined && entry !== unvalued ? [{ step: step.id, axis, set: read.set, entry }] : [];
     });
-    if (chosen.length !== 1) return undefined;
-    const [{ axis, set, entry }] = chosen;
-    const stored = (documentPayload(project.documents, editor.getSnapshot().saved.composed, set) as SetDocument | undefined)?.entries[entry];
-    if (!stored) return undefined;
-    return {
-      label: stored.label || entry,
-      variables: stored.task_variables ?? [],
-      links: stored.task_links ?? [],
-      write: applies ? (name, change) => editor.command(async () => {
-        await store(name, { kind: 'set_entry_task', step: step.id, axis, entry, ...change });
-        return undefined;
-      }).catch((error: unknown) => shownError(error)) : undefined,
-    };
+    return chosen.length === 1 ? entryTask(chosen[0]) : undefined;
   }
 
   /**
@@ -283,7 +284,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     };
   }
 
-  return { duplicateRun, axisCommands, toSweep, fieldWeight, entryTask, removeValue, axisPicker, applySet, combination };
+  return { duplicateRun, axisCommands, toSweep, fieldWeight, entryTask, selectedEntry, removeValue, axisPicker, applySet, combination };
 }
 
 export type SetAuthoring = ReturnType<typeof setAuthoring>;

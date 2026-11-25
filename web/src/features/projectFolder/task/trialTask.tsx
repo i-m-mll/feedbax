@@ -3,7 +3,7 @@ import { studioAccessibleName, studioFormat, studioName, studioValueType } from 
 import { reasonOf, type FieldModel } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
 import {
-  ModelAddressSchema, type Link, type StudioNamedValueType, type StudioTrialReset, type TaskDocument, type ValueType, type Variable,
+  ModelAddressSchema, type Link, type StudioNamedValueType, type SetVariableOrigin, type StudioTrialReset, type TaskDocument, type ValueType, type Variable,
 } from '@/generated/studioContracts';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { authoredPointer } from '../authoredEdits';
@@ -38,8 +38,19 @@ const fits = (field: ValueType, variable: ValueType) => {
 const typeName = (type: ValueType, types: readonly StudioNamedValueType[]) =>
   types.find((named) => sameType(named.type, type))?.name ?? studioValueType(type);
 
-/** The entry that adds the variable `id`, when the selected entry does. */
-const addedBy = (entry: EntryTask | undefined, id: string) => entry?.variables.some((variable) => variable.id === id) ? entry : undefined;
+/** The Set entry that adds a variable, with the variable's id there. */
+interface Owner {
+  readonly entry: EntryTask;
+  readonly variable: string;
+}
+
+/** Each variable a Set entry adds, by its id in the trials, with its entry as the read names it. */
+function owners(view: TrialView, entryOf?: (origin: SetVariableOrigin) => EntryTask | undefined): ReadonlyMap<string, Owner> {
+  return new Map(view.variables.flatMap(({ id, set_entry }) => {
+    const entry = set_entry && entryOf?.(set_entry);
+    return entry ? [[id, { entry, variable: set_entry.variable }] as const] : [];
+  }));
+}
 
 /** The entry's variables with `id` replaced by `update`'s result, or left out where that is none. */
 const updated = (entry: EntryTask, id: string, update: (variable: Variable) => Variable | undefined): Variable[] =>
@@ -66,7 +77,7 @@ function missingStart(id: string): ModelStart {
 
 /** The Model values `variable` initializes, the choice of those its type fits, and its links' problem and change. */
 function initializes(view: TrialView, task: TaskDocument, variable: TaskDocument['variables'][number],
-  commit?: Commit, entry?: EntryTask): VariableInitializes {
+  commit?: Commit, owner?: Owner): VariableInitializes {
   const links = task.links ?? [];
   const starts = new Map(view.resets.map((reset) => [addressKey(reset.address), reset]));
   const own = links.flatMap((link, index) => link.variable === variable.id ? [index] : []);
@@ -83,10 +94,10 @@ function initializes(view: TrialView, task: TaskDocument, variable: TaskDocument
     changed: differs ? {
       from, reset: commit && (() => commit(studioName('reset'), { kind: 'reset', document: 'task', paths: ['/links'] })),
     } : undefined,
-    toggle: entry ? entry.write && ((field) => entry.write!(studioAccessibleName('set', studioName('initializes')), {
+    toggle: owner ? owner.entry.write && ((field) => owner.entry.write!(studioAccessibleName('set', studioName('initializes')), {
       task_links: [
-        ...entry.links.filter(({ model_field }) => model_field !== field),
-        ...fields.has(field) ? [] : [{ model_field: field, variable: variable.id } satisfies Link],
+        ...owner.entry.links.filter(({ model_field }) => model_field !== field),
+        ...fields.has(field) ? [] : [{ model_field: field, variable: owner.variable } satisfies Link],
       ],
     })) : commit && (async (field) => reasonOf(await commit(studioAccessibleName('set', studioName('initializes')), {
       kind: 'structure', changes: [{ op: 'link', model_field: field, variable: fields.has(field) ? null : variable.id }],
@@ -114,21 +125,21 @@ function unstarted(view: TrialView, task: TaskDocument, types: readonly StudioNa
 
 /** The variables of the task document the step reads, each with its Type and Value fields. */
 function variables(view: TrialView, task: TaskDocument, types: readonly StudioNamedValueType[], commit?: Commit,
-  runs?: TrialRuns, selectedEntry?: EntryTask): TaskVariable[] {
+  runs?: TrialRuns, owned: ReadonlyMap<string, Owner> = new Map()): TaskVariable[] {
   const levels = new Map(view.variables.map(({ id, level }) => [id, level]));
   return task.variables.map((variable, index): TaskVariable => {
-    const entry = addedBy(selectedEntry, variable.id);
+    const owner = owned.get(variable.id);
     const named = types.find(({ type }) => sameType(type, variable.type));
     const name = typeName(variable.type, types);
     const options = [...named ? [] : [{ value: name, label: name }], ...types.map(({ name }) => ({ value: name, label: name }))];
     const typeChoice = rawField({
       id: `type:${variable.id}`, label: studioName('type'), value: name, type: { kind: 'choice', options },
       changed: changedAt(view, 'task', `/variables/${index}/type`, commit),
-      change: (entry ? entry.write : commit) && (async (chosen) => {
+      change: (owner ? owner.entry.write : commit) && (async (chosen) => {
         const type = types.find((item) => item.name === chosen)?.type;
         if (!type) return undefined;
-        if (entry) return entry.write!(studioAccessibleName('set', studioName('type')),
-          { task_variables: updated(entry, variable.id, (own) => ({ ...own, type })) });
+        if (owner) return owner.entry.write!(studioAccessibleName('set', studioName('type')),
+          { task_variables: updated(owner.entry, owner.variable, (own) => ({ ...own, type })) });
         return reasonOf(await commit!(studioAccessibleName('set', studioName('type')),
           { kind: 'structure', changes: [{ op: 'set_type', member: 'variable', id: variable.id, type }] }));
       }),
@@ -155,34 +166,40 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
     }) : rawField({ id: `count:${variable.id}`, label: studioName('count'), value: '', type: { kind: 'readOnly' } }) : undefined;
     return {
       id: variable.id, name: variable.name, type: name, valueType: variable.type, typeChoice, value, count,
-      level: levels.get(variable.id) === 2 ? 'step' : 'trial', initializes: initializes(view, task, variable, commit, entry),
-      entry: entry?.label,
+      level: levels.get(variable.id) === 2 ? 'step' : 'trial', initializes: initializes(view, task, variable, commit, owner),
+      entry: owner?.entry.label,
     };
   });
 }
 
 /**
- * The edits of the Variables table: those of a variable the selected entry adds, and Add while an entry is selected,
- * store the entry's variables; the rest edit the Task.
+ * The edits of the Variables table: those of a variable a Set entry adds (`owned`) store that entry's variables, and so
+ * does Add while one entry is selected (`selected`); the rest edit the Task.
  */
-export function variableEdits(task: TaskDocument, commit?: Commit, entry?: EntryTask): VariableEdits {
+export function variableEdits(task: TaskDocument, commit?: Commit, owned: ReadonlyMap<string, Owner> = new Map(),
+  selected?: EntryTask): VariableEdits {
   if (!commit) return {};
-  const write = entry?.write;
   const structure = async (name: string, change: Parameters<Commit>[1] & { kind: 'structure' }, removes?: boolean) =>
     reasonOf(await commit(name, change, removes));
   const named = (id: string) => task.variables.find((variable) => variable.id === id)?.name;
   return {
-    add: (name) => entry ? write?.(studioName('addVariable'), { task_variables: [...entry.variables, {
-      id: fresh(name, task.variables), name, type: { base: 'real', shape: [] }, value: { kind: 'literal', value: 0 },
+    add: (name) => selected ? selected.write?.(studioName('addVariable'), { task_variables: [...selected.variables, {
+      id: fresh(name, [...task.variables, ...selected.variables]), name, type: { base: 'real', shape: [] }, value: { kind: 'literal', value: 0 },
     }] }) : structure(studioName('addVariable'), { kind: 'structure', changes: [{ op: 'add', member: 'variable', name }] }),
-    rename: (id, name) => addedBy(entry, id)
-      ? write?.(studioAccessibleName('rename', named(id)), { task_variables: updated(entry!, id, (own) => ({ ...own, name })) })
-      : structure(studioAccessibleName('rename', named(id)), { kind: 'structure', changes: [{ op: 'rename', member: 'variable', id, name }] }),
-    remove: (id) => addedBy(entry, id) ? write?.(studioAccessibleName('remove', named(id)), {
-      task_variables: updated(entry!, id, () => undefined),
-      task_links: entry!.links.filter(({ variable }) => variable !== id),
-    }) : structure(studioAccessibleName('remove', named(id)),
-      { kind: 'structure', changes: [{ op: 'remove', member: 'variable', id }] }, true),
+    rename: (id, name) => {
+      const owner = owned.get(id);
+      return owner ? owner.entry.write?.(studioAccessibleName('rename', named(id)),
+        { task_variables: updated(owner.entry, owner.variable, (own) => ({ ...own, name })) })
+        : structure(studioAccessibleName('rename', named(id)), { kind: 'structure', changes: [{ op: 'rename', member: 'variable', id, name }] });
+    },
+    remove: (id) => {
+      const owner = owned.get(id);
+      return owner ? owner.entry.write?.(studioAccessibleName('remove', named(id)), {
+        task_variables: updated(owner.entry, owner.variable, () => undefined),
+        task_links: owner.entry.links.filter(({ variable }) => variable !== owner.variable),
+      }) : structure(studioAccessibleName('remove', named(id)),
+        { kind: 'structure', changes: [{ op: 'remove', member: 'variable', id }] }, true);
+    },
     move: (id, index) => structure(studioAccessibleName('move', named(id)),
       { kind: 'structure', changes: [{ op: 'move', member: 'variable', id, index }] }),
     list: (id, list) => structure(studioAccessibleName('set', studioName('list')), { kind: 'structure', changes: [
@@ -198,11 +215,20 @@ function fresh(name: string, variables: readonly Variable[]) {
   return id;
 }
 
-function useVariables(view: TrialView, commit?: Commit, runs?: TrialRuns, entry?: EntryTask) {
+/** Where the Task view finds the Set entries the trials read: by a variable's origin, and the one the runs select. */
+export interface TaskEntries {
+  readonly of: (origin: SetVariableOrigin) => EntryTask | undefined;
+  readonly selected?: EntryTask;
+}
+
+function useVariables(view: TrialView, commit?: Commit, runs?: TrialRuns, entries?: TaskEntries) {
   const catalog = useAuthoringCatalog();
   const task = 'variables' in view.task ? view.task : undefined;
   const types = catalog.data?.tasks.value_types ?? [];
-  return task && { task, variables: variables(view, task, types, commit, runs, entry), unstarted: unstarted(view, task, types, commit) };
+  const owned = owners(view, entries?.of);
+  return task && {
+    task, owned, variables: variables(view, task, types, commit, runs, owned), unstarted: unstarted(view, task, types, commit),
+  };
 }
 
 const entryWeight = (weight: WeightPart | { on?: WeightPart; off?: WeightPart } | null | undefined): SetEntryWeight | undefined =>
@@ -236,10 +262,10 @@ export const selectedVariable = (selected: string | undefined): TaskSelection | 
   selected?.startsWith('variable:') ? { kind: 'variable', id: selected.slice('variable:'.length) } : undefined;
 
 /** The Task view of a task document: Variables, and the grid of epochs and signals. */
-export function TrialTaskDocument({ view, commit, runs, entry, selected, select, drawn, toSweep, weigh }: {
+export function TrialTaskDocument({ view, commit, runs, entries, selected, select, drawn, toSweep, weigh }: {
   view: TrialView; commit?: Commit; runs?: TrialRuns; selected?: string; select(id: string): void;
-  /** The one Set entry the selected runs read, whose variables the table marks and whose edits it stores. */
-  entry?: EntryTask;
+  /** The Set entries the trials read, whose variables the table marks and whose edits they store. */
+  entries?: TaskEntries;
   /** To Sweep on a Set the trials apply, by its axis. */
   toSweep?(axis: string): StudioCommand;
   /** The edit of a weight of a Set the trials apply, by its axis. */
@@ -247,20 +273,20 @@ export function TrialTaskDocument({ view, commit, runs, entry, selected, select,
   /** Each variable's value in the trial the clock shows, by variable id, when that trial was drawn. */
   drawn?: Readonly<Record<string, string>>;
 }) {
-  const shown = useVariables(view, commit, runs, entry);
+  const shown = useVariables(view, commit, runs, entries);
   if (!shown) return null;
   return <TaskDocumentBody variables={<TaskVariables variables={shown.variables}
     sets={setVariables(view, weigh, commit, runs).map((set) => ({ ...set, toSweep: toSweep?.(set.axis) }))} unstarted={shown.unstarted} selected={selectedVariable(selected)}
-    select={(selection) => select(`${selection.kind}:${selection.id}`)} edits={variableEdits(shown.task, commit, entry)}
+    select={(selection) => select(`${selection.kind}:${selection.id}`)} edits={variableEdits(shown.task, commit, shown.owned, entries?.selected)}
     drawn={drawn} />}
     grid={<TrialTaskGrid view={view} commit={commit} runs={runs} selected={selected} select={select} />} />;
 }
 
 /** The Inspector of a task document's variable: its value with the value's parts, and its type. */
-export function TrialVariableInspector({ view, commit, runs, entry, id }: {
-  view: TrialView; commit?: Commit; runs?: TrialRuns; entry?: EntryTask; id: string;
+export function TrialVariableInspector({ view, commit, runs, entries, id }: {
+  view: TrialView; commit?: Commit; runs?: TrialRuns; entries?: TaskEntries; id: string;
 }) {
-  const variable = useVariables(view, commit, runs, entry)?.variables.find((item) => item.id === id);
+  const variable = useVariables(view, commit, runs, entries)?.variables.find((item) => item.id === id);
   return variable ? <VariableInspector variable={variable} /> : null;
 }
 
