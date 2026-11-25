@@ -77,6 +77,9 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
     assert [(trace.meta["group"]["member"], trace.meta["group"]["trial"]) for trace in duplicate.data] == [
         (member, trial) for member in ("original", "duplicate") for trial in trials
     ]
+    assert [trace.name for trace in duplicate.data] == [
+        f"plant.mass=2 · Trial {trial} · Run {run}" for run in (1, 2) for trial in (1, 2)
+    ]
     assert len({trace.legendgroup for trace in duplicate.data}) == 4
 
     layer, = document.layers

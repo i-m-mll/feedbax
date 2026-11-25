@@ -299,14 +299,17 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
     return found;
   }, [projection.data]);
+  /** The Task signal each root input port reads, by the port's address key. */
+  const readSignals = useMemo(() => new Map((projection.data?.task_inputs ?? []).map(({ signal_id, ...address }) =>
+    [addressKey(address), signal_id] as const)), [projection.data]);
   /** A port read by a term of the selected step's Objective, itself or by a leaf under it, carries the Objective mark. */
   const markedPorts = useMemo(() => new Map([
-    ...(projection.data?.task_inputs ?? []).map((address) => [addressKey(address), 'task'] as const),
+    ...[...readSignals.keys()].map((key) => [key, 'task'] as const),
     ...(projection.data?.ports ?? []).filter(({ readers }) => readers?.length).map(({ address }) => {
       const { element } = address;
       return [addressKey(element.kind === 'field' && element.parent.kind === 'port' ? at(address, element.parent) : address), 'objective'] as const;
     }),
-  ]), [projection.data]);
+  ]), [projection.data, readSignals]);
   const attachments = useQuery({
     queryKey: ['model-evaluate-model', saved.project_id, readBody],
     queryFn: ({ signal }) => readEvaluateModel(saved.project_id, readBody!, signal),
@@ -500,9 +503,16 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (reason) targetProblems.set(endKey(wire.target), reason);
   }
   const portMap = useMemo(() => {
-    const ports = owner ? boundaryPorts(owner.ports) : emptyPorts;
-    const unused = currentPath.length ? [] : (projection.data?.task_signals ?? []).filter((signal) =>
-      !owner?.ports.inputs?.some((input) => input.name === signal.label)).map((signal): Port => ({
+    const signals = projection.data?.task_signals ?? [];
+    /** A root input port reads its Task signal by id, and is drawn by the signal's current name. */
+    const signalOf = (port: Port) => currentPath.length ? undefined
+      : readSignals.get(addressKey(at(graph, { kind: 'port', end: port.end })));
+    const ports = (owner ? boundaryPorts(owner.ports) : emptyPorts).map((port) => {
+      const signal = signals.find(({ id }) => id === signalOf(port));
+      return signal ? { ...port, name: signal.label } : port;
+    });
+    const read = new Set(readSignals.values());
+    const unused = currentPath.length ? [] : signals.filter((signal) => !read.has(signal.id)).map((signal): Port => ({
       end: { owner: 'inputs', port: `@task:${signal.id}` }, direction: 'output', name: signal.label,
       type: signal.type, taskSignal: signal.id,
     }));
@@ -511,7 +521,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       end: { owner, port: newPort }, direction: owner === 'inputs' ? 'output' : 'input', name: studioName('addPort'), type: {}, growing: true,
     });
     /** The Inputs card lists the task's signals in the task's order, whether or not a port reads them yet. */
-    const signalOrder = (port: Port) => (projection.data?.task_signals ?? []).findIndex((signal) => signal.label === port.name);
+    const signalOrder = (port: Port) => signals.findIndex(({ id }) => id === (port.taskSignal ?? signalOf(port)));
     const inputs = [...ports.filter((port) => idFor(port.end) === inputCard), ...unused]
       .sort((a, b) => signalOrder(a) - signalOrder(b));
     const map = new Map<string, Port[]>([
@@ -527,7 +537,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       return type || markedPorts.has(key) ? { ...port, type: type ?? port.type, mark: markedPorts.get(key) } : port;
     }));
     return map;
-  }, [owner, drawnInterior, registry, graph, projectedPorts, markedPorts, currentPath.length, projection.data]);
+  }, [owner, drawnInterior, registry, graph, projectedPorts, markedPorts, readSignals, currentPath.length, projection.data]);
   const entries = useMemo(() => libraryEntries(registryQuery.data ?? [], physical), [registryQuery.data, physical]);
   const entryOf = useMemo(() => new Map(entries.map((entry) => [entry.id, entry])), [entries]);
   const libraryItems = useMemo(() => entries.map(({ id, name, group, definition, equations }): LibraryItem => ({
