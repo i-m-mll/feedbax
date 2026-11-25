@@ -48,6 +48,17 @@ class AlignedCondition:
     trials: list[AlignedTrial]
 
 
+
+def trial_origin(record: TrialClockRecord, epoch: str | None) -> float:
+    """The recorded time of the trial start or the first reached occurrence of an epoch."""
+    if epoch is None:
+        return float(record.state_time[0])
+    for cue in record.timeline:
+        if cue.epoch == epoch and cue.start >= 0:
+            return float(record.state_time[cue.start])
+    raise CannotRun("/mean/align", f"trial {record.id!r} did not reach {epoch!r}")
+
+
 def align_trials(
     records: Iterable[TrialClockRecord], options: TrialMeanOptions, selection: TrialMeanSelection,
 ) -> list[AlignedCondition]:
@@ -62,14 +73,10 @@ def align_trials(
     for record in records:
         time = record.state_time
         reached = [cue for cue in record.timeline if cue.start >= 0]
+        if not len(time) or any(not cue.start <= cue.end < len(time) for cue in reached):
+            raise ValueError("Recorded epoch boundaries fall outside the trial's state samples.")
         end = max((cue.end for cue in reached), default=len(time) - 1)
-        start = 0
-        if selection.align is not None:
-            anchor = next((cue for cue in reached if cue.epoch == selection.align), None)
-            if anchor is None:
-                raise CannotRun("/mean/align", f"trial {record.id!r} did not reach {selection.align!r}")
-            start = anchor.start
-        origin = float(time[start])
+        origin = trial_origin(record, selection.align)
         alignment = TrialClockAlignment(
             origin=origin, span=TrialClockSpan(start=float(time[0]) - origin, end=float(time[end]) - origin),
         )

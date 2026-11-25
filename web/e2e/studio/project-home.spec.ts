@@ -46,3 +46,20 @@ test('an example makes a named copy that opens, and Delete removes a filtered ro
   await expect(table.getByRole('link')).toHaveCount(0);
   expect((await listed()).some(({ name }) => name === 'reach_copy')).toBe(false);
 });
+
+test('Open Folder is offered only by the desktop start window, and asks it for the picker', async ({ page }) => {
+  await page.goto('/');
+  const start = page.getByRole('dialog', { name: 'Studio', exact: true });
+  await expect(start.getByRole('button', { name: 'Examples', exact: true })).toBeVisible();
+  await expect(start.getByRole('button', { name: 'Open Folder', exact: true })).toHaveCount(0);
+
+  await page.addInitScript(() => {
+    Object.defineProperty(window, '__FEEDBAX_STUDIO_START__', {
+      value: { openFolder: async () => { (window as unknown as { picked: number }).picked += 1; } },
+    });
+    (window as unknown as { picked: number }).picked = 0;
+  });
+  await page.reload();
+  await start.getByRole('button', { name: 'Open Folder', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { picked: number }).picked)).toBe(1);
+});

@@ -39,6 +39,7 @@ from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
+from feedbax.contracts.trial_clock import StudioSavedFigureMeanRequest
 from feedbax.contracts.trial_record import StudioTrialReplayResponse
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
@@ -234,6 +235,24 @@ def saved_light_product(
     if product.content_security_policy is not None:
         headers["Content-Security-Policy"] = product.content_security_policy
     return Response(product.content, media_type=product.media_type, headers=headers)
+
+
+@router.post("/projects/{project_id}/figures/mean")
+def saved_figure_mean(
+    project_id: ProjectName, body: StudioSavedFigureMeanRequest, request: Request, response: Response,
+) -> Response:
+    try:
+        product = _project_response(response, lambda: request.app.state.project_plan.figure_mean(project_id, body))
+    except JobNotFound as exc:
+        raise HTTPException(404, detail="Figure is absent from the saved Plan.") from exc
+    except JobConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except HostError as exc:
+        raise _host_error(exc) from exc
+    return Response(
+        product.content, media_type=product.media_type,
+        headers={"Cache-Control": response.headers["cache-control"], "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.post("/projects/{project_id}/evaluate-objective")
