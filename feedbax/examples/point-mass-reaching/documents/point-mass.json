@@ -19,22 +19,9 @@
       ],
       "outputs": [
         {
-          "id": "hand",
-          "name": "hand",
-          "type": {
-            "shape": [
-              2
-            ]
-          }
-        },
-        {
-          "id": "velocity",
-          "name": "velocity",
-          "type": {
-            "shape": [
-              2
-            ]
-          }
+          "id": "effector",
+          "name": "effector",
+          "type": {}
         },
         {
           "id": "command",
@@ -66,22 +53,13 @@
             "mass": 1.0
           }
         },
-        "position": {
+        "hand-feedback": {
           "kind": "leaf",
-          "name": "Hand position",
+          "name": "Hand feedback",
           "type": "feedbax.SelectState",
           "fields": {
             "paths": [
-              "pos"
-            ]
-          }
-        },
-        "velocity": {
-          "kind": "leaf",
-          "name": "Hand velocity",
-          "type": "feedbax.SelectState",
-          "fields": {
-            "paths": [
+              "pos",
               "vel"
             ]
           }
@@ -91,7 +69,7 @@
           "name": "Feedback inputs",
           "type": "feedbax.Concatenate",
           "fields": {
-            "n_inputs": 3
+            "n_inputs": 2
           }
         },
         "cell": {
@@ -125,7 +103,7 @@
             "port": "in_0"
           }
         },
-        "sense-position": {
+        "sense-hand": {
           "source": {
             "owner": "component",
             "component": "plant",
@@ -133,44 +111,20 @@
           },
           "target": {
             "owner": "component",
-            "component": "position",
+            "component": "hand-feedback",
             "port": "state"
           }
         },
-        "sense-velocity": {
+        "pack-hand": {
           "source": {
             "owner": "component",
-            "component": "plant",
-            "port": "effector"
-          },
-          "target": {
-            "owner": "component",
-            "component": "velocity",
-            "port": "state"
-          }
-        },
-        "position-feedback": {
-          "source": {
-            "owner": "component",
-            "component": "position",
+            "component": "hand-feedback",
             "port": "output"
           },
           "target": {
             "owner": "component",
             "component": "feedback",
             "port": "in_1"
-          }
-        },
-        "velocity-feedback": {
-          "source": {
-            "owner": "component",
-            "component": "velocity",
-            "port": "output"
-          },
-          "target": {
-            "owner": "component",
-            "component": "feedback",
-            "port": "in_2"
           }
         },
         "controller-input": {
@@ -209,26 +163,15 @@
             "port": "force"
           }
         },
-        "hand": {
+        "effector": {
           "source": {
             "owner": "component",
-            "component": "position",
-            "port": "output"
+            "component": "plant",
+            "port": "effector"
           },
           "target": {
             "owner": "outputs",
-            "port": "hand"
-          }
-        },
-        "record-velocity": {
-          "source": {
-            "owner": "component",
-            "component": "velocity",
-            "port": "output"
-          },
-          "target": {
-            "owner": "outputs",
-            "port": "velocity"
+            "port": "effector"
           }
         },
         "command": {
