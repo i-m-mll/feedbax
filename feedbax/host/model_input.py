@@ -10,7 +10,7 @@ from feedbax.compiler.graph import ExecutableGraph, GraphCompilationError, Graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.execution.trial_resolution import PreparedTrialExecution, declared_model_input_prototypes, resolve_trial_execution
 from feedbax.contracts.expression_values import Problem, ProblemCode
-from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, ModelSource
+from feedbax.contracts.model_input import InitialModelSource, ModelSource
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.objectives.document import ObjectiveUse
 from feedbax.runtime._graph_key_schedule import model_initialization_key
@@ -150,7 +150,7 @@ def prepare_model_task(
     graph_override: GraphSpec | None = None,
 ) -> PreparedModelTask | tuple[Problem, ...]:
     """Pair a source with task-derived prototypes and its optional objective."""
-    definition = source.initial if isinstance(source, CheckpointModelSource) else source
+    definition = source if isinstance(source, InitialModelSource) else source.initial
     resolved = resolve_trial_execution(
         definition.document, task, registry.components, registry.expression_functions,
         python_tasks=registry.python_tasks, objective=objective, objective_use=objective_use,

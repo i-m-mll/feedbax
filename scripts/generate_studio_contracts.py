@@ -258,6 +258,7 @@ from feedbax.contracts.model_document import (
     ModelDocument,
     ModelPhysicalConnection,
     ModelPortAttachments,
+    ModelSignalSource,
     ModelPorts,
     ModelTime,
     ModelWire,
@@ -372,7 +373,7 @@ from feedbax.contracts.trial_record import (
     TrialTermAggregate,
     TrialUnavailable,
 )
-from feedbax.web.api.execution import TaskTrialSampleRequest, TaskTrialSampleResponse
+from feedbax.web.api.execution import StudioRunTaskTrialSampleRequest, TaskTrialSampleRequest, TaskTrialSampleResponse
 from feedbax.web.models.inspection import (
     CycleAnnotationModel,
     InlineTreescopeRequest,
@@ -446,7 +447,8 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.set_document import SetDocument, SetEntry
 from feedbax.contracts.window import Window
 from feedbax.contracts.training_document import TrainingDocument
-from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
+from feedbax.contracts.request_specs import DocumentTrainingConfig, SynthesisRequestSpec, TrainContinuation, TrialDocuments
+from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import (
     StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialRelate,
@@ -529,6 +531,8 @@ AUTHORED_CONTRACT_MODELS = (
     Window,
     TrainingDocument,
     TrialDocuments,
+    SynthesisRequestSpec,
+    SynthesisStepPayload,
     ImportedModelProvenance,
     LoadedModelDocument,
     LoadedModelReference,
@@ -855,6 +859,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TaskSignalAggregate,
     TaskVariableRange,
     TrialAggregate,
+    StudioRunTaskTrialSampleRequest,
     TaskTrialSampleRequest,
     TaskTrialSampleResponse,
     ParentRef,
@@ -1022,6 +1027,7 @@ CONTRACT_MODEL_NAMES = [
     "InlineTreescopeRequest",
     "TreescopeResponse",
     "InspectionStatusResponse",
+    "StudioRunTaskTrialSampleRequest",
     "TaskTrialSampleRequest",
     "TaskTrialSampleResponse",
 ]
@@ -1098,6 +1104,8 @@ def _unique_metadata(metadata: tuple[Any, ...]) -> tuple[Any, ...]:
 def ts_type(annotation: Any) -> str:
     """Return a TypeScript type expression for a Python annotation."""
 
+    if annotation is ModelSignalSource:
+        return "ModelSignalSource"
     annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "unknown"
@@ -1213,6 +1221,8 @@ def zod_schema(
     annotation_metadata = _annotation_metadata(annotation)
     field_metadata = () if field is None else tuple(field.metadata)
     metadata = _unique_metadata(annotation_metadata + field_metadata)
+    if annotation is ModelSignalSource:
+        return "ModelSignalSourceSchema"
     annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "z.unknown()"

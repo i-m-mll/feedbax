@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from feedbax.contracts.figure_document import FigureDocument
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.training import TrialDocuments as TrialDocuments
@@ -83,6 +84,24 @@ class DocumentTrainingRequestSpec(RequestSpec):
             raise ValueError("The completed-update clock exceeds its supported range.")
         if self.numerical_settings.model_dump(exclude_none=True):
             raise ValueError("Train does not support overriding numerical settings.")
+        return self
+
+
+class SynthesisRequestSpec(RequestSpec):
+    """A method run on the resolved Model, Task and Objective under one target."""
+
+    trial_documents: TrialDocuments
+    method: str
+    settings: dict[str, JsonValue]
+    target: ModelAddress = ModelAddress.at_stored_path(())
+    numerical_settings: NumericalSettings = NumericalSettings(floating_point_bits=64)
+
+    _method_key = field_validator("method")(validate_declaration_key)
+
+    @model_validator(mode="after")
+    def _numerical_precision(self) -> SynthesisRequestSpec:
+        if self.numerical_settings.floating_point_bits != 64:
+            raise ValueError("Synthesize requires 64-bit floating point.")
         return self
 
 

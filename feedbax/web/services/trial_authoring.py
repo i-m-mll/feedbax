@@ -1,13 +1,14 @@
 """Project and prepare edits for one saved trial pairing."""
 
 
+from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 
 from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_values import (
     Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, TextSpan, UnresolvedValue,
-    ValueBase, ValueType,
+    SetVariableOrigin, ValueBase, ValueType,
 )
 from feedbax.tasks.document import TrialSource, zero
 from feedbax.tasks.registry import resolve_python_task_instance
@@ -24,13 +25,13 @@ from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.project import (
-    LoadedModelDocument, RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
+    LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
 )
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, compose_step, resolve_step
 from feedbax.contracts.project_sweep import SetAxis
-from feedbax.contracts.set_document import read_set
-from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
+from feedbax.contracts.set_document import SetEntry, read_set
+from feedbax.planner.project_plan import EVALUATION_TASK, PlannedRow, PlannedRun, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
@@ -54,6 +55,7 @@ from feedbax.contracts.task_document import (
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.time_units import TimeValue, length_steps
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
+from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.training import TrialDocuments
 from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.contracts.window import WindowPosition, store_window_offset, window_offset_expression, window_offset_sites
@@ -637,6 +639,13 @@ def _evaluate_documents(plan, key, definition, bundle):
                         components=bundle.components,
                     )
                     graph, task = lowered.graph, lowered.task
+                    if isinstance(variant.task, TaskDocument) and isinstance(task, TaskDocument):
+                        markers = {variable.id: variable.marker for variable in variant.task.variables}
+                        task = task.model_copy(update={"variables": tuple(
+                            variable.model_copy(update={"marker": markers[variable.id]})
+                            if variable.id in markers and variable.marker != markers[variable.id] else variable
+                            for variable in task.variables
+                        )})
                 params = effective_params
     except ValueError as error:
         return documents, _Projection(
@@ -685,43 +694,77 @@ def _pairing(plan, key, bundle, *, definition=None):
     raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
 
 
-def _set_variable_edit(project, plan, key, path, change):
-    if path[:2] != ("task", "variables") or len(path) != 4 or path[-1] != "value":
-        return None
-    row = plan.row(key)
+def read_run_trial_sample(
+    folders: ProjectFolderService, project: str, revision: str, key: RunKey, bundle: ApplicationRegistryBundle,
+) -> tuple[TrialDocuments | _InitialTrialDocuments, GraphSpec | None]:
+    """Read the selected run's model and trial inputs, including its effective Set and Evaluate changes."""
+    plan = folders.read_plan(project, revision=revision, source_runs=(key,)).plan
+    definition = _definition(plan, key)
+    run = plan.row(key)
+    if isinstance(run, PlannedRun) and run.kind == "train":
+        spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        if isinstance(spec, DocumentTrainingRequestSpec):
+            documents = spec.trial_documents
+            if run.train is not None and run.train.task is not None:
+                documents = _with_task(documents, run.train.task)
+            return documents, None
+    try:
+        documents, _, graph = _pairing(plan, key, bundle, definition=definition)
+    except (ValueError, TypeError, KeyError) as error:
+        raise ProjectFolderInvalid(str(error)) from error
+    return documents, graph
+
+
+def _set_variables(project: Project, key: RunKey, row: PlannedRow | None) -> Iterator[tuple[str, SetVariableOrigin, bool, SetEntry]]:
+    """Yield each visible variable's authored Set origin and entry contents."""
     if row is None:
-        return None
+        return
     template = compose_step(project, key.step)
     sweep = template.sweep if not isinstance(template, ProjectDiagnostic) else None
-    arms = [
-        (axis, read.set, row.axis_keys[axis], False)
+    arms: list[tuple[str, str, tuple[str, ...] | None]] = [
+        (axis, read.set, (row.axis_keys[axis],))
         for axis, read in (sweep.axes.items() if sweep is not None else ())
         if isinstance(read, SetAxis) and axis in row.axis_keys
     ]
-    for axis, placement in project.steps[key.step].set_fields.items():
-        name = placement.axis.set
-        arms.extend((axis, name, entry, True) for entry in read_set(project.documents.get, name).entries)
-    choices = []
-    for axis, name, entry, scoped in arms:
-        source = read_set(project.documents.get, name).entries[entry]
-        refs = {entry_variable_id(axis, entry, variable.id): variable.id for variable in source.task_variables}
-        original = refs.get(path[2]) if scoped else path[2]
-        if not any(variable.id == original for variable in source.task_variables):
+    arms.extend((axis, field.axis.set, None) for axis, field in project.steps[key.step].set_fields.items())
+    for axis, name, selected in arms:
+        try:
+            entries = read_set(project.documents.get, name).entries
+        except ValueError:
             continue
-        (edit,) = change.edits
-        assert isinstance(edit, SetProjectValue)
-        value = rename_entry_references(edit.value, refs) if scoped else edit.value
-        variables = tuple(
-            Variable.model_validate(variable.model_dump(mode="json") | {"value": value})
-            if variable.id == original else variable for variable in source.task_variables
-        )
-        choices.append((name, scoped, SetEntryTask(
-            kind="set_entry_task", step=key.step, axis=axis, entry=entry, task_variables=variables,
-        )))
+        scoped = selected is None
+        for entry in entries if selected is None else selected:
+            source = entries.get(entry)
+            if source is None:
+                continue
+            for variable in source.task_variables:
+                id = entry_variable_id(axis, entry, variable.id) if scoped else variable.id
+                yield id, SetVariableOrigin(
+                    step=key.step, axis=axis, set=name, entry=entry, variable=variable.id,
+                ), scoped, source
+
+
+def _set_variable_edit(project, plan, key, path, change):
+    if path[:2] != ("task", "variables") or len(path) != 4 or path[-1] != "value":
+        return None
+    choices = [(origin, scoped, source) for id, origin, scoped, source in _set_variables(project, key, plan.row(key))
+               if id == path[2]]
     if len(choices) > 1:
         raise ProjectFolderInvalid("The variable belongs to more than one selected Set entry.")
-    return choices[0] if choices else None
-
+    if not choices:
+        return None
+    [(origin, scoped, source)] = choices
+    (edit,) = change.edits
+    assert isinstance(edit, SetProjectValue)
+    refs = {entry_variable_id(origin.axis, origin.entry, variable.id): variable.id for variable in source.task_variables}
+    value = rename_entry_references(edit.value, refs) if scoped else edit.value
+    variables = tuple(
+        Variable.model_validate(variable.model_dump(mode="json") | {"value": value})
+        if variable.id == origin.variable else variable for variable in source.task_variables
+    )
+    return origin.set, scoped, SetEntryTask(
+        kind="set_entry_task", step=key.step, axis=origin.axis, entry=origin.entry, task_variables=variables,
+    )
 
 def _set_condition_site(definition, projection):
     task = definition.payload.get("trial_documents", {}).get("task")
@@ -979,7 +1022,12 @@ def _structure_edit(change, documents, definition) -> StudioTrialDocumentEdit | 
         changed = restructure(changed, each)
         if isinstance(changed, Problem):
             return (changed,)
-    _, raw = _changed_value(documents, definition, "task")
+    if isinstance(documents, _InitialTrialDocuments):
+        raw = definition.input_documents["task"].payload
+    else:
+        raw = (definition.payload.get("trial_documents") or {}).get("task")
+        if raw is None:
+            raw = task.model_dump(mode="json", exclude_unset=True)
     before, after = task.model_dump(mode="json"), changed.model_dump(mode="json")
     edits = [
         SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after.get(field, []))
@@ -1519,6 +1567,20 @@ def trial_authoring(
         fields.extend(_trial_fields(
             path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
         ))
+    origins = {}
+    if (
+        task_source is not None and task_source.kind == "trained"
+        and not definition.payload.get("trial_documents", {}).get("task")
+        and (upstream := evaluate_subject(definition)) is not None
+    ):
+        parent = upstream[0]
+        upstream_project = plan.variant_projects[parent.variant]
+        origins.update((id, origin) for id, origin, _, _ in _set_variables(upstream_project, parent, plan.row(parent)))
+    origins.update((id, origin) for id, origin, _, _ in _set_variables(plan.variant_projects[key.variant], key, row))
+    variables = [
+        variable.model_copy(update={"set_entry": origin}) if (origin := origins.get(variable.id)) else variable
+        for variable in projected.variables
+    ]
     set_fields = trial_set_fields(project, key.step)
     if set_fields:
         site = _set_condition_site(definition, projected)
@@ -1540,7 +1602,7 @@ def trial_authoring(
         set_fields=set_fields,
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
-        variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
+        variables=variables, signals=list(projected.signals), epochs=list(projected.epochs),
         epoch_instances=list(projected.epoch_instances),
         period_seconds=period,
         n_steps=compiled.n_steps if compiled else None,

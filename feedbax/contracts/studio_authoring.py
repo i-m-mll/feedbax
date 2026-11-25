@@ -9,7 +9,7 @@ from pydantic import Field, JsonValue, StrictFloat, StrictInt
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.expression_registry import FunctionInfo
-from feedbax.contracts.operation import OperationDefinition
+from feedbax.contracts.operation import DatasetPort, OperationDefinition
 from feedbax.contracts.expression_values import ValueType
 from feedbax.contracts.project import RootDocument, Sha256, StepKind
 from feedbax.contracts.task_document import TaskDocument
@@ -35,7 +35,7 @@ class InputRole(StrictModel):
 
     required: bool
     gathers: bool
-    producer: InputProducer | None
+    producers: list[InputProducer]
     documents: list[Literal["model", "task", "loaded_model"]]
     checkpoint_sets: bool
 
@@ -45,6 +45,7 @@ class StudioAuthoringDeclaration(StrictModel):
     label: str
     renamed_from: tuple[str, ...]
     settings_schema: dict[str, JsonValue]
+    outputs: dict[str, DatasetPort] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
 
 class StudioAuthoringSurface(StrictModel):
@@ -52,6 +53,7 @@ class StudioAuthoringSurface(StrictModel):
     step_payloads: dict[str, dict[str, JsonValue]]
     document_schemas: dict[str, dict[str, JsonValue]]
     training_methods: list[StudioAuthoringDeclaration]
+    synthesis_methods: list[StudioAuthoringDeclaration]
 
 
 class StudioAuthoredDocumentFamily(StrictModel):

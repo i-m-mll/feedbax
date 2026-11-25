@@ -49,7 +49,7 @@ test('places the installed Speed by trial figure from the Analyze Library under 
 });
 
 test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(70_000);
+  test.setTimeout(90_000);
   const home = studio.home;
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', home, 'managed-analyze'));
   const path = '/api/projects/' + project;
@@ -138,6 +138,8 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await expect(search).toHaveValue('velocity');
   await expect(item('Aligned velocity')).toBeFocused();
   await page.keyboard.press('ArrowDown');
+  await expect(item('Peak velocity summary')).toBeFocused();
+  await page.keyboard.press('ArrowDown');
   await expect(item('Trial summary')).toBeFocused();
   await edit(() => page.keyboard.press('Enter'));
   await expect(item('Trial summary')).toBeFocused();
@@ -204,12 +206,54 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   const caption = inspector.getByRole('textbox', { name: 'Caption', exact: true });
   const captioned = await edit(async () => { await caption.fill('Velocity by condition'); await caption.press('Enter'); });
   expect(graph(captioned).views?.['velocity-summary'].figure).toMatchObject({ caption: 'Velocity by condition' });
+
+  // Catches marks that are added in the inspector but not saved, drawn, or redrawn after a reopen.
+  await tab(page, 'Analysis').click();
+  await search.fill('peak');
+  await item('Peak velocity summary').click();
+  await edit(() => page.keyboard.press('Enter'));
+  await analysis.getByRole('group', { name: 'Select Peak velocity summary', exact: true }).click();
+  await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
+  await edit(() => pick(role('Velocity'), 'Aligned velocity.velocity'));
+  await tab(page, 'Figures').click();
+  await figures.getByRole('button', { name: 'Velocity Summary', exact: true }).click();
+  const addMark = async (name: string) => {
+    await inspector.getByRole('button', { name: 'Add Mark', exact: true }).click();
+    await edit(() => page.getByRole('menuitem', { name, exact: true }).click());
+  };
+  await addMark('Data');
+  await edit(() => pick(role('Data 2'), 'Peak velocity summary.summary'));
+  await addMark('Points');
+  await edit(() => pick(role('Data'), 'data-2'));
+  await edit(() => pick(role('X'), 'peak_time'));
+  // A new points layer reads what the figure's band reads; the peak summary names its fields the same.
+  for (const [field, value] of [['Y', 'mean'], ['Lower', 'lower'], ['Upper', 'upper']] as const) {
+    await expect(role(field)).toHaveText(value);
+  }
+  await addMark('Rule');
+  await edit(() => enter(inspector.getByRole('textbox', { name: 'At', exact: true }), '0.05'));
+  await addMark('Span');
+  await edit(() => enter(inspector.getByRole('textbox', { name: 'Start', exact: true }), '0.1'));
+  const marked = await edit(() => enter(inspector.getByRole('textbox', { name: 'End', exact: true }), '0.3'));
+  expect(graph(marked).views?.['velocity-summary'].figure).toMatchObject({
+    data: ['summary', 'data-2'],
+    layers: [
+      { mark: 'band' },
+      { name: 'points', mark: 'points', role: 'data-2', encode: { x: 'peak_time', y: 'mean', error_y: { lower: 'lower', upper: 'upper' } } },
+      { name: 'rule', mark: 'rule', encode: { axis: 'y', at: 0.05 } },
+      { name: 'span', mark: 'span', encode: { axis: 'x', start: 0.1, end: 0.3 } },
+    ],
+  });
+  expect((await plan(marked.revision)).problems.filter(({ step }) => step === 'analyze')).toEqual([]);
+
   await page.reload();
   await mapStep(page, 'analyze').click();
   await tab(page, 'Figures').click();
   await expect(figures.getByText('Velocity by condition', { exact: true })).toBeVisible();
   const restored = await snapshot();
-  expect(graph(restored)).toEqual(graph(captioned));
-  expect(restored.revision).toBe(captioned.revision);
+  expect(graph(restored)).toEqual(graph(marked));
+  expect(restored.revision).toBe(marked.revision);
+  await figures.getByRole('button', { name: 'Velocity Summary', exact: true }).click();
+  await expect(inspector.getByRole('tree', { name: 'Layers', exact: true }).getByRole('treeitem')).toHaveCount(4);
   expect(await attempts()).toEqual(admittedJobs);
 });

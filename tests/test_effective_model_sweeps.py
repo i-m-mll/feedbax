@@ -8,7 +8,6 @@ from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_DIFFERENCE_BATCHES
-from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_sweep import Sweep, SweepExpansionError, axis_to_list, expand_sweep
@@ -85,7 +84,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
     )
     jobs = JobService(host, registry)
     raw = _managed_project(authored)
-    target = _wire_field("train-added", "fields", "factor").to_text()
+    target = _wire_field("train-added", "operands", "factor", "value").to_text()
     raw["steps"]["train"]["sweep"] = {"axes": {"factor": {"path": target, "values": [0.5]}}}
     raw["steps"]["baseline"]["sweep"] = {
         "axes": {"trained": {"input": "subject"}},
@@ -105,7 +104,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
     document = _decode(plan, train.key).trial_documents.model
     (attachment,) = _controller(document).wires["read"].attachments
     assert attachment.id == "train-added"
-    assert attachment.fields == {"factor": 0.5}
+    assert attachment.operands["factor"].value == 0.5
     variation = _decode(plan, evaluate.key).params["variation"]
     (patch,) = variation
     assert patch["value"]["params"]["scale"] == 0.25
@@ -129,7 +128,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
 
 def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     raw = _managed_project(authored)
-    target = _wire_field("train-added", "fields", "factor").to_text()
+    target = _wire_field("train-added", "operands", "factor", "value").to_text()
     variant_target = f"documents.{_TRAINED}.{target}"
     raw["documents"]["alternate"] = deepcopy(raw["documents"]["reach-model"])
     other = deepcopy(raw["steps"]["train"])
@@ -155,7 +154,7 @@ def test_addressed_rules_list_conversion_and_scoped_variant(authored):
         assert not plan.diagnostics
         trains = [run for run in plan.runs if run.key.step == "train"]
         assert {
-            _controller(_decode(plan, run.key).trial_documents.model).wires["read"].attachments[0].fields["factor"]
+            _controller(_decode(plan, run.key).trial_documents.model).wires["read"].attachments[0].operands["factor"].value
             for run in trains
         } == {0.6, 0.9}
         assert {
@@ -187,17 +186,12 @@ def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     assert not plan.runs
 
 
-def test_named_draw_part_does_not_reset_attachment_anchors(authored):
+def test_vector_operand_member_edit_does_not_reset_attachment_anchors(authored):
     _, model, _, _ = authored
     owner = _attachment_owner("read")
     first = _add_attachment(owner, "first", None)
-    first["attachment"]["fields"]["factor"] = {
-        "kind": "draw", "family": "uniform", "args": [
-            {"kind": "literal", "value": 0.1, "unit": "m"},
-            {"kind": "literal", "value": 0.8, "unit": "m"},
-        ],
-    }
-    address = _wire_field("first", "fields", "factor", "low")
+    first["attachment"]["operands"]["factor"]["value"] = [0.1, 0.8]
+    address = _wire_field("first", "operands", "factor", "value", 0)
     records = [
         first, _add_attachment(owner, "second", "first"),
         {"op": "set_field", "address": address.model_dump(mode="json"), "value": 0.2},
@@ -207,11 +201,11 @@ def test_named_draw_part_does_not_reset_attachment_anchors(authored):
     effective = resolve_effective_model(model, ComponentRegistry(), differences)
     chain = _controller(effective).wires["read"].attachments
     assert [attachment.id for attachment in chain] == ["first", "second", "third"]
-    assert chain[0].fields["factor"]["args"][0] == {"kind": "literal", "value": 0.2, "unit": "m"}
+    assert chain[0].operands["factor"].value == (0.2, 0.8)
 
-    whole = _wire_field("first", "fields", "factor")
+    whole = _wire_field("first", "operands", "factor", "value")
     sweep = Sweep.model_validate({
-        "axes": {"draw": {"path": whole.to_text(), "values": [first["attachment"]["fields"]["factor"]]}},
+        "axes": {"draw": {"path": whole.to_text(), "values": [first["attachment"]["operands"]["factor"]["value"]]}},
         "exceptions": {"part": {"where": {"rule": ""}, "patches": {address.to_text(): {"value": 0.2}}}},
     })
     with pytest.raises(SweepExpansionError, match="already writes"):
@@ -220,7 +214,7 @@ def test_named_draw_part_does_not_reset_attachment_anchors(authored):
 
 def test_document_variant_only_changes_the_addressed_base_model(authored):
     raw = document_project(authored, evaluation=False)
-    address = _wire_field("base", "fields", "factor").to_text()
+    address = _wire_field("base", "operands", "factor", "value").to_text()
     _model_controller(raw)["wires"]["read"]["attachments"] = [
         _add_attachment(_attachment_owner("read"), "base", None, 0.9)["attachment"],
     ]
@@ -232,11 +226,11 @@ def test_document_variant_only_changes_the_addressed_base_model(authored):
     plan = compile_project(Project.model_validate(raw), source_runs=keys)
     assert not plan.diagnostics
     assert [
-        _controller(_decode(plan, key).trial_documents.model).wires["read"].attachments[0].fields["factor"]
+        _controller(_decode(plan, key).trial_documents.model).wires["read"].attachments[0].operands["factor"].value
         for key in keys
     ] == [0.9, 0.6]
     provenance = "/payload/trial_documents/model/interior/components/wrapper/interior/components/controller"
-    origin = plan.selected_definitions[keys[1]].sources[provenance + "/interior/wires/read/attachments/0/fields/factor"]
+    origin = plan.selected_definitions[keys[1]].sources[provenance + "/interior/wires/read/attachments/0/operands/factor/value"]
     assert origin.kind == "variant"
     assert plan.selected_definitions[keys[1]].sources[provenance + "/name"].kind == "document"
 

@@ -4,10 +4,18 @@ import { ruleCompletions, type RuleVocabulary } from './runRule';
 const vocabulary: RuleVocabulary = { axes: { seed: ['0', '1', '2'], lr: ['0.01', '0.1'] }, metrics: ['loss', 'objective/total'] };
 const offered = (rule: string, caret = rule.length, words = vocabulary) => ruleCompletions(rule, caret, words).map(({ text }) => text);
 
-test('a comparison starts with an axis, never a result name', () => {
-  expect(offered('')).toEqual(['seed', 'lr', 'lowest', 'highest']);
-  expect(offered('l')).toEqual(['lr', 'lowest']);
+test('a term starts with an axis or, where the rule reads results, a declared metric or a rank', () => {
+  expect(offered('')).toEqual(['seed', 'lr', 'loss', '"objective/total"', 'lowest', 'highest']);
+  expect(offered('l')).toEqual(['lr', 'loss', 'lowest']);
   expect(offered('', 0, { axes: vocabulary.axes })).toEqual(['seed', 'lr']);
+});
+
+test('a metric offers the operators that order it, and no values', () => {
+  expect(offered('seed=0 loss')).toEqual(['seed=0 loss<', 'seed=0 loss<=', 'seed=0 loss>', 'seed=0 loss>=']);
+  expect(offered('loss<')).toEqual(['loss<=']);
+  expect(offered('"objective/total"')).toEqual(['"objective/total"<', '"objective/total"<=', '"objective/total">', '"objective/total">=']);
+  expect(offered('loss<0.')).toEqual([]);
+  expect(offered('loss', 4, { axes: vocabulary.axes })).toEqual([]);
 });
 
 test('an axis offers its operators, then its values, in a list and a range', () => {

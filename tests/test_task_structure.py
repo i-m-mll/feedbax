@@ -1,11 +1,17 @@
 """A task document's structure is changed by the service, and the document it leaves compiles."""
 
+from copy import deepcopy
+
+from fastapi.testclient import TestClient
+import pytest
+
 from feedbax.contracts.expression_values import ValueType
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.expression_values import LiteralValue
-from feedbax.contracts.task_document import BLANK_TASK, TaskDocument
-from tests.support.managed_train_fixture import managed_train_project
+from feedbax.contracts.task_document import BLANK_TASK, Marker, TaskDocument
+from feedbax.web.app import create_app
+from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 from tests.test_model_document_edits import _URL, _Project
 from tests.test_task_document_fields import _save
 
@@ -24,12 +30,13 @@ def _project(tmp_path, task=None):
     return _Project(tmp_path, raw)
 
 
-def _change(project, change, *, body=None) -> StudioTrialAuthoring:
-    row = next(row for row in project.plan().rows if row.kind == "train")
+def _change(project, change, *, body=None, step="train", store_choice=None) -> StudioTrialAuthoring:
+    row = next(row for row in project.plan().rows if row.key.step == step)
     response = project.client.post(f"{_URL}/authoring/trials", json={
         "revision": project.snapshot()["revision"],
         "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row},
         "change": body if change is None else {"kind": "structure", "changes": change if isinstance(change, list) else [change]},
+        "store_choice": store_choice,
     })
     assert response.status_code == 200, response.text
     return StudioTrialAuthoring.model_validate(response.json())
@@ -41,6 +48,101 @@ def _made(project, change) -> list:
     assert view.files, (change, view.problems)
     _save(project, view)
     return _change(project, None).problems
+
+
+def test_shipped_task_marker_survives_reopening_without_changing_request_ids(tmp_path):
+    project = _project(tmp_path)
+    marker = Marker(shape="triangle", filled=True)
+    with project.client:
+        before = project.snapshot()["revision"]
+        requests = project.ids()
+        assert requests
+        task = _change(project, None).task
+        assert isinstance(task, TaskDocument)
+        points = {variable.id: variable for variable in task.variables if variable.type.space == "point"}
+        assert points["start"].marker is points["target"].marker is None
+        assert "start" in {link.variable for link in task.links}
+        assert "target" not in {link.variable for link in task.links}
+        assert not _made(project, {
+            "op": "set_variable_marker", "id": "target", "marker": marker.model_dump(mode="json"),
+        })
+        assert project.snapshot()["revision"] != before
+        assert project.ids() == requests
+
+    project.client = TestClient(create_app(projects_dir=tmp_path))
+    with project.client:
+        task = _change(project, None).task
+        assert next(variable.marker for variable in task.variables if variable.id == "target") == marker
+        assert not _made(project, {"op": "set_variable_marker", "id": "target", "marker": None})
+        stored = next(variable for variable in project.composed(TASK)["variables"] if variable["id"] == "target")
+        assert "marker" not in stored
+        assert project.ids() == requests
+
+
+def _marker_evaluate(tmp_path, subject, *, own_task=False):
+    data = managed_train_project(scenario="delayed-reaches").model_dump(mode="json", by_alias=True, exclude_unset=True)
+    evaluate = managed_evaluation_step("train")
+    if subject == "initial":
+        task_name = TASK
+        documents = data["steps"]["train"]["base"]["inline"]["trial_documents"]
+        evaluate["inputs"] = {
+            "subject": {"kind": "initial_model", "source": documents["model"]},
+            "task": {"kind": "task", "source": documents["task"]},
+        }
+    elif own_task:
+        task_name = "evaluate-task"
+        data["documents"][task_name] = deepcopy(data["documents"][TASK])
+        evaluate["base"]["inline"]["trial_documents"] = {"task": {"document": task_name}}
+    else:
+        task_name = TASK
+    data["steps"]["evaluate"] = evaluate
+    return _Project(tmp_path, data), task_name
+
+
+@pytest.mark.parametrize("subject", ["initial", "trained"])
+def test_evaluate_task_marker_is_visible_without_changing_the_request(tmp_path, subject):
+    project, task_name = _marker_evaluate(tmp_path, subject, own_task=True)
+    marker = Marker(shape="square", filled=False)
+    with project.client:
+        before = project.ids()
+        assert "evaluate" in before
+        variables = project.composed(task_name)["variables"]
+        index = next(i for i, variable in enumerate(variables) if variable["id"] == "target")
+        saved = project.client.patch(_URL, json={
+            "revision": project.snapshot()["revision"], "files": [{
+                "address": {"kind": "document", "id": task_name},
+                "patches": [{
+                    "op": "add", "path": f"/payload/variables/{index}/marker", "value": marker.model_dump(mode="json"),
+                }],
+            }],
+        })
+        assert saved.status_code == 200, saved.text
+        task = _change(project, None, step="evaluate").task
+        assert isinstance(task, TaskDocument)
+        assert next(variable.marker for variable in task.variables if variable.id == "target") == marker
+        assert project.ids() == before
+
+
+@pytest.mark.parametrize("subject", ["initial", "trained"])
+def test_evaluate_structure_edit_preserves_its_task_store_scope(tmp_path, subject):
+    project, _ = _marker_evaluate(tmp_path, subject)
+    marker = Marker(shape="square", filled=False)
+    change = {"op": "set_variable_marker", "id": "target", "marker": marker.model_dump(mode="json")}
+    with project.client:
+        before = project.ids()
+        assert "evaluate" in before
+        edit = _change(project, change, step="evaluate")
+        if subject == "initial":
+            assert not edit.files
+            choice = next(option for option in edit.store_choices if option.kind == "selected_readers")
+            edit = _change(project, change, step="evaluate", store_choice=choice.id)
+        assert edit.files, edit.problems
+        _save(project, edit)
+        for step, expected in (("evaluate", marker), ("train", None)):
+            task = _change(project, None, step=step).task
+            assert isinstance(task, TaskDocument)
+            assert next(variable.marker for variable in task.variables if variable.id == "target") == expected
+        assert project.ids() == before
 
 
 def test_each_structural_change_leaves_a_document_that_compiles(tmp_path):

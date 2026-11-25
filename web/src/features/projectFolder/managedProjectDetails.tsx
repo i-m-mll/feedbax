@@ -7,7 +7,7 @@ import { fetchSavedEvaluationReplay } from '@/api/jobs';
 import type { MapDocumentScope } from '@/components/pipeline/StudioPipelineMap';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands } from '@/components/canvas/StudioCanvas';
-import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, SceneTools, sceneContents, type SceneRelate } from '@/components/scene/SceneRegion';
+import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, SceneTools, sceneContents, type SceneMarking, type SceneRelate } from '@/components/scene/SceneRegion';
 import { recordedStates, trialScene, type SceneTrial, type StateValues } from '@/components/scene/trialScene';
 import { emptyScene, fittedCamera, sceneElements, zoomScene, type Scene, type SceneCamera, type SceneLayer, type SceneTool, type SceneView } from '@/components/scene/sceneView';
 import { useSceneGeometry } from '@/components/scene/useSceneGeometry';
@@ -20,7 +20,7 @@ import {
   DocumentReferenceSchema, ModelDocumentSchema,
   type EvaluateModelRequest, type ModelDocument, type StudioSavedEvaluationRow,
   type StudioSavedTrainKey, type StudioProjectWindowMapProblem, type ModelAddress, type TrialRecord,
-  type StudioSavedEvaluationReplayRequest, type TrialMean, type TrialMeanOptions, type TrialMeanSelection,
+  type StudioSavedEvaluationReplayRequest, type StudioTrialAuthoring, type TrialMean, type TrialMeanOptions, type TrialMeanSelection,
 } from '@/generated/studioContracts';
 import { modelDocumentId, ownDefinition } from './authoredEdits';
 import { placeMember, type Reveal } from './projectWindowProblems';
@@ -69,6 +69,8 @@ interface DetailInputs {
   readonly sceneTrial: SceneTrial;
   /** Writes an Objective term from the Scene's places, where the step's Objective can be edited. */
   readonly relate?: SceneRelate;
+  /** Changes a task variable's marker from the Scene's list, where the step's Task can be edited. */
+  readonly marking?: SceneMarking;
   /** The recorded checkpoints the Scene's trials can be read at, when there is a choice. */
   readonly checkpoints: ReturnType<typeof useSavedEvaluationScene>['checkpoints'];
   readonly namedRun?: StudioSavedTrainKey;
@@ -93,6 +95,8 @@ interface DetailInputs {
   readonly drawerSections: DrawerSections;
   readonly openModelProblems?: (element: ModelAddress, opener: HTMLElement) => void;
   readonly exceptions?: ExceptionMentions;
+  /** The step's trial, whose epochs and Task variables the Model's attachments read. */
+  readonly trial?: StudioTrialAuthoring;
 }
 
 const rootModelPath: string[] = [];
@@ -224,7 +228,7 @@ function useSceneSelection(elements: ElementSelectionStore, scene: Scene | null)
   };
 }
 
-function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements, drawerSections, relate }: DetailInputs,
+function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements, drawerSections, relate, marking }: DetailInputs,
   model: StoredModel | undefined, scope: string, projectId: string, revision: string): ManagedProjectDetail {
   const visible = activeView === 'scene';
   const source = model && visible ? { document_id: model.id, revision } : null;
@@ -282,7 +286,7 @@ function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements,
       </div>
     </CanvasStrip> : null,
     drawer: (scene || checkpoints) && <SceneDrawer sections={drawerSections} scene={scene ?? emptyScene} checkpoints={checkpoints}
-      selected={selection.selected} onSelect={selection.onSelect} />,
+      selected={selection.selected} onSelect={selection.onSelect} marking={marking} />,
     inspector: scene && selection.selected ? <SceneElementInspector scene={scene} selected={selection.selected} /> : null,
   };
 }
@@ -349,6 +353,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     sections: input.drawerSections,
     openProblems: input.openModelProblems,
     exceptions: input.exceptions,
+    trial: input.trial,
   });
   return {
     model: stored ? storedView : { body: null },

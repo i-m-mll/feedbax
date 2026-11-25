@@ -63,7 +63,8 @@ import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
 import { stepDocument } from './documentPayload';
-import type { SceneRelate } from '@/components/scene/SceneRegion';
+import type { SceneMarking, SceneRelate } from '@/components/scene/SceneRegion';
+import { reasonOf } from '@/components/values/fieldModel';
 import { useManagedProjectDetails, useRecordedTerms, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
 import { declaredEvaluation, FigureClockContext } from './figureClock';
@@ -95,6 +96,7 @@ import { InputEditor, type InputGesture } from './InputEditor';
 import { documentChoice } from './referenceChoices';
 import { documentsOfRole } from './useProjectDocuments';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
+import { holdsProducts } from './OperationProducts';
 import { focusedResult, SavedResults } from './SavedResults';
 import { exportLoadedModel } from '@/api/projectFolders';
 import { saveFile } from '@/components/ui/chooseFile';
@@ -447,12 +449,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const scoredBy = authored?.kind === 'evaluate' ? evaluateSubject(authored) : undefined;
   /** An Evaluate is scored by the Objective of the Train that made its checkpoint, or by the one it names itself. */
   const scored = authored?.kind !== 'evaluate' || scoredBy?.kind === 'steps' || scoredBy?.kind === 'document' && !!scoredBy.objective;
+  const operationProducts = step?.kind === 'analyze' && !!namedRun && (shown?.window_map?.analysis_elements ?? [])
+    .some(({ key, kind, requests }) => kind === 'analyze' && savedRunId(key) === savedRunId(namedRun) && requests.some(holdsProducts));
   const views = !step ? noViews : viewOffer({
     step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved',
     objective: scored, model: stored?.value,
     scenePlaces: restGeometry?.kind === 'ready' ? restGeometry.geometry.mechanisms.length > 0 : undefined,
     runProblems: (namedRun && step.runs.find(({ id }) => id === savedRunId(namedRun))?.problems) ?? [],
-    results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series,
+    results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series || operationProducts,
     report: !!stepReport(snapshot, step?.id).report,
   });
   const pins = windowState.secondaryView ? windowState.pins ?? {} : {};
@@ -796,10 +800,16 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       setFieldFocus({ key: crypto.randomUUID(), step: step.id, target: measureAnchor(answer.term) });
       return undefined;
     } : undefined;
+  const taskDocument = trial.view && 'variables' in trial.view.task ? trial.view.task_document ?? step?.id : undefined;
+  const marking = useMemo((): SceneMarking | undefined => trial.commit && taskDocument ? {
+    document: taskDocument,
+    mark: async (variable, marker) => reasonOf(await trial.commit!(studioAccessibleName('set', studioName('marker')),
+      { kind: 'structure', changes: [{ op: 'set_variable_marker', id: variable, marker }] })),
+  } : undefined, [trial.commit, taskDocument]);
   const detailInputs = {
-    editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, relate,
+    editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, relate, marking,
     variantId: variant, evaluation: selectedEvaluation, sceneTrial: trialClock.scene, checkpoints: evaluationReplay.checkpoints,
-    namedRun, documentScopes, planCurrent: plans.current, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm, askStore,
+    namedRun, documentScopes, planCurrent: plans.current, elements, trial: trial.view, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm, askStore,
     drawerSections,
     openModelProblems: (element: ModelAddress, opener: HTMLElement) => {
       const owner = modelProblems?.find((problem) => {
@@ -832,11 +842,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }
     const clocked = slot === clockSlot;
     return {
-      ...detailInputs, step: subject.step, stepId: subject.step.id, focus: null, selection: null, evaluation: subject.evaluation, relate: undefined,
+      ...detailInputs, step: subject.step, stepId: subject.step.id, focus: null, selection: null, evaluation: subject.evaluation, relate: undefined, marking: undefined,
       sceneTrial: clocked ? trialClock.scene : restTrial, checkpoints: clocked ? evaluationReplay.checkpoints : undefined,
       namedRun: undefined, documentScopes: { graph: undefined, task: undefined }, valueEditing: false, evaluateScope: undefined,
       stored: subject.stored, modelProblems: [], selectedSweepValues: new Map<string, Set<string>>(), fieldRows: undefined,
-      fieldAxes: undefined,
+      fieldAxes: undefined, trial: subject.trial,
     };
   }
   const primary = useManagedProjectDetails({ ...slotDetailInputs('primary'), activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden',
@@ -2010,20 +2020,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               const picker = pickDocument('task', value.task_document ?? undefined, documentScopes.task);
               const unfed = unfedTasks(value);
               const variable = selectedVariable(selected);
+              const entries = { of: sets.entryTask, selected: step && sets.selectedEntry(step) };
               return {
                 padded: true,
                 picker: picker && { ...picker, documents: picker.documents.map((entry) => ({ ...entry, problem: unfed.get(entry.key) })) },
                 body: withProblem('variables' in value.task
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
-                    <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
+                    <TrialTaskDocument view={value} commit={commit} runs={runs} entries={entries} selected={selected} select={choose(document)}
                       toSweep={step && ((axis) => sets.toSweep(step.id, axis))}
                       weigh={step && ((axis) => sets.fieldWeight(step.id, axis))}
                       drawn={drawnVariables(trialClock.trial)} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
-                inspector: termInspector || (variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
+                inspector: termInspector || (variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} entries={entries} id={variable.id} />
                   : selected && 'variables' in value.task && inGrid(selected)
                     ? <TrialGridInspector view={value} commit={commit} runs={runs} selected={selected} shown={trialClock.trial} />
                     : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} shown={trialClock.trial} />),
@@ -2173,6 +2184,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             };
           }
           const resultsFailure = planError('results');
+          if (view === 'results' && analyze.results) return { ...analyze.results, padded: true, body: withProblem(analyze.results.body) };
           if (view === 'results') return {
             padded: true,
             body: <SavedResults shown={shown} current={plans.current} failure={resultsFailure} result={shownResult}

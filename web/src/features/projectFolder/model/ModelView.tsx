@@ -11,7 +11,7 @@ import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/
 import { baseChain, baseOf, documentPayload } from '../documentPayload';
 import { shownName } from '@/features/pipeline/planView';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
-import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
+import { Box, House, Search, TriangleAlert } from 'lucide-react';
 import clsx from 'clsx';
 import { Button, IconButton } from '@/components/ui/Button';
 import { carryKind } from '@/components/ui/carry';
@@ -34,14 +34,21 @@ import type { PhysicalInterior,
   AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateModelRequest, JsonValue,
   RemoveModelAttachment, SetField,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelConnectionVerdict, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, ModelProjection,
-  ModelRemovedElement, StudioProjectRevision, StudioProjectSnapshot, StudioSavedTrainKey,
+  ModelRemovedElement, StudioProjectRevision, StudioProjectSnapshot, StudioSavedTrainKey, StudioTrialAuthoring,
 } from '@/generated/studioContracts';
 import { ModelDocumentSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
 import { sendWithStore, type AskStore } from '../storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
-import { attachmentFields, componentFields, delayText, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
+import {
+  attachmentFields, attachmentSources, operationOf, componentFields, delayText, modelFields, sharedFields, sourceValueField,
+  type Attachment, type AttachmentSource, type FieldChange,
+} from './ModelInspector';
+import { AttachmentSourceRow } from './AttachmentSourceRow';
+import { interventionWindow, windowDescription } from './interventionWindow';
+import { WindowEditor } from '../WindowEditor';
+import { windowEpochs } from '../StudioTrialAuthoring';
 import {
   addressKey, isTemplate, libraryEntries, newEquations, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
   holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, withRemoved, type Component, type LibraryEntry, type Port,
@@ -59,6 +66,7 @@ type Structural = NonNullable<ModelProjection['base_differences']>[number];
 type MarkedDifference = { difference: Structural; value: boolean };
 const changeLetters = { added: 'A', removed: 'D', rewired: 'M' } as const;
 const noNames: ReadonlySet<string> = new Set();
+const noVariables: StudioTrialAuthoring['variables'] = [];
 type Difference = AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField;
 type Props = {
   model?: { id: string; value: ModelDocument };
@@ -92,6 +100,8 @@ type Props = {
   /** Opens Problems showing only those inside the element. */
   openProblems?: (element: ModelAddress, opener: HTMLElement) => void;
   exceptions?: ExceptionMentions;
+  /** The step's trial: the epochs an intervention's Window names and the Task variables a source can read. */
+  trial?: StudioTrialAuthoring;
 };
 const sourceAttachment = '@source';
 const componentCarry = carryKind<LibraryItem>('component');
@@ -154,17 +164,19 @@ function positionAt(index: number): ModelPosition {
   return { x: 245 + 235 * (index % 4), y: 38 + 160 * Math.floor(index / 4) };
 }
 
-function stepCount(item: Attachment, step: ModelDocument['step_seconds'] | undefined) {
-  if (item.kind === 'hold') return '□';
+/** An attachment's mark: a Delay's step count as the service pairs it, empty when it pairs to none. */
+function attachmentMark(item: Attachment, steps: number | null | undefined) {
+  if (item.kind === 'hold') return '⊓';
   if (item.kind !== 'delay') return item.kind === 'probe' ? '⌖' : '◇';
-  if ('text' in item.delay) return '';
-  if (item.delay.unit === 'st') return String(item.delay.value);
-  return typeof step === 'number' ? String(Math.round(item.delay.value / step)) : '';
+  return steps == null ? '' : String(steps);
 }
 
 function attachmentName(item: Attachment) {
   if (item.kind === 'hold') return studioName('hold');
-  return item.kind === 'probe' ? item.name : studioName(item.kind === 'delay' ? 'delay' : item.operation.toLowerCase() === 'clamp' ? 'clamp' : 'scale');
+  if (item.kind === 'probe') return item.name;
+  if (item.kind === 'delay') return studioName('delay');
+  const operation = operationOf(item);
+  return operation ? studioName(operation) : item.operation;
 }
 
 function searchable({ name, group }: Pick<LibraryEntry, 'name' | 'group'>, query: string) {
@@ -201,8 +213,11 @@ function LeafChoices({ entries, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, relate, path, setPath, sections, openProblems, exceptions }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, relate, path, setPath, sections, openProblems, exceptions, trial }: Props) {
   const selected = useModelSelection(state, model?.id);
+  const variables = trial?.variables ?? noVariables;
+  const epochs = useMemo(() => trial ? windowEpochs(trial) : [], [trial]);
+  const variableName = (id: string) => variables.find((variable) => variable.id === id)?.name ?? id;
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
   const viewport = useRef<CanvasViewport>(null);
@@ -523,10 +538,17 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     for (const [id, component] of Object.entries(drawnInterior?.components ?? {})) {
       map.set(id, componentPorts(id, component, registry));
     }
+    /** Whether an intervention acts where the port's signal leaves it. */
+    const intervened = ({ end, direction }: Port) => {
+      if (direction !== 'output' || (end.owner !== 'component' && end.owner !== 'inputs')) return false;
+      const store = end.owner === 'component' ? drawnInterior?.components?.[end.component]?.attachments : drawnInterior?.attachments;
+      return !!store?.sources?.[end.port]?.some(({ kind }) => kind === 'intervention');
+    };
     for (const [id, items] of map) map.set(id, items.map((port) => {
       const key = addressKey(at(graph, { kind: 'port', end: port.end }));
       const type = projectedPorts.get(key);
-      return type || markedPorts.has(key) ? { ...port, type: type ?? port.type, mark: markedPorts.get(key) } : port;
+      const mark = markedPorts.get(key) ?? (intervened(port) ? 'intervention' : undefined);
+      return type || mark ? { ...port, type: type ?? port.type, mark } : port;
     }));
     return map;
   }, [owner, drawnInterior, registry, graph, projectedPorts, markedPorts, readSignals, currentPath.length, projection.data]);
@@ -846,8 +868,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function leaf(definition: ComponentDefinition) {
     return {
       kind: 'leaf', name: shortName(definition.name), type: definition.identity?.type_id ?? definition.name,
-      revision: definition.revision, fields: Object.fromEntries(Object.entries(definition.default_params ?? {})
-        .filter(([name]) => name !== 'dt' && name !== 'control_dt')) as Record<string, JsonValue>,
+      revision: definition.revision, fields: { ...definition.default_params } as Record<string, JsonValue>,
     } as const;
   }
   function matchesSource(definition: ComponentDefinition, name: string, source: Port) {
@@ -1214,9 +1235,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const ghost = ghostKeys.has(key);
     const displacedAttachments = displaced.get(key);
     const attached = (list: readonly Attachment[], removedHere: boolean) => list.map((item) => ({
-      id: item.id, label: attachmentName(item), mark: stepCount(item, model?.value.step_seconds),
-      description: item.kind === 'delay' ? `${delayText(item.delay)} · ${wireLabel}` : wireLabel,
+      id: item.id, label: attachmentName(item), mark: attachmentMark(item, projection.data?.delay_steps?.[addressKey(attachmentAddress(address, item.id))]),
+      description: item.kind === 'delay' ? `${delayText(item.delay)} · ${wireLabel}`
+        : item.kind === 'intervention' ? `${windowDescription(item, epochs, variableName)} · ${wireLabel}` : wireLabel,
       delay: item.kind === 'delay', select: () => select(attachmentAddress(address, item.id)),
+      initial: item.kind === 'delay' && item.initial_source?.kind === 'wire' && item.initial_source.source
+        ? { card: idFor(item.initial_source.source), handle: `output:${item.initial_source.source.port}` } : undefined,
       drag: !removedHere && !ghost && model && editTopology && !locked ? { document: model.id, address: attachmentAddress(address, item.id) } : undefined,
       ghost: removedHere || ghost || !!displacedAttachments?.has(addressKey(attachmentAddress(address, item.id))),
       change: changeMark(attachmentAddress(address, item.id)),
@@ -1287,11 +1311,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (evaluate) return applyEvaluate(attachmentName(item), difference, true);
     return (await attempt(attachmentName(item), { op: 'set_attachment', difference }, false))?.reason;
   }
-  function addAttachment(address: ModelAddress, kind: 'delay' | 'intervention' | 'probe') {
+  function addAttachment(address: ModelAddress, kind: Attachment['kind']) {
     const list = effective.get(addressKey(address)) ?? [];
     const id = crypto.randomUUID();
     const item: Attachment = kind === 'delay' ? { id, kind, delay: { unit: 'st', value: 1 }, initial_source: { kind: 'value', value: 0 } }
-      : kind === 'intervention' ? { id, kind, operation: 'scale', fields: { factor: 1 } }
+      : kind === 'hold' ? { id, kind }
+      : kind === 'intervention' ? { id, kind, operation: 'scale', operands: { factor: { kind: 'value', value: 1 } } }
       : { id, kind, name: port?.name ?? 'Probe' };
     const difference = { op: 'add', owner: address, after: list.at(-1)?.id ?? null, attachment: item } as const;
     if (evaluate) void applyEvaluate(studioAccessibleName('add', attachmentName(item)), difference);
@@ -1301,33 +1326,39 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (evaluate) void applyEvaluate(studioName('removeAttachment'), { op: 'remove', address });
     else void apply(studioName('removeAttachment'), { op: 'delete', selection: [address] });
   }
-  function armInitial(address: ModelAddress, item: Attachment) {
-    if (!model || item.kind !== 'delay') return;
+  /** Arms the crosshair to fill `source` with the signal of an output or an Input of the graph that holds it. */
+  function armSource(owner: ModelAddress, source: AttachmentSource) {
+    if (!model || !source.set) return;
+    const set = source.set;
     state.setState({ pick: {
-      accepts: (target) => {
-        if (target.kind !== 'port' || target.document !== model.id) return false;
-        const { port } = target;
-        if (!inGraph(target.address, address) || port.direction !== 'output' || port.end.owner !== 'component') return false;
-        const component = interior?.components?.[port.end.component];
-        return component?.kind === 'leaf' && component.fields?.stateful !== false &&
-          !!registry.get(component.type)?.reset_outputs?.includes(port.end.port);
-      },
-      choose: (target) => {
-        if (target.kind !== 'port') return;
-        const { end } = target.port;
-        if (end.owner === 'component') {
-          const source = { owner: end.owner, component: end.component, port: end.port };
-          void updateAttachment(address, { ...item, initial_source: { kind: 'wire', source } });
-        }
-      },
+      accepts: (target) => target.kind === 'port' && target.document === model.id && inGraph(target.address, owner) &&
+        target.port.direction === 'output' && !target.port.taskSignal && !target.port.growing &&
+        (target.port.end.owner === 'component' || target.port.end.owner === 'inputs'),
+      choose: (target) => { if (target.kind === 'port') void set({ kind: 'wire', port: target.address }); },
     } });
+  }
+  /** The size of the signal an attachment acts on, as its port or its wire's ends type it; 1 when no type says. */
+  function signalWidth(attachment: ModelAddress) {
+    if (attachment.element.kind !== 'attachment') return 1;
+    const parent = attachment.element.parent;
+    const wire = parent.kind === 'wire' ? interior?.wires?.[parent.id] : undefined;
+    const ends = wire ? [[wire.source, 'output'], [wire.target, 'input']] as const
+      : parent.kind === 'port' ? [[parent.end, 'output']] as const : [];
+    for (const [end, direction] of ends) {
+      const type = portMap.get(idFor(end))?.find((candidate) => candidate.end.port === end.port && candidate.direction === direction)?.type;
+      const shape = typeof type === 'object' ? type.shape : undefined;
+      if (shape?.length === 1 && typeof shape[0] === 'number') return shape[0];
+    }
+    return 1;
   }
   function labelOfPort(address: ModelAddress) {
     if (address.element.kind !== 'port') return '';
     const end = address.element.end;
     const candidate = portMap.get(idFor(end))?.find((item) =>
       addressKey(at(graph, { kind: 'port', end: item.end })) === addressKey(address));
-    return [end.owner === 'component' ? interior?.components?.[end.component]?.name : end.owner, candidate?.name].filter(Boolean).join('.');
+    const owner = end.owner === 'component' ? interior?.components?.[end.component]?.name
+      : studioName(end.owner === 'outputs' ? 'outputs' : 'inputs');
+    return [owner, candidate?.name].filter(Boolean).join('.');
   }
   function attachmentCommands(address: ModelAddress) {
     const wire = address.element.kind === 'wire';
@@ -1338,7 +1369,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       address.element.end.owner !== 'boundary';
     if (!(wire || signalPort) || !(editTopology || canEvaluate)) return [];
     return [
-      ...(wire && editTopology ? [bindStudioCommand('addDelay', () => addAttachment(address, 'delay'), { instance: addressKey(address) })] : []),
+      ...(wire && editTopology ? [bindStudioCommand('addDelay', () => addAttachment(address, 'delay'), { instance: addressKey(address) }),
+        bindStudioCommand('addHold', () => addAttachment(address, 'hold'), { instance: addressKey(address) })] : []),
       ...(wire || source ? [bindStudioCommand('addIntervention', () => addAttachment(address, 'intervention'), { instance: addressKey(address) })] : []),
       bindStudioCommand('addProbe', () => addAttachment(address, 'probe'), { instance: addressKey(address) }),
     ];
@@ -1446,7 +1478,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const byKey = new Map(rows.map((row) => [addressKey(attachmentAddress(row.owner, row.item.id)), row]));
     const nodes: TreeNode[] = [...byKey].map(([id, { owner, item, port }]) => ({
       id, name: attachmentName(item) + (isAuthored(attachmentAddress(owner, item.id)) ? ' ◇' : ''),
-      trailing: <>{port && <span>{port}</span>}<span>{stepCount(item, model?.value.step_seconds)}</span></>,
+      trailing: <>{port && <span>{port}</span>}<span>{attachmentMark(item, projection.data?.delay_steps?.[addressKey(attachmentAddress(owner, item.id))])}</span></>,
     }));
     return <Tree aria-label={studioName('attachment')} nodes={nodes} selected={selectionKeys.filter((key) => byKey.has(key))}
       onSelectedChange={(ids) => {
@@ -1498,22 +1530,29 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
 
   function attachmentInspector(address: ModelAddress, item: Attachment) {
     const change = fieldEditing ? (next: Attachment) => updateAttachment(address, next) : undefined;
-    const initial = item.kind === 'delay' ? (() => {
-      const value = item.initial_source;
-      const source = value?.kind === 'wire' ? value.source : undefined;
-      const projected = !source && projectedNames.has('value');
-      const label = source ? labelOfPort(at(graph, {
-        kind: 'port', end: source.owner === 'component' ? { ...source, direction: 'output' } : source,
-      })) || source.port : value?.kind === 'task' ? value.variable : undefined;
-      const arm = editTopology ? () => armInitial(address, item) : undefined;
-      return <div className="flex min-w-0 items-start gap-1">
-        <div className="min-w-0 flex-1">{!projected &&
-          <ValueField key={JSON.stringify([addressKey(address), label])} model={initialField(item, label, change)} />}</div>
-        {arm && <IconButton label={studioName('pickInitial')} icon={<Crosshair />} onClick={arm} />}
-        {label && change && <IconButton label={studioName('clearLink')} icon={<X />}
-          onClick={() => void change({ ...item, initial_source: { kind: 'value', value: 0 } })} />}
-      </div>;
-    })() : null;
+    const byId = new Map(projectedFields.map((field) => [field.id, field]));
+    const sources = attachmentSources(item, graph, change, signalWidth(address));
+    const sourceRows = sources.map((source) => {
+      const { read } = source;
+      const linked = read.kind === 'task' ? variableName(read.variable)
+        : read.kind === 'wire' ? read.port ? labelOfPort(read.port) || addressKey(read.port) : '' : undefined;
+      const field = linked === undefined ? byId.get(source.field) ?? sourceValueField(source, undefined) : sourceValueField(source, linked);
+      const set = source.set;
+      return <AttachmentSourceRow key={JSON.stringify([addressKey(address), source.id, read.kind])} label={source.label} field={field}
+        linked={linked} variables={variables} choose={set && ((variable) => void set({ kind: 'task', variable }))}
+        pick={set && editTopology ? () => armSource(address, source) : undefined}
+        clear={set && (() => void set({ kind: 'value', value: source.unlinked }))} />;
+    });
+    const consumed = new Set(sources.map(({ field }) => field));
+    const ownFields = projectedFields.filter(({ id }) => !consumed.has(id) && !id.startsWith('window.'));
+    const windowLabel = `${fieldScope}-window`;
+    const window = item.kind === 'intervention' && <div className="grid gap-1">
+      <span id={windowLabel} className="text-xs text-shell-muted">{studioName('window')}</span>
+      <WindowEditor window={item.window} labelId={windowLabel} host={interventionWindow({
+        item, epochs, linked: variableName, change,
+        projected: (site) => byId.get(['window', ...site].join('.')),
+      })} />
+    </div>;
     const order = canEvaluate && chain && chain.length > 1 && isAuthored(address) ? [rawField({
       id: 'after', label: studioName('after'), value: chain[chain.indexOf(item) - 1]?.id ?? sourceAttachment,
       type: { kind: 'choice', options: [{ value: sourceAttachment, label: studioName('source') },
@@ -1523,8 +1562,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     })] : [];
     return <Inspector name={attachmentName(item)}>
       {fieldRegion}
-      {fields(attachmentFields(item, change, projectedNames))}
-      {initial}
+      {rows(fieldScope, [...ownFields, ...attachmentFields(item, change, projectedNames, signalWidth(address))])}
+      {sourceRows}
+      {window}
       {rows(addressKey(address), order)}
     </Inspector>;
   }

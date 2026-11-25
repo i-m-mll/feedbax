@@ -58,7 +58,9 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   const kind = sweep ? 'sweep' : field.structure ? valueKind(field.structure.value, field.site.functions) : options.kind ?? 'value';
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
-  const memberText = (value: (typeof choices)[number]['value']) => typeof value === 'number' ? String(value) : value.text;
+  /** A member as written: a number in the field's unit, or its own text. */
+  const memberText = (value: (typeof choices)[number]['value']) =>
+    typeof value !== 'number' ? value.text : unit ? `${value} ${unit}` : String(value);
   const authored = list ? list.values.map(({ value }) => memberText(value)).join(', ') + (list.values.length === 1 ? ',' : '')
     : field.text;
   const effective = multipleRows ? undefined : field.effective ?? undefined;
@@ -99,7 +101,6 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   const held = !sweep && field.mixed ? field.members ?? [] : [];
   const source = origin(options);
   const converted = field.conversion;
-  const time = converted && `${Number(converted.value.toPrecision(8))} ${converted.unit}`;
   const text = sweep ? authored : field.mixed || rowSelection && multipleRows ? null : rowSelection ? effective ?? authored : authored;
   const change: ChangeMark | undefined = effective === undefined ? options.changed ?? evaluateChange(options.source)
     : { from: rowSelection && !sweep ? { kind: 'value', text: authored } : { kind: 'selected', text: effective } };
@@ -124,7 +125,8 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     } : held.length ? { values: held.map(({ id, value }) => ({ id, text: memberText(value), selected: false })) } : undefined,
     parts,
     canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && field.can_change_axis,
-    origin: [time, source.text].filter(Boolean).join(' · ') || undefined,
+    paired: converted ? `${Number(converted.value.toPrecision(8))} ${converted.unit}` : undefined,
+    origin: source.text || undefined,
     change,
     revealOrigin: source.reveal,
     structure: field.structure ?? undefined,

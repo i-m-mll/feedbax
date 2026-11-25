@@ -192,20 +192,17 @@ def noise_output_prototype(
     return {"output": jnp.zeros(tuple(int(dim) for dim in params.get("shape", [1])))}
 
 
-def binary_elementwise_output_prototype(
+def multiply_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return the first available binary elementwise input prototype."""
-
-    proto = inputs.get("a")
-    if proto is None:
-        proto = inputs.get("b")
-    if proto is None:
-        raise MissingPrototypeInput(
-            "binary elementwise output prototype requires input prototype 'a' or 'b'"
-        )
-    return {"output": proto}
+    """Infer the same broadcast shape and dtype as the product."""
+    a, b = inputs.get("a"), inputs.get("b")
+    if a is None and b is None:
+        raise MissingPrototypeInput("Multiply output prototype requires input prototype 'a' or 'b'")
+    if a is None or b is None:
+        return {"output": b if a is None else a}
+    return {"output": jax.eval_shape(lambda a, b: jt.map(jnp.multiply, a, b), a, b)}
 
 
 def input_node_output_prototype(
@@ -233,18 +230,22 @@ def subtract_output_prototype(
     return {"out": proto}
 
 
+def _sum_inputs(values):
+    total, *rest = values
+    for value in rest:
+        total = jt.map(jnp.add, total, value)
+    return total
+
+
 def sum_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return the first available sum input prototype as ``output``."""
-
-    del params
-    for port in ("a", "b", "c", "d"):
-        proto = inputs.get(port)
-        if proto is not None:
-            return {"output": proto}
-    raise MissingPrototypeInput("Sum output prototype requires at least one input prototype")
+    """Infer the broadcast result of the connected inputs."""
+    values = tuple(inputs[port] for port in ("a", "b", "c", "d") if port in inputs)
+    if not values:
+        raise MissingPrototypeInput("Sum output prototype requires at least one input prototype")
+    return {"output": jax.eval_shape(_sum_inputs, values)}
 
 
 def reshape_output_prototype(
@@ -501,17 +502,15 @@ class Sum(Component):
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
         instantaneous=True,
-        output_prototype_fn=sum_output_prototype
+        output_prototype_fn=sum_output_prototype,
+        prototype_depends_on_connected_inputs=True,
     )
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         values = [inputs[port] for port in self.input_ports if port in inputs]
         if not values:
             raise ValueError("Sum requires at least one input")
-        output = values[0]
-        for value in values[1:]:
-            output = jt.map(lambda a, b: a + b, output, value)
-        return {"output": output}, state
+        return {"output": _sum_inputs(values)}, state
 
 
 class Subtract(Component):
@@ -544,7 +543,8 @@ class Multiply(Component):
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
         instantaneous=True,
-        output_prototype_fn=binary_elementwise_output_prototype
+        output_prototype_fn=multiply_output_prototype,
+        prototype_depends_on_connected_inputs=True,
     )
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -1299,8 +1299,8 @@ class Linear(LinearLayer, Component):
     component_presentation = PresentationOverride(headline_field="output_size")
     component_history = History(Change(2, migrate=lambda params: {**params, "initialization": "random"}))
     model_facts = ModelFacts(values=(
-        ModelValue("kernel", "layer.weight", "learned"),
-        ModelValue("bias", "layer.bias", "learned"),
+        ModelValue("kernel", "layer.weight", "parameter"),
+        ModelValue("bias", "layer.bias", "parameter"),
     ))
 
     ports: ClassVar = LinearLayer.ports
@@ -1428,10 +1428,10 @@ class GRU(Component):
     component_presentation = PresentationOverride(headline_field="hidden_size")
     model_facts = ModelFacts(
         values=(
-            ModelValue("input_kernel", "cell.weight_ih", "learned"),
-            ModelValue("recurrent_kernel", "cell.weight_hh", "learned"),
-            ModelValue("gate_bias", "cell.bias", "learned"),
-            ModelValue("candidate_bias", "cell.bias_n", "learned"),
+            ModelValue("input_kernel", "cell.weight_ih", "parameter"),
+            ModelValue("recurrent_kernel", "cell.weight_hh", "parameter"),
+            ModelValue("gate_bias", "cell.bias", "parameter"),
+            ModelValue("candidate_bias", "cell.bias_n", "parameter"),
         ),
         states=(
             StateValue(

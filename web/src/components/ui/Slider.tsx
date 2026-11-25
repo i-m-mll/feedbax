@@ -11,13 +11,15 @@ export interface SliderProps {
   'aria-label': string;
   disabled?: boolean;
   className?: string;
+  /** `line` is a thin slider for a line of its own; `control` stands among controls. */
+  size?: 'control' | 'line';
 }
 
-export function Slider({ value, min, max, step, onValueChange, disabled, className, 'aria-label': label }: SliderProps) {
+export function Slider({ value, min, max, step, onValueChange, disabled, className, size = 'control', 'aria-label': label }: SliderProps) {
   return (
     <BaseSlider.Root value={value} min={min} max={max} step={step} disabled={disabled}
       onValueChange={(next) => onValueChange(next)} className={clsx('w-full', disabledLook, className)}>
-      <BaseSlider.Control className="flex h-control w-full touch-none select-none items-center">
+      <BaseSlider.Control className={clsx('flex w-full touch-none select-none items-center', size === 'line' ? 'h-4' : 'h-control')}>
         <BaseSlider.Track className="relative h-1 w-full rounded-full bg-shell-control">
           <BaseSlider.Indicator className="rounded-full bg-shell-foreground" />
           <BaseSlider.Thumb aria-label={label}

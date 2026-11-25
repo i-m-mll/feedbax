@@ -1,4 +1,4 @@
-import type { Problem, TrialAggregate, TrialRecord } from '@/generated/studioContracts';
+import type { Problem, TaskTimelineCue, TrialAggregate, TrialRecord } from '@/generated/studioContracts';
 
 /** A signal's value at each step of one trial, one number per component; null where the signal is absent. */
 export type SignalSteps = readonly (readonly number[] | null)[];
@@ -47,6 +47,10 @@ export function signalAggregate(aggregate: TrialAggregate, id: string): SignalAg
     ...signal.percentiles && { percentiles: signal.percentiles as (Percentiles[] | null)[] },
   };
 }
+
+/** How a recorded epoch that ends on a condition ended: at the condition, or at its limit. */
+export const endedBy = (outcome: TaskTimelineCue['outcome']) =>
+  outcome === 2 ? 'condition' as const : outcome === 3 ? 'limit' as const : undefined;
 
 /** The steps at which each epoch instance after the first of `record` begins. */
 export const epochBoundaries = (record: TrialRecord) => record.timeline.slice(1).map(({ start }) => start);

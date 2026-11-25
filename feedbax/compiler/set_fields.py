@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
@@ -22,7 +22,7 @@ from feedbax.contracts.model_address import (
 )
 from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.model_document import (
-    CompositeComponent, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
+    CompositeComponent, DelayInitialTask, DelayInitialWire, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
     SignalInput, SignalType,
 )
 from feedbax.contracts.project import Document, apply_differences
@@ -67,6 +67,8 @@ def rename_entry_references(value, refs: Mapping[str, str]):
     if isinstance(value, dict):
         if value.get("kind") == "name" and isinstance(reference := value.get("reference"), str) and reference in refs:
             return value | {"reference": refs[reference]}
+        if value.get("kind") == "task" and isinstance(variable := value.get("variable"), str) and variable in refs:
+            return value | {"variable": refs[variable]}
         return {key: rename_entry_references(item, refs) for key, item in value.items()}
     if isinstance(value, list):
         return [rename_entry_references(item, refs) for item in value]
@@ -104,12 +106,17 @@ def resolve_trial_set_condition(
     return tuple(problems) if problems else parsed
 
 
-def _entry_scope(axis: str, entry: str, source: SetEntry) -> SetEntry:
+def _entry_label(entry: str, variable: str) -> str:
+    return f"{entry} · {variable}"
+
+
+def _entry_scope(axis: str, entry: str, source: SetEntry, shared_labels: frozenset[str]) -> SetEntry:
     refs = {variable.id: entry_variable_id(axis, entry, variable.id) for variable in source.task_variables}
     renamed = rename_entry_references(source.model_dump(mode="json"), refs)
     for variable in renamed.get("task_variables", ()):
         variable["id"] = refs[variable["id"]]
-        variable["name"] = f"{entry} · {variable['name']}"
+        label = _entry_label(entry, variable["name"])
+        variable["name"] = f"{axis} · {label}" if label in shared_labels else label
     for link in renamed.get("task_links", ()):
         link["variable"] = refs.get(link["variable"], link["variable"])
     return SetEntry.model_validate(renamed)
@@ -126,11 +133,16 @@ def _attachment_links(
             remaining.append(link)
             continue
         at = address.element
-        if isinstance(at, FieldElement) and isinstance(at.parent, AttachmentElement) and at.path[0] in {"fields", "window"}:
-            value = NameValue(reference=link.variable).model_dump(mode="json")
-            writes.append(SetField(op="set_field", address=address, value=value))
-        else:
-            remaining.append(link)
+        if isinstance(at, FieldElement) and isinstance(at.parent, AttachmentElement):
+            if at.path[0] == "operands":
+                address = address.model_copy(update={"element": at.model_copy(update={"path": at.path[:2]})})
+                writes.append(SetField(op="set_field", address=address, value={"kind": "task", "variable": link.variable}))
+                continue
+            if at.path[0] == "window":
+                value = NameValue(reference=link.variable).model_dump(mode="json")
+                writes.append(SetField(op="set_field", address=address, value=value))
+                continue
+        remaining.append(link)
     return resolve_effective_model(model, components, tuple(writes)), tuple(remaining)
 
 
@@ -149,12 +161,14 @@ class _Alternative:
 
 class _Union:
     def __init__(
-        self, model: ModelDocument, task: TaskDocument, registry: ComponentRegistry, *, scope: tuple[str, ...] = (),
+        self, model: ModelDocument, task: TaskDocument, registry: ComponentRegistry, *,
+        scope: tuple[str, ...] = (), shared_entry_labels: frozenset[str] = frozenset(),
     ):
         self.model = model
         self.task = task
         self.registry = registry
         self.scope = scope
+        self.shared_entry_labels = shared_entry_labels
         self.variables = list(task.variables)
         self.signals = list(task.signals)
         self.links = list(task.links)
@@ -188,11 +202,11 @@ class _Union:
         return InputBoundaryEnd(owner="inputs", port=gate_id)
 
     def operands(self, attachment: InterventionAttachment, context: str) -> InterventionAttachment:
-        fields = dict(attachment.fields)
-        for key, value in fields.items():
-            reference = _task_reference(value)
-            if reference is None:
+        operands = dict(attachment.operands)
+        for key, operand in operands.items():
+            if not isinstance(operand, DelayInitialTask):
                 continue
+            reference = operand.variable
             variable = next((variable for variable in self.variables if variable.id == reference), None)
             if variable is None:
                 raise ValueError(f"Intervention {attachment.id!r} links to missing Task variable {reference!r}.")
@@ -205,11 +219,8 @@ class _Union:
             self.inputs.append(SignalInput(
                 id=id, name=id, type=SignalType(base=variable.type.base.value, shape=variable.type.shape),
             ))
-            address = ModelAddress(
-                composites=self.scope, element=PortElement(kind="port", end=InputBoundaryEnd(owner="inputs", port=id)),
-            )
-            fields[key] = NameValue(reference=address.to_text()).model_dump(mode="json")
-        return attachment.model_copy(update={"fields": fields}) if fields != attachment.fields else attachment
+            operands[key] = DelayInitialWire(kind="wire", source=InputBoundaryEnd(owner="inputs", port=id))
+        return attachment.model_copy(update={"operands": operands}) if operands != attachment.operands else attachment
 
     def added_components(self, alt: _Alternative, model: ModelDocument, added_wires: set[str]):
         nominal = self.model.interior
@@ -233,7 +244,7 @@ class _Union:
         set_name = placement.axis.set
         cooccurring = isinstance(placement.sampling, CooccurringSetTrials)
         try:
-            source = _entry_scope(axis, entry, authored)
+            source = _entry_scope(axis, entry, authored, self.shared_entry_labels)
             variant = ModelDocument.model_validate(
                 apply_differences(self.model.model_dump(mode="json"), source.differences),
             )
@@ -314,7 +325,7 @@ class _Union:
         return eligible
 
     def placement(
-        self, axis: str, placement: TrialSetField, read: Callable[[str], Document | None], functions: FunctionRegistry,
+        self, axis: str, placement: TrialSetField, entries: Mapping[str, SetEntry], functions: FunctionRegistry,
     ):
         eligible = self.eligibility(axis, placement, functions)
 
@@ -328,7 +339,6 @@ class _Union:
             return self.variable(id, kind, value, choices=SetVariableChoices(set=placement.axis.set, entries=entries))
 
         try:
-            entries = read_set(read, placement.axis.set).entries
             sample = placement.sampling
             by_id = tuple(entries)
             if isinstance(sample, ListedSetTrials):
@@ -550,21 +560,10 @@ def _has_window(wire: ModelWire) -> bool:
     return any(isinstance(item, InterventionAttachment) and item.window is not None for item in wire.attachments)
 
 
-def _task_reference(value) -> str | None:
-    if not isinstance(value, dict) or value.get("kind") != "name":
-        return None
-    reference = NameValue.model_validate(value).reference
-    try:
-        ModelAddress.from_text(reference)
-    except ValueError:
-        return reference
-    return None
-
-
 def _needs_task(attachments) -> bool:
     return any(
         isinstance(attachment, InterventionAttachment)
-        and (attachment.window is not None or any(_task_reference(value) is not None for value in attachment.fields.values()))
+        and (attachment.window is not None or any(isinstance(operand, DelayInitialTask) for operand in attachment.operands.values()))
         for attachment in attachments
     )
 
@@ -626,11 +625,22 @@ def lower_trial_sets(
 ) -> tuple[ModelDocument, TaskDocument, dict[str, str]]:
     model, links = _attachment_links(model, task.links, components)
     task = task.model_copy(update={"links": links}) if links != task.links else task
-    union = _Union(model, task, components)
+    placements = []
+    names = Counter(variable.name for variable in task.variables)
     for axis, placement in sorted(fields.items()):
         if placement.axis.where is not None:
             raise SetFieldProblem(axis, placement.axis.set, None, "Trial Set placements apply to all runs of the step.")
-        union.placement(axis, placement, read, functions)
+        try:
+            entries = read_set(read, placement.axis.set).entries
+        except ValueError as error:
+            raise SetFieldProblem(axis, placement.axis.set, None, str(error)) from error
+        placements.append((axis, placement, entries))
+        names.update(_entry_label(entry, variable.name) for entry, source in entries.items()
+                     for variable in source.task_variables)
+
+    union = _Union(model, task, components, shared_entry_labels=frozenset(name for name, count in names.items() if count > 1))
+    for axis, placement, entries in placements:
+        union.placement(axis, placement, entries, functions)
     compiled_model, compiled_task = union.finish()
     return compiled_model, compiled_task, union.condition_origins
 

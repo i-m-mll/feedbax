@@ -34,7 +34,7 @@ from feedbax.runtime.prototypes import input_passthrough_output_prototype
 
 
 def _float_param(value):
-    return jnp.asarray(value, dtype=jnp.float32)
+    return jnp.asarray(value, dtype=float)
 
 
 def _bool_param(value):

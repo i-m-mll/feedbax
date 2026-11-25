@@ -17,6 +17,7 @@ class FigureTraceMeta(StrictModel):
 class FigurePanelMeta(StrictModel):
     x_axis: str
     y_axis: str
+    z_axis: str | None = Field(default=None, exclude_if=lambda value: value is None)
     time: TrialFigureTime | None = None
 
 

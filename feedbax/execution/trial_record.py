@@ -105,6 +105,8 @@ def aggregate_trials(trials: Sequence[TrialRecord], n_steps: int) -> TrialAggreg
         ends = np.asarray([cue.end for cue in cues])[:, None]
         inside = (steps >= starts) & (steps < ends)
         epochs.append(TaskEpochShare(epoch=first.epoch, label=first.label, share=inside.mean(axis=0).tolist()))
+    interventions = dict.fromkeys(address for trial in trials for address in trial.intervention_windows)
+    inactive = np.zeros(n_steps, dtype=bool)
     return TrialAggregate(
         kind="aggregate",
         epochs=epochs,
@@ -121,5 +123,9 @@ def aggregate_trials(trials: Sequence[TrialRecord], n_steps: int) -> TrialAggreg
         terms={
             name: _aggregate_term([trial.terms[name] for trial in trials])
             for name in trials[0].terms
+        },
+        interventions={
+            address: np.mean([trial.intervention_windows.get(address, inactive) for trial in trials], axis=0).tolist()
+            for address in interventions
         },
     )

@@ -19,19 +19,19 @@ from feedbax.compiler.model_signals import (
 )
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
 from feedbax.compiler.model_edit import model_graph_problems
-from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts, WIRED_VECTOR_INPUT_TYPES
+from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts, derives_input_width
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, PlanarDynamicsSpec, SolverConfigSpec
 from feedbax.contracts.acausal_interface import (
     PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
+from feedbax.contracts.expression_values import Level, LiteralValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.graph import (
     ComponentSpec, DerivedDimensionRuleSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec,
 )
 from feedbax.contracts.model_address import (
-    AttachmentElement, ComponentPortAddress, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress,
+    AttachmentElement, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress,
     PhysicalEnd, PortElement, SignalSource, SignalTarget,
 )
 from feedbax.contracts.model_delay import ModelDelayCarry
@@ -545,35 +545,28 @@ class _Lower:
                 sampled_outputs[source] = relay, "output"
             return sampled_outputs[source]
 
-        def intervention_operand(value, field, key, origin):
-            if isinstance(value, dict) and value.get("kind") == "name":
-                reference = NameValue.model_validate(value).reference
-                try:
-                    address = ModelAddress.from_text(reference)
-                except ValueError as error:
-                    raise ValueError("An intervention Link needs a paired Task variable or a local Model output.") from error
-                if address.composites != path or not isinstance(address.element, PortElement):
-                    raise ValueError("An intervention Link must read an output in the same graph.")
-                end = address.element.end
+        def intervention_operand(operand, value, field, key, origin):
+            if isinstance(operand, DelayInitialWire):
+                end = operand.source
                 if isinstance(end, InputBoundaryEnd) and any(port.id == end.port for port in ports.inputs):
                     return _generated("input", end.port), "output"
-                if isinstance(end, ComponentPortAddress) and end.direction == "output":
+                if isinstance(end, ComponentPortEnd):
                     node = nodes.get(end.component)
                     if node is not None and end.port in node.output_ports:
                         source = end.component, end.port
                         if self.state_only_output(node, subgraphs.get(end.component), end.port):
                             source = state_sample(source, origin)
                         return source
-                raise ValueError("The linked Model output does not exist.")
-            try:
-                array = np.asarray(value)
-            except ValueError as error:
-                raise ValueError("Enter a number or a rectangular numeric array.") from error
-            if array.dtype.kind not in {"f", "i", "u"} or not np.isfinite(array).all():
-                raise ValueError("Enter a finite number or a numeric array.")
-            node = _generated("intervention_constant", key, origin["id"], field)
-            add_generated(node, "feedbax.Constant", {"value": value, "dtype": "float32"}, origin=origin, inputs=())
-            return node, "output"
+                raise ValueError("Connect a Model input or an output in the same graph.")
+            if isinstance(operand, DelayInitialTask):
+                raise ValueError("An intervention Task source requires its paired Task variable.")
+            if isinstance(operand, DelayInitialValue):
+                node = _generated("intervention_constant", key, origin["id"], field)
+                add_generated(node, "feedbax.Constant", {
+                    "value": list(value) if isinstance(value, tuple) else value, "dtype": "float32",
+                }, origin=origin, inputs=())
+                return node, "output"
+            raise ValueError("Choose the intervention's operand source.")
 
         def transform(source, chain, key, at, *, finish=None, signal: _Signal | None = None):
             pending_reset = None
@@ -638,8 +631,8 @@ class _Lower:
                     if attachment.window is not None:
                         raise self.problem(path, "attachment", "intervention window lowering is unavailable", parent=at, id=attachment.id)
                     parameters = {
-                        name: self.numeric_field(value, path, origin, ("fields", name))
-                        for name, value in attachment.fields.items()
+                        name: self.numeric_field(operand.value, path, origin, ("operands", name, "value"))
+                        for name, operand in attachment.operands.items() if isinstance(operand, DelayInitialValue)
                     }
                     operation = attachment.operation.lower()
                     operands = {}
@@ -647,10 +640,8 @@ class _Lower:
                     match operation:
                         case "scale" if type(parameters.get("factor")) in (int, float):
                             type_id, params = "feedbax.Scale", {"scale": parameters["factor"], "fixed": True}
-                        case "add" if isinstance(parameters.get("value"), list) and all(
-                            type(value) in (int, float) and isfinite(value) for value in parameters["value"]
-                        ):
-                            type_id, params = "feedbax.ConstantInput", {"arrays": parameters["value"], "active": True}
+                        case "add" if isinstance(parameters.get("value"), tuple):
+                            type_id, params = "feedbax.ConstantInput", {"arrays": list(parameters["value"]), "active": True}
                         case "clamp" if all(type(parameters.get(name)) in (int, float) for name in ("low", "high")):
                             if parameters["low"] > parameters["high"]:
                                 raise self.problem(path, "attachment", "clamp bounds are reversed", parent=at, id=attachment.id)
@@ -670,9 +661,9 @@ class _Lower:
                     add_generated(segment, type_id, params, origin=origin, inputs=(input_port, *operands.values()))
                     for field, port in operands.items():
                         try:
-                            operand = intervention_operand(parameters.get(field), field, key, origin)
+                            operand = intervention_operand(attachment.operands.get(field), parameters.get(field), field, key, origin)
                         except ValueError as error:
-                            raise self.problem(path, "field", str(error), parent=origin, path=("fields", field)) from error
+                            raise self.problem(path, "field", str(error), parent=origin, path=("operands", field)) from error
                         emit(operand, (segment, port), _generated("intervention_operand", key, attachment.id, field), origin)
                     emit(source, (segment, input_port), _generated("segment", key, attachment.id), origin, reset=pending_reset)
                     pending_reset = None
@@ -770,7 +761,7 @@ class _Lower:
                 if any(w.target_node == b.component and w.target_port == b.port for w in wires):
                     raise self.problem(path, "wire", "target port already has a driver", id=key)
                 transform(source, wire.attachments, key, at, finish=(b.component, b.port), signal=signal)
-                if b.port == "input" and target.type in WIRED_VECTOR_INPUT_TYPES:
+                if derives_input_width(target.type, b.port):
                     if "input_size" in target.params:
                         raise self.problem(
                             path, "field", "The input wire determines this width",

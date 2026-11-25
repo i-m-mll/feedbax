@@ -31,7 +31,7 @@ UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
 TASK = "simple-reaches-task"
 MASS = {"composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]}}
-PUSH = {"kind": "intervention", "id": "push", "operation": "Scale", "fields": {"factor": 0.5}}
+PUSH = {"kind": "intervention", "id": "push", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}}
 
 
 def _data():

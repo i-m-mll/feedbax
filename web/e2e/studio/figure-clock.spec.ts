@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
-import { pickRecordedTrial, trialPicker } from './fixtures/controls';
+import { pickRecordedTrial, showTrials, trialPicker } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -150,7 +150,7 @@ test('with the Scene pinned on an Evaluate and its Analyze selected, scrubbing m
   await expect.poll(async () => { const { drawn, expected } = await playheadAt(plot, half.time); return Math.abs(drawn - expected); })
     .toBeLessThan(1);
 
-  await footer(page).getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'All', exact: true }).click();
+  await showTrials(page, 'All');
   await expect(trialPicker(page)).toHaveText('64 trials');
   await expect.poll(() => shownTrials(plot)).toHaveLength(64);
   await expect.poll(() => heavyTrial(plot)).toEqual([trials[3]]);
