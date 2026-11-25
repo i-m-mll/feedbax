@@ -26,7 +26,7 @@ from feedbax.contracts.acausal_interface import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.expression_values import Level, LiteralValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
+from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.graph import (
     ComponentSpec, DerivedDimensionRuleSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec,
 )
@@ -42,6 +42,7 @@ from feedbax.contracts.model_document import (
     PhysicalInterior, ProbeAttachment, SignalInput, SignalType,
 )
 from feedbax.contracts.project import json_pointer_parts
+from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.time_units import TimeValue, length_steps, time_in_seconds
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.runtime.task_data_roles import task_data_role
@@ -92,11 +93,22 @@ def model_input_prototypes(
 
 def inspect_model_signals(
     model: ModelDocument, components: ComponentRegistry, task_inputs: Mapping[str, ValueType] | None = None,
+    *, task: TaskDocument | None = None,
 ) -> ModelSignalTable:
     """Resolve authored signal facts for Studio reads even when the whole Model cannot run."""
     supplied = task_inputs or {}
+    compiled, compiled_inputs = model, supplied
     try:
-        lowered = lower_model_document(model, components, supplied_inputs=frozenset(supplied))
+        if task is not None:
+            from feedbax.compiler.set_fields import lower_trial_interventions
+
+            compiled, paired_task = lower_trial_interventions(model, task, components)
+            declared = {port.id for port in model.ports.inputs}
+            generated = {port.id for port in compiled.ports.inputs if port.id not in declared}
+            compiled_inputs = dict(supplied) | {
+                signal.name: signal.type for signal in paired_task.signals if signal.id in generated
+            }
+        lowered = lower_model_document(compiled, components, supplied_inputs=frozenset(compiled_inputs))
     except ValueError as error:
         table = resolve_model_signals(model, None, components, task_inputs=supplied)
         diagnostics = error.problems if isinstance(error, ModelCompilationProblem) else (
@@ -104,7 +116,7 @@ def inspect_model_signals(
         )
         problems = {(problem.address.to_text(), problem.reason): problem for problem in (*diagnostics, *table.problems)}
         return replace(table, problems=tuple(problems.values()))
-    prototypes = model_input_prototypes(lowered.graph, model, supplied)
+    prototypes = model_input_prototypes(lowered.graph, compiled, compiled_inputs)
     resolution = resolve_graph_parameters(lowered.graph, prototypes, components, allow_incomplete=True)
     return resolve_model_signals(model, resolution, components, task_inputs=supplied)
 

@@ -474,11 +474,8 @@ def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path
         "kind": "field", "parent": owner["element"], "path": ["fields", "hidden_size"],
     }})
     path = address.to_text()
-    readout_input = ModelAddress.model_validate({"composites": [], "element": {
-        "kind": "field", "parent": {"kind": "component", "id": "readout"}, "path": ["fields", "input_size"],
-    }}).to_text()
     entries = {
-        f"value-{index}": {"value": value, "patches": {path: {"value": value}, readout_input: {"value": value}}}
+        f"value-{index}": {"value": value, "patches": {path: {"value": value}, _MASS_TEXT: {"value": 2.0}}}
         for index, value in enumerate((64, 100, 128), start=1)
     }
     data = _data()
@@ -513,7 +510,7 @@ def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path
         values = reopened.steps["fee"].sweep.axes["hidden-size"].values
         unresolved = {"kind": "unresolved", "text": "U(0, 1)"}
         assert values["value-1"].value == values["value-1"].patches[path].value == unresolved
-        assert values["value-1"].patches[readout_input].value == 64
+        assert values["value-1"].patches[_MASS_TEXT].value == 2.0
         assert [values[member].value for member in ("value-2", "value-3")] == [100, 128]
         assert reopened.documents["model"].payload == data["documents"]["model"]["payload"]
         after = project.plan()
