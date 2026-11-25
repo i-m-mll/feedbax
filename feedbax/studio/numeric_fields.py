@@ -22,7 +22,7 @@ from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTe
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_site import FieldKind, field_kind, project_site, read_field
 from feedbax.contracts.expression_text import ParsedField, print_field
-from feedbax.contracts.time_units import TimeUse, TimeValue, length_steps, literal_time, paired_time
+from feedbax.contracts.time_units import TimeUse, TimeValue, length_steps, literal_time, paired_time, time_steps
 from feedbax.studio.authoring_sweeps import FieldSweeps, drop_axis, named_axis
 from feedbax.studio.value_structure import value_structure
 
@@ -79,6 +79,8 @@ class NumericField:
         magnitude = self.validate(magnitude)
         if self.time_use == "length" and (period is not None or unit == "st"):
             length_steps(TimeValue(value=magnitude, unit=unit), period or 1)
+        elif self.time_use == "offset" and (period is not None or unit == "st"):
+            time_steps(TimeValue(value=magnitude, unit=unit), period or 1)
         return LiteralValue(value=magnitude, unit=unit)
 
 
