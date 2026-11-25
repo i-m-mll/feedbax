@@ -200,7 +200,7 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
         const index = optionIndex(type.options, value);
         return <Select aria-labelledby={labelId} aria-describedby={describedBy} className="w-full" disabled={readOnly}
           value={index < 0 ? null : String(index)} placeholder={model.text === null ? studioName('mixed') : undefined}
-          trailing={problem || change}
+          trailing={problem || change} onOpenChange={model.listOpen}
           items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
           onValueChange={(position) => void submit({ kind: 'set', value: type.options[Number(position)].value })} />;
       }

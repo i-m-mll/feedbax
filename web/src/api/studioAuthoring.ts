@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { asApiRequestError, requestJson, sentBody } from '@/api/request';
+import { asApiRequestError, isHttpConflict, requestJson, sentBody } from '@/api/request';
 import type { CatalogEntry } from '@/components/ui/CatalogPicker';
 import {
   parseContract,
+  type ExpressionPartSite,
   type StudioAuthoringCatalog,
   type StudioCheckpointRuleRequest,
   type StudioRemovedRunsRequest,
@@ -12,6 +13,7 @@ import {
   type StudioSubsetToRowsRequest,
   type StudioTrialAuthoring,
   type StudioTrialAuthoringRequest,
+  type StudioTrialExpressionMenuRequest,
   type StudioTrainAuthoring,
   type StudioTrainAuthoringRequest,
   type StudioTrainStartRequest,
@@ -159,6 +161,28 @@ export async function readStudioTrialAuthoring(
     throw asApiRequestError(error, path);
   }
 }
+
+/** The functions and names that fit at one part of an expression of a trial authoring view. */
+export async function readTrialExpressionMenu(
+  projectId: string, body: StudioTrialExpressionMenuRequest, signal: AbortSignal,
+): Promise<ExpressionPartSite> {
+  const path = '/api/projects/' + encodeURIComponent(projectId) + '/authoring/trials/expression-menu';
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: sentBody('StudioTrialExpressionMenuRequest', body, path), cache: 'no-store', signal,
+    });
+    const site = parseContract('ExpressionPartSite', response);
+    if (JSON.stringify(site.path) !== JSON.stringify(body.part)) throw new Error('The expression menu is not of the requested part');
+    return site;
+  } catch (error) {
+    throw asApiRequestError(error, path);
+  }
+}
+
+/** The trial authoring view a menu was asked of is no longer held by the service. */
+export const isExpiredExpressionContext = (error: unknown) => isHttpConflict(error) &&
+  typeof error.detail === 'object' && error.detail !== null && 'code' in error.detail &&
+  error.detail.code === 'trial_expression_context_unavailable';
 
 export async function readAuthoringCatalog(signal: AbortSignal): Promise<StudioAuthoringCatalog> {
   const path = '/api/projects/authoring/catalog';

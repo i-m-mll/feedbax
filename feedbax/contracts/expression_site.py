@@ -23,11 +23,13 @@ from feedbax.contracts.expression_values import (
     SweepList,
     SweepRange,
     SweepSample,
+    UnresolvedValue,
     ValueBase,
     ValueRecord,
+    scope_problems,
     walk,
 )
-from feedbax.contracts.expression_check import Checked, check
+from feedbax.contracts.expression_check import Checked, _checker, check
 from feedbax.contracts.expression_registry import FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.contracts.expression_text import ParsedField, parse
 
@@ -64,16 +66,10 @@ def project_site(
     value: Expression | None = None,
     *,
     name_paths: Mapping[str, tuple[str, ...]] = MappingProxyType({}),
+    defer_parts: bool = False,
 ) -> SiteProjection:
     """Derive the editor's menu and completion from the same declarations as check."""
-    scope = {name.name for name in site.names}
-    offered = tuple(
-        entry
-        for entry in functions.definitions()
-        if entry.level <= site.finest
-        and set(entry.implicit_names) - {"T"} <= scope
-        and not (site.structural and entry.random)
-    )
+    offered = _offered_functions(site, functions)
     kinds = [FieldKind.VALUE, FieldKind.SWEEP, FieldKind.FORMULA]
     if any(entry.display_class == FunctionClass.DRAW for entry in offered):
         kinds.append(FieldKind.DRAW)
@@ -83,17 +79,12 @@ def project_site(
         kinds.append(FieldKind.SHAPE)
     if any(item.level <= site.finest and site.expected.accepts(item.type) for item in site.names):
         kinds.append(FieldKind.LINK)
-    parts = (
-        _expression_parts(value, site, functions, offered)
-        if value is not None
-        else (
-            ExpressionPartSite(
-                path=(),
-                functions=tuple(entry.id for entry in offered),
-                names=tuple(name.id for name in site.names if name.level <= site.finest),
-            ),
+    parts = ()
+    if not defer_parts:
+        parts = (
+            (_blank_part(site, offered),) if value is None
+            else _expression_parts(value, site, functions, offered)
         )
-    )
     return SiteProjection(
         site=site,
         kinds=tuple(kinds),
@@ -101,6 +92,35 @@ def project_site(
         parts=parts,
         name_paths={name.id: name_paths[name.id] for name in site.names if name.id in name_paths},
     )
+
+
+def _offered_functions(site: Site, functions: FunctionRegistry) -> tuple[FunctionInfo, ...]:
+    scope = {name.name for name in site.names}
+    return tuple(
+        entry
+        for entry in functions.definitions()
+        if entry.level <= site.finest
+        and set(entry.implicit_names) - {"T"} <= scope
+        and not (site.structural and entry.random)
+    )
+
+
+def _blank_part(site: Site, offered: tuple[FunctionInfo, ...]) -> ExpressionPartSite:
+    return ExpressionPartSite(
+        path=(),
+        functions=tuple(entry.id for entry in offered),
+        names=tuple(name.id for name in site.names if name.level <= site.finest),
+    )
+
+
+def project_expression_part(
+    site: Site, functions: FunctionRegistry, value: Expression | None, part: NodePath,
+) -> ExpressionPartSite | None:
+    """Project only the opened part, with the same eligibility as an eager site."""
+    offered = _offered_functions(site, functions)
+    if value is None:
+        return None if part else _blank_part(site, offered)
+    return next(iter(_expression_parts(value, site, functions, offered, selected=part)), None)
 
 
 def _replace_part(tree: Expression, path: NodePath, value: Expression) -> Expression:
@@ -134,20 +154,52 @@ def _with_function(node: Expression, info: FunctionInfo, finest: Level) -> Expre
 
 def _expression_parts(
     tree: Expression, site: Site, functions: FunctionRegistry, offered: tuple[FunctionInfo, ...],
+    *, selected: NodePath | None = None,
 ) -> tuple[ExpressionPartSite, ...]:
     """Check a replacement with its enclosing expression so sibling constraints still apply."""
-    original = check(tree, site, functions)
+    nodes = tuple(walk(tree))
+    by_path = dict(nodes)
+    if selected is not None and selected not in by_path:
+        return ()
+    invalid_scope = scope_problems(site, ())
+    recheck, local, insensitive = _checker(site, functions, reusable=frozenset(id(node) for _, node in nodes))
+    original = (
+        check(tree, site, functions) if isinstance(tree, UnresolvedValue) else invalid_scope or recheck(tree)
+    )
     names = tuple(
-        (name.id, NameValue(reference=name.id)) for name in site.names if name.level <= site.finest
+        (name.id, NameValue(reference=name.id), (name.type, name.level, name.list_count))
+        for name in site.names if name.level <= site.finest
     )
 
     def fits(path: NodePath, replacement: Expression) -> bool:
-        candidate = check(_replace_part(tree, path, replacement), site, functions)
-        if isinstance(candidate, Checked):
+        after = replacement
+        if isinstance(original, Checked) and not isinstance(tree, UnresolvedValue):
+            # A changed child hint can leave its parent's output unchanged. Lift
+            # the edit one edge at a time, stopping when the outer context agrees.
+            for size in range(len(path), 0, -2):
+                if (decision := local(by_path[path[:size]], after, path[:size])) is not None:
+                    return decision
+                after = _replace_part(by_path[path[: size - 2]], path[size - 2 : size], after)
+        else:
+            after = _replace_part(tree, path, replacement)
+        candidate = invalid_scope or recheck(after, collect=False)
+        if not candidate:
             return True
         if isinstance(original, Checked):
             return False
         return all(problem in original and problem.path[:len(path)] != path for problem in candidate)
+
+    def fitted_names(path: NodePath) -> tuple[str, ...]:
+        equivalent = {}
+        accepted = []
+        group_names = isinstance(original, Checked) and insensitive(path)
+        for key, replacement, signature in names:
+            group = signature if group_names else key
+            if group not in equivalent:
+                equivalent[group] = fits(path, replacement)
+            if equivalent[group]:
+                accepted.append(key)
+        return tuple(accepted)
 
     return tuple(
         ExpressionPartSite(
@@ -158,9 +210,9 @@ def _expression_parts(
                 if (replacement := _with_function(node, info, site.finest)) is not None
                 and fits(path, replacement)
             ),
-            names=tuple(key for key, replacement in names if fits(path, replacement)),
+            names=fitted_names(path),
         )
-        for path, node in walk(tree)
+        for path, node in (nodes if selected is None else ((selected, by_path[selected]),))
     )
 
 

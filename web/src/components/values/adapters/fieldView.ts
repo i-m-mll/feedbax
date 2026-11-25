@@ -133,7 +133,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     finest: field.site.site.finest,
     names: field.site.site.names ?? [],
     functions: field.site.functions,
-    sites: field.site.parts,
+    menus: { kind: 'listed', parts: field.site.parts },
     namePaths: field.site.name_paths,
     commit,
   };

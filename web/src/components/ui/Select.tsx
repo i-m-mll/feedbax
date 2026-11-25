@@ -26,6 +26,7 @@ export interface SelectProps<Value extends string> {
   /** A control at the box's trailing end, before the list's glyph: the changed mark. */
   trailing?: ReactNode;
   disabled?: boolean;
+  onOpenChange?: (open: boolean) => void;
   /** Where the keyboard goes when the list closes; the trigger when it gives none. */
   finalFocus?: () => HTMLElement | null | undefined;
   'aria-label'?: string;
@@ -36,7 +37,7 @@ export interface SelectProps<Value extends string> {
 }
 
 export function Select<Value extends string>(
-  { items, value, onValueChange, placeholder, leading, trailing, disabled, finalFocus, id, className, ...aria }: SelectProps<Value>,
+  { items, value, onValueChange, onOpenChange, placeholder, leading, trailing, disabled, finalFocus, id, className, ...aria }: SelectProps<Value>,
 ) {
   const selectedMark = items.find((item) => item.value === value)?.mark;
   const select = (
@@ -45,6 +46,7 @@ export function Select<Value extends string>(
       value={value}
       onValueChange={(next) => { if (next !== null) onValueChange(next as Value); }}
       disabled={disabled}
+      onOpenChange={onOpenChange && ((open) => onOpenChange(open))}
     >
       <BaseSelect.Trigger
         id={id}

@@ -5124,6 +5124,7 @@ export type StudioTrainingPlace = {
 export type StudioTrialAuthoring = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
+  "expression_context": string;
   "model": string | null;
   "task_document": string | null;
   "objective_document": string | null;
@@ -5199,6 +5200,14 @@ export type StudioTrialExpressionEdit = {
   "kind": "expression";
   "path": Pointer;
   "edit": FieldTextEdit | FieldKindEdit | FieldNameEdit;
+};
+
+export type StudioTrialExpressionMenuRequest = {
+  "revision": Sha256;
+  "run": StudioSavedTrainKey;
+  "expression_context": string;
+  "field": Pointer;
+  "part": NodePath;
 };
 
 export type StudioTrialField = {
@@ -14090,6 +14099,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
   z.object({
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
+    "expression_context": z.string(),
     "model": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "task_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "objective_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
@@ -14181,6 +14191,16 @@ export const StudioTrialExpressionEditSchema: z.ZodType<StudioTrialExpressionEdi
     "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialExpressionEdit>;
+
+export const StudioTrialExpressionMenuRequestSchema: z.ZodType<StudioTrialExpressionMenuRequest> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "run": StudioSavedTrainKeySchema,
+    "expression_context": z.string(),
+    "field": PointerSchema,
+    "part": NodePathSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioTrialExpressionMenuRequest>;
 
 export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
   z.object({
@@ -14772,6 +14792,8 @@ export const contractSchemas = {
   StudioLoadedModelImportResult: StudioLoadedModelImportResultSchema,
   StudioTrialAuthoring: StudioTrialAuthoringSchema,
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequestSchema,
+  StudioTrialExpressionMenuRequest: StudioTrialExpressionMenuRequestSchema,
+  ExpressionPartSite: ExpressionPartSiteSchema,
   StudioTrialRelate: StudioTrialRelateSchema,
   StudioRelatePoint: StudioRelatePointSchema,
   StudioRelatePort: StudioRelatePortSchema,
@@ -14961,6 +14983,8 @@ export interface ContractTypeMap {
   StudioLoadedModelImportResult: StudioLoadedModelImportResult;
   StudioTrialAuthoring: StudioTrialAuthoring;
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequest;
+  StudioTrialExpressionMenuRequest: StudioTrialExpressionMenuRequest;
+  ExpressionPartSite: ExpressionPartSite;
   StudioTrialRelate: StudioTrialRelate;
   StudioRelatePoint: StudioRelatePoint;
   StudioRelatePort: StudioRelatePort;
