@@ -88,7 +88,7 @@ from feedbax.planner.project_plan import (
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
-from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates, coordinate_text
+from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates, sweep_value_name
 from feedbax.contracts.run_rule import (
     METRIC_CONDITION_FALSE, RuleRefusal, bind_metric_conditions, choose, metric_condition_holds,
 )
@@ -243,7 +243,7 @@ class ProjectPlanRead:
             rows=[
                 StudioSavedTrainRow(
                     key=StudioSavedTrainKey.model_validate(run.key, from_attributes=True),
-                    label=run.label or run.key.row,
+                    label=run.label,
                     request_id=run.request_id,
                     attempts=[
                         StudioSavedTrainAttempt.model_validate(attempt, from_attributes=True)
@@ -412,18 +412,18 @@ class ProjectPlanRead:
 
         def figure_reference(key: RunKey, element: str) -> StepReference | None:
             candidates = [
-                axis_coordinates(row.coordinates, row.input_axes)
+                row.selection_coordinates
                 for row in step_rows[key.variant, key.step]
             ]
             row = plan.row(key)
             assert row is not None
             axes = {}
-            for axis, value in axis_coordinates(row.coordinates, row.input_axes).items():
+            for axis, value in row.selection_coordinates.items():
                 others = [
                     values for values in candidates if axis in values and values[axis].value_id == value.value_id
                 ]
                 if len(others) != len(candidates):
-                    axes[axis] = [SelectedAxisValue(id=value.value_id, label=coordinate_text(value))]
+                    axes[axis] = [SelectedAxisValue(id=value.value_id, label=sweep_value_name(axis, value))]
                     candidates = others
             if len(candidates) != 1:
                 return None
@@ -450,7 +450,7 @@ class ProjectPlanRead:
             rows=[
                 StudioProjectWindowMapRow(
                     key=StudioSavedTrainKey.model_validate(row.key, from_attributes=True),
-                    label=row.label or row.key.row,
+                    label=row.label,
                     status=statuses[row.key].status,
                     reason=statuses[row.key].reason,
                     opening_step=opening.opening_step if (opening := self.openings.get(row.key)) is not None else None,
@@ -468,10 +468,10 @@ class ProjectPlanRead:
                     if row.kind in {"train", "evaluate"} else None,
                     coordinates={
                         axis: StudioProjectWindowMapCoordinate(
-                            value_id=coordinate.value_id, label=coordinate.label, value=coordinate.value,
+                            value_id=coordinate.value_id, label=sweep_value_name(axis, coordinate), value=coordinate.value,
                             axis_value=axis_values[row.key, axis],
                         )
-                        for axis, coordinate in row.coordinates.items()
+                        for axis, coordinate in axis_coordinates(row.coordinates, {}, row.kept_axes).items()
                     },
                     input_axes={
                         axis: StudioProjectWindowMapInputAxis(
@@ -750,7 +750,7 @@ class ProjectPlanService:
         if step is None:
             raise ProjectFolderInvalid(f"{body.step} is not a step of {body.variant}.")
         rows = [row for row in plan.rows if (row.key.variant, row.key.step) == (body.variant, body.step)]
-        coordinates = {id(row): axis_coordinates(row.coordinates, row.input_axes) for row in rows}
+        coordinates = {id(row): row.selection_coordinates for row in rows}
         metrics = sorted(common_train_metrics(rows)) if body.ranked else []
         try:
             chosen = choose(

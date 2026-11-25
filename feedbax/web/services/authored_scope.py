@@ -121,7 +121,8 @@ def prepared_reach(
         definition = plan.selected_definitions.get(key)
         fields = plan.variant_projects[key.variant].steps[key.step].set_fields
         content = (definition.payload, definition.input_documents, definition.task_additions) if definition else None
-        return row.label, row.coordinates, row.problems, row.resolved, content, row.train, fields
+        # An existing run can acquire or lose the display name Run 1 when copies change.
+        return row.coordinates, row.problems, row.resolved, content, row.train, fields
 
     return frozenset(
         key for key in observed & edited_authored_rows(before, candidate)
