@@ -120,15 +120,15 @@ test('authors coloured hand paths and 3D hidden-state trajectories in the figure
     x: 'scores · component 1', y: 'scores · component 2', z: 'scores · component 3',
   });
 
-  await run('hands');
   await run('dynamics');
+  await run('hands');
   const draws = async () => {
-    await openFigure('hands', 'hand-paths');
-    await expect(drawn('hand-paths').locator('.colorbar')).toHaveCount(1);
-    await expect(drawn('hand-paths').locator('.colorbar')).toContainText('Mass (kg)');
     await openFigure('dynamics', 'hidden');
     await expect(drawn('hidden').locator('.gl-container')).toHaveCount(1);
     await expect(drawn('hidden').locator('.legend, .colorbar').first()).toBeVisible();
+    await openFigure('hands', 'hand-paths');
+    await expect(drawn('hand-paths').locator('.colorbar')).toHaveCount(1);
+    await expect(drawn('hand-paths').locator('.colorbar')).toContainText('Mass (kg)');
   };
   await draws();
   await page.reload();

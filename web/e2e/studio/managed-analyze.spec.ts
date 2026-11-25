@@ -254,6 +254,6 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   expect(graph(restored)).toEqual(graph(marked));
   expect(restored.revision).toBe(marked.revision);
   await figures.getByRole('button', { name: 'Velocity Summary', exact: true }).click();
-  await expect(inspector.getByRole('tree', { name: 'Layers', exact: true }).getByRole('treeitem')).toHaveCount(4);
+  await expect(inspector.getByRole('tree', { name: 'Layers', exact: true }).getByRole('treeitem')).toHaveCount(5);
   expect(await attempts()).toEqual(admittedJobs);
 });
