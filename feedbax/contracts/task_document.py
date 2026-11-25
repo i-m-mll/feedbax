@@ -147,6 +147,15 @@ class TaskDocument(ValueRecord):
         default=(ValidationTrial(),), min_length=1
     )
 
+    def without_markers(self) -> "TaskDocument":
+        """The computational Task, with its Scene-only metadata removed."""
+        if not any(variable.marker is not None for variable in self.variables):
+            return self
+        return self.model_copy(update={"variables": tuple(
+            variable if variable.marker is None else variable.model_copy(update={"marker": None})
+            for variable in self.variables
+        )})
+
     @property
     def condition_ids(self) -> tuple[str, ...]:
         """Identify a fixed cohort by the variables that define each condition."""
