@@ -13,7 +13,9 @@ import type { AuthoredProject } from './authoredEdits';
 import {
   selectionCheckpoints, type CheckpointKind, type CheckpointRange, type EditableCheckpointRule, type SelectionCheckpoint,
 } from './evaluateAuthoring';
-import { documentChoice, documentChoiceId, documentGroup, stepChoice, stepChoiceId, stepGroup } from './referenceChoices';
+import {
+  documentChoice, documentChoiceId, documentGroup, documentKind, stepChoice, stepChoiceId, stepGroup, type DocumentKind,
+} from './referenceChoices';
 import { savedRunId } from './projectWindowPlan';
 import { changedSelections, stepSelections, type SelectionProblems } from './selectionEdits';
 import { CheckpointEditor } from './StudioEvaluateAuthoring';
@@ -22,8 +24,19 @@ import { outputChoice, outputChoiceId, type CardOutput } from './AnalyzeReferenc
 /** What a gesture on an input asks for: its step selections changed, a document read instead, or nothing bound. */
 export type InputGesture =
   | { kind: 'select'; binding: InputBinding }
-  | { kind: 'document'; document: string }
+  | { kind: 'document'; document: string; role: DocumentKind }
   | { kind: 'absent' };
+
+/** The binding by which an input reads the project's document `document` of kind `role`. */
+export function documentBinding(role: DocumentKind, document: string): InputBinding {
+  const source = { document };
+  switch (role) {
+    case 'model': return { kind: 'initial_model', source };
+    case 'loaded_model': return { kind: 'loaded_model', source };
+    case 'task': return { kind: 'task', source };
+    case 'objective': return { kind: 'objective', source };
+  }
+}
 
 /** What the caller draws on selection `index`: its Runs control, and the plan's problems on the selection. */
 export interface SelectionParts {
@@ -115,7 +128,7 @@ export function InputEditor({ label, role, binding, self, steps, project, output
     ...producer ? [stepGroup(producers)] : [],
     ...offered.length ? [{ label: studioName('operations'), choices: offered.map(outputChoice) }] : [],
   ];
-  const documentGroups = role.documents.map((kind) => documentGroup(project, kind));
+  const documentGroups = role.documents.length ? [documentGroup(project, role.documents)] : [];
   const selections = stepSelections(binding);
   const document = documentOf(binding);
   const reads = (choice: ReferenceChoice): Pick<StepReference, 'step' | 'element' | 'product'> | undefined => {
@@ -141,7 +154,8 @@ export function InputEditor({ label, role, binding, self, steps, project, output
   const choose = (index: number | 'new', choice: ReferenceChoice) => {
     if (!onChange) return;
     if (absent && choice.id === absent.id) return onChange({ kind: 'absent' });
-    if (choice.id === documentChoiceId(choice.label)) return onChange({ kind: 'document', document: choice.label });
+    const chosen = choice.id === documentChoiceId(choice.label) && documentKind(project, choice.label, role.documents);
+    if (chosen) return onChange({ kind: 'document', document: choice.label, role: chosen });
     const reference = reads(choice);
     if (!reference) return;
     const current = selections ?? [];
@@ -164,7 +178,9 @@ export function InputEditor({ label, role, binding, self, steps, project, output
   const rows: { value: ReferenceChoice | null; reference?: StepReference }[] = selections
     ? selections.map((reference) => ({ value: shown(reference), reference }))
     : role.gathers && !document ? []
-      : [{ value: document !== undefined ? documentChoice(role.documents[0] ?? 'model', document) : absent ?? null }];
+      : [{ value: document !== undefined
+        ? documentChoice(documentKind(project, document, role.documents) ?? role.documents[0] ?? 'model', document)
+        : absent ?? null }];
   const parts = rows.map(({ reference }, index) => reference ? selection?.(index, reference) : undefined);
   function checkpointEditor({ rule, selections: covered }: SelectionCheckpoint, step?: string) {
     const planned = covered.map((index) => parts[index]?.problems?.checkpoint).find((problem) => problem !== undefined);

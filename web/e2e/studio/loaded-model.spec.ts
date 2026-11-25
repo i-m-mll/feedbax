@@ -1,0 +1,72 @@
+import { expect, test } from './fixtures/studio';
+import type { StudioLoadedModelImportResult, StudioProjectDocument } from '../../src/generated/studioContracts';
+import { runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+
+test.use({ viewport: { width: 1440, height: 900 } });
+
+const digest = (character: string) => character.repeat(64);
+const object = (sha256: string, size_bytes: number) => ({ object_id: `content-object://sha256/${sha256}`, sha256, size_bytes });
+
+// Catches a model file that does not fit refused with only its first problem, or away from the Model it was loaded
+// against; and a model file that fits imported but not listed under its Model, or not shown once loaded.
+test('Load reports every problem of a model file at the Model picker, and shows one that fits under its Model', async ({ page, request }) => {
+  const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const imports: URL[] = [];
+  let fits = false;
+  await page.route(`**${projectPath}/loaded-models/import?*`, async (route) => {
+    const url = new URL(route.request().url());
+    imports.push(url);
+    if (!fits) {
+      const result: StudioLoadedModelImportResult = { status: 'does_not_fit', report: { problems: [
+        { kind: 'missing_slot', replica: '0', address: 'controller.weight_hh', detail: 'absent' },
+        { kind: 'unexpected_slot', replica: '0', address: 'controller.extra', detail: 'not in the Model' },
+        { kind: 'mismatched_slot', replica: '1', address: 'readout.weight', detail: 'shape (2, 8) ≠ (2, 4)' },
+      ] } };
+      return route.fulfill({ status: 422, json: result });
+    }
+    const name = url.searchParams.get('name')!;
+    const created = await request.post(`${projectPath}/files`, { data: { revision: url.searchParams.get('revision'), file: {
+      kind: 'document', id: name, document: { schema: 'feedbax.spec.loaded_model', payload: {
+        schema_version: 'feedbax.spec.loaded_model.v1', model: { document: url.searchParams.get('model') },
+        source: {
+          kind: 'imported', model: object(digest('a'), 1200),
+          weights: { tree_id: `content-tree://sha256/${digest('b')}`, descriptor: object(digest('b'), 800) },
+          encoding: { descriptor_sha256: digest('c') },
+        },
+      } },
+    } } });
+    expect(created.status(), await created.text()).toBe(201);
+    const result: StudioLoadedModelImportResult = {
+      status: 'imported', document: name, snapshot: (await created.json() as StudioProjectDocument).snapshot,
+    };
+    return route.fulfill({ status: 201, json: result });
+  });
+
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  const picker = page.getByRole('button', { name: /^Model Document / });
+  const load = async () => {
+    await picker.click();
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByRole('menuitem', { name: 'Load', exact: true }).click();
+    await (await chooser).setFiles({ name: 'reach baseline.feedbax', mimeType: 'application/octet-stream', buffer: Buffer.from('archive') });
+  };
+
+  await load();
+  const misfit = page.getByRole('dialog', { name: 'Misfit' });
+  await expect(misfit.getByRole('listitem')).toHaveText([
+    'controller.weight_hh missing · 0', 'controller.extra unexpected · 0', 'readout.weight shape (2, 8) ≠ (2, 4) · 1',
+  ]);
+  expect(imports[0].searchParams.get('model')).toBe('point-mass');
+  await page.keyboard.press('Escape');
+  await expect(misfit).toBeHidden();
+
+  fits = true;
+  await load();
+  await expect(page.getByRole('button', { name: 'Loaded Model reach-baseline' })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Inspector' }).getByText('Point mass', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Loaded Model reach-baseline' }).click();
+  const items = page.getByRole('menu', { name: 'Loaded Model' }).getByRole('menuitemradio');
+  await expect(items).toHaveText(['Point mass', 'reach-baseline']);
+});

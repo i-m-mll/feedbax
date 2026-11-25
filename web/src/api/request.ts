@@ -70,7 +70,8 @@ function detailMessage(detail: unknown): string {
   return '';
 }
 
-export async function requestResponse(path: string, options?: RequestInit): Promise<Response> {
+/** The service's response to a request; `answers` are statuses besides success whose body is the route's answer. */
+export async function requestResponse(path: string, options?: RequestInit, answers: readonly number[] = []): Promise<Response> {
   let response: Response;
   const headers = new Headers(options?.headers);
   if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
@@ -86,7 +87,7 @@ export async function requestResponse(path: string, options?: RequestInit): Prom
   }
   serviceResponded();
 
-  if (!response.ok) {
+  if (!response.ok && !answers.includes(response.status)) {
     const detail = await parseErrorBody(response);
     throw new ApiRequestError(
       'http',
