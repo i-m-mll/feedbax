@@ -2147,7 +2147,7 @@ class _Compiler:
         trial_resolution: _TrialResolution | None = None,
     ) -> ResolvedStep | ProjectDiagnostic:
         project = self.variants[key.variant]
-        return composition.bind(
+        resolved = composition.bind(
             project,
             readers=self.readers,
             variant_sources=self.variant_sources.get(key.variant),
@@ -2156,6 +2156,28 @@ class _Compiler:
             row, include_sources=sources, partial_figures=project.steps[key.step].kind == "analyze",
             trial_resolution=trial_resolution,
         )
+        if not row.task_additions or isinstance(resolved, ProjectDiagnostic):
+            return resolved
+        raw = resolved.payload.get("trial_documents")
+        if not isinstance(raw, dict) or "task" not in raw:
+            if project.steps[key.step].kind == "evaluate":
+                return resolved
+            return ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents.task",
+                "A Set entry's Task variables and links need a Task document.", key.step, row=key.row, variant=key.variant,
+            )
+        from feedbax.contracts.task_document import add_to_task
+
+        try:
+            selected = add_to_task(TaskDocument.model_validate(raw["task"]), row.task_additions)
+        except ValueError as error:
+            return ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents.task", str(error),
+                key.step, row=key.row, variant=key.variant,
+            )
+        return replace(resolved, payload=resolved.payload | {
+            "trial_documents": raw | {"task": selected.model_dump(mode="json")},
+        })
 
     def project_definition(
         self,
@@ -2382,10 +2404,10 @@ class _Compiler:
                             train_rows.prepared = trial, prepared
                 if prepared_train is None:
                     payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
-                from feedbax.compiler.set_fields import SetFieldProblem, has_trial_windows, lower_trial_sets
+                from feedbax.compiler.set_fields import SetFieldProblem, lower_trial_sets
 
                 if isinstance(payload, dict) and authored_model is not None and (
-                    fields or has_trial_windows(authored_model.model)
+                    fields
                 ):
                     trial = payload["trial_documents"]
                     try:
@@ -2393,6 +2415,7 @@ class _Compiler:
                         model, task = lower_trial_sets(
                             authored_model.model, authored_task, fields,
                             reader or self.variants[key.variant].documents.get,
+                            self.components or _builtin_model_registry(),
                         )
                     except (SetFieldProblem, ValidationError) as error:
                         if isinstance(error, SetFieldProblem):

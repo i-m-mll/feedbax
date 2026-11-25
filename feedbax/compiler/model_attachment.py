@@ -159,8 +159,8 @@ def resolve_effective_model(
                     )
                 continue
             if isinstance(difference, SetField):
-                if not isinstance(element, FieldElement) or any(not isinstance(part, str) for part in element.path):
-                    raise ValueError("A Model difference must name a field using named parts")
+                if not isinstance(element, FieldElement):
+                    raise ValueError("A Model difference must name a field")
                 attachment = None
                 if isinstance(element.parent, AttachmentElement):
                     attachment = chain_for(element.parent, address).items.get(element.parent.id)

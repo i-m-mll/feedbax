@@ -538,6 +538,7 @@ def _instantiate_graph(
             "recurrent" if wire.is_recurrent else "instant",
             wire.recurrent_initializer,
             id=wire.id,
+            delay_layout=resolution.delay_layouts.get((wire.target_node, wire.target_port)),
         )
         for wire in spec.wires
     )

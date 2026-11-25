@@ -137,6 +137,14 @@ def pair_trial_source(
         signal_ids = {name: name for name in signal_types}
     else:
         template = None
+        from feedbax.compiler.set_fields import lower_trial_interventions
+
+        try:
+            model, task = lower_trial_interventions(model, task, components)
+        except ModelCompilationProblem as error:
+            return model_compilation_problems(error)
+        except ValueError as error:
+            return (Problem(code=ProblemCode.STRUCTURE, path=("model",), reason=str(error)),)
         signal_types = {signal.id: signal.type for signal in task.signals}
         signal_ids = {signal.name: signal.id for signal in task.signals}
     supplied_types = {}

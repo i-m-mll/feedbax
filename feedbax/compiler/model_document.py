@@ -30,7 +30,8 @@ from feedbax.contracts.graph import (
     ComponentSpec, DerivedDimensionRuleSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec,
 )
 from feedbax.contracts.model_address import (
-    AttachmentElement, ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource, SignalTarget,
+    AttachmentElement, ComponentPortAddress, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress,
+    PhysicalEnd, PortElement, SignalSource, SignalTarget,
 )
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.model_edit import ModelGraphProblem
@@ -527,6 +528,36 @@ class _Lower:
                 sampled_outputs[source] = relay, "output"
             return sampled_outputs[source]
 
+        def intervention_operand(value, field, key, origin):
+            if isinstance(value, dict) and value.get("kind") == "name":
+                reference = NameValue.model_validate(value).reference
+                try:
+                    address = ModelAddress.from_text(reference)
+                except ValueError as error:
+                    raise ValueError("An intervention Link needs a paired Task variable or a local Model output.") from error
+                if address.composites != path or not isinstance(address.element, PortElement):
+                    raise ValueError("An intervention Link must read an output in the same graph.")
+                end = address.element.end
+                if isinstance(end, InputBoundaryEnd) and any(port.id == end.port for port in ports.inputs):
+                    return _generated("input", end.port), "output"
+                if isinstance(end, ComponentPortAddress) and end.direction == "output":
+                    node = nodes.get(end.component)
+                    if node is not None and end.port in node.output_ports:
+                        source = end.component, end.port
+                        if self.state_only_output(node, subgraphs.get(end.component), end.port):
+                            source = state_sample(source, origin)
+                        return source
+                raise ValueError("The linked Model output does not exist.")
+            try:
+                array = np.asarray(value)
+            except ValueError as error:
+                raise ValueError("Enter a number or a rectangular numeric array.") from error
+            if array.dtype.kind not in {"f", "i", "u"} or not np.isfinite(array).all():
+                raise ValueError("Enter a finite number or a numeric array.")
+            node = _generated("intervention_constant", key, origin["id"], field)
+            add_generated(node, "feedbax.Constant", {"value": value, "dtype": "float32"}, origin=origin, inputs=())
+            return node, "output"
+
         def transform(source, chain, key, at, *, finish=None, signal: _Signal | None = None):
             pending_reset = None
             for attachment in chain:
@@ -546,10 +577,7 @@ class _Lower:
                         steps = length_steps(delay, self.period)
                     except ValueError as error:
                         raise self.problem(path, "field", str(error), parent=origin, path=("delay",)) from error
-                    if signal is None or signal.shape is None:
-                        raise self.problem(path, "attachment", "delay has no resolved reset shape", parent=at, id=attachment.id)
-                    if signal.dtype not in ("float32", "float64"):
-                        raise self.problem(path, "attachment", "delay requires a real floating-point reset", parent=at, id=attachment.id)
+                    signal = signal or _Signal()
                     initial, reset_output = 0, None
                     match attachment.initial_source:
                         case DelayInitialValue(value=value):
@@ -564,11 +592,13 @@ class _Lower:
                                 path, "attachment", "Choose a Delay Initial source available at reset",
                                 parent=at, id=attachment.id,
                             )
-                    limit = float(np.finfo(signal.dtype).max)
-                    if type(initial) not in (int, float) or not -limit <= initial <= limit:
+                    limit = float(np.finfo(signal.dtype).max) if signal.dtype in ("float32", "float64") else float("inf")
+                    if type(initial) not in (int, float) or not isfinite(initial) or not -limit <= initial <= limit:
                         raise self.problem(path, "attachment", "delay Initial requires a qualified numeric value", parent=at, id=attachment.id)
+                    dtype = signal.dtype if signal.dtype in ("float32", "float64") else None
                     reset = ModelDelayCarry(
-                        shape=signal.shape, dtype=signal.dtype, units=signal.units,
+                        shape=signal.shape if dtype is not None else None,
+                        dtype=dtype or _model_float_dtype(), units=signal.units,
                         steps=steps, initial=initial, reset_output=reset_output,
                         model_delay_id=attachment.id, model_wire_id=key,
                     ).model_dump(mode="json")
@@ -585,7 +615,10 @@ class _Lower:
                         name: self.numeric_field(value, path, origin, ("fields", name))
                         for name, value in attachment.fields.items()
                     }
-                    match attachment.operation.lower():
+                    operation = attachment.operation.lower()
+                    operands = {}
+                    input_port = "input"
+                    match operation:
                         case "scale" if type(parameters.get("factor")) in (int, float):
                             type_id, params = "feedbax.Scale", {"scale": parameters["factor"], "fixed": True}
                         case "add" if isinstance(parameters.get("value"), list) and all(
@@ -596,11 +629,26 @@ class _Lower:
                             if parameters["low"] > parameters["high"]:
                                 raise self.problem(path, "attachment", "clamp bounds are reversed", parent=at, id=attachment.id)
                             type_id, params = "feedbax.Saturation", {"min_val": parameters["low"], "max_val": parameters["high"]}
+                        case "add":
+                            type_id, params, input_port = "feedbax.Sum", {}, "a"
+                            operands = {"value": "b"}
+                        case "scale":
+                            type_id, params, input_port = "feedbax.Multiply", {}, "a"
+                            operands = {"factor": "b"}
+                        case "clamp":
+                            type_id, params = "feedbax.Clamp", {}
+                            operands = {"low": "low", "high": "high"}
                         case _:
                             raise self.problem(path, "attachment", "unrecognized intervention or fields", parent=at, id=attachment.id)
                     segment = _generated("attachment", key, attachment.id)
-                    add_generated(segment, type_id, params, origin=origin)
-                    emit(source, (segment, "input"), _generated("segment", key, attachment.id), origin, reset=pending_reset)
+                    add_generated(segment, type_id, params, origin=origin, inputs=(input_port, *operands.values()))
+                    for field, port in operands.items():
+                        try:
+                            operand = intervention_operand(parameters.get(field), field, key, origin)
+                        except ValueError as error:
+                            raise self.problem(path, "field", str(error), parent=origin, path=("fields", field)) from error
+                        emit(operand, (segment, port), _generated("intervention_operand", key, attachment.id, field), origin)
+                    emit(source, (segment, input_port), _generated("segment", key, attachment.id), origin, reset=pending_reset)
                     pending_reset = None
                     source = (segment, "output")
             if finish is not None:
@@ -685,7 +733,8 @@ class _Lower:
                 if reset is not None:
                     relay = _generated("output", b.port)
                     add_generated(relay, "feedbax.Input", {}, origin=at)
-                    emit(output, (relay, "input"), key, at, reset=reset)
+                    origin = {"kind": "attachment", "parent": at, "id": reset["model_delay_id"]}
+                    emit(output, (relay, "input"), key, origin, reset=reset)
                     output = (relay, "output")
                 output_bindings[external] = output
             else:
