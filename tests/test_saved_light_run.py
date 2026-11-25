@@ -32,6 +32,100 @@ from tests.test_project_report_plan import _report_project
 _TRIALS = ["0", "1"]
 
 
+def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    raw = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    task = raw["documents"]["simple-reaches-task"]["payload"]
+    target = next(signal for signal in task["signals"] if signal["id"] == "target_pos")
+    target["name"] = "Requested target"
+    task["validation_trials"] = task["validation_trials"][:1]
+    raw["steps"] = {
+        "rollout": {
+            "kind": "evaluate",
+            "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
+                "seed": 17, "trial_policy": "paired", "variation": [],
+                "trial_set": {"kind": "every_condition"},
+                "input_bindings": {"target_pos": "target_pos"},
+            }}},
+            "inputs": {
+                "subject": {"kind": "initial_model", "source": {"document": "point-mass"}},
+                "task": {"kind": "task", "source": {"document": "simple-reaches-task"}},
+            },
+        },
+        "plot": {
+            "kind": "analyze",
+            "base": {"inline": {
+                "inputs": {"states": {"kind": "dataset"}},
+                "views": {"target": {
+                    "inputs": {"states": {"input": "states"}},
+                    "figure": {
+                        "data": ["states"],
+                        "layout": [{"name": "position", "row": 1, "col": 1}],
+                        "layers": [{
+                            "name": "target-x", "role": "states", "panel": "position", "mark": "line",
+                            "encode": {
+                                "x": "transition_start",
+                                "y": {"variable": "/v1/task/output/target_pos", "select": {"xy": "x"}},
+                            },
+                        }],
+                    },
+                }},
+            }},
+            "inputs": {"states": {"step": "rollout"}},
+        },
+    }
+    project = "signal-rename"
+    url = f"/api/projects/{project}"
+    _save_project(ProjectFolderService(tmp_path), project, Project.model_validate(raw))
+    rollout = {"variant": "default", "step": "rollout", "row": "default"}
+    plot = rollout | {"step": "plot"}
+
+    def json_object(response, status=200):
+        assert response.status_code == status, response.text
+        return response.json()
+
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        revision = json_object(client.get(url))["revision"]
+
+        def element():
+            window = json_object(client.get(f"{url}/train-runs", params={
+                "revision": revision, "window_map": True,
+            }))["window_map"]
+            assert not window["problems"], window["problems"]
+            (request,) = next(item for item in window["analysis_elements"] if item["name"] == "target")["requests"]
+            return request
+
+        def draw(name):
+            assert element()["status"] in ("not_run", "waiting", "stale")
+            submitted = json_object(client.post(f"{url}/train-runs", json={
+                "revision": revision, "token": token(name), "run_keys": [rollout, plot],
+            }), 202)
+            for item in submitted["items"]:
+                job = wait_until(lambda: (
+                    job if (job := job_row(host, item["job_id"])) and job["outcome"] is not None else None
+                ))
+                assert job["state"] == "succeeded", job["outcome"]
+            return json_object(client.get(element()["result"]["products"]["figure"]))
+
+        before = draw("before")
+        assert before["layout"]["yaxis"]["title"]["text"] == "Requested target (m)"
+        changed = json_object(client.post(f"{url}/authoring/trials", json={
+            "revision": revision, "run": rollout,
+            "change": {"kind": "structure", "changes": [{
+                "op": "rename", "member": "signal", "id": "target_pos", "name": "Renamed target",
+            }]},
+        }))
+        saved = json_object(client.patch(url, json={"revision": revision, "files": changed["files"]}))
+        revision = saved["revision"]
+        after = draw("after")
+        assert after["layout"]["yaxis"]["title"]["text"] == "Renamed target (m)"
+        assert [(trace["x"], trace["y"]) for trace in after["data"]] == [
+            (trace["x"], trace["y"]) for trace in before["data"]
+        ]
+
+
 def _saved_light_definition(*, paired=False):
     project = _report_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     evaluation = managed_evaluation_definition()

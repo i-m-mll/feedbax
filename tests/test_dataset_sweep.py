@@ -123,10 +123,10 @@ def test_same_condition_models_stack_on_labels_and_share_equal_coordinates():
         resident = Dataset.from_arrays(
             {"v": Variable((np.arange(6) + offset).reshape((1, 1, 2, 3)), (
                 "checkpoint", "condition", "trial", "state_time",
-            ))},
+            ), label=f"{model} velocity")},
             coords={
                 "condition": Variable(np.asarray([condition]), ("condition",)),
-                "trial": Variable(np.asarray(["right", "left"]), ("trial",)),
+                "trial": Variable(np.asarray(["right", "left"]), ("trial",), label=f"{model} trial"),
                 "state_time": Variable(np.asarray([0., 0.1, 0.2]), ("state_time",)),
             },
             attrs={"state_lifetime": "trial", "source_graph_sha256": model},
@@ -158,10 +158,12 @@ def test_same_condition_models_stack_on_labels_and_share_equal_coordinates():
     data = stack_dataset_members(inputs)
     assert reads == []
     assert data.descriptor.variables["v"].dims == ("model", "mass", "checkpoint", "condition", "trial", "state_time")
+    assert data.descriptor.variables["v"].label is None
     assert data.data("model").tolist() == ["fast", "slow"]
     assert data.data("mass.value").tolist() == [2.0, 1.0]
     assert data.data("source").item() == "conditions"
     assert data.descriptor.coords["trial"].dims == ("trial",)
+    assert data.descriptor.coords["trial"].label is None
     assert data.descriptor.coords["condition"].dims == ("mass", "condition")
     assert data.data("condition").tolist() == [["heavy"], ["nominal"]]
     assert data.descriptor.attrs == {"state_lifetime": "trial"}
@@ -172,6 +174,8 @@ def test_same_condition_models_stack_on_labels_and_share_equal_coordinates():
 
     single = stack_dataset_members(inputs[:1])
     assert single.descriptor.variables["v"].dims == ("checkpoint", "condition", "trial", "state_time")
+    assert single.descriptor.variables["v"].label == "fast velocity"
+    assert single.descriptor.coords["trial"].label == "fast trial"
     assert single.data("model").item() == "fast"
     with pytest.raises(ValueError, match="collide.*condition"):
         stack_dataset_members([(SweepInputMember("one", {"condition": SweepCoordinate("x")}), inputs[0][1])])
