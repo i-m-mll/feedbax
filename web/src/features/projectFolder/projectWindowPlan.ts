@@ -329,7 +329,7 @@ export function projectWindowPlan(
       openingErrors: openingErrors.length ? openingErrors : undefined,
       progress: training?.attempts.at(-1)?.progress ?? undefined,
       collectionProgress: row.collection_progress ?? undefined,
-      sizeBytes: evaluations.get(id)?.result?.size_bytes,
+      sizeBytes: (evaluation?.result ?? evaluation?.previous)?.size_bytes,
     });
   }
   const source = map
