@@ -118,6 +118,14 @@ def _typed_signal_project():
     project["steps"] = {"simple-reaches": project["steps"]["simple-reaches"]}
     project["steps"]["check"] = managed_evaluation_step("simple-reaches")
     model = project["documents"]["point-mass"]["payload"]
+    for key, leaf in (("position", "pos"), ("velocity", "vel")):
+        model["interior"]["components"][key] = {
+            "kind": "leaf", "name": key, "type": "feedbax.SelectState", "fields": {"paths": [leaf]},
+        }
+        model["interior"]["wires"][f"select-{key}"] = {
+            "source": {"owner": "component", "component": "plant", "port": "effector"},
+            "target": {"owner": "component", "component": key, "port": "state"},
+        }
     model["ports"]["inputs"][0]["type"] = {"shape": [2]}
     model["interior"]["components"]["point_receiver"] = {
         "kind": "composite", "name": "Point receiver",
@@ -166,7 +174,7 @@ def _incompatible_signal_space(studio):
             element = {"kind": "field", "parent": element, "path": path}
         return ports[ModelAddress.model_validate({"composites": [], "element": element}).to_text()]
 
-    hand = port_at({"owner": "outputs", "port": "hand"})
+    hand = port_at({"owner": "outputs", "port": "effector"}, "pos")
     assert hand["type"] == {"base": "real", "shape": [2], "unit": "m", "space": "point"}
     assert hand["readers"] == ["effector_position"]
     effector = {"owner": "component", "component": "plant", "direction": "output", "port": "effector"}
