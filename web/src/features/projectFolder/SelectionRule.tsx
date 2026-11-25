@@ -3,11 +3,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { checkRunRule } from '@/api/studioAuthoring';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { RuleField, type RuleFieldCommand, type RuleFieldProblem } from '@/components/values/RuleField';
-import { pickedTerms } from '@/components/values/runRule';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
-import type { SelectedRow, StudioRunRuleRequest, SubsetTerms } from '@/generated/studioContracts';
-import { savedRunId } from './projectWindowPlan';
+import type { StudioProjectWindowMapRow, StudioRunRuleRequest, SubsetTerms } from '@/generated/studioContracts';
+import { pinnedSelectionLabels, savedRunId, selectedRowTerms } from './projectWindowPlan';
 import type { RuleProblem } from './selectionEdits';
 
 /** Where a rule is checked: the saved revision and variant whose plan holds the producer's runs. */
@@ -29,7 +28,7 @@ const check = (scope: RuleScope, step: string, rule: string, ranked: boolean) =>
  * The rule of a selection of `source`'s runs, or of a sweep exception (`ranked` false). The count is the plan's for
  * the saved rule and the check's while another is written; while the field has focus the runs it chooses are boxed on
  * `source`'s card. Enter saves the rule as written, whether or not it chooses runs, and the plan's problem with it is
- * shown on the saved rule. Pick Runs starts from none; each press on `source`'s card toggles runs, and the field shows the shortest rule choosing those picked.
+ * shown on the saved rule. Pick Runs starts from none; each press on `source`'s card toggles runs, and the field shows the axes that distinguish the picked runs.
  */
 export function SelectionRule({ scope, source, rule, pinned, planned, ranked = true, label = studioName('runs'), picking,
   disabled, problem, onToRows, pick, onCommit }: {
@@ -47,7 +46,7 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
   problem?: RuleProblem;
   onToRows?: () => void;
   /** Where runs can be picked on `source`'s card for the selection: its rows, and the save of what is picked. */
-  pick?: { readonly rows: readonly SelectedRow[]; onCommit(terms: SubsetTerms): void };
+  pick?: { readonly rows: readonly StudioProjectWindowMapRow[]; onCommit(terms: SubsetTerms): void };
   onCommit(rule: string): void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -59,10 +58,7 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
     ? new Set(result.runs.map((row) => savedRunId({ variant: scope.variant, step: source.id, row }))) : undefined,
   [result, scope.variant, source.id]);
   const [picked, setPicked] = useState<ReadonlySet<string>>();
-  const rowOf = useMemo(() => new Map(pick?.rows.map((row) => [savedRunId({ variant: row.variant, step: source.id, row: row.row }), row])),
-    [pick?.rows, source.id]);
-  const pickedWrites = useMemo(() => picked && pickedTerms(source.runs, picked, source.ruleAxes ?? {}, (id) => rowOf.get(id)),
-    [picked, source.runs, source.ruleAxes, rowOf]);
+  const pickedWrites = useMemo(() => picked && pick && selectedRowTerms(pick.rows, picked), [picked, pick?.rows]);
   useEffect(() => {
     if (!picking) return;
     picking.setState({ choosing: picked ? {
@@ -82,15 +78,18 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
   const count = picked ? `${picked.size}/${source.runs.length}`
     : writing ? result?.kind === 'chosen' && checked.data ? `${result.count}/${checked.data.total}` : undefined
       : shown && `${shown.count}/${shown.total}`;
-  const shownPicks = useMemo(() => pickedWrites && ('rule' in pickedWrites ? { text: pickedWrites.rule }
-    : { text: '', pinned: pickedWrites.rows.map(({ key }) => key) }), [pickedWrites]);
+  const shownPicks = useMemo(() => picked && {
+    text: '', pinned: pickedWrites && pinnedSelectionLabels(pickedWrites),
+    representable: picked.size > 0 && pickedWrites !== undefined,
+  }, [picked, pickedWrites]);
   function endPick(save: boolean) {
     setPicked(undefined);
     if (!save || !pick || !pickedWrites || !picked?.size) return;
-    pick.onCommit('rows' in pickedWrites ? { rows: [...pickedWrites.rows] } : pickedWrites.rule ? { rule: pickedWrites.rule } : {});
+    pick.onCommit(pickedWrites);
   }
-  const shownProblem: RuleFieldProblem | undefined = !writing && problem
-    ? { reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } } } : undefined;
+  const shownProblem: RuleFieldProblem | undefined = picked?.size && !pickedWrites
+    ? { reason: 'These axis values also select unpicked runs.' }
+    : !writing && problem ? { reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } } } : undefined;
   const commands: RuleFieldCommand[] = [
     ...pick ? [{ label: studioName('pickRuns'), disabled: disabled || !source.runs.length, invoke: () => setPicked(new Set()) }] : [],
     ...onToRows ? [{ label: studioName('toRows'), disabled: disabled || writing, invoke: onToRows }] : [],

@@ -123,7 +123,7 @@ def test_second_figure_edit_and_analyze_sibling_diagnostic_keep_precise_authorit
     analysis["operations"]["unrelated"] = unrelated
     project.documents["velocity-report"].payload["blocks"].append({"figure": "other"})
     project.steps["report"].inputs["other"] = StepReference(
-        step="analyze", row="default", element="alternate", product="figure"
+        step="analyze", element="alternate", product="figure"
     )
     original = _compile(project, operations, memo)
     assert [item.element for item in original.diagnostics] == ["unrelated"]
@@ -182,7 +182,7 @@ def test_wrong_or_ambiguous_figure_ref_is_refused_and_text_report_needs_no_regis
     assert problem.path == "inputs.velocity_summary.element"
     assert "summarize" in problem.detail and "figure" in problem.detail
 
-    project.steps["report"].inputs["velocity_summary"] = source.model_copy(update={"row": None})
+    project.steps["report"].inputs["velocity_summary"] = source
     project.steps["analyze"] = Step.model_validate(
         project.steps["analyze"].model_dump(mode="json", exclude_unset=True)
         | {

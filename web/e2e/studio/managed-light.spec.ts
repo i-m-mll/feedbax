@@ -191,7 +191,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expect(created.project.steps?.analyze).toMatchObject({
     kind: 'analyze', base: { document: 'analysis' }, inputs: { states: {
       step: evaluateStep,
-      ...(paired ? { where: { rule: expect.stringMatching(/^mass=/) } } : { row: sources[0].key.row }),
+      where: paired ? {} : { axes: { mass: [{ id: 'heavy', label: expect.any(String) }] } },
     } },
   });
   function expectAnalyzeSources(projection: StudioProjectWindowMap) {
@@ -281,7 +281,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expect(report.blocks).toHaveLength(2);
   const role = Object.keys(inputs)[0];
   expect(report.blocks[1]).toMatchObject({ figure: role });
-  expect(inputs[role]).toMatchObject({ step: 'analyze', row: 'default', element: 'velocity_summary', product: 'figure' });
+  expect(inputs[role]).toMatchObject({ step: 'analyze', element: 'velocity_summary', product: 'figure' });
 
   const settled = await plan(ordered.revision);
   expect(settled.problems.filter(({ step }) => step === 'analyze' || step === 'report')).toEqual([]);
