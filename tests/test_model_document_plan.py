@@ -325,11 +325,17 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         assert not prepared["problems"], prepared
         saved = client.patch(url, json={"revision": snapshot["revision"], "files": prepared["files"]})
         assert saved.status_code == 200, saved.text
-        plan = folders.read_plan("window", revision=None).plan
+        settled = folders.read_plan("window", revision=None)
+        plan = settled.plan
         assert len(plan.runs) == 2 and all(run.admission_problem is None for run in plan.runs), (
             plan.diagnostics, tuple(run.problems for run in plan.runs),
         )
         assert {run.label for run in plan.runs} == {"Offset 0.1 s", "Offset 0.2 s"}
+        window = ProjectPlanRead.without_history(settled).response(include_window_map=True).window_map
+        assert window is not None
+        (axis,) = window.steps[0].axes
+        assert axis.label == "Offset"
+        assert [value.value_label for value in axis.values] == ["0.1 s", "0.2 s"]
         values = set()
         for run in plan.runs:
             documents = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.trial_documents
@@ -393,7 +399,10 @@ def test_scale_operand_sweep_has_the_field_name_without_changing_the_axis_key(tm
     assert window is not None
     (axis,) = window.steps[0].axes
     assert axis.id == "value"
-    assert [(value.id, value.label) for value in axis.values] == [("value-1", "Factor 0.5"), ("value-2", "Factor 1")]
+    assert axis.label == "Factor"
+    assert [(value.id, value.label, value.value_label) for value in axis.values] == [
+        ("value-1", "Factor 0.5", "0.5"), ("value-2", "Factor 1", "1"),
+    ]
     assert [(row.key.row, row.label) for row in window.rows] == [
         ("value=value-1", "Factor 0.5"), ("value=value-2", "Factor 1"),
     ]

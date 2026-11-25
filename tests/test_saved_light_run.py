@@ -773,7 +773,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         figure = reopened.get(profile["result"]["products"]["figure"])
         assert figure.status_code == 200, figure.text
         traces = [trace for trace in figure.json()["data"] if trace.get("showlegend", True)]
-        assert [trace["name"] for trace in traces] == [f'mass={mass_values[key]["label"]}' for key in order]
+        assert [trace["name"] for trace in traces] == [mass_values[key]["label"] for key in order]
         assert [trace["meta"]["group"]["member"] for trace in traces] == members
         for index, trace in enumerate(traces):
             np.testing.assert_allclose(array(trace["x"]), times[0])

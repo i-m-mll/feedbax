@@ -4724,12 +4724,14 @@ export type StudioProjectWindowMap = {
 
 export type StudioProjectWindowMapAxis = {
   "id": string;
+  "label": string;
   "values": Array<StudioProjectWindowMapAxisValue>;
 };
 
 export type StudioProjectWindowMapAxisValue = {
   "id": string;
   "label": string;
+  "value_label": string;
   "rule": string;
 };
 
@@ -13588,6 +13590,7 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
 export const StudioProjectWindowMapAxisSchema: z.ZodType<StudioProjectWindowMapAxis> = z.lazy(() =>
   z.object({
     "id": z.string(),
+    "label": z.string(),
     "values": z.array(StudioProjectWindowMapAxisValueSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapAxis>;
@@ -13596,6 +13599,7 @@ export const StudioProjectWindowMapAxisValueSchema: z.ZodType<StudioProjectWindo
   z.object({
     "id": z.string(),
     "label": z.string(),
+    "value_label": z.string(),
     "rule": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapAxisValue>;
