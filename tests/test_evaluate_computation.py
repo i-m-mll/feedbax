@@ -191,10 +191,25 @@ def test_measures_share_post_step_velocity_and_record_its_origin_once(tmp_path):
 
     project = load_shipped_projects()["point-mass-reaching"]
     raw = project.documents["point-mass"].payload
-    raw["ports"]["outputs"].append({"id": "effector", "name": "effector", "type": {}})
-    raw["interior"]["wires"]["whole-effector"] = {
-        "source": {"owner": "component", "component": "plant", "port": "effector"},
-        "target": {"owner": "outputs", "port": "effector"},
+    raw["ports"]["outputs"] = [
+        {"id": name, "name": name, "type": {}} for name in ("velocity", "effector")
+    ]
+    graph = raw["interior"]
+    graph["components"]["observed-velocity"] = {
+        "kind": "leaf", "name": "Observed velocity", "type": "feedbax.SelectState", "fields": {"paths": ["vel"]},
+    }
+    effector = {"owner": "component", "component": "plant", "port": "effector"}
+    graph["wires"] = {
+        **{key: wire for key, wire in graph["wires"].items() if wire["target"]["owner"] != "outputs"},
+        "observation-select": {
+            "source": effector,
+            "target": {"owner": "component", "component": "observed-velocity", "port": "state"},
+        },
+        "observation-velocity": {
+            "source": {"owner": "component", "component": "observed-velocity", "port": "output"},
+            "target": {"owner": "outputs", "port": "velocity"},
+        },
+        "observation-effector": {"source": effector, "target": {"owner": "outputs", "port": "effector"}},
     }
     model = ModelDocument.model_validate(raw)
     task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
