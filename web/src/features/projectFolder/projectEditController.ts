@@ -132,6 +132,8 @@ export interface ProjectEditSnapshot {
   readonly outside: StudioProjectSnapshot | null;
   readonly undoName: string | null;
   readonly redoName: string | null;
+  /** Moves each time the saved plan may have changed since it was last read, so its readers read it again. */
+  readonly planVersion: number;
 }
 
 export class ProjectEditConflictError extends Error {
@@ -351,6 +353,7 @@ export class ProjectEditController {
   private document: StudioProjectDocument;
   private draft: ProjectEditContent;
   private history: History = emptyHistory;
+  private planVersion = 0;
   private savedHistory: History = emptyHistory;
   private outsideBurst: OutsideBurst | undefined;
   private outside: StudioProjectDocument | null = null;
@@ -748,8 +751,16 @@ export class ProjectEditController {
     }).catch(() => {});
   }
 
+  /** The Service says the saved plan may have changed: its facts, such as a run's status, are read again. */
+  planChanged() {
+    this.planVersion += 1;
+    this.publish();
+  }
+
   connected() {
     if (this.abort.signal.aborted) return;
+    // A change made while the stream was away was never announced.
+    this.planChanged();
     void this.sequence(async () => {
       const retry = this.queued.length > 0 && isServiceFailure(this.error);
       await this.refresh();
@@ -859,6 +870,7 @@ export class ProjectEditController {
       outside: this.outside?.snapshot ?? null,
       undoName: this.history.undo[this.history.undo.length - 1]?.name ?? null,
       redoName: this.history.redo[this.history.redo.length - 1]?.name ?? null,
+      planVersion: this.planVersion,
     };
   }
 

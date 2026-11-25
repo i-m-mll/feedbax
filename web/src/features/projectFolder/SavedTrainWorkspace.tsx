@@ -227,7 +227,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const stoppedCheckpointId = useId();
   const { editor } = session;
   const snapshot = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
-  const { saved, configuration, pending, outside } = snapshot;
+  const { saved, configuration, pending, outside, planVersion } = snapshot;
   const jobs = useStudioJobs();
   const connectionKind = useConnection().kind;
   const connected = connectionKind === 'connected';
@@ -246,8 +246,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }, [armedPick, elements]);
   const selectedElements = useStore(elements, (current) => current.selection);
   const mapViewport = useRef<CanvasViewport>(null);
-  const jobsVersion = `${jobs.data?.cursor}:${jobs.data?.remote_version}`;
-  const plans = useSavedPlan(editor, jobsVersion);
+  const plans = useSavedPlan(editor);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null, plans.inTurn);
   /** The failure of the last gesture that has no object of its own to land on. */
   const [commandError, setCommandError] = useState<unknown>();
@@ -573,7 +572,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     enabled: ready && checkpointAttempt !== undefined,
     placeholderData: keepPreviousData,
     gcTime: 0,
-  }, jobsVersion);
+  }, String(planVersion));
   useEffect(() => {
     if (!ready || !focusFirstModel || step?.id !== focusFirstModel) return;
     requestSlotFocus((count) => count + 1);
