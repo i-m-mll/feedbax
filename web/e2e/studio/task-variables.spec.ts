@@ -129,3 +129,27 @@ test('the Variables table names, types and values a new task\'s variables, and s
   await expect(row('target').locator('[data-field-problem], [data-field-term]')).toHaveCount(0);
   await expect(row('radius').getByRole('combobox', { name: 'Type', exact: true })).toHaveText('Distance');
 });
+
+// Catches a Task view that cannot be scrolled from most of its area: a wheel over a table that has nothing more to
+// scroll is kept by the table instead of moving the view around it.
+test('a wheel over the Variables table scrolls the Task view', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1440, height: 560 });
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const panel = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Task', exact: true });
+  const table = panel.getByRole('table', { name: 'Variables', exact: true });
+
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  await table.getByRole('row').nth(1).hover();
+  const view = await table.evaluateHandle((element) => {
+    for (let node = element.parentElement; node; node = node.parentElement) {
+      if (/auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight) return node;
+    }
+    throw new Error('The Task view does not overflow at this height.');
+  });
+  const scrolled = await view.evaluate((node) => node.scrollTop);
+  expect(scrolled).toBeGreaterThan(0);
+  await page.mouse.wheel(0, -scrolled);
+  await expect.poll(() => view.evaluate((node) => node.scrollTop)).toBeLessThan(scrolled);
+});

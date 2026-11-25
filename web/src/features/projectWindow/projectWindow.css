@@ -295,7 +295,7 @@
   position: relative;
   z-index: 3;
   display: grid;
-  grid-template-columns: var(--shell-rail-width) auto minmax(0, 1fr) auto;
+  grid-template-columns: var(--shell-rail-width) auto minmax(0, 1fr) auto auto;
   align-items: center;
   min-height: 36px;
   padding-block: var(--space-1);
@@ -339,31 +339,30 @@
 }
 
 .studio-window-bottom__clock,
-.studio-window-bottom__right {
+.studio-window-bottom__notice {
   min-width: 0;
 }
 
+.studio-window-bottom__notice,
 .studio-window-bottom__right {
   display: flex;
-  justify-content: flex-end;
   align-items: center;
   gap: var(--space-1);
-  padding-inline-end: var(--space-2);
 }
 
-.studio-window-bottom__right > button,
-.studio-window-bottom__right > div > button {
-  white-space: nowrap;
-}
-
-.studio-window-bottom__right > [role='alert'] {
+.studio-window-bottom__notice:not(:empty) {
   max-width: min(32vw, 22rem);
+  padding-inline-start: var(--space-2);
 }
 
-.studio-window-bottom__right > [role='alert'] > span {
+.studio-window-bottom__notice > [role='alert'] > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.studio-window-bottom__right {
+  padding-inline: var(--space-1) var(--space-2);
 }
 
 .studio-project-window .studio-map-card__head:focus-visible {

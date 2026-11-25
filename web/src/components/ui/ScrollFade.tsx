@@ -186,7 +186,7 @@ export const ScrollFade = forwardRef<HTMLDivElement, ScrollFadeProps>(function S
   return (
     <div
       ref={setRef}
-      className={clsx('studio-scroll-fade min-h-0 min-w-0 overscroll-contain', overflow[axis], className)}
+      className={clsx('studio-scroll-fade min-h-0 min-w-0', overflow[axis], className)}
       onScroll={(event) => { mark(event.currentTarget); onScroll?.(event); }}
       {...props}
     />

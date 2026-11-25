@@ -205,6 +205,12 @@ export function commandAttributes(command: StudioCommand, placement?: 'bottom' |
   };
 }
 
+/** A command's attributes for a control whose accessible name says more than the command's, such as a count. */
+export function commandTip(command: StudioCommand, placement?: 'bottom' | 'right') {
+  const { 'aria-label': _, ...attributes } = commandAttributes(command, placement);
+  return attributes;
+}
+
 const punctuation: Record<string, string> = {
   Backslash: '\\', Comma: ',', BracketLeft: '[', BracketRight: ']', Period: '.',
 };
