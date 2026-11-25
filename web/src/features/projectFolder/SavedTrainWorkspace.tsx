@@ -460,7 +460,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     objective: scored, model: stored?.value,
     scenePlaces: restGeometry?.kind === 'ready' ? restGeometry.geometry.mechanisms.length > 0 : undefined,
     runProblems: (namedRun && step.runs.find(({ id }) => id === savedRunId(namedRun))?.problems) ?? [],
-    results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series || operationProducts,
+    results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series ||
+      !!shownResult.evaluation?.result?.origin || operationProducts,
     report: !!stepReport(snapshot, step?.id).report,
   });
   const pins = windowState.secondaryView ? windowState.pins ?? {} : {};
@@ -601,7 +602,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const runRows = shown?.rows.filter(({ key }) => runIds.has(savedRunId(key))) ?? [];
   const evaluationRows = shown?.window_map?.evaluations?.filter(({ key }) => runIds.has(savedRunId(key))) ?? [];
   const authoredMap = shown?.window_map;
-  const lightSteps = new Set(plan.steps.filter(({ kind }) => kind === 'analyze' || kind === 'report').map(({ id }) => id));
+  /** The steps whose runs the Service saves as light results, which the window map's rows schedule. */
+  const lightSteps = new Set(plan.steps.filter(({ kind }) => kind === 'synthesize' || kind === 'analyze' || kind === 'report')
+    .map(({ id }) => id));
   const lightRows = authoredMap?.rows.filter(({ key, status }) =>
     lightSteps.has(key.step) && runIds.has(savedRunId(key)) && status !== 'cannot_run') ?? [];
   const runnableTrainRows = runRows.filter(({ status }) => status !== 'cannot_run');
@@ -2154,8 +2157,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const ownFields = ownFieldProps && <StudioTrainAuthoringForm {...ownFieldProps}
               omitted={evaluationEditor?.authored.trialSet.kind === 'sample' ? [trialCount] : undefined} />;
             return {
-              header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' || lightSteps.has(step.id)
-                ? runCommands : undefined}
+              header: <StudioRunControls commands={runCommands}
                 machine={studioRunMachineControl({ catalog: machineCatalog.data, value: requestedMachine,
                   disabled: machineCatalog.isPending || !connected,
                   onChange: (value) => setMachines((current) => ({ ...current, [step.id]: value })) })}

@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import type { Page } from '@playwright/test';
-import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
-import { mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { reveal } from './fixtures/controls';
 
@@ -34,4 +34,66 @@ test('New makes a Synthesize step whose Method and settings are edited in its in
   await value.fill('2');
   await value.press('Enter');
   await expect.poll(async () => (await saved())?.base).toMatchObject({ inline: { settings: { value: 2 } } });
+});
+
+// Catches: a synthesized model an Evaluate cannot read, or reads as a Train checkpoint, so its result names no origin.
+test('a Synthesize step on the shipped Model is run and read by an Evaluate made from it', { tag: '@round' }, async ({ page, request, studio }) => {
+  test.setTimeout(60_000);
+  const project: string = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.synthesis', 'seed', studio.home, 'synthesis'));
+  const projectPath = `/api/projects/${project}`;
+  const runsPath = `${projectPath}/train-runs`;
+  const saved = async () => await (await request.get(projectPath)).json() as StudioProjectSnapshot;
+  const step = async (id: string) => (await saved()).project.steps?.[id];
+  async function status(id: string) {
+    const { revision } = await saved();
+    const response = await request.get(`${runsPath}?window_map=true&revision=${revision}`);
+    const runs = await response.json() as StudioSavedTrainRuns;
+    return runs.window_map?.rows.find(({ key }) => key.step === id)?.status;
+  }
+  async function run(id: string) {
+    await mapStep(page, id).click();
+    await tab(page, 'Runs').click();
+    await page.getByRole('table', { name: 'Runs', exact: true }).getByRole('button').first().click();
+    const admission = page.waitForResponse((response) =>
+      response.request().method() === 'POST' && new URL(response.url()).pathname === runsPath);
+    await page.getByRole('button', { name: 'Run', exact: true }).click();
+    const response = await admission;
+    expect(response.status(), await response.text()).toBe(202);
+    expect((await response.json() as StudioJobSubmission).items[0]?.disposition).toBe('admitted');
+    await expect.poll(() => status(id), { timeout: 30_000 }).toBe('succeeded');
+  }
+  const header = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header');
+  const picker = (label: string) => header.getByRole('button', { name: new RegExp(`^${label} Document `) });
+
+  await page.goto(`/?project=${project}`);
+  const train = mapStep(page, 'simple-reaches');
+  if (await train.getAttribute('aria-pressed') === 'true') await train.click({ modifiers: ['ControlOrMeta'] });
+  await expect(train).toHaveAttribute('aria-pressed', 'false');
+  await page.getByRole('button', { name: 'New Step', exact: true }).click();
+  await chooseStepKind(page, 'Synthesize');
+  await expect(mapStep(page, 'synthesize')).toBeVisible();
+  await mapStep(page, 'synthesize').click();
+  await tab(page, 'Model').click();
+  await expect(picker('Model')).toHaveText('Point mass');
+  for (const [view, label] of [['Task', 'Task'], ['Objective', 'Objective']] as const) {
+    await tab(page, view).click();
+    await picker(label).click();
+    await page.getByRole('menuitemradio', { name: 'Simple reaches', exact: true }).click();
+  }
+  await expect.poll(async () => (await step('synthesize'))?.base).toMatchObject({ inline: {
+    model: { document: 'point-mass' }, task: { document: 'simple-reaches-task' },
+    objective: { document: 'simple-reaches-objective' },
+  } });
+  await run('synthesize');
+
+  await mapStep(page, 'synthesize').click();
+  await page.getByRole('button', { name: 'New Step', exact: true }).click();
+  await chooseStepKind(page, 'Evaluate');
+  await expect.poll(async () => (await step('evaluate'))?.inputs).toEqual({ subject: { step: 'synthesize' } });
+  await run('evaluate');
+  await tab(page, 'Results').click();
+  const results = page.locator('[data-slot="primary"]').getByRole('tabpanel');
+  await expect(results.getByText('Synthesized', { exact: true })).toBeVisible();
+  await expect(results.getByRole('button', { name: 'synthesize', exact: true })).toBeVisible();
+  await expect(tab(page, 'Scene')).toBeEnabled();
 });
