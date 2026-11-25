@@ -81,16 +81,16 @@ from feedbax.contracts.project_io import project_declaration_name
 from feedbax.planner.project_plan import (
     BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, ProjectPlan, RunKey,
     RunProblem,
-    authored_request_change, planned_input_groups,
+    authored_request_change, common_train_metrics, planned_input_groups,
 )
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates, coordinate_text
-from feedbax.contracts.run_rule import RuleRefusal, choose
+from feedbax.contracts.run_rule import METRIC_CONDITION_FALSE, RuleRefusal, choose
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
-    BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
+    BatchMember, BatchSetMember, BestRank, ConditionalProduct, LastMember, ProductRef, UpdateSeriesMember,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.trial_clock import StudioSavedFigureMeanRequest
@@ -315,7 +315,7 @@ class ProjectPlanRead:
 
         counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
         for key, status in statuses.items():
-            if isinstance(key, RunKey):
+            if isinstance(key, RunKey) and status.status is not JobStatus.NOT_CHOSEN:
                 counts[key.variant, key.step][status.status.value] += 1
 
         edge_keys = [
@@ -348,6 +348,12 @@ class ProjectPlanRead:
                         ),
                         checkpoint_axis=axis[0] if axis is not None else None,
                         can_sweep_checkpoint=input_id == "subject" and step.can_sweep_checkpoint,
+                        metric_names=sorted(common_train_metrics(
+                            row for source_variant in (
+                                plan.variant_projects if reference.variants == "all"
+                                else reference.variants or (variant,)
+                            ) for row in step_rows.get((source_variant, reference.step), ())
+                        )),
                         subset=StudioProjectWindowMapSubset(
                             terms=subset.terms, count=len(subset.ranks or subset.members), total=subset.candidates,
                             ranks=list(subset.ranks),
@@ -731,20 +737,22 @@ class ProjectPlanService:
             raise ProjectFolderInvalid(f"{body.step} is not a step of {body.variant}.")
         rows = [row for row in plan.rows if (row.key.variant, row.key.step) == (body.variant, body.step)]
         coordinates = {id(row): axis_coordinates(row.coordinates, row.input_axes) for row in rows}
+        metrics = sorted(common_train_metrics(rows)) if body.ranked else []
         try:
             chosen = choose(
                 body.rule, rows, coordinates=lambda row: coordinates[id(row)], producer=step.label or body.step,
-                ranked=body.ranked,
+                ranked=body.ranked, final_metrics=common_train_metrics if step.kind == "train" else None,
             )
         except RuleRefusal as refusal:
             return StudioRunRuleCheck(
-                total=len(rows), result=StudioRunRuleRefused(reason=refusal.detail, span=refusal.span),
+                total=len(rows), metric_names=metrics, result=StudioRunRuleRefused(reason=refusal.detail, span=refusal.span),
             )
         best = chosen.best
         groups = {tuple(coordinates[id(row)][axis].value_id for axis in best.per) for row in chosen.rows} if best else ()
-        return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleChosen(
+        return StudioRunRuleCheck(total=len(rows), metric_names=metrics, result=StudioRunRuleChosen(
             runs=[row.key.row for row in chosen.rows],
             count=best.count * len(groups) if best else len(chosen.rows),
+            conditional=bool(chosen.conditions),
         ))
 
     def subset_to_rows(self, project_id: str, body: StudioSubsetToRowsRequest) -> StudioSubsetToRowsEdit:
@@ -951,6 +959,33 @@ def read_settled_project_plan(
             ))
         jobs = replace(jobs, by_request=MappingProxyType(by_request))
     history = dict(_train_history(settled, jobs))
+    conditional = {
+        run.key: binding for run in runs for binding in run.inputs.values()
+        if isinstance(binding.member.reference, ConditionalProduct)
+    }
+    decisions: dict[RunKey, tuple[JobStatus, str]] = {}
+    if conditional:
+        from feedbax.persistence.train_metrics import passes_final_metric_condition
+
+        view = SuccessView(ImmutableArtifactBlobProvider(settled.store_path))
+        for key, binding in conditional.items():
+            producer = history.get(binding.producer)
+            if producer is None or producer.status is not JobStatus.SUCCEEDED or producer.result is None:
+                continue
+            try:
+                evidence = view.attempt_ref(producer.result.job_id)
+                if evidence is None:
+                    raise ValueError("The Train result has no accepted Store receipt.")
+                receipt = view.read_receipt(evidence)
+                reference = binding.member.reference
+                assert isinstance(reference, ConditionalProduct)
+                if not passes_final_metric_condition(view.store, receipt, reference):
+                    decisions[key] = JobStatus.NOT_CHOSEN, METRIC_CONDITION_FALSE
+            except (OSError, ValueError, KeyError) as error:
+                decisions[key] = JobStatus.CANNOT_RUN, str(error)
+        for key in history.keys() & decisions.keys():
+            status, reason = decisions[key]
+            history[key] = replace(history[key], status=status, reason=reason)
     for key, opening in (openings or {}).items():
         if key in history:
             history[key] = replace(history[key], status=opening.status, reason=opening.reason)
@@ -959,6 +994,11 @@ def read_settled_project_plan(
     for run in runs:
         if run.kind == "evaluate":
             row, problem = _evaluation_row(settled, run, jobs, reader, history)
+            if (decision := decisions.get(run.key)) is not None:
+                status, reason = decision
+                row = row.model_copy(update={"status": status, "reason": reason, "can_run": False})
+                if status is JobStatus.NOT_CHOSEN:
+                    problem = None
             if (opening := (openings or {}).get(run.key)) is not None:
                 row = row.model_copy(update={"status": opening.status, "reason": opening.reason})
             evaluations[run.key] = row

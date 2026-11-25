@@ -18,7 +18,7 @@ from feedbax.contracts.model_input import document_input_object, read_document_i
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef
+from feedbax.contracts.request_refs import ConditionalProduct, ContentRef, LastMember, ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.train_settings import normalize_train_method
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 class CanonicalTrainRequestBinding(StrictModel):
     request: ContentObjectRef
     documents: tuple[ContentObjectRef, ...]
-    checkpoint: ProductRef | None = None
+    checkpoint: ConditionalProduct | ProductRef | None = None
     imported_model: ContentRef | None = Field(default=None, exclude_if=lambda value: value is None)
 
 

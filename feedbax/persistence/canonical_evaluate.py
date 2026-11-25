@@ -30,7 +30,7 @@ from feedbax.contracts.model_input import (
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import DecodedRequest, decode_request
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, LastMember, ProductRef, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef, UpdateSeriesMember
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.contracts.rollout import (
     RAW_STATES_SCHEMA as RAW_STATES_SCHEMA,
@@ -63,7 +63,7 @@ type EvaluationSubject = ProductRef | BestRank | ContentRef
 
 class EvaluationRequestBinding(StrictModel):
     request: ContentObjectRef
-    checkpoint: ProductRef | BestRank | None = Field(default=None, exclude_if=lambda value: value is None)
+    checkpoint: ConditionalProduct | ProductRef | BestRank | None = Field(default=None, exclude_if=lambda value: value is None)
     initial_model: ContentRef | None = Field(default=None, exclude_if=lambda value: value is None)
     terminal: TerminalTrainSubject | None = Field(default=None, exclude_if=lambda value: value is None)
 

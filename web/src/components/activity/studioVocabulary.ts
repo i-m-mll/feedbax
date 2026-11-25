@@ -189,7 +189,7 @@ export function studioValidityReason(reason: ValidityReason): StudioValidityRows
       changes: [
         ...reason.differences.map((difference) => 'path' in difference
           ? [difference.path.path, studioValidity(difference.status), ...(difference.functions ?? [])].join(' ')
-          : `${binding(difference.before)} → ${difference.after ? binding(difference.after) : studioValidity('removed')}`),
+          : `${difference.before ? binding(difference.before) : '—'} → ${difference.after ? binding(difference.after) : studioValidity('removed')}`),
         ...(reason.changes ?? []).map(computationChange),
         ...(reason.detail ? [reason.detail] : []),
       ],
@@ -198,7 +198,7 @@ export function studioValidityReason(reason: ValidityReason): StudioValidityRows
   if ('role' in reason) {
     return {
       title: studioValidity('input'),
-      changes: [`${reason.role} ${reason.member} ${studioValidity(reason.after ? 'changed' : 'removed')}`,
+      changes: [`${reason.role} ${reason.member} ${studioValidity(!reason.after ? 'removed' : reason.before ? 'changed' : 'added')}`,
         ...(reason.detail ? [reason.detail] : [])],
     };
   }

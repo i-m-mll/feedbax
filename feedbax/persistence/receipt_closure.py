@@ -13,12 +13,13 @@ from feedbax.contracts.effective_success import (
     select_bound_product,
     select_success_product,
 )
-from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import ContentRef, ProductRef
+from feedbax.contracts.request_identity import DecodedRequest, retained_request_inputs
+from feedbax.contracts.request_refs import ConditionalProduct, ContentRef, ProductRef
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
 from feedbax.persistence.checkpoint_publication import checkpoint_model_objects
+from feedbax.persistence.metric_exclusion import exclusion_objects
 from feedbax.persistence.receipt_content import ClosureVisitors, continuation_objects, success_content_objects, tree_objects
 from feedbax.contracts.code_validity import CheckpointEvidenceRoot
 from feedbax.persistence.evidence import checkpoint_evidence_objects, evidence_objects
@@ -152,6 +153,13 @@ class ReceiptClosure:
                 else:
                     request, binding = consumer
                     product, occurrence = select_bound_product(request, root.product, receipt)
+                    if isinstance(root.product, ConditionalProduct):
+                        from feedbax.persistence.train_metrics import passes_final_metric_condition
+
+                        if not passes_final_metric_condition(self.store, receipt, root.product):
+                            raise ValueError("The retained producer's final metrics do not meet the rule")
+                        for needed in success_content_objects(self.store, receipt.products["metrics"][0], visitors=visitors):
+                            add(needed)
                     if (
                         binding.selection is None
                         or product.name != binding.selection.member
@@ -183,7 +191,14 @@ class ReceiptClosure:
                 for ref in continuation_objects(receipt.continuation, visitors=visitors):
                     add(ref)
 
+            retained = retained_request_inputs(decoded, receipt.excluded)
             for role, members in decoded.inputs.items():
+                for member in members:
+                    if (proof := receipt.excluded.get(role, {}).get(member.key)) is not None and closure.include_ancestry:
+                        assert isinstance(member.reference, ProductRef)
+                        for ref in exclusion_objects(self.store, proof, member.reference.request_id):
+                            add(ref)
+            for role, members in retained.items():
                 for member, bound in zip(members, receipt.inputs[role], strict=True):
                     reference = member.reference
                     selection = bound.selection
