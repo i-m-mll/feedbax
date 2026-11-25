@@ -87,7 +87,7 @@ def test_preview_returns_active_samples_at_the_source_intervention_address(clien
         "composites": [], "element": {"kind": "attachment", "id": "pulse", "parent": owner},
     }).to_text()
     payload["model"]["interior"]["attachments"] = {"sources": {"task-input": [{
-        "kind": "intervention", "id": "pulse", "operation": "add", "fields": {"value": [0.1, 0.0]},
+        "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.1, 0.0]}},
         "window": {"spans": [{
             "kind": "interval", "start": {
                 "anchor": {"kind": "epoch", "epoch": "move", "edge": "start"},

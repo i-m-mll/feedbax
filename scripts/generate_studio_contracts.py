@@ -258,6 +258,7 @@ from feedbax.contracts.model_document import (
     ModelDocument,
     ModelPhysicalConnection,
     ModelPortAttachments,
+    ModelSignalSource,
     ModelPorts,
     ModelTime,
     ModelWire,
@@ -1101,6 +1102,8 @@ def _unique_metadata(metadata: tuple[Any, ...]) -> tuple[Any, ...]:
 def ts_type(annotation: Any) -> str:
     """Return a TypeScript type expression for a Python annotation."""
 
+    if annotation is ModelSignalSource:
+        return "ModelSignalSource"
     annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "unknown"
@@ -1216,6 +1219,8 @@ def zod_schema(
     annotation_metadata = _annotation_metadata(annotation)
     field_metadata = () if field is None else tuple(field.metadata)
     metadata = _unique_metadata(annotation_metadata + field_metadata)
+    if annotation is ModelSignalSource:
+        return "ModelSignalSourceSchema"
     annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "z.unknown()"

@@ -473,7 +473,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }));
   const projectedFields = sharedFields(projectedLists);
   const fieldScope = JSON.stringify([saved.project_id, model?.id, fieldRows, fieldOwners.map(addressKey)]);
-  const ownNames = projectedLists.map((list) => new Set(list.map(({ id }) => id.split('.').at(-1)!)));
+  const ownNames = projectedLists.map((list) => new Set(list.map(({ id }) => {
+    const path = id.split('.');
+    return path[0] === 'operands' ? path[1] : path.at(-1)!;
+  })));
   const projectedNames = new Set([...ownNames[0] ?? []].filter((name) => ownNames.every((names) => names.has(name))));
   /** The project's Problems in the shown Model, the graph's own among them: the list Problems shows. */
   const modelProblems = [...new Map([...problems ?? [], ...projection.data?.problems ?? []]
@@ -1291,7 +1294,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const list = effective.get(addressKey(address)) ?? [];
     const id = crypto.randomUUID();
     const item: Attachment = kind === 'delay' ? { id, kind, delay: { unit: 'st', value: 1 }, initial_source: { kind: 'value', value: 0 } }
-      : kind === 'intervention' ? { id, kind, operation: 'scale', fields: { factor: 1 } }
+      : kind === 'intervention' ? { id, kind, operation: 'scale', operands: { factor: { kind: 'value', value: 1 } } }
       : { id, kind, name: port?.name ?? 'Probe' };
     const difference = { op: 'add', owner: address, after: list.at(-1)?.id ?? null, attachment: item } as const;
     if (evaluate) void applyEvaluate(studioAccessibleName('add', attachmentName(item)), difference);

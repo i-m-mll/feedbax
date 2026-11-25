@@ -38,7 +38,7 @@ class ModelTime(TimeValue):
 
 class DelayInitialValue(StrictModel):
     kind: Literal["value"]
-    value: Annotated[FiniteNumber | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
+    value: Annotated[FiniteNumber | tuple[FiniteNumber, ...] | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
 
 
 class DelayInitialTask(StrictModel):
@@ -51,14 +51,14 @@ class DelayInitialWire(StrictModel):
     source: SignalSource | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
-DelayInitial = Annotated[DelayInitialValue | DelayInitialTask | DelayInitialWire, Field(discriminator="kind")]
+type ModelSignalSource = Annotated[DelayInitialValue | DelayInitialTask | DelayInitialWire, Field(discriminator="kind")]
 
 
 class DelayAttachment(StrictModel):
     kind: Literal["delay"]
     id: ModelElementId
     delay: Annotated[ModelTime | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
-    initial_source: DelayInitial = Field(default_factory=lambda: DelayInitialValue(kind="value", value=0.0))
+    initial_source: ModelSignalSource = Field(default_factory=lambda: DelayInitialValue(kind="value", value=0.0))
 
 
 class HoldAttachment(StrictModel):
@@ -70,10 +70,7 @@ class InterventionAttachment(StrictModel):
     kind: Literal["intervention"]
     id: ModelElementId
     operation: str
-    fields: dict[str, JsonValue] = Field(
-        default_factory=dict,
-        description="Operation values are numbers, numeric arrays, or NameValue references to a Task variable or local Model output.",
-    )
+    operands: dict[str, ModelSignalSource] = Field(default_factory=dict)
     window: Window | None = None
 
 

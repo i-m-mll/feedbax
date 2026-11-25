@@ -14,7 +14,7 @@ from feedbax.contracts.expression_values import (
 )
 from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress, PortElement, WireElement
 from feedbax.contracts.model_document import (
-    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, DelayInitialValue, InterventionAttachment,
+    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, DelayInitialTask, DelayInitialValue, InterventionAttachment,
     LeafComponent, ModelDocument,
 )
 from feedbax.contracts.model_edit import (
@@ -92,14 +92,6 @@ def _numeric_value(value: JsonValue) -> int | float | UnresolvedValue | None:
     return None
 
 
-def _operand_expression(value: JsonValue) -> Expression | None:
-    if isinstance(value, dict) and value.get("kind") == "name":
-        return NameValue.model_validate(value)
-    if isinstance(value, list) and value and all(type(item) in (int, float) for item in value):
-        return CallValue(function="vector", args=tuple(LiteralValue(value=item) for item in value))
-    return None
-
-
 def _window_fields(
     attachment: InterventionAttachment, owner: ModelAddress, names: tuple[ScopedValue, ...],
 ) -> Iterator[_Field]:
@@ -146,7 +138,7 @@ def _attachment_fields(
             yield _duration(owner, "Delay", ("delay",), delay, "st", stored=True, sampled=True)
         else:
             yield _duration(owner, "Delay", ("delay",), delay.value, delay.unit, stored=True, sampled=True)
-        if isinstance(attachment.initial_source, DelayInitialValue):
+        if isinstance(attachment.initial_source, DelayInitialValue) and not isinstance(attachment.initial_source.value, tuple):
             address = _address(owner, "initial_source", "value")
             yield _Field(address, NumericField(
                 address.stored_path(), "Initial", attachment.initial_source.value,
@@ -156,16 +148,25 @@ def _attachment_fields(
         return
     if isinstance(attachment, InterventionAttachment):
         yield from _window_fields(attachment, owner, names)
-        fields = {"add": ("value",), "clamp": ("low", "high"), "scale": ("factor",)}.get(attachment.operation.lower(), ())
-        values = {name: attachment.fields.get(name) for name in fields}
     else:
         return
-    for name, value in values.items():
-        number = _numeric_value(value)
-        expression = _operand_expression(value)
-        if number is None and expression is None:
+    values = {name: source.value for name, source in attachment.operands.items() if isinstance(source, DelayInitialValue)}
+    for name, source in attachment.operands.items():
+        expression = None
+        if isinstance(source, DelayInitialTask):
+            address = _address(owner, "operands", name)
+            expression = NameValue(reference=source.variable)
+            value_type = next((item.type for item in names if item.id == source.variable), ValueType(base=ValueBase.REAL))
+            value = 0
+        elif isinstance(source, DelayInitialValue):
+            address = _address(owner, "operands", name, "value")
+            value = source.value
+            value_type = ValueType(base=ValueBase.REAL, shape=(len(value),) if isinstance(value, tuple) else ())
+            if isinstance(value, tuple):
+                expression = CallValue(function="vector", args=tuple(LiteralValue(value=item) for item in value))
+                value = 0
+        else:
             continue
-        address = _address(owner, "fields", name)
 
         def validate(number: int | float, name=name) -> int | float:
             low = number if name == "low" else values.get("low")
@@ -174,14 +175,11 @@ def _attachment_fields(
                 raise ValueError("Clamp low must be at most high.")
             return number
 
-        referenced = next((item.type for item in names if isinstance(expression, NameValue) and item.id == expression.reference), None)
-        value_type = referenced or ValueType(base=ValueBase.REAL, shape=(len(expression.args),) if isinstance(expression, CallValue) else ())
         yield _Field(address, NumericField(
-            address.stored_path(), name.capitalize(), number if number is not None else 0,
+            address.stored_path(), name.capitalize(), value,
             Site(expected=value_type, finest=Level.TRIAL, names=names),
             True, validate,
         ), expression=expression)
-
 
 def _fields(
     model: ModelDocument, owner: ModelAddress, components: ComponentRegistry, names: tuple[ScopedValue, ...] = (),
@@ -479,7 +477,7 @@ def model_fields(
             sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
             changed=changed,
         )
-        if field.window_offset or field.address.element.path[0] == "fields" and isinstance(field.address.element.parent, AttachmentElement):
+        if field.window_offset or field.address.element.path[0] == "operands" and isinstance(field.address.element.parent, AttachmentElement):
             view = view.model_copy(update={"site": project_site(numeric.site, functions)})
         if field.expression is not None:
             view = view.model_copy(update={
@@ -517,7 +515,8 @@ def model_fields(
             return ModelFieldResponse(problems=[reset])
         edit = FieldTextEdit(kind="text", text=reset)
     expression = None
-    operand = field.address.element.path[0] == "fields" and isinstance(field.address.element.parent, AttachmentElement)
+    write_address = field.address
+    operand = field.address.element.path[0] == "operands" and isinstance(field.address.element.parent, AttachmentElement)
     if (field.window_offset or operand) and isinstance(edit, FieldTextEdit) and edit.value_id is None and not (axis and axis.covering):
         parsed = read_field(edit.text, field.numeric.site, functions)
         if isinstance(parsed, ParsedField):
@@ -525,7 +524,8 @@ def model_fields(
             if field.window_offset and not isinstance(node, LiteralValue | SweepList | SweepRange | SweepSample):
                 expression = store_window_offset(node).model_dump(mode="json")
             elif operand and isinstance(node, NameValue):
-                expression = node.model_dump(mode="json")
+                write_address = _address(body.owner, *field.address.element.path[:2])
+                expression = DelayInitialTask(kind="task", variable=node.reference).model_dump(mode="json")
             elif operand and isinstance(node, CallValue) and node.function == "vector" and all(
                 isinstance(item, LiteralValue) and type(item.value) in (int, float) for item in node.args
             ):
@@ -574,6 +574,9 @@ def model_fields(
             value = result.value
         else:
             value = result.model_dump(mode="json")
+    if operand and len(write_address.element.path) == 2 and write_address == field.address:
+        if not isinstance(value, dict) or value.get("kind") != "task":
+            value = {"kind": "value", "value": value}
     if scope is not None and selected_value(project, body.run.step, scope) is None:
         if axis is None or axis.target.patch_path is None:
             return ModelFieldResponse(problems=[Problem(
@@ -611,7 +614,7 @@ def model_fields(
             folders, project_id, project, plan, body, ModelFieldResponse(files=files, problems=problems), kind="other_runs",
             label="Other Runs", alternatives=alternatives,
         )
-    difference = SetField(op="set_field", address=field.address, value=value)
+    difference = SetField(op="set_field", address=write_address, value=value)
     if evaluate is not None:
         return ModelFieldResponse(command=ModelEditCommand(operation=difference), problems=problems)
     if variant is not None:

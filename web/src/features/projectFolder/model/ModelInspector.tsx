@@ -90,13 +90,21 @@ export function attachmentFields(item: Attachment, change?: AttachmentChange,
       id: 'operation', label: studioName('operation'), value: clamp ? 'clamp' : 'scale',
       type: { kind: 'choice', options: [{ value: 'clamp', label: studioName('clamp') }, { value: 'scale', label: studioName('scale') }] },
       change: change && ((operation) => write({
-        ...item, operation: String(operation), fields: operation === 'clamp' ? { low: -1, high: 1 } : { factor: 1 },
+        ...item, operation: String(operation), operands: operation === 'clamp'
+          ? { low: { kind: 'value', value: -1 }, high: { kind: 'value', value: 1 } }
+          : { factor: { kind: 'value', value: 1 } },
       })),
     }),
-    ...names.filter((name) => !projected?.has(name)).map((name) => rawField({
-      id: name, label: humanizeLabel(name), type: { kind: 'number' }, value: item.fields?.[name] ?? null,
-      change: change && ((value) => write({ ...item, fields: { ...item.fields, [name]: value } })),
-    })),
+    ...names.filter((name) => !projected?.has(name)).map((name) => {
+      const source = item.operands?.[name];
+      const label = humanizeLabel(name);
+      return rawField({
+        id: name, label, type: { kind: 'number' }, value: source?.kind === 'value' ? source.value : null,
+        change: change && ((value) => typeof value === 'number'
+          ? write({ ...item, operands: { ...item.operands, [name]: { kind: 'value', value } } })
+          : studioReason('takesNumber', label)),
+      });
+    }),
     rawField({ id: 'window', label: studioName('window'), type: { kind: 'readOnly' }, value: studioName('wholeTrial') }),
   ];
 }
