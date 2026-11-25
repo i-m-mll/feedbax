@@ -138,6 +138,7 @@ class StudioSavedEvaluationResult(StrictModel):
     job_id: str
     request_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
+    trials: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
     size_bytes: int = Field(ge=0)
