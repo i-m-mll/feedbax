@@ -174,7 +174,7 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
     ))
     snapshot = folders.patch(project, StudioProjectPatchBatch(revision=edit.revision, files=edit.files))
     selected = snapshot.project.steps["baseline"].inputs["subject"].where
-    assert [(item.key, item.variant, item.row) for item in selected.rows] == [
+    assert [(item.key, item.variant, item.row) for item in selected.bound_ranks] == [
         (f"rank-{rank}", "default", winner) for rank, winner in enumerate(ranked, start=1)
     ]
     frozen = folders.read_plan(project, revision=None).plan
