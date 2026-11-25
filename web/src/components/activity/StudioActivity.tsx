@@ -1,7 +1,9 @@
+import clsx from 'clsx';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/features/projectWindow/studioCommands';
 import { holdWhile } from '@/features/projectWindow/heldGestures';
 import { useId, useState, type PropsWithChildren } from 'react';
 import { closeStudioMachine } from '@/api/jobs';
+import { statusCounted, uncountedRun } from '@/components/ui/StatusMark';
 import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioContracts';
 import { StudioJobsProvider, useStudioJobActions, useStudioJobs, useStudioJobsProject, useStudioUnreadableJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
@@ -17,6 +19,7 @@ export type ActivityResultState = (job: StudioActivityJob) => StudioResultState 
 import { Button, IconButton } from '@/components/ui/Button';
 import { X } from 'lucide-react';
 import { Section } from '@/components/ui/Section';
+
 
 const liveStatuses = new Set<StudioRunStatusId>([
   'queued',
@@ -96,7 +99,8 @@ function ActivityRun({
 
   return (
     <li
-      className="space-y-2 rounded-md border border-l-4 bg-shell-surface p-3 shadow-sm"
+      className={clsx('space-y-2 rounded-md border border-l-4 bg-shell-surface p-3 shadow-sm',
+        !statusCounted(resultState ?? job.status) && uncountedRun)}
       style={{ borderLeftColor: tint }}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
