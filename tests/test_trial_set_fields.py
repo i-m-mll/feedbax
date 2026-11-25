@@ -118,7 +118,7 @@ def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
         },
     }}})
     sampled = TrialSetField.model_validate({"axis": {"set": "bank"}, "sampling": {"kind": "weighted"}})
-    model, task = lower_trial_sets(model, task, {"bank": sampled}, {"bank": bank}.get, registry)
+    model, task, _ = lower_trial_sets(model, task, {"bank": sampled}, {"bank": bank}.get, registry, functions=functions)
     execution = compile_trial_execution(model, task, registry, functions, python_tasks=application_python_tasks())
     assert isinstance(execution, PreparedTrialExecution), execution
     parameters = TaskParameters()

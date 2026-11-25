@@ -26,7 +26,7 @@ from feedbax.contracts.acausal_interface import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.expression_values import Level, LiteralValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
+from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.graph import (
     ComponentSpec, DerivedDimensionRuleSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec,
 )
