@@ -16,7 +16,6 @@ import stat
 from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import Literal, Protocol, TYPE_CHECKING
-from uuid import uuid4
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
@@ -1050,6 +1049,7 @@ class ProjectFolder:
                 continue
             projects.append(StudioProjectListEntry(
                 project_id=location.project_id, name=text.configuration.project,
+                folder=str(location.path), step_count=len(text.project.steps),
                 modified=datetime.fromtimestamp(modified_ns / 1_000_000_000, tz=timezone.utc),
             ))
         return StudioProjectList(projects=sorted(projects, key=lambda project: (project.name, project.project_id)))
@@ -1132,16 +1132,26 @@ class ProjectFolder:
             folder.check()
             yield plan
 
-    def new(self) -> StudioProjectDocument:
-        return self._new_folder()[0]
+    def new(self, name: str, *, example: str | None = None) -> StudioProjectDocument:
+        if re.fullmatch(r"untitled-[0-9a-f]+", name, re.IGNORECASE):
+            raise ProjectFolderInvalid("Choose a name for the project.")
+        configuration = ProjectConfiguration(project=name, store="results")
+        project = Project()
+        if example is not None:
+            from feedbax.examples import load_shipped_projects
 
-    def _new_folder(self) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
-        project_id = f"untitled-{uuid4().hex}"
-        configuration = ProjectConfiguration(project=project_id, store="results")
+            project = load_shipped_projects().get(example)
+            if project is None:
+                raise ProjectFolderNotFound(example)
         self.root.mkdir(parents=True, exist_ok=True)
-        write_new_project_folder(self.root / project_id, Project(), configuration, PresentationDocument())
-        location = self._folder(project_id)
-        return self._open_folder(location), location
+        destination = self.root / name
+        try:
+            write_new_project_folder(destination, project, configuration, PresentationDocument())
+        except FileExistsError as error:
+            raise ProjectFileExists(name) from error
+        except OSError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        return self._open_folder(ProjectFolderLocation.selected(destination))
 
     def rename(self, project_id: str, body: StudioProjectRename) -> StudioProjectDocument:
         with self._locked_folder(project_id) as folder:
