@@ -52,6 +52,10 @@ export default function App({ projectId, activity }: { projectId: string | null;
       </main>
     </StudioJobsProvider>
   );
-  if (projectId === null) return <ProjectWindowPalette><StartPage /></ProjectWindowPalette>;
+  if (projectId === null) return (
+    <StudioJobsProvider projectId={null}>
+      <ProjectWindowPalette><StartPage /></ProjectWindowPalette>
+    </StudioJobsProvider>
+  );
   return <ProjectWindowPalette><ProjectEntry requestedId={projectId} /></ProjectWindowPalette>;
 }

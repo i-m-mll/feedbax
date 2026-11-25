@@ -151,12 +151,12 @@ export function StartPage() {
           <Button onClick={() => void projects.refetch()}>{studioName('retry')}</Button>
         </div> : (
           <Table aria-label={studioName('projects')} held={1} aria-busy={projects.isPending || undefined}
-            columns={[{ least: '10rem' }, { least: '10rem', greatest: '24rem' }, { least: '9rem' }, { least: '4rem' }]}>
+            columns={[{ least: '10rem' }, { least: '9rem' }, { least: '4rem' }, { least: '8rem', greatest: '20rem' }]}>
             <thead><tr>
               <TableHeaderCell scope="col">{studioName('name')}</TableHeaderCell>
-              <TableHeaderCell scope="col">{studioName('folder')}</TableHeaderCell>
               <TableHeaderCell scope="col">{studioName('modified')}</TableHeaderCell>
               <TableHeaderCell scope="col" className="text-right">{studioName('steps')}</TableHeaderCell>
+              <TableHeaderCell scope="col">{studioName('folder')}</TableHeaderCell>
             </tr></thead>
             <tbody>{rows.map((project) => (
               <TableRow key={project.project_id} menu={{
@@ -164,9 +164,9 @@ export function StartPage() {
                 items: <MenuItem onClick={() => setDeleting(project)}>{studioName('delete')}</MenuItem>,
               }}>
                 <TableRowHeader><a href={projectHref(project.project_id)} className="block truncate">{project.name}</a></TableRowHeader>
-                <TableCell className="text-shell-muted"><FolderPath folder={project.folder} /></TableCell>
                 <TableCell className="tabular-nums text-shell-muted">{studioDateTime(Date.parse(project.modified))}</TableCell>
                 <TableCell className="text-right tabular-nums text-shell-muted">{project.step_count}</TableCell>
+                <TableCell className="text-shell-muted"><FolderPath folder={project.folder} /></TableCell>
               </TableRow>
             ))}</tbody>
           </Table>
