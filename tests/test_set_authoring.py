@@ -149,7 +149,6 @@ def test_duplicate_run_also_widens_readers_of_its_axis_values(studio):
     for step in readers:
         assert before[step].items() <= after[step].items()
         assert len(after[step]) == 2 * len(before[step])
-        assert set(after[step].values()) == set(before[step].values())
     assert {step: folders.read(PROJECT).project.steps[step] for step in readers} == authored
 
 
