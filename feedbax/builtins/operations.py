@@ -76,7 +76,9 @@ _SPEED = DatasetPort(
 )
 
 
-def _summary_port(schema: str, dims: tuple[str, ...]) -> DatasetPort:
+def _summary_port(
+    schema: str, dims: tuple[str, ...], *, peak_time: bool = False,
+) -> DatasetPort:
     return DatasetPort(
         schema_ids=(schema,),
         optional_dimensions=_OPTIONAL_AXES,
@@ -86,13 +88,14 @@ def _summary_port(schema: str, dims: tuple[str, ...]) -> DatasetPort:
                 for name in ("mean", "standard_deviation", "lower", "upper")
             },
             "count": FieldDescriptor(dims=dims, units="1"),
+            **({"peak_time": FieldDescriptor(dims=dims, units="s")} if peak_time else {}),
         },
         coordinates={name: _STATE_COORDS[name] for name in dims},
     )
 
 
 _SUMMARY = _summary_port(_SUMMARY_SCHEMA, _SUMMARY_AXES)
-_PEAK_SUMMARY = _summary_port(_PEAK_SUMMARY_SCHEMA, ("checkpoint", "condition"))
+_PEAK_SUMMARY = _summary_port(_PEAK_SUMMARY_SCHEMA, ("checkpoint", "condition"), peak_time=True)
 
 
 class AlignedVelocityParameters(StrictModel):
@@ -255,10 +258,19 @@ def summarize_peak_velocity(
     velocity: Annotated[Dataset, _VELOCITY],
     params: VelocitySummaryParameters,
 ) -> Annotated[Dataset, DatasetOutput("summary", _PEAK_SUMMARY)]:
-    """Summarize each trial's maximum velocity component at each checkpoint and condition."""
+    """Summarize each trial's maximum velocity and the time of its first occurrence."""
     stacking = verify_dataset(velocity, _VELOCITY, params)
     values, trial_axis = _velocity_samples(velocity, params)
     # The input port places state_time last, after trial and any stacking dimensions.
-    peaks = values.max(axis=-1)
+    peak_indices = values.argmax(axis=-1, keepdims=True)
+    peaks = np.take_along_axis(values, peak_indices, axis=-1).squeeze(-1)
     result = _summarize_trials(peaks, jnp.asarray(params.ddof), jnp.asarray(params.bounds_scale), trial_axis)
-    return _product(_PEAK_SUMMARY, velocity, stacking, result)
+
+    descriptor = velocity.descriptor
+    time = np.asarray(velocity.data("state_time"))
+    time_sizes = dict(zip(descriptor.coords["state_time"].dims, time.shape, strict=True))
+    time = time.reshape(tuple(time_sizes.get(dim, 1) for dim in descriptor.variables[params.variable].dims))
+    trial_peak_times = np.take_along_axis(time, peak_indices, axis=-1).squeeze(-1)
+    return _product(
+        _PEAK_SUMMARY, velocity, stacking, {**result, "peak_time": trial_peak_times.mean(axis=trial_axis)},
+    )
