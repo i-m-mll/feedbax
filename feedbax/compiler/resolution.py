@@ -614,13 +614,12 @@ class _Completion:
                 delay = ModelDelayCarry.model_validate(initializer)
                 source = self.outputs.get((wire.source_node, wire.source_port))
                 layout = DelayLayout.from_prototype(source, delay.steps)
-                if delay.reset_output is None:
-                    layout.validate_initial(delay.initial)
-                else:
-                    end = delay.reset_output
+                if end := delay.reset_output or delay.reset_evaluate:
                     reset = self.outputs.get((end.component, end.port))
                     if _prototype_signature(reset) != _prototype_signature(source):
                         raise ValueError("Delay Initial does not fit the resolved signal layout.")
+                elif delay.reset_value is None:
+                    layout.validate_initial(delay.initial)
             except (TypeError, ValueError) as error:
                 errors.append(ParameterResolutionError(f"{self.path}/wires/{index}/recurrent_initializer", error))
             else:
