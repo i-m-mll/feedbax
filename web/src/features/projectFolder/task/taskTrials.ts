@@ -4,6 +4,7 @@ import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import type { ModelDocument, StudioTrialAuthoring, TaskDocument, TaskTrialSampleRequest, TaskTrialSampleResponse } from '@/generated/studioContracts';
 import type { EpochBounds } from './taskModel';
 import type { ShelfTask } from './shelfRows';
+import { modelInterventions } from '../model/modelGraph';
 import type { TrialsUnavailable } from './trialSample';
 
 /** The task document a step's Trial authoring reads, when it is one. */
@@ -17,9 +18,10 @@ export const endsBy = (end: TaskDocument['epochs'][number]['end'] | undefined, s
 
 /**
  * A step's task document as the shelf draws it, once the task is paired with the model and so has steps, with the
- * terms of its Objective, held in `objectiveDocument`, that are on.
+ * terms of its Objective, held in `objectiveDocument`, that are on, and the interventions of its Model.
  */
-export function shelfTask(view: StudioTrialAuthoring, document: string, objectiveDocument: string | undefined): ShelfTask | undefined {
+export function shelfTask(view: StudioTrialAuthoring, document: string, objectiveDocument: string | undefined,
+  model?: { id: string; value: ModelDocument }): ShelfTask | undefined {
   const task = taskDocumentOf(view);
   const period = view.period_seconds;
   if (!task || view.n_steps === null || period === null) return undefined;
@@ -41,6 +43,7 @@ export function shelfTask(view: StudioTrialAuthoring, document: string, objectiv
     document, duration: view.n_steps * period,
     epochs,
     ...objectiveDocument && { objective: { document: objectiveDocument, terms } },
+    ...model && { interventions: { document: model.id, items: modelInterventions(model.value) } },
     signals: task.signals.map(({ id, name, cells }) => ({
       id, name, covers: cells.flatMap(({ first_epoch, last_epoch }) => order.slice(order.indexOf(first_epoch), order.indexOf(last_epoch) + 1)),
     })),

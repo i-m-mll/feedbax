@@ -15,7 +15,7 @@ export type Port = {
   readonly direction: Direction;
   readonly name: string;
   readonly type: SignalType | string;
-  readonly mark?: 'task' | 'objective';
+  readonly mark?: 'task' | 'objective' | 'intervention';
   readonly taskSignal?: string;
   readonly growing?: boolean;
 };
@@ -287,4 +287,46 @@ export function withRemoved(model: ModelDocument, removed: readonly ModelRemoved
     }
   }
   return drawn;
+}
+
+/** An intervention of a Model, by its address, with the name its shelf row reads: its operation and where it acts. */
+export interface ModelIntervention {
+  readonly address: ModelAddress;
+  readonly name: string;
+}
+
+/** Every intervention of `model`, on a wire or a source port of any of its graphs, nested ones included. */
+export function modelInterventions(model: ModelDocument): ModelIntervention[] {
+  const found: ModelIntervention[] = [];
+  const walk = (owner: GraphOwner, composites: string[]) => {
+    const components = owner.interior.components ?? {};
+    const endName = (end: { owner: string; component?: string; port: string }) =>
+      end.owner === 'component' ? `${components[end.component!]?.name ?? end.component}.${end.port}` : end.port;
+    const add = (parent: ModelAddress['element'], where: string, items: readonly { kind: string; id: string; operation?: string }[]) => {
+      for (const item of items) {
+        if (item.kind !== 'intervention') continue;
+        found.push({
+          address: { composites, element: { kind: 'attachment', parent, id: item.id } as ModelAddress['element'] },
+          name: `${humanizeLabel(item.operation ?? '')} ${where}`,
+        });
+      }
+    };
+    if (!('physical_domain' in owner.interior) || !owner.interior.physical_domain) {
+      const interior = owner.interior as GraphInterior;
+      for (const [id, wire] of Object.entries(interior.wires ?? {})) {
+        add({ kind: 'wire', id }, `${endName(wire.source)} → ${endName(wire.target)}`, wire.attachments ?? []);
+      }
+      for (const [port, items] of Object.entries(interior.attachments?.sources ?? {})) {
+        add({ kind: 'port', end: { owner: 'inputs', port } }, port, items);
+      }
+    }
+    for (const [id, component] of Object.entries(components)) {
+      for (const [port, items] of Object.entries(component.attachments?.sources ?? {})) {
+        add({ kind: 'port', end: { owner: 'component', component: id, port, direction: 'output' } }, `${component.name}.${port}`, items);
+      }
+      if (component.kind === 'composite') walk(component, [...composites, id]);
+    }
+  };
+  walk(model, []);
+  return found;
 }
