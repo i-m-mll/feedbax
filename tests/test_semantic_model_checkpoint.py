@@ -17,6 +17,7 @@ import pytest
 from feedbax.builtins.training import StandardTrainingSettings, _init_supervised
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.model_assets import model_asset_refs
+from feedbax.compiler.model_document import lower_model_document, model_input_prototypes
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.contracts.method_checkpoint import (
@@ -25,11 +26,14 @@ from feedbax.contracts.method_checkpoint import (
     MethodCheckpointIdentity,
     method_checkpoint_extra_path,
 )
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_values import model_owner_problem
 from feedbax.training.optimizers import OPTIMIZERS
 from feedbax.dataset import Dataset, Variable
 from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.persistence.dataset import open_dataset, publish_dataset
+from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.runtime.raw_state import bind_raw_state
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.method_checkpoint import (
@@ -70,6 +74,57 @@ def _publish(root, graph, models, templates, *, extra=(), assets=None, replica_i
 
 def _open(root, pointer):
     return read_method_checkpoint(root, pointer, components=ComponentRegistry())
+
+
+def test_model_document_checkpoints_command_multiplied_by_noise(tmp_path):
+    command = {"id": "command", "name": "command", "type": {"base": "real", "shape": [2]}}
+    product = {"id": "product", "name": "product", "type": {"base": "real", "shape": [2]}}
+    noise_out = {"owner": "component", "component": "noise", "port": "output"}
+    multiply_a = {"owner": "component", "component": "multiply", "port": "a"}
+    multiply_b = {"owner": "component", "component": "multiply", "port": "b"}
+    multiply_out = {"owner": "component", "component": "multiply", "port": "output"}
+    model = ModelDocument.model_validate({
+        "step_seconds": 0.01,
+        "ports": {"inputs": [command], "outputs": [product]},
+        "interior": {
+            "components": {
+                "multiply": {"kind": "leaf", "name": "Multiply", "type": "feedbax.Multiply"},
+                "noise": {
+                    "kind": "leaf", "name": "Noise", "type": "feedbax.Noise",
+                    "fields": {"mean": 0.5, "std": 0.25, "shape": [2]},
+                },
+            },
+            "wires": {
+                "command-to-multiply": {"source": {"owner": "inputs", "port": "command"}, "target": multiply_a},
+                "noise-to-multiply": {"source": noise_out, "target": multiply_b},
+                "multiply-to-product": {"source": multiply_out, "target": {"owner": "outputs", "port": "product"}},
+            },
+        },
+    })
+    registry = ComponentRegistry()
+    graph = lower_model_document(model, registry).graph
+    problem = model_owner_problem(graph, "evaluate", registry)
+    assert problem is None, problem
+
+    compiled = compile_graph(
+        GraphDocument(graph=graph), registry, input_prototypes=model_input_prototypes(graph, model, {}),
+    ).graph
+    written = _publish(tmp_path / "noise", graph, (compiled,), (compiled,))
+    restored = _open(written.root, written.latest_pointer).model.restore(compiled)
+
+    commands = jnp.asarray([[0., 1.], [-2., 3.], [4., -5.]])
+    key = jax.random.key(82)
+
+    def rollout(graph):
+        return graph.rollout_with_trace(
+            {"command": commands}, graph.init_state(key=key), key=key, n_steps=3,
+            trace=(GraphTraceRequest("port", "noise", node="noise", port="output"),),
+        )
+
+    outputs, _, traces = rollout(compiled)
+    restored_outputs, _, _ = rollout(restored)
+    np.testing.assert_array_equal(outputs["product"], commands * traces["noise"])
+    np.testing.assert_array_equal(restored_outputs["product"], outputs["product"])
 
 
 class _AdaptiveState(eqx.Module):
