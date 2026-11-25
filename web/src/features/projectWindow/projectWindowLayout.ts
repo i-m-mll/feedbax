@@ -8,7 +8,7 @@ const minSlotWidth = 260;
 const minDetailsDrawerWidth = 150;
 const minInspectorWidth = 172;
 const minMapHeight = 150;
-const minDetailsHeight = 180;
+const minDetailsHeight = 320;
 const foldWidth = 36;
 
 export type PreferredWindowSize =

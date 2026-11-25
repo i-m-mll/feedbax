@@ -64,7 +64,10 @@ from feedbax.contracts.studio_figure import (
     FigureLayoutMeta, FigurePanelMeta, FigureProduct, FigureRun, FigureTraceMeta, PlotlyLayout, PlotlyTrace,
 )
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
+from feedbax.contracts.dataset import DatasetDescriptor
+from feedbax.contracts.studio_analyze import (
+    StudioAnalyzeAuthoring, StudioAnalyzeRequest, StudioOperationDatasetPage,
+)
 from feedbax.contracts.studio_scene import (
     SceneAnchorGeometry,
     SceneLinkGeometry,
@@ -244,6 +247,7 @@ from feedbax.contracts.model_address import (
 from feedbax.contracts.model_document import (
     CompositeComponent,
     DelayAttachment,
+    HoldAttachment,
     GraphInterior,
     InputDefault,
     InterventionAttachment,
@@ -434,6 +438,7 @@ from feedbax.contracts.studio_loaded_model import (
     StudioLoadedModelExportRequest, StudioLoadedModelImportQuery, StudioLoadedModelImportResult,
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.window import Window
 from feedbax.contracts.training_document import TrainingDocument
 from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
@@ -513,6 +518,7 @@ AUTHORED_CONTRACT_MODELS = (
     TaskDocument,
     PythonTaskSelection,
     ObjectiveDocument,
+    Window,
     TrainingDocument,
     TrialDocuments,
     ImportedModelProvenance,
@@ -546,6 +552,8 @@ AUTHORED_CONTRACT_MODELS = (
     SampleValues,
     SiteProjection,
     StudioAnalyzeAuthoring,
+    DatasetDescriptor,
+    StudioOperationDatasetPage,
     StudioAnalyzeRequest,
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
@@ -599,6 +607,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelTime,
     InputDefault,
     DelayAttachment,
+    HoldAttachment,
     InterventionAttachment,
     ProbeAttachment,
     SignalInput,

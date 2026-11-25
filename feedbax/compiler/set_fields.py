@@ -9,18 +9,19 @@ from hashlib import sha256
 from itertools import product
 
 from feedbax.contracts.expression_values import (
-    TIME, CallValue, DrawValue, Expression, LiteralValue, NameValue, ValueBase, ValueType,
+    CallValue, DrawValue, Expression, LiteralValue, NameValue, ValueBase, ValueType,
 )
 from feedbax.contracts.model_address import (
     ComponentElement, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress, SignalSource,
 )
 from feedbax.contracts.model_document import (
-    InterventionAttachment, InterventionWindow, LeafComponent, ModelDocument, ModelWire, SignalInput, SignalType,
+    InterventionAttachment, LeafComponent, ModelDocument, ModelWire, SignalInput, SignalType,
 )
 from feedbax.contracts.project import Document, apply_differences
 from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, TrialSetField
 from feedbax.contracts.set_document import read_set
 from feedbax.contracts.task_document import Cell, Link, SetVariableChoices, Signal, TaskDocument, ValidationTrial, Variable
+from feedbax.contracts.window import Window
 
 
 class SetFieldProblem(ValueError):
@@ -45,7 +46,6 @@ def _component_port(component: str, port: str) -> ComponentPortEnd:
 
 _BOOL = ValueType(base=ValueBase.BOOLEAN)
 _INT = ValueType(base=ValueBase.INTEGER)
-_DURATION = ValueType(base=ValueBase.REAL, dimensions=TIME)
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,6 @@ class _Union:
         self.alternatives: dict[str, list[_Alternative]] = defaultdict(list)
         self.conditions: list[tuple[dict[str, int], ...]] = []
         self.curl_activation: dict[str, tuple[bool, list[Expression]]] = {}
-        self.window_offsets: dict[str, NameValue] = {}
 
     def variable(
         self, id: str, value_type: ValueType, value: Expression, *, choices: SetVariableChoices | None = None,
@@ -83,30 +82,11 @@ class _Union:
         self.variables.append(Variable(id=id, name=id, type=value_type, value=value, set_choices=choices))
         return NameValue(reference=id)
 
-    def gate(
-        self, alt: _Alternative, gate_id: str, window: InterventionWindow | None, window_key: str | None,
-    ) -> InputBoundaryEnd:
-        selector = alt.predicate
+    def gate(self, alt: _Alternative, gate_id: str, window: Window | None) -> InputBoundaryEnd:
         first, last = self.task.epochs[0].id, self.task.epochs[-1].id
-        if window is not None:
-            if window.epoch not in {epoch.id for epoch in self.task.epochs}:
-                raise alt.problem(f"Intervention names missing epoch {window.epoch!r}.")
-            first = window.epoch
-            assert window_key is not None
-            period = self.model.step_seconds
-            if window_key not in self.window_offsets:
-                self.window_offsets[window_key] = self.variable(window_key, _DURATION, DrawValue(
-                    family="choice", args=tuple(LiteralValue(value=x * period, unit="s") for x in window.offsets),
-                ))
-            offset = self.window_offsets[window_key]
-            time = NameValue(reference="t")
-            # A half-step boundary avoids rounding a sample off its exact edge.
-            start = _call("sub", offset, LiteralValue(value=0.5 * period, unit="s"))
-            stop = _call("add", start, LiteralValue(value=window.duration * period, unit="s"))
-            selector = _call("and", selector, _call("and", _call("ge", time, start), _call("lt", time, stop)))
         self.signals.append(Signal(
-            id=gate_id, name=gate_id, type=_BOOL, absent=LiteralValue(value=False),
-            cells=(Cell(id=gate_id, first_epoch=first, last_epoch=last, value=selector),),
+            id=gate_id, name=gate_id, type=_BOOL, absent=LiteralValue(value=False), window=window,
+            cells=(Cell(id=gate_id, first_epoch=first, last_epoch=last, value=alt.predicate),),
         ))
         self.inputs.append(SignalInput(id=gate_id, name=gate_id, type=SignalType(base="bool", shape=())))
         return InputBoundaryEnd(owner="inputs", port=gate_id)
@@ -224,7 +204,7 @@ class _Union:
 
     def route(
         self, id: str, source: SignalSource, chain, active_source: SignalSource, active_chain,
-        alt: _Alternative, window: InterventionWindow | None = None, window_key: str | None = None,
+        alt: _Alternative, window: Window | None = None,
     ) -> ComponentPortEnd:
         switch_id = _id(id, alt.axis, alt.entry)
         gate_id = _id(switch_id, "gate")
@@ -236,7 +216,7 @@ class _Union:
             source=active_source, target=_component_port(switch_id, "true_input"), attachments=active_chain,
         )
         self.wires[_id(switch_id, "control")] = ModelWire(
-            source=self.gate(alt, gate_id, window, window_key), target=_component_port(switch_id, "condition"),
+            source=self.gate(alt, gate_id, window), target=_component_port(switch_id, "condition"),
         )
         return _component_port(switch_id, "output")
 
@@ -247,10 +227,8 @@ class _Union:
             self.components[stem] = LeafComponent(kind="leaf", name=stem, type="feedbax.Input")
             self.wires[stem] = ModelWire(source=source, target=_component_port(stem, "input"), attachments=chain)
             source = _component_port(stem, "output")
-        window = attachment.window
-        window_key = _id(id, attachment.id, window.model_dump_json()) if window is not None else None
         segment = attachment.model_copy(update={"window": None})
-        return self.route(context, source, (), source, (segment,), alt, window, window_key)
+        return self.route(context, source, (), source, (segment,), alt, attachment.window)
 
     def finish(self) -> tuple[ModelDocument, TaskDocument]:
         for id in sorted(self.alternatives.keys() | {

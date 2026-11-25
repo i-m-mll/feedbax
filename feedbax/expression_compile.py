@@ -26,10 +26,12 @@ from feedbax.contracts.expression_values import (
     Site,
     ValueBase,
 )
+from feedbax.contracts.time_units import length_steps, literal_time
 from feedbax.expression_builtins import CallContext
 from feedbax.contracts.expression_check import Checked, check
 from feedbax.contracts.expression_registry import Evaluation, FunctionRegistry, StateReset
 from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime.timing import runtime_time_steps
 
 
 _DTYPES = {ValueBase.REAL: float, ValueBase.INTEGER: int, ValueBase.BOOLEAN: bool}
@@ -131,7 +133,15 @@ def compile_expression(
         slot = _path_key(at)
         if isinstance(node, LiteralValue):
             value = node.value
-            if node.unit == "st":
+            discrete_bound = discrete_uniform and len(at) == 2 and at[0] == "args"
+            if discrete_bound:
+                assert period_seconds is not None
+                try:
+                    value = length_steps(literal_time(node), period_seconds)
+                except ValueError as error:
+                    problems.append(Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=(*path, *at)))
+                    value = 0
+            elif node.unit == "st":
                 if period_seconds is None:
                     problems.append(
                         Problem(
@@ -144,7 +154,7 @@ def compile_expression(
                     value *= period_seconds
             elif node.unit is not None and (scale := UNITS[node.unit].scale) != 1:
                 value *= scale
-            dtype = _DTYPES[node_type.type.base]
+            dtype = int if discrete_bound else _DTYPES[node_type.type.base]
             if dtype is int and (int(value) != value or not -(2**31) <= value < 2**31):
                 problems.append(
                     Problem(
@@ -259,10 +269,14 @@ def compile_expression(
                 )
                 if weight_index is not None:
                     named["weights"] = Evaluation(inputs.parameters[weight_index], True)
+                values_in_unit = tuple(arg.value for arg in positional)
+                if context.discrete_uniform:
+                    values_in_unit = tuple(
+                        value if isinstance(child, LiteralValue) else runtime_time_steps(value, period_seconds)
+                        for child, value in zip(node.args, values_in_unit, strict=True)
+                    )
                 result = implementation(
-                    context,
-                    *(arg.value for arg in positional),
-                    **{name: arg.value for name, arg in named.items()},
+                    context, *values_in_unit, **{name: arg.value for name, arg in named.items()},
                 )
                 if stateful:
                     result, state[slot] = result

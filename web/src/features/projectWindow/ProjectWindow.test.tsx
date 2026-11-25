@@ -24,7 +24,10 @@ function Window({ zoom }: { zoom: () => void }) {
 it('covers the main area with Settings while the rail and gear keep working', () => {
   vi.stubGlobal('ResizeObserver', class {
     constructor(private readonly report: ResizeObserverCallback) {}
-    observe() { this.report([{ contentRect: { width: 1440, height: 860 } } as ResizeObserverEntry], this as never); }
+    observe(target: Element) {
+      const height = target.classList.contains('studio-window-shelf') ? 0 : 860;
+      this.report([{ contentRect: { width: 1440, height } } as ResizeObserverEntry], this as never);
+    }
     disconnect() {}
   });
   const zoom = vi.fn();

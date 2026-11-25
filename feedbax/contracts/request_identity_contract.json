@@ -642,6 +642,14 @@
         "absent": {}
       }
     },
+    "feedbax.contracts.model_document.HoldAttachment": {
+      "id": {},
+      "kind": {
+        "values": [
+          "hold"
+        ]
+      }
+    },
     "feedbax.contracts.model_document.InputDefault": {
       "value": {}
     },
@@ -659,11 +667,6 @@
       "window": {
         "absent": null
       }
-    },
-    "feedbax.contracts.model_document.InterventionWindow": {
-      "duration": {},
-      "epoch": {},
-      "offsets": {}
     },
     "feedbax.contracts.model_document.LeafComponent": {
       "attachments": {
@@ -745,6 +748,7 @@
         "absent": [],
         "families": [
           "feedbax.contracts.model_document.DelayAttachment",
+          "feedbax.contracts.model_document.HoldAttachment",
           "feedbax.contracts.model_document.InterventionAttachment",
           "feedbax.contracts.model_document.ProbeAttachment"
         ]
@@ -852,9 +856,6 @@
       "enabled": {
         "absent": true
       },
-      "epochs": {
-        "absent": []
-      },
       "id": {},
       "measure": {
         "families": [
@@ -891,6 +892,9 @@
           "feedbax.contracts.expression_values.NameValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
+      },
+      "window": {
+        "absent": null
       }
     },
     "feedbax.contracts.report_document.ReportDocument": {
@@ -988,6 +992,38 @@
       "every_k": {},
       "through": {}
     },
+    "feedbax.contracts.request_refs.ConditionalProduct": {
+      "conditions": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
+      "kind": {
+        "absent": "conditional",
+        "values": [
+          "conditional"
+        ]
+      },
+      "request_id": {},
+      "role": {},
+      "select": {
+        "absent": null,
+        "families": [
+          "barrier",
+          "batch",
+          "batch_set",
+          "best_by",
+          "last",
+          "member",
+          "slot",
+          "update_series"
+        ]
+      }
+    },
     "feedbax.contracts.request_refs.ContentRef": {
       "media_type": {
         "absent": null
@@ -1006,6 +1042,7 @@
       "reference": {
         "families": [
           "best_rank",
+          "conditional",
           "content",
           "product"
         ]
@@ -1215,7 +1252,8 @@
       "end": {
         "families": [
           "feedbax.contracts.task_document.Length",
-          "feedbax.contracts.task_document.Rest"
+          "feedbax.contracts.task_document.Rest",
+          "feedbax.contracts.task_document.Until"
         ]
       },
       "id": {},
@@ -1291,7 +1329,10 @@
       "cells": {},
       "id": {},
       "name": {},
-      "type": {}
+      "type": {},
+      "window": {
+        "absent": null
+      }
     },
     "feedbax.contracts.task_document.TaskDocument": {
       "epochs": {},
@@ -1312,6 +1353,24 @@
         ]
       },
       "variables": {}
+    },
+    "feedbax.contracts.task_document.Until": {
+      "condition": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
+      "kind": {
+        "absent": "until",
+        "values": [
+          "until"
+        ]
+      },
+      "limit": {}
     },
     "feedbax.contracts.task_document.ValidationTrial": {
       "epoch_steps": {
@@ -1348,6 +1407,15 @@
         ]
       }
     },
+    "feedbax.contracts.time_units.TimeValue": {
+      "unit": {
+        "values": [
+          "s",
+          "st"
+        ]
+      },
+      "value": {}
+    },
     "feedbax.contracts.training.TrialDocuments": {
       "input_bindings": {
         "absent": {}
@@ -1358,6 +1426,107 @@
         "absent": null
       },
       "task": {}
+    },
+    "feedbax.contracts.window.Window": {
+      "spans": {
+        "families": [
+          "feedbax.contracts.window.WindowEpoch",
+          "feedbax.contracts.window.WindowInterval",
+          "feedbax.contracts.window.WindowMoment"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowEpoch": {
+      "epoch": {},
+      "kind": {
+        "values": [
+          "epoch"
+        ]
+      },
+      "occurrence": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.window.WindowEpochAnchor": {
+      "edge": {
+        "values": [
+          "end",
+          "start"
+        ]
+      },
+      "epoch": {},
+      "kind": {
+        "values": [
+          "epoch"
+        ]
+      },
+      "occurrence": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.window.WindowInterval": {
+      "end": {
+        "families": [
+          "feedbax.contracts.window.WindowPosition",
+          "feedbax.contracts.window.WindowRelativePosition"
+        ]
+      },
+      "kind": {
+        "values": [
+          "interval"
+        ]
+      },
+      "start": {}
+    },
+    "feedbax.contracts.window.WindowMoment": {
+      "at": {},
+      "kind": {
+        "values": [
+          "moment"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowPosition": {
+      "anchor": {
+        "families": [
+          "feedbax.contracts.window.WindowEpochAnchor",
+          "feedbax.contracts.window.WindowTrialAnchor"
+        ]
+      },
+      "offset": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue",
+          "feedbax.contracts.time_units.TimeValue"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowRelativePosition": {
+      "offset": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue",
+          "feedbax.contracts.time_units.TimeValue"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowTrialAnchor": {
+      "edge": {
+        "values": [
+          "end",
+          "start"
+        ]
+      },
+      "kind": {
+        "values": [
+          "trial"
+        ]
+      }
     }
   },
   "retired": {
@@ -3791,6 +3960,26 @@
         "field": "input_overrides",
         "migration": "stable-task-input-bindings",
         "model": "feedbax.contracts.training.TrialDocuments"
+      },
+      {
+        "field": "duration",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.model_document.InterventionWindow"
+      },
+      {
+        "field": "epoch",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.model_document.InterventionWindow"
+      },
+      {
+        "field": "offsets",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.model_document.InterventionWindow"
+      },
+      {
+        "field": "epochs",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.objective_document.ObjectiveTerm"
       }
     ],
     "values": [

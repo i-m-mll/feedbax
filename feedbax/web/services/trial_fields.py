@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_units import UNITS
+from feedbax.contracts.time_units import TimeUse
 from feedbax.contracts.expression_values import (
     CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, Site, SweepList, SweepRange,
     SweepSample, UnresolvedValue, ValueBase, ValueType,
@@ -191,7 +192,7 @@ def trial_field_sweep(
     node = at(parsed, path)
     if not _numeric(node):
         return None
-    duration = node.unit == "st"
+    time_use = trial_time_use(role, path) if node.unit in {"s", "st"} else None
     step = project.steps[step_id]
     field = NumericField(
         key=(role, *path), label=label, value=node.value,
@@ -199,15 +200,21 @@ def trial_field_sweep(
             expected=ValueType(base=ValueBase.REAL, dimensions=site.expected.dimensions), finest=Level.RUN,
             structural=True,
         ),
-        stored=True, validate=lambda value: value, unit=node.unit, duration=duration,
+        stored=True, validate=lambda value: value, unit=node.unit, time_use=time_use,
     )
     patch = ".".join(("trial_documents", role, *path, "value"))
     target = SweepTarget(node.value, lambda _value: [], patch)
     named = _names(parsed, path) or (role,)
     return TrialFieldSweep(
-        role, path, field, FieldSweeps(step, target, label, named, integer=duration), at(entry.payload, path) is not None,
+        role, path, field, FieldSweeps(step, target, label, named, integer=time_use == "length" and node.unit == "st"), at(entry.payload, path) is not None,
         path,
     )
+
+
+def trial_time_use(role: str, path: FieldPath) -> TimeUse:
+    if role == "task" and path[:1] == ("epochs",) and path[2:4] == ("end", "length"):
+        return "length"
+    return "constant"
 
 
 def _names(document: BaseModel, path: FieldPath) -> tuple[str, ...]:

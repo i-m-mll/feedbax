@@ -35,7 +35,7 @@ def add_physical_interior(raw, scope):
 
     interior["components"]["linear"] = {
         "kind": "leaf", "name": "Readout", "type": "feedbax.Linear",
-        "fields": {"input_size": 2, "output_size": 6, "initialization": "zeros"},
+        "fields": {"output_size": 6, "initialization": "zeros"},
     }
     interior["wires"].update(
         sample=_wire(_end("arm", "pos"), _end("linear", "input")),

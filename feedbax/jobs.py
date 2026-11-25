@@ -105,6 +105,10 @@ if TYPE_CHECKING:
     from feedbax.project_folder import ProjectFolder, SavedProjectPlans, SettledProjectPlan
 
 
+type AutomaticRun = Literal["all", "no_train", "off"]
+
+DEFAULT_AUTOMATIC_RUN: AutomaticRun = "no_train"
+
 _LIVE_STATES = frozenset({"queued", "assigned", "running", "stopping"})
 _HOST_ONLY_EVENTS = frozenset({"dependency_bound", "dependency_rejected", "continued"})
 _CHECKPOINT_ACTIVITY_EVENTS = frozenset({LIVE_EVALUATE_POINT, DELEGATION_EVENT})
@@ -491,7 +495,7 @@ class JobService(PlanJobReader):
         live_validation_qualifications: Sequence[ValidationQualification] = (),
         targets: TargetRegistry | None = None,
         submit_session: SessionSubmission | None = None,
-        automatic_run: Literal["all", "no_train", "off"] = "all",
+        automatic_run: AutomaticRun = DEFAULT_AUTOMATIC_RUN,
         quick_duration: timedelta = QUICK_RECEIPT_DURATION,
     ) -> None:
         super().__init__(host, components=registries.components, registries=registries)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from enum import IntEnum
 from itertools import groupby
 from math import isfinite
 from typing import Any, NamedTuple, Protocol
@@ -35,6 +34,7 @@ from feedbax.contracts.expression_values import (
 from feedbax.contracts.task_document import (
     Cell as Cell,
     Epoch as Epoch,
+    EpochEnd as EpochEnd,
     EpochSteps,
     Length,
     Link as Link,
@@ -50,8 +50,10 @@ from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices
 from feedbax.contracts.trial_bindings import selected_signal_id
+from feedbax.contracts.time_units import length_steps, literal_time
 from feedbax.runtime._graph_key_schedule import map_trial_samples, validation_trial_keys
-from feedbax.runtime.epoch_windows import EpochRecord, in_epoch
+from feedbax.runtime.epoch_windows import CompiledWindow, EpochRecord, compile_window, in_epoch
+from feedbax.runtime.timing import runtime_time_steps
 
 
 @dataclass(frozen=True)
@@ -60,11 +62,6 @@ class TaskInterface:
     signals: tuple[ScopedValue, ...]
     links: tuple[tuple[str, str], ...]
     model_outputs: tuple[ScopedValue, ...] = ()
-
-
-class EpochEnd(IntEnum):
-    UNREACHED = 0
-    LENGTH = 1
 
 
 class Trial(NamedTuple):
@@ -114,6 +111,7 @@ class _Prepared(NamedTuple):
     absent: Mapping[str, Any]
     run_key: jax.Array
     trial_key: jax.Array
+    windows: Mapping[str, jax.Array] | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +119,7 @@ class _Field:
     address: tuple[str, ...]
     code: Compiled
     list_count: int | None = None
+    length_in_steps: bool = False
 
     def inputs(self, parameters, prepared, values, k=0, *, epoch_entry=False, repeat=None):
         args = (
@@ -172,6 +171,7 @@ class _Signal:
     id: str
     absent: _Field
     cells: tuple[_Cell, ...]
+    window: CompiledWindow | None = None
 
 
 @dataclass(frozen=True)
@@ -212,9 +212,8 @@ class DocumentTask:
             elif field is None:
                 length = 0
             else:
-                length = jnp.rint(
-                    field.evaluate(parameters, prepared, values | {"i": repeat}, repeat=repeat) / self.period
-                ).astype(int)
+                value = field.evaluate(parameters, prepared, values | {"i": repeat}, repeat=repeat)
+                length = value if field.length_in_steps else runtime_time_steps(value, self.period)
             lengths.append(jnp.clip(length, 0, bound))
         if None in self.length_fields:
             lengths[self.length_fields.index(None)] = jnp.maximum(0, self.n_steps - sum(lengths))
@@ -231,7 +230,12 @@ class DocumentTask:
             signal.id: signal.absent.evaluate(parameters, prepared, values)
             for signal in self.signals
         }
-        prepared = prepared._replace(epochs=epochs, absent=absent)
+        inputs = Inputs((), values, run_key, trial_key)
+        windows = {
+            signal.id: signal.window.mask(epochs, self.n_steps, inputs)
+            for signal in self.signals if signal.window is not None
+        }
+        prepared = prepared._replace(epochs=epochs, absent=absent, windows=windows)
         variable_state = {
             variable.id: field.prepare(parameters, prepared, values)
             for variable, field in self.variable_fields
@@ -273,6 +277,9 @@ class DocumentTask:
             output = variables.absent[signal.id]
             available = False
             next_signal = []
+            within = True
+            if signal.window is not None:
+                within = variables.windows[signal.id][k] if self.n_steps else False
             for cell, previous in zip(signal.cells, cell_states, strict=True):
                 start = variables.epochs.starts[cell.first]
                 end = variables.epochs.ends[cell.last]
@@ -290,7 +297,7 @@ class DocumentTask:
                 )._replace(defined=defined)
                 result, next_state = cell.field.code.evaluate_step(inputs, previous)
                 next_signal.append(next_state)
-                supplied = active & result.defined
+                supplied = within & active & result.defined
                 output = jnp.where(supplied, result.value, output)
                 available = available | supplied
             outputs[signal.id] = output
@@ -649,24 +656,21 @@ def compile_task(
             continue
         count = None
         if isinstance(length, LiteralValue):
-            (seconds,) = field.code.parameters
-            steps = round(float(seconds) / period)
-            if seconds < 0 or (seconds > 0 and steps == 0):
-                problem(
-                    ProblemCode.STRUCTURE,
-                    "Length must be zero or round to at least one step.",
-                    path,
-                )
+            try:
+                steps = length_steps(literal_time(length), period)
+            except ValueError as error:
+                problem(ProblemCode.STRUCTURE, str(error), path)
+                steps = 0
+            field = replace(field, code=replace(field.code, parameters=(jnp.asarray(steps),)), length_in_steps=True)
             if bound is None:
                 bound = steps
             elif steps > bound:
                 problem(ProblemCode.LENGTH_BUDGET, "The length exceeds its step bound.", path)
             count = EpochSteps(least=max(steps, 0), nominal=max(steps, 0), greatest=max(steps, 0))
-        if (
-            discrete
-            and all(isinstance(arg, LiteralValue) for arg in length.args)
-        ):
-            low, high = (round(float(seconds) / period) for seconds in field.code.parameters)
+        if discrete:
+            field = replace(field, length_in_steps=True)
+        if discrete and all(isinstance(arg, LiteralValue) for arg in length.args):
+            low, high = map(int, field.code.parameters)
             if not 0 <= low <= high:
                 problem(
                     ProblemCode.STRUCTURE, "Length draw needs ordered nonnegative bounds.", path
@@ -675,8 +679,8 @@ def compile_task(
                 bound = high
             elif high > bound:
                 problem(ProblemCode.LENGTH_BUDGET, "The draw exceeds the epoch bound.", path)
-            else:
-                count = EpochSteps(least=low, nominal=round((low + high) / 2), greatest=high)
+            if 0 <= low <= high:
+                count = EpochSteps(least=low, nominal=(low + high + 1) // 2, greatest=high)
         if bound is None:
             problem(ProblemCode.UNBOUNDED_LENGTH, "A variable length needs a step bound.", path)
         lengths.append(field)
@@ -888,11 +892,27 @@ def compile_task(
 
         signals = [instantiate(signal) for signal in signals]
     epoch_ids = tuple(epochs)
+    instance_ids = tuple(epoch_ids[index] for index in instances)
+    windows = {signal.id: signal.window for signal in document.signals if signal.window is not None}
+    for index, signal in enumerate(signals):
+        if signal.id not in windows:
+            continue
+        path = ("signals", signal.id, "window")
+        compiled = compile_window(
+            windows[signal.id], epochs=instance_ids, period=period, names=tuple(scope.values()),
+            functions=functions, field_address=(document.id, *path), path=path, nominal=nominal,
+        )
+        if isinstance(compiled, tuple):
+            problems.extend(compiled)
+        else:
+            signals[index] = replace(signal, window=compiled)
+    if problems:
+        return tuple(problems)
     return DocumentTask(
         TaskInterface(tuple(scope.values()), tuple(declared_signals), tuple(links.items())),
         n_steps,
         period,
-        tuple(epoch_ids[index] for index in instances),
+        instance_ids,
         tuple(fields),
         tuple(lengths[index] for index in instances),
         tuple(bounds[index] for index in instances),

@@ -681,7 +681,7 @@ def resolve_graph_schedule(graph: GraphSpec) -> tuple[SignalSchedule | None, Gra
     return scoped, GraphKeySchedule(
         schedule_id=KEY_SCHEDULE_ID,
         node_order=() if scoped is not None else instant_execution_order(graph.nodes, (
-            (wire.source_node, wire.target_node) for wire in graph.wires if wire.temporality != "recurrent"
+            (wire.source_node, wire.target_node) for wire in graph.wires if not wire.is_recurrent
         )),
         scoped_node_order=scoped.order if scoped is not None else None,
     )
