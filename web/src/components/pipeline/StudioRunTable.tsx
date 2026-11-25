@@ -155,7 +155,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
           ...named ? [{ least: "6rem", greatest: "16rem" }] : [],
           ...showVariant ? [{ least: "6rem" }] : [],
           ...sweeps.map(() => ({ least: "6rem" })),
-          { least: "8rem" }, { least: "8rem" },
+          { least: "8rem", greatest: "28rem" }, { least: "8rem" },
         ]}
         held={named ? 2 : 1}
         box={{ ref: scroll, axis: "both", className: `${fillSlot ? "h-full" : "max-h-96"} [--fade-inset-top:var(--row-height)]` }}>
@@ -175,6 +175,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
             const run = rows[item.index];
             const lit = picking ? picking.runs.has(run.id) : selected.has(run.id);
             const reason = run.results.some(({ validity }) => validity.reasons?.length) ? undefined : run.reason;
+            const shownReason = studioRunReason({ ...run, reason });
             const selectRow = picking ? { onClick: () => picking.toggle([run.id]), onKeyDown: undefined }
               : selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
             return (
@@ -226,9 +227,11 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                     {labels.get(sweep.id)?.get(run.values[sweep.id])}
                   </TableCell>
                 ))}
-                <TableCell tabIndex={-1} className={cellFocus} aria-description={studioRunReason({ ...run, reason })}>
-                  <span className="inline-flex items-center gap-1.5">
-                    <StudioRunStatus status={run.state} {...appTip(studioRunReason({ ...run, reason }))} />
+                <TableCell tabIndex={-1} className={cellFocus} aria-description={shownReason}>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <StudioRunStatus status={run.state} {...appTip(shownReason)} />
+                    {run.state === "failed" && shownReason && <span data-run-reason className="min-w-0 truncate text-sm"
+                      {...appTip(shownReason)}>{shownReason.split("\n")[0]}</span>}
                     {run.blockedBy && <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
                       onClick={() => onSelectionChange(selectStep(state, run.blockedBy!.stepId))}>{run.blockedBy.label}</Button>}
                   </span>

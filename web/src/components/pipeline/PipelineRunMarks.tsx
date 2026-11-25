@@ -237,6 +237,7 @@ function MarkButton({
     ? studioCountOf(selectedCount, runs.length)
     : null;
   const name = [label, status, share].filter(Boolean).join(' · ');
+  const failure = mark.kind === 'run' && mark.run.state === 'failed' ? studioRunReason(mark.run) : undefined;
   const shaped = size.id === 'full' && statuses.length === 1;
   const chooseFirst = () => {
     if (selectedCount === runs.length) return;
@@ -258,8 +259,8 @@ function MarkButton({
       data-result-run={mark.kind === 'run' ? mark.run.id : undefined}
       aria-label={studioAccessibleName('select', name)}
       aria-pressed={!selectedCount ? false : selectedCount === runs.length ? true : 'mixed'}
-      aria-description={lineageDescription || undefined}
-      {...appTip(studioAccessibleName('select', name))}
+      aria-description={[failure, lineageDescription].filter(Boolean).join(' · ') || undefined}
+      {...appTip([studioAccessibleName('select', name), failure].filter(Boolean).join('\n'))}
       data-map-focus={lineage}
       data-boxed={boxed ? runs.some(({ id }) => boxed.has(id)) ? '' : undefined
         : selectionKind === 'rows' && selectedCount > 0 ? '' : undefined}

@@ -1,10 +1,11 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { appTip } from "@window-shell/browser/tooltip";
 import type { RuleChoice } from "@/features/projectWindow/elementSelection";
 import { StudioRegion, StudioRegionBoundary, useRegionPending, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import {
   studioAccessibleName, studioChangeDetail, studioCountOf, studioEnvironmentNotice, studioMentionReason, studioName, studioPlaceName, studioProblemName,
-  studioReason, studioRunStatus, studioValidityReason, type StudioPlace, type StudioResultState, type StudioValidityRows,
+  studioReason, studioRunReason, studioRunStatus, studioValidityReason, type StudioPlace, type StudioResultState, type StudioValidityRows,
 } from "@/components/activity/studioVocabulary";
 import { StatusMark } from "@/components/ui/StatusMark";
 import { StepKindMark } from "./StepKindMark";
@@ -152,12 +153,15 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
                   const labels = [...count].map(([status, amount]) => cell.length > 1
                     ? `${amount} ${studioRunStatus(status)}`
                     : studioRunStatus(status));
+                  const failure = cell.length === 1 && cell[0].state === "failed" ? studioRunReason(cell[0]) : undefined;
                   return (
                     <TableCell key={column.id}>
                       {cell.length > 0 && (
                         <Button
                           variant="ghost"
                           aria-label={studioAccessibleName("select", [`${y.label} ${row.label}`, `${x.label} ${column.label}`, ...labels].join(" · "))}
+                          aria-description={failure}
+                          {...failure && appTip(failure)}
                           pressed={cell.every(({ id }) => selected.has(id))}
                           className="-ml-control-inline gap-2"
                           {...selectionButton((extend) => onSelectionChange(cell.length === 1
