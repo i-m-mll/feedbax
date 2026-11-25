@@ -30,7 +30,7 @@ from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, compose_step, resolve_step
 from feedbax.contracts.project_sweep import SetAxis
 from feedbax.contracts.set_document import read_set
-from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
+from feedbax.planner.project_plan import EVALUATION_TASK, PlannedRun, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
@@ -54,6 +54,7 @@ from feedbax.contracts.task_document import (
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.time_units import TimeValue, length_steps
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
+from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.training import TrialDocuments
 from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.contracts.window import WindowPosition, store_window_offset, window_offset_expression, window_offset_sites
@@ -683,6 +684,27 @@ def _pairing(plan, key, bundle, *, definition=None):
     if step.kind == "evaluate":
         return _evaluate_documents(plan, key, definition, bundle)
     raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
+
+
+def read_run_trial_sample(
+    folders: ProjectFolderService, project: str, revision: str, key: RunKey, bundle: ApplicationRegistryBundle,
+) -> tuple[TrialDocuments | _InitialTrialDocuments, GraphSpec | None]:
+    """Read the selected run's model and trial inputs, including its effective Set and Evaluate changes."""
+    plan = folders.read_plan(project, revision=revision, source_runs=(key,)).plan
+    definition = _definition(plan, key)
+    run = plan.row(key)
+    if isinstance(run, PlannedRun) and run.kind == "train":
+        spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        if isinstance(spec, DocumentTrainingRequestSpec):
+            documents = spec.trial_documents
+            if run.train is not None and run.train.task is not None:
+                documents = _with_task(documents, run.train.task)
+            return documents, None
+    try:
+        documents, _, graph = _pairing(plan, key, bundle, definition=definition)
+    except (ValueError, TypeError, KeyError) as error:
+        raise ProjectFolderInvalid(str(error)) from error
+    return documents, graph
 
 
 def _set_variable_edit(project, plan, key, path, change):

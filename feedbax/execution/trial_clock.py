@@ -182,9 +182,14 @@ def _mean_shelf(trials: Sequence[AlignedTrial], records: Mapping[str, TrialRecor
 
     signals = dict.fromkeys(name for record in ordered for name in record.present)
     terms = dict.fromkeys(name for record in ordered for name in record.terms)
+    interventions = dict.fromkeys(address for record in ordered for address in record.intervention_windows)
     return TrialMeanShelf(
         times=time.tolist(), epochs=_mean_epochs(trials),
         signals={name: shares(record.present.get(name, []) for record in ordered) for name in signals},
+        interventions={
+            address: shares(record.intervention_windows.get(address, []) for record in ordered)
+            for address in interventions
+        },
         terms={
             name: TrialMeanTermShare(
                 steps=shares(record.terms[name].steps if name in record.terms else [] for record in ordered),
