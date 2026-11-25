@@ -802,6 +802,34 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
             assert view["objective"]["terms"][0] == term | values
 
 
+def test_studio_saves_an_objective_ramp_weighted_by_a_delayed_signal(tmp_path):
+    project = "objective-ramp"
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, project, Project.model_validate(document_project(authored_documents())))
+    route = f"/api/projects/{project}"
+    body = {
+        "revision": folders.read(project).revision,
+        "run": {"variant": "default", "step": "train", "row": "default"},
+    }
+    path = "/objective/terms/effort/weight"
+    text = "(t / T) ** 2 * sqnorm(lag(command, 5))"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        edited = client.post(f"{route}/authoring/trials", json=body | {
+            "change": {"kind": "expression", "path": path, "edit": {"kind": "text", "text": text}},
+        })
+        assert edited.status_code == 200, edited.text
+        proposed = edited.json()
+        assert proposed["files"]
+        assert not proposed["problems"], proposed["problems"]
+        saved = client.patch(route, json={"revision": body["revision"], "files": proposed["files"]})
+        assert saved.status_code == 200, saved.text
+        reread = client.post(f"{route}/authoring/trials", json=body | {"revision": saved.json()["revision"]})
+        assert reread.status_code == 200, reread.text
+        assert not reread.json()["problems"], reread.text
+        field = next(field for field in reread.json()["fields"] if field["path"] == path)
+        assert field["text"] == text
+
+
 def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader(tmp_path):
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()
