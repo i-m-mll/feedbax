@@ -16,7 +16,9 @@ from feedbax.contracts.direct_force_presentation import (
 )
 from feedbax.contracts.component import PortType
 from feedbax.contracts.model_values import ModelFacts, ModelValue, StateValue
-from feedbax.contracts.portable import Ports, ConfigBinding, ComponentOptions
+from feedbax.contracts.portable import (
+    ComponentOptions, ConfigBinding, Ports, SignalProperties, StateSignal,
+)
 from feedbax.runtime.graph import Component, TrialStateProblem
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
@@ -27,10 +29,24 @@ from feedbax.mechanics.skeleton.pointmass import PointMass as PointMassSkeleton
 _PRESENTATION_SOURCES = (
     Path(__file__).resolve().parents[2] / "studio" / "direct_force_presentation.py",
 )
-_MECHANICS_PORTS = Ports(
-    inputs={"force": PortType(dtype="vector")},
-    outputs={"effector": PortType(dtype="state"), "state": PortType(dtype="state")},
-)
+
+
+def _mechanics_ports(states: tuple[StateValue, ...]) -> Ports:
+    return Ports(
+        inputs={"force": PortType(dtype="vector")},
+        outputs={"effector": PortType(dtype="state"), "state": PortType(dtype="state")},
+        input_leaves={("force",): SignalProperties(unit="N", space="free")},
+        output_leaves={
+            path: StateSignal(state.symbol) for state in states for path in state.output_leaves
+        },
+    )
+
+
+def _state_outputs(storage: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+    state = ("state", *storage)
+    return (state, storage) if storage[0] == "effector" else (state,)
+
+
 _ARM_ANGLE = ("plant", "skeleton", "angle")
 _ARM_RATE = ("plant", "skeleton", "d_angle")
 _EFFECTOR_POSITION = ("effector", "pos")
@@ -42,7 +58,6 @@ class TwoLinkArm(Mechanics, Component):
 
     component_presentation = PresentationOverride(representation=_two_link_arm_representation())
     component_sources = _PRESENTATION_SOURCES
-    ports = _MECHANICS_PORTS
     model_facts = ModelFacts(
         values=(
             ModelValue("link_lengths", "plant.skeleton.l", "source"),
@@ -50,20 +65,22 @@ class TwoLinkArm(Mechanics, Component):
         ),
         states=tuple(
             StateValue(
-                symbol, storage, unit, axis, ("state", *storage), frame,
+                symbol, storage, unit, axis, ("state", *storage),
                 configuration=symbol == "skeleton/angle", space=space,
+                output_leaves=_state_outputs(storage),
             )
-            for symbol, storage, unit, axis, frame, space in (
-                ("skeleton/angle", _ARM_ANGLE, "rad", "joint", None, None),
-                ("skeleton/angular_velocity", _ARM_RATE, "rad/s", "joint", None, None),
-                ("skeleton/torque", ("plant", "skeleton", "torque"), "N*m", "joint", None, None),
-                ("skeleton/effector_force", ("plant", "skeleton", "effector_force"), "N", "xy", "world", None),
-                ("effector/position", _EFFECTOR_POSITION, "m", "xy", "world", "point"),
-                ("effector/velocity", _EFFECTOR_VELOCITY, "m/s", "xy", "world", None),
-                ("effector/force", ("effector", "force"), "N", "xy", "world", None),
+            for symbol, storage, unit, axis, space in (
+                ("skeleton/angle", _ARM_ANGLE, "rad", "joint", None),
+                ("skeleton/angular_velocity", _ARM_RATE, "rad/s", "joint", None),
+                ("skeleton/torque", ("plant", "skeleton", "torque"), "N*m", "joint", None),
+                ("skeleton/effector_force", ("plant", "skeleton", "effector_force"), "N", "xy", "free"),
+                ("effector/position", _EFFECTOR_POSITION, "m", "xy", "point"),
+                ("effector/velocity", _EFFECTOR_VELOCITY, "m/s", "xy", "free"),
+                ("effector/force", ("effector", "force"), "N", "xy", "free"),
             )
         ),
     )
+    ports = _mechanics_ports(model_facts.states)
     config_bindings = (ConfigBinding(path="plant.skeleton.l", name="link_lengths"),)
 
     def __init__(
@@ -134,9 +151,10 @@ class PointMass(Mechanics, Component):
         states=tuple(
             StateValue(
                 f"{part}/{quantity}", (*storage, attribute), unit, "xy",
-                ("state", *storage, attribute), "world",
+                ("state", *storage, attribute),
                 aliases=((*companion, attribute),) if quantity != "force" else (),
-                space="point" if quantity == "position" else None,
+                space="point" if quantity == "position" else "free",
+                output_leaves=_state_outputs((*storage, attribute)),
             )
             for part, storage, companion in (
                 ("effector", ("effector",), ("plant", "skeleton")),
@@ -148,7 +166,7 @@ class PointMass(Mechanics, Component):
         ),
     )
 
-    ports = _MECHANICS_PORTS
+    ports = _mechanics_ports(model_facts.states)
     config_bindings = (
         ConfigBinding(path="plant.skeleton.mass", name="mass"),
         ConfigBinding(path="plant.skeleton.damping", name="damping"),

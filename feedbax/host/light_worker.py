@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import ExitStack
 from dataclasses import asdict
 from functools import lru_cache
@@ -25,6 +26,7 @@ from feedbax.contracts.request_specs import (
     ReportRequestSpec,
 )
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.studio_figure import FigureRun
 from feedbax.contracts.trial_clock import TrialMeanSelection
 from feedbax.dataset import Dataset
 from feedbax.contracts.member_stack import labelled_members
@@ -46,6 +48,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plot.dataset_figure import render as render_figure
+from feedbax.plot.figure_trial_clock import FigureRecordedDataset
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import RegisteredOperation
@@ -106,41 +109,36 @@ def _dataset_inputs(
 
 
 def _recorded_figure_trials(
-    store: ImmutableArtifactBlobProvider, roles: set[str], bindings: Bindings, stack: ExitStack,
-) -> dict[str, dict[str, Dataset]]:
-    """Follow a trial-preserving product to the exact recorded input used by its retained receipt."""
-    success = SuccessView(store)
+    success: SuccessView, roles: set[str], bindings: Bindings, stack: ExitStack,
+) -> dict[str, list[FigureRecordedDataset]]:
+    """Find the exact source clocks, retaining the member keys of stacked Analyze inputs."""
     opened: dict[str, Dataset] = {}
 
-    def recorded(member: BoundMember) -> dict[str, Dataset]:
+    def recorded(member: BoundMember, keys: frozenset[str]) -> Iterator[tuple[str, frozenset[str]]]:
         ref = dataset_member(member)
         digest = ref.content.sha256
         dataset = opened.get(digest)
         if dataset is None:
-            dataset = stack.enter_context(open_stored_dataset(store, ref))
+            dataset = stack.enter_context(open_stored_dataset(success.store, ref))
             opened[digest] = dataset
-        if "trial_record" in dataset.descriptor.attrs:
-            return {digest: dataset}
-        if member.selection is None:
-            return {}
-        producer = success.read_receipt(member.selection.receipt)
-        return {
-            sha: source
-            for members in producer.inputs.values()
-            for parent in members
-            if parent.content.media_type == DATASET_MEDIA_TYPE
-            for sha, source in recorded(parent).items()
-        }
+        keys = keys | {member.key}
+        descriptor = dataset.descriptor
+        if "trial_record" in descriptor.attrs and "epoch_start" in descriptor.variables:
+            yield digest, keys
+        elif member.selection is not None:
+            producer = success.read_receipt(member.selection.receipt)
+            for members in producer.inputs.values():
+                for parent in members:
+                    if parent.content.media_type == DATASET_MEDIA_TYPE:
+                        yield from recorded(parent, keys)
 
     sources = {}
     for role in roles:
-        datasets = {}
+        by_digest: dict[str, frozenset[str]] = {}
         for member in bindings[role]:
-            results = recorded(member)
-            if len(results) != 1:
-                raise ValueError(f"Figure input {role!r}/{member.key!r} requires one retained trial clock.")
-            datasets[member.key], = results.values()
-        sources[role] = datasets
+            for digest, keys in recorded(member, frozenset()):
+                by_digest[digest] = by_digest.get(digest, frozenset()) | keys
+        sources[role] = [FigureRecordedDataset(opened[digest], keys) for digest, keys in by_digest.items()]
     return sources
 
 
@@ -157,11 +155,15 @@ def render_saved_figure(
         raise ValueError("Expected a saved figure request.")
     with ExitStack() as stack:
         datasets = _dataset_inputs(store, request, bindings, stack)
+        success = SuccessView(store)
         recorded = None
         if mean is not None:
             roles = {layer.role for layer in spec.document.layers if "trial" in layer.group}
-            recorded = _recorded_figure_trials(store, roles, bindings, stack)
-        figure = render_figure(spec.document, datasets, names=spec.names, mean=mean, recorded_trials=recorded)
+            recorded = _recorded_figure_trials(success, roles, bindings, stack)
+        figure = render_figure(
+            spec.document, datasets, names=spec.names, mean=mean, recorded_trials=recorded,
+            runs=figure_source_runs(success, spec, bindings),
+        )
         document = figure.to_json()
         assert document is not None
         return document.encode()
@@ -177,6 +179,34 @@ def _retain_staged_object(
             targets=(light_staging_target(success_content_ref(content)),),
         )
     )
+
+
+def figure_source_runs(
+    view: SuccessView, spec: RenderRequestSpec, bindings: Bindings,
+) -> dict[str, tuple[FigureRun, ...]]:
+    """Verify the planned role origins against the actual saved input receipts."""
+    if not spec.source_runs:
+        return {}
+    if spec.source_runs.keys() != bindings.keys():
+        raise ValueError("Figure source runs must cover each bound dataset role.")
+    producers: dict[str, frozenset[str]] = {}
+
+    def lineage(member: BoundMember) -> frozenset[str]:
+        if member.selection is None or member.content.media_type != DATASET_MEDIA_TYPE:
+            return frozenset()
+        ref = member.selection.receipt
+        if ref.sha256 not in producers:
+            receipt = view.read_receipt(ref)
+            producers[ref.sha256] = frozenset((receipt.request.id,)).union(
+                *(lineage(parent) for group in receipt.inputs.values() for parent in group),
+            )
+        return producers[ref.sha256]
+
+    for role, sources in spec.source_runs.items():
+        actual = frozenset().union(*(lineage(member) for member in bindings[role]))
+        if any(run.request_id not in actual for run in sources):
+            raise ValueError(f"Figure role {role!r} differs from its saved run lineage.")
+    return spec.source_runs
 
 
 def _compute(

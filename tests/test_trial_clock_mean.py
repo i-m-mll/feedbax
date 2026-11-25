@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanSelection
 from feedbax.dataset import Dataset, Variable
@@ -51,7 +52,8 @@ def unequal_epochs():
         coords={
             "condition": Variable(np.array(["condition-id"]), ("condition",)),
             "trial": Variable(np.array(_TRIALS), ("trial",)),
-            "state_time": Variable(_TIME, ("state_time",), units="s"),
+            "state_time": Variable(_TIME, ("state_time",), units="s", trial_time=TrialFigureTime()),
+            "clock": Variable(_TIME, ("state_time",), units="s", trial_time=TrialFigureTime()),
             "xy": Variable(np.array(["x", "y"]), ("xy",)),
         },
         attrs={"trial_record": layout.model_dump(mode="json")},
@@ -128,7 +130,7 @@ def test_saved_figure_mean_uses_the_same_aligned_sample_reference(unequal_epochs
             {
                 "name": "path", "panel": "path", "role": "states", "mark": "line",
                 "group": ["condition", "trial"],
-                "encode": {"x": "state_time", "y": {
+                "encode": {"x": "clock", "y": {
                     "variable": _POSITION, "select": {"xy": {"index": 0}},
                 }},
             },
@@ -150,6 +152,7 @@ def test_saved_figure_mean_uses_the_same_aligned_sample_reference(unequal_epochs
     ),)}
     plain = json.loads(render_saved_figure(store, request, bindings))
     rendered = json.loads(render_saved_figure(store, request, bindings, mean=TrialMeanSelection(align="move")))
+    assert rendered["layout"]["meta"]["panels"]["path"]["time"]["zero_epoch"] == "move"
     traces = rendered["data"]
     assert traces[-1] == plain["data"][-1]
     assert [trace["meta"]["group"]["trial"] for trace in traces[:-1] if "trial" in trace["meta"]["group"]] == list(_TRIALS)
@@ -161,3 +164,30 @@ def test_saved_figure_mean_uses_the_same_aligned_sample_reference(unequal_epochs
             assert trace["x"] == time
             assert trace["y"] == [xy[0] for xy in values]
         assert lower["fill"] == "tonexty"
+
+
+def test_stacked_figure_matches_the_bound_member_with_repeated_trial_ids(unequal_epochs):
+    from feedbax.contracts.project_sweep import SweepCoordinate, SweepInputMember
+    from feedbax.dataset_sweep import stack_dataset_members
+    from feedbax.plot.figure_trial_clock import FigureRecordedDataset, FigureTrialSource
+
+    descriptor = unequal_epochs.descriptor
+    start = unequal_epochs.data("epoch_start").copy()
+    start[0, 1, 1] = 3
+    other = Dataset.bind(
+        descriptor,
+        tensor_shapes={name: descriptor.shape(name) for name in descriptor.tensor_names},
+        load_tensor=lambda name, index: start[index] if name == "epoch_start" else unequal_epochs.data(name, index),
+    )
+    plotted = stack_dataset_members([
+        (SweepInputMember("first-run", {"mass": SweepCoordinate("light", value=1)}), unequal_epochs),
+        (SweepInputMember("second-run", {"mass": SweepCoordinate("heavy", value=2)}), other),
+    ])
+    source = FigureTrialSource(plotted, [
+        FigureRecordedDataset(unequal_epochs, frozenset({"first-run"})),
+        FigureRecordedDataset(other, frozenset({"second-run"})),
+    ], plotted.data)
+
+    trial, _ = source.project({"mass": (1,), "trial": (1,)})
+    assert trial.id == "second"
+    assert trial.timeline[1].start == 3

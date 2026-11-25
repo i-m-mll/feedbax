@@ -328,6 +328,7 @@ class HostClient:
         checkpoint_objective_root: str | None = None,
         terminal_train: tuple[str, list[str]] | None = None,
         checkpoint_admission: tuple[str, list[str]] | None = None,
+        attempt_addresses: tuple[str, list[str]] | None = None,
     ) -> JobsSnapshot:
         return cast(
             JobsSnapshot,
@@ -342,6 +343,7 @@ class HostClient:
                 **({"record_keys": list(record_keys)} if record_keys else {}),
                 **({"terminal_train": list(terminal_train)} if terminal_train is not None else {}),
                 **({"checkpoint_admission": list(checkpoint_admission)} if checkpoint_admission is not None else {}),
+                **({"attempt_addresses": list(attempt_addresses)} if attempt_addresses is not None else {}),
                 **({"checkpoint_progress_root": checkpoint_progress_root} if checkpoint_progress_root is not None else {}),
                 **(
                     {"checkpoint_objective_root": checkpoint_objective_root}

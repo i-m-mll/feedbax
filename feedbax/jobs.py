@@ -57,6 +57,8 @@ from feedbax.contracts.jobs import (
 )
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT, LiveEvaluationObservation
 from feedbax.contracts.manifest import (
+    EvaluationRunManifest,
+    EvaluationRunSpec,
     TrainingRunManifest,
     canonical_manifest_path,
     load_manifest_bytes,
@@ -71,6 +73,7 @@ from feedbax.contracts.receipt_validity import CodeDifference, InputDifference, 
 from feedbax.contracts.effective_success import EvaluationSubjectValue, TerminalTrainSubject
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.live_evaluate import DELEGATION_EVENT
@@ -97,7 +100,7 @@ if TYPE_CHECKING:
     from feedbax.persistence.store_sync import StoreEndpoint
     from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.persistence.canonical_evaluate import EvaluationResult, RolloutParameters
+    from feedbax.persistence.canonical_evaluate import EvaluationResult
     from feedbax.project_folder import ProjectFolder, SavedProjectPlans, SettledProjectPlan
 
 
@@ -228,6 +231,9 @@ class PlanJobAttempt:
     provenance: AttemptProvenance | None = None
     metric_names: tuple[str, ...] = ()
     """The numeric summary metrics a successful Train attempt reports, which a lowest or highest term can rank by."""
+    request_id: RequestId | None = None
+    revision: str | None = None
+    trials: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -241,7 +247,7 @@ class PlanJobAttempts:
     checkpoint_catalogs: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
     finished_checkpoints: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
     """The checkpoint coordinates each Train producer published on its way to success, once no attempt of it is live."""
-    light_by_address: Mapping[str, tuple[PlanJobAttempt, ...]] = field(default_factory=dict)
+    by_address: Mapping[str, tuple[PlanJobAttempt, ...]] = field(default_factory=dict)
     validity_checks: tuple[dict[str, Any], ...] = ()
 
 
@@ -255,6 +261,7 @@ class _VerifiedEvaluation:
     checkpoint_source: StudioTrainCheckpointSource | None = None
     checkpoint_sources: tuple[StudioTrainCheckpointSource, ...] = ()
     bound_subject: StudioBoundBestSubject | None = None
+    trials: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -303,7 +310,7 @@ class PlanJobReader:
     def read_plan_attempts(
         self, *, project: str, store: Path, requests: Collection[RequestId],
         stopped_checkpoint_jobs: Sequence[str] = (),
-        light_addresses: Collection[str] = (), project_root: Path | None = None,
+        addresses: Collection[str] = (), project_root: Path | None = None,
     ) -> PlanJobAttempts:
         """Read saved Plan attempts and authenticate any selected stopped checkpoints."""
         manifest_root = str(store)
@@ -313,6 +320,7 @@ class PlanJobReader:
             project=project, start_host=False, record_keys=(key,), include_launch=include_producers,
             checkpoint_progress_root=manifest_root if include_producers else None,
             checkpoint_admission=(manifest_root, sorted(requests)),
+            attempt_addresses=(manifest_root, sorted(addresses)) if addresses else None,
         )
         plan_ref = cast(AuthoredTrainPlanRef | None, snapshot.get("records", {}).get(key))
         wanted = set(requests)
@@ -322,7 +330,7 @@ class PlanJobReader:
                 wanted.update(result["request_id"] for result in (row["last"], row["prior"]) if result)
         stopped_jobs = set(stopped_checkpoint_jobs)
         attempts: dict[RequestId, list[PlanJobAttempt]] = {}
-        light_attempts: dict[str, list[PlanJobAttempt]] = {}
+        addressed_attempts: dict[str, list[PlanJobAttempt]] = {}
         by_id = {
             job["id"]: job for job in cast(list[dict[str, Any]], snapshot["jobs"])
             if job["data"].get("manifest_root") == manifest_root
@@ -338,13 +346,16 @@ class PlanJobReader:
             self._validity_observer(project_root)
             if project_root is not None and self._validity_registries is not None else None
         )
+        admitted_addresses = snapshot.get("attempt_addresses", {})
         for job in by_id.values():
             if job["state"] == "reused":
                 continue
             request_id = job["request"]
             light = _is_light_request(request_id)
-            address = job["data"].get("run_key")
-            if request_id not in wanted and not (light and address in light_addresses):
+            known = set(admitted_addresses.get(job["id"], ()))
+            if (address := job["data"].get("run_key")) in addresses:
+                known.add(address)
+            if request_id not in wanted and not known:
                 continue
             evaluate = request_id.startswith("evaluate:")
             collected_train = _is_collected_train(job)
@@ -430,10 +441,12 @@ class PlanJobReader:
                 train_request=store_success.request if collected_train and store_success is not None else None,
                 collected_evaluate=collected_evaluate, validity=validity, provenance=provenance,
                 metric_names=metric_names if receipt is not None else (),
+                request_id=request_id, revision=job["data"].get("revision"),
+                trials=result.trials if result is not None else (),
             )
             attempts.setdefault(request_id, []).append(attempt)
-            if light and address in light_addresses:
-                light_attempts.setdefault(address, []).append(attempt)
+            for address in known:
+                addressed_attempts.setdefault(address, []).append(attempt)
         return PlanJobAttempts(
             snapshot["cursor"],
             MappingProxyType({request: tuple(rows) for request, rows in attempts.items()}),
@@ -444,7 +457,7 @@ class PlanJobReader:
                 request: tuple(coordinates)
                 for request, coordinates in snapshot.get("finished_checkpoints", {}).items()
             }),
-            light_by_address=MappingProxyType({address: tuple(rows) for address, rows in light_attempts.items()}),
+            by_address=MappingProxyType({address: tuple(rows) for address, rows in addressed_attempts.items()}),
             validity_checks=tuple(job for job in by_id.values() if "validity_check" in job["data"]),
         )
 
@@ -794,6 +807,9 @@ class JobService(PlanJobReader):
             candidates = []
             for name in order:
                 item = _with_project_root(items[name], current.project_root)
+                if item.job is not None:
+                    job = replace(item.job, data=item.job.data | {"revision": current.revision})
+                    item = replace(item, job=job)
                 if not reuse_completed and item.job is not None and item.job.request in directly_selected:
                     item = replace(item, force_execution=True)
                 candidates.append(item)
@@ -1589,6 +1605,7 @@ class JobService(PlanJobReader):
         job = Job(
             id=attempt_id, project=project, request=request_id, launch=launch,
             data={key: data[key] for key in ("run_key", "stage_id", "scenario_id", "label", "coordinates")}
+            | ({"revision": data["revision"]} if "revision" in data else {})
             | {
                 "collected_evaluate": True, "manifest_root": str(destination.root), "runtime": launch.argv[0],
                 "target": placement.model_dump(mode="json"),
@@ -1645,6 +1662,7 @@ class JobService(PlanJobReader):
         item = self._training_item(
             project, request_id, spec,
             {key: data[key] for key in ("run_key", "stage_id", "scenario_id", "label", "coordinates")}
+            | ({"revision": data["revision"]} if "revision" in data else {})
             | {"collected_train": True, "target": placement.model_dump(mode="json")}, store,
             canonical_request=binding,
             checkpoint_catalog=tuple(attempt["launch"]["payload"].get("checkpoint_catalog", ())),
@@ -2292,6 +2310,7 @@ def _verified_evaluation_result(
             manifest_object=manifest_object,
             checkpoint_sources=_selected_checkpoint_sources(job),
             bound_subject=_best_subject(job),
+            trials=_evaluation_trials(manifest),
         )
     except (OSError, TypeError, ValueError, KeyError):
         return None
@@ -2311,7 +2330,10 @@ def _verify_stored_evaluation(
         store, store.get_object(manifest_object), manifest_object, success.attempt, success.request.id, receipt,
     )
     if isinstance(subject, ContentRef):
-        return _VerifiedEvaluation(receipt, states_ref(manifest).content.size, None, "ordinary", manifest_object)
+        return _VerifiedEvaluation(
+            receipt, states_ref(manifest).content.size, None, "ordinary", manifest_object,
+            trials=_evaluation_trials(manifest),
+        )
     (bound,) = success.inputs["subject"]
     source = bound.evaluation_subject
     assert source is not None
@@ -2349,7 +2371,13 @@ def _verify_stored_evaluation(
         checkpoint_source=checkpoint_source,
         checkpoint_sources=() if single else checkpoints,
         bound_subject=best,
+        trials=_evaluation_trials(manifest),
     )
+
+
+def _evaluation_trials(manifest: EvaluationRunManifest) -> tuple[str, ...]:
+    spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+    return tuple(RolloutParameters.model_validate(spec.params).trials)
 
 
 def _selected_checkpoint_sources(job: dict[str, Any]) -> tuple[StudioTrainCheckpointSource, ...]:

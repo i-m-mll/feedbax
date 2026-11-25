@@ -80,7 +80,7 @@ import {
 } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
-import { axisProblems, bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
+import { axisProblems, bestRankGroups, pinnedSelectionLabels, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
@@ -1124,7 +1124,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const subset = step?.inputs.find(({ id }) => id === inputId)?.subset;
     return <SelectionRule key={JSON.stringify([step?.id, role, index, source.id])}
       scope={{ project: saved.project_id, revision: shown.revision, variant }} source={source} rule={where.rule ?? ''}
-      pinned={where.rows?.map(({ key }) => key)} planned={subset} picking={elements} disabled={!applies}
+      pinned={pinnedSelectionLabels(where)} planned={subset} picking={elements} disabled={!applies}
       problem={problem} onToRows={onToRows}
       pick={{ rows: stepSourceRows(shown, source.id, variant), onCommit }}
       onCommit={(rule) => {

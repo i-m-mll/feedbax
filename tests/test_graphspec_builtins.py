@@ -18,7 +18,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_document import ResolvedModelInterface
 from feedbax.compiler.model_reset import ModelResetError, resolve_model_reset
 from feedbax.builtins.runtime.affine_composer import AffineValueComposer
-from feedbax.builtins.runtime.components import Demux, ElementwiseAffineModulator
+from feedbax.builtins.runtime.components import Split, ElementwiseAffineModulator
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
@@ -321,9 +321,9 @@ def test_task_data_reference_vector_composes_into_affine_controller_reference() 
         ],
         "bindings": [
             {
-                "id": "task:target_position->reference_mux:in_0",
+                "id": "task:target_position->reference_concatenate:in_0",
                 "source_data_id": "target_position",
-                "target_node_id": "reference_mux",
+                "target_node_id": "reference_concatenate",
                 "target_port": "in_0",
                 "role": "model_input",
                 "metadata": {},
@@ -345,8 +345,8 @@ def test_task_data_reference_vector_composes_into_affine_controller_reference() 
                 input_ports=[],
                 output_ports=["output"],
             ),
-            "reference_mux": ComponentSpec(
-                type="feedbax.Mux",
+            "reference_concatenate": ComponentSpec(
+                type="feedbax.Concatenate",
                 params={"n_inputs": 2},
                 input_ports=["in_0", "in_1"],
                 output_ports=["output"],
@@ -365,7 +365,7 @@ def test_task_data_reference_vector_composes_into_affine_controller_reference() 
             WireSpec(
                 source_node="zero_velocity",
                 source_port="output",
-                target_node="reference_mux",
+                target_node="reference_concatenate",
                 target_port="in_1",
             ),
             WireSpec(
@@ -375,7 +375,7 @@ def test_task_data_reference_vector_composes_into_affine_controller_reference() 
                 target_port="feedback",
             ),
             WireSpec(
-                source_node="reference_mux",
+                source_node="reference_concatenate",
                 source_port="output",
                 target_node="controller",
                 target_port="reference",
@@ -394,7 +394,7 @@ def test_task_data_reference_vector_composes_into_affine_controller_reference() 
         graph,
         StudioTaskBindingSpec.model_validate(task_binding_spec),
     )
-    assert plans[0].graph_input == "task:target_position->reference_mux.in_0"
+    assert plans[0].graph_input == "task:target_position->reference_concatenate.in_0"
 
     state = init_state_from_component(graph)
     outputs, _ = graph(
@@ -407,17 +407,17 @@ def test_task_data_reference_vector_composes_into_affine_controller_reference() 
     roundtrip = graph_to_spec(graph)
     assert roundtrip.nodes["zero_velocity"].type == "feedbax.Constant"
     assert roundtrip.nodes["controller"].type == "feedbax.AffineFeedbackController"
-    assert roundtrip.input_bindings[plans[0].graph_input] == ("reference_mux", "in_0")
+    assert roundtrip.input_bindings[plans[0].graph_input] == ("reference_concatenate", "in_0")
 
 
-def _derived_mux_gru_spec(declared_input_size: Any = "__missing__") -> GraphSpec:
+def _derived_concatenate_gru_spec(declared_input_size: Any = "__missing__") -> GraphSpec:
     cell_params: dict[str, Any] = {"hidden_size": 5}
     if declared_input_size != "__missing__":
         cell_params["input_size"] = declared_input_size
     return GraphSpec(
         nodes={
-            "input_mux": ComponentSpec(
-                type="feedbax.Mux",
+            "input_join": ComponentSpec(
+                type="feedbax.Concatenate",
                 params={"n_inputs": 2},
                 input_ports=["in_0", "in_1"],
                 output_ports=["output"],
@@ -431,7 +431,7 @@ def _derived_mux_gru_spec(declared_input_size: Any = "__missing__") -> GraphSpec
         },
         wires=[
             WireSpec(
-                source_node="input_mux",
+                source_node="input_join",
                 source_port="output",
                 target_node="cell",
                 target_port="input",
@@ -444,13 +444,13 @@ def _derived_mux_gru_spec(declared_input_size: Any = "__missing__") -> GraphSpec
                 "node": "cell",
                 "param": "input_size",
                 "port": "input",
-                "metadata": {"dimension_source": "mux_concat_inputs"},
+                "metadata": {"dimension_source": "concatenate_inputs"},
             }
         ],
     )
 
 
-def _derived_mux_task_bindings(
+def _derived_concatenate_task_bindings(
     *,
     second_role: str = "model_input",
     first_shape: list[Any] | None = None,
@@ -487,17 +487,17 @@ def _derived_mux_task_bindings(
             ],
             "bindings": [
                 {
-                    "id": "task:kinematics->input_mux:in_0",
+                    "id": "task:kinematics->input_join:in_0",
                     "source_data_id": "kinematics",
-                    "target_node_id": "input_mux",
+                    "target_node_id": "input_join",
                     "target_port": "in_0",
                     "role": "model_input",
                     "metadata": {},
                 },
                 {
-                    "id": "task:gain_schedule->input_mux:in_1",
+                    "id": "task:gain_schedule->input_join:in_1",
                     "source_data_id": "gain_schedule",
-                    "target_node_id": "input_mux",
+                    "target_node_id": "input_join",
                     "target_port": "in_1",
                     "role": second_role,
                     "metadata": {},
@@ -508,9 +508,9 @@ def _derived_mux_task_bindings(
     )
 
 
-def test_derived_dimension_rule_sets_gru_input_size_from_task_data_mux_fan_in() -> None:
-    spec = _derived_mux_gru_spec()
-    task_binding_spec = _derived_mux_task_bindings()
+def test_derived_dimension_rule_sets_gru_input_size_from_task_data_concatenate_fan_in() -> None:
+    spec = _derived_concatenate_gru_spec()
+    task_binding_spec = _derived_concatenate_task_bindings()
 
     graph = spec_to_graph(
         spec,
@@ -524,9 +524,9 @@ def test_derived_dimension_rule_sets_gru_input_size_from_task_data_mux_fan_in() 
     assert "input_size_source" not in spec_payload["nodes"]["cell"]["params"]
 
 
-def test_derived_dimension_rule_counts_component_parameter_mux_fan_in() -> None:
-    spec = _derived_mux_gru_spec()
-    task_binding_spec = _derived_mux_task_bindings(
+def test_derived_dimension_rule_counts_component_parameter_concatenate_fan_in() -> None:
+    spec = _derived_concatenate_gru_spec()
+    task_binding_spec = _derived_concatenate_task_bindings(
         second_role="component_parameter",
         second_shape=["time", 4],
     )
@@ -541,8 +541,8 @@ def test_derived_dimension_rule_counts_component_parameter_mux_fan_in() -> None:
 
 
 def test_derived_dimension_rule_rejects_declared_conflict() -> None:
-    spec = _derived_mux_gru_spec(declared_input_size=7)
-    task_binding_spec = _derived_mux_task_bindings()
+    spec = _derived_concatenate_gru_spec(declared_input_size=7)
+    task_binding_spec = _derived_concatenate_task_bindings()
 
     with pytest.raises(ValueError, match="Derived dimension conflict"):
         spec_to_graph(
@@ -553,8 +553,8 @@ def test_derived_dimension_rule_rejects_declared_conflict() -> None:
 
 
 def test_derived_dimension_rule_rejects_null_declaration() -> None:
-    spec = _derived_mux_gru_spec(declared_input_size=None)
-    task_binding_spec = _derived_mux_task_bindings()
+    spec = _derived_concatenate_gru_spec(declared_input_size=None)
+    task_binding_spec = _derived_concatenate_task_bindings()
 
     with pytest.raises(ValueError, match="declared null"):
         spec_to_graph(
@@ -1438,7 +1438,7 @@ def _registered_outputs(
             "shapes": {"output": ((4,),)},
         },
         {
-            "type": "feedbax.Mux",
+            "type": "feedbax.Concatenate",
             "params": {"n_inputs": 3},
             "inputs": {
                 "in_0": jnp.zeros((2,)),
@@ -1550,9 +1550,9 @@ def test_registered_linear_state_space_output_prototype() -> None:
     assert outputs["state"].shape == (3,)
 
 
-def test_demux_output_prototype_splits_input_final_dimension() -> None:
+def test_split_output_prototype_splits_input_final_dimension() -> None:
     outputs = _registered_outputs(
-        "feedbax.Demux",
+        "feedbax.Split",
         {"sizes": [2, 1, 3]},
         {"input": jnp.zeros((4, 6))},
         input_ports=["input"],
@@ -1564,10 +1564,10 @@ def test_demux_output_prototype_splits_input_final_dimension() -> None:
     assert outputs["out_2"].shape == (4, 3)
 
 
-def test_demux_output_prototype_requires_input_prototype() -> None:
-    with pytest.raises(ValueError, match="Demux output prototype requires input prototype 'input'"):
+def test_split_output_prototype_requires_input_prototype() -> None:
+    with pytest.raises(ValueError, match="Split output prototype requires input prototype 'input'"):
         _registered_outputs(
-            "feedbax.Demux",
+            "feedbax.Split",
             {"sizes": [2, 1]},
             {},
             input_ports=["input"],
@@ -1575,10 +1575,10 @@ def test_demux_output_prototype_requires_input_prototype() -> None:
         )
 
 
-def test_demux_output_prototype_rejects_width_mismatch() -> None:
-    with pytest.raises(ValueError, match="Demux input final dimension 4.*sum\\(sizes\\) 5"):
+def test_split_output_prototype_rejects_width_mismatch() -> None:
+    with pytest.raises(ValueError, match="Split input final dimension 4.*sum\\(sizes\\) 5"):
         _registered_outputs(
-            "feedbax.Demux",
+            "feedbax.Split",
             {"sizes": [2, 3]},
             {"input": jnp.zeros((4,))},
             input_ports=["input"],
@@ -1586,18 +1586,18 @@ def test_demux_output_prototype_rejects_width_mismatch() -> None:
         )
 
 
-def test_demux_output_prototype_infers_through_graph_with_deferred_input() -> None:
+def test_split_output_prototype_infers_through_graph_with_deferred_input() -> None:
     registry = ComponentRegistry()
     spec = GraphSpec(
         nodes={
             "join": ComponentSpec(
-                type="feedbax.Mux",
+                type="feedbax.Concatenate",
                 params={"n_inputs": 2},
                 input_ports=["in_0", "in_1"],
                 output_ports=["output"],
             ),
             "split": ComponentSpec(
-                type="feedbax.Demux",
+                type="feedbax.Split",
                 params={"sizes": [2, 3]},
                 input_ports=["input"],
                 output_ports=["out_0", "out_1"],
@@ -1912,11 +1912,11 @@ def test_channel_rejects_unknown_noise_model() -> None:
     assert "Only canonical Channel noise parameters are accepted" in diagnostic.observed_condition
 
 
-def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
+def test_split_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
     spec = GraphSpec(
         nodes={
             "split": ComponentSpec(
-                type="feedbax.Demux",
+                type="feedbax.Split",
                 params={"sizes": [2, 1, 3]},
                 input_ports=["input"],
                 output_ports=["out_0", "out_1", "out_2"],
@@ -1935,7 +1935,7 @@ def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
     graph = spec_to_graph(spec, component_registry=_components())
 
     split = graph.nodes["split"]
-    assert isinstance(split, Demux)
+    assert isinstance(split, Split)
     assert split.sizes == (2, 1, 3)
     assert split.output_ports == ("out_0", "out_1", "out_2")
 
@@ -1948,7 +1948,7 @@ def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
 
     roundtrip = graph_to_spec(graph)
     node = roundtrip.nodes["split"]
-    assert node.type == "feedbax.Demux"
+    assert node.type == "feedbax.Split"
     assert node.params["sizes"] == [2, 1, 3]
     assert node.input_ports == ["input"]
     assert node.output_ports == ["out_0", "out_1", "out_2"]
@@ -1958,8 +1958,8 @@ def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
 def test_graphspec_build_materializes_omitted_dynamic_ports_from_policy() -> None:
     spec = GraphSpec(
         nodes={
-            "join": ComponentSpec(type="feedbax.Mux", params={"n_inputs": 2}),
-            "split": ComponentSpec(type="feedbax.Demux", params={"sizes": [2, 1]}),
+            "join": ComponentSpec(type="feedbax.Concatenate", params={"n_inputs": 2}),
+            "split": ComponentSpec(type="feedbax.Split", params={"sizes": [2, 1]}),
         },
         wires=[
             WireSpec(
@@ -1989,13 +1989,13 @@ def test_graphspec_build_materializes_omitted_dynamic_ports_from_policy() -> Non
     assert jnp.allclose(outputs["right"], jnp.array([3.0]))
 
 
-def test_mux_graphspec_rejects_n_inputs_port_count_mismatch() -> None:
-    with pytest.raises(ValueError, match="Mux node 'join'.*n_inputs=2"):
+def test_concatenate_graphspec_rejects_n_inputs_port_count_mismatch() -> None:
+    with pytest.raises(ValueError, match="Concatenate node 'join'.*n_inputs=2"):
         spec_to_graph(
             GraphSpec(
                 nodes={
                     "join": ComponentSpec(
-                        type="feedbax.Mux",
+                        type="feedbax.Concatenate",
                         params={"n_inputs": 2},
                         input_ports=["in_0", "in_1", "in_2"],
                         output_ports=["output"],
@@ -2008,13 +2008,13 @@ def test_mux_graphspec_rejects_n_inputs_port_count_mismatch() -> None:
         )
 
 
-def test_demux_graphspec_rejects_sizes_output_port_count_mismatch() -> None:
-    with pytest.raises(ValueError, match="Demux node 'split'.*sizes=\\[2, 1, 3\\]"):
+def test_split_graphspec_rejects_sizes_output_port_count_mismatch() -> None:
+    with pytest.raises(ValueError, match="Split node 'split'.*sizes=\\[2, 1, 3\\]"):
         spec_to_graph(
             GraphSpec(
                 nodes={
                     "split": ComponentSpec(
-                        type="feedbax.Demux",
+                        type="feedbax.Split",
                         params={"sizes": [2, 1, 3]},
                         input_ports=["input"],
                         output_ports=["out_0", "out_1"],
@@ -2029,17 +2029,17 @@ def test_demux_graphspec_rejects_sizes_output_port_count_mismatch() -> None:
         )
 
 
-def test_demux_graphspec_executes_as_internal_node() -> None:
+def test_split_graphspec_executes_as_internal_node() -> None:
     spec = GraphSpec(
         nodes={
             "join": ComponentSpec(
-                type="feedbax.Mux",
+                type="feedbax.Concatenate",
                 params={"n_inputs": 2},
                 input_ports=["in_0", "in_1"],
                 output_ports=["output"],
             ),
             "split": ComponentSpec(
-                type="feedbax.Demux",
+                type="feedbax.Split",
                 params={"sizes": [2, 1]},
                 input_ports=["input"],
                 output_ports=["out_0", "out_1"],
@@ -2158,13 +2158,13 @@ def test_registered_bandpass_attenuates_nyquist_and_remains_bounded_at_small_tau
     assert jnp.all(jnp.abs(small_tau) <= 1.0)
 
 
-def test_demux_graphspec_rejects_invalid_sizes() -> None:
-    with pytest.raises(ValueError, match="Demux sizes must be positive"):
+def test_split_graphspec_rejects_invalid_sizes() -> None:
+    with pytest.raises(ValueError, match="Split sizes must be positive"):
         spec_to_graph(
             GraphSpec(
                 nodes={
                     "split": ComponentSpec(
-                        type="feedbax.Demux",
+                        type="feedbax.Split",
                         params={"sizes": [2, 0]},
                         input_ports=["input"],
                         output_ports=["out_0", "out_1"],
@@ -2179,12 +2179,12 @@ def test_demux_graphspec_rejects_invalid_sizes() -> None:
         )
 
 
-def test_demux_rejects_mismatched_input_width() -> None:
+def test_split_rejects_mismatched_input_width() -> None:
     graph = spec_to_graph(
         GraphSpec(
             nodes={
                 "split": ComponentSpec(
-                    type="feedbax.Demux",
+                    type="feedbax.Split",
                     params={"sizes": [2, 2]},
                     input_ports=["input"],
                     output_ports=["out_0", "out_1"],
@@ -2199,7 +2199,7 @@ def test_demux_rejects_mismatched_input_width() -> None:
     )
     state = init_state_from_component(graph)
 
-    with pytest.raises(ValueError, match="Demux input final dimension"):
+    with pytest.raises(ValueError, match="Split input final dimension"):
         graph({"input": jnp.arange(3.0)}, state, key=jax.random.PRNGKey(0))
 
 

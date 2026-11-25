@@ -28,6 +28,12 @@ NonemptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_lengt
 type Pointer = Annotated[str, StringConstraints(pattern=r"^(?:/(?:[^~/]|~[01])*)*$")]
 
 
+class StudioSavedTrainKey(StrictModel):
+    variant: str
+    step: str
+    row: str
+
+
 class DocumentReference(StrictModel):
     document: ProjectName
     pointer: Pointer | None = None
@@ -75,11 +81,27 @@ def _require_row_list(rows: object) -> object:
     return rows
 
 
+class SelectedAxisValue(StrictModel):
+    id: AxisValueId
+    label: str
+    """The value's display name at selection time, used if the ID subsequently disappears."""
+
+
+class SelectedAxisValueProblem(StrictModel):
+    axis: ProjectName
+    missing: SelectedAxisValue
+    remaining: list[SelectedAxisValue]
+
+
 class SubsetTerms(StrictModel):
     """Which runs of a step a selection reads: its run rule as written, and the runs To Rows pinned."""
 
     rule: str = ""
     rows: list[SelectedRow] | None = Field(default=None, exclude_if=lambda rows: rows is None)
+    axes: dict[ProjectName, Annotated[list[SelectedAxisValue], Field(min_length=1)]] = Field(
+        default_factory=dict, exclude_if=lambda axes: not axes,
+    )
+    """Values selected by ID on each constrained axis. Any other axis is unrestricted."""
 
     _require_rows = field_validator(
         "rows", mode="before", json_schema_input_type=list[SelectedRow]
@@ -91,6 +113,14 @@ class SubsetTerms(StrictModel):
         if rows is not None and len({row.key for row in rows}) != len(rows):
             raise ValueError("row member keys must be distinct")
         return rows
+
+    @field_validator("axes")
+    @classmethod
+    def _distinct_axis_values(cls, axes: dict[str, list[SelectedAxisValue]]) -> dict[str, list[SelectedAxisValue]]:
+        for axis, values in axes.items():
+            if len({value.id for value in values}) != len(values):
+                raise ValueError(f"{axis} repeats an axis value")
+        return axes
 
 
 class SweepExceptionTerms(StrictModel):

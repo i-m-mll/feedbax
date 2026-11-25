@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
 from feedbax.application.composition import load_application
 from feedbax.analysis.report_document import render as render_report
-from feedbax.contracts.dataset import DATASET_MEDIA_TYPE
+from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, TrialFigureTime
 from feedbax.contracts.effective_success import BoundMember, success_content_ref
 from feedbax.contracts.figure_document import (
     FigureDocument,
@@ -24,6 +24,7 @@ from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, ProductRef
 from feedbax.contracts.request_specs import RenderRequestSpec
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA
+from feedbax.contracts.studio_figure import FigureProduct
 from feedbax.dataset import Dataset, Variable
 from feedbax.host.light_worker import _compute
 from feedbax.host.light_jobs import validate_light_request
@@ -54,7 +55,7 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
             "checkpoint": Variable(np.array([31, 7]), ("checkpoint",)),
             "condition": Variable(np.array([condition]), ("condition",)),
             "trial": Variable(np.array(["last", "first"]), ("trial",)),
-            "state_time": Variable(time, ("state_time",), units="s"),
+            "state_time": Variable(time, ("state_time",), units="s", trial_time=TrialFigureTime()),
         },
         schema_id=RAW_STATES_SCHEMA,
     )
@@ -80,7 +81,15 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
         descriptor={"descriptor_sha256": ref.descriptor_sha256},
     ),)}
     saved = _compute(store, request, bindings, "render-attempt", *validate_light_request(request))
-    assert store.get_object(success_content_ref(saved.content)) == figure.to_json().encode()
+    product = store.get_object(success_content_ref(saved.content))
+    assert product == figure.to_json().encode()
+    parsed = FigureProduct.model_validate_json(product)
+    panel = parsed.layout.meta.panels["speed"]
+    assert panel.model_dump(exclude_none=True) == {"x_axis": "x", "y_axis": "y", "time": {}}
+    assert [trace.meta.model_dump() for trace in parsed.data] == [
+        {"layer": "trial-speed", "group": {"condition": condition, "trial": trial}}
+        for trial in ("last", "first")
+    ]
 
 
 def test_velocity_report_references_the_saved_band_with_condition_order_and_physical_time(
@@ -134,6 +143,7 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
         assert high.showlegend is False and low.showlegend is False
 
     figure_bytes = figure.to_json().encode()
+    assert "time" not in figure.layout.meta["panels"]["velocity"]
     encoded = encode_request(
         RenderRequestSpec(document=document),
         {"summary": (InputMember(

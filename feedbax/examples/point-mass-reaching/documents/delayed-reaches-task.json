@@ -14,7 +14,8 @@
           ],
           "dimensions": {
             "length": 1
-          }
+          },
+          "space": "point"
         },
         "value": {
           "kind": "call",
@@ -61,7 +62,8 @@
           ],
           "dimensions": {
             "length": 1
-          }
+          },
+          "space": "point"
         },
         "value": {
           "kind": "call",
@@ -184,7 +186,8 @@
           ],
           "dimensions": {
             "length": 1
-          }
+          },
+          "space": "point"
         },
         "cells": [
           {
@@ -209,7 +212,8 @@
           "dimensions": {
             "length": 1,
             "time": -1
-          }
+          },
+          "space": "free"
         },
         "cells": [
           {
@@ -243,7 +247,8 @@
           ],
           "dimensions": {
             "length": 1
-          }
+          },
+          "space": "point"
         },
         "cells": [
           {

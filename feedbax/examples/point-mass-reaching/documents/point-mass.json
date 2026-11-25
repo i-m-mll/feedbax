@@ -12,7 +12,8 @@
             "shape": [
               2
             ],
-            "unit": "m"
+            "unit": "m",
+            "space": "point"
           }
         }
       ],
@@ -90,23 +91,10 @@
         "feedback": {
           "kind": "leaf",
           "name": "Feedback inputs",
-          "type": "feedbax.AssembleFeedback",
+          "type": "feedbax.Concatenate",
           "fields": {
-            "n_inputs": 3,
-            "layout": {
-              "tuple": [
-                null,
-                null,
-                null
-              ]
-            }
+            "n_inputs": 3
           }
-        },
-        "flatten": {
-          "kind": "leaf",
-          "name": "Controller input",
-          "type": "feedbax.Ravel",
-          "fields": {}
         },
         "cell": {
           "kind": "leaf",
@@ -187,22 +175,10 @@
             "port": "in_2"
           }
         },
-        "flatten-inputs": {
-          "source": {
-            "owner": "component",
-            "component": "feedback",
-            "port": "output"
-          },
-          "target": {
-            "owner": "component",
-            "component": "flatten",
-            "port": "input"
-          }
-        },
         "controller-input": {
           "source": {
             "owner": "component",
-            "component": "flatten",
+            "component": "feedback",
             "port": "output"
           },
           "target": {

@@ -126,6 +126,13 @@
       },
       "shape": {
         "absent": []
+      },
+      "space": {
+        "absent": null,
+        "values": [
+          "free",
+          "point"
+        ]
       }
     },
     "feedbax.contracts.figure_document.BandEncodings": {
@@ -675,6 +682,13 @@
       "shape": {
         "absent": null
       },
+      "space": {
+        "absent": null,
+        "values": [
+          "free",
+          "point"
+        ]
+      },
       "unit": {
         "absent": null
       }
@@ -729,6 +743,11 @@
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
+    },
+    "feedbax.contracts.project_inputs.StudioSavedTrainKey": {
+      "row": {},
+      "step": {},
+      "variant": {}
     },
     "feedbax.contracts.report_document.ReportDocument": {
       "blocks": {
@@ -999,6 +1018,9 @@
       },
       "numerical_settings": {
         "absent": {}
+      },
+      "source_runs": {
+        "absent": {}
       }
     },
     "feedbax.contracts.request_specs.ReportRequestSpec": {
@@ -1033,6 +1055,10 @@
           "reset"
         ]
       }
+    },
+    "feedbax.contracts.studio_figure.FigureRun": {
+      "key": {},
+      "request_id": {}
     },
     "feedbax.contracts.task_document.Cell": {
       "first_epoch": {},

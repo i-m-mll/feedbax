@@ -1,6 +1,7 @@
 """Exercise saved Run and product custody through the real local Host."""
 
 from base64 import b64decode, b64encode
+from copy import deepcopy
 from hashlib import sha256
 import re
 
@@ -8,11 +9,13 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.builtins.figure_templates import SpeedByTrial, SpeedByTrialSettings
 from feedbax.cli import main
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ElementKey, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.studio_figure import FigureProduct
 from feedbax.examples import load_shipped_projects
 from feedbax.host.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -21,7 +24,8 @@ from feedbax.persistence.effective_success import SuccessView
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
-from tests.support.host import token, wait_until
+from tests.support.host import admit, held_until_released, job_row, run_job, token, wait_until
+from tests.support.managed_train_fixture import managed_train_project
 from tests.test_project_analyze_plan import _operations
 from tests.test_project_report_plan import _report_project
 
@@ -215,6 +219,130 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         assert subject.terminal_receipt.model_dump(mode="json") == new_train["outcome"]["store_success"]
 
 
+
+def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    host.policy(compute=1, light=1)
+    projects = tmp_path / "projects"
+    folders = ProjectFolderService(projects)
+    definition = _saved_light_definition()
+    shipped = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    documents = definition["documents"]
+    shipped["documents"]["simple-reaches-task"] = documents["task"]
+    definition["documents"] = shipped["documents"] | {
+        name: documents[name] for name in ("velocity-analysis", "velocity-figure", "velocity-report")
+    }
+    definition["steps"]["train"] = shipped["steps"]["train"]
+    definition["steps"]["train"]["label"] = "Fit reaching controller"
+    definition["steps"]["baseline"]["label"] = "Check reaching trials"
+    definition["steps"]["copy"] = deepcopy(definition["steps"]["baseline"])
+    _save_project(folders, "reaching", Project.model_validate(definition))
+    project_id = folders.open("reaching").snapshot.project_id
+    path = "/api/projects/reaching"
+
+    def key(step):
+        return {"variant": "default", "step": step, "row": "default"}
+
+    def expect(response, code=200):
+        assert response.status_code == code, response.text
+        return response.json()
+
+    with TestClient(create_app(projects_dir=projects)) as client:
+        def plan(revision):
+            return expect(client.get(f"{path}/train-runs", params={"revision": revision, "window_map": True}))
+
+        def replay(revision, job_id, step, code=200):
+            return expect(client.post(f"{path}/evaluate-replay", json={
+                "revision": revision, "job_id": job_id, "key": key(step), "trial": _TRIALS[0],
+            }), code)
+
+        snapshot = expect(client.get(path))
+        revision = snapshot["revision"]
+        release = tmp_path / "release"
+        gate = run_job("gate", held_until_released(release), project=project_id)
+        admit(host, "gate", gate)
+        wait_until(lambda: job_row(host, gate.id, "running"))
+        try:
+            items = expect(client.post(f"{path}/train-runs", json={
+                "revision": revision, "token": token("retained"),
+                "run_keys": [key(step) for step in ("train", "baseline", "copy", "analyze")],
+            }), 202)["items"]
+            train, evaluate, copy, *light = items
+            assert train["disposition"] == evaluate["disposition"] == "admitted"
+            assert copy["disposition"] == "attached" and copy["job_id"] == evaluate["job_id"]
+            window = plan(revision)["window_map"]
+            waiting = {row["key"]["step"]: row for row in window["evaluations"]}
+            assert waiting["baseline"]["status"] == "waiting"
+            assert waiting["baseline"]["reason"] == "Waiting for Fit reaching controller."
+            assert waiting["baseline"]["can_run"]
+            assert not any(row.get("step") == "baseline" for row in window["problems"])
+        finally:
+            release.touch()
+        jobs = {item["job_id"] for item in (train, evaluate, *light)}
+
+        def finished():
+            observed = [job for job in host.jobs(project=project_id) if job["id"] in jobs]
+            return observed if len(observed) == len(jobs) and all(job["outcome"] is not None for job in observed) else None
+
+        assert all(job["state"] == "succeeded" for job in wait_until(finished))
+        before = plan(revision)
+        replayed = replay(revision, evaluate["job_id"], "baseline")
+        figure = next(
+            request["result"] for element in before["window_map"]["analysis_elements"]
+            if element["name"] == "profile" for request in element["requests"]
+        )
+
+        original_figure = client.get(figure["products"]["figure"])
+        assert original_figure.status_code == 200
+        model_address = {"composites": [], "element": {
+            "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
+        }}
+        edited = expect(client.post(f"{path}/model/edit", json={
+            "revision": revision, "presentation_revision": snapshot["presentation_revision"],
+            "document": "point-mass", "command": {"operation": {
+                "op": "set_field", "address": model_address, "value": 2.5,
+            }},
+        }))
+        assert edited["result"]["status"] == "applied", edited
+        changed = expect(client.get(path))["revision"]
+        assert changed != revision
+        after = plan(changed)
+        (old_train,) = after["rows"]
+        assert old_train["status"] == "stale"
+        assert old_train["request_id"] != old_train["previous"]["request_id"]
+        assert old_train["previous"]["job_id"] == train["job_id"]
+        assert old_train["previous"]["revision"] == revision
+
+        window = after["window_map"]
+        evaluations = {row["key"]["step"]: row for row in window["evaluations"]}
+        for step in ("baseline", "copy"):
+            row = evaluations[step]
+            assert row["status"] == "stale" and not row["can_run"]
+            assert row["reason"] == "Fit reaching controller is out of date."
+            assert row["result"] is None and row["request_id"] != row["previous"]["request_id"]
+            assert row["previous"]["job_id"] == evaluate["job_id"]
+            assert row["previous"]["revision"] == revision
+            assert row["previous"]["trials"] == _TRIALS
+            assert row["previous"]["checkpoint_source"]["job_id"] == train["job_id"]
+            assert replay(changed, evaluate["job_id"], step) == replayed
+        replay(changed, evaluate["job_id"], "analyze", code=404)
+
+        (analysis,) = [row for row in window["rows"] if row["key"]["step"] == "analyze"]
+        assert analysis["status"] == "stale"
+        assert analysis["reason"] == "Check reaching trials is out of date."
+        profile = next(
+            request for element in window["analysis_elements"]
+            if element["name"] == "profile" for request in element["requests"]
+        )
+        assert profile["previous"]["job_id"] == figure["job_id"]
+        assert profile["previous"]["revision"] == revision
+        response = client.get(profile["previous"]["products"]["figure"])
+        assert response.status_code == 200
+        assert response.content == original_figure.content
+
+
 def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, monkeypatch):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
@@ -224,6 +352,16 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     project = "paired"
     path = f"/api/projects/{project}"
     definition = _saved_light_definition(paired=True)
+    analysis = definition["documents"]["velocity-analysis"]["payload"]
+    analysis["operations"]["speed"] = {
+        "operation": "feedbax.trial_speed",
+        "params": {"velocity": analysis["operations"]["align"]["params"]["velocity"]},
+        "inputs": {"states": {"input": "states"}},
+    }
+    analysis["views"]["by_trial"] = {
+        "figure": SpeedByTrial(SpeedByTrialSettings()).model_dump(mode="json", exclude_unset=True),
+        "inputs": {"speed": {"element": "speed", "product": "speed"}},
+    }
     steps = definition["steps"]
     mass_values = steps["conditions"]["sweep"]["axes"]["mass"]["values"]
     mass_values["heavy"]["label"] = "Heavy load"
@@ -250,7 +388,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     assert not plan.diagnostics
     analyze = RunKey("default", "analyze", "default")
     assert {element.name for element in plan.elements if element.run == analyze} == {
-        "align", "summarize", "profile",
+        "align", "summarize", "profile", "speed", "by_trial",
     }
     align = plan.elements[ElementKey(analyze, "align")]
     decoded = decode_request(plan.requests[align.request_id], plan.documents.__getitem__)
@@ -271,11 +409,11 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
             ],
         })
         assert response.status_code == 202, response.text
-        assert [item["disposition"] for item in response.json()["items"]] == ["admitted"] * 7, response.text
+        assert [item["disposition"] for item in response.json()["items"]] == ["admitted"] * 9, response.text
 
         def terminal():
             jobs = host.jobs(project=review.project_id)
-            return jobs if len(jobs) == 7 and all(job["outcome"] is not None for job in jobs) else None
+            return jobs if len(jobs) == 9 and all(job["outcome"] is not None for job in jobs) else None
 
         jobs = wait_until(terminal)
         assert all(job["state"] == "succeeded" for job in jobs), [
@@ -358,6 +496,37 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         for index, trace in enumerate(traces):
             np.testing.assert_allclose(array(trace["x"]), times[0])
             np.testing.assert_allclose(array(trace["y"]), mean[index, 0, 0])
+        (by_trial,) = (
+            element["requests"][0] for element in window["analysis_elements"] if element["name"] == "by_trial"
+        )
+        speed = reopened.get(by_trial["result"]["products"]["figure"])
+        assert speed.status_code == 200, speed.text
+        product = FigureProduct.model_validate_json(speed.content)
+        assert product.layout.meta.panels["speed"].model_dump(exclude_none=True) == {
+            "time": {}, "x_axis": "x", "y_axis": "y",
+        }
+        assert [run.model_dump() for run in product.layout.meta.runs["speed"]] == [
+            {"key": address("conditions", rows[key]), "request_id": request}
+            for key, request in zip(order, evaluation_ids, strict=True)
+        ]
+        assert [trace.meta.model_dump() for trace in product.data] == [
+            {"layer": "trial-speed", "group": {"condition": condition, "trial": trial}}
+            for condition in conditions for trial in _TRIALS
+        ]
+        averaged = reopened.post(f"{path}/figures/mean", json={
+            "revision": revision, "job_id": by_trial["result"]["job_id"], "mean": {"by": [], "align": "move"},
+        })
+        assert averaged.status_code == 200, averaged.text
+        assert averaged.json()["layout"]["meta"]["panels"]["speed"]["time"] == {"zero_epoch": "move"}
+        for condition in conditions:
+            originals = [trace.y for trace in product.data if trace.meta.group["condition"] == condition]
+            band = [
+                trace for trace in averaged.json()["data"]
+                if trace["meta"]["group"] == {"condition": condition}
+            ]
+            assert len(band) == 3
+            average = band[-1]
+            np.testing.assert_allclose(average["y"], np.mean([array(samples) for samples in originals], axis=0))
         (report,) = (row for row in window["rows"] if row["key"]["step"] == "report")
         _, published_report = proof(request_ids[RunKey("default", "report", "default")])
         assert published_report.inputs["velocity_summary"][0].selection.receipt == figure_ref
