@@ -30,7 +30,7 @@ def _entries():
             }},
         }},
         "scaled": {"label": "Scaled force", "differences": {"/interior/wires/plant-wire/attachments": {"value": [
-            {"kind": "intervention", "id": "scale", "operation": "Scale", "fields": {"factor": 0.5}},
+            {"kind": "intervention", "id": "scale", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
         ]}}},
         "heavy": {"label": "Heavy", "differences": {"/interior/components/plant/fields/mass": {"value": 2.0}}},
     }

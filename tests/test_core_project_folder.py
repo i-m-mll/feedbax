@@ -69,7 +69,7 @@ def _model_project():
     }
     interior["wires"].update({
         "ab": {"source": _end("a", "output"), "target": _end("b", "input"), "attachments": [
-            {"kind": "intervention", "id": "scale", "operation": "Scale", "fields": {"factor": 0.5}},
+            {"kind": "intervention", "id": "scale", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
         ]},
         "bc": {"source": _end("b", "output"), "target": _end("c", "input")},
     })
@@ -116,7 +116,7 @@ def _edit_cases():
         "move_port": {"address": _address("port", end=_port("inputs", "one")), "index": 0},
         "set_field": {"address": _address("field", parent=a["element"], path=["fields", "gain"]), "value": 2.0},
         "set_attachment": {"difference": {"op": "add", "owner": ab, "after": "scale", "attachment": {
-            "kind": "intervention", "id": "second", "operation": "Scale", "fields": {"factor": 2.0},
+            "kind": "intervention", "id": "second", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 2.0}},
         }}},
         "move_wire_attachment": {
             "address": _address("attachment", parent=ab["element"], id="scale"),
