@@ -59,6 +59,7 @@ class Compiled:
     evaluate_run: Callable[[Inputs], dict[str, Any]]
     evaluate_trial: Callable[[Inputs, dict[str, Any]], dict[str, Any]]
     evaluate_step: Callable[[Inputs, State], tuple[Evaluation, State]]
+    observe_points: Callable[[Inputs, State, tuple[NodePath, ...]], tuple[Evaluation, ...]]
 
     def with_trial(self, inputs: Inputs, run_values: dict[str, Any]) -> State:
         return State(self.evaluate_trial(inputs, run_values), self.initial_state.slots)
@@ -80,6 +81,7 @@ def compile_expression(
     path: NodePath = (),
     root_draw_key: bool = False,
     nominal: bool = False,
+    record_points: bool = False,
 ) -> Compiled | tuple[Problem, ...]:
     """Compile with dynamic literal operands.
 
@@ -118,6 +120,7 @@ def compile_expression(
     problems: list[Problem] = []
     run_evaluators: list[tuple[str, Callable]] = []
     trial_evaluators: list[tuple[str, Callable]] = []
+    point_evaluators: dict[NodePath, Callable] = {}
     names = {value.name: value.id for value in site.names}
     draw_ordinal = 0
     random_call_ordinal = 0
@@ -275,11 +278,17 @@ def compile_expression(
                     valid = valid & available
                 return Evaluation(result, valid)
 
-        if isinstance(node, (LiteralValue, NameValue)) or node_type.level == Level.STEP:
-            return evaluate
-        phase = run_evaluators if node_type.level == Level.RUN else trial_evaluators
-        phase.append((slot, evaluate))
-        return lambda _inputs, values, _state: values[slot]
+        resolved = evaluate
+        if not isinstance(node, (LiteralValue, NameValue)) and node_type.level < Level.STEP:
+            phase = run_evaluators if node_type.level == Level.RUN else trial_evaluators
+            phase.append((slot, evaluate))
+
+            def resolved(_inputs, values, _state):
+                return values[slot]
+
+        if record_points and node_type.type.space == "point" and node_type.type.shape == (2,):
+            point_evaluators[at] = resolved
+        return resolved
 
     evaluate = visit(tree, ())
     if problems:
@@ -304,4 +313,7 @@ def compile_expression(
             state.values, next_slots
         )
 
-    return Compiled(checked, tuple(parameters), State({}, slots), run, trial, step)
+    def observe(inputs: Inputs, state: State, paths: tuple[NodePath, ...]) -> tuple[Evaluation, ...]:
+        return tuple(point_evaluators[path](inputs, state.values, dict(state.slots)) for path in paths)
+
+    return Compiled(checked, tuple(parameters), State({}, slots), run, trial, step, observe)

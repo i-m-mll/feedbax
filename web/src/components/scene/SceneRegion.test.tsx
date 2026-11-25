@@ -30,7 +30,7 @@ const scene: Scene = { groups: [{ key: elementKey(mechanism), address: mechanism
   element('upper', 'bodies', { kind: 'segment', points: [[0, 0], [0.2, 0.4]] }),
   element('shoulder', 'joints', { kind: 'point', point: [0, 0] }),
   element('flexor', 'muscles', { kind: 'path', points: [[0.05, 0], [0.15, 0.3]] }),
-] }], rest: [], tracks: [], ends: [], relations: [], places: [] };
+] }], rest: [], tracks: [], means: [], ends: [], relations: [], places: [] };
 
 const noLayersHidden = new Set<SceneLayer>();
 

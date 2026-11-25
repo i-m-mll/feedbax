@@ -7,10 +7,12 @@ from pathlib import Path
 
 from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
-from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
+from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef, ContentRetentionTarget
 from feedbax.contracts.effective_success import TerminalTrainSubject
 from feedbax.contracts.model_input import document_input_object
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GraphSpec
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
+from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_io import TextProject
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
@@ -78,7 +80,8 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
         if document.schema_id in (TASK_DOCUMENT_SCHEMA_ID, OBJECTIVE_DOCUMENT_SCHEMA_ID, TRAINING_DOCUMENT_SCHEMA_ID):
             continue
         model = graph_schemas.get(document.schema_id)
-        if model is None:
+        loaded = document.schema_id == LOADED_MODEL_SCHEMA_ID
+        if model is None and not loaded:
             gaps.append(f"document {name}: no Store-root traversal for {document.schema_id}")
             continue
         composed = compose_document(text.project.documents.get, name)
@@ -86,6 +89,13 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
             gaps.append(f"document {name}: {composed.detail}")
             continue
         try:
+            if loaded:
+                source = LoadedModelDocument.model_validate(composed.payload).source
+                roots.append(RootObservation(f"document:{name}", (
+                    object_target(source.model), ContentRetentionTarget(ref_kind="tree", tree=source.weights),
+                )))
+                continue
+            assert model is not None
             assets = tuple(
                 ref for _, ref in model_asset_refs(model.model_validate(composed.payload))
             )

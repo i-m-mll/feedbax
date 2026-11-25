@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pydantic import Field
+
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.expression_registry import Evaluation
 from feedbax.contracts.expression_values import LENGTH, DrawValue, Level, ValueBase
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import model_state_address, semantic_key
@@ -12,6 +15,7 @@ from feedbax.contracts.studio_place import path_parts
 from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanOptions
 from feedbax.contracts.trial_record import TaskTimelineCue, TrialRecord, TrialStateTrack, TrialTerm
 from feedbax.execution.trial_clock import TrialClockRecord
+from feedbax.execution.trial_places import BoundTermPlaces, TrialPlacePlan, finite_points, project_term_places
 from feedbax.execution.trial_record import trial_weight_values
 
 if TYPE_CHECKING:
@@ -29,6 +33,9 @@ class RecordedTrialLayout(StrictModel):
     positions: tuple[str, ...]
     configurations: tuple[str, ...]
     discrete_variables: tuple[TrialClockChoice, ...] = ()
+    observations: dict[str, str] = Field(default_factory=dict)
+    """Model origin addresses and their dataset variables, including shared raw state."""
+    term_places: dict[str, BoundTermPlaces] = Field(default_factory=dict)
 
     def mean_options(self) -> TrialMeanOptions:
         return TrialMeanOptions(
@@ -47,9 +54,15 @@ def _term_field(facet: str, name: str) -> str:
     return "objective" + pointer((facet, name))
 
 
+def _point_field(term: str, index: int, facet: str) -> str:
+    return "objective" + pointer(("point_places", term, str(index), facet))
+
+
 def trial_dataset_fields(
     task: TrialSource, evaluated: TrialEvaluation, layout: RawStateLayout, *,
     leading: tuple[str, ...], labels: dict[str, str], document: TaskDocument | None = None,
+    observation_origins: tuple[tuple[str, str], ...] = (),
+    places: TrialPlacePlan | None = None,
 ) -> tuple[dict[str, Variable], dict[str, Variable], RecordedTrialLayout]:
     import numpy as np
 
@@ -104,6 +117,27 @@ def trial_dataset_fields(
             put(_term_field("weight_defined", name), defined, transition_axes)
         put(_term_field("trial_coverage", name), trace.covered, trial_axes)
         put(_term_field("trial_values", name), np.where(trace.covered, trace.reduced.value, 0.0), trial_axes)
+        for index, observed in enumerate(trace.points):
+            values, defined = finite_points(observed.value, observed.defined)
+            put(_point_field(name, index, "values"), values, transition_axes, point=True)
+            put(_point_field(name, index, "defined"), defined, transition_axes)
+    raw_states = {
+        model_state_address(value.key).to_text(): value.key for value in layout.values
+        if value.key.startswith("/v1/model/state/")
+    }
+    observations = {}
+    for operand, origin in observation_origins:
+        if origin in observations:
+            continue
+        if origin in raw_states:
+            observations[origin] = raw_states[origin]
+        else:
+            path = semantic_key("model", "output", (), origin)
+            samples = evaluated.retained[operand]
+            if not np.isfinite(samples).all():
+                raise FloatingPointError(f"Nonfinite observations at {origin}")
+            put(path, samples, transition_axes)
+            observations[origin] = path
     choices = {
         variable.id for variable in document.variables
         if isinstance(variable.value, DrawValue) and variable.value.family == "choice"
@@ -121,6 +155,8 @@ def trial_dataset_fields(
             for value in task.interface.variables
             if value.level < Level.STEP and (value.type.base != ValueBase.REAL or value.id in choices)
         ),
+        observations=observations,
+        term_places=places.terms if places is not None else {},
     )
 
 
@@ -169,9 +205,19 @@ def read_trial_record(
     )
     terms = {}
     for name in term_names:
+        def point(index: int) -> Evaluation | None:
+            values = _point_field(name, index, "values")
+            if values not in dataset.descriptor.variables:
+                return None
+            return Evaluation(
+                dataset.data(values, selection),
+                dataset.data(_point_field(name, index, "defined"), selection),
+            )
+
         covered = dataset.data(_term_field("trial_coverage", name), selection).item()
         values_field = _term_field("values", name)
         weights_field = _term_field("weights", name)
+        relations, places = project_term_places(layout.term_places.get(name), point)
         terms[name] = TrialTerm(
             steps=dataset.data(_term_field("steps", name), selection).tolist(),
             covered=covered,
@@ -183,6 +229,8 @@ def read_trial_record(
             weights=trial_weight_values(
                 dataset.data(weights_field, selection), dataset.data(_term_field("weight_defined", name), selection),
             ) if weights_field in dataset.descriptor.variables else None,
+            relations=relations,
+            places=places,
         )
     return TrialRecord(
         id=trial_id, inits=groups.get("initial", {}), inputs=groups.get("output", {}),
@@ -196,6 +244,10 @@ def read_trial_record(
         configurations={
             model_state_address(name).to_text(): dataset.data(name, selection).tolist()
             for name in layout.configurations
+        },
+        observations={
+            origin: dataset.data(path, selection)[1 if path.startswith("/v1/model/state/") else 0:].tolist()
+            for origin, path in layout.observations.items()
         },
     )
 

@@ -1,9 +1,11 @@
 import { appTip } from '@window-shell/browser/tooltip';
-import { ChevronDown, FileCode } from 'lucide-react';
-import { useRef } from 'react';
+import { ChevronDown, FileCode, Package } from 'lucide-react';
+import { useRef, useState } from 'react';
 import { studioAccessibleName, studioCountOf, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { InlineEdit } from '@/components/ui/InlineEdit';
+import { chooseFile } from '@/components/ui/chooseFile';
+import { Popover, PopoverContent } from '@/components/ui/Popover';
 import {
   Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSubmenu, MenuTrigger,
 } from '@/components/ui/Menu';
@@ -32,6 +34,10 @@ export interface DocumentPickerModel {
   /** `held` is every key a project document has, which Change Key cannot take. */
   readonly changeKey?: { readonly commit: (key: string) => void; readonly held: ReadonlySet<string> };
   readonly detach?: () => void;
+  /** Imports a model archive as a Loaded Model of the shown Model. */
+  readonly load?: (archive: File) => void;
+  /** Every problem of the last archive that did not load against the shown Model. */
+  readonly unfit?: { readonly problems: readonly string[]; readonly dismiss: () => void };
 }
 
 export interface PickerDocument {
@@ -42,6 +48,10 @@ export interface PickerDocument {
   readonly python?: boolean;
   /** Why the step cannot use the document as it stands, such as a model input it would leave unfed. */
   readonly problem?: string;
+  /** The document is a Loaded Model: weights fitted to the Model it is listed under. */
+  readonly loaded?: boolean;
+  /** The document cannot be chosen, though others can. */
+  readonly unavailable?: boolean;
 }
 
 export interface PickerTemplate {
@@ -55,10 +65,16 @@ function PythonMark() {
     className="flex shrink-0 text-shell-muted [&_svg]:size-[1em]"><FileCode aria-hidden="true" /></span>;
 }
 
-/** A document's marks: Python, and the problem that keeps the step from using it, whose tip is the reason. */
-function DocumentMarks({ python, problem }: { python?: boolean; problem?: string }) {
+function LoadedMark() {
+  return <span role="img" aria-label={studioName('loaded_model')} {...appTip(studioName('loaded_model'))}
+    className="flex shrink-0 text-shell-muted [&_svg]:size-[1em]"><Package aria-hidden="true" /></span>;
+}
+
+/** A document's marks: Python or Loaded Model, and the problem that keeps the step from using it, whose tip is the reason. */
+function DocumentMarks({ python, loaded, problem }: { python?: boolean; loaded?: boolean; problem?: string }) {
   return <>
     {python && <PythonMark />}
+    {loaded && <LoadedMark />}
     {problem && <StatusMark status="cannot_run" label={problem} />}
   </>;
 }
@@ -78,7 +94,8 @@ export function DocumentPicker({ model, editing, setEditing }: {
   editing: DocumentEditing | undefined;
   setEditing: (editing: DocumentEditing | undefined) => void;
 }) {
-  const { label, document, name, documents, templates, count, refusal, choose, create, duplicate, rename, changeKey, detach } = model;
+  const { label, document, name, documents, templates, count, refusal, choose, create, duplicate, rename, changeKey, detach, load, unfit } = model;
+  const [trigger, setTrigger] = useState<HTMLElement | null>(null);
   const shown = documents.find((entry) => entry.key === document);
   const edit = (start?: () => Promise<string | undefined>) => start && (async () => {
     const created = await start();
@@ -101,18 +118,19 @@ export function DocumentPicker({ model, editing, setEditing }: {
   }
   const start = (part: DocumentEditing['part']) => () => { renaming.current = true; setEditing({ document, part }); };
   return <><Menu onOpenChange={(open) => { if (open) renaming.current = false; }}>
-    <MenuTrigger render={<Button variant="ghost" className="min-w-0 gap-1 px-1" />}
+    <MenuTrigger ref={(element: HTMLElement | null) => setTrigger(element)} render={<Button variant="ghost" className="min-w-0 gap-1 px-1" />}
       aria-label={studioAccessibleName(label, name)}>
       <span className="studio-window-slot__document">{name}</span>
-      {shown && <DocumentMarks python={shown.python} problem={shown.problem} />}
+      {shown && <DocumentMarks python={shown.python} loaded={shown.loaded} problem={shown.problem} />}
       {count && count.users > 1 && count.lit < count.users &&
         <span className="whitespace-nowrap text-xs text-shell-muted">{studioCountOf(count.lit, count.users)}</span>}
       <ChevronDown aria-hidden="true" />
     </MenuTrigger>
     <MenuContent aria-label={studioName(label)} finalFocus={() => !renaming.current}>
       <MenuRadioGroup value={document} onValueChange={(value: string) => { if (value !== document) choose?.(value); }}>
-        {documents.map(({ key, name, depth, python, problem }) => <MenuRadioItem key={key} value={key} disabled={!choose}
-          mark={<DocumentMarks python={python} problem={problem} />}>
+        {documents.map(({ key, name, depth, python, loaded, unavailable, problem }) => <MenuRadioItem key={key} value={key}
+          disabled={!choose || unavailable}
+          mark={<DocumentMarks python={python} loaded={loaded} problem={problem} />}>
           <span style={depth ? { paddingInlineStart: `${depth}rem` } : undefined}>{name}</span>
         </MenuRadioItem>)}
       </MenuRadioGroup>
@@ -126,10 +144,18 @@ export function DocumentPicker({ model, editing, setEditing }: {
         </MenuSubmenu>
         : <MenuItem disabled={!create} onClick={edit(create && (() => create()))}>{studioName('new')}</MenuItem>}
       <MenuItem disabled={!duplicate} onClick={edit(duplicate)}>{studioName('duplicate')}</MenuItem>
+      {load && <MenuItem onClick={() => { void chooseFile().then((file) => { if (file) load(file); }); }}>{studioName('load')}</MenuItem>}
       <MenuItem disabled={!rename} onClick={start('name')}>{studioName('rename')}</MenuItem>
       <MenuItem disabled={!changeKey} onClick={start('key')}>{studioName('changeKey')}</MenuItem>
       {detach && <MenuItem onClick={detach}>{studioName('detach')}</MenuItem>}
     </MenuContent>
   </Menu>
-  {refusal && <span role="alert" className="min-w-0 truncate text-xs text-shell-muted">{refusal}</span>}</>;
+  {refusal && <span role="alert" className="min-w-0 truncate text-xs text-shell-muted">{refusal}</span>}
+  <Popover open={!!unfit} onOpenChange={(open) => { if (!open) unfit?.dismiss(); }}>
+    <PopoverContent anchor={trigger} aria-label={studioName('doesNotFit')} className="max-h-80 max-w-md overflow-auto">
+      <ul role="alert" className="grid gap-1 text-xs">
+        {unfit?.problems.map((problem, index) => <li key={index}>{problem}</li>)}
+      </ul>
+    </PopoverContent>
+  </Popover></>;
 }

@@ -10,6 +10,7 @@ from typing import Any
 from feedbax.contracts.expression_values import (
     ANGLE,
     DIMENSIONLESS,
+    LENGTH,
     TIME,
     CallValue,
     Dimensions,
@@ -124,6 +125,15 @@ def _vector(
     return ValueType(
         base=result.base, dimensions=result.dimensions, shape=(len(args), *result.shape)
     )
+
+
+def _point(args: tuple[ValueType, ...], kwargs: Mapping[str, ValueType]) -> ValueType | SignatureError:
+    if any(arg.shape or arg.base == _BOOL for arg in args):
+        return _type("Point coordinates must be numeric scalars.")
+    if any(arg.dimensions != LENGTH for arg in args):
+        return _unit("Point coordinates must be lengths.")
+    result = _vector(args, kwargs)
+    return result.model_copy(update={"space": "point"}) if isinstance(result, ValueType) else result
 
 
 def _index(
@@ -886,6 +896,10 @@ def register_builtins(registry: FunctionRegistry) -> None:
         result_dimensions=partial(_known_result, start=1),
     )
     add("vector", "values…", (1, None), _vector, _stack)
+    add(
+        "point", "x, y[, z]", (2, 3), _point, _stack,
+        argument_context=partial(_operand_context, base=_REAL), result_dimensions=lambda _: LENGTH,
+    )
     add(
         "index",
         "array, index",

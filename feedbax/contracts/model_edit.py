@@ -283,12 +283,12 @@ class ModelProjectionRequest(StrictModel):
     document: ProjectName
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
+    evaluate_scope: SelectedRuns | None = None
 
 
 class ModelConnectionReviewRequest(ModelProjectionRequest):
     graph: ModelAddress
     source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
-    evaluate_scope: SelectedRuns | None = None
     grow_source: bool = False
 
 
@@ -353,7 +353,6 @@ class ModelProjection(StrictModel):
     physical_ports: tuple[ModelPhysicalPortProjection, ...] = ()
     task_signals: tuple[ModelTaskSignal, ...] = ()
     task_inputs: tuple[ModelAddress, ...] = ()
-    objective_ports: tuple[ModelAddress, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
     resolved_model: ModelDocument | None = None
     base_differences: tuple[ModelStructuralDifference, ...] = ()
