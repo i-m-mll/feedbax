@@ -206,7 +206,10 @@ def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
     gate = selected[:, None] & (onset[:, None] <= steps) & (steps < onset[:, None] + 2)
     curl = amps[:, None, None] * input_velocity[..., ::-1] * np.array([-1.0, 1.0])
     expected = np.array([1.0, 0.0]) + np.where(gate[..., None], curl, 0.0)
-    np.testing.assert_allclose(outputs["force"], expected, atol=1e-6)
+    dtype = np.dtype("float64" if jax.config.x64_enabled else "float32")
+    assert amps.dtype == outputs["force"].dtype == velocity.dtype == dtype
+    tolerance = 8 * np.finfo(dtype).eps
+    np.testing.assert_allclose(outputs["force"], expected, rtol=tolerance, atol=tolerance)
 
 
 def _conditioned_project(sampling):
