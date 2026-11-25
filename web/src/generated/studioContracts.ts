@@ -4832,6 +4832,7 @@ export type StudioProjectWindowMapRow = {
 export type StudioProjectWindowMapStep = {
   "variant": string;
   "step_id": string;
+  "label": string;
   "kind": StepKind;
   "group": string | null;
   "inputs": Array<StudioProjectWindowMapInput>;
@@ -13719,6 +13720,7 @@ export const StudioProjectWindowMapStepSchema: z.ZodType<StudioProjectWindowMapS
   z.object({
     "variant": z.string(),
     "step_id": z.string(),
+    "label": z.string(),
     "kind": StepKindSchema,
     "group": z.union([z.string(), z.null()]),
     "inputs": z.array(StudioProjectWindowMapInputSchema),

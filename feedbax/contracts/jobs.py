@@ -376,6 +376,7 @@ class StudioProjectWindowMapAxis(StrictModel):
 class StudioProjectWindowMapStep(StrictModel):
     variant: str
     step_id: str
+    label: str
     kind: StepKind
     group: str | None
     inputs: list[StudioProjectWindowMapInput]

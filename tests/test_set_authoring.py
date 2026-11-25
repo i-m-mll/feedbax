@@ -272,6 +272,7 @@ def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selec
     assert _duplicate(folders, client, "train") == {"axis": "run", "value": "run-2"}
     plan, result = read()
     train = next(step for step in result["window_map"]["steps"] if step["step_id"] == "train")
+    assert train["label"] == "Train"
     assert [(value["id"], value["label"]) for value in train["axes"][0]["values"]] == [
         ("", "Run 1"), ("run-2", "Run 2"),
     ]
@@ -286,9 +287,11 @@ def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selec
 
     raw = folders.read(PROJECT).project.model_dump(mode="json", by_alias=True, exclude_unset=True)
     evaluate = raw["steps"]["baseline"]
+    evaluate["label"] = "Check reach"
     evaluate["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     _save_project(folders, PROJECT, Project.model_validate(raw))
     _, result = read()
+    assert next(step for step in result["window_map"]["steps"] if step["step_id"] == "baseline")["label"] == "Check reach"
     assert [
         row["label"] for row in result["window_map"]["rows"] if row["key"]["step"] == "baseline"
     ] == ["Run 1", "Run 2"]
