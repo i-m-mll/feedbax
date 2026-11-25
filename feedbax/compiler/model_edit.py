@@ -284,7 +284,8 @@ class ModelEditDraft:
             owner, graph, source, target, output, replacing=key,
         ):
             attachments.append({
-                "kind": "delay", "id": uuid4().hex, "delay": {"value": 1, "unit": "st"}, "initial": 0,
+                "kind": "delay", "id": uuid4().hex, "delay": {"value": 1, "unit": "st"},
+                "initial_source": {"kind": "value", "value": 0},
             })
         graph["wires"][key] = _signal(source, target, attachments)
         self.changed.append(_address(address.composites, "wire", id=key))
@@ -659,7 +660,7 @@ class ModelEditDraft:
                 item = next((entry for entry in chain if entry["id"] == parent.id), None)
             else:
                 item = attachment
-            allowed = {"fields", "window", "operation", "initial", "delay", "name"}
+            allowed = {"fields", "window", "operation", "initial_source", "delay", "name"}
             if item is not None and len(path) > 1 and path[0] == "fields" and path[1] not in item.get("fields", {}):
                 raise _Refusal(address, "the addressed attachment field no longer exists")
         elif parent.kind == "port":

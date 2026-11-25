@@ -121,6 +121,26 @@ def test_composite_without_input_to_output_path_needs_no_delay():
     assert delay.kind == "delay" and (delay.delay.value, delay.delay.unit) == (1, "st")
 
 
+@pytest.mark.parametrize("initial_source", [
+    {"kind": "value", "value": 2.5},
+    {"kind": "task", "variable": "context"},
+    {"kind": "wire"},
+    {"kind": "wire", "source": _end("same", "out")},
+])
+def test_delay_initial_modes_are_authored_by_the_attachment_command(initial_source):
+    owner = _address(("outer",), "wire", id="in")
+    attachment = {
+        "kind": "delay", "id": "lag", "delay": {"value": 5, "unit": "st"}, "initial_source": initial_source,
+    }
+    result = _execute(_start(), "set_attachment", difference={
+        "op": "add", "owner": owner, "attachment": attachment, "after": None,
+    })
+    assert not isinstance(result, ModelEditProblem), result
+    archived = ModelEditState.model_validate_json(result.state.model_dump_json())
+    graph = archived.document.interior.components["outer"].interior
+    assert graph.wires["in"].attachments[0].model_dump(mode="json") == attachment
+
+
 def _start(deep_name="inner", *, decorated=False, fanout=False, default=False):
     delay = {"kind": "delay", "id": "delay", "delay": {"value": 1, "unit": "st"}}
     inner = {"components": {"same": _leaf("leaf", gain=1), "sink": _leaf()}}

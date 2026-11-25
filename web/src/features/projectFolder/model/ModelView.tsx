@@ -36,7 +36,7 @@ import type { PhysicalInterior,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelConnectionVerdict, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, ModelProjection,
   ModelRemovedElement, StudioProjectRevision, StudioProjectSnapshot, StudioSavedTrainKey,
 } from '@/generated/studioContracts';
-import { ModelAddressSchema, ModelDocumentSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
+import { ModelDocumentSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
 import { sendWithStore, type AskStore } from '../storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
@@ -152,16 +152,6 @@ const newPort = '__new_port__';
 
 function positionAt(index: number): ModelPosition {
   return { x: 245 + 235 * (index % 4), y: 38 + 160 * Math.floor(index / 4) };
-}
-
-function linkedAddress(value: string) {
-  try {
-    const parsed = ModelAddressSchema.safeParse(JSON.parse(value));
-    return parsed.success ? parsed.data : undefined;
-  } catch (error) {
-    if (error instanceof SyntaxError) return undefined;
-    throw error;
-  }
 }
 
 function stepCount(item: Attachment, step: ModelDocument['step_seconds'] | undefined) {
@@ -1300,7 +1290,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function addAttachment(address: ModelAddress, kind: 'delay' | 'intervention' | 'probe') {
     const list = effective.get(addressKey(address)) ?? [];
     const id = crypto.randomUUID();
-    const item: Attachment = kind === 'delay' ? { id, kind, delay: { unit: 'st', value: 1 }, initial: 0 }
+    const item: Attachment = kind === 'delay' ? { id, kind, delay: { unit: 'st', value: 1 }, initial_source: { kind: 'value', value: 0 } }
       : kind === 'intervention' ? { id, kind, operation: 'scale', fields: { factor: 1 } }
       : { id, kind, name: port?.name ?? 'Probe' };
     const difference = { op: 'add', owner: address, after: list.at(-1)?.id ?? null, attachment: item } as const;
@@ -1323,7 +1313,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           !!registry.get(component.type)?.reset_outputs?.includes(port.end.port);
       },
       choose: (target) => {
-        if (target.kind === 'port') void updateAttachment(address, { ...item, initial: { kind: 'name', reference: addressKey(target.address) } });
+        if (target.kind !== 'port') return;
+        const { end } = target.port;
+        if (end.owner === 'component') {
+          const source = { owner: end.owner, component: end.component, port: end.port };
+          void updateAttachment(address, { ...item, initial_source: { kind: 'wire', source } });
+        }
       },
     } });
   }
@@ -1504,18 +1499,19 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function attachmentInspector(address: ModelAddress, item: Attachment) {
     const change = fieldEditing ? (next: Attachment) => updateAttachment(address, next) : undefined;
     const initial = item.kind === 'delay' ? (() => {
-      const value = item.initial;
-      const reference = value && typeof value === 'object' && !Array.isArray(value) &&
-        value.kind === 'name' && typeof value.reference === 'string' ? value.reference : null;
-      const projected = !reference && projectedNames.has('initial');
-      const parsed = reference ? linkedAddress(reference) : undefined;
-      const label = reference ? parsed ? labelOfPort(parsed) || addressKey(parsed) : reference : undefined;
+      const value = item.initial_source;
+      const source = value?.kind === 'wire' ? value.source : undefined;
+      const projected = !source && projectedNames.has('value');
+      const label = source ? labelOfPort(at(graph, {
+        kind: 'port', end: source.owner === 'component' ? { ...source, direction: 'output' } : source,
+      })) || source.port : value?.kind === 'task' ? value.variable : undefined;
       const arm = editTopology ? () => armInitial(address, item) : undefined;
       return <div className="flex min-w-0 items-start gap-1">
         <div className="min-w-0 flex-1">{!projected &&
           <ValueField key={JSON.stringify([addressKey(address), label])} model={initialField(item, label, change)} />}</div>
         {arm && <IconButton label={studioName('pickInitial')} icon={<Crosshair />} onClick={arm} />}
-        {reference && change && <IconButton label={studioName('clearLink')} icon={<X />} onClick={() => void change({ ...item, initial: 0 })} />}
+        {label && change && <IconButton label={studioName('clearLink')} icon={<X />}
+          onClick={() => void change({ ...item, initial_source: { kind: 'value', value: 0 } })} />}
       </div>;
     })() : null;
     const order = canEvaluate && chain && chain.length > 1 && isAuthored(address) ? [rawField({

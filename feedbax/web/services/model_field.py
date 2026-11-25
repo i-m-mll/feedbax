@@ -7,10 +7,12 @@ from pydantic import JsonValue
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_document import model_tau_seconds
+from feedbax.compiler.model_ports import model_unstored_fields
 from feedbax.contracts.expression_values import TIME, Level, LiteralValue, Problem, ProblemCode, Site, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress, PortElement, WireElement
 from feedbax.contracts.model_document import (
-    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, InterventionAttachment, LeafComponent, ModelDocument,
+    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, DelayInitialValue, InterventionAttachment,
+    LeafComponent, ModelDocument,
 )
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, ListedRuns, StepRuns, ModelEditCommand, SetField,
@@ -57,13 +59,13 @@ def _address(owner: ModelAddress, *path: str) -> ModelAddress:
 
 def _duration(
     owner: ModelAddress, label: str, path: tuple[str, ...], value: int | float | UnresolvedValue, unit: str,
-    *, stored: bool = False, literal: bool = False,
+    *, stored: bool = False, literal: bool = False, sampled: bool = False,
 ) -> _Field:
     address = _address(owner, *path)
     return _Field(address, NumericField(
         address.stored_path(), label, value,
         Site(expected=ValueType(base=ValueBase.REAL, dimensions=TIME), finest=Level.RUN, structural=True),
-        stored, _positive, unit, duration=True,
+        stored, _positive, unit, time_use="length" if sampled else "constant",
     ), literal=literal)
 
 
@@ -103,11 +105,18 @@ def _attachment_fields(branch: ModelDocument | CompositeComponent, owner: ModelA
     if isinstance(attachment, DelayAttachment):
         delay = attachment.delay
         if isinstance(delay, UnresolvedValue):
-            yield _duration(owner, "Delay", ("delay",), delay, "st", stored=True)
+            yield _duration(owner, "Delay", ("delay",), delay, "st", stored=True, sampled=True)
         else:
-            yield _duration(owner, "Delay", ("delay",), delay.value, delay.unit, stored=True)
-        values = {"initial": attachment.initial}
-    elif isinstance(attachment, InterventionAttachment):
+            yield _duration(owner, "Delay", ("delay",), delay.value, delay.unit, stored=True, sampled=True)
+        if isinstance(attachment.initial_source, DelayInitialValue):
+            address = _address(owner, "initial_source", "value")
+            yield _Field(address, NumericField(
+                address.stored_path(), "Initial", attachment.initial_source.value,
+                Site(expected=ValueType(base=ValueBase.REAL), finest=Level.RUN, structural=True),
+                True, lambda value: value,
+            ))
+        return
+    if isinstance(attachment, InterventionAttachment):
         names = {"clamp": ("low", "high"), "scale": ("factor",)}.get(attachment.operation.lower(), ())
         values = {name: attachment.fields.get(name) for name in names}
     else:
@@ -115,7 +124,7 @@ def _attachment_fields(branch: ModelDocument | CompositeComponent, owner: ModelA
     for name, value in values.items():
         if (number := _numeric_value(value)) is None:
             continue
-        address = _address(owner, *(("initial",) if name == "initial" else ("fields", name)))
+        address = _address(owner, "fields", name)
 
         def validate(number: int | float, name=name) -> int | float:
             low = number if name == "low" else values.get("low")
@@ -170,9 +179,10 @@ def _fields(model: ModelDocument, owner: ModelAddress, components: ComponentRegi
     if not isinstance(component, LeafComponent) or not (definition := components.get(component.type)):
         return
     defaults = definition.params.default_params
+    unstored = model_unstored_fields(component.type)
     for schema in definition.param_schema:
         name = schema.name
-        if name in {"dt", "control_dt"} or name in component.port_counts or "." in name:
+        if name in unstored or name in component.port_counts or "." in name:
             continue
         base = {"int": ValueBase.INTEGER, "float": ValueBase.REAL}.get(schema.type)
         value = component.fields.get(name, defaults.get(name))
@@ -405,7 +415,8 @@ def model_fields(
         fields.append(project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
             held=held.get(field_key, ()),
-            period=period, scoped=bool(body.rows or body.axes),
+            period=period, effective_unit=resolved.numeric.unit if resolved else None,
+            scoped=bool(body.rows or body.axes),
             address=field.address, problems=_held_problems(field, functions, period)
             or (_held_problems(resolved, functions, period) if resolved is not None else []),
             sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
@@ -514,13 +525,7 @@ def model_fields(
     value = result
     if isinstance(result, LiteralValue):
         if field.address.element.parent.kind == "attachment":
-            if result.unit == "st" and result.value != int(result.value):
-                problems = _address_problems(field, (Problem(
-                    code=ProblemCode.STRUCTURE, reason="Delay in steps must be a whole number.",
-                ),))
-                value = UnresolvedValue(text=edit.text).model_dump(mode="json")
-            else:
-                value = result.model_dump(mode="json", exclude={"kind"})
+            value = result.model_dump(mode="json", exclude={"kind"})
         elif result.unit == "st" and field.numeric.unit == "st" and not field.literal and field.numeric.stored:
             value = result.value
         else:

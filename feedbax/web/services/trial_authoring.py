@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 
 from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_values import (
-    Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, UnresolvedValue,
+    Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, UnresolvedValue,
     ValueBase, ValueType,
 )
 from feedbax.tasks.document import TrialSource, zero
@@ -44,12 +44,14 @@ from feedbax.contracts.studio_trials import (
     StudioTrialStructureEdit,
 )
 from feedbax.contracts.task_document import (
-    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, Rest, TaskDocument,
+    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Length, PythonTaskSelection, TaskDocument,
 )
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.time_units import TimeValue, length_steps
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.training import TrialDocuments
 from feedbax.contracts.trial_bindings import selected_signal_id
+from feedbax.contracts.window import WindowPosition, store_window_offset, window_offset_expression, window_offset_sites
 from feedbax.contracts.expression_check import references
 from feedbax.contracts.expression_site import FieldKind, project_site, read_field
 from feedbax.contracts.expression_text import parse, print_field, resolve_expression
@@ -62,10 +64,10 @@ from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFol
 from feedbax.web.services.set_authoring import trial_set_fields
 from feedbax.web.services.store_choice import EditStore, all_readers_store, choose_store
 from feedbax.studio.selection import StoredEdit
-from feedbax.studio.numeric_fields import project_numeric_field
+from feedbax.studio.numeric_fields import project_numeric_field, time_conversion
 from feedbax.web.services.trial_fields import (
-    TrialFieldSweep, at, held_expression_file, index_pointer, numeric_nodes, routes_to_sweep, site_expression, trial_field_sweep,
-    trial_field_sweep_edit,
+    TrialFieldSweep, at, held_expression_file, index_pointer, is_window_offset, numeric_nodes, routes_to_sweep,
+    site_expression, trial_field_sweep, trial_field_sweep_edit, trial_time_use,
 )
 from feedbax.web.services.trial_scope import (
     authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, lit_steps, preview_stored, scoped_file,
@@ -212,6 +214,7 @@ def _unpaired_objective_sites(documents, signals) -> dict[tuple[str | int, ...],
         path = ("objective", "terms", term.id)
         sites[(*path, "measure")] = Site(expected=term.measure_type, names=names, finest=Level.STEP)
         sites[(*path, "weight")] = Site(expected=ValueType(base=ValueBase.REAL), names=weight_names, finest=Level.STEP)
+        sites.update({(*path, "window", *at): site for at, site in window_offset_sites(term.window, names).items()})
     return sites
 
 
@@ -286,12 +289,42 @@ def _expression_edit(change, documents, projection, bundle):
     raw = document.model_dump(mode="json", exclude_unset=True)
     if end is not None and text.strip() == "rest":
         return StudioTrialDocumentEdit(kind=role, edits=_end_edits(raw, end, "rest", {}))
+    window_offset = is_window_offset(role, tuple(rest))
+    if window_offset and not text.strip() and isinstance(at(document, tuple(rest[:-1])), WindowPosition):
+        stored = index_pointer(raw, tuple(rest))
+        return StudioTrialDocumentEdit(kind=role, edits=[RemoveProjectValue(op="remove", path=stored)]) if stored else ()
+    condition, separator, limit = text.rpartition("≤") if end is not None else ("", "", "")
+    if separator:
+        condition_path = (role, *rest[:-1], "condition")
+        condition_site = projection.fields[condition_path]
+        parsed = parse(condition.strip(), condition_site, bundle.expression_functions)
+        value = UnresolvedValue(text=condition.strip()) if isinstance(parsed, tuple) else parsed.value
+        if isinstance(value, SweepList | SweepRange | SweepSample):
+            return one
+        limit = _until_limit(limit.strip(), site, bundle, documents, (role, *rest[:-1], "limit"))
+        if isinstance(limit, tuple):
+            return limit
+        return StudioTrialDocumentEdit(kind=role, edits=_end_edits(
+            raw, end, "until", {"condition": value.model_dump(mode="json"), "limit": limit.model_dump(mode="json")},
+        ))
+    if _epoch_end_field((role, *rest), "limit"):
+        limit = _until_limit(text, site, bundle, documents, (role, *rest))
+        if isinstance(limit, tuple):
+            return limit
+        return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
+            op="replace", path=index_pointer(raw, tuple(rest)), value=limit.model_dump(mode="json"),
+        )])
     parsed = parse(text, site, bundle.expression_functions)
     value = UnresolvedValue(text=text) if isinstance(parsed, tuple) else parsed.value
     if isinstance(value, SweepList | SweepRange | SweepSample):
         return one
+    if window_offset:
+        try:
+            value = store_window_offset(value)
+        except ValueError:
+            value = UnresolvedValue(text=text)
     stored_value = value.model_dump(mode="json")
-    if end is not None and isinstance(at(document, tuple(rest[:-1])), Rest):
+    if end is not None and not isinstance(at(document, tuple(rest[:-1])), Length):
         return StudioTrialDocumentEdit(kind=role, edits=_end_edits(
             raw, end, "length", {"length": stored_value},
         ))
@@ -300,6 +333,27 @@ def _expression_edit(change, documents, projection, bundle):
     return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
         op="replace" if stored else "add", path=path, value=stored_value,
     )])
+
+
+def _until_limit(text, site, bundle, documents, path):
+    parsed = parse(text, site, bundle.expression_functions)
+    if isinstance(parsed, tuple):
+        return tuple(problem.model_copy(update={"path": path}) for problem in parsed)
+    literal = parsed.value
+    if not isinstance(literal, LiteralValue) or type(literal.value) not in (float, int) or literal.unit not in {"s", "st"}:
+        return (Problem(code=ProblemCode.MISSING_LIMIT, reason="Until needs a limit in seconds or steps.", path=path),)
+    limit = TimeValue(value=literal.value, unit=literal.unit)
+    period = documents.model.step_seconds
+    if isinstance(period, float):
+        try:
+            length_steps(limit, period)
+        except ValueError as error:
+            return (Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=path),)
+    return limit
+
+
+def _epoch_end_field(path: tuple[str | int, ...], field: str) -> bool:
+    return path[:2] == ("task", "epochs") and path[3:] == ("end", field)
 
 
 def _end_of(document, role, rest) -> str | None:
@@ -320,6 +374,14 @@ def _end_edits(raw, end: str, kind: str, fields: dict) -> list:
     edits += [SetProjectValue(op="replace" if key in held else "add", path=f"{end}/{key}", value=value)
               for key, value in fields.items()]
     edits += [RemoveProjectValue(op="remove", path=f"{end}/{key}") for key in held if key != "kind" and key not in fields]
+    if kind == "until":
+        epoch_index = int(json_pointer_parts(end)[1])
+        epoch = raw["epochs"][epoch_index]["id"]
+        edits.extend(
+            RemoveProjectValue(op="remove", path=pointer(("validation_trials", str(index), "epoch_steps", epoch)))
+            for index, trial in enumerate(raw.get("validation_trials", ()))
+            if epoch in trial.get("epoch_steps", ())
+        )
     return edits
 
 
@@ -922,19 +984,30 @@ def _held_values(authored, definition, documents, projection, kind):
             source_path = pointer(tuple(root.split("."))) + indexed + "/text"
         source: ValueSource | None = definition.sources.get(source_path)
         if source is not None and (owner := held_expression_file(authored, source, value)) is not None:
-            yield owner, value, site
+            yield owner, value, site, is_window_offset(role, tuple(rest))
 
 
 def _resolved_value_files(authored, candidate, pairings, compile_sources, bundle):
     """Store a parsed value in its original file when its readers agree on the references."""
     functions = bundle.expression_functions
     proposals = {}
+
+    def resolved(held, site, window_offset):
+        parsed = resolve_expression(held, site, functions)
+        if isinstance(parsed, tuple):
+            return None
+        try:
+            return store_window_offset(parsed.value) if window_offset else parsed.value
+        except ValueError:
+            return None
+
     for key, (documents, projection) in pairings.items():
         kind = candidate.steps[key.variant, key.step].kind
-        for owner, held, site in _held_values(authored, candidate.selected_definitions[key], documents, projection, kind):
+        for owner, held, site, window_offset in _held_values(
+            authored, candidate.selected_definitions[key], documents, projection, kind,
+        ):
             key_and_path = (owner[0].kind, owner[0].id, owner[1])
-            parsed = resolve_expression(held, site, functions)
-            proposals.setdefault(key_and_path, []).append(None if isinstance(parsed, tuple) else parsed.value)
+            proposals.setdefault(key_and_path, []).append(resolved(held, site, window_offset))
 
     accepted = {
         owner: values[0] for owner, values in proposals.items()
@@ -954,12 +1027,13 @@ def _resolved_value_files(authored, candidate, pairings, compile_sources, bundle
         other = compile_sources(authored, other_runs)
         for key, definition in other.selected_definitions.items():
             shown, projection, _ = _pairing(other, key, bundle)
-            for (address, path), held, site in _held_values(authored, definition, shown, projection, "train"):
+            for (address, path), held, site, window_offset in _held_values(
+                authored, definition, shown, projection, "train",
+            ):
                 owner = (address.kind, address.id, path)
                 if owner not in accepted:
                     continue
-                parsed = resolve_expression(held, site, functions)
-                if isinstance(parsed, tuple) or parsed.value != accepted[owner]:
+                if resolved(held, site, window_offset) != accepted[owner]:
                     del accepted[owner]
 
     return [
@@ -1096,7 +1170,7 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
     ]
 
 
-def _trial_fields(path, site: Site, expression, functions, sweep, row, problems, name_paths) -> list[StudioTrialField]:
+def _trial_fields(path, site: Site, expression, functions, sweep, row, problems, name_paths, period) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
 
@@ -1107,21 +1181,29 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
     shown = expression is not None and not missing
     projection = project_site(site, functions, expression, name_paths=name_paths)
     fields = []
-    for inner, label in numeric_nodes(expression, functions) if shown else ():
+    implicit_offset = expression is None and is_window_offset(path[0], path[1:])
+    numeric = window_offset_expression(None) if implicit_offset else expression
+    for inner, label in numeric_nodes(numeric, functions) if shown or implicit_offset else ():
         swept = sweep((*path, *inner), site, label or _field_label(path))
         if swept is None:
             continue
+        current = at(numeric, inner)
         view = project_numeric_field(
-            StudioTrialField, swept.field, swept.axis, functions, row, at(expression, inner).value,
-            path=pointer(tuple(map(str, (*path, *inner)))),
+            StudioTrialField, swept.field, swept.axis, functions, row, current.value,
+            period=period, effective_unit=current.unit, path=pointer(tuple(map(str, (*path, *inner)))),
         )
         if inner:
             fields.append(view)
         elif view.sweep is not None or view.can_sweep:
+            if implicit_offset and view.sweep is None:
+                view = view.model_copy(update={"text": "", "conversion": None, "structure": None})
             return [view.model_copy(update={
                 "site": projection, "problems": _field_problems(path, site, view.text, functions, problems),
             })]
-    projection = projection.model_copy(update={"kinds": tuple(kind for kind in projection.kinds if kind != FieldKind.SWEEP)})
+    if _epoch_end_field(path, "limit"):
+        projection = projection.model_copy(update={"kinds": (FieldKind.VALUE,), "functions": (), "parts": ()})
+    else:
+        projection = projection.model_copy(update={"kinds": tuple(kind for kind in projection.kinds if kind != FieldKind.SWEEP)})
     printed = site.model_copy(update={"names": (*site.names, *(
         ScopedValue(id=reference, name=reference, type=ValueType(base=ValueBase.REAL), level=Level.RUN)
         for reference in sorted(missing)
@@ -1135,6 +1217,7 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
     return [StudioTrialField(
         path=pointer(tuple(map(str, path))), label=_field_label(path), site=projection, text=text,
         structure=value_structure(expression, site, functions) if shown else None,
+        conversion=time_conversion(expression, period, trial_time_use(path[0], path[1:])),
         problems=marks,
     ), *fields]
 
@@ -1276,23 +1359,34 @@ def trial_authoring(
         document = _field_document(documents, path[0])
         if document is None:
             return None
-        found = site_expression(document, tuple(map(str, path[1:])))
+        raw_path = tuple(map(str, path[1:]))
+        if _epoch_end_field(path, "limit"):
+            stored_limit = at(document, raw_path)
+            if isinstance(stored_limit, TimeValue):
+                return LiteralValue(value=stored_limit.value, unit=stored_limit.unit)
+        found = site_expression(document, raw_path)
         if found is None and path[0] == "task" and path[1] == "signals" and path[3:] == ("absent",):
             signal = next(item for item in document.signals if item.id == path[2])
             return zero(signal.type.base, signal.type.shape)
         return found
 
     def sweep(path, site, label):
-        if paired is None:
+        if paired is None or _epoch_end_field(path, "limit"):
             return None
         return _field_sweep(project, plan, key, definition, path, site, label)
 
-    fields = [
-        field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
-        for field in _trial_fields(
-            path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths,
-        )
-    ]
+    clock = documents.model.step_seconds
+    period = clock if isinstance(clock, float) else None
+    fields = []
+    for path, site in projected.fields.items():
+        if path[1:2] == ("validation_trials",):
+            continue
+        value = expression(path)
+        if _epoch_end_field(path, "condition") and value is None:
+            continue
+        fields.extend(_trial_fields(
+            path, site, value, bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
+        ))
     field_problems = [
         problem for field in fields for problem in field.problems
         if not _held_problems(problem.path, projected.problems)
@@ -1312,7 +1406,7 @@ def trial_authoring(
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
         epoch_instances=list(projected.epoch_instances),
-        period_seconds=documents.model.step_seconds if isinstance(documents.model.step_seconds, float) else None,
+        period_seconds=period,
         n_steps=compiled.n_steps if compiled else None,
         batch_size=_batch_size(step.kind, definition.payload),
         reads_model=compiled.reads_model if compiled else False,
