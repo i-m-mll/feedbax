@@ -526,7 +526,6 @@ def test_recurrent_constant_initializer_seeds_final_state_dtype_and_shape() -> N
                 source_port="output",
                 target_node="delay",
                 target_port="input",
-                temporality="recurrent",
                 recurrent_initializer={
                     "kind": "constant",
                     "value": [1.0, 2.0, 3.0],

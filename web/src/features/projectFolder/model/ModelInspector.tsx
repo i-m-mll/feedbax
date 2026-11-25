@@ -1,4 +1,4 @@
-import type { ComponentDefinition, DelayAttachment, InterventionAttachment, JsonValue, ModelDocument, ModelTime, ProbeAttachment } from '@/generated/studioContracts';
+import type { ComponentDefinition, DelayAttachment, JsonValue, ModelDocument, ModelTime, ModelWire } from '@/generated/studioContracts';
 import { studioName, studioReason, studioUnit } from '@/components/activity/studioVocabulary';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { FieldCommit, FieldModel } from '@/components/values/fieldModel';
@@ -6,7 +6,7 @@ import { fromParamSchema } from '@/components/values/adapters/paramSchema';
 import { rawField, type RawChange } from '@/components/values/adapters/raw';
 import type { Component } from './modelGraph';
 
-export type Attachment = DelayAttachment | InterventionAttachment | ProbeAttachment;
+export type Attachment = NonNullable<ModelWire['attachments']>[number];
 /** Writes a raw value at a path under the element; answers with a reason when the edit is refused. */
 export type FieldChange = (path: string[], value: JsonValue) => Promise<string | undefined>;
 export type AttachmentChange = (item: Attachment) => Promise<string | undefined> | void;
@@ -64,6 +64,7 @@ export function componentFields(component: Component, definition: ComponentDefin
 export function attachmentFields(item: Attachment, change?: AttachmentChange,
   projected?: ReadonlySet<string>): FieldModel[] {
   const write = (next: Attachment): ReturnType<RawChange> => change?.(next);
+  if (item.kind === 'hold') return [];
   if (item.kind === 'delay') {
     if (projected?.has('delay')) return [];
     const label = studioName('delay');

@@ -165,6 +165,7 @@ function linkedAddress(value: string) {
 }
 
 function stepCount(item: Attachment, step: ModelDocument['step_seconds'] | undefined) {
+  if (item.kind === 'hold') return '□';
   if (item.kind !== 'delay') return item.kind === 'probe' ? '⌖' : '◇';
   if ('text' in item.delay) return '';
   if (item.delay.unit === 'st') return String(item.delay.value);
@@ -172,6 +173,7 @@ function stepCount(item: Attachment, step: ModelDocument['step_seconds'] | undef
 }
 
 function attachmentName(item: Attachment) {
+  if (item.kind === 'hold') return studioName('hold');
   return item.kind === 'probe' ? item.name : studioName(item.kind === 'delay' ? 'delay' : item.operation.toLowerCase() === 'clamp' ? 'clamp' : 'scale');
 }
 

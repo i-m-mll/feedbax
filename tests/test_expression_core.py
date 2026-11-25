@@ -99,6 +99,9 @@ def compiled(
         "sample(U(0, 1), 8)",
         "U(-0.3, 1, per=run)",
         "(1 + 2) * -3",
+        "-2 ** 3 ** 2",
+        "(2 ** 3) ** 2",
+        "2 ** -2",
         "true and not (1 < 2)",
         "[1,2][1]",
         "hold([1, 2])",
@@ -127,7 +130,7 @@ _TREES = st.recursive(
     lambda child: st.one_of(
         st.builds(
             lambda function, left, right: CallValue(function=function, args=(left, right)),
-            st.sampled_from(["add", "sub", "mul", "div", "mod", "eq", "lt", "ge", "and", "or", "index"]),
+            st.sampled_from(["add", "sub", "mul", "div", "mod", "pow", "eq", "lt", "ge", "and", "or", "index"]),
             child, child,
         ),
         st.builds(
@@ -154,6 +157,9 @@ def test_printed_text_reads_back_as_the_same_value(tree):
         ("a+(b*c)", "a + b * c"),
         ("(a + b) * c", "(a + b) * c"),
         ("a - (b - c)", "a - (b - c)"),
+        ("a ** (b ** c)", "a ** b ** c"),
+        ("(a ** b) ** c", "(a ** b) ** c"),
+        ("(-a) ** (-b)", "(-a) ** -b"),
         ("(a - b) - c", "a - b - c"),
         ("-(a + b)[0]", "-(a + b)[0]"),
         ("not (a < b and c)", "not (a < b and c)"),

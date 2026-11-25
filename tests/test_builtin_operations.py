@@ -1,4 +1,4 @@
-"""The two M3 built-ins operate on saved Evaluate dataset products."""
+"""Built-in operations over saved Evaluate dataset products."""
 
 import numpy as np
 import pytest
@@ -93,6 +93,58 @@ def test_velocity_uses_the_authored_reference_transition():
     first = AlignedVelocityParameters(position=_POSITION, velocity=_VELOCITY, target=_TARGET, target_transition=0)
     with pytest.raises(ValueError, match="finite nonzero length"):
         aligned_velocity(states, first)
+
+
+def test_peak_velocity_summary_discards_time_and_trial_but_keeps_member_groups():
+    states, parallel, _ = _states()
+    velocity = aligned_velocity(states, _PARAMETERS)
+    descriptor = velocity.descriptor
+    parallel[..., 0, 1] = parallel[..., 0, 2]
+    stacked_parallel = np.stack([parallel, 2 * parallel])
+    # The first trial peaks at samples 1 and 2; the other two peak at sample 0.
+    # Different clocks make the two members report different mean peak times.
+    clocks = np.array([[0.0, 0.009, 0.021], [0.1, 0.12, 0.18]])
+    stacked = Dataset.from_arrays(
+        {
+            name: Variable.from_field(
+                stacked_parallel if name == "parallel_velocity" else np.stack([velocity.data(name)] * 2),
+                field,
+                ("member", *field.dims),
+            )
+            for name, field in descriptor.variables.items()
+        },
+        coords={
+            **{
+                name: Variable.from_field(velocity.data(name), field, field.dims)
+                for name, field in descriptor.coords.items()
+                if name != "state_time"
+            },
+            "state_time": Variable(clocks, ("member", "state_time"), units="s"),
+            "member": Variable(np.asarray(["base", "double"]), ("member",)),
+        },
+        schema_id=descriptor.schema_id,
+    )
+    operation = load_application().bundle.operations.resolve("feedbax.summarize_peak_velocity")
+    params = operation.value.parameter_model.model_validate({"ddof": 1, "bounds_scale": 1.5})
+    summary = operation.defining_object(stacked, params)
+
+    port = operation.value.definition.outputs["summary"]
+    assert port.variables["mean"].dims == ("checkpoint", "condition")
+    assert (port.variables["peak_time"].dims, port.variables["peak_time"].units) == (("checkpoint", "condition"), "s")
+    peaks = stacked_parallel.max(axis=-1)
+    mean = peaks.mean(axis=-1)
+    spread = 1.5 * peaks.std(axis=-1, ddof=1)
+    assert set(summary.descriptor.coords) == {"member", "checkpoint", "condition"}
+    for name in summary.descriptor.coords:
+        np.testing.assert_array_equal(summary.data(name), stacked.data(name))
+    for name, expected in (("mean", mean), ("lower", mean - spread), ("upper", mean + spread)):
+        field = summary.descriptor.variables[name]
+        assert (field.dims, field.units, field.frame) == (("member", "checkpoint", "condition"), "m/s", "reach-aligned")
+        np.testing.assert_allclose(summary.data(name), expected)
+    peak_time = summary.descriptor.variables["peak_time"]
+    assert (peak_time.dims, peak_time.units) == (("member", "checkpoint", "condition"), "s")
+    expected_time = (2 * clocks[:, 0] + clocks[:, 1]) / 3
+    np.testing.assert_allclose(summary.data("peak_time"), np.broadcast_to(expected_time[:, None, None], mean.shape))
 
 
 def test_summary_refuses_invalid_parameters_and_sample_count():

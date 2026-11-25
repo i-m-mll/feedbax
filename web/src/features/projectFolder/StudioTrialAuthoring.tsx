@@ -384,8 +384,9 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
 function TermWindow({ view, term, index, commit, labelId }: {
   view: TrialView; term: ObjectiveTerm; index: number; commit?: Commit; labelId?: string;
 }) {
-  const epochs = term.epochs ?? [];
-  const path = termPath(index) + '/epochs';
+  const spans = term.window?.spans ?? [];
+  const epochs = spans.flatMap((span) => span.kind === 'epoch' && span.occurrence == null ? [span.epoch] : []);
+  const path = termPath(index) + '/window';
   const changed = changedAt(view, 'objective', path, commit);
   return <Combobox className="w-full" aria-labelledby={labelId} aria-label={labelId ? undefined : studioName('window')}
     items={view.epochs.map(({ id, name }) => ({ value: id, label: name }))}
@@ -394,8 +395,11 @@ function TermWindow({ view, term, index, commit, labelId }: {
     onToggle={(epoch) => {
       const next = view.epochs.map(({ id }) => id)
         .filter((id) => id === epoch ? !epochs.includes(id) : epochs.includes(id));
+      const nextSpans = [...spans.filter((span) => span.kind !== 'epoch' || span.occurrence != null),
+        ...next.map((id) => ({ kind: 'epoch', epoch: id }))];
+      const value = nextSpans.length ? { spans: nextSpans } as unknown as JsonValue : null;
       void commit?.(studioAccessibleName('set', studioName('window')),
-        { kind: 'objective', edits: [write(path, next, has(term, 'epochs'))] });
+        { kind: 'objective', edits: [write(path, value, has(term, 'window'))] });
     }} />;
 }
 
@@ -419,7 +423,7 @@ function newTerm(chosen: ReturnType<typeof measured>[number]) {
     measure_type: { base: 'real', dimensions: Object.fromEntries(
       Object.entries(chosen.type.dimensions ?? {}).map(([name, exponent]) => [name, exponent * 2]),
     ) },
-    weight: { kind: 'literal', value: 1 }, epochs: [], enabled: true,
+    weight: { kind: 'literal', value: 1 }, enabled: true,
   } satisfies JsonValue;
 }
 

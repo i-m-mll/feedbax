@@ -146,8 +146,11 @@ class WireSpec(BaseModel):
     source_port: str
     target_node: str
     target_port: str
-    temporality: Literal["instant", "recurrent"] = "instant"
     recurrent_initializer: Optional[Dict[str, Any]] = None
+
+    @property
+    def is_recurrent(self) -> bool:
+        return self.recurrent_initializer is not None
 
     def authored_id(self) -> str:
         """Address an older wire without changing its stored model identity."""

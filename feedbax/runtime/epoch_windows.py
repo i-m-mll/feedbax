@@ -17,12 +17,12 @@ def in_epoch(steps, start, end):
     return (start >= 0) & (start <= steps) & (steps < end)
 
 
-def whole_window(record: EpochRecord, n_steps: int, epochs: tuple[int, ...]) -> jax.Array:
-    """An empty epoch selection denotes the whole trial."""
+def whole_window(record: EpochRecord, n_steps: int, epochs: tuple[int, ...] | None) -> jax.Array:
+    """An absent epoch selection denotes the whole trial."""
     steps = jnp.arange(n_steps)
-    if not epochs:
+    if epochs is None:
         return jnp.broadcast_to(True, (*record.starts.shape[:-1], n_steps))
-    indices = jnp.asarray(epochs)
+    indices = jnp.asarray(epochs, dtype=int)
     start = jnp.take(record.starts, indices, axis=-1)[..., None]
     end = jnp.take(record.ends, indices, axis=-1)[..., None]
     return jnp.any(in_epoch(steps, start, end), axis=-2)

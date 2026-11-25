@@ -100,7 +100,7 @@ def _composite(name: str, graph: GraphSpec, registry: ComponentRegistry, period:
     for wire in graph.wires:
         key = wire.authored_id()
         attachments = ()
-        if wire.temporality == "recurrent":
+        if wire.is_recurrent:
             reset = wire.recurrent_initializer or {}
             shape = reset.get("shape")
             if reset.get("seed_channel_history"):

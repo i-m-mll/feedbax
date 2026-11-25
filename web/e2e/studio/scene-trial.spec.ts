@@ -147,13 +147,19 @@ const meanPathCount = (mean: TrialMean) => mean.conditions
 
 // Catches Mean that does not reach the Service's Mean, a Scene that draws no mean path or spread per condition or
 // still poses the mechanism, a clock that stays on the trial's own time rather than Align's or does not reach the
-// earliest aligned trial, a mean path that is not the mean of the trials aligned to Align's epoch, By that does not
-// change the conditions, a By menu that Escape or opening Align leaves open, Align's label drawn over its value, and a
+// earliest aligned trial, a mean path that is not the mean of the trials aligned to Align's epoch, a shelf under Mean
+// that lists fewer Task rows than one trial's or draws a row empty, By that does not change the conditions, a By menu that Escape or opening Align leaves open, Align's label drawn over its value, and a
 // clock that overflows the bottom bar of a narrow window.
 test('Mean by condition aligned to an epoch draws one mean path with its spread per condition, on time from that epoch', { tag: '@round' }, async ({ page, studio }) => {
   test.setTimeout(80_000);
   await doneEvaluationScene(page, studio.home, 'seed-mean-conditions', 'scene-mean');
   const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
+  await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
+  const shelf = page.getByRole('region', { name: 'Shelf', exact: true });
+  const rows = shelf.locator('[data-shelf-rows] > [role="group"]');
+  await expect(rows).not.toHaveCount(0);
+  const oneTrialRows = await rows.evaluateAll((groups) => groups.map((group) => group.getAttribute('aria-label')));
+  expect(oneTrialRows.length).toBeGreaterThan(1);
   const opened = meanReply(page, null);
   await clock.getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'Mean', exact: true }).click();
   const { reply: first } = await opened;
@@ -171,9 +177,10 @@ test('Mean by condition aligned to an epoch draws one mean path with its spread 
   const start = Math.min(...mean.conditions.flatMap(({ trials }) => Object.values(trials).map(({ span }) => span.start)));
   expect(start).toBeLessThan(0);
   await expect(footer(page).getByRole('slider', { name: 'Playback Position' })).toHaveAttribute('min', String(start));
-  await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
-  const epochs = page.getByRole('region', { name: 'Shelf', exact: true }).getByRole('group', { name: 'Epochs', exact: true });
+  const epochs = shelf.getByRole('group', { name: 'Epochs', exact: true });
   await expect(epochs.getByRole('button', { name: epoch.label, exact: true })).toHaveAttribute('data-start', '0');
+  await expect.poll(() => rows.evaluateAll((groups) => groups.map((group) => group.getAttribute('aria-label')))).toEqual(oneTrialRows);
+  for (const name of oneTrialRows.slice(1)) await expect(shelf.getByRole('group', { name: name!, exact: true }).locator('[data-share]')).not.toHaveCount(0);
 
   if (reply.drawn.kind !== 'trials') throw new Error('Mean answered without the trials.');
   const records = new Map(reply.drawn.trials.map((record) => [record.id, record]));
@@ -222,6 +229,12 @@ test('under Mean a figure draws the Service\'s Mean rendering for the clock\'s B
   test.setTimeout(90_000);
   await doneEvaluationScene(page, studio.home, 'seed-mean-figure', 'figure-mean', ['analyze']);
   const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
+  await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
+  const shelf = page.getByRole('region', { name: 'Shelf', exact: true });
+  const rows = shelf.locator('[data-shelf-rows] > [role="group"]');
+  await expect(rows).not.toHaveCount(0);
+  const oneTrialRows = await rows.evaluateAll((groups) => groups.map((group) => group.getAttribute('aria-label')));
+  expect(oneTrialRows.length).toBeGreaterThan(1);
   const opened = meanReply(page, null);
   await clock.getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'Mean', exact: true }).click();
   const epoch = (await opened).reply.mean_options!.align.at(-1)!;
