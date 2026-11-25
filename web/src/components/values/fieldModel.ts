@@ -63,6 +63,9 @@ export function withReset(commit: FieldCommit | undefined, change: ChangeMark | 
 /** A field's kind: one its site offers, or an epoch End's Until or Rest, which only an End's site offers. */
 export type ValueKind = FieldKind | 'until' | 'rest';
 
+/** The text of an epoch End that is Until: its condition, then its limit. */
+export const untilText = (condition: string, limit: string) => `${condition} ≤ ${limit}`;
+
 export interface FieldKindOffer {
   readonly kind: ValueKind;
   readonly enabled: boolean;

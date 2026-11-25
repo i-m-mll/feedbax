@@ -3,6 +3,7 @@ import { studioName, studioReason } from '@/components/activity/studioVocabulary
 import { addressKey } from '@/features/projectFolder/model/modelGraph';
 import { elementKey, isModelAddress, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import { frameAt } from '@/components/timeline/trialClock';
+import { endedBy } from '@/features/projectFolder/task/trialSample';
 import type {
   DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryFrame, TaskDocument, TrialMean, TrialRecord, TrialRelation, ValueType,
 } from '@/generated/studioContracts';
@@ -51,16 +52,25 @@ export function recordedStates(record: TrialRecord): StateValues[] | undefined {
 
 /**
  * Each world-frame path `record` recorded, with where it is at state frame `frame`; under `trails`, drawn up to that
- * frame. States that are one quantity under two names (a mechanism's effector and its skeleton's position) record the
+ * frame. The picked trial's paths mark where each epoch that ends on a condition ended: at the state frame its last
+ * step leads to, the frame its next epoch begins at. States that are one quantity under two names (a mechanism's effector and its skeleton's position) record the
  * same path, which is drawn once.
  */
 export function recordedTracks(record: TrialRecord, frame: number, trails: boolean, picked: boolean): SceneTrack[] {
   const paths = new Map(Object.values(record.states ?? {}).filter((track) => track.frame === 'world')
     .map((track) => [JSON.stringify(track.samples), track.samples]));
+  const endings = picked ? record.timeline.flatMap(({ end, outcome }) => {
+    const by = endedBy(outcome);
+    return by && (!trails || end <= frame) ? [{ end, by }] : [];
+  }) : [];
   return [...paths.values()].map((samples) => {
     const points = samples.map(point).filter((place) => place !== undefined);
     const drawn = trails ? samples.slice(0, frame + 1).map(point).filter((place) => place !== undefined).length : points.length;
-    return { points, drawn, head: point(at(samples, frame)), picked };
+    const ended = endings.flatMap(({ end, by }) => {
+      const place = point(at(samples, end));
+      return place ? [{ point: place, by }] : [];
+    });
+    return { points, drawn, head: point(at(samples, frame)), picked, ended };
   });
 }
 

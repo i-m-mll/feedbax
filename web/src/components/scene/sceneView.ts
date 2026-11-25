@@ -97,13 +97,22 @@ export interface SceneMeanPath {
 
 /**
  * A recorded world-frame track: its whole path, how many of its points are drawn (all of them, or those up to the
- * playhead under Trails), where it is at the playhead, and whether it is the picked trial's, drawn heavier.
+ * playhead under Trails), where it is at the playhead, and whether it is the picked trial's, drawn heavier, with where
+ * its epochs ended on a condition.
  */
 export interface SceneTrack {
   readonly points: readonly ScenePoint[];
   readonly drawn: number;
   readonly head?: ScenePoint;
   readonly picked: boolean;
+  /** Where the picked trial's epochs that end on a condition ended on the track, and how; under Trails, those passed. */
+  readonly ended: readonly SceneEnded[];
+}
+
+/** Where on a track an epoch that ends on a condition ended: at its condition, or at its limit. */
+export interface SceneEnded {
+  readonly point: ScenePoint;
+  readonly by: 'condition' | 'limit';
 }
 
 export const emptyScene: Scene = { groups: [], rest: [], tracks: [], means: [], ends: [], relations: [], places: [] };

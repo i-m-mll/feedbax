@@ -268,6 +268,11 @@ function SceneDrawingCanvas({
               strokeWidth={track.picked ? 1.5 : 1} strokeDasharray="0 3" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             {track.head && <circle data-scene-cursor cx={project(track.head)[0]} cy={project(track.head)[1]} r={track.picked ? 3 : 1.5}
               fill={stroke} />}
+            {track.ended.map(({ point, by }, at) => {
+              const [x, y] = project(point);
+              return <path key={at} data-scene-ended={by} d={`M${x},${y - 4}L${x + 4},${y}L${x},${y + 4}L${x - 4},${y}Z`}
+                fill={by === 'condition' ? stroke : 'var(--surface-main)'} stroke={stroke} strokeWidth={1.25} />;
+            })}
           </g>;
         })}
       </g>
