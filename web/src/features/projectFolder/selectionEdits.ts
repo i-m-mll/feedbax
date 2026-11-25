@@ -42,6 +42,17 @@ export function bindingEdit(
   };
 }
 
+/** An unconstrained selection has no rule to write. Explicit rank bindings can still name no ranks. */
+export function authoredSubset(terms: SubsetTerms): SubsetTerms | undefined {
+  return terms.rule || terms.clauses?.length || terms.bound_ranks != null ? terms : undefined;
+}
+
+export function withSubsetTerms(reference: StepReference, terms: SubsetTerms): StepReference {
+  const { where: _where, ...source } = reference;
+  const where = authoredSubset(terms);
+  return where ? { ...source, where } : source;
+}
+
 /** A plan's problem on a run rule, and the characters of the saved rule it is about. */
 export interface RuleProblem {
   readonly reason: string;

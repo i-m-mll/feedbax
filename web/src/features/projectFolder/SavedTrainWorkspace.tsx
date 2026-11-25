@@ -88,7 +88,7 @@ import { settledWindowSelection, useProjectWindowSelection } from './projectWind
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
 import { SubjectDocuments, TrialsEditor, type StepField } from './StudioEvaluateAuthoring';
 import { SelectionRule } from './SelectionRule';
-import { bindingEdit, connection, exceptionRuleProblem, selectionProblems, stepSelections, subjectAxisEdits } from './selectionEdits';
+import { authoredSubset, bindingEdit, connection, exceptionRuleProblem, selectionProblems, stepSelections, subjectAxisEdits, withSubsetTerms } from './selectionEdits';
 import { InputEditor, type InputGesture } from './InputEditor';
 import { documentChoice } from './referenceChoices';
 import { documentsOfRole } from './useProjectDocuments';
@@ -1200,7 +1200,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     selection={(index, reference) => ({
       problems: inputProblems('checkpoint', index),
       runs: wholeStep && selectionRuns('checkpoint', index, reference,
-        (terms) => onCurrentPlan('startTrain')({ ...reference, where: terms }, `subset.${index}`)),
+        (terms) => onCurrentPlan('startTrain')(withSubsetTerms(reference, terms), `subset.${index}`)),
     })}
     checkpoint={startCheckpoints && startSelections && {
       groups: startCheckpoints, disabled: !applies, refusal: refusedAt('checkpoint'),
@@ -1220,9 +1220,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           runs: <>
             {input && inputDetail(input, !!evaluationEditor)}
             {evaluationEditor && selectionRuns('subject', index, reference,
-              (terms) => onCurrentPlan('editEvaluation')(`subset.${index}`, studioName('runs'), {
-                op: reference.where !== undefined ? 'replace' : 'add', path: evaluationEditor.subjects[index].where, value: terms,
-              }),
+              (terms) => {
+                const where = authoredSubset(terms);
+                const path = evaluationEditor.subjects[index].where;
+                const edit = onCurrentPlan('editEvaluation');
+                if (where) edit(`subset.${index}`, studioName('runs'), {
+                  op: reference.where !== undefined ? 'replace' : 'add', path, value: where,
+                });
+                else if (reference.where !== undefined) edit(`subset.${index}`, studioName('runs'), { op: 'remove', path });
+              },
               attempts ? () => onCurrentPlan('freezeEvaluationSubset')(inputId, reference.step, attempts, index) : undefined)}
           </>,
         };
