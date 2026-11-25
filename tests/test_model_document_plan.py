@@ -1970,6 +1970,56 @@ def test_discrete_mechanics_feedback_reads_start_state_with_exact_delay(kind):
     np.testing.assert_array_equal(delayed["after"], [[sample] for sample in state[1:]])
 
 
+@pytest.mark.parametrize("kind", ["LinearStateSpace", "StructuralLinearStateSpace"])
+def test_discrete_mechanics_effector_reads_start_velocity_in_curl_loop(kind):
+    period = 0.125
+    initial = [0.5, -0.25, 1.0, 2.0]
+    fields = {
+        "A": [[1, 0, period, 0], [0, 1, 0, period], [0, 0, 1, 0], [0, 0, 0, 1]],
+        "B": [[0, 0], [0, 0], [period, 0], [0, period]],
+        "initial_state": initial,
+    }
+    if kind == "StructuralLinearStateSpace":
+        fields["delta_A"] = np.zeros((4, 4)).tolist()
+    document = ModelDocument.model_validate({
+        "step_seconds": period,
+        "ports": {"outputs": [_port("state", "state", shape=[4])]},
+        "interior": {
+            "components": {
+                "plant": {"kind": "leaf", "name": "Plant", "type": f"feedbax.{kind}", "fields": fields},
+                "curl": {"kind": "leaf", "name": "Curl", "type": "feedbax.CurlField", "fields": {"active": True}},
+            },
+            "wires": {
+                "feedback": _wire(_end("plant", "effector"), _end("curl", "effector")),
+                "drive": _wire(_end("curl", "force"), _end("plant", "force")),
+                "observation": _wire(_end("plant", "state"), {"owner": "outputs", "port": "state"}),
+            },
+        },
+    })
+    registry = ComponentRegistry()
+    spec = lower_model_document(document, registry).graph
+    graph = compile_graph(GraphDocument(graph=spec), registry).graph
+    key = jax.random.key(4)
+    outputs, _, traces = graph.rollout_with_trace(
+        {}, graph.init_state(key=key), key=key, n_steps=5,
+        trace=(GraphTraceRequest("port", "effector", node="plant", port="effector"),),
+    )
+
+    expected, forces = [], []
+    position, velocity = np.asarray(initial).reshape(2, 2)
+    for _ in range(5):
+        force = np.array([-velocity[1], velocity[0]])
+        position = position + period * velocity
+        velocity = velocity + period * force
+        forces.append(force)
+        expected.append(np.concatenate((position, velocity)))
+    expected = np.asarray(expected)
+    np.testing.assert_array_equal(outputs["state"], expected)
+    np.testing.assert_array_equal(traces["effector"].pos, expected[:, :2])
+    np.testing.assert_array_equal(traces["effector"].vel, expected[:, 2:])
+    np.testing.assert_array_equal(traces["effector"].force, forces)
+
+
 def test_serial_mechanics_hold_samples_this_step_and_delay_adds_five_steps():
     pytest.importorskip("mujoco.mjx")
     plant = _planar_arm()
