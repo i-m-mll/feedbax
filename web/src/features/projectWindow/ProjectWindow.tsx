@@ -9,6 +9,7 @@ import {
   type CSSProperties, type Dispatch, type ReactNode, type SetStateAction,
 } from 'react';
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
+import { shellHost } from '@window-shell/browser/titlebar';
 import { canvasViewportIcons } from '@/components/canvas/CanvasStrip';
 import type { CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
@@ -33,7 +34,7 @@ import { StudioCommandPalette } from './StudioCommandPalette';
 import { StudioConnectionStatus } from './StudioConnectionStatus';
 import { StudioSettings } from './StudioSettings';
 import { useWindowCommands } from './heldGestures';
-import { bindStudioCommand, commandAttributes, commandInContext, keyHandled, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
+import { bindStudioCommand, commandAttributes, commandInContext, commandTip, keyHandled, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
 import { nativeOwnsShortcut, useStudioNativeMenu } from './studioNativeMenu';
 import { useStudioTitleBar } from './studioTitleBar';
 import { appearanceCommands } from '@/appearance/appearanceCommands';
@@ -374,6 +375,9 @@ export function ProjectWindow({
     setPaletteScope((open) => open ? null : scope);
   });
   const settings = bindStudioCommand('settings', toggleSettings);
+  /** In a browser the start page is the project list; the desktop app opens projects from its own start window. */
+  const projects = projectName && shellHost() !== 'native'
+    ? bindStudioCommand('projects', () => window.location.assign(window.location.pathname)) : undefined;
   const viewportIds = new Set<StudioCommand['id']>(mapCommands?.map(({ id }) => id));
   const separator = mode === 'map' ? '100%' : `${mode === 'both' ? fit.mapHeight.size : compactMapHeight}px`;
   const viewportCommands = fullMapVisible && (mapHasFocus || !commands.some(({ id }) => viewportIds.has(id)))
@@ -384,7 +388,7 @@ export function ProjectWindow({
     back, forward, ...tabCommands,
     bindStudioCommand('nextRegion', () => cycleRegion(1)),
     bindStudioCommand('previousRegion', () => cycleRegion(-1)),
-    settings, ...appearanceCommands(),
+    settings, ...projects ? [projects] : [], ...appearanceCommands(),
   ];
   const shortcutCommands = useRef({ palette, paletteCommands, paletteScope });
   shortcutCommands.current = { palette, paletteCommands, paletteScope };
@@ -462,7 +466,13 @@ export function ProjectWindow({
             })} />
         </div>
         <div className="shell-frame__cell studio-window-bar__project" data-separated="">
-          <h1 className="min-w-0 truncate text-base font-normal">{projectName}</h1>
+          <h1 className="min-w-0 truncate text-base font-normal">
+            {projects
+              ? <Button variant="ghost" className="max-w-full px-1 text-base" {...commandTip(projects)} onClick={projects.invoke}>
+                <span className="truncate">{projectName}</span>
+              </Button>
+              : projectName}
+          </h1>
           {saveStatus}
           {variant}
         </div>

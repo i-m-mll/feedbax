@@ -726,11 +726,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** The runs the shown figure declares its data was read from, whose recorded trials the clock offers for an Analyze. */
   const [figureRuns, declareFigureRuns] = useState<FigureLayoutMeta['runs']>();
   const figureEvaluation = step?.kind === 'analyze' ? declaredEvaluation(shown, figureRuns) : undefined;
+  /** With no one run focused, an Evaluate's clock shows the first selected run that recorded trials. */
+  const firstEvaluation = step?.kind === 'evaluate' ? sceneRows.find((row) => row.result ?? row.previous) : undefined;
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: clockView,
     taskDocument: clockView && (clockView.task_document ?? clockStep?.id),
     objectiveDocument: clockView && (clockView.objective_document ?? clockStep?.id),
-    stored: clockSubject ? clockSubject.stored : stored, evaluation: clockSubject ? clockSubject.evaluation : selectedEvaluation ?? figureEvaluation,
+    stored: clockSubject ? clockSubject.stored : stored, evaluation: clockSubject ? clockSubject.evaluation : selectedEvaluation ?? firstEvaluation ?? figureEvaluation,
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });

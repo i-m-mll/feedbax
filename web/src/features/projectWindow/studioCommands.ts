@@ -77,7 +77,7 @@ export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | Appea
   'pivot' | 'pin' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
-  'fitView' | 'zoomIn' | 'zoomOut' | 'rename';
+  'fitView' | 'zoomIn' | 'zoomOut' | 'rename' | 'projects';
 
 const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'check', 'accept', 'newStep', 'newSweep', 'pivot',

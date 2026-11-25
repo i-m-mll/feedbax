@@ -7,7 +7,7 @@ import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { StatusMark } from '@/components/ui/StatusMark';
 import { parseContract, type FigureProduct, type StudioSavedLightHistory, type TrialMeanSelection } from '@/generated/studioContracts';
-import { axisAttribute, FigureClockContext, marksTrials, timePanels, traceTrial, trialRestyle, type TimePanel } from './figureClock';
+import { axisAttribute, FigureClockContext, marksTrials, plottedTraces, timePanels, traceTrial, trialRestyle, type TimePanel } from './figureClock';
 import { Button } from '@/components/ui/Button';
 import { Section } from '@/components/ui/Section';
 
@@ -16,7 +16,7 @@ type Fields = Record<string, unknown>;
 function themedLayout(layout: Fields | undefined): Fields {
   const style = getComputedStyle(document.documentElement);
   const token = (name: string) => style.getPropertyValue(name).trim();
-  const [text, muted, divider] = [token('--text-primary'), token('--text-muted'), token('--app-divider')];
+  const [text, muted, divider, chrome] = [token('--text-primary'), token('--text-muted'), token('--app-divider'), token('--surface-chrome')];
   const template = (layout?.template ?? {}) as { layout?: Fields };
   const base = template.layout ?? {};
   const axis = (key: string) => ({
@@ -26,12 +26,13 @@ function themedLayout(layout: Fields | undefined): Fields {
   return {
     ...sized,
     autosize: true,
-    legend: { ...(sized.legend as Fields | undefined), orientation: 'h', x: 0, xanchor: 'left', y: -0.2, yanchor: 'top' },
+    legend: { ...(sized.legend as Fields | undefined), orientation: 'h', x: 0, xanchor: 'left', y: -0.2, yanchor: 'top', maxheight: 0.2 },
     template: {
       ...template,
       layout: {
         ...base, paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
         font: { ...(base.font as Fields | undefined), color: text }, xaxis: axis('xaxis'), yaxis: axis('yaxis'),
+        hoverlabel: { ...(base.hoverlabel as Fields | undefined), bgcolor: chrome, bordercolor: divider, font: { color: text } },
       },
     },
   };
@@ -107,9 +108,7 @@ function SavedPlot({ source, name }: { source: FigureSource; name: string }) {
   });
   const runs = figure.data?.layout.meta.runs;
   useEffect(() => {
-    if (!declare || !runs) return;
-    declare(runs);
-    return () => declare(undefined);
+    if (declare && runs) declare(runs);
   }, [declare, runs]);
   const epoch = clock?.epoch ?? null;
   const panels = useMemo(() => figure.data ? timePanels(figure.data, epoch) : [], [figure.data, epoch]);
@@ -119,7 +118,7 @@ function SavedPlot({ source, name }: { source: FigureSource; name: string }) {
     let active = true;
     let purge: (() => void) | undefined;
     const product = figure.data;
-    const { data, layout, frames } = product;
+    const { layout, frames } = product;
     const timed = timePanels(product, latest.current?.epoch ?? null).length > 0;
     void (async () => {
       try {
@@ -127,7 +126,7 @@ function SavedPlot({ source, name }: { source: FigureSource; name: string }) {
         if (!active) return;
         purge = () => Plotly.purge(node);
         const plotted = await Plotly.newPlot(node, {
-          ...structuredClone({ data, layout: { ...themedLayout(layout), ...timed && { dragmode: false } }, frames: frames ?? undefined }),
+          ...structuredClone({ data: plottedTraces(product), layout: { ...themedLayout(layout), ...timed && { dragmode: false } }, frames: frames ?? undefined }),
           config: { responsive: true },
         }) as PlotElement;
         plotted.on('plotly_click', ({ points, event }) => {
@@ -213,6 +212,10 @@ export function SavedFigureResult({ history, name, project, revision, mean }: {
   history: StudioSavedLightHistory; name: string; project: string; revision: string; mean?: TrialMeanSelection;
 }) {
   const [previousSelected, setPreviousSelected] = useState(false);
+  const { declare } = useContext(FigureClockContext);
+  // The runs stay declared while the plot is read again for another Mean, which keeps the clock, and its open menus,
+  // on the same trials; they are withdrawn when the result is no longer shown.
+  useEffect(() => () => declare?.(undefined), [declare]);
   const current = history.result?.products.figure;
   const previous = history.previous?.products.figure;
   const showPrevious = Boolean(previous && (!current || previousSelected));
