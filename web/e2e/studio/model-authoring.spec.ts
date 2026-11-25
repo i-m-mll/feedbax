@@ -90,15 +90,16 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   });
   const cellBox = (await card(cell).boundingBox())!;
   expect(Math.abs(cellBox.x - cursor.x) + Math.abs(cellBox.y - cursor.y)).toBeLessThan(4);
-  await enter(inspector.getByRole('textbox', { name: 'Input size', exact: true }), '2');
-  await expect.poll(async () => (await savedModel()).interior.components?.[cell]).toMatchObject({ fields: { input_size: 2 } });
+  // A vector component's input width is its input wire's, so neither card offers one.
+  await expect(inspector.getByRole('textbox', { name: 'Hidden size', exact: true })).toBeVisible();
+  await expect(inspector.getByRole('textbox', { name: 'Input size', exact: true })).toHaveCount(0);
 
   // A double click on empty canvas opens the same search.
   const readout = await place('Linear', () => canvas.dblclick({ position: { x: box.width * 0.6, y: box.height * 0.6 } }));
-  await enter(inspector.getByRole('textbox', { name: 'Input size', exact: true }), '4');
+  await expect(inspector.getByRole('textbox', { name: 'Input size', exact: true })).toHaveCount(0);
   await enter(inspector.getByRole('textbox', { name: 'Output size', exact: true }), '2');
   await expect.poll(async () => (await savedModel()).interior.components?.[readout])
-    .toMatchObject({ fields: { input_size: 4, output_size: 2 } });
+    .toMatchObject({ fields: { output_size: 2 } });
 
   // Dropping a wire on empty canvas offers the components with an input that fits, and places the chosen one wired.
   let joining = edit();
