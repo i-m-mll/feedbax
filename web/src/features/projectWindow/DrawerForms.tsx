@@ -72,6 +72,18 @@ function unfold(element: Element, root: Element) {
 }
 
 /**
+ * Puts the keyboard on a field with its text read from the start: a text box focused by a command, not by the
+ * pointer, would otherwise put the caret after its last character and scroll a long value's start out of view.
+ */
+export function focusField(field: HTMLElement) {
+  field.focus();
+  if (field instanceof HTMLInputElement && /^(text|search)$/.test(field.type)) {
+    field.setSelectionRange(0, 0);
+    field.scrollLeft = 0;
+  }
+}
+
+/**
  * Puts the keyboard on the requested field of `root` as soon as `root` shows a field, unless a command has run since
  * the request, or the keyboard is already on a field of `root`: it then belongs to what that command opened, or to the
  * field being written.
@@ -100,7 +112,7 @@ export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusR
       const shown = named === null && (element.querySelector('[data-field]') !== null || busy === null);
       const chosen = named || shown ? element.querySelector<HTMLElement>(named ? `${scope} :is(${field})` : field) : null;
       if (!chosen) return false;
-      chosen.focus();
+      focusField(chosen);
       focused.current();
       return true;
     };
