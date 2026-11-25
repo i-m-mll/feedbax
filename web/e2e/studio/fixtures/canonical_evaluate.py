@@ -94,6 +94,13 @@ def seed_eight_trials(home: str, project_id: str):
     return _seed(home, project_id, raw)
 
 
+def seed_sixty_four_trials(home: str, project_id: str):
+    """The evaluation project whose baseline records 64 trials sampled from the task."""
+    raw = _evaluation_project()
+    raw["steps"]["baseline"]["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": 64}
+    return _seed(home, project_id, raw)
+
+
 def seed_step_rename(home: str, project_id: str):
     """Train, an Evaluate reading it, a Train-scoped project sweep target, a group and an arranged sweep order."""
     raw = _evaluation_project()
