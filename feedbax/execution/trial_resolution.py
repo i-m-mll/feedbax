@@ -39,7 +39,7 @@ from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.objectives.document import ObjectiveDocument, ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.execution.trial_execution import TrialExecution, TrialModelOutput
-from feedbax.tasks.document import TaskDocument, TrialSource, bind_task_inputs, compile_task
+from feedbax.tasks.document import TaskDocument, TrialSource, bind_task_inputs, compile_task, delay_initial_problems
 from feedbax.tasks.registry import (
     PythonTaskRegistry,
     PythonTaskTemplate,
@@ -183,6 +183,8 @@ def pair_trial_source(
     else:
         assert template is not None
         compiled = template.prepare(interface, functions)
+        if not isinstance(compiled, tuple):
+            links.extend(delay_initial_problems(interface, {item.id: item for item in compiled.interface.variables}))
     if isinstance(compiled, tuple):
         return (*compiled, *links)
     if template is not None and template.condition_ids != compiled.condition_ids:

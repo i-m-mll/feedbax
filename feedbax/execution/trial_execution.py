@@ -98,7 +98,9 @@ class TrialExecution:
             overrides = jax.tree.map(lambda values: values[0], input_overrides) if self.task.n_steps else {}
             return task_step(task_state, jnp.asarray(0), reads(outputs), overrides)[1]
 
-        reset = self.reset.prepare(graph, task.inits(prepared), key=key, inputs=seed_inputs)
+        reset = self.reset.prepare(
+            graph, task.inits(prepared), key=key, inputs=seed_inputs, reset_values=prepared.values,
+        )
 
         def step(overrides, model_state, carry, _key, k):
             cycle, state, previous = carry
@@ -133,7 +135,9 @@ class TrialExecution:
             return self._drive(graph, trial, key, capture_state, input_overrides)
         inputs = {port: trial.inputs[signal] for port, signal in self.input_bindings}
         inputs.update(input_overrides)
-        reset = self.reset.prepare(graph, trial.inits, key=key, inputs=inputs)
+        reset = self.reset.prepare(
+            graph, trial.inits, key=key, inputs=inputs, input_series=True, reset_values=trial.variables,
+        )
         _, _, retained, history = graph.rollout_with_trace_and_history(
             inputs,
             reset.state,
