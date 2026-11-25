@@ -103,6 +103,14 @@ def _type_name(cls: type) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
+def _encode_pytree(tree: jax.tree_util.PyTreeDef, leaf: Callable[[], object]) -> object:
+    node = tree.node_data()
+    if node is None:
+        return leaf()
+    cls, metadata = node
+    return ("node", _type_name(cls), metadata, tuple(_encode_pytree(child, leaf) for child in tree.children()))
+
+
 def _array_payload(value: Operand) -> Operand:
     if jax.dtypes.issubdtype(value.dtype, jax.dtypes.prng_key):
         return jax.random.key_data(value)
@@ -124,6 +132,8 @@ def _project_argument_metadata(value: object) -> object:
         return value.idx
     if isinstance(value, (jax.tree_util.DictKey, jax.tree_util.FlattenedIndexKey)):
         return value.key
+    if isinstance(value, jax.tree_util.PyTreeDef):
+        return _encode_pytree(value, lambda: ("leaf",))
     if isinstance(value, np.dtype):
         return str(value)
     if isinstance(value, type):
@@ -183,18 +193,14 @@ def pytree_operands(value: object) -> tuple[tuple[Operand, ...], JsonValue]:
     cursor = iter(leaves)
     arrays = []
 
-    def encode_node(tree: jax.tree_util.PyTreeDef) -> object:
-        node = tree.node_data()
-        if node is None:
-            leaf = next(cursor)
-            if isinstance(leaf, (jax.Array, np.ndarray)):
-                arrays.append(leaf)
-                return ("operand",)
-            return ("static", leaf)
-        cls, metadata = node
-        return ("node", _type_name(cls), metadata, tuple(map(encode_node, tree.children())))
+    def encode_leaf() -> object:
+        leaf = next(cursor)
+        if isinstance(leaf, (jax.Array, np.ndarray)):
+            arrays.append(leaf)
+            return ("operand",)
+        return ("static", leaf)
 
-    static = _static_fingerprint(encode_node(structure))
+    static = _static_fingerprint(_encode_pytree(structure, encode_leaf))
     return tuple(arrays), static
 
 
