@@ -103,9 +103,11 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
     ...offered?.clause_index === index && problem && { problem: { reason: problem.reason, offers } },
     remove: () => onCommit({ ...terms, clauses: clauses.filter((_, at) => at !== index) }),
   })) : undefined;
-  const shownProblem: RuleFieldProblem | undefined = !writing && problem && !(lines && offered) ? {
-    reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } }, ...offers && { offers },
-  } : undefined;
+  const shownProblem: RuleFieldProblem | undefined = picked?.size && !pickedWrites
+    ? { reason: 'The producer’s axes do not distinguish these runs.' }
+    : !writing && problem && !(lines && offered) ? {
+      reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } }, ...offers && { offers },
+    } : undefined;
   const commands: RuleFieldCommand[] = [
     ...pick ? [{ label: studioName('pickRuns'), disabled: disabled || !source.runs.length, invoke: () => setPicked(new Set()) }] : [],
     ...onToRows ? [{ label: studioName('toRows'), disabled: disabled || writing, invoke: onToRows }] : [],

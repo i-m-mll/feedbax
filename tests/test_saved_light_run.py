@@ -373,9 +373,9 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         run.coordinates["mass"].value_id: run.key.row
         for run in compile_project(upstream).runs if run.key.step == "conditions"
     }
-    order = ("heavy", "nominal")
+    order = tuple(rows)
     selected = [{"id": key, "label": mass_values[key]["label"]} for key in order]
-    steps["analyze"]["inputs"]["states"] = {"step": "conditions", "where": {"axes": {"mass": selected}}}
+    steps["analyze"]["inputs"]["states"] = {"step": "conditions", "where": {"clauses": [{"mass": selected}]}}
     del steps["baseline"]
     folders = ProjectFolderService(projects, operations=_operations())
     _save_project(folders, project, Project.model_validate(definition))
@@ -494,7 +494,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         figure = reopened.get(profile["result"]["products"]["figure"])
         assert figure.status_code == 200, figure.text
         traces = [trace for trace in figure.json()["data"] if trace.get("showlegend", True)]
-        assert [trace["name"] for trace in traces] == ["mass=Heavy load", "mass=Nominal load"]
+        assert [trace["name"] for trace in traces] == [f'mass={mass_values[key]["label"]}' for key in order]
         for index, trace in enumerate(traces):
             np.testing.assert_allclose(array(trace["x"]), times[0])
             np.testing.assert_allclose(array(trace["y"]), mean[index, 0, 0])

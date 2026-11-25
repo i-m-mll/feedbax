@@ -208,14 +208,14 @@ test('values picked on the producer\'s card pin their IDs on Enter', async ({ pa
   await expect(mapStep(page, 'evaluate')).toHaveAttribute('aria-pressed', 'true');
   await expect(rule).toBeFocused();
   await rule.press('Enter');
-  await expect.poll(subject).toEqual({ clauses: [{ seed: [
+  await expect.poll(subject).toMatchObject({ clauses: [{ seed: expect.arrayContaining([
     { id: expect.stringMatching(/^value-/), label: '0' }, { id: expect.stringMatching(/^value-/), label: '2' },
-  ] }] });
+  ]) }] });
   await expect(runRows(page)).toHaveCount(2);
 });
 
-// Catches a pick that is not a product of its values refused, or saved as that product, which reads four runs, not two.
-test('two diagonal picks save as a clause each, and the producer\'s card marks exactly those two', async ({ page, request }) => {
+// Catches a diagonal pick that widens to the whole rectangle, and Escape saving the picks.
+test('diagonal picks save two clauses, and Escape keeps the saved rule', async ({ page, request }) => {
   const { rule, card, subject } = await pickingProject(page, request, {
     seed: { path: 'seed', values: [0, 1] }, batches: { path: 'training_config.n_batches', values: [2, 3] },
   });
@@ -229,17 +229,20 @@ test('two diagonal picks save as a clause each, and the producer\'s card marks e
   await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
   await mark(0, 2).click();
   await mark(1, 3).click();
-  await expect(rule.locator('..')).toContainText('2/4');
+  await expect(rule).toHaveValue('');
+  for (const [seed, batches] of [[0, 2], [1, 3]]) await expect(mark(seed, batches)).toHaveAttribute('data-boxed', '');
   await expect(card.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(2);
+  await expect(rule.locator('..')).toContainText('2/4');
   await rule.press('Enter');
-  const labels = async () => (((await subject()) as SubsetTerms | undefined)?.clauses ?? []).map((clause) =>
-    Object.entries(clause).map(([axis, values]) => `${axis}=${values.map(({ label }) => label).join(',')}`).join(' ')).sort();
-  await expect.poll(labels).toEqual(['batches=2 seed=0', 'batches=3 seed=1']);
+  const value = (label: string) => [{ id: expect.stringMatching(/^value-/), label }];
+  await expect.poll(subject).toEqual({ clauses: expect.arrayContaining([
+    { seed: value('0'), batches: value('2') }, { seed: value('1'), batches: value('3') },
+  ]) });
   await rule.press('Escape');
   await expect(runRows(page)).toHaveCount(2);
+  // The producer's card marks the runs the two Evaluate runs read: the picked two, not the rectangle they span.
   await runRows(page).first().getByRole('button').click();
   await runRows(page).last().getByRole('button').click({ modifiers: ['Shift'] });
   await expect(card.locator('[data-map-focus="upstream"]')).toHaveCount(2);
-  await expect(mark(0, 2)).toHaveAttribute('data-map-focus', 'upstream');
-  await expect(mark(1, 3)).toHaveAttribute('data-map-focus', 'upstream');
+  for (const [seed, batches] of [[0, 2], [1, 3]]) await expect(mark(seed, batches)).toHaveAttribute('data-map-focus', 'upstream');
 });

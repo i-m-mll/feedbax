@@ -25,54 +25,63 @@ export function stepSourceRows(saved: StudioSavedTrainRuns, step: string, varian
     key.step === step && key.variant === variant && member_key != null) ?? [];
 }
 
-type MapRow = StudioProjectWindowMapRow;
-const rowValue = (row: MapRow, axis: string) => row.input_axes?.[axis] ?? row.coordinates[axis];
+type SourceCoordinate = StudioProjectWindowMapRow['coordinates'][string] |
+  NonNullable<StudioProjectWindowMapRow['input_axes']>[string];
 
-function selectedValue(coordinate: NonNullable<ReturnType<typeof rowValue>>): SelectedAxisValue {
+function pinValue(coordinate: SourceCoordinate): SelectedAxisValue {
   const { value_id: id, label } = coordinate;
   const value = 'value' in coordinate ? coordinate.value : null;
-  return { id, label: label ?? (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string' ? String(value) : id) };
+  return { id, label: label ?? (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string'
+    ? String(value) : id) };
+}
+
+const compareIds = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+
+/** Pins a product of axis values if it matches the pick, else gives each picked row its own clause. */
+export function selectedRowTerms(rows: readonly StudioProjectWindowMapRow[], picked: ReadonlySet<string>): SubsetTerms | undefined {
+  const members = rows.map(({ key, coordinates, input_axes }) =>
+    ({ id: savedRunId(key), values: { ...coordinates, ...input_axes } as Record<string, SourceCoordinate> }));
+  const selected = members.filter(({ id }) => picked.has(id));
+  if (!selected.length || selected.length !== picked.size) return undefined;
+  const others = members.filter(({ id }) => !picked.has(id));
+  const matches = (values: Record<string, SourceCoordinate>, clause: AxisSelectionClause) => Object.entries(clause)
+    .every(([axis, wanted]) => wanted.some(({ id }) => values[axis]?.value_id === id));
+  const product: AxisSelectionClause = {};
+  const names = new Set([
+    ...rows.flatMap(({ coordinates }) => Object.keys(coordinates)),
+    ...rows.flatMap(({ input_axes }) => Object.keys(input_axes ?? {})),
+  ]);
+  let outside = others;
+  for (const axis of names) {
+    const values = selected.map((member) => member.values[axis]);
+    if (values.some((value) => value === undefined)) continue;
+    const chosen = new Map(values.map((value) => [value.value_id, pinValue(value)]));
+    const stillOutside = outside.filter((member) => chosen.has(member.values[axis]?.value_id));
+    if (stillOutside.length === outside.length) continue;
+    product[axis] = [...chosen.values()].sort((left, right) => compareIds(left.id, right.id));
+    outside = stillOutside;
+  }
+  if (!outside.length) return { clauses: storedClauses([product]) };
+
+  const clauses = selected.map(({ values }) =>
+    Object.fromEntries(Object.entries(values).map(([axis, value]) => [axis, [pinValue(value)]])));
+  if (clauses.some((clause) => others.some(({ values }) => matches(values, clause)))) return undefined;
+  return { clauses: storedClauses(clauses) };
 }
 
 /** A clause in its stored order: axes by id, and each axis's values by id. */
 function canonicalClause(clause: AxisSelectionClause): AxisSelectionClause {
-  return Object.fromEntries(Object.keys(clause).sort().map((axis) =>
-    [axis, [...clause[axis]].sort((left, right) => left.id.localeCompare(right.id))]));
+  return Object.fromEntries(Object.keys(clause).sort(compareIds).map((axis) =>
+    [axis, [...clause[axis]].sort((left, right) => compareIds(left.id, right.id))]));
 }
 
 const clauseKey = (clause: AxisSelectionClause) =>
   JSON.stringify(Object.entries(clause).map(([axis, values]) => [axis, values.map(({ id }) => id)]));
 
-/**
- * The clauses that read exactly the picked rows: one clause, naming the values of each axis that tells them from the
- * rest, when they are the product of their values; otherwise one per picked row, naming its value on every axis. A
- * clause that names nothing reads every row.
- */
-export function selectedRowTerms(rows: readonly MapRow[], picked: ReadonlySet<string>): SubsetTerms | undefined {
-  const selected = rows.filter(({ key }) => picked.has(savedRunId(key)));
-  if (!selected.length || selected.length !== picked.size) return undefined;
-  const axes = [...new Set(rows.flatMap(({ coordinates, input_axes }) => [...Object.keys(coordinates), ...Object.keys(input_axes ?? {})]))];
-  const product: AxisSelectionClause = {};
-  const matches = (row: MapRow) => Object.entries(product).every(([axis, values]) =>
-    values.some(({ id }) => id === rowValue(row, axis)?.value_id));
-  for (const axis of axes) {
-    const values = selected.map((row) => rowValue(row, axis));
-    if (values.some((value) => value === undefined)) continue;
-    const chosen = new Map(values.map((coordinate) => [coordinate!.value_id, selectedValue(coordinate!)]));
-    if (rows.some((row) => matches(row) && !chosen.has(rowValue(row, axis)?.value_id ?? ''))) product[axis] = [...chosen.values()];
-  }
-  const clauses = rows.filter(matches).length === selected.length ? [product]
-    : selected.map((row) => Object.fromEntries(axes.flatMap((axis) => {
-      const coordinate = rowValue(row, axis);
-      return coordinate ? [[axis, [selectedValue(coordinate)]]] : [];
-    })));
-  return { clauses: storedClauses(clauses) };
-}
-
 /** Clauses as they are stored: each in canonical order, equal ones once, and in order of their axes' and values' ids. */
 export function storedClauses(clauses: readonly AxisSelectionClause[]): AxisSelectionClause[] {
   const stored = new Map(clauses.map(canonicalClause).map((clause) => [clauseKey(clause), clause]));
-  return [...stored.keys()].sort().map((key) => stored.get(key)!);
+  return [...stored.keys()].sort(compareIds).map((key) => stored.get(key)!);
 }
 
 export function planVariants(saved: StudioSavedTrainRuns | undefined) {
