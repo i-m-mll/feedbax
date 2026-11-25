@@ -4,7 +4,7 @@ import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { appendManagedFiles, enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
-import { pick } from './fixtures/controls';
+import { pick, popupListbox } from './fixtures/controls';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 
@@ -147,7 +147,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   page.off('request', countReview);
   expect(reviews).toEqual(['edit', 'edit']);
   for (const [field, label] of [
-    ['Position', / · effector position$/], ['Velocity', / · effector velocity$/], ['Target', /target pos$/i],
+    ['Position', / · effector position$/], ['Velocity', / · effector velocity$/], ['Target', /^target.pos$/i],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => pick(select, label));
@@ -160,8 +160,8 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   // A role offers only the sources that fit it: the saved states are no velocity a summary reads.
   await role('Velocity').click();
-  await expect(page.getByRole('option', { name: 'Aligned velocity.velocity', exact: true })).toBeVisible();
-  await expect(page.getByRole('option', { name: 'states', exact: true })).toHaveCount(0);
+  await expect(popupListbox(page).getByRole('option', { name: 'Aligned velocity.velocity', exact: true })).toBeVisible();
+  await expect(popupListbox(page).getByRole('option', { name: 'states', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
   await edit(() => pick(role('Velocity'), 'Aligned velocity.velocity'));
 

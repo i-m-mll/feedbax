@@ -129,7 +129,10 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
   path: readonly string[] = [key]): FieldModel {
   const anchor = context.anchor?.(path);
   const projection = context.projected?.(path);
-  if (projection) return { ...projection, path, anchor };
+  if (projection) {
+    const changed = context.changed?.(path);
+    return { ...projection, path, anchor, change: changed, commit: withReset(projection.commit, changed) };
+  }
   const field = { ...declaredField(key, property, value, context, path), path, anchor };
   return context.mixed?.(path) && field.type.kind !== 'group' ? { ...field, value: null, text: null } : field;
 }

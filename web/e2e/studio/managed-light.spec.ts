@@ -10,7 +10,7 @@ import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
 import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
 import { activate, chooseOption, chooseStepKind, number, openView, palette, tabTo, typeValue } from './fixtures/studioKeyboard';
 
-import { applyTo, pick } from './fixtures/controls';
+import { applyTo, pick, popupListbox } from './fixtures/controls';
 import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -209,7 +209,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await selectElement('Aligned velocity');
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
   for (const [field, label] of [
-    ['Position', / · effector position$/], ['Velocity', / · effector velocity$/], ['Target', /target pos$/i],
+    ['Position', / · effector position$/], ['Velocity', / · effector velocity$/], ['Target', /^target.pos$/i],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => chooseOption(page, select, label));
@@ -227,7 +227,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   // The popup's search field takes focus after it opens; keys typed before then are lost.
   await expect(page.locator('input').and(page.getByRole('combobox', { name: 'Velocity', exact: true }))).toBeFocused();
   await page.keyboard.type('states');
-  await expect(page.getByRole('option')).toHaveCount(0);
+  await expect(popupListbox(page).getByRole('option')).toHaveCount(0);
   await page.keyboard.press('Escape');
   await edit(() => chooseOption(page, roleField('Velocity'), 'Aligned velocity.velocity'));
 
