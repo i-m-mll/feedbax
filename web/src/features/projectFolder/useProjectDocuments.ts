@@ -251,7 +251,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
       load: role === 'model' && editable ? (archive) => { void load(model, archive); } : undefined,
       unfit: unfit?.model === model ? { problems: unfit.problems, dismiss: () => setUnfit(undefined) } : undefined,
       choose: repoint ? (next) => { void attempt(role, () => point(studioAccessibleName('select', kind), role, next)); } : undefined,
-      templates: role === 'task' && taskTemplates.size ? [...taskTemplates.values()].map(({ template }) => template) : undefined,
+      templates: role === 'task' ? [...taskTemplates.values()].map(({ template }) => template) : undefined,
       create: repoint && role !== 'loaded_model' ? (template) => attempt(role, async () => {
         const { saved } = editor.getSnapshot();
         const { id, document } = namedDocument(saved.project.documents,
