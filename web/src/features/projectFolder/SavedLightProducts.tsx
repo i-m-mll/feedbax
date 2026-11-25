@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { z } from 'zod';
 import { requestJson } from '@/api/request';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
-import type { StudioSavedLightHistory } from '@/generated/studioContracts';
+import { parseContract, type StudioSavedLightHistory } from '@/generated/studioContracts';
 import { Button } from '@/components/ui/Button';
 import { Section } from '@/components/ui/Section';
 
@@ -35,12 +34,6 @@ function themedLayout(layout: Fields | undefined): Fields {
   };
 }
 
-const figureProduct = z.object({
-  data: z.array(z.record(z.unknown())),
-  layout: z.record(z.unknown()).optional(),
-  frames: z.array(z.record(z.unknown())).optional(),
-});
-
 function SavedPlot({ url, name }: { url: string; name: string }) {
   const target = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
@@ -48,7 +41,7 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
   const theme = useRootAttribute('data-theme');
   const figure = useQuery({
     queryKey: ['saved-plotly-figure', url],
-    queryFn: async ({ signal }) => figureProduct.parse(await requestJson(url, { signal })),
+    queryFn: async ({ signal }) => parseContract('FigureProduct', await requestJson(url, { signal })),
   });
   useEffect(() => {
     const node = target.current;
@@ -62,7 +55,7 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
         if (!active) return;
         purge = () => Plotly.purge(node);
         await Plotly.newPlot(node, {
-          ...structuredClone({ data, layout: themedLayout(layout), frames }), config: { responsive: true },
+          ...structuredClone({ data, layout: themedLayout(layout), frames: frames ?? undefined }), config: { responsive: true },
         });
         if (active) setReady(true);
       } catch (error) {

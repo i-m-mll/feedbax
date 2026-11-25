@@ -72,8 +72,8 @@ def _label_coords(layout: StackLayout) -> dict[str, Variable]:
 
 
 def _same_field(left: FieldDescriptor, right: FieldDescriptor) -> bool:
-    return (left.dims, left.units, left.quantity, left.frame) == (
-        right.dims, right.units, right.quantity, right.frame,
+    return left.model_copy(update={"inline_values": None}) == right.model_copy(
+        update={"inline_values": None},
     ) and (left.inline_values is None) == (right.inline_values is None)
 
 
@@ -101,24 +101,21 @@ def _member_coordinate(
     if all(array.dtype == arrays[0].dtype and np.array_equal(array, arrays[0]) for array in arrays[1:]):
         return None
     values, kept = _spanning(np.stack(arrays).reshape((*shape, *arrays[0].shape)), axes)
-    return Variable(values, (*kept, *base.dims), units=base.units, quantity=base.quantity, frame=base.frame)
+    return Variable.from_field(values, base, (*kept, *base.dims))
 
 
 def _stacked(fields: Sequence[FieldDescriptor], axes: tuple[str, ...], name: str) -> FieldDescriptor:
     prototype = fields[0]
     if any(not _same_field(prototype, other) for other in fields[1:]):
         raise ValueError(f"Dataset members disagree on field {name!r}")
-    return FieldDescriptor(
-        dims=(*axes, *prototype.dims),
-        units=prototype.units,
-        quantity=prototype.quantity,
-        frame=prototype.frame,
-        inline_values=(
+    return prototype.model_copy(update={
+        "dims": (*axes, *prototype.dims),
+        "inline_values": (
             tuple(value for field in fields for value in field.inline_values or ())
             if prototype.inline_values is not None
             else None
         ),
-    )
+    })
 
 
 def stack_dataset_members(

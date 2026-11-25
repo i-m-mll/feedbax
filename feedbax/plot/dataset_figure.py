@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import cycle
+from types import MappingProxyType
 from typing import Any, assert_never
 
 import numpy as np
 import plotly.graph_objects as go
 from plotly.colors import qualitative
 
-from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor
+from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor, TrialFigureTime
 from feedbax.contracts.figure_document import (
     BandLayer,
     Encoding,
@@ -25,6 +26,7 @@ from feedbax.contracts.figure_document import (
     layer_encodings,
     validate_figure_bindings,
 )
+from feedbax.contracts.studio_figure import FigureRun, FigureTraceMeta
 from feedbax.dataset import Dataset
 from feedbax.plot.colors import color_add_alpha
 from feedbax.plot.figure_grid import assemble_figure_grid
@@ -106,7 +108,7 @@ def _groups(
         for labels_by_name, group in _groups(
             source, tuple(rest), positions | {dimension: tuple(indices)}
         ):
-            yield {name: source.printed(name, value)} | labels_by_name, group
+            yield {name: value} | labels_by_name, group
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,8 @@ def _draw(
     channels: Mapping[str, _Samples],
     label: str,
     color: str,
+    *,
+    group: dict[str, Label],
 ) -> tuple[go.Scatter, ...]:
     x, y = channels["x"], channels["y"]
     for name, samples in channels.items():
@@ -168,6 +172,7 @@ def _draw(
             x.positions,
         ):
             raise ValueError(f"Channel {name!r} does not share the x samples.")
+    meta = FigureTraceMeta(layer=layer.name, group=group).model_dump(mode="json")
     center = go.Scatter(
         name=label,
         legendgroup=label,
@@ -176,6 +181,7 @@ def _draw(
         y=y.values,
         mode="lines",
         line={"color": color, "dash": layer.style.line_dash, "width": layer.style.line_width},
+        meta=meta,
     )
     if isinstance(layer, LineLayer):
         return (center,)
@@ -196,6 +202,7 @@ def _draw(
             mode="lines",
             line={"color": "rgba(255,255,255,0)"},
             hoverinfo="skip",
+            meta=meta,
         )
         for name in ("upper", "lower")
     )
@@ -209,6 +216,7 @@ def render(
     theme: str | go.layout.Template | Mapping[str, Any] | None = None,
     *,
     names: Mapping[str, Mapping[str, str]] | None = None,
+    runs: Mapping[str, tuple[FigureRun, ...]] = MappingProxyType({}),
 ) -> go.Figure:
     """Render only the authored bindings and prepared values, printing ``names`` for the value IDs they cover."""
     sources = {
@@ -221,6 +229,7 @@ def render(
     colors = cycle(canvas.layout.template.layout.colorway or qualitative.Plotly)
     traces: dict[str, list[go.Scatter]] = {panel.name: [] for panel in figure.layout}
     inferred_labels: dict[str, dict[str, str]] = {}
+    panel_times: dict[str, TrialFigureTime | None] = {}
     for layer in figure.layers:
         source = sources[layer.role]
         before = len(traces[layer.panel])
@@ -233,9 +242,13 @@ def render(
                         channels[channel] = _encoded(source, encoding, positions)
                     except ValueError as error:
                         raise ValueError(f"channel {channel!r}: {error}") from error
-                label = (layer.style.label or layer.name).format_map(group)
+                printed = {name: source.printed(name, value) for name, value in group.items()}
+                label = (layer.style.label or layer.name).format_map(printed)
                 color = layer.style.color or next(colors)
-                traces[layer.panel].extend(_draw(layer, channels, label, color))
+                traces[layer.panel].extend(_draw(layer, channels, label, color, group=group))
+                time = channels["x"].field.trial_time
+                if panel_times.setdefault(layer.panel, time) != time:
+                    panel_times[layer.panel] = None
                 inferred_labels.setdefault(
                     layer.panel, {axis: channels[axis].label for axis in ("x", "y")}
                 )
@@ -244,4 +257,7 @@ def render(
         if len(traces[layer.panel]) == before:
             raise ValueError(f"Layer {layer.name!r} has no plotted groups.")
 
-    return assemble_figure_grid(canvas, figure.layout, figure.view, traces, inferred_labels)
+    return assemble_figure_grid(
+        canvas, figure.layout, figure.view, traces, inferred_labels,
+        panel_times=panel_times, runs=runs,
+    )
