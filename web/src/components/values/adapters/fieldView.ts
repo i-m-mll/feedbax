@@ -98,6 +98,8 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   /** The values the selected runs hold, outside a sweep of the field. */
   const held = !sweep && field.mixed ? field.members ?? [] : [];
   const source = origin(options);
+  const converted = field.conversion;
+  const time = converted && `${Number(converted.value.toPrecision(8))} ${converted.unit}`;
   const text = sweep ? authored : field.mixed || rowSelection && multipleRows ? null : rowSelection ? effective ?? authored : authored;
   const change: ChangeMark | undefined = effective === undefined ? options.changed ?? evaluateChange(options.source)
     : { from: rowSelection && !sweep ? { kind: 'value', text: authored } : { kind: 'selected', text: effective } };
@@ -122,7 +124,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     } : held.length ? { values: held.map(({ id, value }) => ({ id, text: memberText(value), selected: false })) } : undefined,
     parts,
     canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && field.can_change_axis,
-    origin: [field.conversion, source.text].filter(Boolean).join(' · ') || undefined,
+    origin: [time, source.text].filter(Boolean).join(' · ') || undefined,
     change,
     revealOrigin: source.reveal,
     structure: field.structure ?? undefined,

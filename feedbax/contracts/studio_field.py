@@ -16,6 +16,7 @@ from feedbax.contracts.studio_authoring import StudioRunSelection
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.expression_site import SiteProjection
+from feedbax.contracts.time_units import TimeValue
 
 
 class FieldTextEdit(StrictModel):
@@ -106,8 +107,8 @@ class StudioFieldView(StrictModel):
     mixed: bool = False
     """The selected runs hold different values."""
     unit: str | None = None
-    conversion: str | None = None
-    """A duration's single value in the model's other time unit: steps for seconds, seconds for steps."""
+    conversion: TimeValue | None = None
+    """The equivalent in the other time unit under the selected Model's Step."""
     site: SiteProjection
     sweep: StudioSweepList | StudioSweepRange | StudioSweepSampler | None = None
     selected_value: ProjectName | None = None
