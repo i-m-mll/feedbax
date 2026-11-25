@@ -108,6 +108,10 @@ def trial_dataset_fields(
         variable.id for variable in document.variables
         if isinstance(variable.value, DrawValue) and variable.value.family == "choice"
     } if document is not None else set()
+    if document is not None:
+        # All rows of a fixed cohort assign the same fields. Each one has a finite
+        # authored set of values in this evaluation, even for real-valued positions.
+        choices.update(document.validation_trials[0].variables)
     return fields, coords, RecordedTrialLayout(
         epochs=tuple((epoch, labels.get(epoch, epoch)) for epoch in task.epochs),
         positions=tuple(value.key for value in layout.values if value.position),
