@@ -1,7 +1,7 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import {
   firstTrainTask, type ModelDocument, type ObjectiveDocument, type StudioProjectSnapshot, type StudioSavedTrainRuns,
-  type StudioProjectDocument, type StudioTrialAuthoring, type TaskDocument,
+  type StudioTrialAuthoring, type TaskDocument,
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
 import { pick } from './controls';
@@ -15,11 +15,7 @@ export async function authorFirstTrain(
   page: Page, request: APIRequestContext, totalUpdates: number,
   forceComparison?: { activation: 'softmax' },
 ) {
-  const creation = post(page, '/api/projects');
-  await startProject(page);
-  const created = await creation;
-  expect(created.status()).toBe(201);
-  const { snapshot } = await created.json() as StudioProjectDocument;
+  const { snapshot } = await startProject(page);
   expect(snapshot.project.steps).toEqual({});
   expect(snapshot.project.documents).toEqual({});
   const projectPath = '/api/projects/' + snapshot.project_id;

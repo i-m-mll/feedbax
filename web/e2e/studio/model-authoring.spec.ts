@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import { type Locator, type Page } from '@playwright/test';
 import {
-  firstTrainTask, type ModelDocument, type StudioJobSubmission, type StudioProjectDocument, type StudioSavedTrainRuns,
+  firstTrainTask, type ModelDocument, type StudioJobSubmission, type StudioSavedTrainRuns,
   type TaskDocument,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep } from './fixtures/canonicalTrain';
@@ -44,11 +44,7 @@ async function drag(page: Page, from: Locator, to: Locator | { x: number; y: num
  */
 test('authors a Model with the pointer and trains it @round', async ({ page, request }) => {
   test.setTimeout(58_000);
-  const creation = post(page, '/api/projects');
-  await startProject(page);
-  const created = await creation;
-  expect(created.status()).toBe(201);
-  const { snapshot } = await created.json() as StudioProjectDocument;
+  const { snapshot } = await startProject(page);
   const projectPath = '/api/projects/' + snapshot.project_id;
   const runsPath = projectPath + '/train-runs';
   const saved = () => readSaved(request, projectPath);

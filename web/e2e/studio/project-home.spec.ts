@@ -38,7 +38,9 @@ test('an example makes a named copy that opens, and Delete removes a filtered ro
   const table = start.getByRole('table', { name: 'Projects', exact: true });
   await start.getByRole('textbox', { name: 'Filter' }).fill('REACH_C');
   await expect(table.getByRole('link')).toHaveText(['reach_copy']);
-  await table.getByRole('row', { name: /reach_copy/ }).getByRole('button', { name: 'Project reach_copy' }).click();
+  const row = table.getByRole('row', { name: /reach_copy/ });
+  await row.hover();
+  await row.getByRole('button', { name: 'Project reach_copy', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Delete' }).click();
   await page.getByRole('dialog', { name: 'Delete reach_copy?' }).getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(table.getByRole('link')).toHaveCount(0);
