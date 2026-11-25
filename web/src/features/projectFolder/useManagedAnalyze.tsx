@@ -52,16 +52,14 @@ type Source = OperationElement['inputs'][string];
 
 /**
  * What the step's authoring catalog depends on: the step's shape (its base, sweep, deltas and states input, which the
- * operations and their choices depend on) and the saved contents of the document it reads and its bases (which its
- * Changed marks and input sources depend on).
+ * operations and their choices depend on) and the saved project revision, since its Changed marks, input sources and
+ * variable names read the document, its bases and the Task upstream.
  */
 function catalogBasis({ saved, draft }: Pick<ProjectEditSnapshot, 'saved' | 'draft'>, stepId: string | undefined) {
   const step = stepId ? draft.steps?.[stepId] : undefined;
   if (step?.kind !== 'analyze') return { shape: undefined, basis: JSON.stringify([]) };
   const shape = JSON.stringify([step.base, step.sweep, step.deltas, step.inputs?.states]);
-  const document = stepDocument(step.base);
-  const contents = document && baseChain(saved.project.documents, document).map((name) => saved.project.documents?.[name]);
-  return { shape, basis: JSON.stringify([shape, contents ?? null]) };
+  return { shape, basis: JSON.stringify([shape, saved.revision]) };
 }
 type RefusalPlace = 'dialog' | readonly [string, string] | { readonly key: string };
 
