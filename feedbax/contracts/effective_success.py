@@ -274,6 +274,9 @@ class Success(ReferenceValue):
             inputs = self.inputs
             subject = inputs.get("subject", ())
             initial = len(subject) == 1 and subject[0].content.media_type in {INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE}
+            synthesized = (
+                len(subject) == 1 and subject[0].content.media_type == MODEL_TREE_MEDIA_TYPE and subject[0].content.tree
+            )
             roles = {"subject": subject[0].content.media_type, "task": TASK_INPUT_MEDIA_TYPE} if initial else {}
             if "objective" in inputs:
                 roles["objective"] = OBJECTIVE_INPUT_MEDIA_TYPE
@@ -282,6 +285,11 @@ class Success(ReferenceValue):
                     len(inputs[role]) == 1 and inputs[role][0].content.media_type == media_type
                     and not inputs[role][0].content.tree and inputs[role][0].selection is None
                     for role, media_type in roles.items()
+                )
+            elif synthesized:
+                valid = (
+                    not projected and inputs.keys() == {"subject"}
+                    and subject[0].selection is not None and subject[0].selection.member == "model"
                 )
             else:
                 valid = projected == ["subject"] and inputs.keys() == {"subject"} and len(subject) == 1

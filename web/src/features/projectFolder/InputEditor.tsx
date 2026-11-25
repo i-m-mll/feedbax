@@ -166,7 +166,7 @@ export function InputEditor({ label, role, binding, self, steps, project, output
       return onChange({ kind: 'select', binding: changedSelections(current, { kind: 'add', reference: added(reference) }) });
     }
     if (!selections) return onChange({ kind: 'select', binding: added(reference) });
-    onChange({ kind: 'select', binding: changedSelections(current, { kind: 'replace', index, reference }) });
+    onChange({ kind: 'select', binding: changedSelections(current, { kind: 'replace', index, reference: added(reference) }) });
   };
   const groups = (only: boolean): ReferenceGroup[] => [
     ...absent ? [{ label: studioName('documents'), choices: [absent] }] : [],

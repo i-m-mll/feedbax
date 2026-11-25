@@ -7,7 +7,7 @@ import {
   type StudioSavedTrainRuns,
   type SubsetTerms, type UnresolvedValue, type UpdateRule,
 } from '@/generated/studioContracts';
-import { trainSourceSubset } from './createCheckpointTrain';
+import { modelSourceSubset } from './createCheckpointTrain';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
 import { stepSelections, subjectAxisEdits } from './selectionEdits';
@@ -258,8 +258,9 @@ export function ordinaryEvaluation(step: Step): { subjects: EvaluationSubject[];
   const listed = Array.isArray(step.inputs?.subject);
   const subjects: EvaluationSubject[] = [];
   for (const [index, reference] of selections.entries()) {
-    if ((editableCheckpointRule(reference.checkpoint) === undefined && !axes.some((axis) => 'checkpoint_rule' in axis)) ||
-        reference.variants != null) return undefined;
+    // A selection with no checkpoint reads a Synthesize step's model.
+    if ((reference.checkpoint != null && editableCheckpointRule(reference.checkpoint) === undefined &&
+        !axes.some((axis) => 'checkpoint_rule' in axis)) || reference.variants != null) return undefined;
     const where = reference.where ?? {};
     const terms = 'subset' in where ? undefined : where;
     subjects.push({ reference, terms, where: listed ? `/inputs/subject/${index}/where` : '/inputs/subject/where' });
@@ -289,7 +290,8 @@ export async function createEvaluation(
 ) {
   const { saved } = editor.getSnapshot();
   if (saved.revision !== projection.revision || stopped && saved.project.sweep) throw new ProjectEditConflictError();
-  const { step, members, where } = trainSourceSubset(source, plan, projection);
+  const { step, members, where } = modelSourceSubset(source, plan, projection, ['train', 'synthesize']);
+  const checkpoint = step.kind === 'train' && { checkpoint: stopped ? { at: stopped.at } : 'last' as const };
   if (stopped && (
     members.length !== 1 || members[0].id !== stopped.runId ||
     !projection.rows.find(({ key }) => savedRunId(key) === stopped.runId)?.attempts.some(
@@ -297,7 +299,7 @@ export async function createEvaluation(
     )
   )) throw new ProjectEditConflictError();
   const domain = managedTrialDomain(projection, members);
-  if (!domain) throw new Error('Choose managed Train runs that share a trial-set rule.');
+  if (!domain) throw new Error('Choose managed runs that share a trial-set rule.');
   const trialSet: TrialSet = domain.kind === 'fixed' ? { kind: 'every_condition' } : { kind: 'sample', count: 1 };
   const id = generatedName('evaluate', holds(saved.project.steps));
   await editor.createFile({
@@ -308,7 +310,7 @@ export async function createEvaluation(
         evaluation_type: rollout,
         params: { trial_set: trialSet, seed: 0, trial_policy: 'paired', variation: [] },
       } },
-      inputs: { subject: { step: step.id, checkpoint: stopped ? { at: stopped.at } : 'last', ...(where && { where }) } },
+      inputs: { subject: { step: step.id, ...checkpoint, ...(where && { where }) } },
       sweep: { axes: { subject: { input: 'subject' } } },
     },
   }, projection.revision);
@@ -330,8 +332,8 @@ export interface DocumentSubject {
 /** What an Evaluate step's subject reads: an initial Model or Loaded Model document, or checkpoints of Train steps. */
 export type AuthoredSubject = DocumentSubject | { kind: 'steps'; selections: StepReference[] };
 
-/** The subject an edit points an Evaluate step at: a document, or one Train step's checkpoint. */
-export type EvaluateSubject = DocumentSubject | { kind: 'step'; step: string };
+/** The subject an edit points an Evaluate step at: a document, or one Train step's checkpoint or Synthesize step's model. */
+export type EvaluateSubject = DocumentSubject | { kind: 'step'; step: string; reads: 'checkpoint' | 'model' };
 
 export function evaluateSubject(step: Step): AuthoredSubject | undefined {
   const inputs = step.inputs ?? {};
@@ -354,8 +356,8 @@ const documentReference = (kind: SubjectDocumentKind | 'task' | 'objective', doc
   ({ kind, source: { document } }) as const;
 
 /**
- * The edits that point an Evaluate step's subject at `next`. A checkpoint subject reads its Task and Objective from
- * its Train step and fans out over the subject's members; a document subject declares its Task and Objective and has
+ * The edits that point an Evaluate step's subject at `next`. A step subject reads its Task and Objective from the
+ * step that made its model and fans out over the subject's members; a document subject declares its Task and Objective and has
  * no subject or checkpoint axis.
  */
 export function evaluateSubjectEdits(step: Step, next: EvaluateSubject): ProjectValueEdit[] {
@@ -364,13 +366,15 @@ export function evaluateSubjectEdits(step: Step, next: EvaluateSubject): Project
   const set = (path: string, present: boolean, value: JsonValue): ProjectValueEdit =>
     ({ op: present ? 'replace' : 'add', path, value });
   if (next.kind === 'step') {
+    const read = (checkpoint: CheckpointRule | null | undefined): JsonValue =>
+      next.reads === 'checkpoint' ? { step: next.step, checkpoint: checkpoint ?? 'last' } : { step: next.step };
     if (current?.kind === 'steps') {
       const [first] = current.selections;
       if (current.selections.length === 1 && first.step === next.step) return [];
-      return [set('/inputs/subject', true, { step: next.step, checkpoint: first?.checkpoint ?? 'last' })];
+      return [set('/inputs/subject', true, read(current.selections.find(({ checkpoint }) => checkpoint != null)?.checkpoint))];
     }
     return [
-      set('/inputs/subject', 'subject' in inputs, { step: next.step, checkpoint: 'last' }),
+      set('/inputs/subject', 'subject' in inputs, read(undefined)),
       ...Object.keys(inputs).filter((role) => role === 'task' || role === 'objective').reverse()
         .map((role) => ({ op: 'remove', path: `/inputs/${role}` }) as const),
       ...subjectAxisEdits(step),

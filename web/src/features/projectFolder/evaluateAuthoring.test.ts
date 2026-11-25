@@ -58,7 +58,10 @@ it('moves an Evaluate subject between a checkpoint and an initial Model and back
   });
   expect(initial.sweep).toBeUndefined();
   expect(evaluateSubject(initial)).toEqual({ kind: 'document', reads: 'initial_model', document: 'arm', task: 'reach', objective: 'loss' });
-  expect(apply(initial, { kind: 'step', step: 'train' })).toEqual(evaluate);
+  expect(apply(initial, { kind: 'step', step: 'train', reads: 'checkpoint' })).toEqual(evaluate);
+  // A Synthesize step's model is read with no checkpoint, which the planner would refuse on it.
+  expect(apply(initial, { kind: 'step', step: 'synthesize', reads: 'model' }).inputs).toEqual({ subject: { step: 'synthesize' } });
+  expect(apply(evaluate, { kind: 'step', step: 'synthesize', reads: 'model' }).inputs).toEqual({ subject: { step: 'synthesize' } });
 });
 
 // Catches a Loaded Model chosen as the subject but still read as an initial Model, which would evaluate untrained weights.

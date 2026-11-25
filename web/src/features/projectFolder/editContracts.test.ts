@@ -42,7 +42,7 @@ function project(step: Step): ProjectEditContent {
 /** Every edit Studio can make of the step's subject, by the builders its fields and wires use. */
 function subjectEdits(step: Step): Record<string, ProjectValueEdit[]> {
   const edits: Record<string, ProjectValueEdit[]> = {
-    'point at a Train step': evaluateSubjectEdits(step, { kind: 'step', step: 'train_b' }),
+    'point at a Train step': evaluateSubjectEdits(step, { kind: 'step', step: 'train_b', reads: 'checkpoint' }),
     'point at an initial Model': evaluateSubjectEdits(step, { kind: 'document', reads: 'initial_model', document: 'arm', task: 'reach', objective: undefined }),
     'wire a Train step': connection(project(step).steps, 'train_c', 'evaluate')?.edits ?? [],
   };

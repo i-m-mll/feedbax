@@ -5243,7 +5243,7 @@ export type StudioTrialInput = {
 };
 
 export type StudioTrialObjectiveSource = {
-  "kind": "train" | "own";
+  "kind": "train" | "synthesize" | "own";
   "step": string;
 };
 
@@ -5346,6 +5346,7 @@ export type SynthesisStepPayload = {
   "model": DocumentReference | ModelDocument;
   "task": DocumentReference | TaskDocument | PythonTaskSelection;
   "objective": DocumentReference | ObjectiveDocument;
+  "input_bindings"?: Record<string, string | null>;
   "method": string;
   "settings"?: Record<string, JsonValue>;
   "target"?: ModelAddress;
@@ -14243,7 +14244,7 @@ export const StudioTrialInputSchema: z.ZodType<StudioTrialInput> = z.lazy(() =>
 
 export const StudioTrialObjectiveSourceSchema: z.ZodType<StudioTrialObjectiveSource> = z.lazy(() =>
   z.object({
-    "kind": z.union([z.literal("train"), z.literal("own")]),
+    "kind": z.union([z.literal("train"), z.literal("synthesize"), z.literal("own")]),
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialObjectiveSource>;
@@ -14380,6 +14381,7 @@ export const SynthesisStepPayloadSchema: z.ZodType<SynthesisStepPayload> = z.laz
     "model": z.union([DocumentReferenceSchema, ModelDocumentSchema]),
     "task": z.union([DocumentReferenceSchema, TaskDocumentSchema, PythonTaskSelectionSchema]),
     "objective": z.union([DocumentReferenceSchema, ObjectiveDocumentSchema]),
+    "input_bindings": z.record(z.string(), z.union([z.string(), z.null()])).optional(),
     "method": z.string(),
     "settings": z.record(z.string(), jsonValueSchema).optional(),
     "target": ModelAddressSchema.optional(),

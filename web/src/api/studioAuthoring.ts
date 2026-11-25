@@ -201,12 +201,14 @@ export function catalogEntries(catalog: StudioAuthoringCatalog | undefined, fami
 }
 
 /** The registries of declarations, read once per session. */
+export const authoringCatalogQuery = {
+  queryKey: ['authoring-catalog'],
+  queryFn: ({ signal }: { signal: AbortSignal }) => readAuthoringCatalog(signal),
+  staleTime: Infinity,
+} as const;
+
 export function useAuthoringCatalog() {
-  return useQuery({
-    queryKey: ['authoring-catalog'],
-    queryFn: ({ signal }) => readAuthoringCatalog(signal),
-    staleTime: Infinity,
-  });
+  return useQuery(authoringCatalogQuery);
 }
 
 /** What a run rule being written chooses among the runs of the step it reads, or why it is refused. */

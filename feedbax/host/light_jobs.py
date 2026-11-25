@@ -32,16 +32,19 @@ from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigureProduct
 from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, DocumentInput, read_document_input
 from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE
+from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
 from feedbax.contracts.operation import DatasetPort, ModelPort, OperationDefinition, TaskPort
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef, RequestId
+from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef, RequestId, is_synthesized_model_product
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
     NumericalSettings,
     RenderRequestSpec,
     ReportRequestSpec,
+    SynthesisRequestSpec,
 )
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.synthesis import SynthesisMethodExecution
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.content_retention import read_active_roots
 from feedbax.persistence.effective_success import SuccessView
@@ -50,6 +53,11 @@ from feedbax.plugins.declarations import DistributionSource, ResolvedDeclaration
 if TYPE_CHECKING:
     from feedbax.analysis.operations import RegisteredOperation
     from feedbax.application.bundle import ApplicationRegistryBundle
+    from feedbax.synthesis.methods import RegisteredSynthesisMethod
+
+
+type LightDeclaration = ResolvedDeclaration[RegisteredOperation] | ResolvedDeclaration[RegisteredSynthesisMethod]
+type LightDefinition = OperationDefinition | SynthesisMethodExecution
 
 
 class LightDelivery(StrictModel):
@@ -109,7 +117,7 @@ def _typed_operation_input(port, members) -> bool:
         return (
             isinstance(reference, ProductRef) and reference.request_id.startswith("train:")
             and reference.role == "checkpoint" and isinstance(reference.select, (LastMember, BatchMember))
-        ) or (isinstance(reference, ContentRef) and not reference.tree and reference.media_type in {
+        ) or is_synthesized_model_product(reference) or (isinstance(reference, ContentRef) and not reference.tree and reference.media_type in {
             INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE,
         })
     if isinstance(port, TaskPort):
@@ -121,6 +129,7 @@ def _typed_operation_input(port, members) -> bool:
         isinstance(member.reference, ProductRef) and (
             member.reference.request_id.startswith("analyze:")
             or member.reference.request_id.startswith("evaluate:") and member.reference.role == "states"
+            or member.reference.request_id.startswith("synthesize:") and member.reference.role != "model"
         )
         for member in members
     )
@@ -129,7 +138,7 @@ def _typed_operation_input(port, members) -> bool:
 def validate_light_request(
     request: DecodedRequest, *, registry: ApplicationRegistryBundle | None = None,
     read_document: Callable[[ContentRef], DocumentInput] | None = None,
-) -> tuple[str, ResolvedDeclaration[RegisteredOperation] | None]:
+) -> tuple[str, LightDeclaration | None]:
     """Check declaration and binding metadata before managed dataset delivery."""
     from feedbax.analysis.operation_inputs import require_task_source
 
@@ -138,8 +147,16 @@ def validate_light_request(
     if isinstance(spec, AnalysisRequestSpec):
         registry = registry or operation_application()
         operation = resolve_analysis_operation(spec, registry)
+    elif isinstance(spec, SynthesisRequestSpec):
+        registry = registry or operation_application()
+        operation = registry.synthesis_methods.declaration_record(spec.method)
+        if operation.key != spec.method:
+            raise ValueError(f"Use the canonical synthesis method key {operation.key!r} in a managed request.")
+        settings = operation.value.declaration.settings_model.model_validate(spec.settings)
+        if settings.model_dump(mode="json") != spec.settings:
+            raise ValueError("Synthesis settings differ from their validated values.")
     output = validate_light_requirements(request, operation.value.definition if operation is not None else None)
-    if operation is not None and read_document is not None:
+    if isinstance(spec, AnalysisRequestSpec) and operation is not None and read_document is not None:
         assert registry is not None
         for role, port in operation.value.definition.inputs.items():
             if isinstance(port, TaskPort):
@@ -150,10 +167,20 @@ def validate_light_request(
     return output, operation
 
 
-def validate_light_requirements(request: DecodedRequest, definition: OperationDefinition | None) -> str:
+def validate_light_requirements(request: DecodedRequest, definition: LightDefinition | None) -> str:
     """Validate admitted ports from declaration metadata and authored input references."""
     spec = request.spec
-    if definition is not None and not isinstance(spec, AnalysisRequestSpec):
+    if isinstance(spec, SynthesisRequestSpec):
+        if not isinstance(definition, SynthesisMethodExecution) or definition.key != spec.method:
+            raise ValueError("Managed Synthesize requires metadata for its canonical method.")
+        if definition.numerical.floating_point_bits != 64 or spec.numerical_settings != NumericalSettings(
+            floating_point_bits=64,
+        ):
+            raise ValueError("Managed Synthesize requires the declared 64-bit environment.")
+        if request.inputs:
+            raise ValueError("Synthesize reads its resolved trial documents.")
+        return "model"
+    if isinstance(definition, SynthesisMethodExecution) or definition is not None and not isinstance(spec, AnalysisRequestSpec):
         raise ValueError("Only managed Analyze accepts operation metadata.")
     if isinstance(spec, AnalysisRequestSpec):
         if definition is None or definition.key != spec.analysis_type:
@@ -185,6 +212,7 @@ def validate_light_requirements(request: DecodedRequest, definition: OperationDe
                 isinstance(member.reference, ProductRef) and (
                     member.reference.request_id.startswith("analyze:")
                     or member.reference.role == "states" and member.reference.request_id.startswith("evaluate:")
+                    or member.reference.request_id.startswith("synthesize:") and member.reference.role != "model"
                 )
                 for member in members
             )
@@ -272,12 +300,21 @@ def _verify_staged_product(
     request: DecodedRequest,
     bindings: Bindings,
     product: Product,
-    operation: ResolvedDeclaration[RegisteredOperation] | None,
+    definition: LightDefinition | None,
 ) -> None:
     spec = request.spec
     ref = success_content_ref(product.content)
-    if operation is not None:
-        _verify_dataset_output(store, product, operation.value.definition.outputs[product.name])
+    if isinstance(definition, SynthesisMethodExecution) and product.name == "model":
+        from feedbax.persistence.model_tree import read_model_tree
+
+        if not isinstance(ref, ContentTreeRef) or product.content.media_type != MODEL_TREE_MEDIA_TYPE:
+            raise ValueError("Synthesize must publish a semantic model tree.")
+        model = read_model_tree(store, ref, SemanticModelEncoding.model_validate(product.descriptor))
+        if tuple(replica.descriptor.id for replica in model.replicas) != ("0",):
+            raise ValueError("Synthesize must publish one model replica.")
+        return
+    if definition is not None:
+        _verify_dataset_output(store, product, definition.outputs[product.name])
         return
     if product.descriptor is not None:
         raise ValueError(
@@ -339,17 +376,23 @@ def publish_light_success(
         if (operation is None) != (provider is None):
             raise ValueError("Managed operation success requires its executed provider provenance")
         provider_trace = _PROVIDER.validate_python(provider) if provider is not None else None
-        if set(result) != {role} or len(result[role]) != 1 or result[role][0].name != role:
-            raise ValueError(f"Managed {request.kind} success requires one {role!r} product")
-        (product,) = result[role]
+        definition = operation.value.definition if operation is not None else None
+        if isinstance(definition, SynthesisMethodExecution) and provider_trace != operation.source:
+            raise ValueError("Synthesis provider differs from the installed method declaration.")
+        expected = {role, *definition.outputs} if isinstance(definition, SynthesisMethodExecution) else {role}
+        if result.keys() != expected or any(len(items) != 1 or items[0].name != name for name, items in result.items()):
+            raise ValueError(f"Managed {request.kind} success requires one member for each product in {sorted(expected)!r}.")
+        order = (role, *sorted(expected - {role}))
+        ordered = tuple(result[name][0] for name in order)
         with bind_managed_inputs(
             view, delivery.request, origins=exact_origins, checkpoint_bindings=checkpoint_bindings, project=delivery.project_id,
         ) as (_, bindings, excluded):
             if view.attempt_ref(job_id) is None:
                 (root,) = read_active_roots(store, (root_id,))
-                if root.targets != (light_staging_target(success_content_ref(product.content)),):
+                if root.targets != tuple(light_staging_target(success_content_ref(product.content)) for product in ordered):
                     raise ValueError("Managed product differs from the exact staged attempt output")
-                _verify_staged_product(store, request, bindings, product, operation)
+                for product in ordered:
+                    _verify_staged_product(store, request, bindings, product, definition)
             success = view.publish_bound(
                 delivery.request, attempt=job_id, products=result, bindings=bindings,
                 provider=provider_trace, target=target,

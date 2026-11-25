@@ -35,6 +35,9 @@ import { useStore } from 'zustand';
 import { usePlayhead, type PlayheadStore, type TrialShowing } from '@/components/timeline/trialClock';
 
 type DetailName = 'model' | 'scene';
+/** A step kind whose product is a model it determines from its authored Model. */
+const producesModel = (kind: string | undefined) => kind === 'train' || kind === 'synthesize';
+
 export type StoredModel = { id: string; value: ModelDocument };
 
 /** A document view's steps: `lit` are those an edit is made for. */
@@ -320,7 +323,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const graphScope = input.documentScopes.graph;
   /** Whether the Model's topology commands apply; a gesture made while the workspace is unsettled waits for it. */
   const topologyApplies = !!saved.presentation && !outside && (input.valueEditing ||
-    canEdit && input.step?.kind === 'train' &&
+    canEdit && producesModel(input.step?.kind) &&
     !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size);
   const storedView = useStoredModelView({
     model: activeView === 'model' ? stored : undefined, editor, saved, elements: input.elements,
@@ -334,10 +337,10 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     fieldAxes: input.fieldAxes,
     fieldEditable: !outside && Boolean(input.namedRun && (
       input.step?.kind === 'evaluate' ? input.evaluateScope
-        : input.step?.kind === 'train' && (saved.project.sweep ? canEdit && graphScope?.localVariant
+        : producesModel(input.step?.kind) && (saved.project.sweep ? canEdit && graphScope?.localVariant
           : canEdit || selection?.kind === 'values' || selection?.kind === 'rows')
     )),
-    projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
+    projectionRun: producesModel(input.step?.kind) ? input.namedRun : undefined,
     relate: input.relate && ((address) => input.relate!({ kind: 'port', address })),
     topologyApplies,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope

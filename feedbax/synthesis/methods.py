@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from feedbax.contracts.operation import DatasetPort, JaxOperation
+from feedbax.contracts.synthesis import SynthesisMethodExecution
 from feedbax.plugins.declarations import CallableDeclaration, DeclarationRegistry, DistributionSource, mark_callable
 
 if TYPE_CHECKING:
@@ -75,6 +76,12 @@ class RegisteredSynthesisMethod:
     source: DistributionSource
     method: SynthesisMethod[Any]
     declaration: SynthesisMethodDeclaration
+
+    @property
+    def definition(self) -> SynthesisMethodExecution:
+        return SynthesisMethodExecution(
+            key=self.key, numerical=self.declaration.numerical, outputs=dict(self.declaration.outputs),
+        )
 
 
 class SynthesisMethodRegistry:

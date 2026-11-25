@@ -6,7 +6,7 @@ from typing import Literal
 from feedbax.contracts.dataset import FieldDescriptor, TrialFigureTime
 from feedbax.contracts.expression_values import LENGTH, ScopedValue, ValueType
 from feedbax.contracts.operation import DatasetPort
-from feedbax.contracts.request_refs import BestRank, ContentRef, ProductRef, UpdateSeriesMember
+from feedbax.contracts.request_refs import BestRank, ContentRef, ProductRef, UpdateSeriesMember, is_synthesized_model_product
 from feedbax.contracts.retained_state import RetainedStateField
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.task_document import Signal
@@ -17,7 +17,7 @@ XY = FieldDescriptor(dims=("xy",))
 
 
 def rollout_update_axis(subject: ContentRef | ProductRef | BestRank) -> UpdateAxis | None:
-    if isinstance(subject, ContentRef):
+    if isinstance(subject, ContentRef) or is_synthesized_model_product(subject):
         return None
     return "update" if isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember) else "checkpoint"
 

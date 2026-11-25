@@ -302,8 +302,17 @@ export function applyAuthoredEdits(
   };
 }
 
+/**
+ * The document a model-producing step reads in `role`, by the plan's document ids: a Train's trial documents, or a
+ * Synthesize step's payload fields.
+ */
+export function trialDocumentId(ids: Readonly<Record<string, string>> | undefined, role: 'model' | 'task' | 'objective') {
+  return ids?.[`payload.trial_documents.${role}`] ?? (role === 'task' ? ids?.['payload.trial_documents.python_task'] : undefined)
+    ?? ids?.[`payload.${role}`];
+}
+
 export function modelDocumentId(ids?: Readonly<Record<string, string>>) {
-  return ids?.['payload.trial_documents.model'];
+  return trialDocumentId(ids, 'model');
 }
 
 /**

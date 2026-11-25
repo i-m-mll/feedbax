@@ -19,7 +19,7 @@ from feedbax.contracts.effective_success import (
 from feedbax.contracts.execution_target import SessionTarget, attempt_target
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.contracts.request_refs import BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef
+from feedbax.contracts.request_refs import BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef, is_synthesized_model_product
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import live_evaluate
 from feedbax.persistence.best_selection import BestMetricUnavailable, completion_score, ranked_requests
@@ -411,7 +411,8 @@ class Store:
                 raise ValueError("Collected Resume differs from its original Train request")
             inputs = original.inputs
         else:
-            inputs = bind_train_inputs(view, request, self._train_predecessor(row, payload))
+            synthesized = ContentObjectRef.model_validate(binding["model_receipt"]) if "model_receipt" in binding else None
+            inputs = bind_train_inputs(view, request, self._train_predecessor(row, payload), synthesized=synthesized)
         from feedbax.contracts.manifest import TrainingRunManifest, canonical_manifest_path, load_manifest_bytes
         from feedbax.host.job_completion import _read_exact, training_metric_file
 
@@ -579,6 +580,8 @@ class Store:
         terminal = payload["canonical_request"].get("terminal")
         if payload["canonical_request"].get("initial_model") is not None:
             binding = {}
+        elif payload["canonical_request"].get("model") is not None:
+            binding = {"model_subject": self.synthesized_subject(row, payload).model_dump(mode="json")}
         elif terminal is None:
             (binding,) = self.completion_bindings(row["id"])
         else:
@@ -630,8 +633,8 @@ class Store:
             raise ValueError("Light launch differs from its admitted project, Store or request.")
         view = Store._success_view(root)
         decoded = view.read_request(request)
-        if decoded.kind not in ("analyze", "render", "report"):
-            raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
+        if decoded.kind not in ("analyze", "render", "report", "synthesize"):
+            raise ValueError("Managed light jobs require an Analyze, Render, Report or Synthesize request.")
         if delivery.excluded:
             if not delivery.excluded.keys() <= Store._light_requests(decoded):
                 raise ValueError("Excluded deliveries must name authored ordinary light inputs.")
@@ -707,6 +710,28 @@ class Store:
                 else:
                     origins[source["request"]] = self._light_receipt(view, self.deferred.exact_source(source))
             return origins
+        except (ValueError, TypeError, KeyError, OSError) as error:
+            raise CompletionFileError(str(error)) from error
+
+    def synthesized_subject(self, row: sqlite3.Row, payload: dict):
+        from feedbax.contracts.model_origin import ModelProductKey
+        from feedbax.persistence.canonical_evaluate import SynthesizedSubjectBinding
+
+        try:
+            subject = ProductRef.model_validate(payload["canonical_request"]["model"])
+            if not is_synthesized_model_product(subject):
+                raise ValueError("Evaluate requires an exact Synthesize model product.")
+            root = payload["manifest_root"]
+            parents = tuple(edge["parent"] for edge in self.db.execute(
+                "SELECT parent FROM edges WHERE job=? AND NOT authenticated_completion", (row["id"],),
+            ))
+            source, = self._light_parents(row["project"], root, frozenset({subject.request_id}), parents)
+            source = self.deferred.exact_source(source)
+            variant, step, run = json.loads(json.loads(source["data"])["run_key"])
+            receipt = self._light_receipt(self._success_view(root), source)
+            return SynthesizedSubjectBinding(
+                receipt=receipt, key=ModelProductKey(variant=variant, step=step, row=run),
+            )
         except (ValueError, TypeError, KeyError, OSError) as error:
             raise CompletionFileError(str(error)) from error
 
@@ -879,7 +904,36 @@ class Store:
                 best = isinstance(checkpoint, dict) and checkpoint.get("kind") == "best_rank"
                 terminal = canonical_request.get("terminal") if evaluate else None
                 initial = canonical_request.get("initial_model") if evaluate else None
-                if initial is not None:
+                synthesized = canonical_request.get("model") if evaluate else None
+                if synthesized is not None:
+                    from feedbax.persistence.canonical_evaluate import BoundEvaluationJobInput, decode_rollout_request
+
+                    try:
+                        launch = BoundEvaluationJobInput.model_validate(payload)
+                        subject = ProductRef.model_validate(synthesized)
+                        if (
+                            job["continues"] is not None or len(job["edges"]) != 1
+                            or job["edges"][0].get("authenticated_completion") or job["edges"][0]["publication"] is not None
+                            or job["launch"]["warm_entrypoint"] != EVALUATE_ENTRYPOINT
+                            or not is_synthesized_model_product(subject)
+                        ):
+                            raise ValueError("Evaluate requires one exact Synthesize model edge.")
+                        root = str(launch.manifest_root)
+                        view = self._success_view(root)
+                        _, _, decoded = decode_rollout_request(
+                            launch.request_id, view.store.get_object(launch.canonical_request.request),
+                        )
+                        if decoded != subject:
+                            raise ValueError("Synthesize subject differs from the canonical Evaluate request.")
+                        parent = job["edges"][0]["job_id"]
+                        self._light_parents(job["project"], root, frozenset({subject.request_id}), (aliases.get(parent, parent),))
+                    except (OSError, TypeError, ValueError, KeyError) as error:
+                        results.append({
+                            "run_key": run_key, "job_id": None, "disposition": "rejected",
+                            "reason": f"{input_path}: {error}",
+                        })
+                        continue
+                elif initial is not None:
                     from feedbax.contracts.model_input import read_document_input
                     from feedbax.persistence.canonical_evaluate import (
                         BoundEvaluationJobInput, decode_rollout_request, initial_evaluation_references,
@@ -1311,12 +1365,14 @@ class Store:
                 )
         if job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT:
             from feedbax.contracts.operation import OperationDefinition
+            from feedbax.contracts.synthesis import SynthesisMethodExecution
             from feedbax.host.light_jobs import validate_light_requirements
 
             payload = job["launch"]["payload"]
             try:
                 decoded = self._light_request(job["launch"], job["project"], job["request"])
-                definition = OperationDefinition.model_validate(light_definition) if light_definition is not None else None
+                metadata_type = SynthesisMethodExecution if decoded.kind == "synthesize" else OperationDefinition
+                definition = metadata_type.model_validate(light_definition) if light_definition is not None else None
                 validate_light_requirements(decoded, definition)
                 numerical = definition.numerical if definition is not None else None
                 if job["slot"] != ("compute" if numerical else "light") or (

@@ -49,7 +49,7 @@ export function usePinnedSubject({ editor, plan, shown, variant, pin, selectedSt
   const rest = useSceneGeometry(saved.project_id, step && stored ? { document_id: stored.id, revision: saved.revision } : null, restPose)?.(0);
   const authored = step && saved.project.steps?.[step.id];
   const scoredBy = authored?.kind === 'evaluate' ? evaluateSubject(authored) : undefined;
-  const trialStep = step?.kind === 'train' || step?.kind === 'evaluate';
+  const trialStep = step?.kind === 'train' || step?.kind === 'synthesize' || step?.kind === 'evaluate';
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, clocked && trialStep && namedRow?.resolved !== false,
     false, () => undefined, async () => false, async () => undefined);
   const offered = step ? viewOffer({

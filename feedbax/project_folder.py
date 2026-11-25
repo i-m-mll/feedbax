@@ -29,6 +29,7 @@ from feedbax._secure_fs import (
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
+from feedbax.synthesis.methods import SynthesisMethodRegistry
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
@@ -454,6 +455,7 @@ def compile_saved_project(
     figure_templates: FigureTemplateRegistry | None = None,
     source_runs: Iterable[RunKey] = (), memo: SavedPlanMemo | None = None,
     training_methods: TrainingMethodRegistry | None = None,
+    synthesis_methods: SynthesisMethodRegistry | None = None,
 ) -> SettledProjectPlan:
     """Compile exact authored bytes and reuse them only with matching input authority."""
     readers = replace(readers, terminal_train=terminal_train_reader(store), imported_model=imported_model_reader(store))
@@ -461,7 +463,7 @@ def compile_saved_project(
     source_runs = frozenset(source_runs)
     stamp = (
         project_id, text.revision, semantic_root, text.root, store, source_runs,
-        compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates),
+        compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods),
         readers.figure_external is not None,
     )
     observations: dict[str, dict[str, object]] = {}
@@ -482,7 +484,7 @@ def compile_saved_project(
         plan = compile_project(
             text.project, source_runs=source_runs, memo=memo,
             operations=operations, components=components, functions=functions, python_tasks=python_tasks,
-            figure_templates=figure_templates, training_methods=training_methods,
+            figure_templates=figure_templates, training_methods=training_methods, synthesis_methods=synthesis_methods,
             readers=replace(readers, **observed_readers),
         )
         settled = SettledProjectPlan(
@@ -931,6 +933,7 @@ class ProjectFolder:
         figure_templates: FigureTemplateRegistry | None = None,
         local_folder: ProjectFolderLocation | None = None,
         training_methods: TrainingMethodRegistry | None = None,
+        synthesis_methods: SynthesisMethodRegistry | None = None,
         load_examples: Callable[[], Mapping[str, Project]] = dict,
     ) -> None:
         self.root = root.resolve()
@@ -941,6 +944,7 @@ class ProjectFolder:
         self.functions = functions
         self.python_tasks = python_tasks
         self.training_methods = training_methods
+        self.synthesis_methods = synthesis_methods
         self._load_examples = load_examples
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: SavedPlanMemo())
         self._known_locations: dict[str, ProjectFolderLocation] = {}
@@ -1155,6 +1159,7 @@ class ProjectFolder:
             source_runs=source_runs, memo=self._plan_memo(project_id),
             operations=self.operations, components=self.components, functions=self.functions,
             python_tasks=self.python_tasks, figure_templates=self.figure_templates, training_methods=self.training_methods,
+            synthesis_methods=self.synthesis_methods,
         )
 
     def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:

@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from hashlib import sha256
 from math import isfinite
 import re
-from typing import Annotated, ClassVar, Literal, get_args
+from typing import Annotated, ClassVar, Literal, TypeGuard, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, field_validator, model_validator
 
@@ -166,6 +166,13 @@ class ProductRef(ReferenceValue):
     request_id: RequestId
     role: Name
     select: ProductSelector | None = None
+
+
+def is_synthesized_model_product(reference: object) -> TypeGuard[ProductRef]:
+    return (
+        isinstance(reference, ProductRef) and reference.request_id.startswith("synthesize:")
+        and reference.role == "model" and reference.select is None
+    )
 
 
 class ConditionalProduct(ProductRef):

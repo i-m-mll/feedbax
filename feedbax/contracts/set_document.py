@@ -193,16 +193,22 @@ def model_slot(
     payload: Payload, document_ids: Mapping[str, str], document_pointers: Mapping[str, str],
 ) -> tuple[str, Payload] | None:
     """The whole Model document a resolved step payload reads, with its content."""
-    name = document_ids.get(MODEL_SLOT)
-    slots = payload.get("trial_documents")
+    path = "payload." + ".".join(trial_model_path(payload))
+    name = document_ids.get(path)
+    slots = payload.get("trial_documents", payload)
     content = slots.get("model") if isinstance(slots, dict) else None
-    if name is None or MODEL_SLOT in document_pointers or not isinstance(content, dict):
+    if name is None or path in document_pointers or not isinstance(content, dict):
         return None
     return name, content
 
 
+def trial_model_path(payload: Payload) -> tuple[str, ...]:
+    """The Model slot of a Train or Synthesize payload."""
+    return ("model",) if "trial_documents" not in payload and "model" in payload else ("trial_documents", "model")
+
+
 def sets_offered(project: Project, step: str) -> tuple[str, ...]:
     """The existing Sets an addressable Train or Evaluate sweep may reference."""
-    if project.steps[step].kind not in ("train", "evaluate"):
+    if project.steps[step].kind not in ("train", "evaluate", "synthesize"):
         return ()
     return tuple(sorted(name for name, document in project.documents.items() if document.schema_id == SET_DOCUMENT_SCHEMA_ID))

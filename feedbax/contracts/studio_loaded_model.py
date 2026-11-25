@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field, RootModel
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.synthesis import ModelProductKey
+from feedbax.contracts.model_origin import ModelProductKey
 from feedbax.contracts.loaded_model import ModelFitReport
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.request_refs import BatchCoordinate, Name, Sha256

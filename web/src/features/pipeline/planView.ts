@@ -82,6 +82,8 @@ export interface PlanStepView {
   /** The step's shown name, `shownName` of its key. */
   readonly label: string;
   readonly kind: StepKind;
+  /** The label of the method a Synthesize step determines its model by. */
+  readonly method?: string;
   readonly group?: string | null;
   readonly sweeps: readonly PlanSweepView[];
   readonly runs: readonly PlanRunView[];
