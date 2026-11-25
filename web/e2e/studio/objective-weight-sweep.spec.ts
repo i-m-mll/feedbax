@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
-import { enter, fixture, mapStep, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
+import { enter, fixture, mapStep, seedManagedProject, sweepLabel, mapCard } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -28,7 +28,7 @@ test("a Weight cell's sweep is an axis on the Train step, listed in the Inspecto
   const table = page.locator('[data-slot="primary"]').getByRole('tabpanel').getByRole('table', { name: 'Objective Terms', exact: true });
   /** The Weight of the term at `index`, counting from the first. */
   const weight = (index: number) => table.getByRole('row').nth(index + 1).getByRole('textbox', { name: 'Weight', exact: true });
-  const card = page.getByRole('article', { name: 'Train train' });
+  const card = mapCard(page, 'train');
 
   await expect(weight(1)).toBeEditable();
   await enter(weight(1), '0.1, 1, 10');

@@ -5,7 +5,7 @@ import type {
   StudioProjectWindowMap, StudioSavedLightResult, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
-import { enter, mapStep, runName, shownRunLabel, runProjectFixture } from './fixtures/canonicalTrain';
+import { enter, mapStep, runName, shownRunLabel, runProjectFixture, mapCard } from './fixtures/canonicalTrain';
 import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
 import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
 import { activate, chooseOption, chooseStepKind, number, openView, palette, tabTo, typeValue } from './fixtures/studioKeyboard';
@@ -511,7 +511,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   const table = page.getByRole('table', { name: 'Runs', exact: true });
   const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  const train = page.getByRole('article', { name: 'Train train', exact: true });
+  const train = mapCard(page, 'train');
   async function snapshot() {
     const response = await request.get(path);
     expect(response.ok(), await response.text()).toBe(true);
@@ -556,7 +556,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
     const creation = page.waitForResponse((response) => response.request().method() === 'POST'
       && new URL(response.url()).pathname === path + '/files'
       && response.request().postDataJSON().file.id === id);
-    await train.getByRole('button', { name: 'New Step train', exact: true }).click();
+    await train.getByRole('button', { name: 'New Step Train', exact: true }).click();
     await chooseStepKind(page, kind);
     const created = await creation;
     expect(created.status(), await created.text()).toBe(201);
@@ -587,7 +587,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   await expect(palette.getByRole('option', { name: 'New Step', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
   await openRuns('train');
-  await expect(train.getByRole('button', { name: 'New Step train', exact: true })).toHaveCount(0);
+  await expect(train.getByRole('button', { name: 'New Step Train', exact: true })).toHaveCount(0);
 
   await pick(variants, 'base');
   await selectPair();

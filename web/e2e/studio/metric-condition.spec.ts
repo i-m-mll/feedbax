@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns, StudioSavedTrainRunRequest } from '../../src/generated/studioContracts';
-import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
@@ -43,8 +43,8 @@ test('a metric condition offers the declared metric, refuses an unknown one, and
 
     await page.goto(`/?project=${snapshot.project_id}`);
     await select(page, 'train');
-    await page.getByRole('article', { name: 'Train train', exact: true })
-      .getByRole('button', { name: 'New Step train', exact: true }).click();
+    await mapCard(page, 'train')
+      .getByRole('button', { name: 'New Step Train', exact: true }).click();
     await chooseStepKind(page, 'Evaluate');
     await rule.fill('train');
     await page.getByRole('option', { name: 'train_loss', exact: true }).click();

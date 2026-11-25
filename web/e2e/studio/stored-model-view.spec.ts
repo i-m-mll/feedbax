@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
-import { chooseSweepValue, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseSweepValue, enter, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { modelEdit, outlineRow, pick, placeFromLibrary } from './fixtures/controls';
 import { rootPayload } from './fixtures/rootPayload';
@@ -232,7 +232,7 @@ test('an Evaluate attachment for the step is stored in a document based on the s
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('0.5');
-  const evaluation = page.getByRole('article', { name: 'Evaluate baseline' });
+  const evaluation = mapCard(page, 'baseline');
   await chooseSweepValue(evaluation, 'seed', 'control');
   await outlineRow(page, 'Cell.output → Readout.input').click();
   await addIntervention(page, projectPath, { rows: ['seed=control'], axes: { seed: ['control'] } });

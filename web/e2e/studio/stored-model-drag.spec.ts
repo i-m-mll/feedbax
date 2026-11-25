@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
 import { blankTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { fixture, mapStep, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -168,7 +168,7 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     return !body.edit && body.revision === (await savedEdit).snapshot.revision;
   }, { timeout: 12_000 });
   void projected.catch(() => {});
-  const planCard = page.getByRole('article', { name: 'Train train', exact: true });
+  const planCard = mapCard(page, 'train');
   const cannotRunMarks = planCard.locator(`button[data-result-run][aria-label$=" · Can't run"]`);
   await expect(cannotRunMarks.first()).toBeVisible();
   // The map is busy from the new revision until its plan is shown; the time it settles is recorded in the page.

@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { enter, fixture, mapStep, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -11,7 +11,7 @@ test('the inspector edits the saved values for the step and its selected runs, a
   // Train offers the settings a project authors, so the project authors Grad Clip to edit it.
   files.at(-1).step.base.inline.settings.grad_clip = 1;
   const { snapshot, projectPath } = await seedManagedProject(request, files);
-  const card = page.getByRole('article', { name: 'Train train', exact: true });
+  const card = mapCard(page, 'train');
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const clip = page.getByRole('region', { name: 'Grad Clip field', exact: true });
   const batches = page.getByRole('region', { name: 'Batches field', exact: true });

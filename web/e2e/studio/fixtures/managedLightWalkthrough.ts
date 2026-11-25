@@ -3,7 +3,7 @@ import type {
   StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
-import { authorLearningRateSweep, chooseSweepValue, mapStep, runName, shownRunLabel } from './canonicalTrain';
+import { authorLearningRateSweep, chooseSweepValue, mapStep, runName, shownRunLabel, mapCard } from './canonicalTrain';
 import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, openView, palette, submitOption, tabTo } from './studioKeyboard';
 import { applyTo, outlineRow, pick } from './controls';
 
@@ -32,7 +32,7 @@ const pane = (page: Page) => page.getByRole('tabpanel', { name: 'Runs', exact: t
 const table = (page: Page) => pane(page).getByRole('table', { name: 'Runs', exact: true });
 const drawer = (page: Page) => page.getByRole('complementary', { name: 'Details Drawer', exact: true });
 const stepInspector = (page: Page) => page.getByRole('complementary', { name: 'Inspector', exact: true });
-const train = (page: Page) => page.getByRole('article', { name: 'Train train', exact: true });
+const train = (page: Page) => mapCard(page, 'train');
 const variant = (page: Page) => page.getByRole('combobox', { name: 'Variant', exact: true });
 
 async function openRuns(page: Page, step: string) {
@@ -147,7 +147,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   async function addSuccessor(kind: 'Train' | 'Evaluate', id: string, producer = 'train') {
     const saved = page.waitForResponse((response) => response.request().method() === 'POST' &&
       new URL(response.url()).pathname === context.projectPath + '/files' && response.request().postDataJSON().file.id === id);
-    const card = page.getByRole('article', { name: 'Train ' + producer, exact: true });
+    const card = mapCard(page, producer);
     await activate(page, card.locator('button[data-command-id="newStep"]'));
     await chooseStepKind(page, kind, true);
     const response = await saved;
@@ -171,7 +171,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   if (!await outline.isVisible()) await palette(page, 'showSteps', 'Show Steps');
   await activate(page, sourceRow(2));
   await expect(used).toHaveCount(0);
-  await expect(page.getByRole('article', { name: 'Report report', exact: true })).not.toHaveAttribute('data-map-related', /.+/);
+  await expect(mapCard(page, 'report')).not.toHaveAttribute('data-map-related', /.+/);
   await activate(page, sourceRow(0));
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
   // The inspector is titled by the run's step and its sweep values.
@@ -203,7 +203,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
   await rule.click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
-  for (const value of ['0.001', '0.002', '0.003']) await chooseSweepValue(page.getByRole('article', { name: 'Train train', exact: true }), 'learning-rate', value);
+  for (const value of ['0.001', '0.002', '0.003']) await chooseSweepValue(mapCard(page, 'train'), 'learning-rate', value);
   await expect(ruleRow).toContainText('3/3');
   const edited = mutation(context, 'PATCH');
   await page.keyboard.press('Enter');

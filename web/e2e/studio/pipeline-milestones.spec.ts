@@ -4,7 +4,7 @@ import type {
   ModelFieldResponse, StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { appendManagedFiles, authorLearningRateSweep, chooseSweepValue, enter, fixture, mapStep, openResultsSlot, runName, shownRunLabel, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { appendManagedFiles, authorLearningRateSweep, chooseSweepValue, enter, fixture, mapStep, openResultsSlot, runName, shownRunLabel, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { pick } from './fixtures/controls';
 import { conditionLabels } from '../../src/features/projectFolder/evaluateAuthoring';
@@ -210,9 +210,9 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   await page.goto(path);
   await select(page, 'train');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const train = page.getByRole('article', { name: 'Train train', exact: true });
+  const train = mapCard(page, 'train');
   const created = responseFor(page, projectPath + '/files');
-  await train.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await train.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
   expect((await created).status()).toBe(201);
   const rule = inspector.getByRole('combobox', { name: 'Runs', exact: true });
@@ -220,7 +220,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const written = `lowest 2 ${metricName}${grouped ? ' per replicate' : ''}`;
   const inputs = inspector;
   const members = inputs.getByRole('list', { name: 'Members', exact: true }).getByRole('listitem');
-  const groupLabels = ['replicate First', 'replicate Second'];
+  const groupLabels = ['First', 'Second'];
   const groupedLists = groupLabels.map((label) =>
     inputs.getByRole('list', { name: `Members ${label}`, exact: true }).getByRole('listitem'));
   const freeze = page.getByRole('menuitem', { name: 'To Rows', exact: true });
@@ -279,7 +279,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   } else {
     expect(keys).toEqual(['rank-1', 'rank-2']);
     for (const [index] of ranks.entries()) {
-      await expect(runs(page).getByRole('rowheader', { name: new RegExp(`rank-${index + 1}`, 'i') })).toHaveCount(1);
+      await expect(runs(page).getByRole('rowheader', { name: new RegExp(`Rank ${index + 1}$`) })).toHaveCount(1);
     }
   }
 
@@ -371,8 +371,8 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const mounted = '/?project=' + snapshot.project_id;
   const map = page.getByRole('region', { name: 'Pipeline Map', exact: true });
-  const train = map.getByRole('article', { name: 'Train train', exact: true });
-  const evaluated = map.getByRole('article', { name: 'Evaluate evaluate', exact: true });
+  const train = mapCard(map, 'train');
+  const evaluated = mapCard(map, 'evaluate');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const steps = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const readPlan = () => savedPlan(request, projectPath);
@@ -396,7 +396,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await chooseSweepValue(train, 'learning-rate', '0.001');
   await chooseSweepValue(train, 'learning-rate', '0.002', true);
   const created = responseFor(page, projectPath + '/files');
-  await train.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await train.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
   const response = await created;
   expect(response.status(), await response.text()).toBe(201);
@@ -538,7 +538,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   await pick(primary(page).getByRole('combobox', { name: 'Rows', exact: true }), 'learning-rate');
   await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'task');
   const cell = (model: string, task: string, status: string) => pivot.getByRole('button', {
-    name: `Select learning-rate ${model} · task ${task} · ${status}`, exact: true,
+    name: `Select ${model} · ${task} · ${status}`, exact: true,
   });
   await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
   await expect(pivot.getByRole('rowheader')).toHaveText(['Slow', 'Fast']);
@@ -581,7 +581,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const mass = page.getByRole('textbox', { name: 'Mass', exact: true });
   // The value comes from the inspected document itself, so the field names no source.
   await expect(mass).toHaveAccessibleDescription('');
-  await chooseSweepValue(page.getByRole('article', { name: 'Train train', exact: true }), 'learning-rate', 'Fast');
+  await chooseSweepValue(mapCard(page, 'train'), 'learning-rate', 'Fast');
   await model.focus();
   await expect(mass).toBeEditable();
   await enter(mass, '2');

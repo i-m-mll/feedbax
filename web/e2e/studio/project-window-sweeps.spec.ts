@@ -2,8 +2,7 @@ import { expect, test } from './fixtures/studio';
 import { type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import {
-  authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot, seedManagedProject, sweepLabel,
-} from './fixtures/canonicalTrain';
+  authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot, seedManagedProject, sweepLabel, mapCard } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -26,7 +25,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
-  const card = page.getByRole('article', { name: 'Train train' });
+  const card = mapCard(page, 'train');
   const table = page.getByRole('table', { name: 'Runs' });
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const rows = table.locator('tbody tr[data-index]');
@@ -179,7 +178,7 @@ test('Add Sweep goes to a nested field and sweeps it only by the text it commits
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const sweep = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project.steps?.train.sweep;
   await page.goto(`/?project=${snapshot.project_id}`);
-  const card = page.getByRole('article', { name: 'Train train' });
+  const card = mapCard(page, 'train');
   const b1 = page.getByRole('region', { name: 'B1 field', exact: true });
   const text = b1.getByRole('textbox', { name: 'B1', exact: true });
   const chooseB1 = async () => {
@@ -246,7 +245,7 @@ test('an addressed Model numeric field authors a step sweep from the inspector',
     .map(({ coordinates }) => coordinates.mass?.value)).toEqual([1, 2]);
   const { plan } = await readPlan(request, projectPath);
   expect(new Set(plan.rows.map(({ request_id }) => request_id)).size).toBe(2);
-  await expect(page.getByRole('article', { name: 'Train train' }).locator('[data-status-mark="not_run"]')).toHaveCount(2);
+  await expect(mapCard(page, 'train').locator('[data-status-mark="not_run"]')).toHaveCount(2);
 });
 
 test('an authored component range reopens as its exact rule and To List keeps row IDs', async ({ page, request }) => {

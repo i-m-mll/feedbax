@@ -202,7 +202,7 @@ export async function authorFirstTrain(
     } },
     [plantId!]: { kind: 'leaf', type: 'feedbax.PointMass' },
   });
-  const reachPort = savedModel.ports.inputs?.find(({ name }) => name === 'target_pos');
+  const reachPort = savedModel.ports.inputs?.find(({ name }) => name === 'target position');
   const commandPort = savedModel.ports.outputs?.find(({ name }) => name === 'output');
   expect(reachPort?.id).toBeTruthy();
   expect(commandPort?.id).toBeTruthy();

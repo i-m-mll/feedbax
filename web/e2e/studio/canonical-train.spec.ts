@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
-import { authorLearningRateSweep, captureStudioWindow, chooseSweepValue, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, shownRunLabel, seedManagedProject } from './fixtures/canonicalTrain';
+import { authorLearningRateSweep, captureStudioWindow, chooseSweepValue, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, shownRunLabel, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 import { formatMetric } from '../../src/components/activity/studioPlot';
 import type {
@@ -386,7 +386,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     return await response.json() as StudioSavedTrainRuns;
   };
   const map = page.getByRole('region', { name: 'Pipeline Map' });
-  const source = map.getByRole('article', { name: 'Train train', exact: true });
+  const source = mapCard(map, 'train');
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   const stepInspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
@@ -437,7 +437,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const prefix = await run('train');
 
   const create = submitted(page, filesPath);
-  await source.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await source.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseTrainSuccessor(page);
   const accepted = await create;
   expect(accepted.status(), await accepted.text()).toBe(201);
@@ -450,7 +450,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     })).sort((left, right) => left.id.localeCompare(right.id)) }] } } },
     deltas: [{ patches: [{ value: 'initialize_from' }] }],
   });
-  const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
+  const child = mapCard(map, childId);
   await expect(mapStep(page, childId)).toHaveAttribute('aria-pressed', 'true');
   await expect(child).toContainText('2 of 3');
   await expect(stepInspector.getByRole('combobox', { name: 'Method', exact: true })).toBeFocused();

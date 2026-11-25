@@ -71,7 +71,17 @@ type DrawnMap = {
 /** The name the Runs table draws for the saved row at `key`: its label, or for a step's only run its step's name. */
 export function drawnRunLabel(map: DrawnMap, key: RowKey) {
   const row = map.rows.find((item) => item.key.variant === key.variant && item.key.step === key.step && item.key.row === key.row)!;
-  return row.label ?? map.steps.find((step) => step.variant === key.variant && step.step_id === key.step)!.label;
+  return row.label ?? drawnStepLabel(map, key);
+}
+
+/** The name the window map gives a run's step. */
+export function drawnStepLabel(map: Pick<DrawnMap, 'steps'>, key: Omit<RowKey, 'row'>) {
+  return map.steps.find((step) => step.variant === key.variant && step.step_id === key.step)!.label;
+}
+
+/** A step's card on the map, found by its id since the card reads the step's name. */
+export function mapCard(scope: Page | Locator, stepId: string) {
+  return scope.locator(`[data-map-card][data-map-step="${stepId}"]`);
 }
 
 export function mapStep(page: Page, stepId: string) {

@@ -3,7 +3,7 @@ import { type Page, type Request } from '@playwright/test';
 import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { appendManagedFiles, enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { appendManagedFiles, enter, mapStep, runProjectFixture, mapCard } from './fixtures/canonicalTrain';
 import { pick, popupListbox } from './fixtures/controls';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
@@ -105,7 +105,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   const upstream = (await plan(initial.revision)).evaluations!.find(({ key }) => key.step === 'baseline')!;
   expect(upstream.result).toBeTruthy();
   const admittedJobs = await attempts();
-  await page.getByRole('article', { name: 'Evaluate baseline', exact: true }).locator('.studio-map-run-mark').click();
+  await mapCard(page, 'baseline').locator('.studio-map-run-mark').click();
   await page.keyboard.press('Meta+K');
   const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
   await palette.getByRole('combobox').fill('New Step');
