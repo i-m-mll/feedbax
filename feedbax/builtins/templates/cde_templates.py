@@ -169,7 +169,7 @@ def cde_controller_spec(
         bias_init=-5.0,
     )
     spec.nodes.update(
-        observation=_node("Mux", ["in_0", "in_1"], ["output"], n_inputs=2, dtype=dtype_name),
+        observation=_node("Concatenate", ["in_0", "in_1"], ["output"], n_inputs=2, dtype=dtype_name),
         h0=_node(
             "Constant", [], ["output"], value=[0.0] * hidden_dim, dtype=dtype_name, trainable=True
         ),

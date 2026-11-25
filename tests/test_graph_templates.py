@@ -64,7 +64,7 @@ def _network_controller_graph_spec() -> GraphSpec:
 def test_spec_to_graph_controller_template_instantiates_explicit_nodes() -> None:
     graph = spec_to_graph(_network_controller_graph_spec(), ComponentRegistry())
 
-    assert set(graph.nodes) == {"input_mux", "cell", "readout", "mechanics"}
+    assert set(graph.nodes) == {"input_join", "cell", "readout", "mechanics"}
 
 
 def test_gru_network_subgraph_runs_with_recurrent_zero_initializer() -> None:
@@ -691,11 +691,11 @@ def test_recurrent_controller_template_is_explicit_plain_graph() -> None:
         out_nonlinearity="identity",
     )
 
-    assert set(subgraph.nodes) == {"input_mux", "cell", "readout"}
+    assert set(subgraph.nodes) == {"input_join", "cell", "readout"}
     assert subgraph.input_ports == ["input", "feedback"]
     assert subgraph.input_bindings == {
-        "input": ("input_mux", "in_0"),
-        "feedback": ("input_mux", "in_1"),
+        "input": ("input_join", "in_0"),
+        "feedback": ("input_join", "in_1"),
     }
     assert subgraph.output_bindings["hidden"] == ("cell", "hidden")
     assert any(
@@ -816,12 +816,12 @@ def test_builtin_executable_templates_are_exposed_in_component_registry() -> Non
     assert network.template_id == "feedbax.templates.recurrent_controller"
     assert network.template_kind == "executable"
     assert network.template_graph is not None
-    assert set(network.template_graph.nodes) == {"input_mux", "cell", "readout"}
+    assert set(network.template_graph.nodes) == {"input_join", "cell", "readout"}
 
     assert feedback.template_id == "feedbax.templates.simple_feedback"
     assert feedback.template_kind == "executable"
     assert feedback.template_graph is not None
-    assert set(feedback.template_graph.subgraphs["net"].nodes) == {"input_mux", "cell", "readout"}
+    assert set(feedback.template_graph.subgraphs["net"].nodes) == {"input_join", "cell", "readout"}
     assert {"feedback_select", "feedback", "feedback_values", "net"} <= set(
         feedback.template_graph.nodes
     )

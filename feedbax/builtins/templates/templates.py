@@ -174,8 +174,8 @@ def recurrent_controller_template_graph(
         "dtype": dtype_name,
     }
     nodes = {
-        "input_mux": ComponentSpec(
-            type="feedbax.Mux",
+        "input_join": ComponentSpec(
+            type="feedbax.Concatenate",
             params={"n_inputs": 2, "dtype": dtype_name},
             input_ports=["in_0", "in_1"],
             output_ports=["output"],
@@ -192,7 +192,7 @@ def recurrent_controller_template_graph(
         ),
     }
     wires = []
-    cell_input_node = "input_mux"
+    cell_input_node = "input_join"
     if encoding_size is not None:
         nodes["encoder"] = ComponentSpec(
             type="feedbax.Linear",
@@ -208,7 +208,7 @@ def recurrent_controller_template_graph(
         )
         wires.append(
             WireSpec(
-                source_node="input_mux",
+                source_node="input_join",
                 source_port="output",
                 target_node="encoder",
                 target_port="input",
@@ -224,7 +224,7 @@ def recurrent_controller_template_graph(
         )
     )
     input_ports = ["input", "feedback"]
-    input_bindings = {"input": ("input_mux", "in_0"), "feedback": ("input_mux", "in_1")}
+    input_bindings = {"input": ("input_join", "in_0"), "feedback": ("input_join", "in_1")}
     hidden_node = "cell"
     hidden_port = "hidden"
     if hidden_nonlinearity != "identity":
@@ -404,8 +404,8 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
         ),
         channel: channel_spec("feedback", "sensory_feedback", "pre_controller"),
         "feedback_values": ComponentSpec(
-            type="feedbax.AssembleFeedback",
-            params={"n_inputs": 1, "layout": None},
+            type="feedbax.Concatenate",
+            params={"n_inputs": 1},
             input_ports=["in_0"],
             output_ports=["output"],
         ),
@@ -503,7 +503,7 @@ class SimpleFeedbackConfig(BaseModel):
 
 
 class RecurrentController(GraphTemplate):
-    """Explicit Mux, recurrent cell, and readout controller graph."""
+    """Explicit Concatenate, recurrent cell, and readout controller graph."""
 
     config = RecurrentControllerConfig
     component_options = ComponentOptions(

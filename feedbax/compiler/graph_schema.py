@@ -246,7 +246,7 @@ def _validate_local_connections(
             )
         )
 
-    issues.extend(_mux_connected_input_issues(graph, task_binding_spec, base_path))
+    issues.extend(_concatenate_connected_input_issues(graph, task_binding_spec, base_path))
     for name, child_resolution in resolution.subgraphs.items():
         token = name.replace("~", "~0").replace("/", "~1")
         issues.extend(_validate_local_connections(
@@ -319,7 +319,7 @@ def _parameter_resolution_issues(
     return issues
 
 
-def _mux_connected_input_issues(
+def _concatenate_connected_input_issues(
     graph: GraphSpec,
     task_binding_spec: Optional[StudioTaskBindingSpec],
     base_path: str,
@@ -338,15 +338,16 @@ def _mux_connected_input_issues(
     occupied_ports = graph_input_ports | wired_ports | task_bound_ports
 
     for node_id, node in graph.nodes.items():
-        if node.type != "feedbax.Mux":
+        if node.type != "feedbax.Concatenate":
             continue
+        minimum_inputs = 1 if node.params.get("n_inputs") == 1 else 2
         connected_inputs = {port for port in node.input_ports if (node_id, port) in occupied_ports}
-        if len(connected_inputs) >= 2:
+        if len(connected_inputs) >= minimum_inputs:
             continue
         issues.append(
             SchemaValidationIssue(
-                type="mux_needs_two_connected_inputs",
-                message=f"Mux {node_id!r} needs at least two connected inputs",
+                type="concatenate_needs_connected_inputs",
+                message=f"Concatenate {node_id!r} needs {minimum_inputs} or more connected inputs",
                 location={"path": f"{base_path}/nodes/{node_id}"},
             )
         )
@@ -563,7 +564,7 @@ def _enumerate_graph_ports(
                 ports=ports,
             )
         )
-    _apply_mux_output_shapes(ports, graph, task_binding_spec)
+    _apply_concatenate_output_shapes(ports, graph, task_binding_spec)
     return ports
 
 
@@ -703,7 +704,7 @@ def _component_port_dimension(
         elif port in {"forces", "activations"}:
             n_pairs = _positive_int_param(node_params, "n_pairs")
             dimension = n_pairs * 2 if n_pairs is not None else None
-    elif component_type == "feedbax.Demux":
+    elif component_type == "feedbax.Split":
         sizes = node_params.get("sizes")
         if isinstance(sizes, (list, tuple)) and all(
             isinstance(size, int) and size > 0 for size in sizes
@@ -779,7 +780,7 @@ def _subgraph_boundary_value_schema(
     return None
 
 
-def _apply_mux_output_shapes(
+def _apply_concatenate_output_shapes(
     ports: list[PortSchema],
     graph: GraphSpec,
     task_binding_spec: Optional[StudioTaskBindingSpec],
@@ -808,7 +809,7 @@ def _apply_mux_output_shapes(
             input_sources[(binding.target_node_id, binding.target_port)] = source
 
     for port in ports:
-        if port.component_type != "feedbax.Mux" or port.direction != "output" or port.port != "output":
+        if port.component_type != "feedbax.Concatenate" or port.direction != "output" or port.port != "output":
             continue
         node = graph.nodes.get(port.node_id or "")
         if node is None:
@@ -827,7 +828,7 @@ def _apply_mux_output_shapes(
         metadata = dict(port.value_schema.metadata)
         metadata.update(
             {
-                "dimension_source": "mux_concat_inputs",
+                "dimension_source": "concatenate_inputs",
                 "input_shapes": input_shapes,
             }
         )

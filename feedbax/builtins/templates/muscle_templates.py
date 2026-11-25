@@ -106,7 +106,7 @@ def _muscle_force_graph(
         raise ValueError("Muscle force graphs require at least one muscle")
 
     scalar_ports = [f"out_{index}" for index in range(muscle_count)]
-    mux_ports = [f"in_{index}" for index in range(muscle_count)]
+    concatenate_ports = [f"in_{index}" for index in range(muscle_count)]
     nodes = {
         "geometry": geometry,
         "reduction": ComponentSpec(
@@ -147,12 +147,12 @@ def _muscle_force_graph(
             )
     for channel in ("forces", "activations"):
         nodes[channel] = ComponentSpec(
-            type="feedbax.Mux",
+            type="feedbax.Concatenate",
             params={"n_inputs": muscle_count},
-            input_ports=mux_ports,
+            input_ports=concatenate_ports,
             output_ports=["output"],
         )
-    for index, (scalar_port, mux_port) in enumerate(zip(scalar_ports, mux_ports, strict=True)):
+    for index, (scalar_port, concatenate_port) in enumerate(zip(scalar_ports, concatenate_ports, strict=True)):
         muscle = f"muscle_{index}"
         nodes[muscle] = actuator.model_copy(deep=True)
         for source, target in {"excitation": "excitation", **kinematics}.items():
@@ -170,7 +170,7 @@ def _muscle_force_graph(
                     source_node=muscle,
                     source_port=source,
                     target_node=target,
-                    target_port=mux_port,
+                    target_port=concatenate_port,
                 )
             )
 

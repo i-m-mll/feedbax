@@ -30,44 +30,44 @@ from feedbax.contracts.component import (
 from feedbax.contracts.migrations import default_spec_registry
 
 
-def test_builtin_mux_and_demux_policies_preserve_dynamic_port_layouts() -> None:
-    from feedbax.builtins.runtime.components import Demux, Input, Mux
+def test_builtin_concatenate_and_split_policies_preserve_dynamic_port_layouts() -> None:
+    from feedbax.builtins.runtime.components import Split, Input, Concatenate
 
-    direct_mux = Mux(n_inputs=3)
-    direct_demux = Demux(sizes=(2, 1, 3))
+    direct_concatenate = Concatenate(n_inputs=3)
+    direct_split = Split(sizes=(2, 1, 3))
     direct_input = Input(output_port="renamed")
-    assert direct_mux.input_ports == ("in_0", "in_1", "in_2")
-    assert direct_demux.output_ports == ("out_0", "out_1", "out_2")
+    assert direct_concatenate.input_ports == ("in_0", "in_1", "in_2")
+    assert direct_split.output_ports == ("out_0", "out_1", "out_2")
     assert direct_input.input_ports == ("input",)
     assert direct_input.output_ports == ("renamed",)
 
     registry = ComponentRegistry()
-    mux = registry.get("feedbax.Mux")
-    demux = registry.get("feedbax.Demux")
+    concatenate = registry.get("feedbax.Concatenate")
+    split = registry.get("feedbax.Split")
 
-    assert mux is not None and mux.dynamic_port_policy is not None
-    assert demux is not None and demux.dynamic_port_policy is not None
+    assert concatenate is not None and concatenate.dynamic_port_policy is not None
+    assert split is not None and split.dynamic_port_policy is not None
     validate_dynamic_port_layout(
-        mux.dynamic_port_policy,
-        mux.default_params,
-        input_ports=mux.input_ports,
-        output_ports=mux.output_ports,
+        concatenate.dynamic_port_policy,
+        concatenate.default_params,
+        input_ports=concatenate.input_ports,
+        output_ports=concatenate.output_ports,
     )
     validate_dynamic_port_layout(
-        demux.dynamic_port_policy,
-        demux.default_params,
-        input_ports=demux.input_ports,
-        output_ports=demux.output_ports,
+        split.dynamic_port_policy,
+        split.default_params,
+        input_ports=split.input_ports,
+        output_ports=split.output_ports,
     )
     assert derive_dynamic_port_layout(
-        mux.dynamic_port_policy,
+        concatenate.dynamic_port_policy,
         {"n_inputs": 3},
     ).model_dump(mode="json") == {
         "input_ports": ["in_0", "in_1", "in_2"],
         "output_ports": ["output"],
     }
     assert derive_dynamic_port_layout(
-        demux.dynamic_port_policy,
+        split.dynamic_port_policy,
         {"sizes": [2, 1, 3]},
     ).model_dump(mode="json") == {
         "input_ports": ["input"],
