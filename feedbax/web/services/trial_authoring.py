@@ -986,7 +986,12 @@ def _structure_edit(change, documents, definition) -> StudioTrialDocumentEdit | 
         changed = restructure(changed, each)
         if isinstance(changed, Problem):
             return (changed,)
-    _, raw = _changed_value(documents, definition, "task")
+    if isinstance(documents, _InitialTrialDocuments):
+        raw = definition.input_documents["task"].payload
+    else:
+        raw = (definition.payload.get("trial_documents") or {}).get("task")
+        if raw is None:
+            raw = task.model_dump(mode="json", exclude_unset=True)
     before, after = task.model_dump(mode="json"), changed.model_dump(mode="json")
     edits = [
         SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after.get(field, []))

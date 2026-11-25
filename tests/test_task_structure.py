@@ -30,12 +30,13 @@ def _project(tmp_path, task=None):
     return _Project(tmp_path, raw)
 
 
-def _change(project, change, *, body=None, step="train") -> StudioTrialAuthoring:
+def _change(project, change, *, body=None, step="train", store_choice=None) -> StudioTrialAuthoring:
     row = next(row for row in project.plan().rows if row.key.step == step)
     response = project.client.post(f"{_URL}/authoring/trials", json={
         "revision": project.snapshot()["revision"],
         "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row},
         "change": body if change is None else {"kind": "structure", "changes": change if isinstance(change, list) else [change]},
+        "store_choice": store_choice,
     })
     assert response.status_code == 200, response.text
     return StudioTrialAuthoring.model_validate(response.json())
@@ -78,8 +79,7 @@ def test_shipped_task_marker_survives_reopening_without_changing_request_ids(tmp
         assert project.ids() == requests
 
 
-@pytest.mark.parametrize("subject", ["initial", "trained"])
-def test_evaluate_task_marker_is_visible_without_changing_the_request(tmp_path, subject):
+def _marker_evaluate(tmp_path, subject, *, own_task=False):
     data = managed_train_project(scenario="delayed-reaches").model_dump(mode="json", by_alias=True, exclude_unset=True)
     evaluate = managed_evaluation_step("train")
     if subject == "initial":
@@ -89,12 +89,19 @@ def test_evaluate_task_marker_is_visible_without_changing_the_request(tmp_path, 
             "subject": {"kind": "initial_model", "source": documents["model"]},
             "task": {"kind": "task", "source": documents["task"]},
         }
-    else:
+    elif own_task:
         task_name = "evaluate-task"
         data["documents"][task_name] = deepcopy(data["documents"][TASK])
         evaluate["base"]["inline"]["trial_documents"] = {"task": {"document": task_name}}
+    else:
+        task_name = TASK
     data["steps"]["evaluate"] = evaluate
-    project = _Project(tmp_path, data)
+    return _Project(tmp_path, data), task_name
+
+
+@pytest.mark.parametrize("subject", ["initial", "trained"])
+def test_evaluate_task_marker_is_visible_without_changing_the_request(tmp_path, subject):
+    project, task_name = _marker_evaluate(tmp_path, subject, own_task=True)
     marker = Marker(shape="square", filled=False)
     with project.client:
         before = project.ids()
@@ -113,6 +120,28 @@ def test_evaluate_task_marker_is_visible_without_changing_the_request(tmp_path, 
         task = _change(project, None, step="evaluate").task
         assert isinstance(task, TaskDocument)
         assert next(variable.marker for variable in task.variables if variable.id == "target") == marker
+        assert project.ids() == before
+
+
+@pytest.mark.parametrize("subject", ["initial", "trained"])
+def test_evaluate_structure_edit_preserves_its_task_store_scope(tmp_path, subject):
+    project, _ = _marker_evaluate(tmp_path, subject)
+    marker = Marker(shape="square", filled=False)
+    change = {"op": "set_variable_marker", "id": "target", "marker": marker.model_dump(mode="json")}
+    with project.client:
+        before = project.ids()
+        assert "evaluate" in before
+        edit = _change(project, change, step="evaluate")
+        if subject == "initial":
+            assert not edit.files
+            choice = next(option for option in edit.store_choices if option.kind == "selected_readers")
+            edit = _change(project, change, step="evaluate", store_choice=choice.id)
+        assert edit.files, edit.problems
+        _save(project, edit)
+        for step, expected in (("evaluate", marker), ("train", None)):
+            task = _change(project, None, step=step).task
+            assert isinstance(task, TaskDocument)
+            assert next(variable.marker for variable in task.variables if variable.id == "target") == expected
         assert project.ids() == before
 
 
