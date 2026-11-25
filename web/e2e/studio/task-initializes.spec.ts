@@ -1,6 +1,8 @@
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioTrialAuthoring, TaskDocument } from '../../src/generated/studioContracts';
-import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
+import { startProject } from './fixtures/studioKeyboard';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -8,10 +10,9 @@ const position = JSON.stringify({ composites: [], element: {
   kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['state', 'effector/position'],
 } });
 
-// Catches a Model start the Model needs that no row shows or marks, a row whose name does not write the variable and
-// its link in one edit, a choice in Initializes that does not re-point the link to the row it is made on, and a Model
-// start no variable initializes that is hidden from the table.
-test('Initializes chooses the Model values a variable starts, and a start the Model needs is a row to name', async ({ page, request }) => {
+// Catches a Model start the Model needs that no row shows or marks, a row for a start nothing needs, a row whose choice
+// of variable does not write the link, and an Initializes choice that does not bring the row back when it is undone.
+test('a start the Model needs and no variable initializes is a row with its problem and a choice of variables', async ({ page, request }) => {
   test.setTimeout(60_000);
   const files = await fixture('ordinary-files', '2') as { kind: string; id: string; document?: { payload: Record<string, any> } }[];
   for (const file of files) {
@@ -28,48 +29,53 @@ test('Initializes chooses the Model values a variable starts, and a start the Mo
     const [, task] = Object.entries(project.documents ?? {}).find(([name]) => name.endsWith('-task'))!;
     return (task as unknown as { payload: TaskDocument }).payload.links ?? [];
   };
-  const unset = async () => {
-    const { revision } = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
-    const response = await request.post(projectPath + '/authoring/trials', {
-      data: { revision, run: { variant: 'default', step: 'train', row: 'default' }, change: null },
-    });
-    return (await response.json() as StudioTrialAuthoring).problems.filter(({ path = [] }) => path[0] === 'links');
-  };
   const table = page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('table', { name: 'Variables', exact: true });
-  const named = (name: string) => table.getByRole('row').filter({ has: page.getByRole('textbox', { name: `Rename ${name}`, exact: true }) });
-  const start = (name: string) => table.getByRole('row').filter({ has: page.getByRole('textbox', { name: `Name ${name}`, exact: true }) });
-  const initializes = (name: string) => named(name).getByRole('combobox', { name: `Initializes ${name}`, exact: true });
   const positionName = 'Point mass · effector position';
+  const picker = (name: string) => table.getByRole('combobox', { name: `Name ${name}`, exact: true });
+  const row = (name: string) => table.getByRole('row')
+    .filter({ has: page.getByRole('combobox', { name: `Name ${name}`, exact: true }) });
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
-  await expect(start(positionName).locator('[data-field-problem]')).toHaveAttribute('data-app-tip', /start of each trial/);
-  // The run's problem is named by the value its row shows, and revealing it puts the keyboard in that row's name.
-  await page.getByRole('button', { name: /^Problems \d+$/ }).click();
+  await expect(row(positionName).locator('[data-field-problem]')).toHaveAttribute('data-app-tip', /start of each trial/);
+  await expect(picker('Point mass · effector velocity')).toHaveCount(0);
+  // The run's problem is named by the value its row shows, and revealing it puts the keyboard on that row's choice.
+  await page.getByRole('button', { name: /^Problems/ }).click();
   await page.getByRole('dialog', { name: 'Problems', exact: true })
     .getByRole('button', { name: new RegExp(`^${positionName} · The Model needs this value`) }).click();
-  await expect(start(positionName).getByRole('textbox', { name: `Name ${positionName}`, exact: true })).toBeFocused();
+  await expect(picker(positionName)).toBeFocused();
   await page.keyboard.press('Escape');
-  // The reveal selected the run, which would make the next Task edit that run's exception; the step is chosen again.
   await mapStep(page, 'train').click();
-  await expect(start('Point mass · effector velocity')).toBeVisible();
-  await expect(start('Point mass · effector velocity').locator('[data-field-problem]')).toHaveCount(0);
-  expect(await unset()).toEqual([expect.objectContaining({ path: ['links', position] })]);
 
-  await enter(start(positionName).getByRole('textbox', { name: `Name ${positionName}`, exact: true }), 'start');
-  await expect(initializes('start')).toHaveAttribute('placeholder', positionName);
-  await expect(start(positionName)).toHaveCount(0);
-  await expect.poll(links).toEqual([{ model_field: position, variable: 'start-2' }]);
-  expect(await unset()).toEqual([]);
+  await pick(picker(positionName), 'origin');
+  await expect.poll(links).toEqual([{ model_field: position, variable: 'start' }]);
+  await expect(picker(positionName)).toHaveCount(0);
+  const initializes = table.getByRole('combobox', { name: 'Initializes origin', exact: true });
+  await expect(initializes).toHaveAttribute('placeholder', positionName);
 
-  await initializes('origin').click();
+  await initializes.click();
   await page.keyboard.type('effector position');
   await page.getByRole('option', { name: 'Point mass · effector · position', exact: true }).click();
-  await expect.poll(links).toEqual([{ model_field: position, variable: 'start' }]);
+  await expect.poll(links).toEqual([]);
   await page.keyboard.press('Escape');
-  await expect(initializes('start')).toHaveAttribute('placeholder', '');
-  await expect(initializes('origin')).toHaveAttribute('placeholder', positionName);
+  await expect(row(positionName).locator('[data-field-problem]')).toHaveAttribute('data-app-tip', /start of each trial/);
+});
+
+// Catches the five leftover rows of the point mass: a Model start no variable initializes drawn as a row with no name.
+test('the shipped Task\'s Variables are its variables and its Sets', async ({ page }) => {
+  const created = page.waitForResponse((response) => response.url().endsWith('/api/projects') && response.request().method() === 'POST');
+  await startProject(page);
+  expect((await created).status()).toBe(201);
+  await page.getByRole('button', { name: 'New Step', exact: true }).press('Enter');
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true }).press('Enter');
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  const table = page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('table', { name: 'Variables', exact: true });
+  await expect(table.getByRole('rowheader').first()).toBeVisible();
+  const names = await table.getByRole('rowheader').evaluateAll((cells) =>
+    cells.map((cell) => cell.querySelector('input')?.value ?? cell.textContent ?? ''));
+  expect(names.length).toBeGreaterThan(0);
+  expect(names.filter((name) => !name.trim())).toEqual([]);
 });
 
 // Catches an Initializes list that is flat, offers a state whose unit the variable does not have, or whose type-ahead
@@ -126,7 +132,7 @@ test('a link to a variable the Task lacks is marked and named at the Model value
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   const row = page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('table', { name: 'Variables', exact: true })
-    .getByRole('row').filter({ has: page.getByRole('textbox', { name: `Name ${positionName}`, exact: true }) });
+    .getByRole('row').filter({ has: page.getByRole('combobox', { name: `Name ${positionName}`, exact: true }) });
   await expect(row.locator('[data-field-problem]')).toHaveAttribute('data-app-tip', reason);
   await page.getByRole('button', { name: /^Problems \d+$/ }).click();
   await expect(page.getByRole('dialog', { name: 'Problems', exact: true })

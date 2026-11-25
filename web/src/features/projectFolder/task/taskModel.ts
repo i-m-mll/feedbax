@@ -30,15 +30,21 @@ export interface VariableInitializes {
   toggle?(id: string): Promise<string | undefined> | void;
 }
 
-/** A Model value no variable initializes, at the foot of Variables with its type fixed and its name empty. */
-export interface UninitializedStart extends ModelStart {
+/**
+ * A Model value no variable initializes that the Task has a problem with, at the foot of Variables: the Model needs it,
+ * or a link names no variable.
+ */
+export interface UnstartedValue extends ModelStart {
   /** The `data-field` a revealed problem of the value focuses. */
   readonly anchor: string;
-  /** Why the Task cannot start the value as it stands: the Model needs it, or a link names no variable. */
-  readonly reason?: string;
+  readonly reason: string;
   /** The type's name. */
   readonly type: string;
   readonly valueType: ValueType;
+  /** The Task's variables whose type fits the value, by id. */
+  readonly variables: readonly { readonly id: string; readonly name: string }[];
+  /** Makes the variable initialize the value; a refusal's reason, or nothing once made. */
+  initialize?(variable: string): Promise<string | undefined>;
 }
 
 export interface TaskVariable {
@@ -134,8 +140,6 @@ export interface TaskSignal {
 export interface TaskDocumentView {
   readonly kind: 'document';
   readonly variables: readonly TaskVariable[];
-  /** The paired Model's values no variable initializes. */
-  readonly starts?: readonly UninitializedStart[];
   readonly epochs: readonly TaskEpoch[];
   readonly repeats: readonly TaskRepeat[];
   readonly signals: readonly TaskSignal[];
