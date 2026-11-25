@@ -79,6 +79,25 @@ class CompiledWindow:
     period: float
     references: frozenset[str]
 
+    def reads_runtime_epoch(self, first_until: int) -> bool:
+        """Whether an ahead-of-rollout mask needs a boundary known only after Until."""
+        def uncertain(boundary: _Boundary, *, sample=False):
+            if boundary.indices is None:
+                return False
+            last = max(boundary.indices, default=-1)
+            return last > first_until or last == first_until and (sample or boundary.edge == "end")
+
+        for span in self.spans:
+            if isinstance(span, tuple):
+                if max(span, default=-1) >= first_until:
+                    return True
+            elif isinstance(span, _Moment):
+                if uncertain(span.at, sample=True):
+                    return True
+            elif uncertain(span.start) or isinstance(span.end, _Boundary) and uncertain(span.end):
+                return True
+        return False
+
     def mask(self, record: EpochRecord, n_steps: int, inputs: Inputs) -> jax.Array:
         steps = jnp.arange(n_steps)
         selected = jnp.zeros((*record.starts.shape[:-1], n_steps), dtype=bool)
