@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
 import { shellHost } from '@window-shell/browser/titlebar';
-import { canvasViewportIcons } from '@/components/canvas/CanvasStrip';
+import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import type { CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
 import { Button, IconButton } from '@/components/ui/Button';
@@ -488,7 +488,8 @@ export function ProjectWindow({
         <section ref={mapSection} id={ids.map} className="studio-window-map" aria-label={studioName('pipelineMap')}>
           <div className="studio-window-map__full" hidden={!fullMapVisible}>
             <div data-studio-focus-region="map" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-hidden">
-              {regionBody('pipelineMap', map)}
+              {mapCommands ? <CanvasStrip viewport={mapCommands} label={studioName('pipelineMap')}>{regionBody('pipelineMap', map)}</CanvasStrip>
+                : regionBody('pipelineMap', map)}
             </div>
             <aside id={ids.mapDrawer} data-studio-focus-region="steps" tabIndex={-1} aria-label={studioName('mapDrawer')} className="studio-window-side"
               hidden={!mapDrawerVisible} style={{ width: fit.mapDrawer.size }}>
@@ -513,13 +514,6 @@ export function ProjectWindow({
         </div>
         <nav className="shell-rail studio-window-rail" data-separated="" aria-label={studioName('details')}
           data-studio-focus-region="rail" tabIndex={-1} style={{ '--shell-rail-separator': separator } as CSSProperties}>
-          {fullMapVisible && mapCommands && (
-            <div role="toolbar" aria-label={studioName('pipelineMap')} aria-orientation="vertical" className="studio-window-rail__map">
-              {mapCommands.map((command) => (
-                <WindowButton key={command.id} command={command} icon={canvasViewportIcons[command.id]} placement="right" />
-              ))}
-            </div>
-          )}
           {detailsVisible && <div role="tablist" aria-label={studioName('details')} aria-orientation="vertical"
             className="shell-scroll-rail studio-window-tabs" data-axis="y"
             onFocusCapture={(event) => {
