@@ -42,6 +42,11 @@ class DelayAttachment(StrictModel):
     initial: JsonValue = 0
 
 
+class HoldAttachment(StrictModel):
+    kind: Literal["hold"]
+    id: ModelElementId
+
+
 class InterventionWindow(StrictModel):
     """A pulse starting a whole number of steps after the named Task epoch begins."""
 
@@ -65,7 +70,7 @@ class ProbeAttachment(StrictModel):
 
 
 WireAttachment = Annotated[
-    DelayAttachment | InterventionAttachment | ProbeAttachment, Field(discriminator="kind")
+    DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment, Field(discriminator="kind")
 ]
 SourceAttachment = Annotated[
     InterventionAttachment | ProbeAttachment, Field(discriminator="kind")

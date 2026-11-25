@@ -116,14 +116,12 @@ def _split(wire: WireSpec, node: str, phase: str | None) -> tuple[WireSpec, Wire
             raise ValueError("cannot insert a carry read on a wire that seeds channel history")
         incoming = incoming.model_copy(
             update={
-                "temporality": "recurrent",
                 "recurrent_initializer": initializer,
             }
         )
     elif phase == "write":
         outgoing = outgoing.model_copy(
             update={
-                "temporality": "recurrent",
                 "recurrent_initializer": _write_reset(wire, producer=False),
             }
         )
@@ -212,7 +210,7 @@ def lower_studio_taps(
                     wire = wires[i]
                     initializer = (
                         _write_reset(wire, producer=True)
-                        if wire.temporality == "recurrent"
+                        if wire.is_recurrent
                         else wire.recurrent_initializer
                     )
                     wires[i] = wire.model_copy(
@@ -247,7 +245,7 @@ def lower_studio_taps(
                             _compact(wire).replace("edge:", "recurrent_carry:", 1) if recurrent else "",
                         )
                     )
-                    and (wire.temporality == "recurrent") == recurrent
+                    and (wire.is_recurrent) == recurrent
                 ]
                 if len(matches) != 1:
                     raise ValueError(f"expected one matching wire for {explicit_id or selector.compact!r}")

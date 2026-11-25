@@ -192,8 +192,8 @@ def test_stab10_trains_and_restores_a_semantic_checkpoint(tmp_path):
     initial = realize(19)
     runtime, graph = initial.executable.graph, initial.executable.resolved.graph
     assert model_owner_problem(graph, "checkpoint", bundle.components) is None
-    assert sum(wire.temporality == "recurrent" for wire in graph.wires) == 1
-    assert sum(wire.temporality == "recurrent" for wire in graph.subgraphs["controller"].wires) == 1
+    assert sum(wire.is_recurrent for wire in graph.wires) == 1
+    assert sum(wire.is_recurrent for wire in graph.subgraphs["controller"].wires) == 1
     key = jax.random.key(13)
     feedback = runtime.nodes["feedback"]
     output, _ = feedback(

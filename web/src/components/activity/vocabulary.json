@@ -419,6 +419,7 @@
     "operation": "Operation",
     "clamp": "Clamp",
     "delay": "Delay",
+    "hold": "Hold",
     "attachment": "Attachment",
     "port": "Port",
     "substeps": "Substeps",

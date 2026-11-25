@@ -650,7 +650,6 @@ def _point_mass_feedback_spec(paths: list[str], **channel_params: Any) -> GraphS
                 source_port="state",
                 target_node="feedback",
                 target_port="mechanics",
-                temporality="recurrent",
                 recurrent_initializer={"kind": "state_output", "state_slot": "mechanics"},
             )
         ],
@@ -798,7 +797,7 @@ def _feedback_reset_graph(component_type):
         "subgraphs": {},
         "wires": [*feedback.wires, WireSpec(
             source_node="mechanics", source_port="state", target_node="select", target_port="state",
-            temporality="recurrent", recurrent_initializer={"kind": "state_output", "seed_channel_history": True},
+            recurrent_initializer={"kind": "state_output", "seed_channel_history": True},
         )],
         "output_bindings": nested.output_bindings | feedback.output_bindings,
     })

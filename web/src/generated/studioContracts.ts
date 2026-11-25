@@ -610,6 +610,11 @@ export interface DelayAttachment {
   initial?: JsonValue;
 }
 
+export interface HoldAttachment {
+  kind: "hold";
+  id: string;
+}
+
 export interface InterventionAttachment {
   kind: "intervention";
   id: string;
@@ -657,7 +662,7 @@ export interface ModelPortAttachments {
 export interface ModelWire {
   source: ComponentPortEnd | InputBoundaryEnd;
   target: ComponentPortEnd | OutputBoundaryEnd;
-  attachments?: Array<DelayAttachment | InterventionAttachment | ProbeAttachment>;
+  attachments?: Array<DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment>;
 }
 
 export interface ModelPhysicalConnection {
@@ -868,14 +873,14 @@ export interface VariantRuns {
 export interface AddModelAttachment {
   op: "add";
   owner: ModelAddress;
-  attachment: DelayAttachment | InterventionAttachment | ProbeAttachment;
+  attachment: DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
   after: string | null;
 }
 
 export interface ChangeModelAttachment {
   address: ModelAddress;
   op: "change";
-  attachment: DelayAttachment | InterventionAttachment | ProbeAttachment;
+  attachment: DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
   after?: string | null;
 }
 
@@ -1091,7 +1096,7 @@ export interface ModelAddedElement {
 export interface ModelRemovedElement {
   change: "removed";
   address: ModelAddress;
-  definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | DelayAttachment | InterventionAttachment | ProbeAttachment;
+  definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
   position?: ModelPosition | null;
   wires?: Record<string, ModelWire>;
   connections?: Record<string, ModelPhysicalConnection>;
@@ -1437,7 +1442,6 @@ export interface WireSpec {
   source_port: string;
   target_node: string;
   target_port: string;
-  temporality?: "instant" | "recurrent";
   recurrent_initializer?: Record<string, unknown> | null;
 }
 
@@ -6955,6 +6959,15 @@ export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<DelayAttachment>;
 
+export const HoldAttachmentSchema: z.ZodType<HoldAttachment> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("hold"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<HoldAttachment>;
+
 export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z.lazy(() =>
   z
     .object({
@@ -7044,7 +7057,7 @@ export const ModelWireSchema: z.ZodType<ModelWire> = z.lazy(() =>
     .object({
       "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
       "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
-      "attachments": z.array(z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])).optional(),
+      "attachments": z.array(z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelWire>;
@@ -7427,7 +7440,7 @@ export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(()
     .object({
       "op": z.literal("add"),
       "owner": ModelAddressSchema,
-      "attachment": z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "attachment": z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
       "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable(),
     })
     .strict()
@@ -7438,6 +7451,12 @@ export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(()
           message: "Expected a wire or port owner",
         });
       }
+      if (value.attachment.kind === "hold" && value.owner.element.kind !== "wire") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A Hold requires a wire",
+        });
+      }
     })
 ) as unknown as z.ZodType<AddModelAttachment>;
 
@@ -7446,7 +7465,7 @@ export const ChangeModelAttachmentSchema: z.ZodType<ChangeModelAttachment> = z.l
     .object({
       "address": ModelAddressSchema,
       "op": z.literal("change"),
-      "attachment": z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "attachment": z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
       "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
     })
     .strict()
@@ -7829,7 +7848,7 @@ export const ModelRemovedElementSchema: z.ZodType<ModelRemovedElement> = z.lazy(
     .object({
       "change": z.literal("removed"),
       "address": ModelAddressSchema,
-      "definition": z.union([LeafComponentSchema, CompositeComponentSchema, ModelWireSchema, ModelPhysicalConnectionSchema, z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])]),
+      "definition": z.union([LeafComponentSchema, CompositeComponentSchema, ModelWireSchema, ModelPhysicalConnectionSchema, z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])]),
       "position": ModelPositionSchema.nullable().optional(),
       "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema).optional(),
       "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema).optional(),
@@ -8404,7 +8423,6 @@ export const WireSpecSchema: z.ZodType<WireSpec> = z.lazy(() =>
       "source_port": z.string(),
       "target_node": z.string(),
       "target_port": z.string(),
-      "temporality": z.union([z.literal("instant"), z.literal("recurrent")]).optional(),
       "recurrent_initializer": z.record(z.string(), z.unknown()).nullable().optional(),
     })
     .strict()
