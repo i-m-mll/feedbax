@@ -668,11 +668,6 @@
         "absent": null
       }
     },
-    "feedbax.contracts.model_document.InterventionWindow": {
-      "duration": {},
-      "epoch": {},
-      "offsets": {}
-    },
     "feedbax.contracts.model_document.LeafComponent": {
       "attachments": {
         "absent": {}
@@ -861,9 +856,6 @@
       "enabled": {
         "absent": true
       },
-      "epochs": {
-        "absent": []
-      },
       "id": {},
       "measure": {
         "families": [
@@ -900,6 +892,9 @@
           "feedbax.contracts.expression_values.NameValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
+      },
+      "window": {
+        "absent": null
       }
     },
     "feedbax.contracts.report_document.ReportDocument": {
@@ -1301,7 +1296,10 @@
       "cells": {},
       "id": {},
       "name": {},
-      "type": {}
+      "type": {},
+      "window": {
+        "absent": null
+      }
     },
     "feedbax.contracts.task_document.TaskDocument": {
       "epochs": {},
@@ -1395,6 +1393,107 @@
         "absent": null
       },
       "task": {}
+    },
+    "feedbax.contracts.window.Window": {
+      "spans": {
+        "families": [
+          "feedbax.contracts.window.WindowEpoch",
+          "feedbax.contracts.window.WindowInterval",
+          "feedbax.contracts.window.WindowMoment"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowEpoch": {
+      "epoch": {},
+      "kind": {
+        "values": [
+          "epoch"
+        ]
+      },
+      "occurrence": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.window.WindowEpochAnchor": {
+      "edge": {
+        "values": [
+          "end",
+          "start"
+        ]
+      },
+      "epoch": {},
+      "kind": {
+        "values": [
+          "epoch"
+        ]
+      },
+      "occurrence": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.window.WindowInterval": {
+      "end": {
+        "families": [
+          "feedbax.contracts.window.WindowPosition",
+          "feedbax.contracts.window.WindowRelativePosition"
+        ]
+      },
+      "kind": {
+        "values": [
+          "interval"
+        ]
+      },
+      "start": {}
+    },
+    "feedbax.contracts.window.WindowMoment": {
+      "at": {},
+      "kind": {
+        "values": [
+          "moment"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowPosition": {
+      "anchor": {
+        "families": [
+          "feedbax.contracts.window.WindowEpochAnchor",
+          "feedbax.contracts.window.WindowTrialAnchor"
+        ]
+      },
+      "offset": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue",
+          "feedbax.contracts.time_units.TimeValue"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowRelativePosition": {
+      "offset": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue",
+          "feedbax.contracts.time_units.TimeValue"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowTrialAnchor": {
+      "edge": {
+        "values": [
+          "end",
+          "start"
+        ]
+      },
+      "kind": {
+        "values": [
+          "trial"
+        ]
+      }
     }
   },
   "retired": {
@@ -3828,6 +3927,26 @@
         "field": "input_overrides",
         "migration": "stable-task-input-bindings",
         "model": "feedbax.contracts.training.TrialDocuments"
+      },
+      {
+        "field": "duration",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.model_document.InterventionWindow"
+      },
+      {
+        "field": "epoch",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.model_document.InterventionWindow"
+      },
+      {
+        "field": "offsets",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.model_document.InterventionWindow"
+      },
+      {
+        "field": "epochs",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.objective_document.ObjectiveTerm"
       }
     ],
     "values": [

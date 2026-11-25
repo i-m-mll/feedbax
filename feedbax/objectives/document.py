@@ -36,6 +36,7 @@ from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import Evaluation, FunctionRegistry
 from feedbax.objectives.base import TermTree
 from feedbax.objectives.term_points import TermPoints, measure_points
+from feedbax.contracts.window import WindowEpoch
 from feedbax.runtime.epoch_windows import whole_window
 from feedbax.tasks.document import Trial, TrialSource
 
@@ -82,7 +83,7 @@ class _Term:
     measure: Compiled
     weight: Compiled
     reduction: Reduction
-    epochs: tuple[int, ...]
+    epochs: tuple[int, ...] | None
     references: frozenset[str]
     weight_references: frozenset[str]
 
@@ -363,7 +364,15 @@ def compile_objective(
             if unpaired:
                 problems.extend(unpaired)
                 continue
-        absent = set(term.epochs) - epoch_ids
+        spans = term.window.spans if term.window is not None else ()
+        if any(not isinstance(span, WindowEpoch) or span.occurrence is not None for span in spans):
+            problems.append(Problem(
+                code=ProblemCode.OUT_OF_SCOPE, path=(*path, "window"),
+                reason="This Window requires sample-range resolution.",
+            ))
+            continue
+        window_epochs = {span.epoch for span in spans if isinstance(span, WindowEpoch)}
+        absent = window_epochs - epoch_ids
         if use in (ObjectiveUse.INHERITED, ObjectiveUse.PREVIEW) and (
             absent or measure_refs - measure_ids or weight_refs - weight_ids
         ):
@@ -382,12 +391,12 @@ def compile_objective(
         if not isinstance(measure, Compiled):
             problems.extend(measure)
             continue
-        if absent or term.epochs and measure.checked.root.level != Level.STEP:
+        if absent or term.window is not None and measure.checked.root.level != Level.STEP:
             reason = (
                 f"Unknown epochs {sorted(absent)}." if absent else "This measure has no time axis."
             )
             problems.append(
-                Problem(code=ProblemCode.OUT_OF_SCOPE, path=(*path, "epochs"), reason=reason)
+                Problem(code=ProblemCode.OUT_OF_SCOPE, path=(*path, "window"), reason=reason)
             )
             continue
         limit = Level.STEP if measure.checked.root.level == Level.STEP else Level.TRIAL
@@ -413,7 +422,9 @@ def compile_objective(
                 measure,
                 weight,
                 term.reduction,
-                tuple(index for index, epoch in enumerate(task.epochs) if epoch in term.epochs),
+                None if term.window is None else tuple(
+                    index for index, epoch in enumerate(task.epochs) if epoch in window_epochs
+                ),
                 used,
                 weight_refs,
             )

@@ -620,7 +620,7 @@ export interface InterventionAttachment {
   id: string;
   operation: string;
   fields?: Record<string, JsonValue>;
-  window?: InterventionWindow | null;
+  window?: Window | null;
 }
 
 export interface ProbeAttachment {
@@ -3317,12 +3317,6 @@ export type InputRole = {
   "checkpoint_sets": boolean;
 };
 
-export type InterventionWindow = {
-  "epoch": string;
-  "offsets": Array<number>;
-  "duration": number;
-};
-
 export type JaxOperation = {
   "backend": "cpu" | "gpu";
   "floating_point_bits": 32 | 64;
@@ -3504,7 +3498,7 @@ export type ObjectiveTerm = {
   "measure_type"?: ValueType;
   "weight"?: Expression;
   "reduction"?: Reduction;
-  "epochs"?: Array<string>;
+  "window"?: Window | null;
   "enabled"?: boolean;
   "name"?: string | null;
 };
@@ -3943,6 +3937,7 @@ export type Signal = {
   "type": ValueType;
   "cells": Array<Cell>;
   "absent"?: Expression | null;
+  "window"?: Window | null;
 };
 
 export type SignalSpace = "point" | "free";
@@ -5283,6 +5278,48 @@ export type WeightedSetTrials = {
 
 export type WholeDimensions = {
   "parameter": string;
+};
+
+export type Window = {
+  "spans": Array<WindowEpoch | WindowInterval | WindowMoment>;
+};
+
+export type WindowEpoch = {
+  "kind": "epoch";
+  "epoch": string;
+  "occurrence"?: number | null;
+};
+
+export type WindowEpochAnchor = {
+  "kind": "epoch";
+  "epoch": string;
+  "occurrence"?: number | null;
+  "edge": "start" | "end";
+};
+
+export type WindowInterval = {
+  "kind": "interval";
+  "start": WindowPosition;
+  "end": WindowPosition | WindowRelativePosition;
+};
+
+export type WindowMoment = {
+  "kind": "moment";
+  "at": WindowPosition;
+};
+
+export type WindowPosition = {
+  "anchor": WindowTrialAnchor | WindowEpochAnchor;
+  "offset"?: TimeValue | CallValue | DrawValue | NameValue | UnresolvedValue | null;
+};
+
+export type WindowRelativePosition = {
+  "offset": TimeValue | CallValue | DrawValue | NameValue | UnresolvedValue;
+};
+
+export type WindowTrialAnchor = {
+  "kind": "trial";
+  "edge": "start" | "end";
 };
 
 export type feedbax__contracts__studio_project__RenameMember = {
@@ -6975,7 +7012,7 @@ export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "operation": z.string(),
       "fields": z.record(z.string(), jsonValueSchema).optional(),
-      "window": InterventionWindowSchema.nullable().optional(),
+      "window": WindowSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<InterventionAttachment>;
@@ -11430,14 +11467,6 @@ export const InputRoleSchema: z.ZodType<InputRole> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<InputRole>;
 
-export const InterventionWindowSchema: z.ZodType<InterventionWindow> = z.lazy(() =>
-  z.object({
-    "epoch": z.string(),
-    "offsets": z.array(z.number().int().safe().min(0)).min(1),
-    "duration": z.number().int().safe().gt(0),
-  }).strict()
-) as unknown as z.ZodType<InterventionWindow>;
-
 export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
   z.object({
     "backend": z.union([z.literal("cpu"), z.literal("gpu")]),
@@ -11692,7 +11721,7 @@ export const ObjectiveTermSchema: z.ZodType<ObjectiveTerm> = z.lazy(() =>
     "measure_type": ValueTypeSchema.optional(),
     "weight": ExpressionSchema.optional(),
     "reduction": ReductionSchema.optional(),
-    "epochs": z.array(z.string()).optional(),
+    "window": z.union([WindowSchema, z.null()]).optional(),
     "enabled": z.boolean().optional(),
     "name": z.union([z.string().min(1), z.null()]).optional(),
   }).strict()
@@ -12285,6 +12314,7 @@ export const SignalSchema: z.ZodType<Signal> = z.lazy(() =>
     "type": ValueTypeSchema,
     "cells": z.array(CellSchema),
     "absent": z.union([ExpressionSchema, z.null()]).optional(),
+    "window": z.union([WindowSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Signal>;
 
@@ -14028,6 +14058,64 @@ export const WholeDimensionsSchema: z.ZodType<WholeDimensions> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<WholeDimensions>;
 
+export const WindowSchema: z.ZodType<Window> = z.lazy(() =>
+  z.object({
+    "spans": z.array(z.union([WindowEpochSchema, WindowIntervalSchema, WindowMomentSchema])),
+  }).strict()
+) as unknown as z.ZodType<Window>;
+
+export const WindowEpochSchema: z.ZodType<WindowEpoch> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("epoch"),
+    "epoch": z.string(),
+    "occurrence": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<WindowEpoch>;
+
+export const WindowEpochAnchorSchema: z.ZodType<WindowEpochAnchor> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("epoch"),
+    "epoch": z.string(),
+    "occurrence": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+    "edge": z.union([z.literal("start"), z.literal("end")]),
+  }).strict()
+) as unknown as z.ZodType<WindowEpochAnchor>;
+
+export const WindowIntervalSchema: z.ZodType<WindowInterval> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("interval"),
+    "start": WindowPositionSchema,
+    "end": z.union([WindowPositionSchema, WindowRelativePositionSchema]),
+  }).strict()
+) as unknown as z.ZodType<WindowInterval>;
+
+export const WindowMomentSchema: z.ZodType<WindowMoment> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("moment"),
+    "at": WindowPositionSchema,
+  }).strict()
+) as unknown as z.ZodType<WindowMoment>;
+
+export const WindowPositionSchema: z.ZodType<WindowPosition> = z.lazy(() =>
+  z.object({
+    "anchor": z.union([WindowTrialAnchorSchema, WindowEpochAnchorSchema]),
+    "offset": z.union([TimeValueSchema, z.union([CallValueSchema, DrawValueSchema, NameValueSchema, UnresolvedValueSchema]), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<WindowPosition>;
+
+export const WindowRelativePositionSchema: z.ZodType<WindowRelativePosition> = z.lazy(() =>
+  z.object({
+    "offset": z.union([TimeValueSchema, z.union([CallValueSchema, DrawValueSchema, NameValueSchema, UnresolvedValueSchema])]),
+  }).strict()
+) as unknown as z.ZodType<WindowRelativePosition>;
+
+export const WindowTrialAnchorSchema: z.ZodType<WindowTrialAnchor> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("trial"),
+    "edge": z.union([z.literal("start"), z.literal("end")]),
+  }).strict()
+) as unknown as z.ZodType<WindowTrialAnchor>;
+
 export const feedbax__contracts__studio_project__RenameMemberSchema: z.ZodType<feedbax__contracts__studio_project__RenameMember> = z.lazy(() =>
   z.object({
     "family": KeyedFamilySchema,
@@ -14132,6 +14220,7 @@ export const contractSchemas = {
   TaskDocument: TaskDocumentSchema,
   PythonTaskSelection: PythonTaskSelectionSchema,
   ObjectiveDocument: ObjectiveDocumentSchema,
+  Window: WindowSchema,
   TrainingDocument: TrainingDocumentSchema,
   TrialDocuments: TrialDocumentsSchema,
   ImportedModelProvenance: ImportedModelProvenanceSchema,
@@ -14313,6 +14402,7 @@ export interface ContractTypeMap {
   TaskDocument: TaskDocument;
   PythonTaskSelection: PythonTaskSelection;
   ObjectiveDocument: ObjectiveDocument;
+  Window: Window;
   TrainingDocument: TrainingDocument;
   TrialDocuments: TrialDocuments;
   ImportedModelProvenance: ImportedModelProvenance;

@@ -15,12 +15,13 @@ from feedbax.contracts.model_address import (
     ComponentElement, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress, SignalSource,
 )
 from feedbax.contracts.model_document import (
-    InterventionAttachment, InterventionWindow, LeafComponent, ModelDocument, ModelWire, SignalInput, SignalType,
+    InterventionAttachment, LeafComponent, ModelDocument, ModelWire, SignalInput, SignalType,
 )
 from feedbax.contracts.project import Document, apply_differences
 from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, TrialSetField
 from feedbax.contracts.set_document import read_set
 from feedbax.contracts.task_document import Cell, Link, SetVariableChoices, Signal, TaskDocument, ValidationTrial, Variable
+from feedbax.contracts.window import Window
 
 
 class SetFieldProblem(ValueError):
@@ -84,7 +85,7 @@ class _Union:
         return NameValue(reference=id)
 
     def gate(
-        self, alt: _Alternative, gate_id: str, window: InterventionWindow | None, window_key: str | None,
+        self, alt: _Alternative, gate_id: str, window: Window | None, window_key: str | None,
     ) -> InputBoundaryEnd:
         selector = alt.predicate
         first, last = self.task.epochs[0].id, self.task.epochs[-1].id
@@ -224,7 +225,7 @@ class _Union:
 
     def route(
         self, id: str, source: SignalSource, chain, active_source: SignalSource, active_chain,
-        alt: _Alternative, window: InterventionWindow | None = None, window_key: str | None = None,
+        alt: _Alternative, window: Window | None = None, window_key: str | None = None,
     ) -> ComponentPortEnd:
         switch_id = _id(id, alt.axis, alt.entry)
         gate_id = _id(switch_id, "gate")
