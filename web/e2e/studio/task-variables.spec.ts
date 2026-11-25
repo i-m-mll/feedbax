@@ -24,7 +24,10 @@ test('the Variables table names, types and values a new task\'s variables, and s
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   await header.getByRole('button', { name: /^Task Document / }).click();
-  await page.getByRole('menu', { name: 'Task Document', exact: true }).getByRole('menuitem', { name: 'New', exact: true }).click();
+  const create = page.getByRole('menu', { name: 'Task Document', exact: true }).getByRole('menuitem', { name: 'New', exact: true });
+  // New offers Blank beside the shipped tasks once the authoring catalog is read; before that it makes a blank task.
+  await expect(create).toHaveAttribute('aria-haspopup', 'menu');
+  await create.click();
   await page.getByRole('menuitem', { name: 'Blank', exact: true }).click();
   await page.keyboard.press('Escape');
   const task = async () => {
@@ -40,13 +43,10 @@ test('the Variables table names, types and values a new task\'s variables, and s
     await enter(table.getByRole('textbox', { name: 'Add Variable', exact: true }), name);
     await expect(row(name)).toBeVisible();
     if (type !== 'Number') {
-      // The Type shows its new value while it saves; the value is entered once the Type is stored.
-      const typed = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/authoring/trials') &&
-        (response.request().postData() ?? '').includes('"set_type"'));
+      // The value is entered while the Type saves, and is stored after it.
       await row(name).getByRole('combobox', { name: 'Type', exact: true }).click();
       await page.getByRole('option', { name: type, exact: true }).click();
       await expect(row(name).getByRole('combobox', { name: 'Type', exact: true })).toHaveText(type);
-      expect((await typed).ok()).toBe(true);
     }
     await enter(value(name), text);
     await expect(value(name)).toHaveValue(text);
@@ -100,17 +100,28 @@ test('the Variables table names, types and values a new task\'s variables, and s
   await expect(term).toHaveText('offset');
   await expect(term).toHaveCSS('color', problemColour);
 
-  // Escape while the committed value saves, and the read of the stored view, leave it shown, not the value it replaces.
+  // A value entered while its Type is saving is stored after it. Escape while the committed value saves, and the read
+  // of the stored view, leave it shown, not the value it replaces. The value's save waits for the Type's, which settles
+  // with its own read; only the reads after the value's are held.
   let holding: 'save' | 'read' | undefined = 'save';
   let release!: () => void;
   let held = new Promise<void>((resolve) => { release = resolve; });
+  let sent!: () => void;
+  const sending = new Promise<void>((resolve) => { sent = resolve; });
+  let releaseType!: () => void;
+  const typing = new Promise<void>((resolve) => { releaseType = resolve; });
   await page.route('**/authoring/trials', async (route) => {
     const body = route.request().postData() ?? '';
-    if (holding === 'save' && body.includes('/task/variables/offset/value') || holding === 'read' && !body.includes('"change"')) await held;
+    const save = holding === 'save' && body.includes('/task/variables/offset/value');
+    if (save) sent();
+    if (body.includes('"set_type"')) await typing;
+    if (save || holding === 'read' && !body.includes('"change"')) await held;
     await route.fallback();
   });
   await add('offset', 'Point', '[0.1 m, 0 m]');
+  releaseType();
   await page.keyboard.press('Escape');
+  await sending;
   await expect(value('offset')).toHaveValue('[0.1 m, 0 m]');
   const releaseSave = release;
   held = new Promise<void>((resolve) => { release = resolve; });
