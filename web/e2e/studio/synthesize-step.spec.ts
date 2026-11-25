@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
-import { reveal } from './fixtures/controls';
+import { pick, reveal } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -80,9 +80,16 @@ test('a Synthesize step on the shipped Model is run and read by an Evaluate made
     await picker(label).click();
     await page.getByRole('menuitemradio', { name: 'Simple reaches', exact: true }).click();
   }
+  await tab(page, 'Task').click();
+  await reveal(page, 'Drawer');
+  await page.getByRole('complementary', { name: 'Details Drawer', exact: true })
+    .getByRole('tree', { name: 'Model Inputs', exact: true }).getByRole('treeitem').filter({ hasText: 'target_pos' }).click();
+  await reveal(page, 'Inspector');
+  await pick(page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('combobox', { name: 'Signals', exact: true }), 'Goal');
   await expect.poll(async () => (await step('synthesize'))?.base).toMatchObject({ inline: {
     model: { document: 'point-mass' }, task: { document: 'simple-reaches-task' },
-    objective: { document: 'simple-reaches-objective' },
+    objective: { document: 'simple-reaches-objective' }, input_bindings: { target_pos: 'goal' },
   } });
   await run('synthesize');
 
