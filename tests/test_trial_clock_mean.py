@@ -1,11 +1,13 @@
 """Check recorded Mean replay and figure samples against the same independent reference."""
 
 from contextlib import nullcontext
+import json
 
 import numpy as np
 import pytest
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanSelection
 from feedbax.dataset import Dataset, Variable
@@ -50,7 +52,9 @@ def unequal_epochs():
         coords={
             "condition": Variable(np.array(["condition-id"]), ("condition",)),
             "trial": Variable(np.array(_TRIALS), ("trial",)),
-            "state_time": Variable(_TIME, ("state_time",), units="s"),
+            "state_time": Variable(_TIME, ("state_time",), units="s", trial_time=TrialFigureTime()),
+            "clock": Variable(_TIME, ("state_time",), units="s", trial_time=TrialFigureTime()),
+            "xy": Variable(np.array(["x", "y"]), ("xy",)),
         },
         attrs={"trial_record": layout.model_dump(mode="json")},
     )
@@ -106,3 +110,84 @@ def test_saved_mean_groups_discrete_values_and_intersects_aligned_times(unequal_
     (condition,) = pooled.mean.conditions
     assert condition.values == {}
     assert condition.time == _reference((0, 1, 2), (0, 0, 0))[0]
+
+
+def test_saved_figure_mean_uses_the_same_aligned_sample_reference(unequal_epochs, tmp_path):
+    from feedbax.contracts.dataset import DATASET_MEDIA_TYPE
+    from feedbax.contracts.effective_success import BoundMember
+    from feedbax.contracts.figure_document import FigureDocument
+    from feedbax.contracts.request_identity import decode_request, encode_request
+    from feedbax.contracts.request_refs import InputMember, ProductRef
+    from feedbax.contracts.request_specs import RenderRequestSpec
+    from feedbax.host.light_worker import render_saved_figure
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.persistence.dataset import publish_dataset
+
+    document = FigureDocument.model_validate({
+        "data": ["states"],
+        "layout": [{"name": "path", "row": 1, "col": 1}],
+        "layers": [
+            {
+                "name": "path", "panel": "path", "role": "states", "mark": "line",
+                "group": ["condition", "trial"],
+                "encode": {"x": "clock", "y": {
+                    "variable": _POSITION, "select": {"xy": {"index": 0}},
+                }},
+            },
+            {
+                "name": "authored", "panel": "path", "role": "states", "mark": "line",
+                "encode": {"x": "state_time", "y": "state_time"},
+            },
+        ],
+    })
+    store = ImmutableArtifactBlobProvider(tmp_path)
+    ref = publish_dataset(store, unequal_epochs)
+    encoded = encode_request(RenderRequestSpec(document=document), {"states": (InputMember(
+        key="states", reference=ProductRef(request_id="evaluate:" + "a" * 64, role="states"),
+    ),)})
+    request = decode_request(encoded.data, encoded.documents.__getitem__)
+    bindings = {"states": (BoundMember(
+        key="states", content=ref.content.model_copy(update={"media_type": DATASET_MEDIA_TYPE}),
+        descriptor={"descriptor_sha256": ref.descriptor_sha256},
+    ),)}
+    plain = json.loads(render_saved_figure(store, request, bindings))
+    rendered = json.loads(render_saved_figure(store, request, bindings, mean=TrialMeanSelection(align="move")))
+    assert rendered["layout"]["meta"]["panels"]["path"]["time"]["zero_epoch"] == "move"
+    traces = rendered["data"]
+    assert traces[-1] == plain["data"][-1]
+    assert [trace["meta"]["group"]["trial"] for trace in traces[:-1] if "trial" in trace["meta"]["group"]] == list(_TRIALS)
+    for direction, indices in enumerate(((0, 1), (2,))):
+        group = {"condition": "condition-id", "direction": direction}
+        upper, lower, average = [trace for trace in traces[:-1] if trace["meta"]["group"] == group]
+        time, mean, mins, maxes = _reference(indices, _START)
+        for trace, values in ((average, mean), (lower, mins), (upper, maxes)):
+            assert trace["x"] == time
+            assert trace["y"] == [xy[0] for xy in values]
+        assert lower["fill"] == "tonexty"
+
+
+def test_stacked_figure_matches_the_bound_member_with_repeated_trial_ids(unequal_epochs):
+    from feedbax.contracts.project_sweep import SweepCoordinate, SweepInputMember
+    from feedbax.dataset_sweep import stack_dataset_members
+    from feedbax.plot.figure_trial_clock import FigureRecordedDataset, FigureTrialSource
+
+    descriptor = unequal_epochs.descriptor
+    start = unequal_epochs.data("epoch_start").copy()
+    start[0, 1, 1] = 3
+    other = Dataset.bind(
+        descriptor,
+        tensor_shapes={name: descriptor.shape(name) for name in descriptor.tensor_names},
+        load_tensor=lambda name, index: start[index] if name == "epoch_start" else unequal_epochs.data(name, index),
+    )
+    plotted = stack_dataset_members([
+        (SweepInputMember("first-run", {"mass": SweepCoordinate("light", value=1)}), unequal_epochs),
+        (SweepInputMember("second-run", {"mass": SweepCoordinate("heavy", value=2)}), other),
+    ])
+    source = FigureTrialSource(plotted, [
+        FigureRecordedDataset(unequal_epochs, frozenset({"first-run"})),
+        FigureRecordedDataset(other, frozenset({"second-run"})),
+    ], plotted.data)
+
+    trial, _ = source.project({"mass": (1,), "trial": (1,)})
+    assert trial.id == "second"
+    assert trial.timeline[1].start == 3
