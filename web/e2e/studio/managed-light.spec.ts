@@ -209,7 +209,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await selectElement('Aligned velocity');
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
   for (const [field, label] of [
-    ['Position', 'plant.effector/position'], ['Velocity', 'plant.effector/velocity'], ['Target', 'target_pos'],
+    ['Position', / · effector position$/], ['Velocity', / · effector velocity$/], ['Target', /target pos$/i],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => chooseOption(page, select, label));

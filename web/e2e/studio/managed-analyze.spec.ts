@@ -147,7 +147,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   page.off('request', countReview);
   expect(reviews).toEqual(['edit', 'edit']);
   for (const [field, label] of [
-    ['Position', 'plant.effector/position'], ['Velocity', 'plant.effector/velocity'], ['Target', 'target_pos'],
+    ['Position', / · effector position$/], ['Velocity', / · effector velocity$/], ['Target', /target pos$/i],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => pick(select, label));
