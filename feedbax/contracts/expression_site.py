@@ -23,11 +23,13 @@ from feedbax.contracts.expression_values import (
     SweepList,
     SweepRange,
     SweepSample,
+    UnresolvedValue,
     ValueBase,
     ValueRecord,
+    scope_problems,
     walk,
 )
-from feedbax.contracts.expression_check import Checked, check
+from feedbax.contracts.expression_check import Checked, _checker, check
 from feedbax.contracts.expression_registry import FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.contracts.expression_text import ParsedField, parse
 
@@ -136,18 +138,47 @@ def _expression_parts(
     tree: Expression, site: Site, functions: FunctionRegistry, offered: tuple[FunctionInfo, ...],
 ) -> tuple[ExpressionPartSite, ...]:
     """Check a replacement with its enclosing expression so sibling constraints still apply."""
-    original = check(tree, site, functions)
+    nodes = tuple(walk(tree))
+    by_path = dict(nodes)
+    invalid_scope = scope_problems(site, ())
+    recheck, local, insensitive = _checker(site, functions, reusable=frozenset(id(node) for _, node in nodes))
+    original = (
+        check(tree, site, functions) if isinstance(tree, UnresolvedValue) else invalid_scope or recheck(tree)
+    )
     names = tuple(
-        (name.id, NameValue(reference=name.id)) for name in site.names if name.level <= site.finest
+        (name.id, NameValue(reference=name.id), (name.type, name.level, name.list_count))
+        for name in site.names if name.level <= site.finest
     )
 
     def fits(path: NodePath, replacement: Expression) -> bool:
-        candidate = check(_replace_part(tree, path, replacement), site, functions)
-        if isinstance(candidate, Checked):
+        after = replacement
+        if isinstance(original, Checked) and not isinstance(tree, UnresolvedValue):
+            # A changed child hint can leave its parent's output unchanged. Lift
+            # the edit one edge at a time, stopping when the outer context agrees.
+            for size in range(len(path), 0, -2):
+                if (decision := local(by_path[path[:size]], after, path[:size])) is not None:
+                    return decision
+                after = _replace_part(by_path[path[: size - 2]], path[size - 2 : size], after)
+        else:
+            after = _replace_part(tree, path, replacement)
+        candidate = invalid_scope or recheck(after, collect=False)
+        if not candidate:
             return True
         if isinstance(original, Checked):
             return False
         return all(problem in original and problem.path[:len(path)] != path for problem in candidate)
+
+    def fitted_names(path: NodePath) -> tuple[str, ...]:
+        equivalent = {}
+        accepted = []
+        group_names = isinstance(original, Checked) and insensitive(path)
+        for key, replacement, signature in names:
+            group = signature if group_names else key
+            if group not in equivalent:
+                equivalent[group] = fits(path, replacement)
+            if equivalent[group]:
+                accepted.append(key)
+        return tuple(accepted)
 
     return tuple(
         ExpressionPartSite(
@@ -158,9 +189,9 @@ def _expression_parts(
                 if (replacement := _with_function(node, info, site.finest)) is not None
                 and fits(path, replacement)
             ),
-            names=tuple(key for key, replacement in names if fits(path, replacement)),
+            names=fitted_names(path),
         )
-        for path, node in walk(tree)
+        for path, node in nodes
     )
 
 
