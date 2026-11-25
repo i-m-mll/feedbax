@@ -169,14 +169,17 @@ function signalPlace(record: TrialRecord, id: string, step: number): ScenePoint 
 }
 
 /**
- * The places Relate can join: each anchor the posed geometry draws, named by the mechanism that draws it, and each
+ * The places Relate can join: each anchor the posed geometry draws, named by the mechanism whose point it is or else
+ * that owns it, and each
  * task variable or signal with a place at the playhead. An anchor no signal reads is not an end, and says so.
  */
 export function relateEnds(geometry: SceneModelGeometry, task: SceneGroup | undefined): SceneEnd[] {
+  const points = new Map(geometry.mechanisms.flatMap((mechanism) =>
+    mechanism.kind === 'point' ? [[addressKey(mechanism.point), mechanism.name]] : []));
   const names = new Map(geometry.mechanisms.map((mechanism) => [owner(mechanism.address)?.key, mechanism.name]));
   const anchors = (geometry.anchors ?? []).map((anchor): SceneEnd => {
     const of = owner(anchor.address);
-    const name = names.get(of?.key) ?? of?.id ?? studioName('anchor');
+    const name = points.get(addressKey(anchor.address)) ?? names.get(of?.key) ?? of?.id ?? studioName('anchor');
     return {
       key: JSON.stringify(['anchor', addressKey(anchor.address)]), place: { kind: 'anchor', address: anchor.address },
       name, point: anchor.position, ...!anchor.signal && { reason: studioReason('unreadAnchor', name) },
