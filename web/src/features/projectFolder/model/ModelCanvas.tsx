@@ -12,6 +12,7 @@ import { appTip } from '@window-shell/browser/tooltip';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
+import { roundedPath } from '@/components/canvas/cardGeometry';
 import { StudioCanvas, type CanvasViewport, type CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
@@ -245,19 +246,6 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
   </SurfaceCard>;
 });
 
-function rounded(points: readonly ModelPosition[]) {
-  let path = `M ${points[0].x},${points[0].y}`;
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const a = points[index - 1], b = points[index], c = points[index + 1];
-    const before = Math.min(6, Math.hypot(b.x - a.x, b.y - a.y) / 2);
-    const after = Math.min(6, Math.hypot(c.x - b.x, c.y - b.y) / 2);
-    path += ` L ${b.x + Math.sign(a.x - b.x) * before},${b.y + Math.sign(a.y - b.y) * before}`;
-    path += ` Q ${b.x},${b.y} ${b.x + Math.sign(c.x - b.x) * after},${b.y + Math.sign(c.y - b.y) * after}`;
-  }
-  const last = points.at(-1)!;
-  return `${path} L ${last.x},${last.y}`;
-}
-
 /** The clearance a wire's label keeps from a card's edge: about half the label's height. */
 const LABEL_CLEARANCE = 12;
 
@@ -315,7 +303,7 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
   const geometry = { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition };
   const [path, labelX, labelY] = physical ? getBezierPath(geometry)
     : !under && !waypoints?.length ? getSmoothStepPath({ ...geometry, borderRadius: 6, offset: 16 })
-      : [rounded(turns), (a.x + b.x) / 2, bend];
+      : [roundedPath(turns), (a.x + b.x) / 2, bend];
   const delayed = data?.attachments?.some((item) => item.delay);
   const labelled = !!(data?.attachments?.length || data?.bundleCount || data?.problem || data?.change);
   const pathRef = useRef<SVGPathElement>(null);
