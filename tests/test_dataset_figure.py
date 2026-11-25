@@ -307,3 +307,80 @@ def test_sparse_panels_keep_authored_positions_and_share_their_rendered_range():
     assert figure.layout.xaxis.range == (-1, 9)
     assert figure.layout.yaxis.range == figure.layout.yaxis3.range == (0, 12)
     assert figure.layout.legend.x == pytest.approx(1.1)
+
+
+def test_points_rules_and_spans_draw_at_their_authored_positions():
+    """Catches error bars drawn as offsets instead of bounds, and references drawn on the wrong axis."""
+    time = np.array([0.0, 0.02, 0.04])
+    summary = Dataset.from_arrays(
+        {
+            "mean": Variable(np.array([[0.0, 0.3, 0.5], [0.0, 0.2, 0.4]]), ("condition", "state_time"), units="m/s"),
+            "lower": Variable(np.array([[0.0, 0.25, 0.4], [0.0, 0.1, 0.3]]), ("condition", "state_time"), units="m/s"),
+            "upper": Variable(np.array([[0.0, 0.4, 0.6], [0.0, 0.3, 0.45]]), ("condition", "state_time"), units="m/s"),
+            "onset": Variable(np.array([0.01, 0.015]), ("condition",), units="s"),
+        },
+        coords={
+            "condition": Variable(np.array(["light", "heavy"]), ("condition",)),
+            "state_time": Variable(time, ("state_time",), units="s", trial_time=TrialFigureTime()),
+        },
+    )
+    document = FigureDocument.model_validate({
+        "data": ["summary"],
+        "layout": [{"name": "velocity", "row": 1, "col": 2}, {"name": "spare", "row": 1, "col": 1}],
+        "layers": [
+            {
+                "name": "peak", "mark": "points", "panel": "velocity", "role": "summary",
+                "select": {"state_time": {"index": 2}}, "group": ["condition"],
+                "encode": {"x": "condition", "y": "mean", "error_y": {"lower": "lower", "upper": "upper"}},
+                "style": {"label": "{condition}", "marker_size": 9},
+            },
+            {"name": "target", "mark": "rule", "panel": "velocity", "role": "summary", "encode": {"axis": "y", "at": 0.5}},
+            {
+                "name": "onset", "mark": "rule", "panel": "velocity", "role": "summary", "group": ["condition"],
+                "encode": {"axis": "x", "at": "onset"},
+            },
+            {
+                "name": "window", "mark": "span", "panel": "velocity", "role": "summary",
+                "encode": {"axis": "x", "start": 0.02, "end": 0.04}, "style": {"color": "#000000", "fill_alpha": 0.25},
+            },
+        ],
+    })
+    figure = render(document, {"summary": summary})
+
+    assert [(trace.name, list(trace.x), list(trace.y)) for trace in figure.data] == [
+        ("light", ["light"], [0.5]), ("heavy", ["heavy"], [0.4]),
+    ]
+    for trace, (lower, upper) in zip(figure.data, ((0.4, 0.6), (0.3, 0.45)), strict=True):
+        assert trace.mode == "markers" and trace.xaxis == "x2"
+        np.testing.assert_allclose(trace.y[0] + trace.error_y.array[0], upper)
+        np.testing.assert_allclose(trace.y[0] - trace.error_y.arrayminus[0], lower)
+
+    target, light, heavy, window = figure.layout.shapes
+    assert (target.type, target.yref, target.y0, target.y1, target.xref, target.x0, target.x1) == (
+        "line", "y2", 0.5, 0.5, "x2 domain", 0, 1,
+    )
+    assert [(shape.xref, shape.x0, shape.yref) for shape in (light, heavy)] == [
+        ("x2", 0.01, "y2 domain"), ("x2", 0.015, "y2 domain"),
+    ]
+    assert (window.type, window.x0, window.x1, window.yref, window.fillcolor) == (
+        "rect", 0.02, 0.04, "y2 domain", "rgba(0, 0, 0, 0.25)",
+    )
+    assert [shape.showlegend for shape in figure.layout.shapes] == [True, True, False, True]
+
+
+def test_error_bounds_that_exclude_their_point_are_refused():
+    """Catches bounds given as offsets (or swapped), which would otherwise draw inverted bars."""
+    values = Dataset.from_arrays(
+        {name: Variable(np.array([value]), ("condition",), units="m/s")
+         for name, value in (("mean", 3.0), ("lower", 0.5), ("upper", 2.0))},
+        coords={"condition": Variable(np.array(["control"]), ("condition",))},
+    )
+    document = FigureDocument.model_validate({
+        "data": ["summary"], "layout": [{"name": "panel", "row": 1, "col": 1}],
+        "layers": [{
+            "name": "estimate", "role": "summary", "panel": "panel", "mark": "points", "group": ["condition"],
+            "encode": {"x": "condition", "y": "mean", "error_y": {"lower": "lower", "upper": "upper"}},
+        }],
+    })
+    with pytest.raises(ValueError, match="enclose their point"):
+        render(document, {"summary": values})

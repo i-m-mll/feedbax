@@ -32,6 +32,7 @@ from feedbax.contracts.project_inputs import (
     select_sweep_exception_rows,
 )
 from feedbax.contracts.run_rule import RuleRefusal, rule_names
+from feedbax.contracts.task_document import TaskAdditions
 type PatchPath = Annotated[str, Field(pattern=r"^[^.]+(?:\.[^.]+)*$")]
 type SweepTarget = Annotated[str, Field(pattern=r"^(?:(?:(?:steps|documents)\.\??[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$")]
 type IntegerSite = Callable[[str], bool]
@@ -172,7 +173,7 @@ class PatchSet(StrictModel):
     _patch_authors: dict[str, str] = PrivateAttr(default_factory=dict)
 
 
-class AxisValue(PatchSet):
+class AxisValue(PatchSet, TaskAdditions):
     label: str | None = None
     value: JsonValue = None
 

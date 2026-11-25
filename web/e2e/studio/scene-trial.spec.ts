@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioTrialReplayResponse, TrialMean } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
-import { pick, popupListbox, showTrials, trialPicker, trialPopup } from './fixtures/controls';
+import { alignMean, showTrials, trialPicker, trialPopup } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -150,9 +150,9 @@ const meanPathCount = (mean: TrialMean) => mean.conditions
 // Catches Mean that does not reach the Service's Mean, a Scene that draws no mean path or spread per condition or
 // still poses the mechanism, a clock that stays on the trial's own time rather than Align's or does not reach the
 // earliest aligned trial, a mean path that is not the mean of the trials aligned to Align's epoch, a shelf under Mean
-// that lists fewer Task rows than one trial's or draws a row empty, By that does not change the conditions, a By menu
-// that Escape or opening Align leaves open, Align's label drawn over its value, a clock that overflows the bottom bar
-// of a narrow window, and an Evaluate bar whose buttons share the scrubber's line.
+// that lists fewer Task rows than one trial's or draws a row empty, By that does not change the conditions, By and
+// Align that Escape leaves open, an Align control left on the bar, a clock that overflows the bottom bar of a narrow
+// window, and an Evaluate bar whose buttons share the scrubber's line.
 test('Mean by condition aligned to an epoch draws one mean path with its spread per condition, on time from that epoch', { tag: '@round' }, async ({ page, studio }) => {
   test.setTimeout(80_000);
   await doneEvaluationScene(page, studio.home, 'seed-mean-conditions', 'scene-mean');
@@ -169,7 +169,7 @@ test('Mean by condition aligned to an epoch draws one mean path with its spread 
   const options = first.mean_options!;
   const epoch = options.align.at(-1)!;
   const aligned = meanReply(page, epoch.id);
-  await pick(clock.getByRole('combobox', { name: 'Align', exact: true }), epoch.label);
+  await alignMean(page, epoch.label);
   const { reply } = await aligned;
   const mean = reply.mean!;
   expect(mean.conditions.length).toBeGreaterThan(1);
@@ -209,17 +209,7 @@ test('Mean by condition aligned to an epoch draws one mean path with its spread 
   await expect(byMenu).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(byMenu).toBeHidden();
-  await trialPicker(page).click();
-  await expect(byMenu).toBeVisible();
-  await clock.getByRole('combobox', { name: 'Align', exact: true }).click();
-  await expect(popupListbox(page)).toBeVisible();
-  await expect(byMenu).toBeHidden();
-  await page.keyboard.press('Escape');
-  await expect(popupListbox(page)).toBeHidden();
-
-  const label = (await clock.getByText('Align', { exact: true }).boundingBox())!;
-  const value = (await clock.getByRole('combobox', { name: 'Align', exact: true }).getByText(epoch.label, { exact: true }).boundingBox())!;
-  expect(label.x + label.width).toBeLessThanOrEqual(value.x);
+  await expect(footer(page).getByRole('combobox', { name: 'Align', exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 900, height: 800 });
   await expect.poll(() => clock.evaluate((group) => [...group.querySelectorAll('*')]
     .filter((node) => node.getBoundingClientRect().right > group.closest('footer')!.getBoundingClientRect().right + 0.5).length)).toBe(0);
@@ -235,7 +225,6 @@ test('Mean by condition aligned to an epoch draws one mean path with its spread 
 test('under Mean a figure draws the Service\'s Mean rendering for the clock\'s By and Align', { tag: '@round' }, async ({ page, studio }) => {
   test.setTimeout(90_000);
   await doneEvaluationScene(page, studio.home, 'seed-mean-figure', 'figure-mean', ['analyze']);
-  const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
   await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
   const shelf = page.getByRole('region', { name: 'Shelf', exact: true });
   const rows = shelf.locator('[data-shelf-rows] > [role="group"]');
@@ -246,7 +235,7 @@ test('under Mean a figure draws the Service\'s Mean rendering for the clock\'s B
   await showTrials(page, 'Mean');
   const epoch = (await opened).reply.mean_options!.align.at(-1)!;
   const aligned = meanReply(page, epoch.id);
-  await pick(clock.getByRole('combobox', { name: 'Align', exact: true }), epoch.label);
+  await alignMean(page, epoch.label);
   await aligned;
 
   const meanFigure = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/figures/mean'));

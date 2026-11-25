@@ -247,6 +247,9 @@ from feedbax.contracts.model_address import (
 from feedbax.contracts.model_document import (
     CompositeComponent,
     DelayAttachment,
+    DelayInitialTask,
+    DelayInitialValue,
+    DelayInitialWire,
     HoldAttachment,
     GraphInterior,
     InputDefault,
@@ -344,6 +347,8 @@ from feedbax.contracts.trial_clock import (
     TrialMean,
     TrialMeanCondition,
     TrialMeanEpoch,
+    TrialMeanShelf,
+    TrialMeanTermShare,
     TrialMeanOptions,
     TrialMeanSelection,
     TrialSeriesSummary,
@@ -438,6 +443,7 @@ from feedbax.contracts.studio_loaded_model import (
     StudioLoadedModelExportRequest, StudioLoadedModelImportQuery, StudioLoadedModelImportResult,
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.set_document import SetDocument, SetEntry
 from feedbax.contracts.window import Window
 from feedbax.contracts.training_document import TrainingDocument
 from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
@@ -516,6 +522,8 @@ AUTHORED_CONTRACT_MODELS = (
     ValidityAcceptance,
     AnalysisDocument,
     TaskDocument,
+    SetDocument,
+    SetEntry,
     PythonTaskSelection,
     ObjectiveDocument,
     Window,
@@ -607,6 +615,9 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelTime,
     InputDefault,
     DelayAttachment,
+    DelayInitialTask,
+    DelayInitialValue,
+    DelayInitialWire,
     HoldAttachment,
     InterventionAttachment,
     ProbeAttachment,
@@ -814,6 +825,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TrialMean,
     TrialMeanCondition,
     TrialMeanEpoch,
+    TrialMeanShelf,
+    TrialMeanTermShare,
     TrialMeanOptions,
     TrialMeanSelection,
     TrialSeriesSummary,

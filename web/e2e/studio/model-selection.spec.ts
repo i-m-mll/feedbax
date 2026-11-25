@@ -154,7 +154,7 @@ test('a delay is a square where its wire turns dashed, and drags to another wire
     wires!.feedback = {
       source: { owner: 'component', component: 'readout', port: 'output' },
       target: { owner: 'component', component: 'cell', port: 'hidden' },
-      attachments: [{ id: 'lag', kind: 'delay', delay: { value: 5, unit: 'st' }, initial: 0 }],
+      attachments: [{ id: 'lag', kind: 'delay', delay: { value: 5, unit: 'st' } }],
     };
   });
   const delay = model.getByRole('button', { name: 'Attachment Delay', exact: true });

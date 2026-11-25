@@ -77,5 +77,5 @@ def test_repeated_epoch_relative_windows_read_a_trial_variable_and_can_select_on
         {"kind": "epoch", "epoch": "hold", "occurrence": 1},
     ], ("hold", "hold"), (length,))
 
-    chosen = window.mask(record, 20, Inputs((), {"length": jnp.asarray(.02)}, None, None))
-    assert jnp.flatnonzero(chosen).tolist() == [1, 2, 11, 12, 13, 14, 15, 16, 17]
+    chosen = window.mask(record, 20, Inputs((), {"length": jnp.asarray(.025)}, None, None))
+    assert jnp.flatnonzero(chosen).tolist() == [1, 2, 3, 11, 12, 13, 14, 15, 16, 17]

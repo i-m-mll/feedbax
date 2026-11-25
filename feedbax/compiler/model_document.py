@@ -7,9 +7,11 @@ from hashlib import sha256
 from math import isfinite
 from collections.abc import Iterator, Mapping
 
+import jax.numpy as jnp
 import numpy as np
 from jax import ShapeDtypeStruct
 
+from feedbax.builtins.mechanics.linear_state_space import LinearStateSpace, linear_state_space_output_prototype
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.resolution import resolve_graph_parameters
 from feedbax.compiler.model_signals import (
@@ -23,7 +25,6 @@ from feedbax.contracts.acausal_interface import (
     PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.graph import (
     ComponentSpec, DerivedDimensionRuleSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec,
@@ -34,7 +35,8 @@ from feedbax.contracts.model_address import (
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.model_edit import ModelGraphProblem
 from feedbax.contracts.model_document import (
-    DelayAttachment, GraphInterior, HoldAttachment, InterventionAttachment, ModelDocument, ModelPorts,
+    DelayAttachment, DelayInitialValue, DelayInitialWire, GraphInterior, HoldAttachment, InterventionAttachment,
+    ModelDocument, ModelPorts,
     PhysicalInterior, ProbeAttachment, SignalInput, SignalType,
 )
 from feedbax.contracts.project import json_pointer_parts
@@ -55,7 +57,17 @@ class ModelCompilationProblem(ValueError):
         self.problems = (ModelGraphProblem(address=address, reason=detail), *related)
 
 
-_DTYPES = {ValueBase.BOOLEAN: np.bool_, ValueBase.INTEGER: np.int32, ValueBase.REAL: np.float32}
+def _signal_dtype(base: ValueBase | str | None) -> np.dtype:
+    if base in ("bool", ValueBase.BOOLEAN):
+        return np.dtype(np.bool_)
+    if base in ("int", "int32", ValueBase.INTEGER):
+        return np.dtype(np.int32)
+    return jnp.result_type(float)
+
+
+def _model_float_dtype(dtype: str | None = None) -> str:
+    """Resolve the authored Model's standard real precision for this process."""
+    return jnp.result_type(float).name if dtype in (None, "float32", "float64") else dtype
 
 
 def declared_model_input_prototypes(model: ModelDocument) -> dict[str, ShapeDtypeStruct]:
@@ -64,9 +76,7 @@ def declared_model_input_prototypes(model: ModelDocument) -> dict[str, ShapeDtyp
         shape = port.type.shape
         if shape is None or any(type(size) is not int or size <= 0 for size in shape):
             continue
-        base = port.type.base
-        dtype = np.bool_ if base in ("bool", "boolean") else np.int32 if base in ("int", "int32", "integer") else np.float32
-        prototypes[port.name] = ShapeDtypeStruct(shape, dtype)
+        prototypes[port.name] = ShapeDtypeStruct(shape, _signal_dtype(port.type.base))
     return prototypes
 
 
@@ -74,7 +84,7 @@ def model_input_prototypes(
     graph: GraphSpec, model: ModelDocument, task_inputs: Mapping[str, ValueType],
 ) -> dict[tuple[str, str], ShapeDtypeStruct]:
     supplied = declared_model_input_prototypes(model)
-    supplied.update({port: ShapeDtypeStruct(value.shape, _DTYPES[value.base]) for port, value in task_inputs.items()})
+    supplied.update({port: ShapeDtypeStruct(value.shape, _signal_dtype(value.base)) for port, value in task_inputs.items()})
     return {target: supplied[port] for port, target in graph.input_bindings.items() if port in supplied}
 
 
@@ -124,7 +134,7 @@ def _named_physical_elements(
 @dataclass(frozen=True)
 class _Signal:
     shape: tuple[int, ...] | None = None
-    dtype: str = "float32"
+    dtype: str = field(default_factory=_model_float_dtype)
     units: str | None = None
 
 
@@ -173,7 +183,7 @@ class _Lower:
 
         if end.owner == "inputs":
             port = next((port for port in ports.inputs if port.id == end.port), None)
-            return _Signal(shape_of(port.type.shape), units=port.type.unit) if port else _Signal()
+            return _Signal(shape_of(port.type.shape), _signal_dtype(port.type.base).name, port.type.unit) if port else _Signal()
 
         component = interior.components.get(end.component)
         if component is None:
@@ -207,6 +217,9 @@ class _Lower:
                 size = definition.params.model.model_fields["hidden_size"].default
             shape = shape_of((size,))
             units = "1"
+        if end.port == "state" and definition is not None and issubclass(definition.params.runtime_type, LinearStateSpace):
+            prototype = linear_state_space_output_prototype(definition.params.default_params | component.fields, {})["state"]
+            return _Signal(prototype.shape, prototype.dtype.name, "1")
         if isinstance(interior, PhysicalInterior) and interior.physical_domain == "planar_multibody":
             if is_acausal_type(component.type, "SensorOutput"):
                 quantity = component.fields.get("quantity", "position")
@@ -214,7 +227,7 @@ class _Lower:
                     return _Signal((2,), units="m")
                 if quantity == "velocity":
                     return _Signal((2,), units="m/s")
-        return _Signal(shape, component.fields.get("dtype", "float32"), units)
+        return _Signal(shape, _model_float_dtype(component.fields.get("dtype")), units)
 
     def destination_shape(
         self, interior: GraphInterior, ports: ModelPorts, end: SignalTarget,
@@ -248,20 +261,9 @@ class _Lower:
         )
 
     def delay_reset_source(
-        self, reference: NameValue, path: tuple[str, ...], interior: GraphInterior, ports: ModelPorts,
-        signal: _Signal, nodes: Mapping[str, ComponentSpec], subgraphs: Mapping[str, GraphSpec | AcausalGraphSpec],
+        self, end: ComponentPortEnd, interior: GraphInterior, ports: ModelPorts, signal: _Signal,
+        nodes: Mapping[str, ComponentSpec], subgraphs: Mapping[str, GraphSpec | AcausalGraphSpec],
     ) -> ComponentPortEnd:
-        address = ModelAddress.from_text(reference.reference)
-        if address.composites != path:
-            raise ValueError("delay Initial must read a reset output of the same graph")
-        element = address.element
-        if (
-            not isinstance(element, PortElement)
-            or element.end.owner != "component"
-            or element.end.direction != "output"
-        ):
-            raise ValueError("delay Initial must read an output port at reset")
-        end = ComponentPortEnd(component=element.end.component, port=element.end.port, owner="component")
         component = nodes.get(end.component)
         if component is None:
             raise ValueError("delay Initial output owner no longer exists")
@@ -483,6 +485,11 @@ class _Lower:
                 for period in ("dt", "control_dt"):
                     if period in definition.params.model.model_fields:
                         params[period] = self.period
+                for field_name in ("dtype", "input_dtype"):
+                    if declaration := definition.params.model.model_fields.get(field_name):
+                        dtype = params.get(field_name, declaration.default)
+                        if dtype in ("float32", "float64") and dtype != (resolved_dtype := _model_float_dtype(dtype)):
+                            params[field_name] = resolved_dtype
                 if component.type == "feedbax.VanillaRNN":
                     tau = params.get("tau", definition.params.model.model_fields["tau"].default)
                     try:
@@ -541,31 +548,24 @@ class _Lower:
                         raise self.problem(path, "field", str(error), parent=origin, path=("delay",)) from error
                     if signal is None or signal.shape is None:
                         raise self.problem(path, "attachment", "delay has no resolved reset shape", parent=at, id=attachment.id)
-                    if signal.dtype != "float32":
-                        raise self.problem(path, "attachment", "delay requires a float32 reset", parent=at, id=attachment.id)
-                    initial = self.numeric_field(attachment.initial, path, origin, ("initial",))
-                    reset_output = None
-                    if isinstance(initial, dict):
-                        try:
-                            reference = NameValue.model_validate(initial)
-                            reset_output = self.delay_reset_source(
-                                reference, path, interior, ports, signal, nodes, subgraphs,
-                            )
-                        except ValueError as error:
-                            raise self.problem(path, "attachment", str(error), parent=at, id=attachment.id) from error
-                        unit = UNITS.get(signal.units or "")
-                        if unit is None or any(size <= 0 for size in signal.shape):
+                    if signal.dtype not in ("float32", "float64"):
+                        raise self.problem(path, "attachment", "delay requires a real floating-point reset", parent=at, id=attachment.id)
+                    initial, reset_output = 0, None
+                    match attachment.initial_source:
+                        case DelayInitialValue(value=value):
+                            initial = self.numeric_field(value, path, origin, ("initial_source", "value"))
+                        case DelayInitialWire(source=ComponentPortEnd() as end):
+                            try:
+                                reset_output = self.delay_reset_source(end, interior, ports, signal, nodes, subgraphs)
+                            except ValueError as error:
+                                raise self.problem(path, "attachment", str(error), parent=at, id=attachment.id) from error
+                        case _:
                             raise self.problem(
-                                path, "attachment", "delay Initial requires a resolved numeric value type",
+                                path, "attachment", "Choose a Delay Initial source available at reset",
                                 parent=at, id=attachment.id,
                             )
-                        self.links.append(ResolvedModelLink(
-                            address=self.address(path, "field", parent=origin, path=("initial",)),
-                            value=reference,
-                            type=ValueType(base=ValueBase.REAL, shape=signal.shape, dimensions=unit.dimensions),
-                        ))
-                        initial = 0
-                    if type(initial) not in (int, float) or not -3.4028234663852886e38 <= initial <= 3.4028234663852886e38:
+                    limit = float(np.finfo(signal.dtype).max)
+                    if type(initial) not in (int, float) or not -limit <= initial <= limit:
                         raise self.problem(path, "attachment", "delay Initial requires a qualified numeric value", parent=at, id=attachment.id)
                     reset = ModelDelayCarry(
                         shape=signal.shape, dtype=signal.dtype, units=signal.units,
@@ -628,7 +628,7 @@ class _Lower:
                     if dtype not in {"b", "i", "u", "f"}:
                         raise self.problem(path, "port", "A default requires a numeric sample",
                                            end={"owner": "inputs", "port": port.id})
-                    params["dtype"] = {"b": "bool", "i": "int32", "u": "int32", "f": "float32"}[dtype]
+                    params["dtype"] = {"b": "bool", "i": "int32", "u": "int32", "f": _model_float_dtype()}[dtype]
                 add_generated(relay, "feedbax.Constant", params, origin=origin, inputs=())
             else:
                 add_generated(relay, "feedbax.Input", {}, origin=origin)
