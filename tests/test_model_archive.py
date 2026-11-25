@@ -1,6 +1,7 @@
 """Native model archives preserve the fitted graph and replica bytes."""
 
 from io import BytesIO
+import json
 from shutil import rmtree
 from zipfile import ZipFile
 
@@ -194,4 +195,18 @@ def test_archive_refuses_a_changed_tensor_with_an_unchanged_descriptor(native_ar
         assert isinstance(result, UnreadableModelArchive), result
         assert result.path == "/" + path
         assert "digest mismatch" in result.detail
+    assert not store.root.exists()
+
+
+def test_archive_refuses_a_graph_outside_native_json_identity(native_archive, tmp_path):
+    model, components, _, _, raw, _ = native_archive
+    files = _read_files(raw)
+    graph = json.loads(files["graph.json"])
+    graph["nodes"]["readout"]["params"]["output_size"] = 2**53
+    files["graph.json"] = json.dumps(graph).encode()
+    store = ImmutableArtifactBlobProvider(tmp_path / "rejected")
+    with stage_model_archive(_as_archive(files), model, store, components=components) as result:
+        assert isinstance(result, UnreadableModelArchive), result
+        assert result.path == "/graph.json"
+        assert "unsafe_integer" in result.detail
     assert not store.root.exists()
