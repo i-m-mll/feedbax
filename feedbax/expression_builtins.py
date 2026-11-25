@@ -432,10 +432,13 @@ def _choose(context: CallContext, condition, yes, no):
 def _held_value(context: CallContext, condition, duration):
     import jax.numpy as jnp
 
+    from feedbax.runtime.timing import runtime_time_steps
+
     condition = condition & context.defined[0] & context.defined[1]
     start = jnp.where(condition, jnp.where(context.state < 0, context.step, context.state), -1)
-    elapsed = (context.step - start) * context.period_seconds
-    return condition & (elapsed >= duration), start
+    steps = runtime_time_steps(duration, context.period_seconds)
+    valid = (duration == 0) | ((duration > 0) & (steps > 0) & jnp.isfinite(duration))
+    return condition & valid & (context.step - start >= steps), start
 
 
 def _filtered(ou: bool, context: CallContext, value, tau, *, nominal=False):

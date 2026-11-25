@@ -1159,3 +1159,119 @@ def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):
         assert response.status_code == 200, response.text
         revision = response.json()["revision"]
         assert author("evaluate")["objective"]["terms"][0]["name"] == "Command effort"
+
+
+@pytest.mark.parametrize(("condition", "boundary", "outcome", "weight"), [
+    ("true", 0, 2, 2.0),
+    ("held(dist(effector.pos, point(0.01 m, 0 m)) < 0.00999 m, 0.1 s)", 12, 2, 2.0),
+    ("held(dist(effector.pos, point(1 m, 0 m)) < 0.00999 m, 0.1 s)", 14, 3, 3.0),
+])
+def test_until_scene_ends_at_entry_after_holding_or_at_limit(tmp_path, condition, boundary, outcome, weight):
+    """Euler moves the hand on the second transition; a ten-step hold ends at boundary 12."""
+    model = {
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [{"id": "force", "name": "force", "type": {"shape": [2], "unit": "N"}}],
+            "outputs": [{"id": "effector", "name": "effector", "type": {"base": "state"}}],
+        },
+        "interior": {
+            "components": {"plant": {"kind": "leaf", "name": "Plant", "type": "feedbax.PointMass"}},
+            "wires": {
+                "force": {
+                    "source": {"owner": "inputs", "port": "force"},
+                    "target": {"owner": "component", "component": "plant", "port": "force"},
+                },
+                "effector": {
+                    "source": {"owner": "component", "component": "plant", "port": "effector"},
+                    "target": {"owner": "outputs", "port": "effector"},
+                },
+            },
+        },
+    }
+
+    def expression(text):
+        return {"kind": "unresolved", "text": text}
+
+    task = {
+        "id": "reach",
+        "variables": (),
+        "epochs": [
+            {"id": "reach", "name": "Reach", "end": {
+                "kind": "until",
+                "condition": expression(condition),
+                "limit": {"value": 0.14, "unit": "s"},
+            }},
+            {"id": "exit", "name": "Exit", "end": {
+                "kind": "length", "length": {"kind": "literal", "value": 2, "unit": "st"},
+            }},
+        ],
+        "signals": [{"id": "force", "name": "force", "type": {
+            "base": "real", "shape": [2], "dimensions": {"mass": 1, "length": 1, "time": -2},
+        }, "cells": [
+            {"id": "push", "first_epoch": "reach", "last_epoch": "reach", "value": expression("vector(1 N, 0 N)")},
+        ]}],
+    }
+    objective = {
+        "id": "score",
+        "terms": [{
+            "id": "ending",
+            "measure": expression("1."),
+            "weight": expression("where(epoch.Reach.condition, 2, where(epoch.Reach.limit, 3, 0))"),
+        }],
+    }
+    app = create_app(projects_dir=tmp_path / "projects")
+    with TestClient(app) as client:
+        response = client.post("/api/execution/task-trials/sample", json={
+            "model": model, "task": task, "objective": objective, "nominal": True,
+        })
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["drawn"]["kind"] == "trials", data["drawn"]
+    (trial,) = data["drawn"]["trials"]
+    assert [(cue["start"], cue["end"], cue["outcome"]) for cue in trial["timeline"]] == [
+        (0, boundary, outcome), (boundary, boundary + 2, 1),
+    ]
+    assert trial["present"]["force"] == [True] * boundary + [False] * (16 - boundary)
+    assert trial["terms"]["ending"]["weights"] == [weight] * 16
+
+
+def test_until_authoring_switches_and_refuses_a_limit_that_rounds_to_zero(tmp_path):
+    app = create_app(projects_dir=tmp_path / "projects")
+    raw = document_project(authored_documents())
+    project = "until-expression"
+    folders = app.state.project_folders
+    _save_project(folders, project, Project.model_validate(raw))
+    revision = folders.read(project).revision
+    run = {"variant": "default", "step": "train", "row": "default"}
+    name = raw["documents"]["task"]["payload"]["epochs"][0]["id"]
+    end = f"/task/epochs/{name}/end"
+    with TestClient(app) as client:
+        def change(field, text):
+            response = client.post(f"/api/projects/{project}/authoring/trials", json={
+                "revision": revision, "run": run,
+                "change": {"kind": "expression", "path": f"{end}/{field}", "edit": {
+                    "kind": "text", "text": text,
+                }},
+            })
+            assert response.status_code == 200, response.text
+            return StudioTrialAuthoring.model_validate(response.json())
+
+        offered = change("length", "true ≤ 0.3 s")
+        assert offered.files and not offered.problems
+        assert offered.task.epochs[0].end.kind == "until"
+        assert offered.epochs[0].steps.least == 0
+        assert offered.epochs[0].steps.greatest == offered.epochs[0].steps.nominal == 30
+        fields = {field.path: field for field in offered.fields}
+        assert f"{end}/condition" in fields
+        assert fields[f"{end}/limit"].conversion.model_dump() == {"value": 30, "unit": "st"}
+        response = client.patch(f"/api/projects/{project}", json={
+            "revision": revision, "files": [file.model_dump(mode="json") for file in offered.files],
+        })
+        assert response.status_code == 200, response.text
+        revision = response.json()["revision"]
+        refused = change("limit", "0.001 s")
+        assert not refused.files
+        assert any(problem.path == ("task", "epochs", name, "end", "limit") for problem in refused.problems)
+        restored = change("length", "20 st")
+        assert restored.files and not restored.problems
+        assert restored.task.epochs[0].end.kind == "length"

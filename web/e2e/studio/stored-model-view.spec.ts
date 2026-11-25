@@ -92,7 +92,7 @@ test('authors and reopens an addressed Model through the project history', async
   const wire = wired.changed[0].element;
   if (wire.kind !== 'wire') throw new Error('Connect did not return a wire address');
   expect(stored(wired.snapshot).interior.wires?.[wire.id].attachments).toMatchObject([
-    { kind: 'delay', delay: { value: 1, unit: 'st' }, initial: 0 },
+    { kind: 'delay', delay: { value: 1, unit: 'st' }, initial_source: { kind: 'value', value: 0 } },
   ]);
   const delay = model.getByRole('button', { name: 'Attachment Delay', exact: true });
   await expect(delay).toHaveAccessibleDescription(/1 st · .+hidden → .+hidden/);
@@ -115,15 +115,15 @@ test('authors and reopens an addressed Model through the project history', async
     await otherHidden.click();
   });
   expect(stored(linked.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({
-    initial: { kind: 'name', reference: expect.stringContaining(component.id) },
+    initial_source: { kind: 'wire', source: { owner: 'component', component: component.id, port: 'hidden' } },
   });
   await model.focus();
   const undone = await apply(() => page.keyboard.press('Meta+Z'), 'undo');
-  expect(stored(undone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({ initial: 0 });
+  expect(stored(undone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({ initial_source: { kind: 'value', value: 0 } });
   await model.focus();
   const redone = await apply(() => page.keyboard.press('Meta+Shift+Z'), 'undo');
   expect(stored(redone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({
-    initial: { kind: 'name', reference: expect.stringContaining(component.id) },
+    initial_source: { kind: 'wire', source: { owner: 'component', component: component.id, port: 'hidden' } },
   });
 
   const before = await cell.evaluate((node) => node.style.transform);

@@ -95,6 +95,7 @@ import { InputEditor, type InputGesture } from './InputEditor';
 import { documentChoice } from './referenceChoices';
 import { documentsOfRole } from './useProjectDocuments';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
+import { holdsProducts } from './OperationProducts';
 import { focusedResult, SavedResults } from './SavedResults';
 import { exportLoadedModel } from '@/api/projectFolders';
 import { saveFile } from '@/components/ui/chooseFile';
@@ -447,12 +448,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const scoredBy = authored?.kind === 'evaluate' ? evaluateSubject(authored) : undefined;
   /** An Evaluate is scored by the Objective of the Train that made its checkpoint, or by the one it names itself. */
   const scored = authored?.kind !== 'evaluate' || scoredBy?.kind === 'steps' || scoredBy?.kind === 'document' && !!scoredBy.objective;
+  const operationProducts = step?.kind === 'analyze' && !!namedRun && (shown?.window_map?.analysis_elements ?? [])
+    .some(({ key, kind, requests }) => kind === 'analyze' && savedRunId(key) === savedRunId(namedRun) && requests.some(holdsProducts));
   const views = !step ? noViews : viewOffer({
     step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved',
     objective: scored, model: stored?.value,
     scenePlaces: restGeometry?.kind === 'ready' ? restGeometry.geometry.mechanisms.length > 0 : undefined,
     runProblems: (namedRun && step.runs.find(({ id }) => id === savedRunId(namedRun))?.problems) ?? [],
-    results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series,
+    results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series || operationProducts,
     report: !!stepReport(snapshot, step?.id).report,
   });
   const pins = windowState.secondaryView ? windowState.pins ?? {} : {};
@@ -2173,6 +2176,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             };
           }
           const resultsFailure = planError('results');
+          if (view === 'results' && analyze.results) return { ...analyze.results, padded: true, body: withProblem(analyze.results.body) };
           if (view === 'results') return {
             padded: true,
             body: <SavedResults shown={shown} current={plans.current} failure={resultsFailure} result={shownResult}
