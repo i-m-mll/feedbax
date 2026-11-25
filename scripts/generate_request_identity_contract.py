@@ -21,6 +21,7 @@ _RETIREMENTS = frozenset({
     "relative-model-addresses",
     "task-epoch-end",
     "stable-task-input-bindings",
+    "shared-trial-windows",
 })
 
 

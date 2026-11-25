@@ -53,7 +53,7 @@ from feedbax.contracts.time_units import TimeValue, length_steps
 from feedbax.contracts.rollout import trial_indices
 from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.runtime._graph_key_schedule import map_trial_samples, validation_trial_keys
-from feedbax.runtime.epoch_windows import EpochRecord, in_epoch
+from feedbax.runtime.epoch_windows import CompiledWindow, EpochRecord, compile_window, in_epoch
 
 
 @dataclass(frozen=True)
@@ -121,6 +121,7 @@ class _Prepared(NamedTuple):
     run_key: jax.Array
     trial_key: jax.Array
     lengths: jax.Array | None = None
+    windows: Mapping[str, jax.Array] | None = None
 
 
 class _Timeline(NamedTuple):
@@ -191,6 +192,7 @@ class _Signal:
     id: str
     absent: _Field
     cells: tuple[_Cell, ...]
+    window: CompiledWindow | None = None
 
 
 @dataclass(frozen=True)
@@ -256,7 +258,12 @@ class DocumentTask:
             signal.id: signal.absent.evaluate(parameters, prepared, values)
             for signal in self.signals
         }
-        prepared = prepared._replace(epochs=epochs, absent=absent, lengths=raw)
+        inputs = Inputs((), values, run_key, trial_key)
+        windows = {
+            signal.id: signal.window.mask(epochs, self.n_steps, inputs)
+            for signal in self.signals if signal.window is not None
+        }
+        prepared = prepared._replace(epochs=epochs, absent=absent, lengths=raw, windows=windows)
         timeline = None
         if any(self.conditions):
             unreachable = jnp.full(raw.shape, -1, dtype=raw.dtype)
@@ -358,6 +365,9 @@ class DocumentTask:
             output = variables.absent[signal.id]
             available = False
             next_signal = []
+            within = True
+            if signal.window is not None:
+                within = variables.windows[signal.id][k] if self.n_steps else False
             for cell, previous in zip(signal.cells, cell_states, strict=True):
                 if timeline is None:
                     start = variables.epochs.starts[cell.first]
@@ -381,7 +391,7 @@ class DocumentTask:
                 )._replace(defined=defined)
                 result, next_state = cell.field.code.evaluate_step(inputs, previous)
                 next_signal.append(next_state)
-                supplied = active & result.defined
+                supplied = within & active & result.defined
                 output = jnp.where(supplied, result.value, output)
                 available = available | supplied
             outputs[signal.id] = output
@@ -1043,6 +1053,22 @@ def compile_task(
 
         signals = [instantiate(signal) for signal in signals]
     epoch_ids = tuple(epochs)
+    instance_ids = tuple(epoch_ids[index] for index in instances)
+    windows = {signal.id: signal.window for signal in document.signals if signal.window is not None}
+    for index, signal in enumerate(signals):
+        if signal.id not in windows:
+            continue
+        path = ("signals", signal.id, "window")
+        compiled = compile_window(
+            windows[signal.id], epochs=instance_ids, period=period, names=tuple(scope.values()),
+            functions=functions, field_address=(document.id, *path), path=path, nominal=nominal,
+        )
+        if isinstance(compiled, tuple):
+            problems.extend(compiled)
+        else:
+            signals[index] = replace(signal, window=compiled)
+    if problems:
+        return tuple(problems)
     used_outputs = frozenset().union(*(
         references(field.code.checked.tree)
         for field in (*(field for _, field in fields), *conditions)
@@ -1054,7 +1080,7 @@ def compile_task(
         TaskInterface(tuple(scope.values()), tuple(declared_signals), tuple(links.items()), outputs, epoch_conditions),
         n_steps,
         period,
-        tuple(epoch_ids[index] for index in instances),
+        instance_ids,
         tuple(fields),
         tuple(lengths[index] for index in instances),
         tuple(bounds[index] for index in instances),

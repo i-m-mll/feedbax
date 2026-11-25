@@ -80,7 +80,6 @@ def test_nested_noise_reset_keys_follow_producers() -> None:
                 source_port="output",
                 target_node=name,
                 target_port="input",
-                temporality="recurrent",
                 recurrent_initializer=recurrent_node_output_initializer(
                     "noise", "output", state_slot="input"
                 ),

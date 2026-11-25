@@ -25,11 +25,21 @@ from tests.test_document_train_pair import authored_documents, document_project
 def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
     functions, model, task, objective = authored = authored_documents()
     raw = document_project(authored)
+    window = {"spans": [{
+        "kind": "interval",
+        "start": {
+            "anchor": {"kind": "epoch", "edge": "start", "epoch": "move"},
+            "offset": {"kind": "draw", "family": "choice", "args": [
+                {"kind": "literal", "value": onset, "unit": "st"} for onset in (15, 30, 45)
+            ]},
+        },
+        "end": {"offset": {"value": 5, "unit": "st"}},
+    }]}
     entries = {
         name: {"differences": {"/interior/wires/effector-wire/attachments": {
             "value": [{
                 "kind": "intervention", "id": name, "operation": "add", "fields": {"value": vector},
-                "window": {"epoch": "move", "offsets": [15, 30, 45], "duration": 5},
+                "window": window,
             }],
         }}}
         for name, vector in {"x": [1.0, 0.0], "y": [0.0, 2.0], "z": [-3.0, -3.0]}.items()

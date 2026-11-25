@@ -419,6 +419,7 @@
     "operation": "Operation",
     "clamp": "Clamp",
     "delay": "Delay",
+    "hold": "Hold",
     "attachment": "Attachment",
     "port": "Port",
     "substeps": "Substeps",
@@ -493,6 +494,7 @@
   "status": {
     "run": {
       "not_run": "Not run",
+      "not_chosen": "Not chosen",
       "cannot_run": "Can't run",
       "stale": "Out of date",
       "queued": "Queued",

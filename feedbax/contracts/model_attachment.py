@@ -103,6 +103,7 @@ def is_generated_attachment_node(name: str, type_id: str) -> bool:
     """Recognize stateless occurrences owned by attachment lowering."""
     for prefix, types in (
         ("_model_attachment_", {"feedbax.Scale", "feedbax.Saturation", "feedbax.ConstantInput"}),
+        ("_model_hold_", {"feedbax.Input"}),
         ("_model_delay_", {"feedbax.Input"}),
         ("_model_output_", {"feedbax.Input"}),
     ):
