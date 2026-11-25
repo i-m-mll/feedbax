@@ -9,6 +9,8 @@ from feedbax.contracts.expression_values import (
     ANGLE, LENGTH, TIME, Expression, LiteralValue, Scalar, ValueBase, ValueRecord, ValueType,
 )
 
+from feedbax.contracts.window import Window
+
 
 TASK_DOCUMENT_SCHEMA_ID = "feedbax.spec.task_document"
 
@@ -82,6 +84,7 @@ class Signal(ValueRecord):
     type: ValueType
     cells: tuple[Cell, ...]
     absent: Expression | None = None
+    window: Window | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class Link(ValueRecord):
