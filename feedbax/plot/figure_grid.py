@@ -1,9 +1,11 @@
 """Assemble the Cartesian panels of a dataset figure."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal
+
+import numpy as np
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -13,6 +15,34 @@ from feedbax.contracts.figure_document import FigureDocumentView, FigurePanel
 from feedbax.contracts.figure_layout import DataDerivedAxisRange, FigureView, PanelAxis
 from feedbax.contracts.studio_figure import FigureLayoutMeta, FigurePanelMeta, FigureRun
 from feedbax.plot.ranges import calculate_array_minmax
+
+
+@dataclass(frozen=True)
+class AxisReference:
+    """A rule (``start == end``) or a span of one axis, drawn across the other axis of its panel."""
+
+    axis: Literal["x", "y"]
+    start: float
+    end: float
+    label: str
+    legend: bool
+    line: Mapping[str, Any]
+    fill: str | None
+    """The span's fill colour; a rule has none."""
+
+    def shape(self, refs: Mapping[Literal["x", "y"], str], *, first: bool) -> dict[str, Any]:
+        across = "y" if self.axis == "x" else "x"
+        return {
+            "type": "line" if self.fill is None else "rect",
+            f"{self.axis}ref": refs[self.axis], f"{self.axis}0": self.start, f"{self.axis}1": self.end,
+            f"{across}ref": f"{refs[across]} domain", f"{across}0": 0, f"{across}1": 1,
+            "line": dict(self.line),
+            "fillcolor": self.fill,
+            "layer": "above" if self.fill is None else "below",
+            "name": self.label,
+            "legendgroup": self.label,
+            "showlegend": self.legend and first,
+        }
 
 
 @dataclass(frozen=True)
@@ -66,8 +96,25 @@ def _check_matched_ranges(axes: Sequence[_Axis]) -> None:
             )
 
 
+def _extents(
+    dimension: Literal["x", "y"], traces: Sequence[go.Scatter], references: Sequence[AxisReference],
+) -> Iterator[Sequence[float]]:
+    """The values each trace and reference reaches on one axis, error bars included."""
+    for trace in traces:
+        values = getattr(trace, dimension)
+        yield values
+        error = getattr(trace, f"error_{dimension}")
+        if error.array is not None:
+            center = np.asarray(values, dtype=float)
+            yield center + np.asarray(error.array, dtype=float)
+            yield center - np.asarray(error.arrayminus, dtype=float)
+    for reference in references:
+        if reference.axis == dimension:
+            yield (reference.start, reference.end)
+
+
 def _set_derived_ranges(
-    axes: Sequence[_Axis], traces: Mapping[str, Sequence[go.Scatter]],
+    axes: Sequence[_Axis], traces: Mapping[str, Sequence[go.Scatter]], references: Mapping[str, Sequence[AxisReference]],
 ) -> None:
     groups: dict[str, list[tuple[_Axis, DataDerivedAxisRange]]] = {}
     for axis in axes:
@@ -89,7 +136,10 @@ def _set_derived_ranges(
         (dimension,) = dimensions
         (padding,) = paddings
         extent = calculate_array_minmax(
-            (getattr(trace, dimension) for axis, _ in members for trace in traces[axis.panel.name]),
+            (
+                values for axis, _ in members
+                for values in _extents(dimension, traces[axis.panel.name], references.get(axis.panel.name, ()))
+            ),
             padding=padding,
         )
         for axis, _ in members:
@@ -125,6 +175,7 @@ def assemble_figure_grid(
     traces: Mapping[str, Sequence[go.Scatter]],
     inferred_labels: Mapping[str, Mapping[str, str]],
     *,
+    references: Mapping[str, Sequence[AxisReference]] = MappingProxyType({}),
     panel_times: Mapping[str, TrialFigureTime | None] = MappingProxyType({}),
     runs: Mapping[str, tuple[FigureRun, ...]] = MappingProxyType({}),
 ) -> go.Figure:
@@ -140,10 +191,15 @@ def assemble_figure_grid(
     )
     axes = []
     panel_meta = {}
+    legends: set[str] = set()
     for panel in panels:
         for trace in traces[panel.name]:
             figure.add_trace(trace, row=panel.row, col=panel.col)
         subplot = figure.get_subplot(panel.row, panel.col)
+        refs = {"x": subplot.xaxis.plotly_name.replace("axis", "", 1), "y": subplot.yaxis.plotly_name.replace("axis", "", 1)}
+        for reference in references.get(panel.name, ()):
+            figure.add_shape(reference.shape(refs, first=reference.label not in legends))
+            legends.add(reference.label)
         labels = inferred_labels.get(panel.name, {})
         x = _Axis(panel, "x", subplot.xaxis, panel.x_axis)
         y = _Axis(panel, "y", subplot.yaxis, panel.y_axis)
@@ -156,7 +212,7 @@ def assemble_figure_grid(
         panel_meta[panel.name] = FigurePanelMeta(
             x_axis=x.reference, y_axis=y.reference, time=panel_times.get(panel.name),
         )
-    _set_derived_ranges(axes, traces)
+    _set_derived_ranges(axes, traces, references)
     _set_view(figure, view)
     figure.layout.meta = FigureLayoutMeta(panels=panel_meta, runs=dict(runs)).model_dump(
         mode="json", exclude_none=True,
