@@ -47,6 +47,7 @@ import { SavedFigureResult } from './SavedLightProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName, keyOfLabel } from './generatedName';
 import type { GestureFailures } from './refusals';
+import { variableName } from './variableName';
 
 type Source = OperationElement['inputs'][string];
 type RefusalPlace = 'dialog' | readonly [string, string] | { readonly key: string };
@@ -427,7 +428,8 @@ export function useManagedAnalyze({
       refusal={(role) => roleRefusal(selected, role)} onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}
     {selectedProblems.map((problem) => <ProblemRow key={problem.path + problem.detail} problem={problem} />)}
     {shownStatus && <p role="status">{studioRunStatus(shownStatus.status)}
-      {shownStatus.reason && <span className="block text-shell-muted">{shownStatus.reason}</span>}
+      {shownStatus.status === 'failed' && shownStatus.reason
+        && <span className="block text-shell-muted">{shownStatus.reason}</span>}
     </p>}
     {mapped && selected && <ElementRequests requests={selectedElement.requests} selected={chosenMember}
       onSelect={(member) => setChosenRequest(member === undefined ? undefined : { scope, element: selected, member })} />}
@@ -438,7 +440,8 @@ export function useManagedAnalyze({
           const schema = path.length === 1 && definition.param_schema.find(({ name }) => name === path[0]);
           const options = schema && catalog?.variables[definition.key]?.[schema.name];
           return schema && options ? fromParamSchema(schema, operation.params?.[schema.name], canEdit
-            ? (value) => writeParameter(path, value) : undefined, { options }) : undefined;
+            ? (value) => writeParameter(path, value) : undefined,
+          { options: options.map((option) => ({ value: option, label: variableName(option) })) }) : undefined;
         }}
         changed={(path) => changedAt(['operations', selected, 'params', ...path])}
         write={canEdit ? writeParameter : undefined} />
