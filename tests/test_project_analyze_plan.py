@@ -215,6 +215,11 @@ def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(ho
     analysis = project.documents["velocity-analysis"].payload
     velocity = analysis["operations"]["align"]["params"]["velocity"]
     analysis["views"]["profile"] = {"figure": {"template": "feedbax.SpeedByTrial"}, "inputs": {}}
+    summary = analysis["operations"]["summarize"]
+    summary["params"].pop("ddof")
+    analysis["views"]["summary"] = {
+        "figure": {"template": "feedbax.VelocitySummary"}, "inputs": {},
+    }
     project.steps["other-analysis"] = project.steps["analyze"]
     for name, content in dump_text_project(project, ProjectConfiguration(project="reach", store="results")).items():
         path = tmp_path / "reach" / name
@@ -231,7 +236,12 @@ def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(ho
         assert before["states"] is None
         assert before["sources"]["profile"]["speed"] == []
         assert before["sources"]["summarize"]["velocity"] == [{"element": "align", "product": "velocity"}]
-        assert before["problems"] == []
+        assert before["sources"]["summary"]["summary"] == []
+        assert {problem["path"]: problem["place"]["field"] for problem in before["problems"]} == {
+            "payload.operations.summarize.params.ddof": "/params/ddof",
+            "payload.views.profile.inputs.speed": "/inputs/speed",
+            "payload.views.summary.inputs.summary": "/inputs/summary",
+        }
 
         edit = client.post(f"{url}/authoring/analyze", json=body | {
             "change": {"kind": "edit", "edits": [{
@@ -239,14 +249,15 @@ def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(ho
                     "operation": "feedbax.trial_speed", "params": {"velocity": velocity},
                     "inputs": {"states": {"input": "states"}},
                 },
-            }]},
+            }, {"op": "add", "path": "/operations/summarize/params/ddof", "value": 0}]},
         })
         assert edit.status_code == 200, edit.text
         after = edit.json()
         assert after["document"] == after["created"][0]["id"] != before["document"]
         assert "/operations/trial_speed" in after["changed"]
         assert after["sources"]["profile"]["speed"] == [{"element": "trial_speed", "product": "speed"}]
-        assert after["problems"] == []
+        assert after["sources"]["summary"]["summary"] == [{"element": "summarize", "product": "summary"}]
+        assert {problem["place"]["field"] for problem in after["problems"]} == {"/inputs/speed", "/inputs/summary"}
         assert client.get(url).json()["revision"] == revision
 
 
@@ -272,7 +283,8 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     def review(element, role, source):
         plan = compile_project(project, operations=registry)
         wire = StudioAnalyzeWire(kind="wire", element=element, role=role, source=source)
-        return analyze_edit(project, plan, _KEY, "velocity-analysis", wire, frozenset(), registry, states).files
+        stored, _ = analyze_edit(project, plan, _KEY, "velocity-analysis", wire, frozenset(), registry, states)
+        return stored.files
 
     with pytest.raises(ValueError, match="Requires dataset schemas"):
         review("summarize", "velocity", {"input": "states"})

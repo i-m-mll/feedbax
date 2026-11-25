@@ -6,6 +6,7 @@ from pydantic import Field, StrictInt
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureDocument
+from feedbax.contracts.member_stack import MEMBER
 from feedbax.plot.templates import figure_template
 
 
@@ -34,7 +35,7 @@ def VelocitySummary(settings: VelocitySummarySettings) -> FigureDocument:
             "panel": "velocity",
             "role": "summary",
             "select": {"checkpoint": {"index": settings.checkpoint_index}},
-            "group": ["condition"],
+            "group": [MEMBER, "condition"],
             "encode": {"x": "state_time", "y": "mean", "lower": "lower", "upper": "upper"},
             "style": {"label": "{condition}"},
         }],
@@ -64,7 +65,7 @@ def SpeedByTrial(settings: SpeedByTrialSettings) -> FigureDocument:
             "panel": "speed",
             "role": "speed",
             "select": {"checkpoint": {"index": settings.checkpoint_index}},
-            "group": ["condition", "trial"],
+            "group": [MEMBER, "condition", "trial"],
             "encode": {"x": "state_time", "y": "speed"},
             "style": {"label": "{condition} · Trial {trial:d}"},
         }],

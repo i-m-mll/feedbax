@@ -147,9 +147,13 @@ def definition_place(
     ``variation`` answers the dotted path a named variation entry patches, so the entry is placed
     where its field lives.
     """
-    if element is not None:
-        return StudioAnalysisPlace(part="analysis", element=element, name=element_name or element)
     parts = tuple(parts)
+    if element is not None:
+        relative = parts[3:] if (
+            len(parts) > 3 and parts[0] == "payload" and parts[1] in ("operations", "views") and parts[2] == element
+        ) else parts
+        field = pointer(relative) if len(relative) > 1 and relative[0] in ("params", "inputs") else None
+        return StudioAnalysisPlace(part="analysis", element=element, name=element_name or element, field=field)
     if parts[:1] == ("inputs",) and len(parts) > 1:
         role, rest = parts[1], parts[2:]
         kind = _INPUT_DOCUMENTS.get(role)
