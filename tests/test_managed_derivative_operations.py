@@ -73,7 +73,7 @@ def _fixed_point_model():
         {
             "cell": _leaf("Cell", f"{witness.PACKAGE}.PinnedGRU", input_size=3, hidden_size=4),
             "readout": _leaf("Readout", f"{witness.PACKAGE}.PinnedReadout", input_size=4, output_size=2),
-            "encoder": _leaf("Encoder", "feedbax.Linear", input_size=3, output_size=4, initialization="zeros"),
+            "encoder": _leaf("Encoder", "feedbax.Linear", output_size=4, initialization="zeros"),
         },
         {
             "drive": _wire(_input("feedback"), _component("cell", "input")),
