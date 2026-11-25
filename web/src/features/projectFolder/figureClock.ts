@@ -61,8 +61,8 @@ export interface TimePanel {
 
 /** The panels of `figure` whose x is the recorded trial's time from `epoch` (null: the trial's start). */
 export function timePanels(figure: FigureProduct, epoch: string | null): TimePanel[] {
-  return Object.values(figure.layout.meta.panels).flatMap(({ x_axis, y_axis, time }) =>
-    time && (time.zero_epoch ?? null) === epoch ? [{ x: x_axis, y: y_axis }] : []);
+  return Object.values(figure.layout.meta.panels).flatMap(({ x_axis, y_axis, z_axis, time }) =>
+    !z_axis && time && (time.zero_epoch ?? null) === epoch ? [{ x: x_axis, y: y_axis }] : []);
 }
 
 /** Plotly's layout attribute for an axis a trace names: `x` is `xaxis`, `y2` is `yaxis2`. */

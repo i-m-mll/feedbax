@@ -1,10 +1,13 @@
 """A task document's structure is changed by the service, and the document it leaves compiles."""
 
+from fastapi.testclient import TestClient
+
 from feedbax.contracts.expression_values import ValueType
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.expression_values import LiteralValue
-from feedbax.contracts.task_document import BLANK_TASK, TaskDocument
+from feedbax.contracts.task_document import BLANK_TASK, Marker, TaskDocument
+from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_model_document_edits import _URL, _Project
 from tests.test_task_document_fields import _save
@@ -41,6 +44,35 @@ def _made(project, change) -> list:
     assert view.files, (change, view.problems)
     _save(project, view)
     return _change(project, None).problems
+
+
+def test_shipped_task_marker_survives_reopening_without_changing_request_ids(tmp_path):
+    project = _project(tmp_path)
+    marker = Marker(shape="triangle", filled=True)
+    with project.client:
+        before = project.snapshot()["revision"]
+        requests = project.ids()
+        assert requests
+        task = _change(project, None).task
+        assert isinstance(task, TaskDocument)
+        points = {variable.id: variable for variable in task.variables if variable.type.space == "point"}
+        assert points["start"].marker is points["target"].marker is None
+        assert "start" in {link.variable for link in task.links}
+        assert "target" not in {link.variable for link in task.links}
+        assert not _made(project, {
+            "op": "set_variable_marker", "id": "target", "marker": marker.model_dump(mode="json"),
+        })
+        assert project.snapshot()["revision"] != before
+        assert project.ids() == requests
+
+    project.client = TestClient(create_app(projects_dir=tmp_path))
+    with project.client:
+        task = _change(project, None).task
+        assert next(variable.marker for variable in task.variables if variable.id == "target") == marker
+        assert not _made(project, {"op": "set_variable_marker", "id": "target", "marker": None})
+        stored = next(variable for variable in project.composed(TASK)["variables"] if variable["id"] == "target")
+        assert "marker" not in stored
+        assert project.ids() == requests
 
 
 def test_each_structural_change_leaves_a_document_that_compiles(tmp_path):
