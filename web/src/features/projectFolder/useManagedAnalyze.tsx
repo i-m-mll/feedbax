@@ -44,7 +44,7 @@ import { savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, placedField, type Reveal } from './projectWindowProblems';
 import { ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
-import { FigureLayers } from './FigureLayers';
+import { FigureLayers, offeredFields, type RoleFields } from './FigureLayers';
 import { holdsProducts, OperationProducts } from './OperationProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName, keyOfLabel } from './generatedName';
@@ -430,11 +430,11 @@ export function useManagedAnalyze({
     void perform((current) => save(current, humanizeLabel(name), set(['operations', selected, 'params', name], next)));
   }
   /** The fields the data bound to the selected figure's `role` offers. */
-  function roleFields(role: string): readonly string[] {
+  function roleFields(role: string): RoleFields {
     const source = figure?.inputs[role];
     const port = !source ? undefined : 'input' in source ? source.input === 'states' ? catalog?.states ?? undefined : undefined
       : source.product ? definitions.get(operations[source.element]?.operation ?? '')?.outputs[source.product] : undefined;
-    return port ? Object.keys({ ...port.variables, ...port.selected_variables, ...port.coordinates }) : [];
+    return port ? offeredFields(port) : {};
   }
   const authoredFigure = figure && 'data' in figure.figure ? figure.figure : undefined;
   const layers = selected && authoredFigure && <FigureLayers key={JSON.stringify([scope, selected])}
