@@ -1503,7 +1503,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const initial = item.kind === 'delay' ? (() => {
       const value = item.initial_source;
       const source = value?.kind === 'wire' ? value.source : undefined;
-      const projected = !source && projectedNames.has('initial');
+      const projected = !source && projectedNames.has('value');
       const label = source ? labelOfPort(at(graph, {
         kind: 'port', end: source.owner === 'component' ? { ...source, direction: 'output' } : source,
       })) || source.port : value?.kind === 'task' ? value.variable : undefined;

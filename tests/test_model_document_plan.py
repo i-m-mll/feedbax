@@ -95,7 +95,7 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
     }
     boundary = {"owner": "inputs", "port": "signal"}
     source_wire = _wire(boundary, _end("a", "input"), [
-        {"kind": "delay", "id": "delay", "delay": delay, "initial": initial_value},
+        {"kind": "delay", "id": "delay", "delay": delay, "initial_source": {"kind": "value", "value": initial_value}},
         {"kind": "intervention", "id": "scale", "operation": "Scale", "fields": {"factor": 3.0}},
     ])
     model = ModelDocument.model_validate({
@@ -1567,15 +1567,10 @@ def test_stored_equations_use_the_scalar_solver_and_free_boundary():
 def test_linked_delay_repeats_the_completed_reset_state():
     raw = _model_project()
     model = raw["documents"]["reach-model"]["payload"]
-    scope = ("wrapper", "controller")
     controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
     delay = controller["interior"]["wires"]["carry"]["attachments"][0]
     delay["delay"]["value"] = 3
-    reference = ModelAddress.model_validate({
-        "composites": scope,
-        "element": {"kind": "port", "end": {**_end("cell", "hidden"), "direction": "output"}},
-    })
-    delay["initial"] = {"kind": "name", "reference": reference.to_text()}
+    delay["initial_source"] = {"kind": "wire", "source": _end("cell", "hidden")}
     plan = compile_project(Project.model_validate(raw))
     assert not plan.diagnostics
     train = next(run for run in plan.runs if run.kind == "train")
@@ -1588,7 +1583,7 @@ def test_linked_delay_repeats_the_completed_reset_state():
     carry = graph.initial_cycle_port_values(state)[("__nested__", "wrapper")][("__nested__", "controller")]
     (queue,) = carry.values()
     np.testing.assert_array_equal(queue, np.full((3, cell.hidden_size), 2.0))
-    delay["initial"]["reference"] = reference.model_copy(update={"composites": ()}).to_text()
+    delay["initial_source"]["source"] = _end("not-in-this-graph", "hidden")
     refused = compile_project(Project.model_validate(raw))
     (problem, *_) = next(run for run in refused.runs if run.kind == "train").problems
     assert problem.model_address.element.id == "carry"
@@ -1818,13 +1813,9 @@ def test_serial_mechanics_hold_samples_this_step_and_delay_adds_five_steps():
     assert graph.nodes["arm"].backend.n_substeps == 2
     assert graph.nodes["arm"].backend.sub_dt == pytest.approx(0.005)
 
-    reference = ModelAddress.model_validate({
-        "composites": [],
-        "element": {"kind": "port", "end": {**_end("arm", "pos"), "direction": "output"}},
-    })
     lag = {
         "kind": "delay", "id": "lag", "delay": {"value": 0.05, "unit": "s"},
-        "initial": {"kind": "name", "reference": reference.to_text()},
+        "initial_source": {"kind": "wire", "source": _end("arm", "pos")},
     }
     payload["interior"]["wires"]["sample"]["attachments"] = [lag, hold]
     linked = lower_model_document(ModelDocument.model_validate(payload), registry)
