@@ -341,6 +341,8 @@ class TrainFacts:
     """The completed-update count the run starts from: 0 when fresh; None when the run controls do not resolve."""
     target_total: int | None
     """The completed-update count at the run's end; None when the run controls do not resolve."""
+    input_bindings: dict[str, str | None] = field(default_factory=dict)
+    """Authored choices before implicit matches are bound in the Train request."""
 
 
 _CHECKPOINT_INITIALIZATION: TypeAdapter[Literal["initialize_from"] | TrainContinuation | None] = TypeAdapter(
@@ -349,12 +351,19 @@ _CHECKPOINT_INITIALIZATION: TypeAdapter[Literal["initialize_from"] | TrainContin
 
 
 def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry) -> TrainFacts:
-    """Read the Task as the request would carry it: a Python task by its canonical selection."""
+    """Read the authored Task and run controls, resolving Python task selections."""
     from feedbax.tasks.registry import resolve_python_task_instance
 
     trial = payload.get("trial_documents")
     task: TaskDocument | PythonTaskSelection | None = None
+    bindings = {}
     if isinstance(trial, dict):
+        raw_bindings = trial.get("input_bindings", {})
+        if isinstance(raw_bindings, dict):
+            bindings = {
+                port: signal for port, signal in raw_bindings.items()
+                if isinstance(port, str) and (signal is None or isinstance(signal, str))
+            }
         try:
             if trial.get("task") is not None:
                 task = TaskDocument.model_validate(trial["task"])
@@ -370,9 +379,9 @@ def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry) -> TrainFac
         batches = DocumentTrainingConfig.model_validate(payload.get("training_config")).n_batches
         start = _CHECKPOINT_INITIALIZATION.validate_python(payload.get("checkpoint_initialization"))
     except ValidationError:
-        return TrainFacts(task, None, None)
+        return TrainFacts(task, None, None, bindings)
     origin = start.source_completed_updates if isinstance(start, TrainContinuation) else 0
-    return TrainFacts(task, origin, origin + batches)
+    return TrainFacts(task, origin, origin + batches, bindings)
 
 
 @dataclass(frozen=True)
@@ -967,6 +976,14 @@ class _ModelSource:
     unpaired: bool = False
     """The Train's Model, Task and Objective do not pair, so nothing evaluates what it would train."""
     authored_model: ModelDocument | None = None
+    trial: TrainFacts | None = None
+
+    @cached_property
+    def evaluation_stamp(self) -> tuple[str, str | None]:
+        trial = self.trial
+        return self.stamp, sha256_bytes(to_json((
+            trial.task.model_dump(mode="json") if trial.task is not None else None, trial.input_bindings,
+        ))) if trial is not None else None
 
 
 @dataclass(frozen=True)
@@ -2284,7 +2301,7 @@ class _Compiler:
             if subject is not None and subject.candidates
             else (model_source,) if model_source is not None else ()
         )
-        source_stamp = tuple(source.stamp if source is not None else None for source in source_models)
+        source_stamp = tuple(source.evaluation_stamp if source is not None else None for source in source_models)
         source_problem = model_source.evaluation_problem if model_source is not None else None
         checkpoint = inputs.get("checkpoint") if kind == "train" else None
         trained = self.model_sources.get(checkpoint.producer) if checkpoint is not None and checkpoint.producer else None
@@ -2618,7 +2635,10 @@ class _Compiler:
             if not isinstance(params, dict):
                 return problem("payload.params", "Declare rollout parameters.")
             try:
-                variation = own_task_variation(train.trial_documents.task_source, slots["task"], params.get("variation", []))
+                authored = model_source.trial.task if model_source.trial is not None else None
+                variation = own_task_variation(
+                    authored or train.trial_documents.task_source, slots["task"], params.get("variation", []),
+                )
             except ValueError as error:
                 return problem("payload.params.variation", str(error))
             if variation is not None:
@@ -2863,6 +2883,9 @@ class _Compiler:
                 raise ValueError("Declare a trial-set rule for managed Evaluate.")
             settings = authored_rollout_settings(raw)
             documents = train.trial_documents
+            authored = model_source.trial
+            if authored is not None and isinstance(authored.task, TaskDocument):
+                documents = documents.model_copy(update={"task": authored.task, "input_bindings": authored.input_bindings})
             variant = resolve_evaluation_variant(
                 model_source.evaluation_graph, documents.task_source, settings.variation,
                 components=self.components or _builtin_model_registry(),
@@ -2902,9 +2925,20 @@ class _Compiler:
                 signals = tuple(ScopedValue(id=name, name=name, type=type_, level=Level.STEP)
                                 for name, type_ in template.signals.items())
             trials = resolve_trial_ids(raw["trial_set"], conditions)
-            lowered = payload | {"params": {name: value for name, value in raw.items() if name != "trial_set"} | {
-                "trials": list(trials),
-            }}
+            params = {name: value for name, value in raw.items() if name != "trial_set"} | {"trials": list(trials)}
+            if authored is not None and isinstance(authored.task, TaskDocument):
+                # Evaluate's Task can change implicit assignments. Send those differences to the worker, whose
+                # Train admission fixes the original pairing by ID.
+                resolved = documents.resolved_signal_bindings(
+                    {signal.name: signal.id for signal in signals}, settings.input_bindings,
+                )
+                runtime = train.trial_documents.input_bindings
+                overrides = {key: value for key, value in resolved.items() if key not in runtime or runtime[key] != value}
+                if overrides:
+                    params["input_bindings"] = overrides
+                else:
+                    params.pop("input_bindings", None)
+            lowered = payload | {"params": params}
             return _EvaluatePayload(
                 lowered, refusals,
                 rollout_dataset_port(signals, settings.states_schema, rollout_update_axis(reference))
@@ -3373,7 +3407,7 @@ class _Compiler:
         self.requests[encoded.id] = encoded.data
         self.documents.update(encoded.documents)
         if lowered.model_source is not None:
-            self.model_sources[key] = lowered.model_source
+            self.model_sources[key] = replace(lowered.model_source, trial=lowered.train)
         run = PlannedRun(
             key, row.kind, row.label, row.coordinates, encoded.id,
             MappingProxyType(dict(inputs)), MappingProxyType(dict(omissions)), requires,

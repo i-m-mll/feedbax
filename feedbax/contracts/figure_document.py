@@ -10,6 +10,7 @@ from pydantic import AfterValidator, Field, JsonValue, StrictBool, StrictFloat, 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor, Name
 from feedbax.contracts.figure_layout import AxisLabels, ComparisonGridParams, FigureView, PanelAxis
+from feedbax.contracts.member_stack import MEMBER
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project_inputs import NonemptyText
 from feedbax.contracts.request_refs import ContentRef
@@ -67,6 +68,7 @@ class _Layer(StrictModel):
     panel: Name
     select: dict[Name, Selection] = Field(default_factory=dict)
     group: tuple[Name, ...] = ()
+    """The grouping coordinates. Member grouping splits a dataset stack and leaves a single dataset whole."""
 
 
 class LineLayer(_Layer):
@@ -205,6 +207,14 @@ def validate_figure_bindings(
         coords = schema.coords if isinstance(schema, DatasetDescriptor) else schema.coordinates
         sizes = schema.dimensions if isinstance(schema, DatasetDescriptor) else {}
         fields = schema.variables | coords
+        if MEMBER in layer.group and (member := coords.get(MEMBER)) is not None:
+            axes = set(member.dims)
+            coords = {
+                name: field.model_copy(update={"dims": kept})
+                if len(field.dims) > 1 and (kept := tuple(dim for dim in field.dims if dim not in axes))
+                else field
+                for name, field in coords.items()
+            }
         for channel, encoding in layer_encodings(layer):
             variable = encoding if isinstance(encoding, str) else encoding.variable
             if variable not in fields:
@@ -223,7 +233,9 @@ def validate_figure_bindings(
         _validate_coordinates(
             layer.select, coords, sizes, path + ".select", f"selection of {layer.name!r}"
         )
-        _validate_coordinates(layer.group, coords, sizes, path + ".group", f"group of {layer.name!r}")
+        _validate_coordinates(
+            tuple(name for name in layer.group if name != MEMBER), coords, sizes, path + ".group", f"group of {layer.name!r}",
+        )
 
 
 def coordinate_dimension(field: FieldDescriptor, sizes: Mapping[str, int]) -> str | None:

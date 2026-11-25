@@ -149,7 +149,15 @@ def test_plan_round_trips_the_authored_task_and_objective(authored):
     decoded = decode_request(data, plan.documents.__getitem__)
     assert decoded.id == request_id
     assert isinstance(decoded.spec, DocumentTrainingRequestSpec)
-    assert decoded.spec.trial_documents.task == task
+    decoded_task = decoded.spec.trial_documents.task
+    assert decoded_task is not None
+    assert [signal.name for signal in decoded_task.signals] == [signal.id for signal in task.signals]
+    assert decoded_task.model_copy(update={
+        "signals": tuple(
+            projected.model_copy(update={"name": authored_signal.name})
+            for projected, authored_signal in zip(decoded_task.signals, task.signals, strict=True)
+        ),
+    }) == task
     assert decoded.spec.trial_documents.objective == objective
     assert encode_request(decoded.spec, decoded.inputs).data == data
 

@@ -11,7 +11,7 @@ from feedbax.contracts.model_address import ComponentElement, ComponentPortAddre
 from feedbax.contracts.model_document import ModelDocument, PhysicalPortType, SignalType
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_edit import (
-    EvaluateModelRequest, ModelPhysicalPortProjection, ModelPortProjection, ModelProjection, StepRuns,
+    EvaluateModelRequest, ModelPhysicalPortProjection, ModelPortProjection, ModelProjection, ModelTaskInput, StepRuns,
 )
 from feedbax.contracts.expression_check import references
 from feedbax.contracts.project import BasedDocument
@@ -197,6 +197,9 @@ def model_projection(folders, project_id, body, bundle):
             ))
     return ModelProjection(
         ports=tuple(ports), physical_ports=tuple(physical_ports), problems=table.problems, task_signals=task_signals,
-        task_inputs=tuple(_boundary_port((), "input", port.id) for port, _ in bound), resolved_model=model,
+        task_inputs=tuple(
+            ModelTaskInput(composites=(), element=_boundary_port((), "input", port.id).element, signal_id=signal.id)
+            for port, signal in bound
+        ), resolved_model=model,
         ungroup=model_ungroup_eligibility(model), **differences,
     )

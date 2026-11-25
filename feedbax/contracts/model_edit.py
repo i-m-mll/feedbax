@@ -309,6 +309,12 @@ class ModelTaskSignal(StrictModel):
     type: SignalType
 
 
+class ModelTaskInput(ModelAddress):
+    """The root Model input and the current Task signal it reads, by stable signal ID."""
+
+    signal_id: str
+
+
 class ModelAddedElement(StrictModel):
     """A component, wire, physical connection or attachment the shown Model has and the one it differs from lacks.
     The wiring of an added component is part of it."""
@@ -352,7 +358,7 @@ class ModelProjection(StrictModel):
     ports: tuple[ModelPortProjection, ...] = ()
     physical_ports: tuple[ModelPhysicalPortProjection, ...] = ()
     task_signals: tuple[ModelTaskSignal, ...] = ()
-    task_inputs: tuple[ModelAddress, ...] = ()
+    task_inputs: tuple[ModelTaskInput, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
     resolved_model: ModelDocument | None = None
     base_differences: tuple[ModelStructuralDifference, ...] = ()

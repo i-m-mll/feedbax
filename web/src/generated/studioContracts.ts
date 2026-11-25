@@ -1107,7 +1107,7 @@ export interface ModelProjection {
   ports?: ModelPortProjection[];
   physical_ports?: ModelPhysicalPortProjection[];
   task_signals?: ModelTaskSignal[];
-  task_inputs?: ModelAddress[];
+  task_inputs?: ModelTaskInput[];
   problems?: ModelGraphProblem[];
   resolved_model?: ModelDocument | null;
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
@@ -1122,6 +1122,12 @@ export interface ModelProjectionRequest {
   rows?: string[];
   axes?: Record<string, string[]>;
   evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
+}
+
+export interface ModelTaskInput {
+  composites: string[];
+  element: GraphElement | InputsElement | OutputsElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
+  signal_id: string;
 }
 
 export interface ModelTaskSignal {
@@ -4000,6 +4006,7 @@ export type StudioAnalysisPlace = {
   "part": "analysis";
   "element": string;
   "name": string;
+  "field"?: Pointer | null;
 };
 
 export type StudioAnalyzeAuthoring = {
@@ -7762,7 +7769,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "ports": z.array(ModelPortProjectionSchema).optional(),
       "physical_ports": z.array(ModelPhysicalPortProjectionSchema).optional(),
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
-      "task_inputs": z.array(ModelAddressSchema).optional(),
+      "task_inputs": z.array(ModelTaskInputSchema).optional(),
       "problems": z.array(ModelGraphProblemSchema).optional(),
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
@@ -7784,6 +7791,16 @@ export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjectionRequest>;
+
+export const ModelTaskInputSchema: z.ZodType<ModelTaskInput> = z.lazy(() =>
+  z
+    .object({
+      "composites": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$"))),
+      "element": z.union([GraphElementSchema, InputsElementSchema, OutputsElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema, FieldElementSchema]),
+      "signal_id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelTaskInput>;
 
 export const ModelTaskSignalSchema: z.ZodType<ModelTaskSignal> = z.lazy(() =>
   z
@@ -12257,6 +12274,7 @@ export const StudioAnalysisPlaceSchema: z.ZodType<StudioAnalysisPlace> = z.lazy(
     "part": z.literal("analysis"),
     "element": z.string(),
     "name": z.string(),
+    "field": z.union([PointerSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalysisPlace>;
 
