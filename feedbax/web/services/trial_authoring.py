@@ -537,16 +537,14 @@ def _producer_trial_writes(change, project, definition, documents, projection):
             writes.append(_override("trial_documents.python_task", "remove"))
         return writes
     if isinstance(change, StudioTrialBindingEdit):
-        if not prefix:
-            raise ProjectFolderInvalid("Synthesize pairs its Model inputs to the Task by name.")
         row = next((row for row in _input_rows(documents, projection) if row.id == change.input_id), None)
         if row is None:
             raise ProjectFolderInvalid("The ID is not a declared Model input for this row.")
         if "input_bindings" in raw:
             return [_override(
-                f"trial_documents.input_bindings.{row.id}", "replace" if row.explicit else "add", change.signal_id,
+                f"{prefix}input_bindings.{row.id}", "replace" if row.explicit else "add", change.signal_id,
             )]
-        return [_override("trial_documents.input_bindings", "add", {row.id: change.signal_id})]
+        return [_override(f"{prefix}input_bindings", "add", {row.id: change.signal_id})]
     field, value = _changed_value(documents, definition, change.kind)
     return _value_writes(f"{prefix}{field}", value, change)
 
@@ -710,6 +708,7 @@ def _pairing(plan, key, bundle, *, definition=None):
             task=task if isinstance(task, TaskDocument) else None,
             python_task=task if isinstance(task, PythonTaskSelection) else None,
             objective=ObjectiveDocument.model_validate(definition.payload.get("objective")),
+            input_bindings=definition.payload.get("input_bindings", {}),
         )
         return documents, _project(documents, bundle), None
     if step.kind == "evaluate":

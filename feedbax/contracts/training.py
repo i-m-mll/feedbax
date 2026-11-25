@@ -55,13 +55,21 @@ class TrialDocuments(StrictModel):
             default = port.name if port.name in signal_ids else None
             if bindings[port.id] == default:
                 del bindings[port.id]
-        if bindings == self.input_bindings and all(signal.name == signal.id for signal in self.task.signals):
+        task = self.task.with_signal_ids_as_names()
+        if bindings == self.input_bindings and task is self.task:
             return self
-        signals = tuple(
-            signal if signal.name == signal.id else signal.model_copy(update={"name": signal.id})
-            for signal in self.task.signals
-        )
-        return self.model_copy(update={"task": self.task.model_copy(update={"signals": signals}), "input_bindings": bindings})
+        return self.model_copy(update={"task": task, "input_bindings": bindings})
+
+    def bindings_for_same_task(self, task: TaskDocument | PythonTaskSelection) -> Mapping[str, str | None]:
+        """Keep a model producer's input choices when an operation uses its Task."""
+        if isinstance(task, PythonTaskSelection):
+            return self.input_bindings if task == self.python_task else {}
+        original = self.task
+        if original is None or original.without_markers().with_signal_ids_as_names() != (
+            task.without_markers().with_signal_ids_as_names()
+        ):
+            return {}
+        return self.resolved_signal_bindings({signal.name: signal.id for signal in original.signals})
 
     @model_validator(mode="after")
     def _one_task(self) -> "TrialDocuments":

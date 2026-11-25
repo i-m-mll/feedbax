@@ -8,20 +8,21 @@ from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticMo
 from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, ParameterModelSource, SynthesizedModelSource
 from feedbax.contracts.request_refs import LastMember, ProductRef, is_synthesized_model_product
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, SynthesisRequestSpec
+from feedbax.contracts.training import TrialDocuments
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.checkpoint_publication import model_product, read_retained_checkpoint
 
 
 def model_product_source(
     bound: BoundMember, *, artifacts: ImmutableArtifactBlobProvider,
-) -> ParameterModelSource:
-    """Read the authored Model and exact semantic product selected by a frozen binding."""
+) -> tuple[ParameterModelSource, TrialDocuments]:
+    """Read the semantic model and resolved trial documents of its exact producer."""
     if (source := bound.checkpoint_model) is not None:
         checkpoint, spec = read_retained_checkpoint(artifacts, source.publication, source.producer)
         model = model_product(checkpoint)
         if (bound.content, bound.descriptor) != (model.content, model.descriptor):
             raise ValueError("Bound model differs from its checkpoint publication")
-        return _model_source(checkpoint.model.tree, checkpoint.model.encoding, spec)
+        return _model_source(checkpoint.model.tree, checkpoint.model.encoding, spec), spec.trial_documents
     if bound.selection is None or bound.content.media_type != MODEL_TREE_MEDIA_TYPE:
         raise ValueError("Model input requires a bound semantic model product")
     receipt = read_success_object(bound.selection.receipt, artifacts.get_object)
@@ -38,8 +39,10 @@ def model_product_source(
         raise ValueError("Bound model differs from its exact producer product")
     tree, encoding = _model_layout(model)
     if isinstance(spec, SynthesisRequestSpec):
-        return SynthesizedModelSource(tree=tree, encoding=encoding, initial=InitialModelSource(document=spec.trial_documents.model))
-    return _model_source(tree, encoding, spec)
+        source = SynthesizedModelSource(tree=tree, encoding=encoding, initial=InitialModelSource(document=spec.trial_documents.model))
+    else:
+        source = _model_source(tree, encoding, spec)
+    return source, spec.trial_documents
 
 
 def _model_layout(model: Product) -> tuple[ContentTreeRef, SemanticModelEncoding]:
@@ -65,11 +68,12 @@ def read_synthesized_model(
 
 def _model_source(
     tree: ContentTreeRef, encoding: SemanticModelEncoding, spec: DocumentTrainingRequestSpec,
-) -> CheckpointModelSource:
+) -> tuple[CheckpointModelSource, TrialDocuments]:
     documents = spec.trial_documents
-    return CheckpointModelSource(
+    source = CheckpointModelSource(
         tree=tree, encoding=encoding,
         initial=InitialModelSource(
             document=documents.model, seed=spec.seed or 0,
         ),
     )
+    return source, documents

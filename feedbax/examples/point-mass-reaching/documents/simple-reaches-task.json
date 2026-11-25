@@ -132,7 +132,7 @@
     "signals": [
       {
         "id": "target_pos",
-        "name": "target_pos",
+        "name": "target position",
         "type": {
           "base": "real",
           "shape": [
@@ -157,7 +157,7 @@
       },
       {
         "id": "target_vel",
-        "name": "Target velocity",
+        "name": "target velocity",
         "type": {
           "base": "real",
           "shape": [

@@ -81,6 +81,10 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
         f"plant.mass=2 · Trial {trial} · Run {run}" for run in (1, 2) for trial in (1, 2)
     ]
     assert len({trace.legendgroup for trace in duplicate.data}) == 4
+    named = render(document, {"speed": stacked}, names=names | {"member": {"original": "Run 1", "duplicate": "Run 2"}})
+    assert [trace.name for trace in named.data] == [
+        f"Run {run} · Trial {trial}" for run in (1, 2) for trial in (1, 2)
+    ]
 
     layer, = document.layers
     selected = layer.model_copy(update={"select": layer.select | {"trial": trials[1]}})
@@ -451,6 +455,15 @@ def test_trajectory_scales_preserve_spatial_samples_and_group_values():
     product = FigureProduct.model_validate_json(result.to_json())
     assert product.layout.meta.panels["pca"].z_axis == "scene.zaxis"
     assert product.layout.meta.panels["hand"].time is None
+
+    titled = document.model_dump(mode="json")
+    titled["layers"][1]["encode"]["color"]["field"] = "mass"
+    titled["color_scales"]["condition"]["title"] = "Mass"
+    legends = render(
+        FigureDocument.model_validate(titled), {"trials": data},
+        names={"mass": {"nominal": "Mass 0.5 kg", "loaded": "Mass 2 kg"}},
+    )
+    assert legends.layout.coloraxis2.colorbar.ticktext == ("2 kg", "0.5 kg")
 
     wrong = document.model_dump(mode="json")
     wrong["layers"][0]["encode"]["color"]["field"] = "time"

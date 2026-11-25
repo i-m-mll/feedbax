@@ -16,6 +16,7 @@ from pydantic import JsonValue
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor, TrialFigureTime
+from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.figure_document import (
     BandLayer,
     BandStyle,
@@ -89,6 +90,15 @@ class _Source:
     def printed(self, name: str, value: Label) -> Label:
         names = self.names.get(name)
         return names.get(value, value) if names is not None and isinstance(value, str) else value
+
+    def group_names(self, group: Mapping[str, Label]) -> dict[str, Label]:
+        labels = {name: self.printed(name, value) for name, value in group.items()}
+        member = group.get(MEMBER)
+        if "condition" in labels and isinstance(member, str):
+            # Different saved Evaluate rows can share one semantic condition ID.
+            if name := self.names.get(MEMBER, {}).get(member):
+                labels["condition"] = name
+        return labels
 
 
 def _selected(
@@ -203,7 +213,7 @@ def _encoded(
     return _Samples(name, descriptor, dimension, np.atleast_1d(data), retained)
 
 
-def _color_sample(source: _Source, encoding: Encoding, group: Group) -> ColorSample:
+def _color_sample(source: _Source, encoding: Encoding, group: Group, title: str | None) -> ColorSample:
     _, positions, member = group
     sample = _encoded(source, encoding, positions, member)
     value = sample.values.item(0)
@@ -211,8 +221,11 @@ def _color_sample(source: _Source, encoding: Encoding, group: Group) -> ColorSam
         raise ValueError("A color channel requires one scalar value per plotted group.")
     if isinstance(value, float) and not np.isfinite(value):
         raise ValueError("A color channel requires finite numerical values.")
-    shown = source.printed(sample.name, value)
-    return ColorSample(value, str(shown), sample.label, sample.field.units)
+    shown = str(source.printed(sample.name, value))
+    axis = member_display_name(sample.name)
+    if (title or sample.label).partition(" (")[0].casefold() == axis.casefold():
+        shown = shown.removeprefix(axis + " ")
+    return ColorSample(value, shown, sample.label, sample.field.units)
 
 
 def _color_groups(
@@ -226,7 +239,8 @@ def _color_groups(
             continue
         source = sources[layer.role]
         try:
-            entries = [(group, _color_sample(source, color.field, group)) for group in _layer_groups(source, layer)]
+            title = figure.color_scales[color.scale].title
+            entries = [(group, _color_sample(source, color.field, group, title)) for group in _layer_groups(source, layer)]
         except (KeyError, ValueError) as error:
             raise ValueError(f"Layer {layer.name!r} color field: {error}") from error
         grouped[layer.name] = entries
@@ -471,7 +485,7 @@ def _label_means(legends: list[_MeanLegend]) -> None:
     values: dict[str, set[bytes]] = defaultdict(set)
     for legend in legends:
         for name, value in legend.group.items():
-            values[name].add(canonical_json_v2_bytes(value))
+            values[name].add(canonical_json_v2_bytes(legend.parts.get(name, value) if name == "condition" else value))
     names = [
         " · ".join(text for name, text in legend.parts.items() if name != MEMBER and len(values[name]) > 1)
         or legend.layer
@@ -609,7 +623,7 @@ def render(
         try:
             if isinstance(layer, RuleLayer | SpanLayer):
                 for group, positions, member in _layer_groups(source, layer):
-                    printed = {name: source.printed(name, value) for name, value in group.items()}
+                    printed = source.group_names(group)
                     label = (layer.style.label or layer.name).format_map(printed)
                     references[layer.panel].extend(
                         _references(source, layer, positions, member, label, layer.style.color or next(colors))
@@ -638,7 +652,7 @@ def render(
                         channel.values.dtype.kind not in "fiu" for channel in channels.values()
                     ):
                         raise ValueError("A trajectory requires numerical position channels.")
-                    printed = {name: source.printed(name, value) for name, value in group.items()}
+                    printed = source.group_names(group)
                     if "trial" in group:
                         dimension, _ = source.coordinate("trial", member)
                         printed["trial"] = positions[dimension][0] + 1

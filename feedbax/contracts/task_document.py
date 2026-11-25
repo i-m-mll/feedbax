@@ -156,6 +156,15 @@ class TaskDocument(ValueRecord):
             for variable in self.variables
         )})
 
+    def with_signal_ids_as_names(self) -> "TaskDocument":
+        """Represent Task signals by their stable IDs."""
+        if all(signal.name == signal.id for signal in self.signals):
+            return self
+        return self.model_copy(update={"signals": tuple(
+            signal if signal.name == signal.id else signal.model_copy(update={"name": signal.id})
+            for signal in self.signals
+        )})
+
     @property
     def condition_ids(self) -> tuple[str, ...]:
         """Identify a fixed cohort by the variables that define each condition."""

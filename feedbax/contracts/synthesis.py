@@ -16,6 +16,7 @@ class SynthesisStepPayload(StrictModel):
     model: DocumentReference | ModelDocument
     task: DocumentReference | TaskDocument | PythonTaskSelection
     objective: DocumentReference | ObjectiveDocument
+    input_bindings: dict[str, str | None] = Field(default_factory=dict)
     method: str
     settings: dict[str, JsonValue] = Field(default_factory=dict)
     target: ModelAddress = ModelAddress.at_stored_path(())
