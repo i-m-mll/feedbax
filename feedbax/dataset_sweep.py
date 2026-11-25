@@ -72,9 +72,14 @@ def _label_coords(layout: StackLayout) -> dict[str, Variable]:
 
 
 def _same_field(left: FieldDescriptor, right: FieldDescriptor) -> bool:
-    return left.model_copy(update={"inline_values": None}) == right.model_copy(
-        update={"inline_values": None},
+    return left.model_copy(update={"inline_values": None, "label": None}) == right.model_copy(
+        update={"inline_values": None, "label": None},
     ) and (left.inline_values is None) == (right.inline_values is None)
+
+
+def _member_label(fields: Sequence[FieldDescriptor]) -> str | None:
+    labels = {field.label for field in fields}
+    return fields[0].label if len(labels) == 1 else None
 
 
 def _spanning(values: np.ndarray, axes: tuple[str, ...]) -> tuple[np.ndarray, tuple[str, ...]]:
@@ -101,7 +106,9 @@ def _member_coordinate(
     if all(array.dtype == arrays[0].dtype and np.array_equal(array, arrays[0]) for array in arrays[1:]):
         return None
     values, kept = _spanning(np.stack(arrays).reshape((*shape, *arrays[0].shape)), axes)
-    return Variable.from_field(values, base, (*kept, *base.dims))
+    return Variable.from_field(
+        values, base.model_copy(update={"label": _member_label(fields)}), (*kept, *base.dims),
+    )
 
 
 def _stacked(fields: Sequence[FieldDescriptor], axes: tuple[str, ...], name: str) -> FieldDescriptor:
@@ -110,6 +117,7 @@ def _stacked(fields: Sequence[FieldDescriptor], axes: tuple[str, ...], name: str
         raise ValueError(f"Dataset members disagree on field {name!r}")
     return prototype.model_copy(update={
         "dims": (*axes, *prototype.dims),
+        "label": _member_label(fields),
         "inline_values": (
             tuple(value for field in fields for value in field.inline_values or ())
             if prototype.inline_values is not None
@@ -173,7 +181,12 @@ def stack_dataset_members(
         },
         coords={
             **label_data.descriptor.coords,
-            **{name: base.coords[name] for name in base.coords if name in shared},
+            **{
+                name: base.coords[name].model_copy(update={
+                    "label": _member_label([item.coords[name] for item in descriptors]),
+                })
+                for name in shared
+            },
         },
         schema_id=base.schema_id,
         attrs=attrs,
