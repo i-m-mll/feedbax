@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelSource, decode_imported_model_document
+
 from feedbax.contracts.model_input import (
+    CheckpointModelSource,
     INITIAL_MODEL_MEDIA_TYPE,
     InitialModelSource,
     read_document_input,
@@ -85,6 +88,13 @@ def run_operation(
             source = read_document_input(model_member.content, artifacts)
             if not isinstance(source, InitialModelSource):
                 raise ValueError(f"Operation input {model_role!r} requires an initial Model document")
+        elif model_member.content.media_type == IMPORTED_MODEL_MEDIA_TYPE:
+            imported = read_document_input(model_member.content, artifacts)
+            assert isinstance(imported, ImportedModelSource)
+            pinned = decode_imported_model_document(artifacts.get_object(imported.model))
+            source = CheckpointModelSource(
+                tree=imported.weights, encoding=imported.encoding, initial=InitialModelSource(document=pinned),
+            )
         else:
             source = checkpoint_model_source(model_member, artifacts=artifacts)
         if task_source is None:

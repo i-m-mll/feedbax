@@ -66,7 +66,7 @@ from feedbax.planner.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, c
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
-from feedbax.persistence.project_subject import terminal_train_reader
+from feedbax.persistence.project_subject import imported_model_reader, terminal_train_reader
 from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
     change_member_key, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
@@ -456,7 +456,7 @@ def compile_saved_project(
     training_methods: TrainingMethodRegistry | None = None,
 ) -> SettledProjectPlan:
     """Compile exact authored bytes and reuse them only with matching input authority."""
-    readers = replace(readers, terminal_train=terminal_train_reader(store))
+    readers = replace(readers, terminal_train=terminal_train_reader(store), imported_model=imported_model_reader(store))
     semantic_root = project_semantic_root(text.project)
     source_runs = frozenset(source_runs)
     stamp = (
@@ -466,7 +466,7 @@ def compile_saved_project(
     )
     observations: dict[str, dict[str, object]] = {}
     observed_readers = {}
-    for kind in ("terminal_train", "figure_external"):
+    for kind in ("terminal_train", "imported_model", "figure_external"):
         if (reader := getattr(readers, kind)) is not None:
             observations[kind] = {}
             observed_readers[kind] = partial(_observe_plan_input, reader, observations[kind])

@@ -7,6 +7,8 @@ from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.checkpoint_projection import ContinuationEncoding, ContinuationOccurrence
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
 from feedbax.contracts.effective_success import Product, success_content_ref
+from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelSource
+from feedbax.contracts.model_input import read_document_input
 from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_GRAPH_PATH,
     MODEL_TREE_MANIFEST_PATH,
@@ -63,6 +65,14 @@ def success_content_objects(
     content = value.content if isinstance(value, Product) else value
     ref = success_content_ref(content)
     if isinstance(ref, ContentObjectRef):
+        if content.media_type == IMPORTED_MODEL_MEDIA_TYPE:
+            source = read_document_input(content, store)
+            assert isinstance(source, ImportedModelSource)
+            if visitors is not None:
+                visitors.object(source.model)
+            return (ref, source.model, *tree_objects(
+                store, source.weights, model_encoding=source.encoding, visitors=visitors,
+            ))
         if visitors is not None and content.media_type == DATASET_MEDIA_TYPE and isinstance(value, Product):
             descriptor = value.descriptor
             if not isinstance(descriptor, dict) or descriptor.keys() != {"descriptor_sha256"}:
