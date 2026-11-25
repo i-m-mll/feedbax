@@ -496,7 +496,7 @@ def test_analyze_collects_static_rows_in_each_named_variant():
 def test_axis_pin_widens_when_its_source_gains_an_unconstrained_axis():
     project = _project()
     project.steps["analyze"].inputs["states"] = StepReference.model_validate({
-        "step": "baseline", "where": {},
+        "step": "baseline", "where": {"clauses": [{}]},
     })
     operations = _operations()
     before = compile_project(project, operations=operations)
@@ -516,7 +516,7 @@ def test_missing_axis_value_points_to_the_original_pin_and_names_remaining_value
     project.steps["conditions"] = _conditions()
     project.steps["analyze"].inputs["states"] = StepReference.model_validate({
         "step": "conditions",
-        "where": {"axes": {"mass": [{"id": "heavy", "label": "Heavy load"}]}},
+        "where": {"clauses": [{"mass": [{"id": "heavy", "label": "Heavy load"}]}]},
     })
     operations = _operations()
     assert not compile_project(project, operations=operations).diagnostics
@@ -526,11 +526,12 @@ def test_missing_axis_value_points_to_the_original_pin_and_names_remaining_value
     values["nominal"].label = "Nominal load"
     broken = compile_project(project, operations=operations)
     (problem,) = broken.diagnostics
-    assert (problem.step, problem.path) == ("analyze", "inputs.states.where.axes.mass.0")
+    assert (problem.step, problem.path) == ("analyze", "inputs.states.where.clauses.0.mass.0")
     assert (problem.authored_file, problem.authored_path) == (
-        "steps/analyze.json", "/inputs/states/where/axes/mass/0",
+        "steps/analyze.json", "/inputs/states/where/clauses/0/mass/0",
     )
     assert problem.selection_value.model_dump() == {
+        "clause_index": 0,
         "axis": "mass",
         "missing": {"id": "heavy", "label": "Heavy load"},
         "remaining": [{"id": "nominal", "label": "Nominal load"}],
@@ -538,7 +539,7 @@ def test_missing_axis_value_points_to_the_original_pin_and_names_remaining_value
     assert {row.key.step for row in broken.runs} == {"train", "baseline", "conditions"}
 
 
-def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
+def test_analyze_clause_value_order_does_not_change_the_request():
     project = _project()
     operations = _operations()
     project.steps["conditions"] = _conditions()
@@ -548,7 +549,7 @@ def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
         project.steps["analyze"] = Step.model_validate({
             "kind": "analyze",
             "base": {"document": "velocity-analysis"},
-            "inputs": {"states": {"step": "conditions", "where": {"axes": {"mass": rows}}}},
+            "inputs": {"states": {"step": "conditions", "where": {"clauses": [{"mass": rows}]}}},
         })
         return compile_project(project, operations=operations)
 
@@ -556,8 +557,8 @@ def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
     reversed_plan = choose(selection[::-1])
     assert not ordered.diagnostics and not reversed_plan.diagnostics
     first, second = _decode(ordered, "align"), _decode(reversed_plan, "align")
-    assert first.inputs["states"] == second.inputs["states"][::-1]
-    assert first.id != second.id
+    assert first.inputs["states"] == second.inputs["states"]
+    assert first.id == second.id
     assert len(ordered.elements) == len(reversed_plan.elements) == 3
 
     project.steps["analyze"].sweep = Sweep.model_validate({"axes": {"source": {"input": "states"}}})
@@ -568,6 +569,61 @@ def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
         tuple(binding.member.key for binding in element.inputs["states"])
         for element in expanded.elements.values() if element.key.name == "align"
     } == {("mass=heavy",), ("mass=nominal",)}
+
+
+def test_diagonal_axis_clauses_widen_and_keep_their_other_matches():
+    project = _project()
+    conditions = _conditions()
+    project.steps["conditions"] = conditions
+    axes = conditions.sweep.axes
+    mass = axes["mass"].values
+    mass["a"], mass["b"] = mass.pop("nominal"), mass.pop("heavy")
+    axes["seed"] = Sweep.model_validate({"axes": {"seed": {"values": {
+        str(value): {"patches": {"params.seed": {"value": value}}} for value in (1, 2)
+    }}}}).axes["seed"]
+    chosen = [
+        {"mass": [{"id": mass_id, "label": label}], "seed": [{"id": str(seed), "label": str(seed)}]}
+        for mass_id, label, seed in (("a", "Nominal", 1), ("b", "Heavy", 2))
+    ]
+    operations = _operations()
+
+    def plan(clauses):
+        project.steps["analyze"].inputs["states"] = StepReference.model_validate({
+            "step": "conditions", "where": {"clauses": clauses},
+        })
+        return compile_project(project, operations=operations)
+
+    def producers(compiled):
+        align = compiled.elements[ElementKey(_KEY, "align")]
+        return [compiled.row(binding.producer).coordinates for binding in align.inputs["states"]]
+
+    first = plan(chosen)
+    opposite = plan([chosen[1], chosen[0], chosen[1]])
+    assert not first.diagnostics and not opposite.diagnostics
+    assert len(producers(first)) == 2
+    assert _decode(first, "align").id == _decode(opposite, "align").id
+    assert project.steps["analyze"].inputs["states"].where.model_dump(exclude_unset=True) == {"clauses": chosen}
+
+    axes["replicate"] = Sweep.model_validate({"axes": {"replicate": {"values": {
+        value: {} for value in ("x", "y", "z")
+    }}}}).axes["replicate"]
+    wider = plan(chosen)
+    assert not wider.diagnostics
+    assert len(producers(wider)) == 6
+    assert {
+        (row["mass"].value_id, row["seed"].value_id, row["replicate"].value_id) for row in producers(wider)
+    } == {(mass_id, seed, replicate) for mass_id, seed in (("a", "1"), ("b", "2")) for replicate in ("x", "y", "z")}
+
+    del mass["b"]
+    broken = plan(chosen)
+    (problem,) = broken.diagnostics
+    assert problem.path == "inputs.states.where.clauses.1.mass.0"
+    assert problem.selection_value.model_dump() == {
+        "clause_index": 1, "axis": "mass", "missing": {"id": "b", "label": "Heavy"},
+        "remaining": [{"id": "a", "label": "1"}],
+    }
+    assert len(producers(broken)) == 3
+    assert {(row["mass"].value_id, row["seed"].value_id) for row in producers(broken)} == {("a", "1")}
 
 
 def test_operation_cycle_keeps_independent_elements_plannable():

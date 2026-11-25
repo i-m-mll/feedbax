@@ -657,7 +657,7 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     root, client = study
     original = load_text_project(root)
     authored = original.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    authored["documents"]["selected"] = {"schema": "subset", "payload": {"axes": {"seed": [{"id": "10", "label": "First"}]}}}
+    authored["documents"]["selected"] = {"schema": "subset", "payload": {"clauses": [{"seed": [{"id": "10", "label": "First"}]}]}}
     authored["steps"]["follow"] = {
         "kind": "train",
         "base": {"step": "fit"},
@@ -691,7 +691,7 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
         assert follower.inputs["checkpoint"].member.key == "seed=10"
         subset = before.subsets[variant, "follow", "checkpoint"]
         assert (subset.document, subset.candidates, subset.members) == ("selected", 2, (producer,))
-        assert [value.id for value in subset.terms.axes["seed"]] == ["10"]
+        assert [value.id for value in subset.terms.clauses[0]["seed"]] == ["10"]
         assert before.steps[variant, "follow"].inputs["checkpoint"].step == "fit"
     assert set(before.sources) == {selected}
     source = before.sources[selected]["/inputs/checkpoint"]
@@ -789,7 +789,7 @@ def _plan_dependencies(root: Path) -> None:
         "10": {"label": "First", "patches": {seed_path: {"value": 10}}},
         "2": {"patches": {seed_path: {"value": 2}}},
     }}}}
-    authored["documents"]["selected"] = {"schema": "subset", "payload": {"axes": {"seed": [{"id": "10", "label": "First"}]}}}
+    authored["documents"]["selected"] = {"schema": "subset", "payload": {"clauses": [{"seed": [{"id": "10", "label": "First"}]}]}}
     authored["steps"]["follow"] = {
         "kind": "train",
         "base": {"step": "fit"},

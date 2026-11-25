@@ -163,38 +163,44 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
     member_key: Callable[[Row], str],
     coordinates: Callable[[Row], Mapping[str, Coordinate]],
     coordinate_label: Callable[[Coordinate], str],
+    missing: Callable[[SelectedAxisValueRefusal], None],
     producer: str,
 ) -> tuple[tuple[tuple[str, Row], ...], RuleBest | None]:
-    """The keyed rows the rule chooses, and its Best term while it waits."""
+    """Select each matching producer row once and report the values of invalid clauses."""
     members = tuple(rows)
     if terms is None:
         return tuple((member_key(row), row) for row in members), None
     if isinstance(terms, StoreSubset):
         raise RuleRefusal("query", "store queries cannot select static step rows")
-    clause = terms.clauses[0]
-    if clause:
-        values_by_row = tuple((row, coordinates(row)) for row in members)
-        positions = {}
-        for axis, wanted in clause.items():
-            available = {
-                value.value_id: SelectedAxisValue(id=value.value_id, label=coordinate_label(value))
-                for _, values in values_by_row if (value := values.get(axis)) is not None
-            }
-            for index, value in enumerate(wanted):
-                if value.id not in available:
-                    raise SelectedAxisValueRefusal(index, SelectedAxisValueProblem(
-                        clause_index=0, axis=axis, missing=value, remaining=list(available.values()),
-                    ))
-            positions[axis] = {value.id: index for index, value in enumerate(wanted)}
-        ordered_axes = sorted(positions)
-        matched = [
-            (tuple(positions[axis][values[axis].value_id] for axis in ordered_axes), row)
-            for row, values in values_by_row
-            if all(axis in values and values[axis].value_id in ids for axis, ids in positions.items())
-        ]
-        chosen_members = tuple(row for _, row in sorted(matched, key=lambda match: match[0]))
-    else:
-        chosen_members = members
+    chosen_members = members
+    if terms.clauses != [{}]:
+        indexed: dict[str, dict[str, tuple[Coordinate, set[int]]]] = {}
+        for position, row in enumerate(members):
+            for axis, value in coordinates(row).items():
+                _, positions = indexed.setdefault(axis, {}).setdefault(value.value_id, (value, set()))
+                positions.add(position)
+        matched: set[int] = set()
+        for clause_index, clause in enumerate(terms.clauses):
+            broken = False
+            constraint_matches = []
+            for axis, wanted in clause.items():
+                options = indexed.get(axis, {})
+                absent = [(index, value) for index, value in enumerate(wanted) if value.id not in options]
+                if absent:
+                    broken = True
+                    remaining = [
+                        SelectedAxisValue(id=option.value_id, label=coordinate_label(option))
+                        for option, _ in options.values()
+                    ]
+                    for index, value in absent:
+                        missing(SelectedAxisValueRefusal(index, SelectedAxisValueProblem(
+                            clause_index=clause_index, axis=axis, missing=value, remaining=remaining,
+                        )))
+                else:
+                    constraint_matches.append(set.union(*(options[value.id][1] for value in wanted)))
+            if not broken:
+                matched.update(set.intersection(*constraint_matches))
+        chosen_members = tuple(members[position] for position in sorted(matched))
     chosen = choose(terms.rule, chosen_members, coordinates=coordinates, producer=producer)
     if terms.bound_ranks is None:
         return tuple((member_key(row), row) for row in chosen.rows), chosen.best

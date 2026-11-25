@@ -88,7 +88,7 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
     pick.onCommit(pickedWrites);
   }
   const shownProblem: RuleFieldProblem | undefined = picked?.size && !pickedWrites
-    ? { reason: 'These axis values also select unpicked runs.' }
+    ? { reason: 'The producer’s axes do not distinguish these runs.' }
     : !writing && problem ? { reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } } } : undefined;
   const commands: RuleFieldCommand[] = [
     ...pick ? [{ label: studioName('pickRuns'), disabled: disabled || !source.runs.length, invoke: () => setPicked(new Set()) }] : [],
