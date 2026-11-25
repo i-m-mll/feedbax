@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from inspect import Parameter, signature
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from jaxtyping import PyTree
     from pydantic import BaseModel
 
+    from feedbax.contracts.training import DocumentTrainingRequestSpec
     from feedbax.runtime.graph import Graph
     from feedbax.training.method_runtime import TrainingContext
 
@@ -32,6 +33,7 @@ class TrainingState(NamedTuple):
 
 
 type TrainingMetrics = Mapping[str, Array | TrainingMetrics]
+type MethodMetricNames = Sequence[str] | Callable[[DocumentTrainingRequestSpec], Sequence[str]]
 type MethodInit[S: BaseModel] = Callable[[S, Graph, Array], TrainingState]
 type MethodUpdate[S: BaseModel] = Callable[
     [TrainingState, TrainingContext[S]], tuple[TrainingState, TrainingMetrics]
@@ -41,16 +43,20 @@ type MethodUpdate[S: BaseModel] = Callable[
 @dataclass(frozen=True, kw_only=True)
 class TrainingMethodDeclaration(CallableDeclaration):
     init: MethodInit[Any]
+    metrics: MethodMetricNames = ()
 
 
 def training_method[S: BaseModel](
     *, settings: type[S], init: MethodInit[S], key: str | None = None,
-    label: str | None = None, renamed_from: tuple[str, ...] = (),
+    label: str | None = None, renamed_from: tuple[str, ...] = (), metrics: MethodMetricNames = (),
 ) -> Callable[[MethodUpdate[S]], MethodUpdate[S]]:
-    """Mark a scalar update for installation through a package entry point."""
+    """Mark a scalar update for package discovery.
+
+    Declare scalar final metric names directly, or derive them from the normalized request.
+    """
     declaration = TrainingMethodDeclaration(
         settings_model=settings, init=init, key=key, label=label,
-        renamed_from=renamed_from,
+        renamed_from=renamed_from, metrics=metrics,
     )
     arguments = signature(init).parameters.values()
     parameter = next(iter(arguments), None)
@@ -77,6 +83,11 @@ class RegisteredTrainingMethod:
     renamed_from: tuple[str, ...]
     init: MethodInit[Any]
     update: MethodUpdate[Any]
+    metrics: MethodMetricNames
+
+    def metric_names(self, request: DocumentTrainingRequestSpec) -> frozenset[str]:
+        names = self.metrics(request) if callable(self.metrics) else self.metrics
+        return frozenset(names)
 
 
 class TrainingMethodRegistry:
@@ -90,7 +101,7 @@ class TrainingMethodRegistry:
         entry = RegisteredTrainingMethod(
             key=key, source=source, update=function, init=declaration.init,
             settings_model=declaration.settings_model, label=declaration.label,
-            renamed_from=declaration.renamed_from,
+            renamed_from=declaration.renamed_from, metrics=declaration.metrics,
         )
         self._declarations.add(key, source, function, entry, renamed_from=declaration.renamed_from)
 

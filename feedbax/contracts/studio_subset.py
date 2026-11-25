@@ -34,7 +34,7 @@ class StudioRunRuleRequest(StrictModel):
     """The producer: the step whose runs the rule chooses."""
     rule: str
     ranked: bool = True
-    """Whether the rule may rank by a result (``lowest``, ``highest``); a sweep exception may not."""
+    """Whether the rule may rank or filter by a final metric. A sweep exception is decided before results."""
 
 
 class StudioRunRuleChosen(StrictModel):
@@ -42,7 +42,8 @@ class StudioRunRuleChosen(StrictModel):
     runs: list[RowKey]
     """The producer's rows the rule's axis terms choose; a lowest or highest term ranks among them."""
     count: int
-    """The runs the selection gives: the rows chosen, or the ranks a lowest or highest term asks for."""
+    """Chosen rows, requested ranks, or candidates when the rule depends on a final metric."""
+    conditional: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class StudioRunRuleRefused(StrictModel):
@@ -55,4 +56,5 @@ class StudioRunRuleCheck(StrictModel):
     """What a run rule chooses among the producer's ``total`` rows, or why it is refused."""
 
     total: int
+    metric_names: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
     result: Annotated[StudioRunRuleChosen | StudioRunRuleRefused, Field(discriminator="kind")]
