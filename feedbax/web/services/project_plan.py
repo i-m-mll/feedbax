@@ -776,7 +776,7 @@ class ProjectPlanService:
     ) -> StudioTrialReplayResponse:
         _, result = self._evaluation_result(project_id, body)
         try:
-            return result.replay(body.trial, checkpoint=body.checkpoint, aggregate=body.aggregate)
+            return result.replay(body.trial, checkpoint=body.checkpoint, aggregate=body.aggregate, mean=body.mean)
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, ValueError, KeyError) as error:
