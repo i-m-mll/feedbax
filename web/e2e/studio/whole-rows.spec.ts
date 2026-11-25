@@ -5,7 +5,7 @@ test.use({ viewport: { width: 1400, height: 900 } });
 
 // Catches a drawer list whose height cuts through a row (a list a few pixels short of its rows that scrolls a little
 // and fades its last row), and a window whose map and shelf leave the Task view too short to show the grid under the
-// Variables table.
+// Variables table; and a list that hides rows marking it by fading the rows it shows, or not marking it at all.
 test('the Task tab shows whole rows in its Outline and the grid under the Variables table', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
@@ -33,11 +33,14 @@ test('the Task tab shows whole rows in its Outline and the grid under the Variab
         scrolls: body.scrollHeight - body.clientHeight > 0.5,
         faded: body.hasAttribute('data-overflow-bottom'),
         cut: rows.some(({ bottom }) => bottom > box.bottom + 0.5),
+        fade: getComputedStyle(body).getPropertyValue('--fade-bottom').trim(),
+        shade: getComputedStyle(body).boxShadow !== 'none',
       };
     }));
   await expect.poll(async () => (await bodies()).find(({ name }) => name === 'Variables'))
-    .toEqual({ name: 'Variables', scrolls: false, faded: false, cut: false });
-  for (const body of await bodies()) expect(body, body.name ?? '').toMatchObject({ cut: false });
+    .toMatchObject({ name: 'Variables', scrolls: false, faded: false, cut: false, shade: false });
+  for (const body of await bodies()) expect(body, body.name ?? '').toMatchObject({ cut: false, fade: '0px', shade: body.faded });
+  expect((await bodies()).find(({ name }) => name === 'Epochs')).toMatchObject({ faded: true, shade: true });
 
   const view = await primary.locator('.studio-window-slot__body').boundingBox();
   const grid = await primary.getByRole('table', { name: 'Epochs', exact: true }).boundingBox();
