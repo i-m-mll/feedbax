@@ -362,8 +362,8 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         for run in compile_project(upstream).runs if run.key.step == "conditions"
     }
     order = ("heavy", "nominal")
-    selected = [{"key": key, "variant": "default", "row": rows[key]} for key in order]
-    steps["analyze"]["inputs"]["states"] = {"step": "conditions", "where": {"rows": selected}}
+    selected = [{"id": key, "label": mass_values[key]["label"]} for key in order]
+    steps["analyze"]["inputs"]["states"] = {"step": "conditions", "where": {"axes": {"mass": selected}}}
     del steps["baseline"]
     folders = ProjectFolderService(projects, operations=_operations())
     _save_project(folders, project, Project.model_validate(definition))
@@ -381,9 +381,10 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     align = plan.elements[ElementKey(analyze, "align")]
     decoded = decode_request(plan.requests[align.request_id], plan.documents.__getitem__)
     request_ids = {run.key: run.request_id for run in plan.runs}
-    evaluation_ids = [request_ids[RunKey("default", "conditions", rows[key])] for key in order]
+    members = [rows[key] for key in order]
+    evaluation_ids = [request_ids[RunKey("default", "conditions", row)] for row in members]
     assert [(item.key, item.reference.request_id) for item in decoded.inputs["states"]] == list(
-        zip(order, evaluation_ids, strict=True)
+        zip(members, evaluation_ids, strict=True)
     )
 
     with TestClient(create_app(projects_dir=projects)) as client:
@@ -418,7 +419,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
 
     evaluations = [proof(request) for request in evaluation_ids]
     align_ref, aligned = proof(align.request_id)
-    assert [item.key for item in aligned.inputs["states"]] == list(order)
+    assert [item.key for item in aligned.inputs["states"]] == members
     assert [item.selection.receipt for item in aligned.inputs["states"]] == [ref for ref, _ in evaluations]
     assert {edge["job_id"] for edge in by_request[align.request_id]["edges"]} == {
         by_request[request]["id"] for request in evaluation_ids
@@ -451,7 +452,8 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     assert summarized.inputs["velocity"][0].selection.receipt == align_ref
     for product, element in ((aligned, "velocity"), (summarized, "summary")):
         with open_stored_dataset(store, dataset_member(product.products[element][0])) as data:
-            assert data.data("mass").tolist() == data.data("member").tolist() == list(order)
+            assert data.data("mass").tolist() == list(order)
+            assert data.data("member").tolist() == members
             assert summary.names["source"][data.data("source").item()].key == "conditions"
             assert data.data("condition").tolist() == [[condition] for condition in conditions]
             np.testing.assert_array_equal(data.data("state_time"), times[0])

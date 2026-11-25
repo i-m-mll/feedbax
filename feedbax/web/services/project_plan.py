@@ -58,7 +58,8 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainRuns,
 )
 from feedbax.contracts.project_inputs import (
-    BatchCheckpoint, InputBinding, SelectedRow, StepReference, SubsetTerms, producer_member_key, subset_to_rows,
+    BatchCheckpoint, BoundRank, InputBinding, SelectedAxisValue, StepReference, SubsetTerms,
+    producer_member_key, subset_to_rows,
 )
 from feedbax.contracts.studio_place import (
     StudioStepPlace, definition_place, document_path, path_parts, variation_targets,
@@ -77,7 +78,7 @@ from feedbax.planner.project_plan import (
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
-from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates
+from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates, coordinate_text
 from feedbax.contracts.run_rule import RuleRefusal, choose
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
@@ -378,6 +379,28 @@ class ProjectPlanRead:
             at: value for _, values in gathered.values() for at, value in values.items()
         }
 
+        def figure_reference(key: RunKey, element: str) -> StepReference | None:
+            candidates = [
+                axis_coordinates(row.coordinates, row.input_axes)
+                for row in step_rows[key.variant, key.step]
+            ]
+            row = plan.row(key)
+            assert row is not None
+            axes = {}
+            for axis, value in axis_coordinates(row.coordinates, row.input_axes).items():
+                others = [
+                    values for values in candidates if axis in values and values[axis].value_id == value.value_id
+                ]
+                if len(others) != len(candidates):
+                    axes[axis] = [SelectedAxisValue(id=value.value_id, label=coordinate_text(value))]
+                    candidates = others
+            if len(candidates) != 1:
+                return None
+            return StepReference(
+                step=key.step, where=SubsetTerms(axes=axes) if axes else None,
+                element=element, product=PLOTLY_FIGURE_ROLE,
+            )
+
         return StudioProjectWindowMap(
             variants=[variant for variant in plan.variants if includes(variant)],
             steps=[
@@ -455,9 +478,8 @@ class ProjectPlanRead:
                     key=StudioSavedTrainKey.model_validate(run, from_attributes=True),
                     name=name, kind=requests[0].kind,
                     status=statuses[ElementKey(run, name)].status, reason=statuses[ElementKey(run, name)].reason,
-                    figure=StepReference(
-                        step=run.step, row=run.row, element=name, product=PLOTLY_FIGURE_ROLE,
-                    ) if isinstance(requests[0].outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
+                    figure=figure_reference(run, name)
+                    if isinstance(requests[0].outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
                     requests=[
                         StudioProjectWindowMapRequest(
                             labels=dict(parse_labels(element.key.member or "")),
@@ -701,7 +723,7 @@ class ProjectPlanService:
         ):
             raise ProjectFolderInvalid("The chosen attempts do not share one complete Best selection.")
         frozen = subset_to_rows(subset.terms, (
-            SelectedRow(key=key, variant=by_rank[key].variant, row=by_rank[key].row) for key in subset.ranks
+            BoundRank(key=key, variant=by_rank[key].variant, row=by_rank[key].row) for key in subset.ranks
         ))
         address = AuthoredFileAddress(kind="step", id=body.step)
         authored = step.model_dump(mode="json", exclude_unset=True)

@@ -6,7 +6,7 @@ import { containsCreatedFile, ProjectEditConflictError, type ProjectEditControll
 
 import { blankDocuments, namedDocument } from './useProjectDocuments';
 import { generatedName, holds } from './generatedName';
-import { planVariants, savedRunId, sharedRowTerms, stepSourceRows } from './projectWindowPlan';
+import { planVariants, selectedRowTerms, stepSourceRows } from './projectWindowPlan';
 
 type NamedStep = CreateNamedStep['step'];
 
@@ -39,16 +39,11 @@ async function createManagedStep(
 }
 
 export function analyzeInput(
-  step: PlanStepView, runs: readonly PlanRunView[], projection: StudioSavedTrainRuns, sharedProject: boolean,
+  step: PlanStepView, runs: readonly PlanRunView[], projection: StudioSavedTrainRuns,
 ): StepReference | undefined {
   const variant = planVariants(projection)[0];
   if (!variant || !runs.length || runs.some((run) => run.variant !== variant)) return undefined;
-  const selected = new Set(runs.map(({ id }) => id));
-  const rows = stepSourceRows(projection, step.id, variant)
-    .filter((row) => selected.has(savedRunId({ ...row, step: step.id })));
-  if (rows.length !== selected.size) return undefined;
-  if (rows.length === 1) return { step: step.id, row: rows[0].row };
-  const where = sharedProject ? sharedRowTerms(step, runs) : { rows };
+  const where = selectedRowTerms(stepSourceRows(projection, step.id, variant), new Set(runs.map(({ id }) => id)));
   return where ? { step: step.id, where } : undefined;
 }
 

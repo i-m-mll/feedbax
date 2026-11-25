@@ -657,9 +657,7 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     root, client = study
     original = load_text_project(root)
     authored = original.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    authored["documents"]["selected"] = {"schema": "subset", "payload": {"rows": [
-        {"key": "selected-seed", "variant": "compare", "row": "seed=10"},
-    ]}}
+    authored["documents"]["selected"] = {"schema": "subset", "payload": {"axes": {"seed": [{"id": "10", "label": "First"}]}}}
     authored["steps"]["follow"] = {
         "kind": "train",
         "base": {"step": "fit"},
@@ -688,14 +686,12 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     assert len(before.requests) == 3
     for variant in before.variants:
         [follower] = [run for run in before.runs if run.key == RunKey(variant, "follow", selected.row)]
-        producer = RunKey("compare", "fit", "seed=10")
+        producer = RunKey(variant, "fit", "seed=10")
         assert follower.inputs["checkpoint"].producer == producer
-        assert follower.inputs["checkpoint"].member.key == "selected-seed"
+        assert follower.inputs["checkpoint"].member.key == "seed=10"
         subset = before.subsets[variant, "follow", "checkpoint"]
         assert (subset.document, subset.candidates, subset.members) == ("selected", 2, (producer,))
-        assert [(row.key, row.variant, row.row) for row in subset.terms.rows] == [
-            ("selected-seed", "compare", "seed=10"),
-        ]
+        assert [value.id for value in subset.terms.axes["seed"]] == ["10"]
         assert before.steps[variant, "follow"].inputs["checkpoint"].step == "fit"
     assert set(before.sources) == {selected}
     source = before.sources[selected]["/inputs/checkpoint"]
@@ -793,9 +789,7 @@ def _plan_dependencies(root: Path) -> None:
         "10": {"label": "First", "patches": {seed_path: {"value": 10}}},
         "2": {"patches": {seed_path: {"value": 2}}},
     }}}}
-    authored["documents"]["selected"] = {"schema": "subset", "payload": {"rows": [
-        {"key": "seed=10", "variant": "default", "row": "seed=10"},
-    ]}}
+    authored["documents"]["selected"] = {"schema": "subset", "payload": {"axes": {"seed": [{"id": "10", "label": "First"}]}}}
     authored["steps"]["follow"] = {
         "kind": "train",
         "base": {"step": "fit"},
