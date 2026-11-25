@@ -57,6 +57,7 @@ from feedbax.contracts.request_specs import (
     RequestSpec,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_variation
+from feedbax.contracts.rollout_dataset import common_rollout_port
 from feedbax.plugins.declarations import missing_declaration
 
 if TYPE_CHECKING:
@@ -191,6 +192,13 @@ def _member_ids(requests: list[Mapping[str, MemberLabel]], names: LabelNames) ->
     return [",".join(f"{label}={values[label]}" for label in varying if label in values) for values in named]
 
 
+@dataclass(frozen=True)
+class EvaluateSource:
+    spec: RequestSpec
+    name: LabelName
+    port: DatasetPort | None
+
+
 class _Lowerer:
     def __init__(
         self,
@@ -199,7 +207,7 @@ class _Lowerer:
         document_pointers: Mapping[str, str],
         documents: Mapping[str, Document],
         step_inputs: Mapping[str, tuple[PlannedInput, ...]],
-        evaluations: Mapping[RunKey, tuple[RequestSpec, LabelName]],
+        evaluations: Mapping[RunKey, EvaluateSource],
         upstream: Mapping[ElementKey, PlannedElement],
         operations: OperationRegistry,
         figure_templates: FigureTemplateRegistry | None,
@@ -213,6 +221,7 @@ class _Lowerer:
         self.upstream = upstream
         self.operations = operations
         self.declarations: Mapping[str, AnalyzeInput] = {}
+        self.element_names: dict[str, str] = {}
         self.figure_templates = figure_templates
         self.elements: dict[str, list[PlannedElement]] = {}
         self.figures: dict[str, FigureDocument] = {}
@@ -255,6 +264,7 @@ class _Lowerer:
                 row=self.key.row,
                 variant=self.key.variant,
                 element=element,
+                element_name=self.element_names.get(element) if element is not None else None,
                 document_path=document_path,
             )
         )
@@ -295,11 +305,12 @@ class _Lowerer:
         inputs = self._step_input(source, "dataset", path)
         if any(binding.producer_element is not None for binding in inputs):
             return self._operation_outputs(inputs, path)
-        schemas = set()
+        ports = []
         for binding in inputs:
             reference = binding.member.reference
             assert isinstance(reference, ProductRef) and binding.producer is not None
-            evaluation, _ = self.evaluations[binding.producer]
+            producer = self.evaluations[binding.producer]
+            evaluation = producer.spec
             if (
                 not isinstance(evaluation, EvaluationRequestSpec)
                 or evaluation.evaluation_type != ROLLOUT_TYPE
@@ -308,15 +319,15 @@ class _Lowerer:
                     path, f"States member {binding.member.key!r} requires a saved rollout Evaluate request."
                 )
             try:
-                schemas.add(RolloutParameters.model_validate(evaluation.params).states_schema)
+                schema = RolloutParameters.model_validate(evaluation.params).states_schema
             except ValidationError as error:
                 raise _ElementIssue(path, f"Invalid saved Evaluate parameters: {error}") from error
-        # The schema is fixed by retention. Concrete model-owned variables are
-        # authenticated when the actual saved dataset is read.
-        if len(schemas) != 1:
+            ports.append(producer.port or DatasetPort(schema_ids=(schema,)))
+        port = common_rollout_port(ports)
+        if len(port.schema_ids) != 1:
             raise _ElementIssue(path, "Selected Evaluate states must use the same dataset schema.")
         entries = self._entries(inputs, path)
-        return inputs, DatasetPort(schema_ids=tuple(schemas), coordinates=_fields(entries, path)), entries
+        return inputs, port.model_copy(update={"coordinates": _fields(entries, path) | port.coordinates}), entries
 
     def _entries(self, inputs: tuple[PlannedInput, ...], path: str) -> _Entries:
         """The labelled entries of a stack of bindings, as ``stack_dataset_members`` lays them out at run time.
@@ -412,7 +423,7 @@ class _Lowerer:
             for binding in bindings:
                 if binding.producer is None or (evaluation := self.evaluations.get(binding.producer)) is None:
                     continue
-                spec, name = evaluation
+                spec, name = evaluation.spec, evaluation.name
                 if isinstance(spec, EvaluationRequestSpec) and spec.evaluation_type == ROLLOUT_TYPE:
                     params = RolloutParameters.model_validate(spec.params)
                     if name.label is None:
@@ -685,7 +696,7 @@ def lower_analyze(
     documents: Mapping[str, Document],
     document_problems: tuple[ProjectDiagnostic, ...],
     step_inputs: Mapping[str, tuple[PlannedInput, ...]],
-    evaluations: Mapping[RunKey, tuple[RequestSpec, LabelName]],
+    evaluations: Mapping[RunKey, EvaluateSource],
     upstream: Mapping[ElementKey, PlannedElement],
     operations: OperationRegistry,
     *,
@@ -713,6 +724,10 @@ def lower_analyze(
         return lower.planned, lower.encoded, lower.problems, lower.figures
 
     lower.declarations = document.inputs
+    lower.element_names = {
+        name: item.label or name
+        for items in (document.operations, document.views) for name, item in items.items()
+    }
     graph = TopologicalSorter()
     for name, element in sorted(document.operations.items()):
         graph.add(

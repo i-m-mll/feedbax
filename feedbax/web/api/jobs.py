@@ -37,6 +37,7 @@ from feedbax.contracts.jobs import (
 )
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.studio_project import StudioProjectPlanChanged
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
 from feedbax.contracts.trial_clock import StudioSavedFigureMeanRequest
@@ -51,6 +52,10 @@ from feedbax.web.services.remote_runs import StudioRemoteRuns
 
 router = APIRouter(prefix="/api", tags=["jobs"])
 _FOLDER_OBSERVATION_INTERVAL = 0.5
+_PLAN_JOB_EVENTS = frozenset({
+    "activity", "queued", "assigned", "accepted", "phase", "progress", "publication",
+    "stopping", "blocked", "terminal", "reused",
+})
 
 
 def _jobs(request: Request) -> JobService:
@@ -478,16 +483,20 @@ async def job_events(
         replay_complete = False
         next_observation = monotonic()
         last_remote_version = 0
+        observed_folders: set[str] = set()
         while True:
             if cursor < page.oldest_cursor or cursor > head:
                 reset = StudioEventReset(oldest_cursor=page.oldest_cursor, cursor=head)
                 yield f"event: reset\ndata: {reset.model_dump_json()}\n\n"
                 return
+            changed_plans: set[str] = set()
             for event in page.events:
                 if not replay_complete and event.cursor > boundary:
                     replay_complete = True
                     yield _watermark_event("replay_complete", boundary)
                 yield f"id: {event.cursor}\ndata: {event.model_dump_json()}\n\n"
+                if replay_complete and event.project_id in folders and event.kind in _PLAN_JOB_EVENTS:
+                    changed_plans.add(event.project_id)
             cursor = page.cursor
             if not replay_complete and cursor >= boundary:
                 replay_complete = True
@@ -497,6 +506,7 @@ async def job_events(
             if remote is not None and replay_complete and remote.version != last_remote_version:
                 last_remote_version = remote.version
                 yield f'event: machines_changed\ndata: {{"version":{last_remote_version}}}\n\n'
+                changed_plans.update(observed_folders)
             if remote is not None and replay_complete and projects:
                 for source in await run_in_threadpool(remote.venue_cursors):
                     key = (source.session_id, source.stream_id)
@@ -510,11 +520,20 @@ async def job_events(
                     venue_positions[key] = events.cursor
                     for event in events.events:
                         yield f"event: venue_event\ndata: {event.model_dump_json()}\n\n"
+                        if event.project_id in folders and event.kind in _PLAN_JOB_EVENTS:
+                            changed_plans.add(event.project_id)
             if watch is not None and replay_complete and monotonic() >= next_observation:
                 revisions = await run_in_threadpool(watch.changed)
                 next_observation = monotonic() + _FOLDER_OBSERVATION_INTERVAL
                 for revision in revisions:
                     yield f"event: project_revision\ndata: {revision.model_dump_json()}\n\n"
+                    if revision.project_id not in observed_folders:
+                        observed_folders.add(revision.project_id)
+                        changed_plans.add(revision.project_id)
+
+            for folder in sorted(changed_plans):
+                change = StudioProjectPlanChanged(project_id=folder)
+                yield f"event: project_plan_changed\ndata: {change.model_dump_json()}\n\n"
             wait = 5 if remote is None else 0.75
             if watch is not None and replay_complete:
                 wait = min(wait, max(0, next_observation - monotonic()))

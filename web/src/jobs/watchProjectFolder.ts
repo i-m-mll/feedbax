@@ -1,4 +1,4 @@
-import type { StudioProjectRevision } from '@/generated/studioContracts';
+import type { StudioProjectPlanChanged, StudioProjectRevision } from '@/generated/studioContracts';
 import type { StudioJobCommand, StudioJobPort } from './studioJobConnection';
 import { openJobPort } from './studioJobStream';
 
@@ -7,6 +7,7 @@ export function watchProjectFolder(
   handlers: {
     revision: (event: StudioProjectRevision) => void;
     connected: () => void;
+    planChanged?: (event: StudioProjectPlanChanged) => void;
   },
 ): () => void {
   let port: StudioJobPort | null = null;
@@ -19,6 +20,7 @@ export function watchProjectFolder(
       if (port !== opened) return;
       if (data.type === 'folder-connected') handlers.connected();
       if (data.type === 'folder-revision' && data.revision.project_id === id) handlers.revision(data.revision);
+      if (data.type === 'project-plan-changed' && data.change.project_id === id) handlers.planChanged?.(data.change);
     };
     opened.postMessage({ type: 'subscribe-folder', folderId: id } satisfies StudioJobCommand);
   }

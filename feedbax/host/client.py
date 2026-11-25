@@ -380,19 +380,23 @@ class HostClient:
 
     def mirror_collected_train(
         self, job: Job, *, state: str, receipt: JsonObject | None, progress: JsonObject | None, delivery: int,
+        submitted_at_ms: int, ended_at_ms: int,
     ) -> None:
         self._call(
             "mirror_collected_train", job=asdict(job), state=state,
             receipt=receipt, progress=progress, delivery=delivery,
+            submitted_at_ms=submitted_at_ms, ended_at_ms=ended_at_ms,
         )
 
     def mirror_collected_evaluate(
         self, job: Job, *, receipt: Mapping[str, Any],
         progress: Mapping[str, Any] | None, delivery: int,
+        submitted_at_ms: int, ended_at_ms: int,
     ) -> None:
         self._call(
             "mirror_collected_evaluate", job=asdict(job), receipt=dict(receipt),
             progress=None if progress is None else dict(progress), delivery=delivery,
+            submitted_at_ms=submitted_at_ms, ended_at_ms=ended_at_ms,
         )
 
     def submissions(

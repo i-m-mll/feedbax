@@ -414,7 +414,7 @@ class StudioProjectWindowMapProblem(StrictModel):
             variant=diagnostic.variant, step=diagnostic.step, row=diagnostic.row,
             place=definition_place(
                 path_parts(diagnostic.path), lambda _slot: diagnostic.document,
-                element=diagnostic.element, member=diagnostic.model_address,
+                element=diagnostic.element, element_name=diagnostic.element_name, member=diagnostic.model_address,
                 variation=lambda _name: diagnostic.variation_target,
             ) if diagnostic.step else None,
             document_path=diagnostic.document_path, address=diagnostic.authored_file or source,
@@ -571,6 +571,10 @@ class StudioActivityJob(StrictModel):
     label: str
     coordinates: dict[str, JsonValue]
     status: JobStatus
+    submitted_at_ms: int = Field(ge=0)
+    """When this job was submitted, in Unix epoch milliseconds."""
+    ended_at_ms: int | None = Field(ge=0)
+    """When this job reached a terminal state, in Unix epoch milliseconds."""
     phase: str | None = None
     reason: str | None = None
     can_resume: bool = False

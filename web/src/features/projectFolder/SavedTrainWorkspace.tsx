@@ -124,7 +124,7 @@ type EditorSession = ReturnType<typeof bindProjectEditor>;
 /** The Model's own initial state, at which the Scene's geometry tells whether the Model has anything to draw. */
 const restPose: readonly StateValues[] = [{}];
 /** What a Scene draws of a step the clock does not read: its Model at rest. */
-const restTrial: SceneTrial = { picked: undefined, possible: [], frame: 0, task: undefined, trails: false };
+const restTrial: SceneTrial = { picked: undefined, possible: [], reading: false, frame: 0, task: undefined, trails: false };
 const slots = ['primary', 'secondary'] as const;
 /** The anchor of an Evaluate's sampled number of trials, which the Trials editor draws. */
 const trialCount = '/params/trial_set/count';
@@ -1246,7 +1246,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const inputEditorKey = JSON.stringify([variant, selection.pipeline]);
   const inputEditor = step && (trainStart && startRole ? <InputEditor key={inputEditorKey} label={studioName('start')} role={startRole}
     binding={authored?.inputs?.checkpoint} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
-    absent={documentChoice('model', trainStart)} refusal={refusedAt('input')}
+    absent={documentChoice(saved.project, 'model', trainStart)} refusal={refusedAt('input')}
     onReveal={(source) => selection.select(selectStep(state, source))}
     selection={(index, reference) => ({
       problems: inputProblems('checkpoint', index),

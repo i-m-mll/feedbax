@@ -148,6 +148,8 @@ export interface StudioActivityJob {
   label: string;
   coordinates: Record<string, JsonValue>;
   status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  submitted_at_ms: number;
+  ended_at_ms: number | null;
   phase?: string | null;
   reason?: string | null;
   can_resume?: boolean;
@@ -3123,6 +3125,7 @@ export type FieldDescriptor = {
   "dims": Array<Name>;
   "units"?: string | null;
   "quantity"?: string | null;
+  "label"?: string | null;
   "frame"?: string | null;
   "trial_time"?: TrialFigureTime | null;
   "inline_values"?: Array<JsonValue> | null;
@@ -3996,6 +3999,7 @@ export type StudioAddClassMember = {
 export type StudioAnalysisPlace = {
   "part": "analysis";
   "element": string;
+  "name": string;
 };
 
 export type StudioAnalyzeAuthoring = {
@@ -4005,6 +4009,7 @@ export type StudioAnalyzeAuthoring = {
   "states": DatasetPort | null;
   "sources": Record<string, Record<string, Array<StepInput | OperationDataset>>>;
   "variables": Record<string, Record<string, Array<string>>>;
+  "variable_names"?: Record<string, string>;
   "figure": FigureDocument;
   "changed"?: Array<Pointer>;
   "files"?: Array<StudioProjectFilePatch>;
@@ -4421,6 +4426,10 @@ export type StudioProjectPatchBatch = {
   "presentation_revision"?: Sha256 | null;
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
+};
+
+export type StudioProjectPlanChanged = {
+  "project_id": string;
 };
 
 export type StudioProjectRename = {
@@ -6133,6 +6142,8 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "label": z.string(),
       "coordinates": z.record(z.string(), jsonValueSchema),
       "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "submitted_at_ms": z.number().int().safe().gte(0),
+      "ended_at_ms": z.number().int().safe().gte(0).nullable(),
       "phase": z.string().nullable().optional(),
       "reason": z.string().nullable().optional(),
       "can_resume": z.boolean().optional(),
@@ -11047,6 +11058,7 @@ export const FieldDescriptorSchema: z.ZodType<FieldDescriptor> = z.lazy(() =>
     "dims": z.array(NameSchema),
     "units": z.union([z.string(), z.null()]).optional(),
     "quantity": z.union([z.string(), z.null()]).optional(),
+    "label": z.union([z.string(), z.null()]).optional(),
     "frame": z.union([z.string(), z.null()]).optional(),
     "trial_time": z.union([TrialFigureTimeSchema, z.null()]).optional(),
     "inline_values": z.union([z.array(jsonValueSchema), z.null()]).optional(),
@@ -12230,6 +12242,7 @@ export const StudioAnalysisPlaceSchema: z.ZodType<StudioAnalysisPlace> = z.lazy(
   z.object({
     "part": z.literal("analysis"),
     "element": z.string(),
+    "name": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalysisPlace>;
 
@@ -12241,6 +12254,7 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "states": z.union([DatasetPortSchema, z.null()]),
     "sources": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([StepInputSchema, OperationDatasetSchema])))),
     "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
+    "variable_names": z.record(z.string(), z.string()).optional(),
     "figure": FigureDocumentSchema,
     "changed": z.array(PointerSchema).optional(),
     "files": z.array(StudioProjectFilePatchSchema).optional(),
@@ -12793,6 +12807,12 @@ export const StudioProjectPatchBatchSchema: z.ZodType<StudioProjectPatchBatch> =
     "created": z.array(CreateNamedDocumentSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectPatchBatch>;
+
+export const StudioProjectPlanChangedSchema: z.ZodType<StudioProjectPlanChanged> = z.lazy(() =>
+  z.object({
+    "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectPlanChanged>;
 
 export const StudioProjectRenameSchema: z.ZodType<StudioProjectRename> = z.lazy(() =>
   z.object({
@@ -13923,6 +13943,7 @@ export const contractSchemas = {
   StudioProjectExamples: StudioProjectExamplesSchema,
   StudioProjectList: StudioProjectListSchema,
   StudioProjectNew: StudioProjectNewSchema,
+  StudioProjectPlanChanged: StudioProjectPlanChangedSchema,
   StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
   StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
@@ -14103,6 +14124,7 @@ export interface ContractTypeMap {
   StudioProjectExamples: StudioProjectExamples;
   StudioProjectList: StudioProjectList;
   StudioProjectNew: StudioProjectNew;
+  StudioProjectPlanChanged: StudioProjectPlanChanged;
   StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;
   StudioProjectPatchBatch: StudioProjectPatchBatch;

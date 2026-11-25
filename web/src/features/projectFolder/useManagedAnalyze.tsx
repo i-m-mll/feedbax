@@ -31,7 +31,7 @@ import {
   choosePick, useNamedSelection, usePick, type ElementSelectionStore,
 } from '@/features/projectWindow/elementSelection';
 import { shownName, type PlanStepView } from '@/features/pipeline/planView';
-import { heldElementKeys } from './analysisElements';
+import { heldElements } from './analysisElements';
 import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
 import { SelectionRule } from './SelectionRule';
@@ -47,7 +47,6 @@ import { SavedFigureResult } from './SavedLightProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName, keyOfLabel } from './generatedName';
 import type { GestureFailures } from './refusals';
-import { variableName } from './variableName';
 
 type Source = OperationElement['inputs'][string];
 
@@ -268,12 +267,15 @@ export function useManagedAnalyze({
       catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
     } : undefined };
   }
-  function add(kind: 'operations' | 'views', stem: string, value: JsonValue, point?: PresentationPosition) {
+  /** Places an element named as the Library names what it is made from, numbered while another element shows that name. */
+  function add(kind: 'operations' | 'views', named: string, value: Readonly<Record<string, JsonValue>>, point?: PresentationPosition) {
     void perform(async (current) => {
-      const held = heldElementKeys(editor.getSnapshot().draft.documents, current.composed);
-      const name = generatedName(stem, (name) => name === 'states' || name in declarations || held.has(name));
-      const label = studioName(kind === 'operations' ? 'addOperation' : 'addFigure');
-      await save(current, label, set([kind, name], value));
+      const held = heldElements(editor.getSnapshot().draft.documents, current.composed);
+      const shownNames = new Set(held.values());
+      const label = generatedName(named, (label) => shownNames.has(label), ' ');
+      const name = generatedName(keyOfLabel(label) || kind,
+        (name) => name === 'states' || name in declarations || held.has(name));
+      await save(current, studioName(kind === 'operations' ? 'addOperation' : 'addFigure'), set([kind, name], { ...value, label }));
       setDialog(undefined);
       if (liveScope.current === scope) {
         setInspected(undefined);
@@ -285,10 +287,11 @@ export function useManagedAnalyze({
     }, canEdit, opened ? 'dialog' : undefined);
   }
   const addFigure = (point?: PresentationPosition) => {
-    if (catalog) add('views', figureItem, { figure: catalog.figure, inputs: {} }, point);
+    if (catalog) add('views', humanizeLabel(figureItem), { figure: catalog.figure, inputs: {} }, point);
   };
   const addOperation = (operation: string, point?: PresentationPosition) => {
-    add('operations', operation.split('.').at(-1)!, { operation, params: {}, inputs: {} }, point);
+    const entry = definitions.get(operation);
+    if (entry) add('operations', entry.label, { operation, params: {}, inputs: {} }, point);
   };
   const addCommand = bindStudioCommand('addComponent', () => {
     if (focusedView === 'figures') addFigure();
@@ -416,7 +419,7 @@ export function useManagedAnalyze({
       editing={namingNow?.field === 'key' && namingNow.element === selected}
       onEditingChange={(editing) => setNaming(editing ? { scope, element: selected, field: 'key' } : undefined)}
       onCommit={(key) => changeElementKey(selected, key)}
-      unavailable={(key) => keyUnavailable(key, (key) => heldElementKeys(draft.documents, saved.composed).has(key))}
+      unavailable={(key) => keyUnavailable(key, (key) => heldElements(draft.documents, saved.composed).has(key))}
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
     {selected && selectedInput && key && inputRole && <InputEditor label={humanizeLabel(selected)} role={inputRole}
       binding={step?.inputs?.[selected]} self={key.step} project={saved.project} steps={steps} picking={selection}
@@ -464,7 +467,7 @@ export function useManagedAnalyze({
           const options = schema && catalog?.variables[definition.key]?.[schema.name];
           return schema && options ? fromParamSchema(schema, operation.params?.[schema.name], canEdit
             ? (value) => writeParameter(path, value) : undefined,
-          { options: options.map((option) => ({ value: option, label: variableName(option) })) }) : undefined;
+          { options: options.map((option) => ({ value: option, label: catalog?.variable_names?.[option] ?? option })) }) : undefined;
         }}
         changed={(path) => changedAt(['operations', selected, 'params', ...path])}
         write={canEdit ? writeParameter : undefined} />
@@ -503,9 +506,9 @@ export function useManagedAnalyze({
   function place(id: string, point?: PresentationPosition) {
     if (id === figureItem) addFigure(point);
     else if (definitions.has(id)) addOperation(id, point);
-    else if (figureTemplates.some(({ key }) => key === id)) {
-      const stem = keyOfLabel(id.split('.').at(-1)!.replace(/([a-z0-9])([A-Z])/g, '$1-$2'));
-      add('views', stem, { figure: { template: id }, inputs: {} }, point);
+    else {
+      const template = figureTemplates.find(({ key }) => key === id);
+      if (template) add('views', template.label, { figure: { template: id }, inputs: {} }, point);
     }
   }
   const libraryInspector = shownItem && <Inspector name={shownItem.name} type={shownItem.group}>

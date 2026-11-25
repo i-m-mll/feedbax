@@ -67,33 +67,47 @@
         },
         "value": {
           "kind": "call",
-          "function": "vector",
+          "function": "add",
           "args": [
             {
-              "kind": "draw",
-              "family": "uniform",
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": -0.4
-                },
-                {
-                  "kind": "literal",
-                  "value": 0.5
-                }
-              ]
+              "kind": "name",
+              "reference": "start"
             },
             {
-              "kind": "draw",
-              "family": "uniform",
+              "kind": "call",
+              "function": "polar",
               "args": [
                 {
-                  "kind": "literal",
-                  "value": -0.3
+                  "kind": "draw",
+                  "family": "uniform",
+                  "args": [
+                    {
+                      "kind": "literal",
+                      "value": 0.1,
+                      "unit": "m"
+                    },
+                    {
+                      "kind": "literal",
+                      "value": 0.5,
+                      "unit": "m"
+                    }
+                  ]
                 },
                 {
-                  "kind": "literal",
-                  "value": 0.45
+                  "kind": "draw",
+                  "family": "uniform",
+                  "args": [
+                    {
+                      "kind": "literal",
+                      "value": -3.141592653589793,
+                      "unit": "rad"
+                    },
+                    {
+                      "kind": "literal",
+                      "value": 3.141592653589793,
+                      "unit": "rad"
+                    }
+                  ]
                 }
               ]
             }
@@ -203,7 +217,7 @@
       },
       {
         "id": "target_vel",
-        "name": "target_vel",
+        "name": "Target velocity",
         "type": {
           "base": "real",
           "shape": [
