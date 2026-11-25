@@ -53,6 +53,9 @@ function Entry({ checked, role, onClick, children }: {
   </Button>;
 }
 
+/** A section's name in the popup, above its entries. */
+const sectionLabel = 'px-row-inline pb-0.5 text-xs text-shell-muted';
+
 const sets: readonly TrialSet[] = ['nominal', 'samples', 'recorded'];
 
 /** The trials under Mean's By: the labels of the variables chosen, all of them unless chosen. */
@@ -62,7 +65,8 @@ const byLabels = (options: TrialMeanOptions | undefined, by: readonly string[] |
 /**
  * The one statement of which trials are shown and how. Its text is what is shown. Its popup chooses One, All or Mean,
  * then what that showing is of: under One a single trial, every one that exists for the selection in groups; under All
- * the set shown, when more than one can be; under Mean the variables whose values make a condition. The seed and the
+ * the set shown, when more than one can be; under Mean the variables whose values make a condition and the epoch whose start is zero (the trial's
+ * start unless chosen). The seed and the
  * count the samples are drawn with are at its foot while samples are offered.
  */
 export function TrialPicker({ offer, clock, shown, recordedLabels, recordedOutOfDate, meanOptions, onChange }: TrialPickerProps) {
@@ -106,7 +110,9 @@ export function TrialPicker({ offer, clock, shown, recordedLabels, recordedOutOf
         <span className={secondaryText}>{studioName(trials === 'samples' ? 'sampledTrials' : 'recordedTrials')}</span>
       </Entry>;
     }))
-      : meanOptions && <div role="group" aria-label={studioName('meanBy')} className="grid grid-cols-[minmax(0,1fr)]">
+      : meanOptions && <>
+        <div role="group" aria-label={studioName('meanBy')} className="grid grid-cols-[minmax(0,1fr)]">
+        <span aria-hidden="true" className={sectionLabel}>{studioName('meanBy')}</span>
         {meanOptions.by.map(({ id, label }) => {
           const chosen = !clock.mean.by || clock.mean.by.includes(id);
           return <Entry key={id} role="checkbox" checked={chosen} onClick={() => {
@@ -115,7 +121,17 @@ export function TrialPicker({ offer, clock, shown, recordedLabels, recordedOutOf
             onChange({ ...clock, mean: { ...clock.mean, by: next.length === meanOptions.by.length ? null : next } });
           }}><span className={primaryText}>{label}</span></Entry>;
         })}
-      </div>;
+        </div>
+        <div role="radiogroup" aria-label={studioName('meanAlign')}
+          className="mt-1 grid grid-cols-[minmax(0,1fr)] border-t border-shell-divider pt-1">
+          <span aria-hidden="true" className={sectionLabel}>{studioName('meanAlign')}</span>
+          {[{ id: null, label: studioName('trialStart') }, ...meanOptions.align].map(({ id, label }) =>
+            <Entry key={id ?? ''} role="radio" checked={clock.mean.align === id}
+              onClick={() => onChange({ ...clock, mean: { ...clock.mean, align: id } })}>
+              <span className={primaryText}>{label}</span>
+            </Entry>)}
+        </div>
+      </>;
   const sampled = offer.samples > 0 && (kind === 'one' || shown.trials === 'samples');
   return <Popover open={open} onOpenChange={setOpen}>
     <PopoverTrigger render={<Button variant="ghost" className="w-44 shrink-0 gap-1 px-1 tabular-nums" />}
