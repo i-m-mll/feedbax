@@ -40,6 +40,7 @@ class JobStatus(StrEnum):
     QUEUED = "queued"
     AWAITING_AUTHORIZATION = "awaiting_authorization"
     BLOCKED = "blocked"
+    WAITING = "waiting"
     STARTING = "starting"
     RUNNING = "running"
     STOPPING = "stopping"
@@ -135,6 +136,8 @@ class StudioBoundBestSubject(StrictModel):
 
 class StudioSavedEvaluationResult(StrictModel):
     job_id: str
+    request_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
     size_bytes: int = Field(ge=0)
@@ -158,6 +161,7 @@ class StudioSavedEvaluationRow(StrictModel):
     can_run: bool
     trials: list[str]
     result: StudioSavedEvaluationResult | None
+    previous: StudioSavedEvaluationResult | None = Field(default=None, exclude_if=lambda value: value is None)
     subject_rank_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
     checkpoint_series: StudioEvaluationCheckpointSeries | None = Field(
         default=None, exclude_if=lambda value: value is None,
@@ -219,6 +223,7 @@ class StudioEvaluationObjectiveSeries(StrictModel):
 class StudioSavedTrainResult(StrictModel):
     request_id: str
     job_id: str
+    revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     progress: JobProgress | None
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -273,6 +278,7 @@ class StudioProjectWindowMapInputAxis(StrictModel):
 class StudioSavedLightResult(StrictModel):
     job_id: str
     request_id: str
+    revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     products: dict[str, str]
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)

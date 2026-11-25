@@ -475,6 +475,7 @@
       "queued": "Queued",
       "awaiting_authorization": "Needs approval",
       "blocked": "Blocked",
+      "waiting": "Waiting",
       "starting": "Starting",
       "running": "Running",
       "stopping": "Stopping",

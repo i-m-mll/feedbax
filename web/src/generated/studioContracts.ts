@@ -147,7 +147,7 @@ export interface StudioActivityJob {
   scenario_id: string;
   label: string;
   coordinates: Record<string, JsonValue>;
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   phase?: string | null;
   reason?: string | null;
   can_resume?: boolean;
@@ -298,6 +298,8 @@ export interface StudioEvaluationCheckpointSeries {
 
 export interface StudioSavedEvaluationResult {
   job_id: string;
+  request_id?: string | null;
+  revision?: string | null;
   receipt: JobReceipt;
   checkpoint_source: StudioTrainCheckpointSource | null;
   size_bytes: number;
@@ -312,11 +314,12 @@ export interface StudioSavedEvaluationResult {
 export interface StudioSavedEvaluationRow {
   key: StudioSavedTrainKey;
   request_id: string;
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
   can_run: boolean;
   trials: string[];
   result: StudioSavedEvaluationResult | null;
+  previous?: StudioSavedEvaluationResult | null;
   subject_rank_key?: string | null;
   checkpoint_series?: StudioEvaluationCheckpointSeries | null;
   checkpoint_attempt?: StudioEvaluationCheckpointAttempt | null;
@@ -326,7 +329,7 @@ export interface StudioSavedEvaluationRow {
 
 export interface StudioSavedTrainAttempt {
   job_id: string;
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
   progress: JobProgress | null;
   successful_receipt: JobReceipt | null;
@@ -351,6 +354,7 @@ export interface StudioSavedTrainKey {
 export interface StudioSavedTrainResult {
   request_id: string;
   job_id: string;
+  revision?: string | null;
   receipt: JobReceipt;
   progress: JobProgress | null;
   validity?: ReceiptValidity | null;
@@ -362,7 +366,7 @@ export interface StudioSavedTrainRow {
   label: string;
   request_id: string;
   attempts: StudioSavedTrainAttempt[];
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
   result: StudioSavedTrainResult | null;
   previous: StudioSavedTrainResult | null;
@@ -3101,7 +3105,7 @@ export type JaxOperation = {
   "floating_point_bits": 32 | 64;
 };
 
-export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
 
 export type KeyedFamily = "documents" | "steps" | "elements";
 
@@ -4381,6 +4385,7 @@ export type StudioSavedLightHistory = {
 export type StudioSavedLightResult = {
   "job_id": string;
   "request_id": string;
+  "revision"?: string | null;
   "receipt": JobReceipt;
   "products": Record<string, string>;
   "validity"?: ReceiptValidity | null;
@@ -5807,7 +5812,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "scenario_id": z.string(),
       "label": z.string(),
       "coordinates": z.record(z.string(), jsonValueSchema),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "phase": z.string().nullable().optional(),
       "reason": z.string().nullable().optional(),
       "can_resume": z.boolean().optional(),
@@ -6034,6 +6039,8 @@ export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationR
   z
     .object({
       "job_id": z.string(),
+      "request_id": z.string().nullable().optional(),
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
       "receipt": JobReceiptSchema,
       "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
       "size_bytes": z.number().int().safe().gte(0),
@@ -6052,11 +6059,12 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
     .object({
       "key": StudioSavedTrainKeySchema,
       "request_id": z.string(),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
       "can_run": z.boolean(),
       "trials": z.array(z.string()),
       "result": StudioSavedEvaluationResultSchema.nullable(),
+      "previous": StudioSavedEvaluationResultSchema.nullable().optional(),
       "subject_rank_key": z.string().nullable().optional(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
       "checkpoint_attempt": StudioEvaluationCheckpointAttemptSchema.nullable().optional(),
@@ -6070,7 +6078,7 @@ export const StudioSavedTrainAttemptSchema: z.ZodType<StudioSavedTrainAttempt> =
   z
     .object({
       "job_id": z.string(),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
       "progress": JobProgressSchema.nullable(),
       "successful_receipt": JobReceiptSchema.nullable(),
@@ -6107,6 +6115,7 @@ export const StudioSavedTrainResultSchema: z.ZodType<StudioSavedTrainResult> = z
     .object({
       "request_id": z.string(),
       "job_id": z.string(),
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
       "receipt": JobReceiptSchema,
       "progress": JobProgressSchema.nullable(),
       "validity": ReceiptValiditySchema.nullable().optional(),
@@ -6122,7 +6131,7 @@ export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(
       "label": z.string(),
       "request_id": z.string(),
       "attempts": z.array(StudioSavedTrainAttemptSchema),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
       "result": StudioSavedTrainResultSchema.nullable(),
       "previous": StudioSavedTrainResultSchema.nullable(),
@@ -10640,7 +10649,7 @@ export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
 ) as unknown as z.ZodType<JaxOperation>;
 
 export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
-  z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
+  z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
 ) as unknown as z.ZodType<JobStatus>;
 
 export const KeyedFamilySchema: z.ZodType<KeyedFamily> = z.lazy(() =>
@@ -12336,6 +12345,7 @@ export const StudioSavedLightResultSchema: z.ZodType<StudioSavedLightResult> = z
   z.object({
     "job_id": z.string(),
     "request_id": z.string(),
+    "revision": z.union([z.string().regex(new RegExp("^[a-f0-9]{64}$")), z.null()]).optional(),
     "receipt": JobReceiptSchema,
     "products": z.record(z.string(), z.string()),
     "validity": z.union([ReceiptValiditySchema, z.null()]).optional(),
