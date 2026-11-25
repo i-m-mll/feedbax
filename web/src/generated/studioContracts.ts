@@ -3961,7 +3961,6 @@ export type SetToField = {
   "kind": "set_to_field";
   "step": string;
   "axis": string;
-  "condition"?: Expression | null;
 };
 
 export type SetToSweep = {
@@ -12431,7 +12430,6 @@ export const SetToFieldSchema: z.ZodType<SetToField> = z.lazy(() =>
     "kind": z.literal("set_to_field"),
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "condition": z.union([ExpressionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<SetToField>;
 

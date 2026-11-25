@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 
 from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_values import (
-    Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, UnresolvedValue,
+    Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, TextSpan, UnresolvedValue,
     ValueBase, ValueType,
 )
 from feedbax.tasks.document import TrialSource, zero
@@ -17,6 +17,7 @@ from feedbax.contracts.matrix_core import stored_parts
 from feedbax.contracts.studio_scope import StoreKind
 from feedbax.compiler.model_reset import ModelResetField
 from feedbax.compiler.model_signals import model_measure_scope
+from feedbax.compiler.set_fields import resolve_trial_set_condition, trial_set_condition_site
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
@@ -52,7 +53,7 @@ from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, O
 from feedbax.contracts.training import TrialDocuments
 from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.contracts.window import WindowPosition, store_window_offset, window_offset_expression, window_offset_sites
-from feedbax.contracts.expression_check import references
+from feedbax.contracts.expression_check import check, references
 from feedbax.contracts.expression_site import FieldKind, project_site, read_field
 from feedbax.contracts.expression_text import parse, print_field, resolve_expression
 from feedbax.studio.value_structure import value_structure
@@ -70,7 +71,7 @@ from feedbax.web.services.trial_fields import (
     site_expression, trial_field_sweep, trial_field_sweep_edit, trial_time_use,
 )
 from feedbax.web.services.trial_scope import (
-    authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, lit_steps, preview_stored, scoped_file,
+    authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, scoped_file,
     reached_steps, selected_runs, source_value_file, variant_view,
 )
 
@@ -275,13 +276,23 @@ def _field_document(documents, role):
     return documents.task_source if role == "task" and isinstance(documents.task_source, TaskDocument) else None
 
 
+def _one_expression_problem(path):
+    return (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression.", path=path),)
+
+
+def _one_expression(text, site, functions, path):
+    parsed = parse(text, site, functions)
+    value = UnresolvedValue(text=text) if isinstance(parsed, tuple) else parsed.value
+    return _one_expression_problem(path) if isinstance(value, SweepList | SweepRange | SweepSample) else value
+
+
 def _expression_edit(change, documents, projection, bundle):
     role, *rest = json_pointer_parts(change.path)
     site = projection.fields.get((role, *rest))
     document = _field_document(documents, role)
     if site is None or document is None or index_pointer(document.model_dump(mode="json"), tuple(rest[:-1])) is None:
         raise ProjectFolderInvalid("The selected field is unavailable.")
-    one = (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression.", path=(role, *rest)),)
+    one = _one_expression_problem((role, *rest))
     if change.edit.kind != "text" or change.edit.value_id is not None:
         return one
     text = change.edit.text
@@ -314,10 +325,9 @@ def _expression_edit(change, documents, projection, bundle):
         return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
             op="replace", path=index_pointer(raw, tuple(rest)), value=limit.model_dump(mode="json"),
         )])
-    parsed = parse(text, site, bundle.expression_functions)
-    value = UnresolvedValue(text=text) if isinstance(parsed, tuple) else parsed.value
-    if isinstance(value, SweepList | SweepRange | SweepSample):
-        return one
+    value = _one_expression(text, site, bundle.expression_functions, (role, *rest))
+    if isinstance(value, tuple):
+        return value
     if window_offset:
         try:
             value = store_window_offset(value)
@@ -671,6 +681,46 @@ def _pairing(plan, key, bundle, *, definition=None):
     raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
 
 
+def _set_condition_site(definition, projection):
+    task = definition.payload.get("trial_documents", {}).get("task")
+    if task is None:
+        return trial_set_condition_site(())
+    resolved = {variable.id: variable for variable in projection.variables}
+    return trial_set_condition_site(tuple(
+        resolved.get(variable.id) or ScopedValue(id=variable.id, name=variable.name, type=variable.type, level=Level.TRIAL)
+        for variable in TaskDocument.model_validate(task).variables
+    ))
+
+
+def _set_condition_edit(expression, path, body, folders, project, settled, key, bundle, definition, projection):
+    step = project.steps[key.step]
+    if step.kind != "train" or len(path) != 3 or path[-1] != "condition" or path[1] not in step.set_fields:
+        raise ProjectFolderInvalid("The selected Set condition is unavailable.")
+    edit = expression.edit
+    if edit.kind != "text" or edit.value_id is not None:
+        return StoredEdit([]), _one_expression_problem(path), None
+    field = step.set_fields[path[1]]
+    address = AuthoredFileAddress(kind="step", id=key.step)
+    if edit.text.strip():
+        site = _set_condition_site(definition, projection)
+        condition = _one_expression(edit.text, site, bundle.expression_functions, path)
+        if isinstance(condition, tuple):
+            return StoredEdit([]), condition, None
+        if condition == field.condition:
+            return StoredEdit([]), (), None
+        raw = step.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        file = file_value(address, raw, path, condition.model_dump(mode="json"))
+    elif field.condition is not None:
+        file = StudioProjectFilePatch(address=address, patches=[RemoveProjectValue(op="remove", path=pointer(path))])
+    else:
+        return StoredEdit([]), (), None
+    selected = selected_runs(settled.plan, key, body.scope or StudioTrialStepScope(kind="step"))
+    return _validate_files(
+        body, project, settled, key, selected, folders, bundle,
+        [("whole_step", "Whole Step", key.step, StoredEdit([file]))], edited_rows=edited_authored_rows,
+    )
+
+
 def _prepare_edits(body, folders, project_id, project, settled, key, bundle, definition, documents, projected, *, change):
     scope = body.scope
     plan = settled.plan
@@ -678,6 +728,8 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
     expression = change if isinstance(change, StudioTrialExpressionEdit) else None
     if expression is not None:
         path = json_pointer_parts(expression.path)
+        if path[:1] == ("set_fields",):
+            return _set_condition_edit(expression, path, body, folders, project, settled, key, bundle, definition, projected)
         holder = next((path[:end] for end in range(len(path), 0, -1) if path[:end] in projected.fields), path)
         site = projected.fields.get(holder)
         swept = _field_sweep(project, plan, key, definition, path, site, _field_label(holder)) if (
@@ -1046,7 +1098,7 @@ def _resolved_value_files(authored, candidate, pairings, compile_sources, bundle
 
 def _validate_files(
     body, project, settled, key, selected, folders, bundle, candidates,
-    *, preserve=None, controlling=None, other_runs=None,
+    *, preserve=None, controlling=None, other_runs=None, edited_rows=None,
 ):
     """Calculate each store's reach on the authored definitions before preparing its files."""
     possible = {
@@ -1074,7 +1126,7 @@ def _validate_files(
             stored = preserve(stored)
         authored = preview_stored(project, stored)
         after = compile_sources(authored, possible)
-        runs = _changed_runs(before, after)
+        runs = (_changed_runs if edited_rows is None else edited_rows)(before, after)
         value = stored, authored, after
         if kind == "all_readers":
             return all_readers_store(source, runs, value)
@@ -1220,6 +1272,30 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
         conversion=time_conversion(expression, period, trial_time_use(path[0], path[1:])),
         problems=marks,
     ), *fields]
+
+
+def _condition_field(placement, site, functions, row):
+    path = "set_fields", placement.axis, "condition"
+    condition = placement.condition
+    problems = ()
+    if condition is not None:
+        parsed = resolve_trial_set_condition(condition, placement.sampling, site, functions)
+        checked = parsed if isinstance(parsed, tuple) else check(parsed.value, site, functions, spans=parsed.spans)
+        if isinstance(checked, tuple):
+            problems = tuple(item.model_copy(update={"path": (*path, *item.path)}) for item in checked)
+        elif row is not None:
+            problems = tuple(
+                Problem(code=ProblemCode.STRUCTURE, reason=item.detail, path=path)
+                for item in row.problems if item.path == pointer(path)
+            )
+    (view,) = _trial_fields(path, site, condition, functions, lambda *_: None, row, problems, {}, None)
+    if view.text and view.problems:
+        span = TextSpan(start=0, end=len(view.text))
+        view = view.model_copy(update={"problems": [
+            item if item.span else item.model_copy(update={"span": span})
+            for item in view.problems
+        ]})
+    return view
 
 
 def _batch_size(kind: str, payload) -> int | None:
@@ -1384,6 +1460,10 @@ def trial_authoring(
         fields.extend(_trial_fields(
             path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
         ))
+    set_fields = trial_set_fields(project, key.step)
+    if set_fields:
+        site = _set_condition_site(definition, projected)
+        fields.extend(_condition_field(placement, site, bundle.expression_functions, row) for placement in set_fields)
     field_problems = [
         problem for field in fields for problem in field.problems
         if not _held_problems(problem.path, projected.problems)
@@ -1398,7 +1478,7 @@ def trial_authoring(
             definition, objective_path,
         )) if objective_source is not None and objective_source.kind == "own" else [],
         task_source=task_source, task_field_sources=task_field_sources,
-        set_fields=trial_set_fields(snapshot.project, key.step),
+        set_fields=set_fields,
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
