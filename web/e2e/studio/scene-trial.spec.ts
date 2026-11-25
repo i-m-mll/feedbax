@@ -62,8 +62,11 @@ test('a Point signal appears in the Scene once the playhead passes its start', a
   await expect(target.locator('[data-scene-shown]')).toHaveCount(1);
 });
 
-/** Runs the evaluation fixture's Train and its baseline Evaluate, and opens the Scene of the baseline's Done run. */
-async function doneEvaluationScene(page: Page, home: string, seed: string, scenario: string) {
+/**
+ * Runs the evaluation fixture's Train, its baseline Evaluate and then each of `after`, and opens the Scene of the
+ * baseline's Done run.
+ */
+async function doneEvaluationScene(page: Page, home: string, seed: string, scenario: string, after: readonly string[] = []) {
   const projectId = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', seed, home, scenario));
   const runs = `/api/projects/${projectId}/train-runs`;
   const plans = page.getByRole('table', { name: 'Runs', exact: true });
@@ -80,6 +83,8 @@ async function doneEvaluationScene(page: Page, home: string, seed: string, scena
   await page.goto(`/?project=${encodeURIComponent(projectId)}`);
   await run('train');
   await run('baseline');
+  for (const step of after) await run(step);
+  if (after.length) await mapStep(page, 'baseline').click();
   await plans.getByRole('button', { name: /^\d+ baseline$/ }).click();
   await tab(page, 'Scene').click();
 }
@@ -182,4 +187,28 @@ test('Mean by condition aligned to an epoch draws one mean path with its spread 
   const pooledMean = (await (await pooled).json() as StudioTrialReplayResponse).mean!;
   expect(pooledMean.conditions).toHaveLength(1);
   await expect(scene(page).locator('[data-scene-mean]')).toHaveCount(meanPathCount(pooledMean));
+});
+
+// Catches a figure pane that draws its saved product under Mean, or asks for a Mean other than the clock's.
+test('under Mean a figure draws the Service\'s Mean rendering for the clock\'s By and Align', { tag: '@round' }, async ({ page, studio }) => {
+  test.setTimeout(90_000);
+  await doneEvaluationScene(page, studio.home, 'seed-mean-figure', 'figure-mean', ['analyze']);
+  const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
+  const opened = meanReply(page, null);
+  await clock.getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'Mean', exact: true }).click();
+  const epoch = (await opened).reply.mean_options!.align.at(-1)!;
+  const aligned = meanReply(page, epoch.id);
+  await pick(clock.getByRole('combobox', { name: 'Align', exact: true }), epoch.label);
+  await aligned;
+
+  const meanFigure = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/figures/mean'));
+  await mapStep(page, 'analyze').click();
+  await tab(page, 'Figures').click();
+  const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
+  await figures.getByRole('button', { name: 'by_trial', exact: true }).click();
+  const response = await meanFigure;
+  expect(response.status(), await response.text()).toBe(200);
+  expect(response.request().postDataJSON()).toMatchObject({ mean: { by: null, align: epoch.id } });
+  const product = await response.json() as { data: unknown[] };
+  await expect(figures.locator('g.scatterlayer g.trace')).toHaveCount(product.data.length);
 });
