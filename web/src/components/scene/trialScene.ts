@@ -5,9 +5,10 @@ import { elementKey, isModelAddress, type ElementAddress } from '@/features/proj
 import { frameAt } from '@/components/timeline/trialClock';
 import { endedBy } from '@/features/projectFolder/task/trialSample';
 import type {
-  DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryFrame, TaskDocument, TrialMean, TrialRecord, TrialRelation, ValueType,
+  DomainDiagnostic, JsonValue, Marker, ModelAddress, StudioSceneGeometryFrame, TaskDocument, TrialMean, TrialRecord, TrialRelation, ValueType,
 } from '@/generated/studioContracts';
 import type { ScenePoint } from './planarProjection';
+import { markMarkers } from './sceneView';
 import type {
   Scene, SceneElement, SceneEnd, SceneGroup, SceneMeanPath, ScenePlace, SceneRelation, SceneShape, SceneTrack,
 } from './sceneView';
@@ -246,18 +247,20 @@ export interface SceneTask {
 
 /**
  * The task's variables and signals that have a place, at `step`: in the picked trial, and at each of the trials that
- * may be shown. A variable linked to a Model field is the trial's start; every other place is a goal.
+ * may be shown. A variable linked to a Model field is the trial's start; every other place is a goal. Each is drawn by its
+ * variable's marker, or else by its mark's.
  */
 export function taskGroup(task: SceneTask, record: TrialRecord | undefined, possible: readonly TrialRecord[], step: number): SceneGroup | undefined {
   const address: ElementAddress = { document: task.document, element: { kind: 'named', id: 'task' } };
   const starts = new Set(task.value.links?.map((link) => link.variable));
   const element = (kind: 'variable' | 'signal', id: string, name: string,
-    place: (record: TrialRecord, id: string, step: number) => ScenePoint | undefined): SceneElement => {
+    place: (record: TrialRecord, id: string, step: number) => ScenePoint | undefined, marker?: Marker | null): SceneElement => {
     const located: ElementAddress = { document: task.document, element: { kind: 'named', id: `${kind}:${id}` } };
     const shown = record && place(record, id, step);
+    const mark = kind === 'variable' && starts.has(id) ? 'start' : 'goal';
     return {
       key: elementKey(located), address: located, name, layer: kind === 'variable' ? 'variables' : 'signals',
-      mark: kind === 'variable' && starts.has(id) ? 'start' : 'goal',
+      mark, marker: marker ?? markMarkers[mark],
       ...shown && { shape: { kind: 'point', point: shown } },
       possible: possible.map((trial) => place(trial, id, step)).filter((spot) => spot !== undefined),
       values: shown ? [{ label: name, point: shown }] : [],
@@ -265,7 +268,7 @@ export function taskGroup(task: SceneTask, record: TrialRecord | undefined, poss
   };
   const elements = [
     ...task.value.variables.filter((variable) => hasPlace(variable.type))
-      .map((variable) => element('variable', variable.id, variable.name, variablePlace)),
+      .map((variable) => element('variable', variable.id, variable.name, variablePlace, variable.marker)),
     ...task.value.signals.filter((signal) => hasPlace(signal.type))
       .map((signal) => element('signal', signal.id, signal.name, signalPlace)),
   ];
