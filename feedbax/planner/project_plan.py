@@ -1483,8 +1483,7 @@ def _encode_row(
                 raise _PayloadProblems((("method", error.args[0]),)) from error
             try:
                 spec, method, _ = normalize_train_method(spec, training_methods)
-                if spec.training_config.replicates == 1:
-                    metric_names = method.metric_names(spec)
+                metric_names = method.metric_names(spec)
             except ValidationError as error:
                 raise _PayloadProblems(tuple(
                     (".".join(("settings", *map(str, failure["loc"]))), failure["msg"])

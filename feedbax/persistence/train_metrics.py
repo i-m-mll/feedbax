@@ -3,15 +3,16 @@
 from collections.abc import Iterator
 from dataclasses import dataclass
 from hashlib import sha256
-from math import isfinite
+from math import fsum, isfinite
 import json
 import os
 from pathlib import Path
 from typing import Any, BinaryIO
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.effective_success import Success, success_content_ref
+from feedbax.contracts.effective_success import Success, read_effective_request, success_content_ref
 from feedbax.contracts.request_refs import ConditionalProduct
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.run_rule import metric_condition_holds
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.method_checkpoint import TrainMetricPrefix
@@ -102,6 +103,18 @@ def _last_metric_row(store: ImmutableArtifactBlobProvider, success: Success) -> 
     return row["metrics"]
 
 
+def finite_final_metric(value: Any, replicas: int, name: str) -> float:
+    """Read one scalar per replica and reduce the run's measure to their mean."""
+    values = (value,) if replicas == 1 else value
+    if isinstance(values, (tuple, list)) and len(values) == replicas:
+        try:
+            if all(type(item) in (float, int) and isfinite(item) for item in values):
+                return fsum(float(item) / replicas for item in values)
+        except OverflowError:
+            pass
+    raise ValueError(f"The Train result has no finite scalar {name!r} for each replica.")
+
+
 def passes_final_metric_condition(
     store: ImmutableArtifactBlobProvider, success: Success, reference: ConditionalProduct,
 ) -> bool:
@@ -110,13 +123,13 @@ def passes_final_metric_condition(
         raise ValueError("Metric condition names a different Train request.")
     metrics = _last_metric_row(store, success)
 
-    def score(name: str) -> float:
-        value = metrics.get(name)
-        if type(value) not in (float, int) or not isfinite(value):
-            raise ValueError(f"The exact Train result has no finite {name!r} metric.")
-        return float(value)
-
-    return metric_condition_holds(reference.conditions, score)
+    decoded = read_effective_request(success, store.get_object)
+    if not isinstance(decoded.spec, DocumentTrainingRequestSpec):
+        raise ValueError("Metric condition requires a document Train request.")
+    replicas = decoded.spec.training_config.replicates
+    return metric_condition_holds(
+        reference.conditions, lambda name: finite_final_metric(metrics.get(name), replicas, name),
+    )
 
 
 def materialize_metrics(store: ImmutableArtifactBlobProvider, history: MetricHistory, path: Path) -> None:

@@ -81,10 +81,10 @@ from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates, coordinate_text
-from feedbax.contracts.run_rule import RuleRefusal, choose
+from feedbax.contracts.run_rule import METRIC_CONDITION_FALSE, RuleRefusal, choose
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
-    BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
+    BatchMember, BatchSetMember, BestRank, ConditionalProduct, LastMember, ProductRef, UpdateSeriesMember,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.trial_clock import StudioSavedFigureMeanRequest
@@ -306,7 +306,7 @@ class ProjectPlanRead:
 
         counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
         for key, status in statuses.items():
-            if isinstance(key, RunKey):
+            if isinstance(key, RunKey) and status.status is not JobStatus.NOT_CHOSEN:
                 counts[key.variant, key.step][status.status.value] += 1
 
         edge_keys = [
@@ -914,6 +914,33 @@ def read_settled_project_plan(
             ))
         jobs = replace(jobs, by_request=MappingProxyType(by_request))
     history = dict(_train_history(settled, jobs))
+    conditional = {
+        run.key: binding for run in runs for binding in run.inputs.values()
+        if isinstance(binding.member.reference, ConditionalProduct)
+    }
+    decisions: dict[RunKey, tuple[JobStatus, str]] = {}
+    if conditional:
+        from feedbax.persistence.train_metrics import passes_final_metric_condition
+
+        view = SuccessView(ImmutableArtifactBlobProvider(settled.store_path))
+        for key, binding in conditional.items():
+            producer = history.get(binding.producer)
+            if producer is None or producer.status is not JobStatus.SUCCEEDED or producer.result is None:
+                continue
+            try:
+                evidence = view.attempt_ref(producer.result.job_id)
+                if evidence is None:
+                    raise ValueError("The Train result has no accepted Store receipt.")
+                receipt = view.read_receipt(evidence)
+                reference = binding.member.reference
+                assert isinstance(reference, ConditionalProduct)
+                if not passes_final_metric_condition(view.store, receipt, reference):
+                    decisions[key] = JobStatus.NOT_CHOSEN, METRIC_CONDITION_FALSE
+            except (OSError, ValueError, KeyError) as error:
+                decisions[key] = JobStatus.CANNOT_RUN, str(error)
+        for key in history.keys() & decisions.keys():
+            status, reason = decisions[key]
+            history[key] = replace(history[key], status=status, reason=reason)
     for key, opening in (openings or {}).items():
         if key in history:
             history[key] = replace(history[key], status=opening.status, reason=opening.reason)
@@ -922,6 +949,11 @@ def read_settled_project_plan(
     for run in runs:
         if run.kind == "evaluate":
             row, problem = _evaluation_row(settled, run, jobs, reader, history)
+            if (decision := decisions.get(run.key)) is not None:
+                status, reason = decision
+                row = row.model_copy(update={"status": status, "reason": reason, "can_run": False})
+                if status is JobStatus.NOT_CHOSEN:
+                    problem = None
             if (opening := (openings or {}).get(run.key)) is not None:
                 row = row.model_copy(update={"status": opening.status, "reason": opening.reason})
             evaluations[run.key] = row

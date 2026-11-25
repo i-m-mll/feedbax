@@ -549,7 +549,7 @@ class StudioMachineApprovalReceipt(StrictModel):
 
 
 class JobOutcome(StrictModel):
-    outcome: Literal["succeeded", "stopped", "failed", "interrupted", "blocked"]
+    outcome: Literal["succeeded", "stopped", "failed", "interrupted", "blocked", "not_chosen"]
     error: JobError | None = None
     receipt: JobReceipt | None = None
     signal: int | None = None

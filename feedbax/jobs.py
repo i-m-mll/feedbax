@@ -71,7 +71,7 @@ from feedbax.planner.project_plan import (
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.receipt_validity import CodeDifference, InputDifference, ReceiptValidity, ValidityJudgement
-from feedbax.contracts.effective_success import EvaluationSubjectValue, TerminalTrainSubject
+from feedbax.contracts.effective_success import EvaluationSubjectValue, ExcludedProduct, TerminalTrainSubject
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.rollout import RolloutParameters
@@ -873,7 +873,9 @@ class JobService(PlanJobReader):
                     anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=reference.request_id))
                     anchor = next((job["id"] for job in reversed(anchors) if (
                         job["data"].get("manifest_root") == str(store.root)
-                        and (job["state"] in _LIVE_STATES or (job["state"] == "succeeded" and self._receipt_matches(job)))
+                        and (job["state"] in _LIVE_STATES | {"not_chosen"} or (
+                            job["state"] == "succeeded" and self._receipt_matches(job)
+                        ))
                     )), None)
                 else:
                     anchor = (
@@ -1941,6 +1943,8 @@ class JobService(PlanJobReader):
                 parent = attempts.get(parent["outcome"]["retained_attempt"])
             if parent is not None and parent["state"] == "succeeded" and (ref := view.attempt_ref(parent["id"])) is not None:
                 origins[parent["request"]] = ref
+            elif parent is not None and parent["state"] == "not_chosen":
+                origins[parent["request"]] = ExcludedProduct.model_validate(parent["outcome"]["excluded_product"])
         for job in reversed(jobs):
             if job["state"] in _LIVE_STATES:
                 return None
@@ -2644,6 +2648,8 @@ def saved_request_status(
         return live.status, live.reason
     if attempts:
         latest = attempts[-1]
+        if latest.status is JobStatus.NOT_CHOSEN:
+            return latest.status, latest.reason
         if success is not None and latest.status is not JobStatus.CORRUPT:
             notice = None
             if latest != success:

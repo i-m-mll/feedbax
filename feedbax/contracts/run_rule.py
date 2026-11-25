@@ -64,6 +64,9 @@ def value_text(coordinate: SweepCoordinate) -> str:
     return name if RULE_NAME.fullmatch(name) and name not in _RESERVED else '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+METRIC_CONDITION_FALSE = "The producer’s final metrics did not meet the rule."
+
+
 _RESERVED = frozenset({"true", "false", "and", "or", "not", "lowest", "highest", "per"})
 
 
@@ -251,6 +254,10 @@ def choose[Row](
     ranking = best[0] if best else None
     if ranking is not None:
         text = _text(rule, ranking.span)
+        if final_metrics is not None and ranking.metric not in final_metrics(picked):
+            raise RuleRefusal(
+                "rule", f"{text}: {producer} has no declared final metric {ranking.metric}.", ranking.span,
+            )
         if len(set(ranking.per)) != len(ranking.per):
             raise RuleRefusal("rule", f"{text}: per names an axis twice.", ranking.span)
         groups: Counter[tuple[str, ...]] = Counter()

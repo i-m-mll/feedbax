@@ -122,8 +122,10 @@ def test_metric_conditions_plan_one_fixed_row_per_candidate():
     raw = _swept(range(3), "lr=0.01 train_loss < seed")
     # The reader need not author a sweep to get one row per candidate.
     del raw["steps"]["baseline"]["sweep"]
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["replicates"] = 2
     plan = compile_project(Project.model_validate(raw))
     assert not plan.diagnostics, plan.diagnostics
+    assert all("train_loss" in run.metric_names for run in plan.runs if run.kind == "train")
     candidates = [run for run in plan.runs if run.kind == "evaluate"]
     assert len(candidates) == 3
     for candidate in candidates:

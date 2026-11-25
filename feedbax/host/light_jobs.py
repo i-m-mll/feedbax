@@ -21,6 +21,7 @@ from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
 from feedbax.contracts.effective_success import (
     Bindings,
     BoundMember,
+    LightOrigins,
     Product,
     Products,
     RequestObject,
@@ -32,7 +33,7 @@ from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_M
 from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE
 from feedbax.contracts.operation import DatasetPort, ModelPort, OperationDefinition, TaskPort
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef, RequestId
+from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
     NumericalSettings,
@@ -65,11 +66,11 @@ class LightDelivery(StrictModel):
 
 class LightCompletionBindings(StrictModel):
     bindings: tuple[dict, ...]
-    origins: dict[RequestId, ContentObjectRef]
+    origins: LightOrigins
 
 
 _PRODUCTS = TypeAdapter(Products)
-_ORIGINS = TypeAdapter(dict[RequestId, ContentObjectRef])
+_ORIGINS = TypeAdapter(LightOrigins)
 _PROVIDER = TypeAdapter(DistributionSource)
 
 
@@ -341,7 +342,7 @@ def publish_light_success(
         (product,) = result[role]
         with bind_managed_inputs(
             view, delivery.request, origins=exact_origins, checkpoint_bindings=checkpoint_bindings, project=delivery.project_id,
-        ) as (_, bindings):
+        ) as (_, bindings, excluded):
             if view.attempt_ref(job_id) is None:
                 (root,) = read_active_roots(store, (root_id,))
                 if root.targets != (light_staging_target(success_content_ref(product.content)),):
@@ -350,7 +351,7 @@ def publish_light_success(
             success = view.publish_bound(
                 delivery.request, attempt=job_id, products=result, bindings=bindings,
                 provider=provider_trace, target=target,
-                execution_evidence=execution_evidence,
+                execution_evidence=execution_evidence, excluded=excluded,
             )
         store.release_root(root_id)
     return success.ref.model_dump(mode="json")
