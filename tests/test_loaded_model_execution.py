@@ -29,6 +29,7 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
     raw = _saved_light_definition()
     train = raw["steps"]["train"]
     train_payload = train["base"]["inline"]
+    train_payload["training_config"]["snapshot_interval"] = 1
     baseline = raw["steps"]["baseline"]
     source = Project.model_validate({"documents": raw["documents"], "steps": {"train": train, "baseline": baseline}})
     _save_project(folders, "exporter", source)
@@ -78,11 +79,15 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
         revision = expect(client.get(path))["revision"]
         trained, evaluated = run(client, path, revision, "train", "baseline")
         coordinate = train_payload["training_config"]["n_batches"]
-        output = client.post(f"{path}/loaded-models/export", json={
+        export = {
             "revision": revision, "key": key("train"), "job_id": trained["id"], "completed_updates": coordinate,
-        })
+        }
+        assert client.post(f"{path}/loaded-models/export", json=export | {"key": key("baseline")}).status_code == 404
+        output = client.post(f"{path}/loaded-models/export", json=export)
         assert output.status_code == 200, output.text
         assert output.headers["Content-Disposition"].endswith(f'train-{coordinate}.feedbax-model"')
+        early = client.post(f"{path}/loaded-models/export", json=export | {"completed_updates": 1})
+        assert early.status_code == 200 and early.content != output.content
         expected = rollout(*receipt("exporter", evaluated), checkpoint=coordinate)
 
         inputs = {
@@ -100,11 +105,18 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
         short_task["epochs"][0]["end"]["length"]["value"] = 7
         next_train = deepcopy(train)
         next_train["base"]["inline"]["training_config"]["n_batches"] = 1
+        invalid_continue = deepcopy(next_train)
+        invalid_continue["inputs"] = {"checkpoint": inputs["subject"]}
+        invalid_continue["base"]["inline"]["checkpoint_initialization"] = {
+            "mode": "continue_from", "source_completed_updates": coordinate,
+            "state": "preserve", "rng": "carry", "schedule": "continue",
+        }
         raw["steps"]["analyze"]["inputs"]["states"] = {"step": "baseline"}
         for layer in raw["documents"]["velocity-figure"]["payload"]["layers"]:
             layer.get("select", {}).pop("checkpoint", None)
         raw["steps"] = {
-            "train": next_train, "baseline": loaded_baseline, "shorter": shorter, "analyze": raw["steps"]["analyze"],
+            "train": next_train, "baseline": loaded_baseline, "shorter": shorter,
+            "analyze": raw["steps"]["analyze"], "invalid-continue": invalid_continue,
         }
         _save_project(folders, "receiver", Project.model_validate(raw))
         rmtree(projects / "exporter")
@@ -134,6 +146,7 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
         assert (next_result.continuation.clock.segment_start, next_result.continuation.clock.schedule_origin) == (0, 0)
         assert next_result.inputs["checkpoint"][0].selection is None
         window = expect(client.get(f"{path}/train-runs", params={"revision": revision, "window_map": True}))["window_map"]
+        assert any("a Loaded Model supports only initialize_from" in item["detail"] for item in window["problems"])
         (selected,) = [row for row in window["evaluations"] if row["key"]["step"] == "baseline"]
         assert selected["result"]["loaded_model"]["kind"] == "imported"
         assert selected["result"].get("checkpoint_source") is None
