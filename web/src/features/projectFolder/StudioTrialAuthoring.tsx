@@ -33,6 +33,7 @@ import type {
   FieldKind, JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
   StudioTrialField, TrialTermAggregate,
 } from '@/generated/studioContracts';
+import type { NamedElementAddress } from '@/features/projectWindow/elementSelection';
 import { authoredPointer } from './authoredEdits';
 import { addressKey } from './model/modelGraph';
 import { BatchTrace, TermTrace, TrialTrace } from './task/SignalTrace';
@@ -98,6 +99,8 @@ const trialAuthoringQuery = (project: string, revision: string, run: StudioSaved
 export function useTrialAuthoring(
   editor: ProjectEditController, project: string, revision: string, run: StudioSavedTrainKey | undefined,
   enabled: boolean, editable: boolean, scope: TrialChangeScope, confirmRemoval: ConfirmRunRemoval, askStore: AskStore,
+  /** Selects the term a Relate wrote, once it is stored. */
+  selectTerm?: (term: NamedElementAddress) => void,
 ) {
   const queryClient = useQueryClient();
   const query = useQuery({
@@ -142,6 +145,9 @@ export function useTrialAuthoring(
         if (settled.status === 'refused') return shownError(settled.error);
         // The commit settles once the view of what it stored is read, so its field never draws the value it replaced.
         await queryClient.prefetchQuery(trialAuthoringQuery(project, editor.getSnapshot().saved.revision, run));
+        if (result.related_term) {
+          selectTerm?.({ document: result.objective_document ?? run.step, element: { kind: 'named', id: result.related_term } });
+        }
       }
       return undefined;
     }).catch(shownError);

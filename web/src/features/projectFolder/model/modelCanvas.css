@@ -19,7 +19,12 @@
 .studio-model-wire { stroke: var(--text-muted); }
 .studio-model-attachments { position: absolute; pointer-events: all; display: flex; gap: 2px; }
 .studio-model-waypoint { position: absolute; pointer-events: all; cursor: move; }
-.studio-model-port[data-verdict="marked"] .react-flow__handle { width: 13px; height: 13px; border-width: 2px; border-color: var(--studio-status-failure); }
+/* An input that states a type other than the dragged source's is still offered, dimmed. */
+.studio-model-port[data-verdict="marked"] .react-flow__handle { width: 13px; height: 13px; border-width: 2px; opacity: .35; }
+.studio-model-port[data-verdict="marked"] > span { opacity: .45; }
+.studio-model-port-type { margin-inline: 4px; font-size: 10px; color: var(--text-muted); }
+.studio-model-port-term { visibility: hidden; vertical-align: baseline; }
+.studio-model-port:hover > .studio-model-port-term, .studio-model-port:focus-within > .studio-model-port-term { visibility: visible; }
 .react-flow__edge[data-preview="kept"] .studio-model-wire { stroke: var(--text-primary, currentColor); stroke-dasharray: 6 3; }
 .react-flow__edge[data-preview="displaced"] .studio-model-wire { opacity: .35; }
 

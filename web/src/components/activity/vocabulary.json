@@ -353,6 +353,8 @@
     "modelInputs": "Model Inputs",
     "outputs": "Outputs",
     "addTerm": "Add Term",
+    "pointType": "Point",
+    "vectorType": "Vector",
     "objectiveTerms": "Objective Terms",
     "term": "Term",
     "measure": "Measure",

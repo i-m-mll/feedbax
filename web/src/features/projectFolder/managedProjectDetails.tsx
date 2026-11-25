@@ -90,6 +90,8 @@ interface DetailInputs {
   readonly drawerSections: DrawerSections;
   readonly openModelProblems?: (element: ModelAddress, opener: HTMLElement) => void;
   readonly exceptions?: ExceptionMentions;
+  /** Writes a term on a Model port into the step's Objective; answers with a refusal. */
+  readonly relate?: (address: ModelAddress) => Promise<string | undefined>;
 }
 
 const rootModelPath: string[] = [];
@@ -293,6 +295,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
           : canEdit || selection?.kind === 'values' || selection?.kind === 'rows')
     )),
     projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
+    relate: input.step?.kind === 'train' && input.namedRun ? input.relate : undefined,
     topologyApplies,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,

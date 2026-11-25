@@ -1,3 +1,4 @@
+import { reasonOf } from '@/components/values/fieldModel';
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -692,7 +693,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   });
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
-    trialEditable, trialChangeScope, runRemoval.confirm, askStore);
+    trialEditable, trialChangeScope, runRemoval.confirm, askStore, (term) => selectElement(elements, term));
   const clockView = clockSubject ? clockSubject.trial : trial.view;
   const clockStep = clockSubject ? clockSubject.step : step;
   const trialClock = useTrialClock({
@@ -759,6 +760,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
     fieldAxes: valueTerms && Object.fromEntries(valueTerms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]])),
     exceptions: exceptionMention,
+    relate: trial.commit && ((address: ModelAddress) =>
+      trial.commit!(studioName('addTerm'), { kind: 'relate', first: { kind: 'port', address } }).then(reasonOf)),
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({
@@ -777,7 +780,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       sceneTrial: clocked ? trialClock.scene : restTrial, checkpoints: clocked ? evaluationReplay.checkpoints : undefined,
       namedRun: undefined, documentScopes: { graph: undefined, task: undefined }, valueEditing: false, evaluateScope: undefined,
       stored: subject.stored, modelProblems: [], selectedSweepValues: new Map<string, Set<string>>(), fieldRows: undefined,
-      fieldAxes: undefined,
+      fieldAxes: undefined, relate: undefined,
     };
   }
   const primary = useManagedProjectDetails({ ...slotDetailInputs('primary'), activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden',
