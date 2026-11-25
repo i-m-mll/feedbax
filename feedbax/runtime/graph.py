@@ -309,6 +309,14 @@ def _select_state_path(state_view: PyTree, path: str) -> PyTree:
 
 
 @dataclasses.dataclass(frozen=True)
+class GraphSignalEdits:
+    """Ephemeral input and output edits at occurrences during a single step."""
+
+    inputs: Callable[[ScopedPort, PyTree], PyTree]
+    outputs: Callable[[ScopedPort, PyTree], PyTree]
+
+
+@dataclasses.dataclass(frozen=True)
 class GraphTraceRequest:
     """A single graph-boundary value to retain during execution."""
 
@@ -891,6 +899,7 @@ class Graph(GraphNode):
         trace: tuple[GraphTraceRequest, ...] = (),
         t: PyTree = 0,
         rollout_step_hook: Optional[RolloutStepHook] = None,
+        signal_edits: GraphSignalEdits | None = None,
     ) -> tuple[
         dict[str, PyTree],
         State,
@@ -912,6 +921,7 @@ class Graph(GraphNode):
             t=t,
             rollout_step_hook=rollout_step_hook,
             trace=trace,
+            signal_edits=signal_edits,
         )
 
     def _step(
@@ -924,6 +934,7 @@ class Graph(GraphNode):
         t: PyTree,
         rollout_step_hook: Optional[RolloutStepHook],
         trace: tuple[GraphTraceRequest, ...] = (),
+        signal_edits: GraphSignalEdits | None = None,
     ) -> tuple[dict[str, PyTree], State, dict[tuple[str, str], PyTree], dict[str, PyTree]]:
         transition_key = step_key(key, t)
         if not self._needs_iteration:
@@ -938,6 +949,7 @@ class Graph(GraphNode):
             t=t,
             rollout_step_hook=rollout_step_hook,
             trace=trace,
+            signal_edits=signal_edits,
         )
 
     def _transition(
@@ -950,6 +962,8 @@ class Graph(GraphNode):
         t: PyTree,
         rollout_step_hook: Optional[RolloutStepHook],
         trace: tuple[GraphTraceRequest, ...] = (),
+        signal_edits: GraphSignalEdits | None = None,
+        scope: tuple[str, ...] = (),
     ) -> tuple[dict[str, PyTree], State, dict[tuple[str, str], PyTree], dict[str, PyTree]]:
         port_values = {} if cycle_port_values is None else dict(cycle_port_values)
         if self._scoped_schedule is None and cycle_port_values is not None:
@@ -975,12 +989,14 @@ class Graph(GraphNode):
                 initializer_upstream_nodes=initializer_upstream_nodes,
                 rollout_step_hook=rollout_step_hook,
                 trace=scoped_traces, observed=trace_values,
+                signal_edits=signal_edits, scope=scope,
             )
         else:
             if rollout_step_hook is not None:
                 raise ValueError("A composite rollout hook requires a contiguous composite schedule")
             port_values, new_state = self._execute_scoped_step(
                 self._scoped_schedule, port_values, state, key=key, trace=scoped_traces, observed=trace_values,
+                signal_edits=signal_edits, owner_scope=scope,
             )
 
         new_cycle_port_values: dict[tuple[str, str], PyTree] = {}
@@ -1021,6 +1037,8 @@ class Graph(GraphNode):
         key: PRNGKeyArray,
         trace: tuple[GraphTraceRequest, ...],
         observed: dict[str, PyTree],
+        signal_edits: GraphSignalEdits | None,
+        owner_scope: tuple[str, ...],
     ) -> tuple[dict[tuple[str, str], PyTree], State]:
         """Interleave leaves while retaining hierarchical state and carry addresses."""
         owners = {(): self}
@@ -1060,8 +1078,16 @@ class Graph(GraphNode):
                 port: values[endpoint]
                 for port in node.input_ports if (endpoint := ScopedPort(scope, port)) in values
             }
+            if signal_edits is not None:
+                inputs = {
+                    port: signal_edits.inputs(ScopedPort((*owner_scope, *scope), port), value)
+                    for port, value in inputs.items()
+                }
+                values.update({ScopedPort(scope, port): value for port, value in inputs.items()})
             outputs, state = node(inputs, state, key=keys[scope])
             for port, value in outputs.items():
+                if signal_edits is not None:
+                    value = signal_edits.outputs(ScopedPort((*owner_scope, *scope), port), value)
                 endpoint = ScopedPort(scope, port)
                 values[endpoint] = value
                 for target in outgoing.get(endpoint, ()):
@@ -1113,6 +1139,8 @@ class Graph(GraphNode):
         rollout_step_hook: Optional[RolloutStepHook] = None,
         trace: tuple[GraphTraceRequest, ...],
         observed: dict[str, PyTree],
+        signal_edits: GraphSignalEdits | None,
+        scope: tuple[str, ...],
     ) -> tuple[dict[tuple[str, str], PyTree], State]:
         execution_order = self._execution_order
         cycle_wire_set = set(self._cycle_wires)
@@ -1160,6 +1188,13 @@ class Graph(GraphNode):
                     for port_name in node.input_ports
                     if (node_name, port_name) in port_values
                 }
+            node_scope = (*scope, node_name)
+            if signal_edits is not None:
+                node_inputs = {
+                    port: signal_edits.inputs(ScopedPort(node_scope, port), value)
+                    for port, value in node_inputs.items()
+                }
+                port_values.update({(node_name, port): value for port, value in node_inputs.items()})
             if isinstance(node, Graph):
                 child_carry = nested_cycle_values.get(node_name)
                 if child_carry is None and node._needs_iteration:
@@ -1175,6 +1210,7 @@ class Graph(GraphNode):
                     t=t,
                     rollout_step_hook=rollout_step_hook,
                     trace=tuple(child_traces.get(node_name, ())),
+                    signal_edits=signal_edits, scope=node_scope,
                 )
                 observed.update(child_observed)
                 if node_cycle_values:
@@ -1183,6 +1219,8 @@ class Graph(GraphNode):
                 node_outputs, state = node(node_inputs, state, key=node_key)
 
             for port_name, value in node_outputs.items():
+                if signal_edits is not None:
+                    value = signal_edits.outputs(ScopedPort(node_scope, port_name), value)
                 port_values[(node_name, port_name)] = value
                 for wire in outgoing_wires.get((node_name, port_name), []):
                     if wire in cycle_wire_set:

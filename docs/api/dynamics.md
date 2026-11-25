@@ -1,6 +1,6 @@
 # Dynamical systems
 
-::: feedbax.mechanics.dynamics.LTISystem
+::: feedbax.linear.linearize
     options:
         members: [
             'vector_field',
