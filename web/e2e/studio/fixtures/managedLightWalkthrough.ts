@@ -4,7 +4,7 @@ import type {
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 import { authorLearningRateSweep, mapStep, runName } from './canonicalTrain';
-import { activate, activateMenuItem, chooseOption, chooseOutlineRow, chooseStepKind, number, openView, palette, tabTo } from './studioKeyboard';
+import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, openView, palette, submitOption, tabTo } from './studioKeyboard';
 import { applyTo, outlineRow, pick } from './controls';
 
 type Walkthrough = {
@@ -220,11 +220,18 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const child = 'train-2';
   const continued = await addSuccessor('Train', child);
   expect(continued.project.steps?.[child]?.kind).toBe('train');
+
+  async function saveWholeStep() {
+    const option = applyTo(page).getByRole('menuitem', { name: 'Whole Step', exact: true });
+    await expect(option).toBeEnabled();
+    const [saved] = await Promise.all([mutation(context, 'PATCH'), activateMenuItem(page, option)]);
+    expect(saved.ok(), await saved.text()).toBe(true);
+    return saved;
+  }
+
   const carryover = stepInspector(page).getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
-  const carry = mutation(context, 'PATCH');
-  await chooseOption(page, carryover, 'Carry training state', 'Whole Step');
-  const carried = await carry;
-  expect(carried.ok(), await carried.text()).toBe(true);
+  await submitOption(page, carryover, 'Carry training state');
+  const carried = await saveWholeStep();
   expect(carried.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
   const carriedChild = (await carried.json() as StudioProjectSnapshot).project.steps?.[child];
   expect(carriedChild?.deltas?.at(-1)?.patches).toEqual([{
@@ -236,11 +243,8 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   await expect(carryover).toHaveText('Carry training state');
   const batchCount = stepInspector(page).getByRole('textbox', { name: 'Batches', exact: true });
   await expect(batchCount).toBeEditable();
-  const batches = mutation(context, 'PATCH');
   await number(page, batchCount, String(additionalUpdates));
-  await activateMenuItem(page, applyTo(page).getByRole('menuitem', { name: 'Whole Step', exact: true }));
-  const changed = await batches;
-  expect(changed.ok(), await changed.text()).toBe(true);
+  const changed = await saveWholeStep();
   // The child reads its parent's training document, so its own Batches is a document based on that one.
   const editedProject = (await changed.json() as StudioProjectSnapshot).project;
   expect(Object.values(editedProject.documents ?? {}).filter((document) => 'base' in document
