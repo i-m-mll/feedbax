@@ -13,7 +13,7 @@ from jax import ShapeDtypeStruct
 
 from feedbax.builtins.mechanics.linear_state_space import LinearStateSpace, linear_state_space_output_prototype
 from feedbax.component_registry import ComponentRegistry
-from feedbax.compiler.resolution import resolve_graph_parameters
+from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
 from feedbax.compiler.model_signals import (
     ModelSignalTable, ResolvedSignalLeaf, boundary_signal_port, resolve_model_signals, task_data_value_type,
 )
@@ -25,17 +25,18 @@ from feedbax.contracts.acausal_interface import (
     PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
+from feedbax.contracts.expression_units import UNITS
+from feedbax.contracts.expression_values import Level, LiteralValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.graph import (
     ComponentSpec, DerivedDimensionRuleSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec,
 )
 from feedbax.contracts.model_address import (
-    AttachmentElement, ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource, SignalTarget,
+    AttachmentElement, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress, PhysicalEnd, PortElement, SignalSource, SignalTarget,
 )
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.model_edit import ModelGraphProblem
 from feedbax.contracts.model_document import (
-    DelayAttachment, DelayInitialValue, DelayInitialWire, GraphInterior, HoldAttachment, InterventionAttachment,
+    DelayAttachment, DelayInitialTask, DelayInitialValue, DelayInitialWire, GraphInterior, HoldAttachment, InterventionAttachment,
     ModelDocument, ModelPorts,
     PhysicalInterior, ProbeAttachment, SignalInput, SignalType,
 )
@@ -144,7 +145,6 @@ class _Lower:
     components: ComponentRegistry
     origins: dict[tuple[str, ...], ModelAddress] = field(default_factory=dict)
     holds: set[tuple[str, ...]] = field(default_factory=set)
-    links: list[ResolvedModelLink] = field(default_factory=list)
     plugins: set[str] = field(default_factory=set)
 
     def address(self, scope, kind, **fields) -> ModelAddress:
@@ -261,17 +261,22 @@ class _Lower:
         )
 
     def delay_reset_source(
-        self, end: ComponentPortEnd, interior: GraphInterior, ports: ModelPorts, signal: _Signal,
+        self, end: SignalSource, interior: GraphInterior, ports: ModelPorts, signal: _Signal,
         nodes: Mapping[str, ComponentSpec], subgraphs: Mapping[str, GraphSpec | AcausalGraphSpec],
-    ) -> ComponentPortEnd:
+        input_sources: Mapping[str, tuple[str, str]],
+    ) -> tuple[ComponentPortEnd, bool]:
+        supplied = self.source_signal(interior, ports, end)
+        if supplied.units is not None and signal.units is not None and supplied.units != signal.units:
+            raise ValueError("Delay Initial units differ from the delayed signal.")
+        if isinstance(end, InputBoundaryEnd):
+            if end.port not in input_sources:
+                raise ValueError("Delay Initial input no longer exists.")
+            component, port = input_sources[end.port]
+            return ComponentPortEnd(owner="component", component=component, port=port), False
         component = nodes.get(end.component)
-        if component is None:
-            raise ValueError("delay Initial output owner no longer exists")
-        if not self.has_reset_output(component, subgraphs.get(end.component), end.port):
-            raise ValueError("delay Initial refers to an output without a qualified numeric reset value")
-        if self.source_signal(interior, ports, end) != signal:
-            raise ValueError("delay Initial reset output type differs from the delayed signal")
-        return end
+        if component is None or end.port not in component.output_ports:
+            raise ValueError("Delay Initial output no longer exists.")
+        return end, self.has_reset_output(component, subgraphs.get(end.component), end.port)
 
     def physical(
         self, interior: PhysicalInterior, ports: ModelPorts, path: tuple[str, ...], *, substeps: int = 1,
@@ -547,18 +552,26 @@ class _Lower:
                     except ValueError as error:
                         raise self.problem(path, "field", str(error), parent=origin, path=("delay",)) from error
                     signal = signal or _Signal()
-                    initial, reset_output = 0, None
+                    initial, reset_output, reset_evaluate, reset_value = 0, None, None, None
                     match attachment.initial_source:
                         case DelayInitialValue(value=value):
                             initial = self.numeric_field(value, path, origin, ("initial_source", "value"))
-                        case DelayInitialWire(source=ComponentPortEnd() as end):
+                        case DelayInitialWire(source=end) if end is not None:
                             try:
-                                reset_output = self.delay_reset_source(end, interior, ports, signal, nodes, subgraphs)
+                                endpoint, state_only = self.delay_reset_source(
+                                    end, interior, ports, signal, nodes, subgraphs, input_sources,
+                                )
                             except ValueError as error:
                                 raise self.problem(path, "attachment", str(error), parent=at, id=attachment.id) from error
+                            if state_only:
+                                reset_output = endpoint
+                            else:
+                                reset_evaluate = endpoint
+                        case DelayInitialTask(variable=variable):
+                            reset_value = variable
                         case _:
                             raise self.problem(
-                                path, "attachment", "Choose a Delay Initial source available at reset",
+                                path, "attachment", "Connect an output or Model input to Delay Initial.",
                                 parent=at, id=attachment.id,
                             )
                     limit = float(np.finfo(signal.dtype).max) if signal.dtype in ("float32", "float64") else float("inf")
@@ -569,6 +582,7 @@ class _Lower:
                         shape=signal.shape if dtype is not None else None,
                         dtype=dtype or _model_float_dtype(), units=signal.units,
                         steps=steps, initial=initial, reset_output=reset_output,
+                        reset_evaluate=reset_evaluate, reset_value=reset_value,
                         model_delay_id=attachment.id, model_wire_id=key,
                     ).model_dump(mode="json")
                     relay = _generated("delay", key, attachment.id)
@@ -822,7 +836,6 @@ class LoweredModelDocument:
     graph: GraphSpec
     task: StudioTaskBindingSpec | None
     origins: dict[tuple[str, ...], ModelAddress]
-    links: tuple[ResolvedModelLink, ...]
     plugins: tuple[str, ...]
 
     def interface(
@@ -849,7 +862,7 @@ class LoweredModelDocument:
             _Lower(model, components).period,
             _scoped_ports(model, table, "inputs"),
             _scoped_ports(model, table, "outputs"),
-            self.links,
+            tuple(_resolved_delay_links(resolution)),
             self.plugins,
             resolve_model_reset(resolution, components),
             table,
@@ -899,8 +912,38 @@ class ResolvedModelInput(ScopedValue):
 @dataclass(frozen=True)
 class ResolvedModelLink:
     address: ModelAddress
-    value: NameValue
+    variable: str
     type: ValueType
+
+
+def _resolved_delay_links(
+    resolution: GraphParameterResolution, scope: tuple[str, ...] = (),
+) -> Iterator[ResolvedModelLink]:
+    for wire in resolution.graph.wires:
+        initializer = wire.recurrent_initializer or {}
+        if "model_delay_id" not in initializer:
+            continue
+        delay = ModelDelayCarry.model_validate(initializer)
+        if delay.reset_value is None:
+            continue
+        address = ModelAddress.model_validate({
+            "composites": scope,
+            "element": {"kind": "field", "path": ["initial_source"], "parent": {
+                "kind": "attachment", "parent": {"kind": "wire", "id": delay.model_wire_id},
+                "id": delay.model_delay_id,
+            }},
+        })
+        layout = resolution.delay_layouts[wire.target_node, wire.target_port]
+        leaf = layout.leaves[0]
+        unit = UNITS.get(delay.units or "1")
+        if len(layout.leaves) != 1 or leaf.path or any(not size for size in leaf.shape) or unit is None:
+            raise ModelCompilationProblem(address, "Delay Initial needs a Task variable with the delayed signal's numeric type.")
+        base = {"b": ValueBase.BOOLEAN, "i": ValueBase.INTEGER, "u": ValueBase.INTEGER, "f": ValueBase.REAL}
+        yield ResolvedModelLink(address, delay.reset_value, ValueType(
+            base=base[leaf.dtype.kind], shape=leaf.shape, dimensions=unit.dimensions,
+        ))
+    for name, child in resolution.subgraphs.items():
+        yield from _resolved_delay_links(child, (*scope, name))
 
 
 def _scoped_ports(
@@ -942,7 +985,7 @@ def lower_model_document(
     graph = lower.graph(model.interior, model.ports, (), available=names | supplied_inputs)
     lower.reject_within_step_paths(graph)
     binding = lower.root_inputs(task, graph) if task is not None else None
-    return LoweredModelDocument(graph, binding, lower.origins, tuple(lower.links), tuple(sorted(lower.plugins)))
+    return LoweredModelDocument(graph, binding, lower.origins, tuple(sorted(lower.plugins)))
 
 
 def lower_planar_scene_interior(
