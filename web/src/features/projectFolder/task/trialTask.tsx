@@ -167,15 +167,27 @@ function useVariables(view: TrialView, commit?: Commit, runs?: TrialRuns) {
 const entryWeight = (weight: WeightPart | { on?: WeightPart; off?: WeightPart } | null | undefined): SetEntryWeight | undefined =>
   weight == null || typeof weight === 'number' ? weight ?? undefined : { on: weight.on ?? 1, off: weight.off ?? 1 };
 
-/** The Sets the step's trials apply, as the service lists them, each weighed by `weigh` with its axis. */
-function setVariables(view: TrialView, weigh?: (axis: string) => TaskSetVariable['weigh']): TaskSetVariable[] {
-  return (view.set_fields ?? []).map(({ axis, set, entries }) => ({
-    axis, set, weigh: weigh?.(axis),
-    entries: [...entries.filter(({ entry }) => entry !== null), ...entries.filter(({ entry }) => entry === null)]
-      .map(({ entry, label, weight }) => ({
-        id: entry, label: entry === null ? studioName('none') : label || entry, weight: entryWeight(weight),
-      })),
-  }));
+/**
+ * The Sets the step's trials apply, as the service lists them, each weighed by `weigh` with its axis and limited by
+ * the condition the service projects at its field.
+ */
+function setVariables(view: TrialView, weigh?: (axis: string) => TaskSetVariable['weigh'], commit?: Commit,
+  runs?: TrialRuns): TaskSetVariable[] {
+  return (view.set_fields ?? []).map(({ axis, set, entries, condition }) => {
+    const path = authoredPointer(['set_fields', axis, 'condition']);
+    const projection = view.fields.find((field) => field.path === path);
+    return {
+      axis, set, weigh: weigh?.(axis),
+      condition: projection && trialField(projection, studioName('condition'), runs, {
+        id: `condition:${axis}`, kind: expressionKind(condition ?? undefined),
+        commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('condition')), { kind: 'expression', path, edit })),
+      }),
+      entries: [...entries.filter(({ entry }) => entry !== null), ...entries.filter(({ entry }) => entry === null)]
+        .map(({ entry, label, weight }) => ({
+          id: entry, label: entry === null ? studioName('none') : label || entry, weight: entryWeight(weight),
+        })),
+    };
+  });
 }
 
 /** The selected variable, from the window's selection of a task element (`variable:<id>`). */
@@ -195,7 +207,7 @@ export function TrialTaskDocument({ view, commit, runs, selected, select, drawn,
   const shown = useVariables(view, commit, runs);
   if (!shown) return null;
   return <TaskDocumentBody variables={<TaskVariables variables={shown.variables}
-    sets={setVariables(view, weigh).map((set) => ({ ...set, toSweep: toSweep?.(set.axis) }))} unstarted={shown.unstarted} selected={selectedVariable(selected)}
+    sets={setVariables(view, weigh, commit, runs).map((set) => ({ ...set, toSweep: toSweep?.(set.axis) }))} unstarted={shown.unstarted} selected={selectedVariable(selected)}
     select={(selection) => select(`${selection.kind}:${selection.id}`)} edits={variableEdits(shown.task, commit)}
     drawn={drawn} />}
     grid={<TrialTaskGrid view={view} commit={commit} runs={runs} selected={selected} select={select} />} />;

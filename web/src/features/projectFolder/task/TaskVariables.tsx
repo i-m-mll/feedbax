@@ -148,7 +148,10 @@ export function TaskVariables({ variables, sets = [], unstarted = [], selected, 
   </Table>;
 }
 
-/** A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts. */
+/**
+ * A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts, and the
+ * condition a trial meets to receive one.
+ */
 function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: StudioCommand }; drawn: boolean }) {
   const { toSweep, weigh } = set;
   return <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
@@ -156,6 +159,7 @@ function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: St
     <TableRowHeader className="font-mono">{set.set}</TableRowHeader>
     <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
     <TableCell>
+      <span className="flex h-full min-w-0 items-center gap-x-3">
       <ul aria-label={studioAccessibleName('values', set.set)} className="flex h-full min-w-0 flex-wrap items-center gap-x-3">
         {set.entries.map(({ id, label, weight }) => {
           const part = (side?: WeightSide) => weigh && ((value: number) => weigh(id, side, value));
@@ -170,6 +174,11 @@ function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: St
           </li>;
         })}
       </ul>
+      {set.condition && <span className="flex h-full min-w-[8rem] flex-1 items-center gap-1">
+        <span className="shrink-0 text-shell-muted">{studioName('condition')}</span>
+        <span className="min-w-0 flex-1"><ValueField form="cell" model={set.condition} /></span>
+      </span>}
+      </span>
     </TableCell>
     {drawn && <TableCell />}
     <TableCell />
