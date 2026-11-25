@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -111,11 +111,21 @@ class ModelOwnerProblem:
     path: tuple[str, ...]
     reason: str
 
+    @property
+    def occurrence(self) -> tuple[str, ...]:
+        return self.path[2::2]
+
 
 def model_owner_problem(
     graph: GraphSpec, use: Literal["checkpoint", "evaluate"], components: ComponentRegistry,
 ) -> ModelOwnerProblem | None:
     """Check a resolved graph's declared support before realizing its owners."""
+    return next(model_owner_problems(graph, use, components), None)
+
+
+def model_owner_problems(
+    graph: GraphSpec, use: Literal["checkpoint", "evaluate"], components: ComponentRegistry,
+) -> Iterator[ModelOwnerProblem]:
     from feedbax.contracts.model_occurrence import graph_leaf_occurrences
 
     for path, node, physical in graph_leaf_occurrences(graph):
@@ -138,8 +148,7 @@ def model_owner_problem(
             )
         else:
             reason = f"owner {node.type!r} has no typed model checkpoint owner for this revision"
-        return ModelOwnerProblem(
+        yield ModelOwnerProblem(
             ("graph", *(token for name in path[:-1] for token in ("subgraphs", name)), "nodes", path[-1]),
             reason,
         )
-    return None

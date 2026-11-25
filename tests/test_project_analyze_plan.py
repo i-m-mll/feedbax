@@ -4,6 +4,8 @@ from copy import deepcopy
 import json
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
 from feedbax.contracts.project_inputs import StepReference
 from feedbax.contracts.base import sha256_bytes
@@ -33,6 +35,7 @@ from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.application.bundle import new_application_registry_bundle
+from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
 
@@ -155,7 +158,7 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     )
 
 
-def test_speed_template_prints_unnamed_evaluate_condition_values():
+def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp_path, monkeypatch):
     project = _project()
     project.documents["heavy-model"] = BasedDocument.model_validate({
         "schema": project.documents["point-mass"].schema_id,
@@ -191,6 +194,18 @@ def test_speed_template_prints_unnamed_evaluate_condition_values():
     figure = _decode(plan, "profile")
     assert figure.spec.names["condition"] == {condition: "plant.mass=2"}
     assert figure.inputs["speed"][0].reference == ProductRef(request_id=_decode(plan, "speed").id, role="speed")
+    root = tmp_path / "reach"
+    for name, content in dump_text_project(project, ProjectConfiguration(project="reach", store="results")).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        revision = client.get("/api/projects/reach").json()["revision"]
+        response = client.get("/api/projects/reach/train-runs", params={"revision": revision, "window_map": True})
+        assert response.status_code == 200, response.text
+        elements = {item["name"]: item for item in response.json()["window_map"]["analysis_elements"]}
+        assert [request["request_id"] for request in elements["profile"]["requests"]] == [figure.id]
 
 
 def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():

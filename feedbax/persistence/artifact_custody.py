@@ -789,15 +789,15 @@ def decode_content_tree_descriptor(raw: bytes, tree_ref: ContentTreeRef) -> Cont
     return tree
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class ImmutableArtifactBlobProvider:
     """Explicit local provider for suffixless immutable artifact blobs."""
 
-    root: Path | str
-    storage_backend: str = _STORAGE_BACKEND
+    root: Path
+    storage_backend: str
 
-    def __post_init__(self) -> None:
-        root_path = _validate_explicit_root(self.root)
+    def __init__(self, root: Path | str, storage_backend: str = _STORAGE_BACKEND) -> None:
+        root_path = _validate_explicit_root(root)
         try:
             if stat.S_ISLNK(root_path.lstat().st_mode):
                 raise ArtifactBlobContainmentError(
@@ -805,9 +805,9 @@ class ImmutableArtifactBlobProvider:
                 )
         except FileNotFoundError:
             pass
-        if self.storage_backend != _STORAGE_BACKEND:
+        if storage_backend != _STORAGE_BACKEND:
             raise ArtifactBlobReferenceError(
-                f"unsupported immutable blob storage backend: {self.storage_backend!r}"
+                f"unsupported immutable blob storage backend: {storage_backend!r}"
             )
         require_secure_path_capabilities(
             SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
@@ -816,6 +816,7 @@ class ImmutableArtifactBlobProvider:
             require_link_no_follow=True,
         )
         object.__setattr__(self, "root", _canonicalize_trusted_system_aliases(root_path))
+        object.__setattr__(self, "storage_backend", storage_backend)
 
     def _exclusive_lock(self, *, create: bool = True) -> AbstractContextManager[None]:
         """Return the one store lock shared by references and retention state."""
