@@ -1,7 +1,8 @@
 import clsx from 'clsx';
 import { Check, ChevronDown } from 'lucide-react';
 import { useState } from 'react';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { StatusMark } from '@/components/ui/StatusMark';
 import { Button } from '@/components/ui/Button';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { NumberField } from '@/components/ui/NumberField';
@@ -17,6 +18,8 @@ export interface TrialPickerProps {
   readonly shown: TrialPick;
   /** A recorded trial's condition, by its index, drawn after its entry. */
   readonly recordedLabels?: readonly string[];
+  /** Whether the recorded trials are a result an edit put out of date, which their entries and the shown text mark. */
+  readonly recordedOutOfDate?: boolean;
   readonly onChange: (clock: TrialClock) => void;
 }
 
@@ -40,18 +43,20 @@ function WholeField({ label, value, least, most, onCommit }: {
  * for the selection, in groups, with the seed and the count the samples are drawn with at its foot. Picking a trial
  * shows that trial alone.
  */
-export function TrialPicker({ offer, clock, shown, recordedLabels, onChange }: TrialPickerProps) {
+export function TrialPicker({ offer, clock, shown, recordedLabels, recordedOutOfDate, onChange }: TrialPickerProps) {
   const [open, setOpen] = useState(false);
   const count = sampleCount(clock, offer);
   const text = (pick: TrialPick) => pickText(pick, clock, offer);
   const shownText = text(shown);
+  const outOfDate = recordedOutOfDate && shown.trials === 'recorded';
   const picks = offeredPicks(offer, count);
   const groups = (['nominal', 'samples', 'recorded'] as const)
     .map((trials) => picks.filter((pick) => pick.trials === trials)).filter((group) => group.length);
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger render={<Button variant="ghost" className="w-40 shrink-0 justify-between gap-1 px-1 tabular-nums" />}
-      aria-label={`${studioName('trial')} ${shownText}`}>
-      <span className="truncate">{shownText}</span>
+    <PopoverTrigger render={<Button variant="ghost" className="w-40 shrink-0 gap-1 px-1 tabular-nums" />}
+      aria-label={`${studioName('trial')} ${shownText}`} aria-description={outOfDate ? studioRunStatus('stale') : undefined}>
+      {outOfDate && <StatusMark status="stale" />}
+      <span className="grow truncate text-left">{shownText}</span>
       <ChevronDown aria-hidden="true" />
     </PopoverTrigger>
     <PopoverContent side="top" aria-label={studioName('trial')} className="grid w-56 gap-1 !p-1">
@@ -66,6 +71,7 @@ export function TrialPicker({ offer, clock, shown, recordedLabels, onChange }: T
               onClick={() => { onChange({ ...clock, picked: pick }); setOpen(false); }}>
               <span className="flex size-[1em] shrink-0 items-center justify-center">{checked && <Check aria-hidden="true" />}</span>
               <span className={primaryText}>{text(pick)}</span>
+              {recordedOutOfDate && pick.trials === 'recorded' && <StatusMark status="stale" label={studioRunStatus('stale')} />}
               {pick.trials === 'recorded' && at !== undefined && recordedLabels?.[at] &&
                 <span className={secondaryText}>{recordedLabels[at]}</span>}
             </Button>;

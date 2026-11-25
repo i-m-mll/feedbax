@@ -80,7 +80,7 @@ import {
 } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
-import { axisProblems, bestRankGroups, pinnedSelectionLabels, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
+import { axisProblems, bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
@@ -1123,14 +1123,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const inputId = Array.isArray(authored?.inputs?.[role]) ? `${role}.${index}` : role;
     const subset = step?.inputs.find(({ id }) => id === inputId)?.subset;
     return <SelectionRule key={JSON.stringify([step?.id, role, index, source.id])}
-      scope={{ project: saved.project_id, revision: shown.revision, variant }} source={source} rule={where.rule ?? ''}
-      pinned={pinnedSelectionLabels(where)} planned={subset} picking={elements} disabled={!applies}
+      scope={{ project: saved.project_id, revision: shown.revision, variant }} source={source} terms={where}
+      planned={subset} picking={elements} disabled={!applies}
       problem={problem} onToRows={onToRows}
-      pick={{ rows: stepSourceRows(shown, source.id, variant), onCommit }}
-      onCommit={(rule) => {
-        const { rule: _written, ...rest } = where;
-        onCommit(rule ? { ...rest, rule } : rest);
-      }} />;
+      pick={{ rows: stepSourceRows(shown, source.id, variant) }} onCommit={onCommit} />;
   }
   const trainStart = authoring && authored?.kind === 'train' && step && readRefusal?.step !== step.id
     && modelDocumentId(step.documentIds);
@@ -1923,11 +1919,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 ...exceptionPatchTexts(exception.rule.patches ?? {}, trainLabels, trainClasses),
                 ...editable ? [] : [exceptionRuns(step, exception)],
               ].join(' · '), rule: editable && <SelectionRule scope={{ project: saved.project_id, revision: shown.revision, variant }}
-                source={step} rule={where?.rule ?? ''} ranked={false} picking={elements}
+                source={step} terms={{ rule: where?.rule ?? '' }} ranked={false} picking={elements}
                 planned={{ count: exception.count, total: step.runs.length }}
                 problem={exceptionRuleProblem(shown.window_map?.problems ?? [], step.id, variant, exception.id)}
                 disabled={!applies || !!saved.project.sweep}
-                onCommit={(rule) => onCurrentPlan('editExceptionRule')(exception.id, rule)} /> };
+                onCommit={({ rule }) => onCurrentPlan('editExceptionRule')(exception.id, rule ?? '')} /> };
             });
             const revealedException = exceptionReveal?.revision === saved.revision && exceptionReveal.step === step.id
               ? exceptionReveal.id : undefined;
