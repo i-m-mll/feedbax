@@ -262,7 +262,7 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
         revision = snapshot["revision"]
         release = tmp_path / "release"
         gate = run_job("gate", held_until_released(release), project=project_id)
-        admit(host, "gate", gate)
+        admit(host, token("gate"), gate)
         wait_until(lambda: job_row(host, gate.id, "running"))
         try:
             items = expect(client.post(f"{path}/train-runs", json={

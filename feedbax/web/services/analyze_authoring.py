@@ -313,6 +313,7 @@ def analyze_authoring(
         document=step.base.document,
         operations=definitions,
         states=states,
+        sources={},
         variables={
             definition.key: _variable_choices(definition, states, dimensions) for definition in definitions
         },
