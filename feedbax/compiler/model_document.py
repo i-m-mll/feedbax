@@ -8,6 +8,7 @@ from math import isfinite
 from collections.abc import Mapping
 
 import numpy as np
+from jax import ShapeDtypeStruct
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.resolution import resolve_graph_parameters
@@ -48,6 +49,48 @@ class ModelCompilationProblem(ValueError):
         super().__init__(detail)
         self.address = address
         self.problems = (ModelGraphProblem(address=address, reason=detail), *related)
+
+
+_DTYPES = {ValueBase.BOOLEAN: np.bool_, ValueBase.INTEGER: np.int32, ValueBase.REAL: np.float32}
+
+
+def declared_model_input_prototypes(model: ModelDocument) -> dict[str, ShapeDtypeStruct]:
+    prototypes = {}
+    for port in model.ports.inputs:
+        shape = port.type.shape
+        if shape is None or any(type(size) is not int or size <= 0 for size in shape):
+            continue
+        base = port.type.base
+        dtype = np.bool_ if base in ("bool", "boolean") else np.int32 if base in ("int", "int32", "integer") else np.float32
+        prototypes[port.name] = ShapeDtypeStruct(shape, dtype)
+    return prototypes
+
+
+def model_input_prototypes(
+    graph: GraphSpec, model: ModelDocument, task_inputs: Mapping[str, ValueType],
+) -> dict[tuple[str, str], ShapeDtypeStruct]:
+    supplied = declared_model_input_prototypes(model)
+    supplied.update({port: ShapeDtypeStruct(value.shape, _DTYPES[value.base]) for port, value in task_inputs.items()})
+    return {target: supplied[port] for port, target in graph.input_bindings.items() if port in supplied}
+
+
+def inspect_model_signals(
+    model: ModelDocument, components: ComponentRegistry, task_inputs: Mapping[str, ValueType] | None = None,
+) -> ModelSignalTable:
+    """Resolve authored signal facts for Studio reads even when the whole Model cannot run."""
+    supplied = task_inputs or {}
+    try:
+        lowered = lower_model_document(model, components, supplied_inputs=frozenset(supplied))
+    except ValueError as error:
+        table = resolve_model_signals(model, None, components, task_inputs=supplied)
+        diagnostics = error.problems if isinstance(error, ModelCompilationProblem) else (
+            ModelGraphProblem(address=ModelAddress.at_stored_path(()), reason=str(error)),
+        )
+        problems = {(problem.address.to_text(), problem.reason): problem for problem in (*diagnostics, *table.problems)}
+        return replace(table, problems=tuple(problems.values()))
+    prototypes = model_input_prototypes(lowered.graph, model, supplied)
+    resolution = resolve_graph_parameters(lowered.graph, prototypes, components, allow_incomplete=True)
+    return resolve_model_signals(model, resolution, components, task_inputs=supplied)
 
 
 def model_tau_seconds(tau: object, period: float) -> float:
