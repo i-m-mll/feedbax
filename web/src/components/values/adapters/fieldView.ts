@@ -58,7 +58,9 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   const kind = sweep ? 'sweep' : field.structure ? valueKind(field.structure.value, field.site.functions) : options.kind ?? 'value';
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
-  const memberText = (value: (typeof choices)[number]['value']) => typeof value === 'number' ? String(value) : value.text;
+  /** A member as written: a number in the field's unit, or its own text. */
+  const memberText = (value: (typeof choices)[number]['value']) =>
+    typeof value !== 'number' ? value.text : unit ? `${value} ${unit}` : String(value);
   const authored = list ? list.values.map(({ value }) => memberText(value)).join(', ') + (list.values.length === 1 ? ',' : '')
     : field.text;
   const effective = multipleRows ? undefined : field.effective ?? undefined;
