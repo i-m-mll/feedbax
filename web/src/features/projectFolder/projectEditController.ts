@@ -759,8 +759,6 @@ export class ProjectEditController {
 
   connected() {
     if (this.abort.signal.aborted) return;
-    // A change made while the stream was away was never announced.
-    this.planChanged();
     void this.sequence(async () => {
       const retry = this.queued.length > 0 && isServiceFailure(this.error);
       await this.refresh();
