@@ -203,7 +203,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
   await rule.click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
-  for (const value of ['0.001', '0.002', '0.003']) await chooseSweepValue(mapStep(page, 'train'), 'learning-rate', value);
+  for (const value of ['0.001', '0.002', '0.003']) await chooseSweepValue(page.getByRole('article', { name: 'Train train', exact: true }), 'learning-rate', value);
   await expect(ruleRow).toContainText('3/3');
   const edited = mutation(context, 'PATCH');
   await page.keyboard.press('Enter');

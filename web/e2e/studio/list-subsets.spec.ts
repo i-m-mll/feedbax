@@ -78,7 +78,7 @@ test('freezes one measured selection of a listed Evaluate subject and leaves the
     step: string; where: Record<string, unknown>;
   }>;
   expect(subject.map(({ step, where }) => [step, Object.keys(where)])).toEqual([
-    ['train', ['rule', 'rows']], ['train_b', ['rule']], ['train', ['subset']],
+    ['train', ['rule', 'bound_ranks']], ['train_b', ['rule']], ['train', ['subset']],
   ]);
   await expect(await menu(0)).toHaveCount(0);
   await close();

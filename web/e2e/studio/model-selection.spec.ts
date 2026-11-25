@@ -17,6 +17,8 @@ async function openModel(page: Page, request: Parameters<typeof seedManagedProje
   await page.keyboard.press('Meta+2');
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
   await expect(model.locator('.react-flow__node').first()).toBeVisible();
+  // Cards and attachments take presses once the Model is editable, which Lock follows.
+  await expect(model.getByRole('button', { name: 'Lock', exact: true })).toBeEnabled();
   const edit = () => page.waitForResponse((response) =>
     response.request().method() === 'POST' && new URL(response.url()).pathname === `${projectPath}/model/edit`);
   return { model, errors, edit, saved: Object.keys(saved.interior.components ?? {}).sort() };
@@ -104,12 +106,13 @@ test('an attachment dragged onto another wire is drawn there before it is droppe
   await page.mouse.down();
   await page.mouse.move(on.x, on.y, { steps: 6 });
   await expect(attachment).toHaveCount(1);
-  const drawn = (await attachment.boundingBox())!;
-  const middle = { x: drawn.x + drawn.width / 2, y: drawn.y + drawn.height / 2 };
-  expect(middle.x).toBeGreaterThan(target.x - 20);
-  expect(middle.x).toBeLessThan(target.x + target.width + 20);
-  expect(middle.y).toBeGreaterThan(target.y - 20);
-  expect(middle.y).toBeLessThan(target.y + target.height + 20);
+  // The drawing follows the pointer on a later frame than the move.
+  await expect.poll(async () => {
+    const drawn = (await attachment.boundingBox())!;
+    const middle = { x: drawn.x + drawn.width / 2, y: drawn.y + drawn.height / 2 };
+    return middle.x > target.x - 20 && middle.x < target.x + target.width + 20
+      && middle.y > target.y - 20 && middle.y < target.y + target.height + 20;
+  }, { message: 'The attachment is drawn on the wire under the pointer' }).toBe(true);
   const moved = edit();
   await page.mouse.up();
   const request_ = (await moved).request().postDataJSON();

@@ -96,8 +96,10 @@ test('the inspector edits the saved values for the step and its selected runs, a
   await expect.poll(storedOnValue).toEqual({ exceptions: 0, batches: [Number(override)] });
   const scoped = (await plan())!.rows;
   expect(scoped.filter((row, index) => row.request_id !== after[index].request_id)).toHaveLength(1);
+  // A draft is saved for the runs it was typed for when the selection moves away from them.
   await batchText.fill('77');
   await rate.getByRole('button', { name: 'Select Learning Rate 0.001', exact: true }).click({ modifiers: ['Shift'] });
+  await expect.poll(storedOnValue).toEqual({ exceptions: 0, batches: [77] });
   await expect(batchText).toHaveValue('');
   await expect(batches.locator('output')).toHaveCount(0);
   await rate.getByRole('button', { name: 'Select Learning Rate 0.001', exact: true }).click();
@@ -105,6 +107,8 @@ test('the inspector edits the saved values for the step and its selected runs, a
   await expect(batches.locator('output')).toHaveCount(0);
 
   await page.getByRole('tabpanel', { name: 'Runs', exact: true }).focus();
+  await page.keyboard.press('Meta+Z');
+  await expect.poll(storedOnValue).toEqual({ exceptions: 0, batches: [Number(override)] });
   await page.keyboard.press('Meta+Z');
   await expect.poll(async () => (await plan())?.rows.map(({ request_id }) => request_id)).toEqual(after.map(({ request_id }) => request_id));
   await page.keyboard.press('Meta+Shift+Z');
