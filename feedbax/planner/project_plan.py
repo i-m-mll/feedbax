@@ -88,6 +88,7 @@ from feedbax.contracts.result_address import (
     AddressProblem, ElementHolders, analyze_cards, payload_elements, shared_element_keys,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_rollout_settings, resolve_trial_ids
+from feedbax.contracts.retained_state import RetainedStateField
 from feedbax.contracts.rollout_dataset import common_rollout_port, rollout_dataset_port, rollout_update_axis
 from feedbax.contracts.project_sweep import (
     CHECKPOINT_RULE_TARGET,
@@ -515,6 +516,10 @@ class PlannedAnalyzeRun(PlannedRow):
     requires: tuple[str, ...]
     inputs: Mapping[str, tuple[PlannedInput, ...]]
     figures: Mapping[str, FigureDocument]
+    dataset_inputs: Mapping[str, DatasetPort]
+    """The resolved ports of this row's dataset inputs, including stack coordinates."""
+    dataset_outputs: Mapping[str, Mapping[str, DatasetPort]]
+    """Each operation's readable dataset products, with the labels of their stacked members."""
 
     def requests(self, name: str) -> tuple[PlannedElement, ...]:
         """The requests of the element ``name``, in plan order."""
@@ -992,6 +997,7 @@ class _ModelSource:
     stamp: str
     evaluation_problem: ProjectDiagnostic | None = None
     evaluation_graph: GraphSpec | None = None
+    evaluation_states: tuple[RetainedStateField, ...] = ()
     trained: _TrainedSource | None = None
     unpaired: bool = False
     """The Train's Model, Task and Objective do not pair, so nothing evaluates what it would train."""
@@ -1296,6 +1302,7 @@ class _TrainPreparation:
     evaluation: GraphSpec | ProjectDiagnostic
     graph: GraphSpec
     lowered: LoweredModelDocument
+    evaluation_states: tuple[RetainedStateField, ...]
 
 
 @dataclass(frozen=True)
@@ -1468,7 +1475,9 @@ def _encode_row(
                 model_source, evaluation_problem=replace(preparation.evaluation, document=model_source.document),
             )
         else:
-            model_source = replace(model_source, evaluation_graph=preparation.evaluation)
+            model_source = replace(
+                model_source, evaluation_graph=preparation.evaluation, evaluation_states=preparation.evaluation_states,
+            )
     try:
         if kind == "report":
             document = ReportDocument.model_validate(payload)
@@ -2362,6 +2371,7 @@ class _Compiler:
             model_source = _ModelSource(
                 None, documents.model, terminal.request_id,
                 evaluation_graph=evaluation if isinstance(evaluation, GraphSpec) else None,
+                evaluation_states=preparation.evaluation_states,
                 evaluation_problem=evaluation if isinstance(evaluation, ProjectDiagnostic) else None,
             )
         source_models = (
@@ -2588,7 +2598,7 @@ class _Compiler:
                     model_address=address,
                 )
             result = _TrainPreparation(
-                checkpoint_problem, evaluation, graph, paired.lowered,
+                checkpoint_problem, evaluation, graph, paired.lowered, paired.retained_state_fields,
             )
         self.trial_preparations[identity] = result
         return result
@@ -2847,7 +2857,7 @@ class _Compiler:
                 variant = resolve_evaluation_variant(
                     paired.lowered.graph, task, settings.variation, components=components,
                 )
-                if variant.task != task:
+                if variant.task != task or variant.graph != paired.lowered.graph:
                     paired = pair_trial_source(
                         model, variant.task, components, functions,
                         python_tasks=tasks, input_bindings=settings.input_bindings, graph_override=variant.graph,
@@ -2874,8 +2884,12 @@ class _Compiler:
                 narrowed, document_ids=resolved.document_ids, document_uses=resolved.document_uses,
                 problems=self.locate_sweep_run_problems(problems, template, key, row),
                 pinned_model=model if isinstance(subject_ref, LoadedModelReference) else None,
-                dataset_port=rollout_dataset_port(paired.task.interface.signals, settings.states_schema, None)
-                if not isinstance(paired, tuple) and not paired.problems else None,
+                dataset_port=(
+                    rollout_dataset_port(
+                        paired.task.interface.signals, settings.states_schema, None,
+                        model_states=paired.model.retained_state_fields,
+                    ) if not isinstance(paired, tuple) and not paired.problems else None
+                ),
             ), inputs
         except ModelCompilationProblem as error:
             problems = _trial_problems(model_compilation_problems(error), None, initial=True)
@@ -2986,7 +3000,8 @@ class _Compiler:
             )
             refusals = ()
             paired_task = None
-            if settings.input_bindings or any(target[0] == "task" for target in variant.edit_origins):
+            state_fields = model_source.evaluation_states
+            if settings.input_bindings or variant.task != documents.task_source or variant.graph != model_source.evaluation_graph:
                 pairing = pair_trial_source(
                     documents.model, variant.task,
                     self.components or _builtin_model_registry(), self.functions or _builtin_expression_registry(),
@@ -3005,6 +3020,7 @@ class _Compiler:
                 else:
                     assert not isinstance(pairing, tuple)
                     paired_task = pairing.task
+                    state_fields = pairing.model.retained_state_fields
             if paired_task is not None:
                 conditions, signals = paired_task.condition_ids, paired_task.interface.signals
             elif isinstance(variant.task, TaskDocument):
@@ -3039,7 +3055,7 @@ class _Compiler:
             lowered = payload | {"params": params}
             return _EvaluatePayload(
                 lowered, refusals,
-                rollout_dataset_port(signals, settings.states_schema, rollout_update_axis(reference))
+                rollout_dataset_port(signals, settings.states_schema, rollout_update_axis(reference), model_states=state_fields)
                 if not refusals else None,
             )
         except ValueError as error:
@@ -3731,7 +3747,7 @@ class _Compiler:
             and isinstance(producer := source.member.reference, ProductRef)
             and producer.request_id.startswith("evaluate:")
         }
-        elements, encoded, problems, figures = lower_analyze(
+        elements, encoded, problems, figures, dataset_inputs, dataset_outputs = lower_analyze(
             key,
             resolved.payload,
             resolved.document_ids,
@@ -3756,6 +3772,8 @@ class _Compiler:
         run = PlannedAnalyzeRun(
             key, original.kind, original.label, original.coordinates,
             MappingProxyType(elements), template.requires, MappingProxyType(dict(inputs)), MappingProxyType(figures),
+            MappingProxyType(dataset_inputs),
+            MappingProxyType({name: MappingProxyType(ports) for name, ports in dataset_outputs.items()}),
             axis_keys=original.axis_keys,
             input_axes=original.input_axes,
             document_ids=MappingProxyType(dict(resolved.document_ids)),

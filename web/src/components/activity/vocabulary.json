@@ -293,6 +293,14 @@
     "rule": "Rule",
     "span": "Span",
     "trajectory": "Trajectory",
+    "colorScale": "Color Scale",
+    "colorBy": "Color By",
+    "groupBy": "Group",
+    "zAxis": "Z",
+    "palette": "Palette",
+    "domain": "Domain",
+    "title": "Title",
+    "legend": "Legend",
     "addMark": "Add Mark",
     "panel": "Panel",
     "dataRole": "Data",
@@ -631,7 +639,10 @@
     "takesDuration": "{value} takes a duration in s or st",
     "takesPositive": "{value} takes a positive number",
     "takesWeight": "{value} takes zero or a positive number",
-    "takesText": "{value} takes text"
+    "takesText": "{value} takes text",
+    "takesField": "{value} takes fields of the data",
+    "takesDistinct": "{value} takes distinct values",
+    "takesIncreasingPair": "{value} takes a low and a high number"
   },
   "format": {
     "deleteProject": "Delete {name}?",

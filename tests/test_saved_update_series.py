@@ -57,6 +57,9 @@ def test_update_series_expands_per_train_definition_without_store(tmp_path):
         selector = decoded.inputs["subject"][0].reference.select
         assert isinstance(selector, UpdateSeriesMember)
         assert selector.updates == updates
+        hand = run.dataset_port.variables["/v1/model/state/plant/effector~1position"]
+        assert hand.dims == ("update", "condition", "trial", "state_time", "xy")
+        assert hand.units == "m" and hand.quantity == "position" and hand.frame == "world"
         assert selector.rule == Project.model_validate(raw).steps[step].inputs["subject"].checkpoint
         assert decoded.inputs["subject"][0].reference.request_id == rows["train"].request_id
         assert encode_request(decoded.spec, decoded.inputs).data == payload
