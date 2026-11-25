@@ -12,3 +12,8 @@ commands.allow = ["studio_window_action"]
 identifier = "allow-open-project-folder"
 description = "Choose a project folder from the registered Studio start webview."
 commands.allow = ["open_project_folder"]
+
+[[permission]]
+identifier = "allow-save-studio-file"
+description = "Save a file the registered Studio project webview hands over, where the user chooses."
+commands.allow = ["save_studio_file"]
