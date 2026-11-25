@@ -75,7 +75,7 @@ from feedbax.contracts.project_io import project_declaration_name
 from feedbax.planner.project_plan import (
     BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, ProjectPlan, RunKey,
     RunProblem,
-    authored_request_change, planned_input_groups,
+    authored_request_change, common_train_metrics, planned_input_groups,
 )
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
@@ -339,6 +339,12 @@ class ProjectPlanRead:
                         ),
                         checkpoint_axis=axis[0] if axis is not None else None,
                         can_sweep_checkpoint=input_id == "subject" and step.can_sweep_checkpoint,
+                        metric_names=sorted(common_train_metrics(
+                            row for source_variant in (
+                                plan.variant_projects if reference.variants == "all"
+                                else reference.variants or (variant,)
+                            ) for row in step_rows.get((source_variant, reference.step), ())
+                        )),
                         subset=StudioProjectWindowMapSubset(
                             terms=subset.terms, count=len(subset.ranks or subset.members), total=subset.candidates,
                             ranks=list(subset.ranks),
@@ -686,20 +692,22 @@ class ProjectPlanService:
             raise ProjectFolderInvalid(f"{body.step} is not a step of {body.variant}.")
         rows = [row for row in plan.rows if (row.key.variant, row.key.step) == (body.variant, body.step)]
         coordinates = {id(row): axis_coordinates(row.coordinates, row.input_axes) for row in rows}
+        metrics = sorted(common_train_metrics(rows)) if body.ranked else []
         try:
             chosen = choose(
                 body.rule, rows, coordinates=lambda row: coordinates[id(row)], producer=step.label or body.step,
-                ranked=body.ranked,
+                ranked=body.ranked, final_metrics=common_train_metrics if step.kind == "train" else None,
             )
         except RuleRefusal as refusal:
             return StudioRunRuleCheck(
-                total=len(rows), result=StudioRunRuleRefused(reason=refusal.detail, span=refusal.span),
+                total=len(rows), metric_names=metrics, result=StudioRunRuleRefused(reason=refusal.detail, span=refusal.span),
             )
         best = chosen.best
         groups = {tuple(coordinates[id(row)][axis].value_id for axis in best.per) for row in chosen.rows} if best else ()
-        return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleChosen(
+        return StudioRunRuleCheck(total=len(rows), metric_names=metrics, result=StudioRunRuleChosen(
             runs=[row.key.row for row in chosen.rows],
             count=best.count * len(groups) if best else len(chosen.rows),
+            conditional=bool(chosen.conditions),
         ))
 
     def subset_to_rows(self, project_id: str, body: StudioSubsetToRowsRequest) -> StudioSubsetToRowsEdit:

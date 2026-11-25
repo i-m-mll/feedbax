@@ -72,7 +72,7 @@ from feedbax.planner.project_plan import (
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.receipt_validity import CodeDifference, InputDifference, ReceiptValidity, ValidityJudgement
 from feedbax.contracts.effective_success import EvaluationSubjectValue, TerminalTrainSubject
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.validation_placement import ValidationPlacement
@@ -935,7 +935,10 @@ class JobService(PlanJobReader):
             ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
-        if isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember) and not params.variation:
+        if (
+            isinstance(subject, ProductRef) and not isinstance(subject, ConditionalProduct)
+            and isinstance(subject.select, UpdateSeriesMember) and not params.variation
+        ):
             qualification = self._live_validation_qualifications.get((subject.request_id, request_id))
             if qualification is not None:
                 data = data | {"validation_qualification": qualification.model_dump(mode="json")}
@@ -2588,7 +2591,7 @@ def _job_status(
 ) -> tuple[JobStatus, str | None]:
     state = job["state"]
     outcome = job.get("outcome") or {}
-    reason = (outcome.get("error") or {}).get("message")
+    reason = outcome.get("reason") or (outcome.get("error") or {}).get("message")
     kind = job["request"].partition(":")[0]
     evaluate = kind == "evaluate"
     if state == "succeeded" and not receipt_intact:

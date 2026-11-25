@@ -16,7 +16,7 @@ from feedbax.contracts.effective_success import RequestObject, TerminalTrainSubj
 from feedbax.contracts.execution_target import SessionTarget, attempt_target
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.contracts.request_refs import BestRank, ContentRef, LastMember, ProductRef
+from feedbax.contracts.request_refs import BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import live_evaluate
 from feedbax.persistence.best_selection import BestMetricUnavailable, completion_score, ranked_requests
@@ -112,7 +112,7 @@ INSERT OR IGNORE INTO policy VALUES ('compute', 4), ('light', 1);
 
 LIVE = "('queued','assigned','running','stopping')"
 ACTIVE = "('assigned','running','stopping')"
-TERMINAL = "('succeeded','reused','stopped','failed','interrupted','blocked')"
+TERMINAL = "('succeeded','reused','stopped','failed','interrupted','blocked','not_chosen')"
 
 JOB_ID = re.compile(r"[a-zA-Z0-9_-]{1,128}")
 TRAIN_REQUEST_ID = re.compile(r"train:[0-9a-f]{64}")
@@ -2285,6 +2285,40 @@ class Store:
         )
         self.append(job, "dependency_bound", binding)
 
+    def _condition_pin(
+        self, job: sqlite3.Row, anchor: str, checkpoint: dict, candidates: dict,
+    ) -> tuple[dict, TerminalTrainSubject] | None:
+        from feedbax.persistence.evaluation_subject import read_terminal_train_subject
+        from feedbax.persistence.train_metrics import passes_final_metric_condition
+
+        key = anchor, None, None, None, True
+        if key not in candidates:
+            candidates[key] = self._completion_candidate(anchor, terminal_model=True, current=True)
+        candidate = candidates[key]
+        self._record_completion_rejections(job, anchor, candidate.rejections)
+        if candidate.error is not None:
+            self.finished(job, {"outcome": "blocked", "error": candidate.error})
+        if candidate.binding is None:
+            return None
+        launch = json.loads(job["launch"])
+        try:
+            reference = ConditionalProduct.model_validate(checkpoint)
+            pin = TerminalTrainSubject.model_validate(candidate.binding["terminal"])
+            store = self._success_view(launch["payload"]["manifest_root"]).store
+            receipt, _ = read_terminal_train_subject(store, pin, reference.request_id)
+            if passes_final_metric_condition(store, receipt, reference):
+                return candidate.binding, pin
+        except (OSError, TypeError, KeyError, ValueError) as error:
+            self.finished(job, {"outcome": "blocked", "error": {
+                "code": "input_unavailable", "message": str(error),
+            }})
+        else:
+            self.finished(job, {
+                "outcome": "not_chosen", "reason": "The producer’s final metrics did not meet the rule.",
+                "metric_producer": pin.receipt.model_dump(mode="json"),
+            })
+        return None
+
     def resolve_completions(self) -> None:
         with self.db:
             rows = self.db.execute(
@@ -2315,6 +2349,11 @@ class Store:
                         "error": {"code": "invalid_request", "message": str(error)},
                     })
                     continue
+                condition = None
+                if isinstance(checkpoint, dict) and checkpoint.get("kind") == "conditional":
+                    condition = self._condition_pin(job, anchor, checkpoint, candidates)
+                    if condition is None:
+                        continue
                 is_live = json.loads(job["data"]).get("placement") == "live"
                 tip = live_evaluate.pinned_tip(self.db, job["id"]) if is_live else None
                 if is_live and tip is None:
@@ -2345,6 +2384,8 @@ class Store:
                     outcome = "interrupted" if is_live and error["code"] == "input_unavailable" else "blocked"
                     self.finished(job, {"outcome": outcome, "error": error})
                 elif binding is not None:
+                    if condition is not None and "terminal" not in binding:
+                        binding = binding | {"metric_producer": condition[1].receipt.model_dump(mode="json")}
                     if is_live:
                         binding = binding | {"live_evaluation_points": live_evaluate.selected_points(
                             self.db, job["id"], binding["checkpoint_selection"]["members"],
