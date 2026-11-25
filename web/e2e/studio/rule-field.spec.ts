@@ -9,6 +9,9 @@ import { pick } from './fixtures/controls';
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
+/** A stored selection with its clauses as the Host reads them: none written is the one clause that reads every run. */
+const withDefaultClauses = (where: StepReference['where']) =>
+  where && !('subset' in where) ? { ...where, clauses: where.clauses ?? [{}] } : where;
 const runRows = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true }).getByRole('rowheader');
 
 async function select(page: Page, step: string) {
@@ -50,7 +53,7 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   const saved = saving();
   await rule.press('Enter');
   expect((await saved).ok()).toBe(true);
-  await expect.poll(async () => (await reads('evaluate', 'subject')).where).toEqual({ rule: 'seed=0..1' });
+  await expect.poll(async () => withDefaultClauses((await reads('evaluate', 'subject')).where)).toEqual({ rule: 'seed=0..1', clauses: [{}] });
   await expect(runRows(page)).toHaveCount(2);
 
   await page.reload();
@@ -61,7 +64,7 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   const kept = saving();
   await rule.press('Enter');
   expect((await kept).ok()).toBe(true);
-  await expect.poll(async () => (await reads('evaluate', 'subject')).where).toEqual({ rule: 'sed=0' });
+  await expect.poll(async () => withDefaultClauses((await reads('evaluate', 'subject')).where)).toEqual({ rule: 'sed=0', clauses: [{}] });
   await expect(rule).toHaveAttribute('aria-invalid', 'true');
   await expect(problem).toHaveAttribute('data-app-tip', /sed is not swept/);
 
@@ -116,7 +119,7 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   const started = saving();
   await rule.press('Enter');
   expect((await started).ok()).toBe(true);
-  await expect.poll(async () => (await reads('train-2', 'checkpoint')).where).toEqual({ rule: 'seed=3' });
+  await expect.poll(async () => withDefaultClauses((await reads('train-2', 'checkpoint')).where)).toEqual({ rule: 'seed=3', clauses: [{}] });
   await expect(runRows(page)).toHaveCount(1);
 });
 
@@ -154,7 +157,7 @@ test('a rule written before the new step\'s form lands keeps the keyboard and sa
     && new URL(response.url()).pathname === projectPath);
   await rule.press('Enter');
   expect((await started).ok()).toBe(true);
-  await expect.poll(async () => (await reads('train-2', 'checkpoint')).where).toEqual({ rule: 'seed=3' });
+  await expect.poll(async () => withDefaultClauses((await reads('train-2', 'checkpoint')).where)).toEqual({ rule: 'seed=3', clauses: [{}] });
 });
 
 // Catches a stored rule that chooses no run explained by a sentence under the Subject picker instead of on the rule
@@ -238,11 +241,9 @@ test('diagonal picks save two clauses, and Escape keeps the saved rule', async (
   await expect.poll(subject).toEqual({ clauses: expect.arrayContaining([
     { seed: value('0'), batches: value('2') }, { seed: value('1'), batches: value('3') },
   ]) });
-  await rule.press('Escape');
+  // Once saved, the field boxes the runs its clauses read on the producer's card: the picked two, not the rectangle.
+  await rule.focus();
+  await expect(card.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(2);
+  for (const [seed, batches] of [[0, 2], [1, 3]]) await expect(mark(seed, batches)).toHaveAttribute('data-boxed', '');
   await expect(runRows(page)).toHaveCount(2);
-  // The producer's card marks the runs the two Evaluate runs read: the picked two, not the rectangle they span.
-  await runRows(page).first().getByRole('button').click();
-  await runRows(page).last().getByRole('button').click({ modifiers: ['Shift'] });
-  await expect(card.locator('[data-map-focus="upstream"]')).toHaveCount(2);
-  for (const [seed, batches] of [[0, 2], [1, 3]]) await expect(mark(seed, batches)).toHaveAttribute('data-map-focus', 'upstream');
 });

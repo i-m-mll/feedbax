@@ -6,7 +6,7 @@ import { RuleField, type RuleFieldCommand, type RuleFieldProblem } from '@/compo
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import type { StudioProjectWindowMapRow, StudioRunRuleRequest, SubsetTerms } from '@/generated/studioContracts';
-import { clauseText, pinnedSelectionLabels, savedRunId, selectedRowTerms } from './projectWindowPlan';
+import { clauseRuns, clauseText, pinnedSelectionLabels, savedRunId, selectedRowTerms } from './projectWindowPlan';
 import { replacedAxisValue, type RuleProblem } from './selectionEdits';
 
 /** Where a rule is checked: the saved revision and variant whose plan holds the producer's runs. */
@@ -61,8 +61,12 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
     ? new Set(result.runs.map((row) => savedRunId({ variant: scope.variant, step: source.id, row }))) : undefined,
   [result, scope.variant, source.id]);
   const [picked, setPicked] = useState<ReadonlySet<string>>();
-  /** The check reads the rule's text alone, so it boxes the runs a saved choice of clauses reads only once the text is rewritten. */
-  const boxesDraft = !terms.clauses?.length || (draft ?? '').trim() !== rule.trim();
+  const constrained = (terms.clauses ?? []).some((clause) => Object.keys(clause).length > 0);
+  /** The runs the saved clauses read, which the field boxes while its rule's text is theirs; the check reads text alone. */
+  const savedKey = constrained && !rule.trim() && pick ? JSON.stringify([...clauseRuns(pick.rows, terms.clauses ?? [])].sort()) : undefined;
+  // Keyed by the runs themselves: the rows and terms arrive as new objects on every render.
+  const savedRuns = useMemo(() => savedKey === undefined ? undefined : new Set<string>(JSON.parse(savedKey)), [savedKey]);
+  const boxed = constrained && (draft ?? '').trim() === rule.trim() ? savedRuns : runs;
   const pickedWrites = useMemo(() => picked && pick && selectedRowTerms(pick.rows, picked), [picked, pick?.rows]);
   useEffect(() => {
     if (!picking) return;
@@ -74,8 +78,8 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
         for (const id of toggled) if (all) next.delete(id); else next.add(id);
         return next;
       }),
-    } : draft !== null && runs && boxesDraft ? { step: source.id, runs } : null });
-  }, [picking, picked, draft, runs, source.id, boxesDraft]);
+    } : draft !== null && boxed ? { step: source.id, runs: boxed } : null });
+  }, [picking, picked, draft, boxed, source.id]);
   useEffect(() => () => picking?.setState({ choosing: null }), [picking]);
   /** An empty rule reads every run, which the plan does not count as a selection. */
   const shown = planned ?? (!rule.trim() && !pinned?.length ? { count: source.runs.length, total: source.runs.length } : undefined);
@@ -117,7 +121,9 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
       metrics: ranked ? source.ruleMetrics ?? [] : undefined }}
     problem={shownProblem} picked={shownPicks}
     commands={commands} onPickEnd={endPick} onDraft={setDraft} onCommit={(written) => {
-      const { rule: _written, ...rest } = terms;
-      onCommit(written ? { ...rest, rule: written } : rest);
+      const { rule: _written, clauses: saved, ...rest } = terms;
+      /** Clauses that constrain nothing are the stored default, written by leaving them out. */
+      const kept = constrained ? { ...rest, clauses: saved } : rest;
+      onCommit(written ? { ...kept, rule: written } : kept);
     }} />;
 }

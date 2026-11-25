@@ -69,6 +69,12 @@ export function selectedRowTerms(rows: readonly StudioProjectWindowMapRow[], pic
   return { clauses: storedClauses(clauses) };
 }
 
+/** The runs of `rows` a choice of clauses reads: those any clause matches on every axis it names. */
+export function clauseRuns(rows: readonly StudioProjectWindowMapRow[], clauses: readonly AxisSelectionClause[]): ReadonlySet<string> {
+  return new Set(rows.filter(({ coordinates, input_axes }) => clauses.some((clause) => Object.entries(clause).every(([axis, wanted]) =>
+    wanted.some(({ id }) => (input_axes?.[axis] ?? coordinates[axis])?.value_id === id)))).map(({ key }) => savedRunId(key)));
+}
+
 /** A clause in its stored order: axes by id, and each axis's values by id. */
 function canonicalClause(clause: AxisSelectionClause): AxisSelectionClause {
   return Object.fromEntries(Object.keys(clause).sort(compareIds).map((axis) =>
