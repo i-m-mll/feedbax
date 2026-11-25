@@ -637,6 +637,13 @@ def _evaluate_documents(plan, key, definition, bundle):
                         components=bundle.components,
                     )
                     graph, task = lowered.graph, lowered.task
+                    if isinstance(variant.task, TaskDocument) and isinstance(task, TaskDocument):
+                        markers = {variable.id: variable.marker for variable in variant.task.variables}
+                        task = task.model_copy(update={"variables": tuple(
+                            variable.model_copy(update={"marker": markers[variable.id]})
+                            if variable.id in markers and variable.marker != markers[variable.id] else variable
+                            for variable in task.variables
+                        )})
                 params = effective_params
     except ValueError as error:
         return documents, _Projection(

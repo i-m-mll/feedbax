@@ -2723,6 +2723,14 @@ class _Compiler:
                 except ValueError as error:
                     return problem(EVALUATION_TASK, str(error))
             try:
+                if isinstance(inherited, TaskDocument):
+                    inherited = inherited.without_markers()
+                if isinstance(selected, dict) and isinstance(selected.get("variables"), list) and any(
+                    isinstance(variable, dict) and "marker" in variable for variable in selected["variables"]
+                ):
+                    selected = TaskDocument.model_validate(selected).without_markers().model_dump(
+                        mode="json", exclude_unset=True,
+                    )
                 variation = own_task_variation(inherited, selected, params.get("variation", []))
             except ValueError as error:
                 return problem("payload.params.variation", str(error))
