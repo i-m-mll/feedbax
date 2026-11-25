@@ -97,7 +97,7 @@ def test_bounded_train_and_evaluate_share_trial_objective(authored):
     assert paired.objective is not None
     graph = paired.executable.graph
     assert (
-        ModelAddress.from_text(paired.execution.observations[0].selector).element.end.port
+        ModelAddress.from_text(paired.execution.observation_origins[0][0]).element.end.port
         == "command"
     )
     methods = TrainingMethodRegistry()
