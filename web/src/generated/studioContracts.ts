@@ -1106,6 +1106,7 @@ export interface ModelRewiredElement {
 export interface ModelProjection {
   ports?: ModelPortProjection[];
   physical_ports?: ModelPhysicalPortProjection[];
+  delay_steps?: Record<string, number | null>;
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelTaskInput[];
   problems?: ModelGraphProblem[];
@@ -7883,6 +7884,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
     .object({
       "ports": z.array(ModelPortProjectionSchema).optional(),
       "physical_ports": z.array(ModelPhysicalPortProjectionSchema).optional(),
+      "delay_steps": z.record(z.string(), z.number().int().safe().nullable()).optional(),
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
       "task_inputs": z.array(ModelTaskInputSchema).optional(),
       "problems": z.array(ModelGraphProblemSchema).optional(),

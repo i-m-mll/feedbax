@@ -318,8 +318,8 @@ def _nominal_sample(family: str, context: CallContext, *args, weights=None):
 
     match family:
         case "uniform" if context.discrete_uniform:
-            low, high = (jnp.rint(arg / context.period_seconds) for arg in args)
-            return jnp.rint((low + high) / 2) * context.period_seconds
+            low, high = args
+            return (low + high + 1) // 2
         case "uniform":
             low, high = args
             return low + (high - low) / 2
@@ -352,8 +352,8 @@ def _sample(family: str, context: CallContext, *args, weights=None):
     key = context.key
     match family:
         case "uniform" if context.discrete_uniform:
-            low, high = (jnp.rint(arg / context.period_seconds).astype(int) for arg in args)
-            return random.randint(key, (), low, high + 1) * context.period_seconds
+            low, high = args
+            return random.randint(key, (), low, high + 1)
         case "uniform" | "loguniform":
             lo, hi = args
             shape = jnp.broadcast_shapes(jnp.shape(lo), jnp.shape(hi))
