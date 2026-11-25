@@ -433,7 +433,7 @@ export function useManagedAnalyze({
   function roleFields(role: string): RoleFields {
     const source = figure?.inputs[role];
     const port = !source ? undefined : 'input' in source ? source.input === 'states' ? catalog?.states ?? undefined : undefined
-      : source.product ? definitions.get(operations[source.element]?.operation ?? '')?.outputs[source.product] : undefined;
+      : source.product ? catalog?.operation_outputs?.[source.element]?.[source.product] : undefined;
     return port ? offeredFields(port) : {};
   }
   const authoredFigure = figure && 'data' in figure.figure ? figure.figure : undefined;

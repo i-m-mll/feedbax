@@ -197,8 +197,8 @@ const none = () => studioName('noneChoice');
 function layerFields(figure: FigureDocument, layer: Layer, offered: RoleFields, change?: Change): FieldModel[] {
   const field = fieldMaker(change);
   const names = Object.keys(offered);
-  const replaced = (next: Layer, document: FigureDocument = figure): FigureDocument =>
-    ({ ...document, layers: document.layers.map((item) => item.name === next.name ? next : item) });
+  const replaced = (next: Layer, document: FigureDocument = figure): FigureDocument => labelled(figure, layer, offered,
+    { ...document, layers: document.layers.map((item) => item.name === next.name ? next : item) });
   const options = (values: readonly string[], current?: string): FieldOption[] =>
     [...new Set([...values, ...current ? [current] : []])].map((value) => ({ value, label: value }));
   const choice = (values: readonly string[], current?: string) => ({ kind: 'choice' as const, options: options(values, current) });
@@ -322,17 +322,7 @@ function layerFields(figure: FigureDocument, layer: Layer, offered: RoleFields, 
     const z = encode.z ?? undefined;
     const setZ = (next: Encoding | undefined) => {
       const { z: _, ...planar } = encode;
-      const moved: TrajectoryLayer = { ...layer, encode: next ? { ...planar, z: next } : planar };
-      const document = replaced(moved);
-      const panelOf = (item: FigureDocument) => item.layout.find(({ name }) => name === layer.panel);
-      const wasSpatial = figure.layers.some((item) => item.panel === layer.panel && isSpatial(item));
-      const becomesSpatial = document.layers.some((item) => item.panel === layer.panel && isSpatial(item));
-      const panel = panelOf(document);
-      if (!panel || wasSpatial === becomesSpatial) return document;
-      const relabelled: FigurePanel = becomesSpatial
-        ? { ...panel, axes_labels: { x: encodingLabel(encode.x, offered), y: encodingLabel(encode.y, offered), z: encodingLabel(next!, offered) } }
-        : { ...panel, axes_labels: panel.axes_labels && { ...panel.axes_labels, z: null }, z_axis: null };
-      return { ...document, layout: document.layout.map((item) => item.name === panel.name ? relabelled : item) };
+      return replaced({ ...layer, encode: next ? { ...planar, z: next } : planar });
     };
     return [...common, ...read,
       field('zAxis', optional(names, z && variableOf(z)), z ? variableOf(z) : none(),
@@ -341,6 +331,31 @@ function layerFields(figure: FigureDocument, layer: Layer, offered: RoleFields, 
       ...coloring, ...looks];
   }
   return [...common, ...coloring, ...looks];
+}
+
+const spatialAxes = ['x', 'y', 'z'] as const;
+
+/**
+ * `after` with the axis labels of `layer`'s panel kept to its encodings while the panel is 3D: a panel that becomes 3D
+ * is labelled by the fields its trajectory reads, a label that is still the label of the encoding it was taken from
+ * follows the encoding, and a panel that stops being 3D loses its z axis.
+ */
+function labelled(before: FigureDocument, layer: Layer, offered: RoleFields, after: FigureDocument): FigureDocument {
+  const spatialIn = (document: FigureDocument) =>
+    document.layers.find((item) => item.panel === layer.panel && isSpatial(item)) as TrajectoryLayer | undefined;
+  const was = spatialIn(before);
+  const is = spatialIn(after);
+  const panel = after.layout.find(({ name }) => name === layer.panel);
+  if (!panel || (!was && !is)) return after;
+  const labels = panel.axes_labels ?? {};
+  const label = (trajectory: TrajectoryLayer, axis: typeof spatialAxes[number]) => {
+    const encoding = trajectory.encode[axis];
+    return encoding ? encodingLabel(encoding, offered) : null;
+  };
+  const next: FigurePanel = !is ? { ...panel, axes_labels: { ...labels, z: null }, z_axis: null }
+    : { ...panel, axes_labels: Object.fromEntries(spatialAxes.map((axis) =>
+      [axis, !was || labels[axis] == null || labels[axis] === label(was, axis) ? label(is, axis) : labels[axis]])) };
+  return { ...after, layout: after.layout.map((item) => item.name === panel.name ? next : item) };
 }
 
 function scaleFields(figure: FigureDocument, name: string, scale: ColorScale, change?: Change): FieldModel[] {
