@@ -147,7 +147,7 @@ export interface StudioActivityJob {
   scenario_id: string;
   label: string;
   coordinates: Record<string, JsonValue>;
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   phase?: string | null;
   reason?: string | null;
   can_resume?: boolean;
@@ -247,6 +247,7 @@ export interface StudioSavedEvaluationReplayRequest {
   trial?: string | null;
   aggregate?: boolean;
   checkpoint?: number | null;
+  mean?: TrialMeanSelection | null;
 }
 
 export interface StudioEvaluationObjectiveSeries {
@@ -298,6 +299,9 @@ export interface StudioEvaluationCheckpointSeries {
 
 export interface StudioSavedEvaluationResult {
   job_id: string;
+  request_id?: string | null;
+  revision?: string | null;
+  trials?: string[] | null;
   receipt: JobReceipt;
   checkpoint_source: StudioTrainCheckpointSource | null;
   size_bytes: number;
@@ -312,11 +316,12 @@ export interface StudioSavedEvaluationResult {
 export interface StudioSavedEvaluationRow {
   key: StudioSavedTrainKey;
   request_id: string;
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
   can_run: boolean;
   trials: string[];
   result: StudioSavedEvaluationResult | null;
+  previous?: StudioSavedEvaluationResult | null;
   subject_rank_key?: string | null;
   checkpoint_series?: StudioEvaluationCheckpointSeries | null;
   checkpoint_attempt?: StudioEvaluationCheckpointAttempt | null;
@@ -326,7 +331,7 @@ export interface StudioSavedEvaluationRow {
 
 export interface StudioSavedTrainAttempt {
   job_id: string;
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
   progress: JobProgress | null;
   successful_receipt: JobReceipt | null;
@@ -351,6 +356,7 @@ export interface StudioSavedTrainKey {
 export interface StudioSavedTrainResult {
   request_id: string;
   job_id: string;
+  revision?: string | null;
   receipt: JobReceipt;
   progress: JobProgress | null;
   validity?: ReceiptValidity | null;
@@ -362,7 +368,7 @@ export interface StudioSavedTrainRow {
   label: string;
   request_id: string;
   attempts: StudioSavedTrainAttempt[];
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
   result: StudioSavedTrainResult | null;
   previous: StudioSavedTrainResult | null;
@@ -912,6 +918,17 @@ export interface InsertComponentOnWire {
   id?: string | null;
 }
 
+export interface InsertComponentOnPhysicalConnection {
+  op: "insert_physical_component";
+  address: ModelAddress;
+  component: LeafComponent | CompositeComponent;
+  a_port: string;
+  b_port: string;
+  position: ModelPosition;
+  flipped?: boolean;
+  id?: string | null;
+}
+
 export interface MoveWireAttachment {
   op: "move_wire_attachment";
   address: ModelAddress;
@@ -947,7 +964,7 @@ export interface ResetDifference {
 }
 
 export interface ModelEditCommand {
-  operation: AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite | ResetDifference;
+  operation: AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | InsertComponentOnPhysicalConnection | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite | ResetDifference;
 }
 
 export interface ModelEditProblem {
@@ -1056,6 +1073,11 @@ export interface ModelPortProjection {
   type: SignalType;
 }
 
+export interface ModelPhysicalPortProjection {
+  address: ModelAddress;
+  type: "translational" | "rotational" | "frame";
+}
+
 export interface ModelAddedElement {
   change: "added";
   address: ModelAddress;
@@ -1078,6 +1100,7 @@ export interface ModelRewiredElement {
 
 export interface ModelProjection {
   ports?: ModelPortProjection[];
+  physical_ports?: ModelPhysicalPortProjection[];
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelAddress[];
   objective_ports?: ModelAddress[];
@@ -2102,6 +2125,7 @@ export interface ComponentDefinition {
   is_composite?: boolean;
   template_graph?: GraphSpec | AcausalGraphSpec | null;
   placement_reason?: string | null;
+  equations_domains?: Array<"translational" | "rotational">;
   template_ui_state?: GraphUIState | null;
   template_id?: string | null;
   template_kind?: string | null;
@@ -2139,12 +2163,79 @@ export interface TaskTimelineCue {
   outcome: number;
 }
 
+export interface TrialBoundarySummary {
+  mean: number;
+  lower: number;
+  upper: number;
+}
+
+export interface TrialClockAlignment {
+  origin: number;
+  span: TrialClockSpan;
+}
+
+export interface TrialClockChoice {
+  id: string;
+  label: string;
+}
+
+export interface TrialClockSpan {
+  start: number;
+  end: number;
+}
+
+export interface TrialMean {
+  selection: TrialMeanSelection;
+  conditions: TrialMeanCondition[];
+}
+
+export interface TrialMeanCondition {
+  values: Record<string, JsonValue>;
+  trials: Record<string, TrialClockAlignment>;
+  span: TrialClockSpan | null;
+  time: number[];
+  states: Record<string, TrialSeriesSummary>;
+  epochs: TrialMeanEpoch[];
+}
+
+export interface TrialMeanEpoch {
+  epoch: string;
+  label: string;
+  occurrence: number;
+  start: TrialBoundarySummary;
+  end: TrialBoundarySummary;
+}
+
+export interface TrialMeanOptions {
+  by: TrialClockChoice[];
+  align: TrialClockChoice[];
+}
+
+export interface TrialMeanSelection {
+  by?: string[] | null;
+  align?: string | null;
+}
+
+export interface TrialSeriesSummary {
+  mean: number[][];
+  lower: number[][];
+  upper: number[][];
+}
+
+export interface StudioSavedFigureMeanRequest {
+  revision: string;
+  job_id: string;
+  mean: TrialMeanSelection;
+}
+
 export interface StudioTrialReplayResponse {
   n_steps: number;
   state_time: number[];
   position: string | null;
   receipt: JobReceipt;
   drawn: TrialRecords | TrialAggregate;
+  mean_options?: TrialMeanOptions | null;
+  mean?: TrialMean | null;
 }
 
 export interface TrialRecord {
@@ -3101,7 +3192,7 @@ export type JaxOperation = {
   "floating_point_bits": 32 | 64;
 };
 
-export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
 
 export type KeyedFamily = "documents" | "steps" | "elements";
 
@@ -3531,6 +3622,17 @@ export type ScopedValue = {
   "list_count"?: number | null;
 };
 
+export type SelectedAxisValue = {
+  "id": string;
+  "label": string;
+};
+
+export type SelectedAxisValueProblem = {
+  "axis": string;
+  "missing": SelectedAxisValue;
+  "remaining": Array<SelectedAxisValue>;
+};
+
 export type SelectedRow = {
   "key": string;
   "variant": string;
@@ -3737,6 +3839,7 @@ export type StoreKind = "all_readers" | "selected_readers" | "sweep_value" | "se
 export type StoreSubset = {
   "rule"?: string;
   "rows"?: Array<SelectedRow>;
+  "axes"?: Record<string, Array<SelectedAxisValue>>;
   "query": ManifestPredicate;
 };
 
@@ -4097,6 +4200,15 @@ export type StudioProjectDocument = {
   "snapshot": StudioProjectSnapshot;
 };
 
+export type StudioProjectExample = {
+  "id": string;
+  "name": string;
+};
+
+export type StudioProjectExamples = {
+  "examples": Array<StudioProjectExample>;
+};
+
 export type StudioProjectFilePatch = {
   "address": AuthoredFileAddress;
   "patches": Array<ProjectValueEdit>;
@@ -4109,7 +4221,14 @@ export type StudioProjectList = {
 export type StudioProjectListEntry = {
   "project_id": string;
   "name": string;
+  "folder": string;
   "modified": string;
+  "step_count": number;
+};
+
+export type StudioProjectNew = {
+  "name": string;
+  "example"?: string | null;
 };
 
 export type StudioProjectPatch = {
@@ -4248,6 +4367,7 @@ export type StudioProjectWindowMapProblem = {
   "authored_path"?: string | null;
   "blocked_by"?: StudioSavedTrainKey | null;
   "span"?: TextSpan | null;
+  "selection_value"?: SelectedAxisValueProblem | null;
 };
 
 export type StudioProjectWindowMapRequest = {
@@ -4381,6 +4501,7 @@ export type StudioSavedLightHistory = {
 export type StudioSavedLightResult = {
   "job_id": string;
   "request_id": string;
+  "revision"?: string | null;
   "receipt": JobReceipt;
   "products": Record<string, string>;
   "validity"?: ReceiptValidity | null;
@@ -4691,6 +4812,7 @@ export type StudioValueStructure = {
 export type SubsetTerms = {
   "rule"?: string;
   "rows"?: Array<SelectedRow>;
+  "axes"?: Record<string, Array<SelectedAxisValue>>;
 };
 
 export type Sweep = {
@@ -5807,7 +5929,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "scenario_id": z.string(),
       "label": z.string(),
       "coordinates": z.record(z.string(), jsonValueSchema),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "phase": z.string().nullable().optional(),
       "reason": z.string().nullable().optional(),
       "can_resume": z.boolean().optional(),
@@ -5955,6 +6077,7 @@ export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEval
       "trial": z.string().nullable().optional(),
       "aggregate": z.boolean().optional(),
       "checkpoint": z.number().int().safe().gte(0).nullable().optional(),
+      "mean": TrialMeanSelectionSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationReplayRequest>;
@@ -6034,6 +6157,9 @@ export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationR
   z
     .object({
       "job_id": z.string(),
+      "request_id": z.string().nullable().optional(),
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
+      "trials": z.array(z.string()).nullable().optional(),
       "receipt": JobReceiptSchema,
       "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
       "size_bytes": z.number().int().safe().gte(0),
@@ -6052,11 +6178,12 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
     .object({
       "key": StudioSavedTrainKeySchema,
       "request_id": z.string(),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
       "can_run": z.boolean(),
       "trials": z.array(z.string()),
       "result": StudioSavedEvaluationResultSchema.nullable(),
+      "previous": StudioSavedEvaluationResultSchema.nullable().optional(),
       "subject_rank_key": z.string().nullable().optional(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
       "checkpoint_attempt": StudioEvaluationCheckpointAttemptSchema.nullable().optional(),
@@ -6070,7 +6197,7 @@ export const StudioSavedTrainAttemptSchema: z.ZodType<StudioSavedTrainAttempt> =
   z
     .object({
       "job_id": z.string(),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
       "progress": JobProgressSchema.nullable(),
       "successful_receipt": JobReceiptSchema.nullable(),
@@ -6107,6 +6234,7 @@ export const StudioSavedTrainResultSchema: z.ZodType<StudioSavedTrainResult> = z
     .object({
       "request_id": z.string(),
       "job_id": z.string(),
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
       "receipt": JobReceiptSchema,
       "progress": JobProgressSchema.nullable(),
       "validity": ReceiptValiditySchema.nullable().optional(),
@@ -6122,7 +6250,7 @@ export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(
       "label": z.string(),
       "request_id": z.string(),
       "attempts": z.array(StudioSavedTrainAttemptSchema),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
       "result": StudioSavedTrainResultSchema.nullable(),
       "previous": StudioSavedTrainResultSchema.nullable(),
@@ -7096,6 +7224,21 @@ export const InsertComponentOnWireSchema: z.ZodType<InsertComponentOnWire> = z.l
     .strict()
 ) as unknown as z.ZodType<InsertComponentOnWire>;
 
+export const InsertComponentOnPhysicalConnectionSchema: z.ZodType<InsertComponentOnPhysicalConnection> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("insert_physical_component"),
+      "address": ModelAddressSchema,
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "a_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "b_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "position": ModelPositionSchema,
+      "flipped": z.boolean().optional(),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<InsertComponentOnPhysicalConnection>;
+
 export const MoveWireAttachmentSchema: z.ZodType<MoveWireAttachment> = z.lazy(() =>
   z
     .object({
@@ -7157,7 +7300,7 @@ export const ResetDifferenceSchema: z.ZodType<ResetDifference> = z.lazy(() =>
 export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
   z
     .object({
-      "operation": z.union([AddComponentSchema, MoveCardsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema, ResetDifferenceSchema]),
+      "operation": z.union([AddComponentSchema, MoveCardsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, InsertComponentOnPhysicalConnectionSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema, ResetDifferenceSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditCommand>;
@@ -7341,6 +7484,15 @@ export const ModelPortProjectionSchema: z.ZodType<ModelPortProjection> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<ModelPortProjection>;
 
+export const ModelPhysicalPortProjectionSchema: z.ZodType<ModelPhysicalPortProjection> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "type": z.union([z.literal("translational"), z.literal("rotational"), z.literal("frame")]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPhysicalPortProjection>;
+
 export const ModelAddedElementSchema: z.ZodType<ModelAddedElement> = z.lazy(() =>
   z
     .object({
@@ -7377,6 +7529,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
   z
     .object({
       "ports": z.array(ModelPortProjectionSchema).optional(),
+      "physical_ports": z.array(ModelPhysicalPortProjectionSchema).optional(),
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
       "task_inputs": z.array(ModelAddressSchema).optional(),
       "objective_ports": z.array(ModelAddressSchema).optional(),
@@ -9180,6 +9333,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "is_composite": z.boolean().optional(),
       "template_graph": z.union([GraphSpecSchema, AcausalGraphSpecSchema, z.null()]).optional(),
       "placement_reason": z.string().nullable().optional(),
+      "equations_domains": z.array(z.union([z.literal("translational"), z.literal("rotational")])).optional(),
       "template_ui_state": GraphUIStateSchema.nullable().optional(),
       "template_id": z.string().nullable().optional(),
       "template_kind": z.string().nullable().optional(),
@@ -9231,6 +9385,115 @@ export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<TaskTimelineCue>;
 
+export const TrialBoundarySummarySchema: z.ZodType<TrialBoundarySummary> = z.lazy(() =>
+  z
+    .object({
+      "mean": z.number().finite(),
+      "lower": z.number().finite(),
+      "upper": z.number().finite(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialBoundarySummary>;
+
+export const TrialClockAlignmentSchema: z.ZodType<TrialClockAlignment> = z.lazy(() =>
+  z
+    .object({
+      "origin": z.number().finite(),
+      "span": TrialClockSpanSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<TrialClockAlignment>;
+
+export const TrialClockChoiceSchema: z.ZodType<TrialClockChoice> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "label": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialClockChoice>;
+
+export const TrialClockSpanSchema: z.ZodType<TrialClockSpan> = z.lazy(() =>
+  z
+    .object({
+      "start": z.number().finite(),
+      "end": z.number().finite(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialClockSpan>;
+
+export const TrialMeanSchema: z.ZodType<TrialMean> = z.lazy(() =>
+  z
+    .object({
+      "selection": TrialMeanSelectionSchema,
+      "conditions": z.array(TrialMeanConditionSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMean>;
+
+export const TrialMeanConditionSchema: z.ZodType<TrialMeanCondition> = z.lazy(() =>
+  z
+    .object({
+      "values": z.record(z.string(), jsonValueSchema),
+      "trials": z.record(z.string(), TrialClockAlignmentSchema),
+      "span": TrialClockSpanSchema.nullable(),
+      "time": z.array(z.number().finite()),
+      "states": z.record(z.string(), TrialSeriesSummarySchema),
+      "epochs": z.array(TrialMeanEpochSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanCondition>;
+
+export const TrialMeanEpochSchema: z.ZodType<TrialMeanEpoch> = z.lazy(() =>
+  z
+    .object({
+      "epoch": z.string(),
+      "label": z.string(),
+      "occurrence": z.number().int().safe(),
+      "start": TrialBoundarySummarySchema,
+      "end": TrialBoundarySummarySchema,
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanEpoch>;
+
+export const TrialMeanOptionsSchema: z.ZodType<TrialMeanOptions> = z.lazy(() =>
+  z
+    .object({
+      "by": z.array(TrialClockChoiceSchema),
+      "align": z.array(TrialClockChoiceSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanOptions>;
+
+export const TrialMeanSelectionSchema: z.ZodType<TrialMeanSelection> = z.lazy(() =>
+  z
+    .object({
+      "by": z.array(z.string()).nullable().optional(),
+      "align": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanSelection>;
+
+export const TrialSeriesSummarySchema: z.ZodType<TrialSeriesSummary> = z.lazy(() =>
+  z
+    .object({
+      "mean": z.array(z.array(z.number().finite())),
+      "lower": z.array(z.array(z.number().finite())),
+      "upper": z.array(z.array(z.number().finite())),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialSeriesSummary>;
+
+export const StudioSavedFigureMeanRequestSchema: z.ZodType<StudioSavedFigureMeanRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "job_id": z.string(),
+      "mean": TrialMeanSelectionSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedFigureMeanRequest>;
+
 export const StudioTrialReplayResponseSchema: z.ZodType<StudioTrialReplayResponse> = z.lazy(() =>
   z
     .object({
@@ -9239,6 +9502,8 @@ export const StudioTrialReplayResponseSchema: z.ZodType<StudioTrialReplayRespons
       "position": z.string().nullable(),
       "receipt": JobReceiptSchema,
       "drawn": z.union([TrialRecordsSchema, TrialAggregateSchema]),
+      "mean_options": TrialMeanOptionsSchema.nullable().optional(),
+      "mean": TrialMeanSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioTrialReplayResponse>;
@@ -10640,7 +10905,7 @@ export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
 ) as unknown as z.ZodType<JaxOperation>;
 
 export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
-  z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
+  z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
 ) as unknown as z.ZodType<JobStatus>;
 
 export const KeyedFamilySchema: z.ZodType<KeyedFamily> = z.lazy(() =>
@@ -11231,6 +11496,21 @@ export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<ScopedValue>;
 
+export const SelectedAxisValueSchema: z.ZodType<SelectedAxisValue> = z.lazy(() =>
+  z.object({
+    "id": z.string().min(1),
+    "label": z.string(),
+  }).strict()
+) as unknown as z.ZodType<SelectedAxisValue>;
+
+export const SelectedAxisValueProblemSchema: z.ZodType<SelectedAxisValueProblem> = z.lazy(() =>
+  z.object({
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "missing": SelectedAxisValueSchema,
+    "remaining": z.array(SelectedAxisValueSchema),
+  }).strict()
+) as unknown as z.ZodType<SelectedAxisValueProblem>;
+
 export const SelectedRowSchema: z.ZodType<SelectedRow> = z.lazy(() =>
   z.object({
     "key": z.string().min(1),
@@ -11506,6 +11786,7 @@ export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
     "rows": z.array(SelectedRowSchema).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).optional(),
     "query": ManifestPredicateSchema,
   }).strict()
 ) as unknown as z.ZodType<StoreSubset>;
@@ -11979,6 +12260,19 @@ export const StudioProjectDocumentSchema: z.ZodType<StudioProjectDocument> = z.l
   }).strict()
 ) as unknown as z.ZodType<StudioProjectDocument>;
 
+export const StudioProjectExampleSchema: z.ZodType<StudioProjectExample> = z.lazy(() =>
+  z.object({
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "name": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectExample>;
+
+export const StudioProjectExamplesSchema: z.ZodType<StudioProjectExamples> = z.lazy(() =>
+  z.object({
+    "examples": z.array(StudioProjectExampleSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectExamples>;
+
 export const StudioProjectFilePatchSchema: z.ZodType<StudioProjectFilePatch> = z.lazy(() =>
   z.object({
     "address": AuthoredFileAddressSchema,
@@ -11996,9 +12290,18 @@ export const StudioProjectListEntrySchema: z.ZodType<StudioProjectListEntry> = z
   z.object({
     "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "folder": z.string(),
     "modified": z.string().datetime({ offset: true }),
+    "step_count": z.number().int().safe().min(0),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectListEntry>;
+
+export const StudioProjectNewSchema: z.ZodType<StudioProjectNew> = z.lazy(() =>
+  z.object({
+    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "example": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectNew>;
 
 export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(() =>
   z.object({
@@ -12169,6 +12472,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "authored_path": z.union([z.string(), z.null()]).optional(),
     "blocked_by": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
     "span": z.union([TextSpanSchema, z.null()]).optional(),
+    "selection_value": z.union([SelectedAxisValueProblemSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 
@@ -12336,6 +12640,7 @@ export const StudioSavedLightResultSchema: z.ZodType<StudioSavedLightResult> = z
   z.object({
     "job_id": z.string(),
     "request_id": z.string(),
+    "revision": z.union([z.string().regex(new RegExp("^[a-f0-9]{64}$")), z.null()]).optional(),
     "receipt": JobReceiptSchema,
     "products": z.record(z.string(), z.string()),
     "validity": z.union([ReceiptValiditySchema, z.null()]).optional(),
@@ -12724,6 +13029,7 @@ export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
     "rows": z.array(SelectedRowSchema).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).optional(),
   }).strict()
 ) as unknown as z.ZodType<SubsetTerms>;
 
@@ -13107,7 +13413,9 @@ export const contractSchemas = {
   StudioProjectCreateFile: StudioProjectCreateFileSchema,
   StudioProjectCreateFiles: StudioProjectCreateFilesSchema,
   StudioProjectDocument: StudioProjectDocumentSchema,
+  StudioProjectExamples: StudioProjectExamplesSchema,
   StudioProjectList: StudioProjectListSchema,
+  StudioProjectNew: StudioProjectNewSchema,
   StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
   StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
@@ -13125,6 +13433,7 @@ export const contractSchemas = {
   StudioSceneGeometryResponse: StudioSceneGeometryResponseSchema,
   StudioErrorReport: StudioErrorReportSchema,
   StudioTrialReplayResponse: StudioTrialReplayResponseSchema,
+  StudioSavedFigureMeanRequest: StudioSavedFigureMeanRequestSchema,
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
   PenzaiNodeRequest: PenzaiNodeRequestSchema,
@@ -13273,7 +13582,9 @@ export interface ContractTypeMap {
   StudioProjectCreateFile: StudioProjectCreateFile;
   StudioProjectCreateFiles: StudioProjectCreateFiles;
   StudioProjectDocument: StudioProjectDocument;
+  StudioProjectExamples: StudioProjectExamples;
   StudioProjectList: StudioProjectList;
+  StudioProjectNew: StudioProjectNew;
   StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;
   StudioProjectPatchBatch: StudioProjectPatchBatch;
@@ -13291,6 +13602,7 @@ export interface ContractTypeMap {
   StudioSceneGeometryResponse: StudioSceneGeometryResponse;
   StudioErrorReport: StudioErrorReport;
   StudioTrialReplayResponse: StudioTrialReplayResponse;
+  StudioSavedFigureMeanRequest: StudioSavedFigureMeanRequest;
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;
   PenzaiNodeRequest: PenzaiNodeRequest;

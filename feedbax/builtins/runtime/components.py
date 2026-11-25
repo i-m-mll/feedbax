@@ -313,11 +313,11 @@ def lstm_output_prototype(
     return {"output": hidden, "hidden": hidden, "cell": hidden}
 
 
-def mux_output_prototype(
+def concatenate_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return a concatenated vector prototype for all declared mux inputs."""
+    """Return a concatenated vector prototype for all declared concatenate inputs."""
 
     n_inputs = int(params.get("n_inputs", 2))
     ports = [f"in_{index}" for index in range(n_inputs)]
@@ -328,34 +328,34 @@ def mux_output_prototype(
     ]
     if extra_dynamic_ports:
         raise ValueError(
-            f"Mux output prototype received ports {extra_dynamic_ports!r} outside "
+            f"Concatenate output prototype received ports {extra_dynamic_ports!r} outside "
             f"declared n_inputs={n_inputs}"
         )
     missing = [port for port in ports if port not in inputs]
     if missing:
         raise MissingPrototypeInput(
-            "Mux output prototype requires input prototypes for ports "
+            "Concatenate output prototype requires input prototypes for ports "
             + ", ".join(repr(port) for port in missing)
         )
-    widths = [_ravel_width(inputs[port], component="Mux", port=port) for port in ports]
+    widths = [_ravel_width(inputs[port], component="Concatenate", port=port) for port in ports]
     return {"output": jnp.zeros((sum(widths),), dtype=params.get("dtype"))}
 
 
-def demux_output_prototype(
+def split_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Return per-output prototypes by slicing the input final dimension."""
 
-    proto = _required_input(inputs, "input", component="Demux")
-    shape = _shape_from_single_array(proto, component="Demux", port="input")
+    proto = _required_input(inputs, "input", component="Split")
+    shape = _shape_from_single_array(proto, component="Split", port="input")
     if not shape:
-        raise ValueError("Demux input prototype must have at least one dimension")
-    sizes = _positive_sizes(params, component="Demux")
+        raise ValueError("Split input prototype must have at least one dimension")
+    sizes = _positive_sizes(params, component="Split")
     width = shape[-1]
     total = sum(sizes)
     if width != total:
-        raise ValueError(f"Demux input final dimension {width} does not match sum(sizes) {total}")
+        raise ValueError(f"Split input final dimension {width} does not match sum(sizes) {total}")
     prefix = shape[:-1]
     return {f"out_{index}": jnp.zeros((*prefix, size)) for index, size in enumerate(sizes)}
 
@@ -1571,14 +1571,14 @@ class LSTM(Component):
         return super().from_config(config, **context)
 
 
-class _MuxConfig(BaseModel):
+class _ConcatenateConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     dtype: str | None = ConfigField(default=None)
     n_inputs: int = ConfigField(default=2, ge=1)
 
 
-class Mux(Component):
+class Concatenate(Component):
     """Concatenate multiple inputs into a single vector.
 
     Creates ``n_inputs`` input ports named ``in_0``, ``in_1``, etc.,
@@ -1589,7 +1589,7 @@ class Mux(Component):
     """
 
     model_facts = ModelFacts()
-    config: ClassVar[type[BaseModel]] = _MuxConfig
+    config: ClassVar[type[BaseModel]] = _ConcatenateConfig
 
     ports: ClassVar[Ports] = Ports(
         inputs={},
@@ -1607,7 +1607,7 @@ class Mux(Component):
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
         instantaneous=True,
-        output_prototype_fn=mux_output_prototype
+        output_prototype_fn=concatenate_output_prototype
     )
 
     n_inputs: int = field(static=True)
@@ -1615,9 +1615,9 @@ class Mux(Component):
 
     def __init__(
         self,
-        n_inputs: int = _MuxConfig.model_fields["n_inputs"].default,
+        n_inputs: int = _ConcatenateConfig.model_fields["n_inputs"].default,
         *,
-        dtype: Any = _MuxConfig.model_fields["dtype"].default,
+        dtype: Any = _ConcatenateConfig.model_fields["dtype"].default,
     ):
         self.dtype = jnp.dtype(dtype).name if dtype is not None else None
         self.n_inputs = int(n_inputs)
@@ -1637,18 +1637,18 @@ class Mux(Component):
             flat, _ = ravel_pytree(inputs[port])
             parts.append(jnp.asarray(flat, dtype=self.dtype))
         if not parts:
-            raise ValueError("Mux requires at least one connected input")
+            raise ValueError("Concatenate requires at least one connected input")
         output = jnp.concatenate(parts, axis=-1)
         return {"output": output}, state
 
 
-class _DemuxConfig(BaseModel):
+class _SplitConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     sizes: Any = ConfigField(default=[1, 1], json_schema_extra={"feedbax": {"type": "array"}})
 
 
-class Demux(Component):
+class Split(Component):
     """Split a vector into multiple outputs by size.
 
     Creates ``len(sizes)`` output ports named ``out_0``, ``out_1``, etc.
@@ -1658,7 +1658,7 @@ class Demux(Component):
     """
 
     model_facts = ModelFacts()
-    config: ClassVar[type[BaseModel]] = _DemuxConfig
+    config: ClassVar[type[BaseModel]] = _SplitConfig
 
     ports: ClassVar[Ports] = Ports(
         inputs={"input": PortType(dtype="vector")},
@@ -1674,17 +1674,17 @@ class Demux(Component):
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
         instantaneous=True,
-        output_prototype_fn=demux_output_prototype
+        output_prototype_fn=split_output_prototype
     )
 
     sizes: tuple[int, ...] = field(static=True)
 
-    def __init__(self, sizes: Sequence[int] = _DemuxConfig.model_fields["sizes"].default):
+    def __init__(self, sizes: Sequence[int] = _SplitConfig.model_fields["sizes"].default):
         self.sizes = tuple(int(s) for s in sizes)
         if not self.sizes:
-            raise ValueError("Demux sizes must contain at least one output size")
+            raise ValueError("Split sizes must contain at least one output size")
         if any(size <= 0 for size in self.sizes):
-            raise ValueError("Demux sizes must be positive integers")
+            raise ValueError("Split sizes must be positive integers")
 
     def __call__(
         self,
@@ -1696,7 +1696,7 @@ class Demux(Component):
         x = inputs["input"]
         if x.shape[-1] != sum(self.sizes):
             raise ValueError(
-                f"Demux input final dimension {x.shape[-1]} does not match "
+                f"Split input final dimension {x.shape[-1]} does not match "
                 f"sum(sizes) {sum(self.sizes)}"
             )
         outputs: dict[str, PyTree] = {}

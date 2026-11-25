@@ -40,7 +40,9 @@ from feedbax.contracts.project import (
     member_display_name,
     member_name,
 )
-from feedbax.contracts.project_inputs import InitialModelReference, InputBinding, ObjectiveDocumentReference, TaskDocumentReference
+from feedbax.contracts.project_inputs import (
+    InitialModelReference, InputBinding, ObjectiveDocumentReference, SelectedAxisValueProblem, TaskDocumentReference,
+)
 from feedbax.contracts.project_sources import (
     SourceList,
     SourceObject,
@@ -127,6 +129,7 @@ class ProjectDiagnostic:
     blocked_by: RunKey | None = None
     """For ``blocked_input``, the producer row that cannot run."""
     span: TextSpan | None = None
+    selection_value: SelectedAxisValueProblem | None = None
 
 
 @dataclass(frozen=True)

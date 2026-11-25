@@ -1,4 +1,4 @@
-"""Selection, assembly, and wiring for explicit feedback paths."""
+"""Selection and wiring for explicit feedback paths."""
 
 from __future__ import annotations
 
@@ -7,15 +7,14 @@ from dataclasses import dataclass
 from operator import attrgetter
 from typing import Any, ClassVar
 
-import equinox as eqx
 import jax.tree as jt
 from jaxtyping import PyTree
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as ConfigField
 
-from feedbax.contracts.component import DynamicPortPolicy, PortType
+from feedbax.contracts.component import PortType
 from feedbax.contracts.model_values import ModelFacts
-from feedbax.contracts.portable import ComponentOptions, ConfigBinding, Ports
+from feedbax.contracts.portable import ComponentOptions, Ports
 from feedbax.runtime.graph import Component, GraphNode, Wire
 from feedbax.runtime.prototypes import _required_input
 
@@ -61,37 +60,12 @@ def _extract_state_selector_params(component: SelectState, model: Any) -> Any:
     return {"paths": list(component.where.paths)}
 
 
-def _extract_feedback_assembly_params(component: AssembleFeedback, model: Any) -> Any:
-    return {"layout": component.to_layout(), "n_inputs": component.structure.num_leaves}
-
-
-def _build_feedback_assembly(params: Mapping[str, Any]) -> AssembleFeedback:
-    assembly = AssembleFeedback.from_layout(params.get("layout"))
-    if len(assembly.input_ports) != params["n_inputs"]:
-        raise ValueError("AssembleFeedback n_inputs must match its layout leaf count")
-    return assembly
-
-
 def state_selector_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
     state = _required_input(inputs, "state", component="SelectState")
     return {"output": StateSelector(tuple(params["paths"]))(state)}
-
-
-def feedback_assembly_output_prototype(
-    params: Mapping[str, Any],
-    inputs: Mapping[str, Any],
-) -> dict[str, Any]:
-    assembly = _build_feedback_assembly(params)
-    for port in assembly.input_ports:
-        _required_input(inputs, port, component="AssembleFeedback")
-    return {"output": assembly.assemble(inputs)}
-
-
-def _build_select_state(params: Mapping[str, Any]) -> SelectState:
-    return SelectState(StateSelector(tuple(params["paths"])))
 
 
 class _SelectStateConfig(BaseModel):
@@ -135,114 +109,6 @@ class SelectState(StateSelection, Component):
 
     def configuration_values(self):
         return _extract_state_selector_params(self, self.config.model_construct())
-
-
-def _freeze_layout(value):
-    if isinstance(value, tuple) and type(value) is tuple:
-        return ("tuple", tuple(_freeze_layout(child) for child in value))
-    if isinstance(value, list) and type(value) is list:
-        return ("list", tuple(_freeze_layout(child) for child in value))
-    if isinstance(value, dict) and type(value) is dict and all(isinstance(key, str) for key in value):
-        return ("dict", tuple((name, _freeze_layout(child)) for name, child in value.items()))
-    if type(value) is int and value == 0:
-        return None
-    raise ValueError("Portable feedback layouts support tuple, list, and string-keyed dict")
-
-
-def _thaw_layout(node):
-    if node is None:
-        return 0
-    kind, children = node
-    if kind == "dict":
-        return {name: _thaw_layout(child) for name, child in children}
-    thawed = [_thaw_layout(child) for child in children]
-    return tuple(thawed) if kind == "tuple" else thawed
-
-
-class _AssembleFeedbackConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    n_inputs: int = ConfigField(default=1, ge=1)
-    layout: Any = ConfigField(default=None, json_schema_extra={"feedbax": {"type": "object"}})
-
-
-class AssembleFeedback(Component):
-    """Reassemble independent channel values in the controller's feedback tree."""
-
-    model_facts = ModelFacts()
-
-    config: ClassVar[type[BaseModel]] = _AssembleFeedbackConfig
-
-    ports: ClassVar[Ports] = Ports(
-        inputs={},
-        outputs={"output": PortType(dtype="any")},
-        dynamic=DynamicPortPolicy(
-            count_param="n_inputs",
-            count_mode="integer",
-            direction="input",
-            fixed_output_ports=("output",),
-            generated_name_template="in_{index}",
-            dynamic_port_type=PortType(dtype="any"),
-        ),
-    )
-    component_options: ClassVar[ComponentOptions] = ComponentOptions(
-        output_prototype_fn=feedback_assembly_output_prototype
-    )
-
-    config_bindings: ClassVar = (ConfigBinding("structure.num_leaves", name="n_inputs"),)
-
-    layout: Any = eqx.field(static=True)
-
-    def __init__(self, structure):
-        self.layout = _freeze_layout(structure.unflatten([0] * structure.num_leaves))
-
-    @property
-    def structure(self):
-        return jt.structure(_thaw_layout(self.layout))
-
-    def assemble(self, inputs: Mapping[str, PyTree]) -> PyTree:
-        return self.structure.unflatten([inputs[port] for port in self.input_ports])
-
-    def __call__(self, inputs, state, *, key):
-        return {"output": self.assemble(inputs)}, state
-
-    @classmethod
-    def from_layout(cls, layout):
-        def decode(value):
-            if value is None:
-                return 0
-            if not isinstance(value, dict) or len(value) != 1:
-                raise ValueError(
-                    "Feedback layout expects null leaves or tagged tuple, list, and dict nodes"
-                )
-            ((kind, children),) = value.items()
-            if kind == "tuple":
-                return tuple(decode(child) for child in children)
-            if kind == "list":
-                return [decode(child) for child in children]
-            if kind == "dict":
-                return {name: decode(child) for name, child in children.items()}
-            raise ValueError(f"Unsupported feedback layout node {kind!r}")
-
-        return cls(jt.structure(decode(layout)))
-
-    def to_layout(self):
-        def encode(node):
-            if node is None:
-                return None
-            kind, children = node
-            if kind == "dict":
-                return {"dict": {name: encode(child) for name, child in children}}
-            return {kind: [encode(child) for child in children]}
-
-        return encode(self.layout)
-
-    @classmethod
-    def from_config(cls, config, **context):
-        return _build_feedback_assembly(config.model_dump(mode="python"))
-
-    def configuration_values(self):
-        return _extract_feedback_assembly_params(self, self.config.model_construct())
 
 
 def feedback_node_names(count: int) -> tuple[tuple[str, str], ...]:
