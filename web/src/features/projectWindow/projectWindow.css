@@ -225,6 +225,16 @@
   flex: 1 1 auto;
 }
 
+.studio-window-slot__step {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
 .studio-window-slot__controls :where(fieldset, select) {
   min-width: 0;
   max-width: 100%;

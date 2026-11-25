@@ -39,7 +39,7 @@ import { shownName, type PlanRunView, type PlanStepView, type PlanView } from '@
 import {
   emptyPipelineSelection, selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState,
 } from '@/features/pipeline/selection';
-import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
+import { ProjectWindow, type SlotPinning } from '@/features/projectWindow/ProjectWindow';
 import { ProjectSettingRows } from '@/features/projectWindow/StudioSettings';
 import { useHeldGestures } from '@/features/projectWindow/heldGestures';
 import { StatusMark } from '@/components/ui/StatusMark';
@@ -47,8 +47,10 @@ import { ProblemRow, StudioProblems, problemEntries, type ProblemEntry } from '@
 import { holds } from './model/modelGraph';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
-  noViews, projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
+  noViews, pinProjectWindowSlot, projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot,
+  type ProjectWindowView,
 } from '@/features/projectWindow/projectWindowState';
+import { pinnableViews, stepModelSource, usePinnedSubject } from './pinnedSlot';
 import {
   ModelAddressSchema, StepReferenceSchema, StudioProjectRenameSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
@@ -111,11 +113,14 @@ import { ScrollFade } from '@/components/ui/ScrollFade';
 import type { AxisMenu } from '@/components/pipeline/PipelineRunMarks';
 import { OfferedSets, setAuthoring } from './setAuthoring';
 import { useSceneGeometry } from '@/components/scene/useSceneGeometry';
-import type { StateValues } from '@/components/scene/trialScene';
+import type { SceneTrial, StateValues } from '@/components/scene/trialScene';
 
 type EditorSession = ReturnType<typeof bindProjectEditor>;
 /** The Model's own initial state, at which the Scene's geometry tells whether the Model has anything to draw. */
 const restPose: readonly StateValues[] = [{}];
+/** What a Scene draws of a step the clock does not read: its Model at rest. */
+const restTrial: SceneTrial = { picked: undefined, possible: [], frame: 0, task: undefined, trails: false };
+const slots = ['primary', 'secondary'] as const;
 /** The anchor of an Evaluate's sampled number of trials, which the Trials editor draws. */
 const trialCount = '/params/trial_set/count';
 
@@ -401,8 +406,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const namedRow = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId) ??
     selectedDefinitionRows[0] ?? definitionRows[0];
   const namedRun = namedRow?.key;
-  const modelSource = step?.kind === 'evaluate' ? modelDocumentId(plan.steps.find(({ id }) =>
-    id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
+  const modelSource = stepModelSource(plan, step);
   const stored = useStoredModel(editor, step, modelSource);
   const restGeometry = useSceneGeometry(saved.project_id, stored ? { document_id: stored.id, revision: saved.revision } : null, restPose)?.(0);
   const scoredBy = authored?.kind === 'evaluate' ? evaluateSubject(authored) : undefined;
@@ -416,11 +420,37 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series,
     report: !!stepReport(snapshot, step?.id).report,
   });
-  const availableViews = views.available;
-  const primaryView = projectWindowSlotView(windowState, 'primary', availableViews);
-  const secondaryView = projectWindowSlotView(windowState, 'secondary', availableViews);
+  const pins = windowState.secondaryView ? windowState.pins ?? {} : {};
+  const preferredView = (slot: ProjectWindowSlot) => slot === 'primary' ? windowState.primaryView : windowState.secondaryView;
+  /** The slot pinned to a step other than the selected one whose Scene is shown, which the clock reads. */
+  const clockSlot = slots.find((slot) => pins[slot] && pins[slot].stepId !== step?.id && preferredView(slot) === 'scene');
+  const held = {
+    primary: usePinnedSubject({ editor, plan, shown, variant, pin: pins.primary, selectedStep: step?.id, clocked: clockSlot === 'primary' }),
+    secondary: usePinnedSubject({ editor, plan, shown, variant, pin: pins.secondary, selectedStep: step?.id, clocked: clockSlot === 'secondary' }),
+  };
+  const clockSubject = clockSlot && held[clockSlot].step ? held[clockSlot] : undefined;
+  const slotOffer = (slot: ProjectWindowSlot) => held[slot].step ? held[slot].views : views;
+  const primaryView = projectWindowSlotView(windowState, 'primary', slotOffer('primary').available);
+  const secondaryView = projectWindowSlotView(windowState, 'secondary', slotOffer('secondary').available);
   const focusSlot = secondaryView && windowState.focusedSlot === 'secondary' ? 'secondary' : 'primary';
   const focusView = focusSlot === 'secondary' ? secondaryView : primaryView;
+  /** Whether the focused slot shows a pinned step other than the selected one, which the selection's commands do not reach. */
+  const focusHeld = !!held[focusSlot].step;
+  const pinRun = namedRun && savedRunId(namedRun);
+  useEffect(() => {
+    setWindowState((current) => slots.reduce((next, slot) => {
+      const pin = next.pins?.[slot];
+      return pin && pin.stepId === step?.id && pinRun && pin.runId !== pinRun
+        ? pinProjectWindowSlot(next, slot, { ...pin, runId: pinRun }) : next;
+    }, current));
+  }, [pinRun, setWindowState, step?.id]);
+  const projectSteps = saved.project.steps;
+  useEffect(() => {
+    setWindowState((current) => slots.reduce((next, slot) => {
+      const pin = next.pins?.[slot];
+      return pin && !projectSteps?.[pin.stepId] ? pinProjectWindowSlot(next, slot, undefined) : next;
+    }, current));
+  }, [projectSteps, setWindowState]);
   const revealed = problemReveal?.revision === saved.revision && problemReveal.variant === variant &&
     problemReveal.reveal.step === step?.id && problemReveal.runId === (state.focus?.runId ?? null)
     ? problemReveal.reveal : undefined;
@@ -474,7 +504,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     graph: setScope() ?? documentScope('graph'), task: documentScope('task'),
     objective: documentScope('objective'), training: documentScope('training'), analysis: documentScope('analysis'),
   };
-  const activeDocumentScope = windowState.mode === 'map' ? undefined
+  const activeDocumentScope = windowState.mode === 'map' || focusHeld ? undefined
     : focusView === 'model' ? documentScopes.graph
       : focusView === 'task' || focusView === 'objective' || focusView === 'training' ? documentScopes[focusView]
         : focusView === 'analysis' || focusView === 'figures' ? documentScopes.analysis
@@ -663,10 +693,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
     trialEditable, trialChangeScope, runRemoval.confirm, askStore);
+  const clockView = clockSubject ? clockSubject.trial : trial.view;
+  const clockStep = clockSubject ? clockSubject.step : step;
   const trialClock = useTrialClock({
-    windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
-    taskDocument: trial.view && (trial.view.task_document ?? step?.id),
-    objectiveDocument: trial.view && (trial.view.objective_document ?? step?.id), stored, evaluation: selectedEvaluation,
+    windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: clockView,
+    taskDocument: clockView && (clockView.task_document ?? clockStep?.id),
+    objectiveDocument: clockView && (clockView.objective_document ?? clockStep?.id),
+    stored: clockSubject ? clockSubject.stored : stored, evaluation: clockSubject ? clockSubject.evaluation : selectedEvaluation,
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });
@@ -732,21 +765,45 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       ...current, modelPaths: { ...current.modelPaths, [slot]: { document, path } },
     }));
   }
-  const primary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden',
-    problemReveal: focusSlot === 'primary' ? revealed : undefined, modelPath: windowState.modelPaths?.primary,
+  /** A slot's inputs: the selection's, or those of the step it is pinned to, which it shows without editing. */
+  function slotDetailInputs(slot: ProjectWindowSlot) {
+    const subject = held[slot];
+    if (!subject.step) {
+      return clockSubject ? { ...detailInputs, sceneTrial: restTrial, checkpoints: undefined } : detailInputs;
+    }
+    const clocked = slot === clockSlot;
+    return {
+      ...detailInputs, step: subject.step, stepId: subject.step.id, focus: null, selection: null, evaluation: subject.evaluation,
+      sceneTrial: clocked ? trialClock.scene : restTrial, checkpoints: clocked ? evaluationReplay.checkpoints : undefined,
+      namedRun: undefined, documentScopes: { graph: undefined, task: undefined }, valueEditing: false, evaluateScope: undefined,
+      stored: subject.stored, modelProblems: [], selectedSweepValues: new Map<string, Set<string>>(), fieldRows: undefined,
+      fieldAxes: undefined,
+    };
+  }
+  const primary = useManagedProjectDetails({ ...slotDetailInputs('primary'), activeView: windowState.mode === 'map' ? 'hidden' : primaryView ?? 'hidden',
+    problemReveal: focusSlot === 'primary' && !held.primary.step ? revealed : undefined, modelPath: windowState.modelPaths?.primary,
     setModelPath: (document, path) => setModelPath('primary', document, path) });
-  const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden',
-    problemReveal: focusSlot === 'secondary' ? revealed : undefined, modelPath: windowState.modelPaths?.secondary,
+  const secondary = useManagedProjectDetails({ ...slotDetailInputs('secondary'), activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden',
+    problemReveal: focusSlot === 'secondary' && !held.secondary.step ? revealed : undefined, modelPath: windowState.modelPaths?.secondary,
     setModelPath: (document, path) => setModelPath('secondary', document, path) });
   const focusedDetail = windowState.mode !== 'map' && (focusView === 'model' || focusView === 'scene')
     ? (focusSlot === 'primary' ? primary : secondary)[focusView] : undefined;
   const analyze = useManagedAnalyze({
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: shown, wholeStep,
     chosen: documentScopes.analysis?.lit,
-    focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
+    focusedView: windowState.mode === 'map' || focusHeld ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
     sections: drawerSections, steps: plan.steps, failures: stepFailures(step?.kind === 'analyze' ? step.id : undefined),
     selectStep: (source) => selection.select(selectStep(state, source)),
   });
+  const pinnedAnalyzeInputs = (slot: ProjectWindowSlot) => ({
+    editor, key: held[slot].step?.kind === 'analyze' ? held[slot].namedRun : undefined, projection: shown, wholeStep: false,
+    savePosition: saveElementPosition, selection: elements, sections: drawerSections, steps: plan.steps,
+    failures: stepFailures(undefined), selectStep: (source: string) => selection.select(selectStep(state, source)),
+  });
+  const pinnedAnalyze = {
+    primary: useManagedAnalyze(pinnedAnalyzeInputs('primary')),
+    secondary: useManagedAnalyze(pinnedAnalyzeInputs('secondary')),
+  };
   const report = useManagedReport({
     editor, snapshot, plan, projection: shown, variant, stepId: step?.kind === 'report' ? step.id : undefined,
     run: step?.kind === 'report' ? namedRun : undefined,
@@ -1664,6 +1721,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }
     runCommands.push(bindStudioCommand('openRun', () => { if (exactRow) showRun(exactRow.key); }, { enabled: !!exactJob }));
   }
+  /** A slot's pin: unpin when pinned; else, on a view a pin keeps, pin to the selected step and its run. */
+  function slotPinning(slot: ProjectWindowSlot): SlotPinning | undefined {
+    const pin = pins[slot];
+    const view = slot === 'primary' ? primaryView : secondaryView;
+    if (pin) {
+      return {
+        command: bindStudioCommand('pin', () => setWindowState((current) => pinProjectWindowSlot(current, slot, undefined)),
+          { name: 'unpin', instance: slot }),
+        pinned: { label: stepLabel(pin.stepId), views: held[slot].step ? held[slot].views : undefined },
+      };
+    }
+    if (!step || !view || !pinnableViews.has(view)) return undefined;
+    const target = { stepId: step.id, ...pinRun && { runId: pinRun } };
+    return { command: bindStudioCommand('pin', () => setWindowState((current) => pinProjectWindowSlot(current, slot, target)),
+      { instance: slot }) };
+  }
   function pivotCommand(slot: ProjectWindowSlot) {
     if (!step || step.sweeps.length < 2) return undefined;
     return bindStudioCommand('pivot', () => setPivotSlots((current) => ({
@@ -1715,6 +1788,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
         saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
         views={views}
+        pins={{ primary: slotPinning('primary'), secondary: slotPinning('secondary') }}
         commands={commands} mapCommands={canvasViewportCommands(() => mapViewport.current, !!shown && plan.steps.length > 0)}
         focusRequest={focusRequest}
         onBack={selection.back} onForward={selection.forward}
@@ -1809,6 +1883,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} resultState={activityResultState} />}
         renderView={(view, slot) => {
           const details = slot === 'primary' ? primary : secondary;
+          if (held[slot].step) {
+            if (view === 'analysis' || view === 'figures') return pinnedAnalyze[slot][view];
+            if (view === 'model' || view === 'scene') return { ...details[view], header: details[view].path };
+            return { body: null };
+          }
           const withProblem = (body: ReactNode) => revealed?.view === view && slot === focusSlot && !fieldReveal
             ? <ProblemDestination reveal={revealed} action={graphRepair && <Button
               disabled={!applies} onClick={removeRefusedVariation}>
