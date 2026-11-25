@@ -108,3 +108,21 @@ it('draws the seeds of an Evaluate reading two Train steps once each, in order, 
   expect([column('train-a-0'), column('train-b-0')]).toEqual([0, 0]);
   expect([column('train-a-2'), column('train-b-2')]).toEqual([2, 2]);
 });
+
+// Catches: the step drawer reordering while a revision's plan is read, because the plan and the project list steps differently.
+it('lists steps in one order whether or not the plan has been read', () => {
+  const project: Project = { steps: Object.fromEntries(['train-2', 'analyze', 'train-10'].map((id) =>
+    [id, { kind: 'train', base: { inline: {} } }])) };
+  const saved: StudioSavedTrainRuns = {
+    revision: '0'.repeat(64), rows: [],
+    window_map: {
+      variants: ['base'], rows: [], edges: [], problems: [],
+      steps: ['train-10', 'train-2', 'analyze'].map((step_id) => ({
+        variant: 'base', step_id, kind: 'train', group: null, document_ids: {}, status_counts: {}, axes: [], inputs: [],
+      })),
+    },
+  };
+  const order = (read?: StudioSavedTrainRuns) => projectWindowPlan(project, read, 'base').steps.map(({ id }) => id);
+  expect(order(saved)).toEqual(['analyze', 'train-2', 'train-10']);
+  expect(order(undefined)).toEqual(order(saved));
+});

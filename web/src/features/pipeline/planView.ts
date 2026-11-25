@@ -92,6 +92,8 @@ export interface PlanStepView {
   readonly ruleMetrics?: readonly string[];
   /** Why the last gesture on the step was refused; its problem mark carries it. */
   readonly refusal?: string;
+  /** A step being added: drawn from the gesture until the plan that has it is read, and taking no gestures. */
+  readonly adding?: boolean;
 }
 
 // Presentation input for the regions. IDs, values, status and edges are supplied

@@ -216,7 +216,7 @@ test('reopens the same live run and restores loss after backend and host restart
   expect(await hostPid(studio.home)).not.toBe(originalHost);
 
   await page.close();
-  const reopened = await browser.newPage({ baseURL: studio.origin, serviceWorkers: 'block' });
+  const reopened = await browser.newPage({ baseURL: studio.origin });
   try {
     await reopened.goto(mounted);
     await mapStep(reopened, 'train').click();

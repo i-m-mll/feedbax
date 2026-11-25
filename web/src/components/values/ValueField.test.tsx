@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test } from 'vitest';
 import type { JsonValue } from '@/generated/studioContracts';
 import { fromParamSchema } from './adapters/paramSchema';
+import { rawField } from './adapters/raw';
 import { ValueField } from './ValueField';
 
 afterEach(cleanup);
@@ -39,4 +40,17 @@ test('Escape drops the typed value, and leaving the field afterwards saves nothi
   await userEvent.keyboard('{Escape}');
   await userEvent.tab();
   expect(written).toEqual([]);
+});
+
+// Catches: a toggle looks unclicked while its edit saves, so the click seems to have done nothing; or a refused toggle stays shown.
+test('a toggle shows its new value while it saves, and its stored value again when refused', async () => {
+  let answer: (refusal?: string) => void = () => {};
+  const model = rawField({ id: 'enabled', label: 'Enabled', type: { kind: 'boolean' }, value: true,
+    change: () => new Promise<string | undefined>((resolve) => { answer = resolve; }) });
+  render(<ValueField model={model} />);
+  const box = screen.getByRole('checkbox');
+  await userEvent.click(box);
+  expect(box.getAttribute('aria-checked')).toBe('false');
+  answer('The term is required');
+  await waitFor(() => expect(box.getAttribute('aria-checked')).toBe('true'));
 });
