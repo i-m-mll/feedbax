@@ -109,10 +109,8 @@ def model_field_target(path: str) -> ModelFieldTarget | None:
     elif not path.startswith("{"):
         return None
     address = ModelAddress.from_text(path)
-    if not isinstance(address.element, FieldElement) or any(
-        not isinstance(part, str) for part in address.element.path
-    ):
-        raise ValueError("A Model sweep target must name a field using named parts")
+    if not isinstance(address.element, FieldElement):
+        raise ValueError("A Model sweep target must name a field")
     return ModelFieldTarget(address, scope)
 
 
