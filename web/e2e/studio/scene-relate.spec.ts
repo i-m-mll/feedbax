@@ -1,6 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { trialPicker } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -21,18 +22,31 @@ test('Relate dragged from the hand to the target adds one Objective term and its
   await mapStep(page, 'train').click();
   await tab(page, 'Objective').click();
   const table = page.locator('[data-slot="primary"]').getByRole('table', { name: 'Objective Terms', exact: true });
-  const rows = await table.getByRole('row').count();
+  // A header, the fixture's one term, and the foot that adds a term.
+  await expect(table.getByRole('row')).toHaveCount(3);
   await tab(page, 'Scene').click();
   const canvas = scene(page).getByRole('group', { name: 'Scene', exact: true });
   await expect(canvas).toBeVisible();
-  const lines = canvas.locator('[data-scene-relation]');
-  const drawn = await lines.count();
+  // The nominal trial's target is at the start; a sample's is not.
+  await trialPicker(page).click();
+  await page.getByRole('radio', { name: /^sample 2 of \d+$/ }).click();
+  await expect(trialPicker(page)).toHaveText(/^sample 2 of \d+$/);
 
   await scene(page).getByRole('toolbar').getByRole('button', { name: 'Relate', exact: true }).click();
   const hand = canvas.getByRole('button', { name: 'Relate Point mass', exact: true });
   const target = canvas.getByRole('button', { name: 'Relate target', exact: true });
-  const [fromX, fromY] = await centre(hand);
-  const [toX, toY] = await centre(target);
+  const start = canvas.getByRole('button', { name: 'Relate start', exact: true });
+  const at = async (end: Locator) => end.locator('circle').first().evaluate((circle: SVGCircleElement) =>
+    [circle.cx.baseVal.value, circle.cy.baseVal.value]);
+  // The Model is posed by the picked trial once its geometry is read: at the start, apart from the target.
+  await expect.poll(async () => {
+    const [handAt, startAt, targetAt] = await Promise.all([hand, start, target].map(at));
+    return JSON.stringify(handAt) === JSON.stringify(startAt) && JSON.stringify(targetAt) !== JSON.stringify(startAt);
+  }).toBe(true);
+  const lines = canvas.locator('[data-scene-relation]');
+  const drawn = await lines.count();
+  const [fromX, fromY] = await centre(hand.locator('circle').first());
+  const [toX, toY] = await centre(target.locator('circle').first());
   await page.mouse.move(fromX, fromY);
   await page.mouse.down();
   await page.mouse.move(toX, toY, { steps: 8 });
@@ -43,12 +57,10 @@ test('Relate dragged from the hand to the target adds one Objective term and its
   const line = lines.last();
   const ends = await line.evaluate((element: SVGLineElement) =>
     [[element.x1.baseVal.value, element.y1.baseVal.value], [element.x2.baseVal.value, element.y2.baseVal.value]]);
-  const at = async (end: Locator) => end.locator('circle').first().evaluate((circle: SVGCircleElement) =>
-    [circle.cx.baseVal.value, circle.cy.baseVal.value]);
   expect(ends).toEqual(expect.arrayContaining([await at(hand), await at(target)]));
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await expect(inspector.getByRole('textbox', { name: 'Measure', exact: true })).toBeFocused();
 
   await tab(page, 'Objective').click();
-  await expect(table.getByRole('row')).toHaveCount(rows + 1);
+  await expect(table.getByRole('row')).toHaveCount(4);
 });

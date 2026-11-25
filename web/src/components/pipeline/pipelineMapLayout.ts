@@ -47,11 +47,11 @@ export function mapStepLineage(
 }
 
 export function focusedMapEdgePairs(
-  edges: PlanView['edges'], focus: RunAddress,
+  edges: PlanView['edges'], roots: readonly RunAddress[],
   upstream: RunSetsByStep, downstream: RunSetsByStep,
 ) {
   function contains(steps: RunSetsByStep, run: RunAddress) {
-    return (run.stepId === focus.stepId && run.runId === focus.runId) ||
+    return roots.some((root) => run.stepId === root.stepId && run.runId === root.runId) ||
       steps.get(run.stepId)?.has(run.runId);
   }
   const pairs = new Set<string>();

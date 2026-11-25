@@ -21,6 +21,7 @@ import type {
 } from '@/generated/studioContracts';
 import { selectElement, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { showProjectWindowView, type ProjectWindowState, type ProjectWindowView } from '@/features/projectWindow/projectWindowState';
+import { clockRun, type FigureClock } from './figureClock';
 import { recordedTrials, useSavedEvaluationScene, type StoredModel } from './managedProjectDetails';
 import type { TrialView } from './StudioTrialAuthoring';
 import { batchRows, meanRows, nominalRows, trialRows, trialTermRows, type ShelfTask } from './task/shelfRows';
@@ -257,8 +258,23 @@ export function useTrialClock({
     ...mean && recordedTrial && { mean: { value: mean, time, stateTime: recordedTrial.stateTime } },
     ...pick?.trials === 'recorded' && replay.read.kind === 'failed' && { failure: replay.read },
   };
+  const recordedPick = pick?.trials === 'recorded' ? pick : undefined;
+  const pickedTrial = recordedPick && recorded.ids[recordedPick.showing.index];
+  const pickedKind = recordedPick?.showing.kind;
+  /** Under Mean the time is measured from Align's epoch and no single trial is drawn. */
+  const figure: FigureClock = {
+    time, setTime, epoch: averaging ? clock.mean.align : null, run: recordedPick && clockRun(evaluation),
+    picked: pickedTrial === undefined || !pickedKind || pickedKind === 'mean' ? undefined : { trial: pickedTrial, kind: pickedKind },
+    pickTrial: (trial) => {
+      const index = recorded.ids.indexOf(trial);
+      const kind = pickedKind === 'all' ? 'all' : 'one';
+      if (index >= 0) change({ ...clock, picked: { trials: 'recorded', showing: { kind, index } } });
+    },
+  };
   return {
     replay,
+    /** What a figure draws from the clock. */
+    figure,
     /** What the Scene draws: the shown trial at the playhead's frame, the trials it may be, and the task. */
     scene,
     /** What the Variables table and the Inspector show, when it can be drawn. */

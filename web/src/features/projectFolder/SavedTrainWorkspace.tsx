@@ -53,7 +53,7 @@ import {
 import { pinnableViews, stepModelSource, usePinnedSubject } from './pinnedSlot';
 import {
   ModelAddressSchema, StepReferenceSchema, StudioProjectRenameSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
-  type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
+  type FigureLayoutMeta, type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type LoadedModelReference, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StepReference, type SubsetTerms,
   type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type StudioPlanReviewSource, type StudioProjectWindowMapException, type ModelAddress, type PatchValue,
   type StudioClassField, type StudioProjectSnapshot,
@@ -66,6 +66,7 @@ import { stepDocument } from './documentPayload';
 import type { SceneRelate } from '@/components/scene/SceneRegion';
 import { useManagedProjectDetails, useRecordedTerms, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
+import { declaredEvaluation, FigureClockContext } from './figureClock';
 import { drawnVariables } from './task/trialSample';
 import { usePlayheadStore } from '@/components/timeline/trialClock';
 import { viewOffer, viewsByKind } from './viewContent';
@@ -722,11 +723,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     trialEditable, trialChangeScope, runRemoval.confirm, askStore);
   const clockView = clockSubject ? clockSubject.trial : trial.view;
   const clockStep = clockSubject ? clockSubject.step : step;
+  /** The runs the shown figure declares its data was read from, whose recorded trials the clock offers for an Analyze. */
+  const [figureRuns, declareFigureRuns] = useState<FigureLayoutMeta['runs']>();
+  const figureEvaluation = step?.kind === 'analyze' ? declaredEvaluation(shown, figureRuns) : undefined;
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: clockView,
     taskDocument: clockView && (clockView.task_document ?? clockStep?.id),
     objectiveDocument: clockView && (clockView.objective_document ?? clockStep?.id),
-    stored: clockSubject ? clockSubject.stored : stored, evaluation: clockSubject ? clockSubject.evaluation : selectedEvaluation,
+    stored: clockSubject ? clockSubject.stored : stored, evaluation: clockSubject ? clockSubject.evaluation : selectedEvaluation ?? figureEvaluation,
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });
@@ -1835,6 +1839,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 
   return (
     <RunRemovalContext.Provider value={runRemoval.confirm}><AskStoreContext.Provider value={askStore}>
+    <FigureClockContext.Provider value={{ clock: trialClock.figure, declare: declareFigureRuns }}>
       <ProjectWindow
         projectSettings={projectSettings}
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
@@ -2166,7 +2171,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       />
       {runRemoval.dialog}
       {choiceMenu.menu}
-    </AskStoreContext.Provider></RunRemovalContext.Provider>
+    </FigureClockContext.Provider></AskStoreContext.Provider></RunRemovalContext.Provider>
   );
 }
 

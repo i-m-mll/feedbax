@@ -94,6 +94,20 @@ def seed_eight_trials(home: str, project_id: str):
     return _seed(home, project_id, raw)
 
 
+def seed_sixty_four_trials(home: str, project_id: str):
+    """The evaluation project with a task of 64 validation trials, each target moved a little, which the baseline records."""
+    raw = _evaluation_project()
+    task = raw["documents"]["task"]["payload"]
+    trials = task["validation_trials"]
+    task["validation_trials"] = [
+        deepcopy(trials[index % len(trials)]) | {"variables": trials[index % len(trials)]["variables"] | {
+            "target": [value + 0.001 * (index // len(trials)) for value in trials[index % len(trials)]["variables"]["target"]],
+        }}
+        for index in range(64)
+    ]
+    return _seed(home, project_id, raw)
+
+
 def _mean_conditions_project():
     """The eight-trial evaluation project with its last four trials catch trials, so that By has two conditions."""
     raw = _evaluation_project()
@@ -353,7 +367,8 @@ def observe(home: str, project: str, revision: str, trial_index: str):
 if __name__ == "__main__":
     action, *args = sys.argv[1:]
     print(json.dumps({
-        "seed": seed, "seed-eight-trials": seed_eight_trials, "seed-mean-conditions": seed_mean_conditions,
+        "seed": seed, "seed-eight-trials": seed_eight_trials, "seed-sixty-four-trials": seed_sixty_four_trials,
+        "seed-mean-conditions": seed_mean_conditions,
         "seed-mean-figure": seed_mean_figure, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
         "series-files": series_files, "seed-series-variants": seed_series_variants,
         "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,

@@ -17,6 +17,13 @@ export interface PipelineSelectionState {
 
 export const emptyPipelineSelection: PipelineSelectionState = { selection: null, focus: null };
 
+/** The runs whose lineage is lit: every selected row of the focused run's step, or the focused run alone. */
+export function lineageRoots({ selection, focus }: PipelineSelectionState): readonly RunAddress[] {
+  if (!focus) return [];
+  return selection?.kind === "rows" && selection.stepId === focus.stepId
+    ? selection.runIds.map((runId) => ({ stepId: focus.stepId, runId })) : [focus];
+}
+
 export function extendsSelection(event: Pick<MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) {
   return event.metaKey || event.ctrlKey || event.shiftKey;
 }
@@ -145,10 +152,9 @@ export function indexPlanLineage(edges: readonly PlanRunEdge[]) {
   return {
     upstream: (roots: readonly RunAddress[]): RunSetsByStep => visit(incoming, roots),
     downstream: (roots: readonly RunAddress[]): RunSetsByStep => visit(outgoing, roots),
-    related(focus: RunAddress | null): RunSetsByStep {
-      if (!focus) return new Map();
-      const related = visit(incoming, [focus]);
-      for (const [stepId, ids] of visit(outgoing, [focus])) {
+    related(roots: readonly RunAddress[]): RunSetsByStep {
+      const related = visit(incoming, roots);
+      for (const [stepId, ids] of visit(outgoing, roots)) {
         const known = related.get(stepId);
         if (known) for (const id of ids) known.add(id);
         else related.set(stepId, ids);

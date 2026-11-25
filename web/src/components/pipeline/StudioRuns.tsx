@@ -16,6 +16,7 @@ import type { StudioProjectWindowMapProblem } from "@/generated/studioContracts"
 import {
   selectionButton,
   indexPlanLineage,
+  lineageRoots,
   selectedRuns,
   selectRun,
   selectSweepGroup,
@@ -358,7 +359,7 @@ export function StudioRunControls({ commands = [], machine, combination, pivotCo
 
 function RunsContent({ plan, step, state, onSelectionChange, pivotActive, runMenu, axisMenu, choosing }: StudioRunsProps) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
-  const related = useMemo(() => lineage.related(state.focus), [lineage, state.focus]);
+  const related = useMemo(() => lineage.related(lineageRoots(state)), [lineage, state]);
   const selection = { step, state, onSelectionChange };
   return <ScrollFade axis="both" className="h-full min-h-0">
     {pivotActive
