@@ -48,7 +48,9 @@ from feedbax.persistence.method_checkpoint import (
     read_method_checkpoint_manifest,
 )
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE
-from feedbax.persistence.semantic_fingerprint import UnsupportedSemanticValue, fingerprint_semantic_values
+from feedbax.persistence.semantic_fingerprint import (
+    UnsupportedSemanticValue, fingerprint_semantic_values, project_pytree,
+)
 from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
 from feedbax.host.model_checkpoint import SemanticModelSlot
 
@@ -98,6 +100,8 @@ def _extra_layout(extra: PyTree, count: int):
 
 
 def _checkpoint_metadata(value):
+    if isinstance(value, jax.tree_util.PyTreeDef):
+        return project_pytree(value, lambda: ("leaf",))
     if isinstance(value, jax.ShapeDtypeStruct):
         return value.shape, str(value.dtype), value.weak_type
     if isinstance(value, type) and "<locals>" not in value.__qualname__:
