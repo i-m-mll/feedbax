@@ -520,14 +520,14 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const rows = initial.window_map!.rows.filter(({ key }) => key.step === 'evaluate');
   expect(train).toHaveLength(6);
   expect(rows).toHaveLength(4);
-  expect(initial.window_map?.problems).toHaveLength(4);
-  expect(initial.window_map?.problems.every(({ step, path, code }) =>
-    step === 'evaluate' && path === '/inputs/subject' && code === 'cannot_run')).toBe(true);
+  // Every Evaluate row waits on its unrun Train subject, which is not a problem with the Evaluate.
+  expect(initial.window_map?.problems).toEqual([]);
   expect(rows.map(({ coordinates }) => [coordinates['learning-rate'].label, coordinates.task.label])).toEqual([
     ['Slow', 'Short Task'], ['Slow', 'Long Task'], ['Fast', 'Short Task'], ['Fast', 'Long Task'],
   ]);
   const evaluation = initial.window_map!.evaluations!;
   expect(evaluation.map(({ trials }) => trials.length)).toEqual([2, 3, 2, 3]);
+  expect(evaluation.map(({ status, reason }) => [status, reason])).toEqual(Array(4).fill(['waiting', 'Waiting for train.']));
 
   const pivot = primary(page).getByRole('table', { name: 'Pivot', exact: true });
   // The subject is told apart by the learning-rate its runs carry, and the one seed they share tells nothing apart.
@@ -540,7 +540,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   });
   await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
   await expect(pivot.getByRole('rowheader')).toHaveText(['Slow', 'Fast']);
-  await expect(pivot.getByRole('button', { name: /Can't run$/ })).toHaveCount(4);
+  await expect(pivot.getByRole('button', { name: /Waiting$/ })).toHaveCount(4);
 
   await select(page, 'train');
   await launchRows(page, projectPath, train.map(({ key }) => key));

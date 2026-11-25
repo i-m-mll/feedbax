@@ -19,13 +19,16 @@ import type { ModelStart, SetEntryWeight, TaskSelection, TaskSetVariable, TaskVa
 
 const sameType = (a: ValueType, b: ValueType) => studioValueType(a) === studioValueType(b);
 
+/** A type's nonzero dimension exponents: an authored type omits the dimensions it does not carry. */
+const exponents = ({ dimensions = {} }: ValueType) => Object.fromEntries(Object.entries(dimensions).filter(([, exponent]) => exponent));
+
 /** Whether a Model field of type `field` takes a variable of type `variable`, as the service checks a link. */
 const fits = (field: ValueType, variable: ValueType) => {
   const target = field.shape ?? [];
   const source = variable.shape ?? [];
   const offset = target.length - source.length;
   return offset >= 0 && source.every((size, index) => size === 1 || size === target[offset + index])
-    && canonicalJsonV2(field.dimensions ?? {}) === canonicalJsonV2(variable.dimensions ?? {})
+    && canonicalJsonV2(exponents(field)) === canonicalJsonV2(exponents(variable))
     && (field.space == null || variable.space == null || field.space === variable.space)
     && (field.base === variable.base || field.base === 'real' && variable.base === 'integer');
 };

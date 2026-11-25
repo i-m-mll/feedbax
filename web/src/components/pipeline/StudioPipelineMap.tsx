@@ -478,7 +478,7 @@ function sameHeights(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, numb
 function MapDiagram({
   layout,
   card,
-  primaryStep,
+  fullSteps,
   clearFocus,
   strongEdges,
   viewportRef,
@@ -487,8 +487,8 @@ function MapDiagram({
 }: {
   layout: MapLayout;
   card: (step: PlanStepView, compact: boolean) => ReactNode;
-  /** In compact density, the step whose card stays full. */
-  primaryStep?: string;
+  /** In compact density, the steps whose cards stay full: the primary step, and the step whose runs a rule is picking. */
+  fullSteps: ReadonlySet<string>;
   clearFocus: () => void;
   strongEdges: ReadonlySet<string>;
   viewportRef?: Ref<CanvasViewport>;
@@ -508,11 +508,11 @@ function MapDiagram({
     placePipelineMap(layout, ({ id }) => ({ width: mapCardWidth, height: fullHeights.current.get(id) ?? unmeasuredCardHeight })),
     visibleSize.current.width, visibleSize.current.height,
   );
-  const compactCard = (step: PlanStepView) => compact && step.id !== primaryStep;
+  const compactCard = (step: PlanStepView) => compact && !fullSteps.has(step.id);
   const placement: MapPlacement = useMemo(() => placePipelineMap(layout, ({ id }) => ({
-    width: compact && id !== primaryStep ? compactMapCardWidth : mapCardWidth,
+    width: compact && !fullSteps.has(id) ? compactMapCardWidth : mapCardWidth,
     height: heights.get(id) ?? unmeasuredCardHeight,
-  })), [layout, heights, compact, primaryStep]);
+  })), [layout, heights, compact, fullSteps]);
   const [geometry, setGeometry] = useState<{
     width: number; height: number; compact: boolean;
     paths: readonly { id: string; d: string }[];
@@ -856,6 +856,8 @@ export function StudioPipelineMap({
   const selectedSteps = state.selection?.kind === 'steps' ? state.selection.stepIds
     : state.selection ? [state.selection.stepId] : [];
   const primaryStep = activeStepId ?? selectedSteps[0];
+  const fullSteps = useMemo(() => new Set([primaryStep, choosing?.step].filter((id): id is string => !!id)),
+    [primaryStep, choosing?.step]);
   const firstStep = newStepCommand?.();
   function insertAt(target: EventTarget) {
     const card = target instanceof Element ? target.closest<HTMLElement>('[data-map-step]') : null;
@@ -926,7 +928,7 @@ export function StudioPipelineMap({
               stepMenu={stepMenu}
             />
           )}
-          <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus} primaryStep={primaryStep}
+          <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus} fullSteps={fullSteps}
             strongEdges={strongEdges} viewportRef={viewportRef} fitReady={fitReady} wiring={wiring}
             card={(step, compact) => (
               <StepCard

@@ -619,14 +619,16 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   await rail.getByRole('tab', { name: 'Runs', exact: true }).click();
   await openResultsSlot(page);
   const chartWidth = () => loss.evaluate((svg: SVGSVGElement) => svg.viewBox.baseVal.width);
+  const bottom = page.locator('.studio-window-bottom');
+  const row = await bottom.evaluate(({ clientHeight }) => clientHeight);
   await page.setViewportSize({ width: 620, height: 860 });
   await expect(page.getByRole('complementary', { name: 'Details Drawer' })).toBeHidden();
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toBeHidden();
   await expect(page.locator('.studio-window-slot__strip')).toHaveCount(0);
   await expect.poll(chartWidth).toBeLessThan(desktopWidth);
   await expect(loss.locator('polyline')).toHaveCount(1);
-  const bottom = page.locator('.studio-window-bottom');
-  await expect.poll(() => bottom.evaluate(({ clientHeight }) => clientHeight)).toBeLessThanOrEqual(40);
+  // A narrow bottom bar wraps its transport onto a second row, and no further.
+  await expect.poll(() => bottom.evaluate(({ clientHeight }) => clientHeight)).toBeLessThanOrEqual(2 * row);
   await captureStudioWindow(page, info, '04-narrow-results');
   const splitWidth = await chartWidth();
   await page.setViewportSize({ width: 520, height: 860 });

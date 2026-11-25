@@ -230,13 +230,11 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await chooseStep(page, 'baseline');
-  await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
+  await expect(plans(page).getByText('Waiting', { exact: true })).toBeVisible();
   const initialPlan = (await plan()).window_map!;
   const [initial] = initialPlan.evaluations!.filter(({ key }) => key.step === 'baseline');
-  expect(initial.can_run).toBe(false);
-  expect(initialPlan.problems).toContainEqual(expect.objectContaining({
-    step: 'baseline', code: 'cannot_run', path: '/inputs/subject',
-  }));
+  expect(initial).toMatchObject({ can_run: false, status: 'waiting', reason: 'Waiting for train.' });
+  expect(initialPlan.problems.filter(({ step }) => step === 'baseline')).toEqual([]);
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeDisabled();
   // A card accepts a new step whatever its runs' status.

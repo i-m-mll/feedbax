@@ -14,6 +14,7 @@ describe('component catalog transport', () => {
             name: 'RepresentedGain',
             category: 'Test',
             description: 'Represented component fixture',
+            headline: { name: 'RepresentedGain', field: 'gain' },
             param_schema: [{ name: 'gain', type: 'float', default: 1.0, required: false }],
             input_ports: ['input'],
             output_ports: ['output'],

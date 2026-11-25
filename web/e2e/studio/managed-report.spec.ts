@@ -72,7 +72,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   const map = await windowMap(created.revision);
   expect(map.problems.filter(({ step }) => step === 'report')).toEqual([]);
   expect(map.rows).toContainEqual(expect.objectContaining({
-    key: expect.objectContaining({ step: 'report' }), status: 'not_run',
+    key: expect.objectContaining({ step: 'report' }), status: 'waiting',
   }));
   for (const variant of ['base', 'compare']) {
     expect(map.edges).toContainEqual(expect.objectContaining({
