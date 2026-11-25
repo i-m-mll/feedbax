@@ -535,6 +535,8 @@ class Subtract(Component):
 class Multiply(Component):
     """Element-wise product of two inputs."""
 
+    model_facts = ModelFacts()
+
     ports: ClassVar[Ports] = Ports(
         inputs={"a": PortType(dtype="any"), "b": PortType(dtype="any")},
         outputs={"output": PortType(dtype="any")},
