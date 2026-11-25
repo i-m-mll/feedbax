@@ -260,7 +260,7 @@ function MarkButton({
       aria-label={studioAccessibleName('select', name)}
       aria-pressed={!selectedCount ? false : selectedCount === runs.length ? true : 'mixed'}
       aria-description={[failure, lineageDescription].filter(Boolean).join(' · ') || undefined}
-      {...appTip([studioAccessibleName('select', name), failure].filter(Boolean).join('\n'))}
+      {...appTip(studioAccessibleName('select', [name, failure].filter(Boolean).join(' · ')))}
       data-map-focus={lineage}
       data-boxed={boxed ? runs.some(({ id }) => boxed.has(id)) ? '' : undefined
         : selectionKind === 'rows' && selectedCount > 0 ? '' : undefined}

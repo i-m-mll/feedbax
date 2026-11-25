@@ -229,9 +229,9 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                 ))}
                 <TableCell tabIndex={-1} className={cellFocus} aria-description={shownReason}>
                   <span className="flex min-w-0 items-center gap-1.5">
-                    <StudioRunStatus status={run.state} {...appTip(shownReason)} />
+                    <StudioRunStatus status={run.state} {...appTip(studioRunReason({ ...run, reason }))} />
                     {run.state === "failed" && shownReason && <span data-run-reason className="min-w-0 truncate text-sm"
-                      {...appTip(shownReason)}>{shownReason.split("\n")[0]}</span>}
+                      {...appTip(studioRunReason({ ...run, reason }))}>{shownReason.split("\n")[0]}</span>}
                     {run.blockedBy && <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
                       onClick={() => onSelectionChange(selectStep(state, run.blockedBy!.stepId))}>{run.blockedBy.label}</Button>}
                   </span>

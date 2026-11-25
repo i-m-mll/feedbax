@@ -161,7 +161,7 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
                           variant="ghost"
                           aria-label={studioAccessibleName("select", [`${y.label} ${row.label}`, `${x.label} ${column.label}`, ...labels].join(" · "))}
                           aria-description={failure}
-                          {...failure && appTip(failure)}
+                          {...failure && appTip(studioRunReason(cell[0]))}
                           pressed={cell.every(({ id }) => selected.has(id))}
                           className="-ml-control-inline gap-2"
                           {...selectionButton((extend) => onSelectionChange(cell.length === 1
