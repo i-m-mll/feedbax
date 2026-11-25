@@ -2677,6 +2677,12 @@ export type BestCheckpoint = {
   "best_by": string;
 };
 
+export type BoundRank = {
+  "key": string;
+  "variant": string;
+  "row": string;
+};
+
 export type CallValue = {
   "kind"?: "call";
   "function": string;
@@ -3542,12 +3548,6 @@ export type SelectedAxisValueProblem = {
   "remaining": Array<SelectedAxisValue>;
 };
 
-export type SelectedRow = {
-  "key": string;
-  "variant": string;
-  "row": string;
-};
-
 export type SetAxis = {
   "set": string;
   "where"?: AxisCondition | null;
@@ -3735,7 +3735,6 @@ export type StepPresentation = {
 export type StepReference = {
   "step": string;
   "where"?: SubsetTerms | NamedSubset | null;
-  "row"?: string | null;
   "variants"?: "all" | Array<string> | null;
   "checkpoint"?: CheckpointRule | null;
   "element"?: string | null;
@@ -3747,7 +3746,7 @@ export type StoreKind = "all_readers" | "selected_readers" | "sweep_value" | "se
 
 export type StoreSubset = {
   "rule"?: string;
-  "rows"?: Array<SelectedRow>;
+  "bound_ranks"?: Array<BoundRank> | null;
   "axes"?: Record<string, Array<SelectedAxisValue>>;
   "query": ManifestPredicate;
 };
@@ -4703,7 +4702,7 @@ export type StudioValueStructure = {
 
 export type SubsetTerms = {
   "rule"?: string;
-  "rows"?: Array<SelectedRow>;
+  "bound_ranks"?: Array<BoundRank> | null;
   "axes"?: Record<string, Array<SelectedAxisValue>>;
 };
 
@@ -10081,6 +10080,14 @@ export const BestCheckpointSchema: z.ZodType<BestCheckpoint> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<BestCheckpoint>;
 
+export const BoundRankSchema: z.ZodType<BoundRank> = z.lazy(() =>
+  z.object({
+    "key": z.string().min(1),
+    "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
+    "row": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
+  }).strict()
+) as unknown as z.ZodType<BoundRank>;
+
 export const CallValueSchema: z.ZodType<CallValue> = z.lazy(() =>
   z.object({
     "kind": z.literal("call").optional(),
@@ -11260,14 +11267,6 @@ export const SelectedAxisValueProblemSchema: z.ZodType<SelectedAxisValueProblem>
   }).strict()
 ) as unknown as z.ZodType<SelectedAxisValueProblem>;
 
-export const SelectedRowSchema: z.ZodType<SelectedRow> = z.lazy(() =>
-  z.object({
-    "key": z.string().min(1),
-    "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
-    "row": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
-  }).strict()
-) as unknown as z.ZodType<SelectedRow>;
-
 export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
   z.object({
     "set": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -11518,7 +11517,6 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
   z.object({
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "where": z.union([SubsetTermsSchema, NamedSubsetSchema, z.null()]).optional(),
-    "row": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")), z.null()]).optional(),
     "variants": z.union([z.literal("all"), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))), z.null()]).optional(),
     "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
     "element": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
@@ -11534,7 +11532,7 @@ export const StoreKindSchema: z.ZodType<StoreKind> = z.lazy(() =>
 export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
-    "rows": z.array(SelectedRowSchema).optional(),
+    "bound_ranks": z.union([z.array(BoundRankSchema), z.null()]).optional(),
     "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).optional(),
     "query": ManifestPredicateSchema,
   }).strict()
@@ -12754,7 +12752,7 @@ export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.laz
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
-    "rows": z.array(SelectedRowSchema).optional(),
+    "bound_ranks": z.union([z.array(BoundRankSchema), z.null()]).optional(),
     "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).optional(),
   }).strict()
 ) as unknown as z.ZodType<SubsetTerms>;

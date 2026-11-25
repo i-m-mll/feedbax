@@ -236,8 +236,8 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         for run in compile_project(upstream).runs if run.key.step == "conditions"
     }
     order = ("heavy", "nominal")
-    selected = [{"key": key, "variant": "default", "row": rows[key]} for key in order]
-    steps["analyze"]["inputs"]["states"] = {"step": "conditions", "where": {"rows": selected}}
+    selected = [{"id": key, "label": mass_values[key]["label"]} for key in order]
+    steps["analyze"]["inputs"]["states"] = {"step": "conditions", "where": {"axes": {"mass": selected}}}
     del steps["baseline"]
     folders = ProjectFolderService(projects, operations=_operations())
     _save_project(folders, project, Project.model_validate(definition))
