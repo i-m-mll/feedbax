@@ -249,7 +249,10 @@ def _prepare_weighted_rollout(
     )
     if isinstance(restored, tuple):
         problem = restored[0]
-        raise CannotRun(json_pointer(("inputs", "subject", *problem.path)), problem.reason)
+        subject_path = (
+            ("inputs", "subject", "checkpoint") if imported_subject_sha256 is None else ("inputs", "subject")
+        )
+        raise CannotRun(json_pointer((*subject_path, *problem.path)), problem.reason)
     model, task = rollout_semantics(
         restored.resolved.graph, restored.resolved.key_schedule, paired.task_source,
         paired.execution.input_bindings, variant.source_overrides,
