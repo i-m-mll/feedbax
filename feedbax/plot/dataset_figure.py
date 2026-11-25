@@ -131,7 +131,7 @@ class _Samples:
 
     @property
     def label(self) -> str:
-        title = self.field.quantity or self.name.replace("_", " ")
+        title = self.field.label or self.field.quantity or self.name.replace("_", " ")
         return f"{title} ({self.field.units})" if self.field.units else title
 
 

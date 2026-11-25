@@ -45,13 +45,14 @@ class TrialFigureTime(StrictModel):
 
 
 class FieldDescriptor(StrictModel):
-    """A field's labelled dimensions and scientific metadata."""
+    """A field's labelled dimensions, display name and scientific metadata."""
 
     model_config = ConfigDict(frozen=True)
 
     dims: tuple[Name, ...]
     units: StrictStr | None = None
     quantity: StrictStr | None = None
+    label: StrictStr | None = None
     frame: StrictStr | None = None
     trial_time: TrialFigureTime | None = None
     inline_values: tuple[JsonValue, ...] | None = None

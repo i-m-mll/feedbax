@@ -38,6 +38,7 @@ from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef, U
 from feedbax.contracts.rollout import (
     ResolvedInitialRollout, ResolvedRolloutBinding, ResolvedRolloutMember, rollout_objective_sha256, rollout_semantics,
 )
+from feedbax.contracts.rollout_dataset import UpdateAxis, rollout_coordinates, rollout_leading, rollout_update_axis
 from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.persistence.completion import CompletionFileError
@@ -349,13 +350,12 @@ def _prepare_stored_rollout(
 
 def rollout_dataset(
     prepared: PreparedRollout, evaluated: TrialEvaluation, params: RolloutParameters,
-    *, update_axis: str | None = "checkpoint",
+    *, update_axis: UpdateAxis | None = "checkpoint",
 ) -> Dataset:
     import jax
     import numpy as np
 
     from feedbax.contracts.authored_canonical import canonical_sha256
-    from feedbax.contracts.dataset import TrialFigureTime
     from feedbax.dataset import Dataset, Variable
     from feedbax.persistence.evaluation_trial_records import trial_dataset_fields
     from feedbax.contracts.task_document import TaskDocument
@@ -367,7 +367,7 @@ def rollout_dataset(
     history = jax.tree.map(np.asarray, evaluated.history)
     n_trials = evaluated.trials.epochs.starts.shape[0]
     trials = [jax.tree.map(lambda value: value[i], history) for i in range(n_trials)]
-    leading = ("condition",) if update_axis is None else (update_axis, "condition")
+    leading = rollout_leading(update_axis)
 
     def expand(value):
         array = np.asarray(value)
@@ -394,7 +394,6 @@ def rollout_dataset(
     variables.update(trial_fields)
     state_coordinates.update(trial_coordinates)
     time = np.arange(paired.execution.task.n_steps + 1, dtype=np.float64) * graph.period_seconds
-    trial_time = TrialFigureTime()
     variation = params.condition_id()
     attrs = {
         "state_sampling": "reset_and_post_transition",
@@ -417,21 +416,23 @@ def rollout_dataset(
                 ).hexdigest(),
                 "variation_sha256": variation,
             })
-    coordinates = {}
+    coordinate_values = {
+        "condition": np.asarray([variation]),
+        "trial": np.asarray(params.trials),
+        "state_time": time,
+        "transition_start": time[:-1],
+        "transition_end": time[1:],
+    }
     if update_axis is not None:
         assert isinstance(prepared.member, ResolvedRolloutMember)
-        coordinates[update_axis] = Variable(np.asarray([prepared.member.coordinate]), (update_axis,))
+        coordinate_values[update_axis] = np.asarray([prepared.member.coordinate])
+    coordinates = {
+        name: Variable.from_field(coordinate_values[name], descriptor, descriptor.dims)
+        for name, descriptor in rollout_coordinates(update_axis).items()
+    }
     return Dataset.from_arrays(
         variables,
-        coords={
-            **coordinates,
-            "condition": Variable(np.asarray([variation]), ("condition",)),
-            "trial": Variable(np.asarray(params.trials), ("trial",)),
-            **state_coordinates,
-            "state_time": Variable(time, ("state_time",), units="s", trial_time=trial_time),
-            "transition_start": Variable(time[:-1], ("transition",), units="s", trial_time=trial_time),
-            "transition_end": Variable(time[1:], ("transition",), units="s", trial_time=trial_time),
-        },
+        coords=coordinates | state_coordinates,
         attrs=attrs,
         schema_id=params.states_schema,
     )
@@ -767,7 +768,7 @@ def main(argv: Sequence[str]) -> int:
         with ExitStack() as opened:
             result = _series_dataset(
                 members, binding, params, stop,
-                update_axis=None if isinstance(subject, ContentRef) else "update" if is_series else "checkpoint",
+                update_axis=rollout_update_axis(subject),
                 job_id=job_id, store=store, opened=opened, computation=computation,
             )
             if result is None or stop.exists():
