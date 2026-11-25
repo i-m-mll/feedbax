@@ -502,7 +502,7 @@ function MarkerChoice({ element, marker, mark, choose }: {
   return <span className="contents" onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
     onKeyDown={(event) => event.stopPropagation()}>
     <Menu>
-      <MenuTrigger render={<IconButton size="mark" label={studioAccessibleName('marker', element.name)} icon={<MarkerGlyph marker={marker} mark={mark} />} tipPlacement="right" />} />
+      <MenuTrigger render={<IconButton size="mark" label={studioName('marker')} icon={<MarkerGlyph marker={marker} mark={mark} />} tipPlacement="right" />} />
       <MenuContent side="right" aria-label={studioAccessibleName('marker', element.name)}>
         <MenuRadioGroup value={marker.shape} onValueChange={(shape: Marker['shape']) => change({ ...marker, shape })}>
           {markerShapes.map((shape) => <MenuRadioItem key={shape} value={shape}
