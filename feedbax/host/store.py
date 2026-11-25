@@ -426,6 +426,7 @@ class Store:
 
     def mirror_collected_train(
         self, job: dict, state: str, receipt: dict | None, progress: dict | None, delivery: int,
+        submitted_at_ms: int, ended_at_ms: int,
     ) -> None:
         """Acknowledge terminal Train custody only after it is committed to this Host."""
         from feedbax.persistence.train_job import read_train_job
@@ -467,10 +468,13 @@ class Store:
             if ref is not None:
                 outcome["store_job_entry"] = ref.model_dump(mode="json")
             checkpoint = {"completed_updates": entry.recovery.pointer.completed_updates}
-        self._mirror_collected_terminal(job, state, outcome, progress, checkpoint, delivery)
+        self._mirror_collected_terminal(
+            job, state, outcome, progress, checkpoint, delivery, submitted_at_ms, ended_at_ms,
+        )
 
     def mirror_collected_evaluate(
         self, job: dict, receipt: dict, progress: dict | None, delivery: int,
+        submitted_at_ms: int, ended_at_ms: int,
     ) -> None:
         """Record the terminal attempt only after its exact Store receipt is admitted locally."""
         from feedbax.persistence.canonical_evaluate import (
@@ -509,11 +513,16 @@ class Store:
             "store_success": receipt,
             "receipt": {"manifest_id": evaluation_manifest_id(job["id"]), "manifest_sha256": manifest.sha256},
         }
-        self._mirror_collected_terminal(job, "succeeded", outcome, progress, None, delivery)
+        self._mirror_collected_terminal(
+            job, "succeeded", outcome, progress, None, delivery, submitted_at_ms, ended_at_ms,
+        )
 
     def _mirror_collected_terminal(
         self, job: dict, state: str, outcome: dict, progress: dict | None, checkpoint: dict | None, delivery: int,
+        submitted_at_ms: int, ended_at_ms: int,
     ) -> None:
+        if any(type(value) is not int or value < 0 for value in (submitted_at_ms, ended_at_ms)):
+            raise HostError("invalid_request", "Collected attempt times must be Unix epoch milliseconds.")
         data = job["data"]
         with self.db:
             if (previous := self.get(job["id"])) is not None:
@@ -542,7 +551,9 @@ class Store:
             )
             recorded = self.get(job["id"])
             assert recorded is not None
-            self.append(recorded, "terminal", outcome)
+            self.append(recorded, "terminal", outcome | {"venue_times": {
+                "submitted_at_ms": submitted_at_ms, "ended_at_ms": ended_at_ms,
+            }})
 
     def _is_managed_launch(self, row: sqlite3.Row, entrypoint: str) -> bool:
         launch = json.loads(row["launch"])
@@ -1335,11 +1346,31 @@ class Store:
         include_launch: bool,
         job_ids: list[str] | None = None,
     ) -> list[dict]:
-        selection = "AND id IN (" + ",".join("?" * len(job_ids)) + ")" if job_ids else ""
+        """Read job rows and their lifecycle times. Older venue mirrors recorded only local custody time."""
+        selection = "AND jobs.id IN (" + ",".join("?" * len(job_ids)) + ")" if job_ids else ""
         rows = self.db.execute(
-            f"""SELECT *, {_STUDIO_CONTINUATION} AS continued FROM jobs
-                WHERE (? IS NULL OR project=?) AND (? IS NULL OR request=?)
-                AND (? IS NULL OR id=?) {selection} ORDER BY seq""",
+            f"""SELECT jobs.*, {_STUDIO_CONTINUATION} AS continued,
+                       coalesce(
+                           CAST(queued.time * 1000 AS INTEGER),
+                           json_extract(terminal.data, '$.venue_times.submitted_at_ms'),
+                           CAST(terminal.time * 1000 AS INTEGER)
+                       ) AS submitted_at_ms,
+                       coalesce(
+                           CASE WHEN queued.cursor IS NULL
+                               THEN json_extract(terminal.data, '$.venue_times.ended_at_ms') END,
+                           CAST(terminal.time * 1000 AS INTEGER)
+                       ) AS ended_at_ms
+                FROM jobs
+                LEFT JOIN events queued ON queued.cursor = (
+                    SELECT cursor FROM events WHERE job=jobs.id AND kind='queued' ORDER BY cursor LIMIT 1
+                )
+                LEFT JOIN events terminal ON jobs.state IN {TERMINAL} AND terminal.cursor = (
+                    SELECT cursor FROM events WHERE job=jobs.id
+                    AND kind=CASE WHEN jobs.state='reused' THEN 'reused' ELSE 'terminal' END
+                    ORDER BY cursor LIMIT 1
+                )
+                WHERE (? IS NULL OR jobs.project=?) AND (? IS NULL OR jobs.request=?)
+                AND (? IS NULL OR jobs.id=?) {selection} ORDER BY jobs.seq""",
             (project, project, request, request, job_id, job_id, *(job_ids or ())),
         )
         result = []
@@ -1356,6 +1387,8 @@ class Store:
                     "stop_mode",
                     "delivery",
                     "worker_pid",
+                    "submitted_at_ms",
+                    "ended_at_ms",
                 )
             }
             view.update(
