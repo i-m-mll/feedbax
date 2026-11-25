@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures/studio';
-import { type Page } from '@playwright/test';
+import { type Page, type Request } from '@playwright/test';
 import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
@@ -125,26 +125,26 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await item('Aligned velocity').click();
   if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
   await expect(inspector.getByText('Aligned velocity', { exact: true })).toBeVisible();
-  // The catalog reread each edit starts is held until both adds are saved: an edit does not wait for it.
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
-  const reviews = (url: URL) => url.pathname === reviewPath;
-  await page.route(reviews, async (route) => {
-    if (!route.request().postDataJSON()?.change) await held;
-    await route.fallback();
-  });
+  // An edit's own review answers with the catalog after it, so an edit asks the service once.
+  const reviews: unknown[] = [];
+  const countReview = (sent: Request) => {
+    if (new URL(sent.url()).pathname === reviewPath) reviews.push(sent.postDataJSON()?.change?.kind ?? 'read');
+  };
+  page.on('request', countReview);
   await edit(() => page.keyboard.press('Enter'));
   await expect(search).toHaveValue('velocity');
   await expect(item('Aligned velocity')).toBeFocused();
   await page.keyboard.press('ArrowDown');
   await expect(item('Trial summary')).toBeFocused();
   await edit(() => page.keyboard.press('Enter'));
-  release();
-  await page.unroute(reviews);
   await expect(item('Trial summary')).toBeFocused();
   await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
+  // A new operation's unset choice reads empty, not as a mixed selection.
+  await expect(inspector.getByRole('combobox', { name: 'Position', exact: true })).toHaveText('');
+  page.off('request', countReview);
+  expect(reviews).toEqual(['edit', 'edit']);
   for (const [field, label] of [
-    ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
+    ['Position', 'plant.effector/position'], ['Velocity', 'plant.effector/velocity'], ['Target', 'target_pos'],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => pick(select, label));
@@ -154,15 +154,12 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
 
   await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '1.5'));
-  const beforeRefusal = await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
-  const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
-    response.request().postDataJSON()?.change?.kind === 'wire');
-  await pick(role('Velocity'), 'states');
-  expect((await refusal).status()).toBe(422);
-  // The refusal lands on the role field it was made in.
-  await expect(role('Velocity')).toHaveAccessibleDescription(/Requires dataset schemas/);
-  await expect(role('Velocity').getByRole('img', { name: 'Problem', exact: true })).toHaveAttribute('data-app-tip', /Requires dataset schemas/);
-  expect((await snapshot()).revision).toBe(beforeRefusal.revision);
+  await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
+  // A role offers only the sources that fit it: the saved states are no velocity a summary reads.
+  await role('Velocity').click();
+  await expect(page.getByRole('option', { name: 'aligned_velocity.velocity', exact: true })).toBeVisible();
+  await expect(page.getByRole('option', { name: 'states', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
   await edit(() => pick(role('Velocity'), 'aligned_velocity.velocity'));
 
   const pane = analysis.locator('.react-flow__pane');
@@ -200,7 +197,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await tab(page, 'Figures').click();
   await figures.getByRole('button', { name: 'velocity_summary', exact: true }).click();
   await expect(figures.getByText('Waiting', { exact: true })).toBeVisible();
-  await expect(inspector.getByRole('status')).toContainText('Waiting for analyze.');
+  await expect(inspector.getByRole('status')).toHaveText('Waiting');
   const caption = inspector.getByRole('textbox', { name: 'Caption', exact: true });
   const captioned = await edit(async () => { await caption.fill('Velocity by condition'); await caption.press('Enter'); });
   expect(graph(captioned).views?.velocity_summary.figure).toMatchObject({ caption: 'Velocity by condition' });

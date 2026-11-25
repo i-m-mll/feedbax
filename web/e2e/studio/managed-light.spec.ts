@@ -62,7 +62,6 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const scope = paired ? 'base' : 'default';
   const path = first?.projectPath ?? '/api/projects/' + project;
   const runPath = path + '/train-runs';
-  const reviewPath = path + '/authoring/analyze';
   const mounted = '/?project=' + encodeURIComponent(project);
   const analysis = page.getByRole('tabpanel', { name: 'Analysis', exact: true });
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
@@ -210,7 +209,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await selectElement('aligned_velocity');
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
   for (const [field, label] of [
-    ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
+    ['Position', 'plant.effector/position'], ['Velocity', 'plant.effector/velocity'], ['Target', 'target_pos'],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => chooseOption(page, select, label));
@@ -221,21 +220,15 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await place('Trial summary');
   await selectElement('summarize_velocity');
   await edit(() => number(page, boundsScale, '1.5'));
-  const beforeRefusal = await edit(() => number(page, inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
-  const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
-    response.request().postDataJSON()?.change?.kind === 'wire');
+  await edit(() => number(page, inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
+  // A role offers only the sources that fit it, by keyboard too: typing `states` finds nothing for a velocity.
   await tabTo(page, roleField('Velocity'));
   await page.keyboard.press('ArrowDown');
   // The popup's search field takes focus after it opens; keys typed before then are lost.
   await expect(page.locator('input').and(page.getByRole('combobox', { name: 'Velocity', exact: true }))).toBeFocused();
   await page.keyboard.type('states');
-  await expect(page.getByRole('option', { name: 'states', exact: true })).toHaveAttribute('data-highlighted');
-  await page.keyboard.press('Enter');
-  expect((await refusal).status()).toBe(422);
-  // The refusal lands on the role field it was made in.
-  await expect(roleField('Velocity')).toHaveAccessibleDescription(/Requires dataset schemas/);
-  await expect(roleField('Velocity').getByRole('img', { name: 'Problem', exact: true })).toHaveAttribute('data-app-tip', /Requires dataset schemas/);
-  expect((await snapshot()).revision).toBe(beforeRefusal.revision);
+  await expect(page.getByRole('option')).toHaveCount(0);
+  await page.keyboard.press('Escape');
   await edit(() => chooseOption(page, roleField('Velocity'), 'aligned_velocity.velocity'));
 
   await place('Velocity Summary');
