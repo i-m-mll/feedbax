@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.examples import load_shipped_projects
 from feedbax.web.app import create_app
 from tests.test_document_task_parity import _model_payload, _pair_model, example
 from feedbax.contracts.expression_values import LENGTH, CallValue, NameValue, ValueBase, ValueType
@@ -147,6 +148,23 @@ def test_nominal_trial_uses_representative_values_and_the_same_task_timeline(cli
         ("hold", 0, 10), ("cue", 10, 24), ("move", 24, 80),
     ]
     assert trial["present"]["target_pos"] == [False] * 10 + [True] * 70
+
+
+@pytest.mark.parametrize("kind", ["simple-reaches", "delayed-reaches"])
+def test_shipped_nominal_reach_has_a_target_apart_from_the_hand(client, kind):
+    """Relate must have distinct hand and target positions in the first trial Studio draws."""
+    documents = load_shipped_projects()["point-mass-reaching"].documents
+    response = client.post("/api/execution/task-trials/sample", json={
+        "model": documents["point-mass"].payload,
+        "task": documents[f"{kind}-task"].payload,
+        "nominal": True, "seed": 0, "count": 1,
+    })
+    assert response.status_code == 200, response.text
+    (trial,) = response.json()["drawn"]["trials"]
+    start, target = (trial["variables"][name] for name in ("start", "target"))
+    assert start == pytest.approx([0.05, 0.075])
+    assert target == pytest.approx([0.35, 0.075])
+    assert list(trial["inits"].values()) == [start]
 
 
 def test_term_preview_distinguishes_compile_problem_from_empty_window(client, expression_functions):
