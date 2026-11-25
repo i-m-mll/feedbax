@@ -109,8 +109,8 @@ const axisPoint = (plot: Locator, fraction: number) => plot.evaluate((node, frac
 }, fraction);
 
 // Catches a figure that ignores the clock's time or its picked trial, a pin that freezes the trial the figure and the
-// Scene share, a figure whose press does not move the clock, a click on a trace that picks no trial, and a playhead
-// drawn over a figure that declares no time panel.
+// Scene share, a figure whose press does not move the clock, a click on a trace that picks no trial, a legend or hover
+// label listing every trial over the plot, and a playhead drawn over a figure that declares no time panel.
 test('with the Scene pinned on an Evaluate and its Analyze selected, scrubbing moves both and the trial is marked', { tag: '@round' }, async ({ page, request, studio }) => {
   test.setTimeout(120_000);
   const { trials } = await speedFigure(page, request, studio.home, 'figure-clock');
@@ -154,6 +154,12 @@ test('with the Scene pinned on an Evaluate and its Analyze selected, scrubbing m
   await expect(trialPicker(page)).toHaveText('64 trials');
   await expect.poll(() => shownTrials(plot)).toHaveLength(64);
   await expect.poll(() => heavyTrial(plot)).toEqual([trials[3]]);
+  await expect(plot.locator('g.legend .traces')).toHaveCount(0);
+  expect(await plot.evaluate((node) => (node as unknown as { _fullLayout: { yaxis: { _length: number } } })._fullLayout.yaxis._length /
+    node.getBoundingClientRect().height)).toBeGreaterThan(0.5);
+  await page.mouse.move(half.x, half.y);
+  await page.mouse.move(half.x + 4, half.y);
+  await expect(plot.locator('.hoverlayer text')).toHaveCount(0);
 
   const top = await plot.evaluate((node, x) => {
     const gd = node as unknown as {

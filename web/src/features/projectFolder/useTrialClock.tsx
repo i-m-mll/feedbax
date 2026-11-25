@@ -131,13 +131,18 @@ function rowsOf(task: ShelfTask, pick: TrialPick, shown: TrialShown | TrialsUnav
   }
 }
 
-/** Under Mean, the time from Align's epoch over which some condition has a mean, and the times its samples are at. */
-function meanTimeline(mean: TrialMean): Omit<ClockTimeline, 'bands'> | undefined {
-  const spans = mean.conditions.flatMap((condition) => condition.span ? [condition.span] : []);
-  if (!spans.length) return undefined;
-  const start = Math.min(...spans.map((span) => span.start));
-  const end = Math.max(...spans.map((span) => span.end));
-  return { start, duration: end - start, frameTimes: [...new Set(mean.conditions.flatMap((condition) => condition.time))].sort((a, b) => a - b) };
+/**
+ * Under Mean, the time from Align's epoch over which some trial has a record, which the figures draw every trial over,
+ * and the times every trial's samples are at, on that axis.
+ */
+function meanTimeline(mean: TrialMean, stateTime: readonly number[]): Omit<ClockTimeline, 'bands'> | undefined {
+  const alignments = mean.conditions.flatMap((condition) => Object.values(condition.trials));
+  if (!alignments.length) return undefined;
+  const start = Math.min(...alignments.map(({ span }) => span.start));
+  const end = Math.max(...alignments.map(({ span }) => span.end));
+  const times = new Set(alignments.flatMap(({ origin, span }) => stateTime.map((time) => Math.round((time - origin) * 1e9) / 1e9)
+    .filter((time) => time >= span.start - 1e-9 && time <= span.end + 1e-9)));
+  return { start, duration: end - start, frameTimes: [...times].sort((a, b) => a - b) };
 }
 
 /**
@@ -153,8 +158,8 @@ function MeanFields({ options, choice, onChange }: {
   const by = choice.by ?? options.by.map(({ id }) => id);
   const byText = options.by.filter(({ id }) => by.includes(id)).map(({ label }) => label).join(', ') || studioName('none');
   return <>
-    <Menu>
-      <MenuTrigger render={<Button variant="ghost" className="min-w-0 gap-1 px-1" />} aria-label={studioAccessibleName('meanBy', byText)}>
+    <Menu modal={false}>
+      <MenuTrigger render={<Button variant="ghost" className="min-w-0 max-w-48 gap-1 px-1" />} aria-label={studioAccessibleName('meanBy', byText)}>
         <span className="text-shell-muted">{studioName('meanBy')}</span><span className="truncate">{byText}</span>
         <ChevronDown aria-hidden="true" />
       </MenuTrigger>
@@ -166,8 +171,8 @@ function MeanFields({ options, choice, onChange }: {
           }}>{label}</MenuCheckboxItem>)}
       </MenuContent>
     </Menu>
-    <Select aria-label={studioName('meanAlign')} value={choice.align ?? trialStart}
-      leading={<span className="pl-control-inline text-shell-muted">{studioName('meanAlign')}</span>}
+    <span aria-hidden="true" className="pl-1 text-shell-muted">{studioName('meanAlign')}</span>
+    <Select aria-label={studioName('meanAlign')} value={choice.align ?? trialStart} className="min-w-0 max-w-32"
       items={[{ value: trialStart, label: studioName('trialStart') }, ...options.align.map(({ id, label }) => ({ value: id, label }))]}
       onValueChange={(align) => onChange({ ...choice, align: align === trialStart ? null : align })} />
   </>;
@@ -199,10 +204,10 @@ export function useTrialClock({
   const recordedTrial = replay.read.kind === 'read' ? replay.read : undefined;
   const { shown, query, possible, picked } = useShown(pick, clock, offer, view, stored, replay, sceneVisible);
   const drawn = view && taskDocument ? shelfTask(view, taskDocument, objectiveDocument) : undefined;
-  const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument, pick, clock.seed]));
-  const [time, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
+  const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument]));
+  const [heldTime, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
   const stateTime = pick?.trials === 'recorded' ? recordedTrial?.stateTime : undefined;
-  const replayTimeline = averaging ? mean ? meanTimeline(mean) ?? null : null
+  const replayTimeline = averaging ? mean && recordedTrial ? meanTimeline(mean, recordedTrial.stateTime) ?? null : null
     : stateTime && stateTime.length > 1 && stateTime[stateTime.length - 1] > 0
       ? { start: 0, duration: stateTime[stateTime.length - 1], frameTimes: [...stateTime] } : null;
   /** A recorded trial's step is its run's; any other trial's is the step's Model's. */
@@ -217,6 +222,8 @@ export function useTrialClock({
       frameTimes: view?.n_steps && period != null ? frames(view.n_steps, period) : [],
       bands: epochs?.kind === 'segments' ? epochs.segments : [],
     };
+  /** The playhead is kept across trials of one time axis, so it is brought within the shown trial's time. */
+  const time = timeline.duration > 0 ? Math.min(Math.max(heldTime, timeline.start), timeline.start + timeline.duration) : heldTime;
   const selected = useStore(elements, (current) => current.selection);
   const axis = useTimeAxisStore();
   const change = (next: TrialClock) => setWindowState((current) => ({ ...current, clock: next }));
@@ -242,7 +249,7 @@ export function useTrialClock({
     onValueChange={(kind) => change({
       ...clock, picked: { trials: batchSet, showing: { kind, index: pick?.trials === batchSet ? pick.showing.index : 0 } },
     })} />;
-  const showing = showingAll && <div className="flex shrink-0 items-center gap-1">
+  const showing = showingAll && <div className="flex min-w-0 items-center gap-1">
     {showingAll}
     {averaging && replay.meanOptions && <MeanFields options={replay.meanOptions} choice={clock.mean}
       onChange={(next) => change({ ...clock, mean: next })} />}

@@ -74,6 +74,13 @@ export function traceTrial(figure: FigureProduct, index: number): string | undef
   return trial === undefined || trial === null ? undefined : String(trial);
 }
 
+/**
+ * The traces as Plotly draws them: a trial is picked on the clock or by a click on its trace, so a per-trial trace has
+ * no legend entry and no hover label, which for many trials would cover the plot.
+ */
+export const plottedTraces = (figure: FigureProduct) => figure.data.map((trace, index) =>
+  traceTrial(figure, index) === undefined ? trace : { ...trace, showlegend: false, hoverinfo: 'none' });
+
 /** Plotly's restyle of every per-trial trace: whether it is drawn, its line width and its opacity. */
 export interface TrialRestyle {
   readonly traces: number[];

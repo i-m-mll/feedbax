@@ -175,8 +175,8 @@ export function usePlayheadStore() {
 }
 
 /**
- * The playhead's time in the trial `scope` names, and its setter. A trial the playhead has not been moved in starts at
- * 0, so the time returns to the start whenever the shown trial changes.
+ * The playhead's time on the time axis `scope` names, and its setter. Trials shown on one axis share the time, so
+ * switching between them, or between One, All and Mean, keeps it; an axis the playhead has not been moved on starts at 0.
  */
 export function usePlayhead(store: PlayheadStore, scope: string) {
   const playhead = useStore(store);

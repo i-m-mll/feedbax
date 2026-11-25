@@ -179,7 +179,7 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   const batch = aggregate.data?.drawn.kind === 'aggregate' ? aggregate.data.drawn : undefined;
   const averaged: TrialMean | undefined = request?.mean ? replay.data?.mean ?? undefined : undefined;
   const meanOptions: TrialMeanOptions | undefined = replay.data?.mean_options ?? undefined;
-  const timeScope = JSON.stringify(['recorded', jobId, request?.trial, request?.mean ?? null, checkpoint]);
+  const timeScope = JSON.stringify(['recorded', jobId, request?.mean?.align ?? null]);
   const [time, setTime] = usePlayhead(playhead, timeScope);
   const chooseCheckpoint = (coordinate: number) => {
     if (jobId && coordinates?.includes(coordinate)) setCheckpoint({ jobId, coordinate });

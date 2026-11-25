@@ -509,15 +509,15 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
 }
 
 /**
- * A field's kind as a glyph that opens the menu of every kind its site takes, the present one checked. With one, the
- * glyph is only the kind.
+ * A field's kind as a glyph that opens the menu of every kind its site takes, the present one checked. With one, or
+ * on a field that cannot be changed, the glyph is only the kind.
  */
 function KindMark({ model, kind = model.kind, label = model.label, readOnly, open, onOpenChange, finalFocus, onChoose }: {
   model: FieldModel; kind?: ValueKind; label?: string; readOnly: boolean; open: boolean; onOpenChange(open: boolean): void;
   finalFocus: RefObject<HTMLInputElement>; onChoose(kind: ValueKind): void;
 }) {
   const offers = kindOffers(model);
-  if (offers.length < 2) {
+  if (offers.length < 2 || readOnly) {
     return <span role="img" aria-label={studioFieldKindLabel(label, kind)} {...appTip(studioFieldKindLabel(label, kind))}
       className="flex size-full items-center justify-center text-shell-muted">
       {kindGlyphs[kind]}
@@ -529,7 +529,7 @@ function KindMark({ model, kind = model.kind, label = model.label, readOnly, ope
       icon={kindGlyphs[kind]} />} />
     <MenuContent aria-label={studioFieldLabel('kinds', label)} finalFocus={finalFocus}>
       <MenuRadioGroup value={kind} onValueChange={(chosen: ValueKind) => { onOpenChange(false); onChoose(chosen); }}>
-        {offers.map((offer) => <MenuRadioItem key={offer.kind} value={offer.kind} disabled={readOnly || !offer.enabled}
+        {offers.map((offer) => <MenuRadioItem key={offer.kind} value={offer.kind} disabled={!offer.enabled}
           glyph={<span className="flex text-shell-muted">{kindGlyphs[offer.kind]}</span>}>{studioName(offer.kind)}</MenuRadioItem>)}
       </MenuRadioGroup>
     </MenuContent>

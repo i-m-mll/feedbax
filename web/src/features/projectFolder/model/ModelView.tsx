@@ -17,6 +17,7 @@ import { carryKind } from '@/components/ui/carry';
 import { focusRing } from '@/components/ui/styles';
 import { Dialog } from '@/components/ui/Dialog';
 import { Menu, MenuContent, MenuGroup, MenuGroupLabel, MenuItem } from '@/components/ui/Menu';
+import { MentionRow } from '@/features/projectWindow/StudioProblems';
 import { Inspector, InspectorAddRow } from '@/components/ui/Inspector';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import { Select } from '@/components/ui/Select';
@@ -243,6 +244,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const [rename, setRename] = useState<string>();
   /** Where the interior Inputs card's empty handle opened the list of signals outside. */
   const [addPort, setAddPort] = useState<DOMRect>();
+  /** Where a struct port's Add Term opened the list of its readable fields. */
+  const [termFields, setTermFields] = useState<{ rect: DOMRect; port: string; fields: readonly { label: string; address: ModelAddress }[] }>();
   const [menu, setMenu] = useState<{ address: ModelAddress; x: number; y: number; point: ModelPosition }>();
   /** What each target of the connection being drawn would do, by target end. */
   const [review, setReview] = useState<{ source: Port; verdicts: ReadonlyMap<string, ModelConnectionVerdict> }>();
@@ -273,6 +276,18 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   });
   const projectedPorts = useMemo(() => new Map<string, Port['type']>([...projection.data?.ports ?? [], ...projection.data?.physical_ports ?? []]
     .map(({ address, type }) => [addressKey(address), type])), [projection.data]);
+  /** The numeric fields under each struct-valued port, by port: Add Term on such a port relates one of them. */
+  const readableFields = useMemo(() => {
+    const found = new Map<string, { path: readonly (string | number)[]; address: ModelAddress }[]>();
+    for (const { address, type } of projection.data?.ports ?? []) {
+      const { element } = address;
+      if (element.kind !== 'field' || element.parent.kind !== 'port' || typeof type === 'string') continue;
+      if (type.base !== 'real' && type.base !== 'integer') continue;
+      const key = addressKey(at(address, element.parent));
+      found.set(key, [...found.get(key) ?? [], { path: element.path, address }]);
+    }
+    return found;
+  }, [projection.data]);
   /** A port read by a term of the selected step's Objective, itself or by a leaf under it, carries the Objective mark. */
   const markedPorts = useMemo(() => new Map([
     ...(projection.data?.task_inputs ?? []).map((address) => [addressKey(address), 'task'] as const),
@@ -467,6 +482,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (address.element.kind === 'attachment') address = at(address, address.element.parent);
     addressedProblems.set(addressKey(address), item.reason);
   }
+  /** A wire's problem is its target's: the input whose type the wire does not fit carries it. */
+  const targetProblems = new Map<string, string>();
+  for (const [id, wire] of Object.entries(drawnInterior?.wires ?? {})) {
+    const reason = addressedProblems.get(addressKey(at(graph, { kind: 'wire', id })));
+    if (reason) targetProblems.set(endKey(wire.target), reason);
+  }
   const portMap = useMemo(() => {
     const ports = owner ? boundaryPorts(owner.ports) : emptyPorts;
     const unused = currentPath.length ? [] : (projection.data?.task_signals ?? []).filter((signal) =>
@@ -478,8 +499,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const grow = (owner: 'inputs' | 'outputs'): Port => ({
       end: { owner, port: newPort }, direction: owner === 'inputs' ? 'output' : 'input', name: studioName('addPort'), type: {}, growing: true,
     });
+    /** The Inputs card lists the task's signals in the task's order, whether or not a port reads them yet. */
+    const signalOrder = (port: Port) => (projection.data?.task_signals ?? []).findIndex((signal) => signal.label === port.name);
+    const inputs = [...ports.filter((port) => idFor(port.end) === inputCard), ...unused]
+      .sort((a, b) => signalOrder(a) - signalOrder(b));
     const map = new Map<string, Port[]>([
-      [inputCard, [...ports.filter((port) => idFor(port.end) === inputCard), ...unused, ...currentPath.length ? [] : [grow('inputs')]]],
+      [inputCard, [...inputs, ...currentPath.length ? [] : [grow('inputs')]]],
       [outputCard, [...ports.filter((port) => idFor(port.end) === outputCard), grow('outputs')]],
     ]);
     for (const [id, component] of Object.entries(drawnInterior?.components ?? {})) {
@@ -1097,7 +1122,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         })),
         previewPort: (port) => setPreviewTarget(port?.direction === 'input' ? endKey(wireEnd(port)) : undefined),
         portProblems: new Map(ports.flatMap((port) => {
-          const reason = addressedProblems.get(addressKey(at(graph, { kind: 'port', end: port.end })));
+          const reason = addressedProblems.get(addressKey(at(graph, { kind: 'port', end: port.end })))
+            ?? (port.direction === 'input' ? targetProblems.get(endKey(wireEnd(port))) : undefined);
           return reason ? [[portId(port), reason] as const] : [];
         })),
         enter,
@@ -1107,8 +1133,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         addTerm: relate && !ghost && id !== inputCard ? (port) => {
           if (port.taskSignal || port.growing || port.direction === 'physical' || definition && port.direction !== 'output') return undefined;
           const portAddress = at(graph, { kind: 'port', end: port.end });
-          return () => {
-            if (model) void relate(portAddress).then((reason) => setIssue(reason ? { document: model.id, address: portAddress, reason } : undefined));
+          const own = projectedPorts.get(addressKey(portAddress));
+          const numeric = typeof own === 'object' && (own.base === 'real' || own.base === 'integer');
+          const fields = numeric ? [] : readableFields.get(addressKey(portAddress)) ?? [];
+          const relateAt = (address: ModelAddress) => {
+            if (model) void relate(address).then((reason) => setIssue(reason ? { document: model.id, address: portAddress, reason } : undefined));
+          };
+          return (rect) => {
+            if (fields.length <= 1) relateAt(fields[0]?.address ?? portAddress);
+            else setTermFields({ rect, port: port.name, fields: fields.map(({ path, address }) => ({ label: [port.name, ...path].join('.'), address })) });
           };
         } : undefined,
       },
@@ -1489,13 +1522,19 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           ? (await attempt(studioName('rename'), { op: 'rename', address, name: String(name).trim() }, false))?.reason
           : studioReason('takesText', studioName('name')),
       }) : undefined;
+      const reason = addressedProblems.get(addressKey(address))
+        ?? (port.direction === 'input' ? targetProblems.get(endKey(wireEnd(port))) : undefined);
       return <Inspector name={port.name} type={portTypeLabel(port)} attachments={attachmentsShown}>
+        {reason && <MentionRow name={port.name} detail={reason} placeShown={false} />}
         {rename && rows(addressKey(address), [rename])}
       </Inspector>;
     }
     const wire = address.element.kind === 'wire' ? interior?.wires?.[address.element.id] : undefined;
+    const reason = addressedProblems.get(addressKey(address));
     return <Inspector name={wire ? `${endLabel(wire.source)} → ${endLabel(wire.target)}` : studioName('wire')}
-      type={wire ? studioName('wire') : undefined} attachments={attachmentsShown} />;
+      type={wire ? studioName('wire') : undefined} attachments={attachmentsShown}>
+      {reason && <MentionRow name={studioName('wire')} detail={reason} placeShown={false} />}
+    </Inspector>;
   }
 
   /** What a removed element was, read-only. */
@@ -1591,8 +1630,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         clear();
       }
     }}>
-      {(issue || problem) && <p className="px-2 text-sm" role="alert">
-        {issue?.reason ?? problem?.reason}
+      {(issue && !issue.address || problem) && <p className="px-2 text-sm" role="alert">
+        {issue && !issue.address ? issue.reason : problem?.reason}
       </p>}
       {evaluate && !refused && <StudioRegion state={studioReadState(
         'model', attachments.data, attachments.error, () => { void attachments.refetch(); },
@@ -1661,11 +1700,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       </div>
     </div> : null,
     drawer: model && <Drawer>
-      <LibraryList sections={sections} section="model.library" name={studioName('library')} searchName="searchLibrary"
+      {editTopology && <LibraryList sections={sections} section="model.library" name={studioName('library')} searchName="searchLibrary"
         state={studioReadState('library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); })}
-        items={libraryItems} selected={libraryItem?.id} carried={editTopology ? componentCarry : undefined}
+        items={libraryItems} selected={libraryItem?.id} carried={componentCarry}
         onInspect={(id) => setLibraryItem(entryOf.get(id))}
-        onPlace={editTopology ? (id) => { const entry = entryOf.get(id); if (entry) add(entry); } : undefined} />
+        onPlace={(id) => { const entry = entryOf.get(id); if (entry) add(entry); }} />}
       <DrawerSection sections={sections} id="model.outline" name={studioName('outline')}>
         {outline && <Tree ref={outlineTree} aria-label={studioName('outline')} nodes={outline.nodes}
           selected={selected.flatMap((address) => outlineRow(address) ?? [])}
@@ -1713,7 +1752,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             onClick={() => add(entry, search, searchSource, port)}>{entry.name} · {port}</Button> : [];
       })
         : <LeafChoices entries={entries} query={searchText} choose={(entry) => add(entry, search)} disabled={!editTopology} />}
-    </Dialog> : addPort && model ? <Menu open onOpenChange={(open) => { if (!open) setAddPort(undefined); }}>
+    </Dialog> : termFields ? <Menu open onOpenChange={(open) => { if (!open) setTermFields(undefined); }}>
+      <MenuContent aria-label={studioAccessibleName('addTerm', termFields.port)} anchor={{ getBoundingClientRect: () => termFields.rect }}>
+        {termFields.fields.map(({ label, address }) => <MenuItem key={label} onClick={() => {
+          setTermFields(undefined);
+          const port = address.element.kind === 'field' ? at(address, address.element.parent) : address;
+          if (model) void relate?.(address).then((reason) => setIssue(reason ? { document: model.id, address: port, reason } : undefined));
+        }}>{label}</MenuItem>)}
+      </MenuContent>
+    </Menu> : addPort && model ? <Menu open onOpenChange={(open) => { if (!open) setAddPort(undefined); }}>
       <MenuContent aria-label={studioName('addPort')} anchor={{ getBoundingClientRect: () => addPort }}>
         {outsideSignals().map(({ key, label, source, outerPath }) => <MenuItem key={key} onClick={() => {
           setAddPort(undefined);

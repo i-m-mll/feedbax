@@ -22,16 +22,19 @@ export type Port = {
 export type Registry = ReadonlyMap<string, ComponentDefinition>;
 type ModelAttachment = NonNullable<ModelWire['attachments']>[number];
 
-/** The kind and unit of a port's type, as its card shows it beside the port's name. */
+/** The kind, size and unit of a port's type, as its card shows it beside the port's name; a real value's kind goes unsaid. */
 export function portTypeName({ type }: Port) {
   if (typeof type === 'string') return humanizeLabel(type);
-  return [type.space && studioName(type.space === 'point' ? 'pointType' : 'vectorType'), type.unit].filter(Boolean).join(' ');
+  if (type.space) return [studioName(type.space === 'point' ? 'pointType' : 'vectorType'), type.unit].filter(Boolean).join(' ');
+  return [type.base !== 'real' && type.base && humanizeLabel(type.base), shapeText(type), type.unit].filter(Boolean).join(' ');
 }
+
+const shapeText = (type: SignalType) => type.shape?.length ? `[${type.shape.join(', ')}]` : null;
 
 export function portTypeLabel(port: Port) {
   const { type } = port;
   if (typeof type === 'string') return humanizeLabel(type);
-  return [portTypeName(port), type.base, type.shape?.length ? `[${type.shape.join(', ')}]` : null].filter(Boolean).join(' ');
+  return [type.space ? portTypeName(port) : type.unit, type.base, shapeText(type)].filter(Boolean).join(' ');
 }
 
 export function addressKey(address: ModelAddress) {

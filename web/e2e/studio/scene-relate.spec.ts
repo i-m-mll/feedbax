@@ -14,7 +14,8 @@ const centre = async (target: Locator) => {
 };
 
 // Catches a Relate that writes a term the Scene then cannot draw: a term whose relation does not end at the hand and
-// the target, a write that adds no row or more than one, and a new term that is not selected with its Measure focused.
+// the target, a write that adds no row or more than one, a new term that is not selected with its Measure focused,
+// and a second relation of the same two places drawn exactly over the first.
 test('Relate dragged from the hand to the target adds one Objective term and its dashed line', async ({ page, request }) => {
   test.setTimeout(45_000);
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
@@ -61,6 +62,22 @@ test('Relate dragged from the hand to the target adds one Objective term and its
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await expect(inspector.getByRole('textbox', { name: 'Measure', exact: true })).toBeFocused();
 
+
+  // A second relation of the same two places is drawn beside the first, not over it.
+  await tab(page, 'Scene').click();
+  await scene(page).getByRole('toolbar').getByRole('button', { name: 'Relate', exact: true }).click();
+  const [againX, againY] = await centre(hand.locator('circle').first());
+  const [overX, overY] = await centre(target.locator('circle').first());
+  await page.mouse.move(againX, againY);
+  await page.mouse.down();
+  await page.mouse.move(overX, overY, { steps: 8 });
+  await page.mouse.up();
+  await expect(lines).toHaveCount(drawn + 2);
+  const segments = await lines.evaluateAll((elements) => (elements as SVGLineElement[]).slice(-2).map((element) =>
+    [element.x1.baseVal.value, element.y1.baseVal.value, element.x2.baseVal.value, element.y2.baseVal.value]));
+  const apart = Math.max(...segments[0].map((value, index) => Math.abs(value - segments[1][index])));
+  expect(apart).toBeGreaterThan(3);
+
   await tab(page, 'Objective').click();
-  await expect(table.getByRole('row')).toHaveCount(4);
+  await expect(table.getByRole('row')).toHaveCount(5);
 });
