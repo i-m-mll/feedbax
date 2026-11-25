@@ -513,6 +513,7 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
 
 def _evaluate_documents(plan, key, definition, bundle):
     upstream = evaluate_subject(definition)
+    authored = None
     if upstream:
         subject = next((row for row in plan.runs if row.key == upstream[0]), None)
         raw = plan.requests.get(subject.request_id) if subject else None
@@ -522,6 +523,9 @@ def _evaluate_documents(plan, key, definition, bundle):
         if not isinstance(request, DocumentTrainingRequestSpec):
             raise ProjectFolderInvalid("The selected Evaluate has no managed Train pairing.")
         documents = request.trial_documents
+        if subject.train is not None and isinstance(subject.train.task, TaskDocument):
+            authored = subject.train
+            documents = documents.model_copy(update={"task": authored.task, "input_bindings": authored.input_bindings})
     elif "subject" in definition.input_documents:
         documents = _initial_trial_documents(definition, bundle)
     else:
@@ -540,6 +544,7 @@ def _evaluate_documents(plan, key, definition, bundle):
         ) is not None:
             raw_params = raw_params | {"variation": variation}
         params = authored_rollout_settings(raw_params)
+        authored_bindings = params.input_bindings
         variant = resolve_evaluation_variant(
             projection.pair.lowered.graph, documents.task_source, params.variation,
             components=bundle.components,
@@ -564,7 +569,9 @@ def _evaluate_documents(plan, key, definition, bundle):
                 code=ProblemCode.STRUCTURE, path=("variation",), reason=str(error),
             )),
         ), None
-    documents = _with_task(documents, task, input_bindings=documents.input_bindings | params.input_bindings)
+    documents = _with_task(
+        documents, task, input_bindings=documents.input_bindings | authored_bindings | params.input_bindings,
+    )
     paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
     return documents, replace(paired, task_origins=variant.edit_origins), graph
 
