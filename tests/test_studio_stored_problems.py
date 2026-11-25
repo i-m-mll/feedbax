@@ -118,9 +118,13 @@ def _typed_signal_project():
     project["steps"] = {"simple-reaches": project["steps"]["simple-reaches"]}
     project["steps"]["check"] = managed_evaluation_step("simple-reaches")
     model = project["documents"]["point-mass"]["payload"]
+    model["ports"]["inputs"][0]["type"] = {"shape": [2]}
     model["interior"]["components"]["point_receiver"] = {
         "kind": "composite", "name": "Point receiver",
-        "ports": {"inputs": [{"id": "in", "name": "Point", "type": {"shape": [2], "space": "point"}}]},
+        "ports": {"inputs": [
+            {"id": "in", "name": "Point", "type": {"shape": [2], "space": "point"}},
+            {"id": "free", "name": "Free", "type": {"shape": [2], "space": "free"}},
+        ]},
         "interior": {},
     }
     return project
@@ -134,6 +138,11 @@ def _incompatible_signal_space(studio):
     review = studio.post("/model/connections", document=document, run=run, graph=_GRAPH, source=source)
     verdict = next(item for item in review["targets"] if item["target"] == target)
     assert verdict["reason"] is None and "point" in verdict["problem"] and "free" in verdict["problem"]
+
+    root_source = {"owner": "inputs", "port": "target_pos"}
+    from_task = studio.post("/model/connections", document=document, run=run, graph=_GRAPH, source=root_source)
+    free = next(item for item in from_task["targets"] if item["target"] == {**target, "port": "free"})
+    assert free["reason"] is None and "expected free space, received point space" in free["problem"]
     evaluate = studio.post("/model/projection", document=document, run=studio.run("check"), evaluate_scope={"kind": "step"})
     assert any(port["readers"] == ["effector_position"] for port in evaluate["ports"])
 
