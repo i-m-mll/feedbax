@@ -102,6 +102,46 @@ def test_preview_returns_active_samples_at_the_source_intervention_address(clien
     assert np.flatnonzero(trial["intervention_windows"][address]).tolist() == list(range(first, first + 3))
 
 
+def test_a_saved_evaluate_sample_uses_its_own_window(tmp_path):
+    from feedbax.application.bundle import new_application_registry_bundle
+    from feedbax.contracts.project import Project
+    from feedbax.web.services.project_folder import ProjectFolderService
+    from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
+    from tests.support.model_documents import read_changed_model
+    from tests.test_canonical_evaluate_admission import _save_project
+
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["late"] = managed_evaluation_step("train")
+    owner = {"composites": [], "element": {"kind": "wire", "id": "drive"}}
+    read_changed_model(raw, "late", [{
+        "op": "add", "owner": owner, "after": None,
+        "attachment": {
+            "kind": "intervention", "id": "pulse", "operation": "add", "fields": {"value": [0.5, 0.0]},
+            "window": {"spans": [{
+                "kind": "interval",
+                "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 0.2, "unit": "s"}},
+                "end": {"offset": {"value": 2, "unit": "st"}},
+            }]},
+        },
+    }], base="point-mass", components=new_application_registry_bundle().components)
+    _save_project(ProjectFolderService(tmp_path), "timed", Project.model_validate(raw))
+    with TestClient(create_app(projects_dir=tmp_path)) as studio:
+        revision = studio.get("/api/projects/timed").json()["revision"]
+        body = {
+            "project_id": "timed", "revision": revision,
+            "run": {"variant": "default", "step": "late", "row": "default"}, "nominal": True,
+        }
+        route = "/api/execution/task-trials/sample"
+        sampled = studio.post(route, json=body)
+        assert sampled.status_code == 200, sampled.text
+        assert studio.post(route, json=body | {"revision": "0" * 64}).status_code == 409
+    trial, = sampled.json()["drawn"]["trials"]
+    address = ModelAddress.model_validate(owner | {
+        "element": {"kind": "attachment", "id": "pulse", "parent": owner["element"]},
+    }).to_text()
+    assert np.flatnonzero(trial["intervention_windows"][address]).tolist() == [20, 21]
+
+
 def test_a_binding_problem_does_not_hide_the_trial(client, expression_functions):
     payload = authored_preview("simple", expression_functions)
     payload["input_bindings"] = {"task-input": "target_vel"}

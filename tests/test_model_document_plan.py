@@ -304,9 +304,9 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         offset = fields["window", "spans", 0, "start", "offset"]
         assert offset["text"] == "0 st" and offset["can_sweep"]
         assert fields["fields", "value"]["structure"]["value"]["function"] == "vector"
-        edit = {"address": offset["address"], "edit": {"kind": "text", "text": "0.02 s"}}
+        edit = {"address": offset["address"], "edit": {"kind": "text", "text": "0.1 s"}}
         value = client.post(url + "/model/fields", json=body | edit).json()
-        assert value["command"]["operation"]["value"] == {"value": 0.02, "unit": "s"}
+        assert value["command"]["operation"]["value"] == {"value": 0.1, "unit": "s"}
         applied = client.post(url + "/model/edit", json={
             "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
             "document": "point-mass", "command": value["command"],
@@ -316,9 +316,9 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         body["revision"] = snapshot["revision"]
         fields = client.post(url + "/model/fields", json=body).json()["fields"]
         shown = next(field for field in fields if field["address"] == offset["address"])
-        assert shown["text"] == "0.02 s" and shown["conversion"] == {"value": 2.0, "unit": "st"}
+        assert shown["text"] == "0.1 s" and shown["conversion"] == {"value": 10.0, "unit": "st"}
         response = client.post(url + "/model/fields", json=body | {
-            "address": offset["address"], "edit": {"kind": "text", "text": "0.02 s, 0.04 s"},
+            "address": offset["address"], "edit": {"kind": "text", "text": "0.1 s, 0.2 s"},
         })
         assert response.status_code == 200, response.text
         prepared = response.json()
@@ -336,7 +336,24 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
             start = attachment.window.spans[0].start.offset
             assert start.unit == "s"
             values.add(start.value)
-        assert values == {0.02, 0.04}
+            body = {
+                "project_id": "window", "revision": saved.json()["revision"], "count": 2,
+                "run": {"variant": run.key.variant, "step": run.key.step, "row": run.key.row},
+            }
+            route = "/api/execution/task-trials/sample"
+            sampled = client.post(route, json=body)
+            assert sampled.status_code == 200, sampled.text
+            draw = sampled.json()
+            address = ModelAddress.model_validate(owner).to_text()
+            first = round(start.value / documents.model.step_seconds)
+            active = [first, first + 1]
+            for trial in draw["drawn"]["trials"]:
+                assert np.flatnonzero(trial["intervention_windows"][address]).tolist() == active
+            batch = client.post(route, json=body | {"aggregate": True})
+            assert batch.status_code == 200, batch.text
+            shares = batch.json()["drawn"]["interventions"][address]
+            assert shares == [float(i in active) for i in range(draw["n_steps"])]
+        assert values == {0.1, 0.2}
 
 
 def test_addressed_field_range_sample_and_row_provenance(tmp_path):
