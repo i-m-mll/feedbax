@@ -1073,6 +1073,7 @@ export interface ModelConnectionReview {
 export interface ModelPortProjection {
   address: ModelAddress;
   type: SignalType;
+  readers?: string[];
 }
 
 export interface ModelPhysicalPortProjection {
@@ -1106,6 +1107,7 @@ export interface ModelProjection {
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelAddress[];
   objective_ports?: ModelAddress[];
+  problems?: ModelGraphProblem[];
   resolved_model?: ModelDocument | null;
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
@@ -7678,6 +7680,7 @@ export const ModelPortProjectionSchema: z.ZodType<ModelPortProjection> = z.lazy(
     .object({
       "address": ModelAddressSchema,
       "type": SignalTypeSchema,
+      "readers": z.array(z.string()).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelPortProjection>;
@@ -7731,6 +7734,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
       "task_inputs": z.array(ModelAddressSchema).optional(),
       "objective_ports": z.array(ModelAddressSchema).optional(),
+      "problems": z.array(ModelGraphProblemSchema).optional(),
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
