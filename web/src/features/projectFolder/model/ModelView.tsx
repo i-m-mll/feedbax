@@ -164,12 +164,11 @@ function positionAt(index: number): ModelPosition {
   return { x: 245 + 235 * (index % 4), y: 38 + 160 * Math.floor(index / 4) };
 }
 
-function stepCount(item: Attachment, step: ModelDocument['step_seconds'] | undefined) {
+/** An attachment's mark: a Delay's step count as the service pairs it, empty when it pairs to none. */
+function attachmentMark(item: Attachment, steps: number | null | undefined) {
   if (item.kind === 'hold') return '⊓';
   if (item.kind !== 'delay') return item.kind === 'probe' ? '⌖' : '◇';
-  if ('text' in item.delay) return '';
-  if (item.delay.unit === 'st') return String(item.delay.value);
-  return typeof step === 'number' ? String(Math.round(item.delay.value / step)) : '';
+  return steps == null ? '' : String(steps);
 }
 
 function attachmentName(item: Attachment) {
@@ -869,8 +868,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function leaf(definition: ComponentDefinition) {
     return {
       kind: 'leaf', name: shortName(definition.name), type: definition.identity?.type_id ?? definition.name,
-      revision: definition.revision, fields: Object.fromEntries(Object.entries(definition.default_params ?? {})
-        .filter(([name]) => name !== 'dt' && name !== 'control_dt')) as Record<string, JsonValue>,
+      revision: definition.revision, fields: { ...definition.default_params } as Record<string, JsonValue>,
     } as const;
   }
   function matchesSource(definition: ComponentDefinition, name: string, source: Port) {
@@ -1237,7 +1235,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const ghost = ghostKeys.has(key);
     const displacedAttachments = displaced.get(key);
     const attached = (list: readonly Attachment[], removedHere: boolean) => list.map((item) => ({
-      id: item.id, label: attachmentName(item), mark: stepCount(item, model?.value.step_seconds),
+      id: item.id, label: attachmentName(item), mark: attachmentMark(item, projection.data?.delay_steps?.[addressKey(attachmentAddress(address, item.id))]),
       description: item.kind === 'delay' ? `${delayText(item.delay)} · ${wireLabel}`
         : item.kind === 'intervention' ? `${windowDescription(item, epochs, variableName)} · ${wireLabel}` : wireLabel,
       delay: item.kind === 'delay', select: () => select(attachmentAddress(address, item.id)),
@@ -1464,7 +1462,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const byKey = new Map(rows.map((row) => [addressKey(attachmentAddress(row.owner, row.item.id)), row]));
     const nodes: TreeNode[] = [...byKey].map(([id, { owner, item, port }]) => ({
       id, name: attachmentName(item) + (isAuthored(attachmentAddress(owner, item.id)) ? ' ◇' : ''),
-      trailing: <>{port && <span>{port}</span>}<span>{stepCount(item, model?.value.step_seconds)}</span></>,
+      trailing: <>{port && <span>{port}</span>}<span>{attachmentMark(item, projection.data?.delay_steps?.[addressKey(attachmentAddress(owner, item.id))])}</span></>,
     }));
     return <Tree aria-label={studioName('attachment')} nodes={nodes} selected={selectionKeys.filter((key) => byKey.has(key))}
       onSelectedChange={(ids) => {

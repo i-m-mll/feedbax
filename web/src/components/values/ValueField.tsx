@@ -164,12 +164,13 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   const reasonId = useId();
   const originId = useId();
   const changeId = useId();
+  const pairedId = useId();
   const { reason, refusal, setReason, submit, sent } = useSubmit(model);
   const value = sent ? sent.value : model.value;
   const readOnly = !model.commit;
   const shownReason = reason ?? model.reason;
   const term = shownReason ? problemTerm(model, refusal) : undefined;
-  const describedBy = [model.change && changeId, model.origin && originId, shownReason && reasonId]
+  const describedBy = [model.paired && pairedId, model.change && changeId, model.origin && originId, shownReason && reasonId]
     .filter(Boolean).join(' ') || undefined;
   // A problem about one term is drawn on the term; its reason still describes the control.
   const problem = shownReason && (term ? <FieldProblemReason reason={shownReason} id={reasonId} />
@@ -215,7 +216,7 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
       default:
         return <ValueText model={model} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!shownReason}
           term={term && shownReason ? { ...term, reason: shownReason } : undefined}
-          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind} changeMark={marks} />;
+          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind} changeMark={marks} pairedId={pairedId} />;
     }
   })();
 
@@ -352,7 +353,7 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   </section>;
 }
 
-function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, clearReason, chooseKind, changeMark, end, parameterOf }: {
+function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, clearReason, chooseKind, changeMark, end, parameterOf, pairedId }: {
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
   /** The term of a text the problem is about; drawn while the field shows that text. */
   term?: TextTerm & { readonly text: string };
@@ -363,6 +364,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   end?: ReactNode;
   /** The field and parameter whose names make the input's accessible name, for a chosen class's only parameter. */
   parameterOf?: readonly [field: string, parameter: string];
+  /** The id of the value in the other time unit, which describes the control; it is drawn while no draft replaces the value. */
+  pairedId?: string;
 }) {
   const { label } = model;
   const input = useRef<HTMLInputElement>(null);
@@ -498,6 +501,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   return <>
     <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={changeMark} end={end} className="min-w-0"
       term={term && term.text === text ? term : undefined}
+      after={model.paired && pairedId && draft === undefined ? { text: model.paired, id: pairedId } : undefined}
       aria-label={parameterOf ? studioParameterLabel(...parameterOf) : undefined} size={end ? Math.max(6, text.length + 1) : undefined}
       placeholder={model.text === null && draft === undefined ? studioName('mixed') : undefined}
       readOnly={readOnly || model.type.kind === 'readOnly'} invalid={invalid}

@@ -139,12 +139,12 @@ function PositionFields({ host, position, site, relative, disabled, set }: {
   ];
   const edges = [{ value: 'start', label: studioName('start') }, { value: 'end', label: studioName('end') }] as const;
   return <div role="group" aria-label={studioName(site[2])} className="flex min-w-0 flex-wrap items-center gap-1">
-    <span className="w-10 shrink-0 text-xs text-shell-muted">{label}</span>
-    <Select className="min-w-0 flex-1" aria-label={studioAccessibleName('anchor', label)} items={places} disabled={disabled}
+    <span className="w-8 shrink-0 text-xs text-shell-muted">{label}</span>
+    <Select className="min-w-16 flex-1" aria-label={studioAccessibleName('anchor', label)} items={places} disabled={disabled}
       value={anchored ? anchorKey(anchored) : lengthKey}
       onValueChange={(key) => set(key === lengthKey ? { offset: position.offset ?? zero }
         : { anchor: anchorAt(key, anchored?.edge ?? 'start'), offset: position.offset ?? zero })} />
-    {anchored && <Select className="w-20 shrink-0" aria-label={studioAccessibleName('edge', label)} items={edges} disabled={disabled}
+    {anchored && <Select className="min-w-16 flex-1" aria-label={studioAccessibleName('edge', label)} items={edges} disabled={disabled}
       value={anchored.edge} onValueChange={(edge) => set({ ...position, anchor: { ...anchored, edge } })} />}
     <div className="min-w-28 flex-1"><ValueField model={host.offset(site)} form="cell" /></div>
   </div>;
