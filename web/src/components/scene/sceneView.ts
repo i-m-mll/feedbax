@@ -109,9 +109,14 @@ export interface SceneTrack {
   readonly ended: readonly SceneEnded[];
 }
 
-/** Where on a track an epoch that ends on a condition ended: at its condition, or at its limit. */
+/**
+ * Where on a track an epoch that ends on a condition ended, drawn as a tick across the track: at its condition, or at
+ * its limit. `toward` is the nearest other point of the track, which gives the track's direction there; a track that
+ * stays at one point has none.
+ */
 export interface SceneEnded {
   readonly point: ScenePoint;
+  readonly toward?: ScenePoint;
   readonly by: 'condition' | 'limit';
 }
 

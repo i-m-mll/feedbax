@@ -68,7 +68,11 @@ export function recordedTracks(record: TrialRecord, frame: number, trails: boole
     const drawn = trails ? samples.slice(0, frame + 1).map(point).filter((place) => place !== undefined).length : points.length;
     const ended = endings.flatMap(({ end, by }) => {
       const place = point(at(samples, end));
-      return place ? [{ point: place, by }] : [];
+      if (!place) return [];
+      const index = Math.min(end, points.length - 1);
+      const differs = (other: ScenePoint | undefined) => other && (other[0] !== place[0] || other[1] !== place[1]);
+      const toward = points.slice(index + 1).find(differs) ?? points.slice(0, index).reverse().find(differs);
+      return [{ point: place, by, ...toward && { toward } }];
     });
     return { points, drawn, head: point(at(samples, frame)), picked, ended };
   });

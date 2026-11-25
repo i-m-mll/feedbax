@@ -17,10 +17,10 @@ describe('recordedTracks', () => {
   // Catches a mark one frame off the step where the epoch ended, a limit drawn as a condition, a mark on an epoch that
   // ended at its length, a mark on a trial beside the picked one, and a mark ahead of the playhead under Trails.
   it('marks where each Until epoch of the picked trial ended, and how', () => {
-    expect(recordedTracks(record(2), 0, false, true)[0].ended).toEqual([{ point: [5, 0], by: 'condition' }]);
-    expect(recordedTracks(record(3), 0, false, true)[0].ended).toEqual([{ point: [5, 0], by: 'limit' }]);
+    expect(recordedTracks(record(2), 0, false, true)[0].ended).toEqual([{ point: [5, 0], toward: [6, 0], by: 'condition' }]);
+    expect(recordedTracks(record(3), 0, false, true)[0].ended).toEqual([{ point: [5, 0], toward: [6, 0], by: 'limit' }]);
     expect(recordedTracks(record(2), 0, false, false)[0].ended).toEqual([]);
     expect(recordedTracks(record(2), 4, true, true)[0].ended).toEqual([]);
-    expect(recordedTracks(record(2), 5, true, true)[0].ended).toEqual([{ point: [5, 0], by: 'condition' }]);
+    expect(recordedTracks(record(2), 5, true, true)[0].ended).toEqual([{ point: [5, 0], toward: [6, 0], by: 'condition' }]);
   });
 });
