@@ -1246,16 +1246,28 @@ def test_until_authoring_switches_and_refuses_a_limit_that_rounds_to_zero(tmp_pa
     name = raw["documents"]["task"]["payload"]["epochs"][0]["id"]
     end = f"/task/epochs/{name}/end"
     with TestClient(app) as client:
-        def change(field, text):
+        def author(change=None):
             response = client.post(f"/api/projects/{project}/authoring/trials", json={
-                "revision": revision, "run": run,
-                "change": {"kind": "expression", "path": f"{end}/{field}", "edit": {
-                    "kind": "text", "text": text,
-                }},
+                "revision": revision, "run": run, "change": change,
             })
             assert response.status_code == 200, response.text
             return StudioTrialAuthoring.model_validate(response.json())
 
+        def change(field, text):
+            return author({"kind": "expression", "path": f"{end}/{field}", "edit": {
+                "kind": "text", "text": text,
+            }})
+
+        def assert_empty_condition(result, kind):
+            assert result.task.epochs[0].end.kind == kind
+            fields = {field.path: field for field in result.fields}
+            assert f"{end}/length" in fields
+            condition = fields[f"{end}/condition"]
+            assert condition.text == ""
+            assert condition.site.site.expected.base == "boolean"
+            assert {value.name for value in condition.site.site.names} >= {"command", "time", "t"}
+
+        assert_empty_condition(author(), "length")
         offered = change("length", "true ≤ 0.3 s")
         assert offered.files and not offered.problems
         assert offered.task.epochs[0].end.kind == "until"
@@ -1275,3 +1287,4 @@ def test_until_authoring_switches_and_refuses_a_limit_that_rounds_to_zero(tmp_pa
         restored = change("length", "20 st")
         assert restored.files and not restored.problems
         assert restored.task.epochs[0].end.kind == "length"
+        assert_empty_condition(change("length", "rest"), "rest")
