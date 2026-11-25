@@ -19,7 +19,7 @@ from feedbax.compiler.model_signals import (
 )
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
 from feedbax.compiler.model_edit import model_graph_problems
-from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts, WIRED_VECTOR_INPUT_TYPES
+from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts, derives_input_width
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, PlanarDynamicsSpec, SolverConfigSpec
 from feedbax.contracts.acausal_interface import (
     PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
@@ -770,7 +770,7 @@ class _Lower:
                 if any(w.target_node == b.component and w.target_port == b.port for w in wires):
                     raise self.problem(path, "wire", "target port already has a driver", id=key)
                 transform(source, wire.attachments, key, at, finish=(b.component, b.port), signal=signal)
-                if b.port == "input" and target.type in WIRED_VECTOR_INPUT_TYPES:
+                if derives_input_width(target.type, b.port):
                     if "input_size" in target.params:
                         raise self.problem(
                             path, "field", "The input wire determines this width",

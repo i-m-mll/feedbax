@@ -6,6 +6,7 @@ from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import Expression, LiteralValue, ValueType
+from feedbax.contracts.task_document import Marker
 
 type Member = Literal["variable", "epoch", "signal"]
 
@@ -110,8 +111,14 @@ class SetVariableCount(StrictModel):
     count: Expression | None
 
 
+class SetVariableMarker(StrictModel):
+    op: Literal["set_variable_marker"]
+    id: str
+    marker: Marker | None
+
+
 type TaskStructureChange = Annotated[
     AddMember | RemoveMember | RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink
-    | RepeatEpochs | SetRepeatCount | RemoveRepeat | SetVariableCount,
+    | RepeatEpochs | SetRepeatCount | RemoveRepeat | SetVariableCount | SetVariableMarker,
     Field(discriminator="op"),
 ]

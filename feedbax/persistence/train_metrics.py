@@ -1,6 +1,6 @@
 """Immutable NDJSON deltas of a Train request's checkpointed metric history."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from hashlib import sha256
 from math import fsum, isfinite
@@ -11,7 +11,7 @@ from typing import Any, BinaryIO
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import Success, read_effective_request, success_content_ref
-from feedbax.contracts.request_refs import ConditionalProduct
+from feedbax.contracts.request_refs import ConditionalProduct, RequestId
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.run_rule import metric_condition_holds
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -115,11 +115,11 @@ def finite_final_metric(value: Any, replicas: int, name: str) -> float:
     raise ValueError(f"The Train result has no finite scalar {name!r} for each replica.")
 
 
-def passes_final_metric_condition(
-    store: ImmutableArtifactBlobProvider, success: Success, reference: ConditionalProduct,
-) -> bool:
-    """Decide only from the exact trained model and its committed final metrics."""
-    if success.request.id != reference.request_id:
+def read_final_train_metrics(
+    store: ImmutableArtifactBlobProvider, success: Success, request: RequestId,
+) -> Callable[[str], float]:
+    """Read finite metric scalars from the exact Train request's committed final update."""
+    if success.request.id != request:
         raise ValueError("Metric condition names a different Train request.")
     metrics = _last_metric_row(store, success)
 
@@ -127,9 +127,13 @@ def passes_final_metric_condition(
     if not isinstance(decoded.spec, DocumentTrainingRequestSpec):
         raise ValueError("Metric condition requires a document Train request.")
     replicas = decoded.spec.training_config.replicates
-    return metric_condition_holds(
-        reference.conditions, lambda name: finite_final_metric(metrics.get(name), replicas, name),
-    )
+    return lambda name: finite_final_metric(metrics.get(name), replicas, name)
+
+
+def passes_final_metric_condition(
+    store: ImmutableArtifactBlobProvider, success: Success, reference: ConditionalProduct,
+) -> bool:
+    return metric_condition_holds(reference.conditions, read_final_train_metrics(store, success, reference.request_id))
 
 
 def materialize_metrics(store: ImmutableArtifactBlobProvider, history: MetricHistory, path: Path) -> None:

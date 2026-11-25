@@ -9,17 +9,17 @@ import { Tree, type TreeNode } from '@/components/ui/Tree';
 import { ValueField } from '@/components/values/ValueField';
 import { rawField } from '@/components/values/adapters/raw';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
-import type { ElementAddress } from '@/features/projectWindow/elementSelection';
-import type { StudioRelatePort } from '@/generated/studioContracts';
-import { Menu, MenuCheckboxItem, MenuContent, MenuTrigger } from '@/components/ui/Menu';
+import { isModelAddress, type ElementAddress } from '@/features/projectWindow/elementSelection';
+import type { Marker, StudioRelatePort } from '@/generated/studioContracts';
+import { Menu, MenuCheckboxItem, MenuContent, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu';
 import { Select } from '@/components/ui/Select';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioName, studioUnit } from '@/components/activity/studioVocabulary';
 import { useElementSize } from '@/hooks/useElementSize';
 import { WORKSPACE_SVG_HEIGHT, WORKSPACE_SVG_WIDTH, fitScale, niceScaleLength, sceneBounds, shapePoints, type ScenePoint } from './planarProjection';
 import {
-  fittedCamera, sceneElements, sceneLayers, zoomScene,
-  type Scene, type SceneCamera, type SceneElement, type SceneEnd, type SceneEndPlace, type SceneLayer, type SceneShape,
+  fittedCamera, markMarkers, sceneElements, sceneLayers, zoomScene,
+  type Scene, type SceneCamera, type SceneElement, type SceneEnd, type SceneEndPlace, type SceneLayer, type SceneMark, type SceneShape,
   type SceneTool, type SceneView,
 } from './sceneView';
 
@@ -69,22 +69,44 @@ function RestDrawing({ shape, project }: { shape: SceneShape; project: (point: S
     strokeLinejoin="round" vectorEffect="non-scaling-stroke" />;
 }
 
+/** A marker centred at (x, y), `radius` across from its centre to its edge. */
+export function MarkerShape({ marker, x, y, radius, ...props }: SVGProps<SVGElement> & {
+  marker: Marker; x: number; y: number; radius: number;
+}) {
+  const drawn = props as SVGProps<SVGPathElement>;
+  switch (marker.shape) {
+    case 'circle': return <circle cx={x} cy={y} r={radius} {...props as SVGProps<SVGCircleElement>} />;
+    case 'square': {
+      const side = radius * 0.85;
+      return <rect x={x - side} y={y - side} width={2 * side} height={2 * side} {...props as SVGProps<SVGRectElement>} />;
+    }
+    case 'triangle': {
+      const [dx, dy] = [radius * Math.sqrt(3) / 2, radius / 2];
+      return <path d={`M ${x} ${y - radius} L ${x + dx} ${y + dy} L ${x - dx} ${y + dy} Z`} strokeLinejoin="round" {...drawn} />;
+    }
+  }
+}
+
 function ElementDrawing({ element, active, project }: {
   element: SceneElement;
   active: boolean;
   project: (point: ScenePoint) => ScenePoint;
 }) {
   const stroke = active ? 'var(--text-primary)' : 'var(--studio-scene-outline)';
-  const possible = element.possible?.map(project).map(([x, y], index) => <circle key={index} data-scene-possible cx={x} cy={y}
-    r={active ? 6 : 5} fill="transparent" stroke={stroke} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />);
+  const possibleMarker = element.marker ? { ...element.marker, filled: false } : { shape: 'circle' as const, filled: false };
+  const possible = element.possible?.map(project).map(([x, y], index) => <MarkerShape key={index} data-scene-possible
+    marker={possibleMarker} x={x} y={y} radius={active ? 6 : 5} fill="transparent" stroke={stroke} strokeWidth={1.5}
+    vectorEffect="non-scaling-stroke" />);
   const { shape } = element;
   if (!shape) return <>{possible}</>;
   if (shape.kind === 'point') {
     const [x, y] = project(shape.point);
+    const colour = element.mark && `var(--studio-scene-${element.mark})`;
     return <>
       {possible}
-      {element.mark
-        ? <circle data-scene-shown cx={x} cy={y} r={9} fill="transparent" stroke={`var(--studio-scene-${element.mark})`}
+      {element.marker && colour
+        ? <MarkerShape data-scene-shown={`${element.marker.shape} ${element.marker.filled ? 'filled' : 'open'}`} marker={element.marker}
+          x={x} y={y} radius={9} fill={element.marker.filled ? colour : 'transparent'} stroke={colour}
           strokeWidth={active ? 3 : 1.5} vectorEffect="non-scaling-stroke" />
         : <circle data-scene-shown cx={x} cy={y} r={active ? 7.5 : 6} fill="var(--text-primary)" />}
       <circle cx={x} cy={y} r={9} fill="transparent" />
@@ -443,24 +465,85 @@ function outlineMark(problem: string | undefined) {
   return problem && <StatusMark status="cannot_run" label={problem} />;
 }
 
+const markerShapes = ['circle', 'square', 'triangle'] as const satisfies readonly Marker['shape'][];
+
+/** A task element's marker as a row's glyph, in its mark's colour. */
+function MarkerGlyph({ marker, mark }: { marker: Marker; mark: SceneMark }) {
+  const colour = `var(--studio-scene-${mark})`;
+  return <svg viewBox="0 0 16 16" aria-hidden data-marker={`${marker.shape} ${marker.filled ? 'filled' : 'open'}`}>
+    <MarkerShape marker={marker} x={8} y={8.5} radius={6} fill={marker.filled ? colour : 'none'} stroke={colour} strokeWidth={1.5} />
+  </svg>;
+}
+
+/** How the Scene's list changes a task variable's marker. */
+export interface SceneMarking {
+  /** The task document whose variables it changes. */
+  readonly document: string;
+  /** Stores the variable's marker, or none so that it is drawn by its mark's; answers why when the edit is refused. */
+  mark(variable: string, marker: Marker | null): Promise<string | undefined>;
+}
+
+/** A variable's id, when the element is a variable of the task document `marking` changes. */
+function markedVariable(element: SceneElement, marking: SceneMarking | undefined) {
+  const { address } = element;
+  if (!marking || isModelAddress(address) || address.document !== marking.document) return undefined;
+  const [kind, ...id] = address.element.id.split(':');
+  return kind === 'variable' ? id.join(':') : undefined;
+}
+
+/** The menu on a variable's marker: its shape, and whether it is filled. Its mark's marker is stored as none. */
+function MarkerChoice({ element, marker, mark, choose }: {
+  element: SceneElement; marker: Marker; mark: SceneMark; choose(marker: Marker | null): void;
+}) {
+  const change = (next: Marker) => {
+    const own = markMarkers[mark];
+    choose(next.shape === own.shape && next.filled === own.filled ? null : next);
+  };
+  return <span className="contents" onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
+    onKeyDown={(event) => event.stopPropagation()}>
+    <Menu>
+      <MenuTrigger render={<IconButton size="mark" label={studioName('marker')} icon={<MarkerGlyph marker={marker} mark={mark} />} tipPlacement="right" />} />
+      <MenuContent side="right" aria-label={studioAccessibleName('marker', element.name)}>
+        <MenuRadioGroup value={marker.shape} onValueChange={(shape: Marker['shape']) => change({ ...marker, shape })}>
+          {markerShapes.map((shape) => <MenuRadioItem key={shape} value={shape}
+            glyph={<MarkerGlyph marker={{ shape, filled: marker.filled }} mark={mark} />}>{studioName(shape)}</MenuRadioItem>)}
+        </MenuRadioGroup>
+        <MenuSeparator />
+        <MenuCheckboxItem checked={marker.filled} closes onCheckedChange={(filled) => change({ ...marker, filled })}>
+          {studioName('filled')}
+        </MenuCheckboxItem>
+      </MenuContent>
+    </Menu>
+  </span>;
+}
+
+type MarkerRefusal = { readonly key: string; readonly reason: string };
+
 /**
  * Each mechanism with its bodies, joints and muscles, and the task with its variables and signals that have a place,
- * in Layers' order, as rows keyed by their element's key.
+ * in Layers' order, as rows keyed by their element's key. A task element's row ends in its marker, which a variable of
+ * the task document `marking` changes chooses from; a refused choice is marked on its row.
  */
-function sceneOutline(scene: Scene) {
+function sceneOutline(scene: Scene, marking: SceneMarking | undefined, refusal: MarkerRefusal | undefined,
+  choose: (element: SceneElement, variable: string, marker: Marker | null) => void) {
   const addresses = new Map<string, ElementAddress>();
   const nodes = scene.groups.map((group): TreeNode => {
     addresses.set(group.key, group.address);
     const children = sceneLayers.flatMap((layer) => group.elements.filter((element) => element.layer === layer)).map((element): TreeNode => {
       addresses.set(element.key, element.address);
-      return { id: element.key, name: element.name, glyph: layerGlyphs[element.layer], trailing: outlineMark(element.problem) };
+      const variable = markedVariable(element, marking);
+      const { marker, mark } = element;
+      const shown = marker && mark && (variable === undefined ? <MarkerGlyph marker={marker} mark={mark} />
+        : <MarkerChoice element={element} marker={marker} mark={mark} choose={(next) => choose(element, variable, next)} />);
+      const problem = refusal?.key === element.key ? refusal.reason : element.problem;
+      return { id: element.key, name: element.name, glyph: layerGlyphs[element.layer], trailing: <>{outlineMark(problem)}{shown}</> };
     });
     return { id: group.key, name: group.name, glyph: <Boxes />, trailing: outlineMark(group.problem), children: children.length ? children : undefined };
   });
   return { nodes, addresses };
 }
 
-export function SceneDrawer({ sections, scene, selected, onSelect, checkpoints }: SceneSelection & {
+export function SceneDrawer({ sections, scene, selected, onSelect, checkpoints, marking }: SceneSelection & {
   sections: DrawerSections;
   scene: Scene;
   checkpoints?: {
@@ -468,9 +551,14 @@ export function SceneDrawer({ sections, scene, selected, onSelect, checkpoints }
     selected: number;
     onSelect: (checkpoint: number) => void;
   };
+  marking?: SceneMarking;
 }) {
   const checkpointLabel = useId();
-  const outline = useMemo(() => sceneOutline(scene), [scene]);
+  const [refusal, setRefusal] = useState<MarkerRefusal>();
+  const outline = useMemo(() => sceneOutline(scene, marking, refusal, (element, variable, marker) => {
+    setRefusal(undefined);
+    void marking?.mark(variable, marker).then((reason) => { if (reason) setRefusal({ key: element.key, reason }); });
+  }), [scene, marking, refusal]);
   return (
     <Drawer>
       {checkpoints && (

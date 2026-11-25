@@ -1112,6 +1112,33 @@ def test_plan_reports_all_authored_graph_problems_for_train_and_initial_evaluate
         assert {item.model_address.element.id for item in row.problems} == {"dangling-first", "dangling-second"}
 
 
+def test_unwired_linear_review_accepts_the_gru_width(tmp_path):
+    from feedbax.contracts.model_edit import ModelConnectionReviewRequest
+    from tests.support.managed_train_fixture import managed_train_project
+
+    data = managed_train_project().model_dump(mode="json", by_alias=True)
+    interior = data["documents"]["point-mass"]["payload"]["interior"]
+    for wire in ("target", "decode"):
+        del interior["wires"][wire]
+    interior["components"]["scalar"] = {"kind": "leaf", "name": "Scalar", "type": "feedbax.Constant", "fields": {"value": 2.0}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "unwired", Project.model_validate(data))
+    revision = folders.read("unwired").revision
+    registry = new_application_registry_bundle()
+
+    def candidate(component):
+        review = folders.review_model_connections("unwired", ModelConnectionReviewRequest.model_validate({
+            "revision": revision, "document": "point-mass",
+            "graph": {"composites": [], "element": {"kind": "graph"}},
+            "source": {"owner": "component", "component": component, "port": "output"},
+        }), registry)
+        return next(item for item in review.targets if item.target.owner == "component"
+                    and item.target.component == "readout" and item.target.port == "input")
+
+    assert candidate("cell").reason is None and candidate("cell").problem is None
+    assert "shape" in candidate("scalar").problem
+
+
 @pytest.mark.parametrize("source", ["gru", "task"])
 def test_model_projection_and_compilation_get_input_size_from_the_wire(tmp_path, source):
     """Changing a GRU's hidden size also changes the wired Linear's input width."""

@@ -80,6 +80,8 @@ export type ModelEdgeData = {
   waypoints?: readonly ModelPosition[];
   attachments?: readonly {
     id: string; label: string; description: string; mark: string; delay: boolean; select(): void; drag?: ModelLocation;
+    /** The output whose signal a delay's Initial reads at the trial's start: its card and handle. */
+    initial?: { card: string; handle: string };
     ghost?: boolean; change?: ChangeMarkProps;
   }[];
   ghost?: boolean;
@@ -96,6 +98,9 @@ type WireAttachment = NonNullable<ModelEdgeData['attachments']>[number];
 /** An attachment carried from the wire it is on. */
 type CarriedAttachment = { wire: string; attachment: WireAttachment };
 const attachmentCarry = carryKind<CarriedAttachment>('attachment');
+
+/** The glyph of each port mark, distinct from every attachment's mark. */
+const portMarks: Record<NonNullable<Port['mark']>, string> = { task: '▥', objective: '◎', intervention: '◇' };
 
 /** What a Library item dropped would make: its card, and the wires into and out of it when it splits a wire. */
 export type LibraryPreview = { cards: ModelCard[]; wires: ModelEdge[] };
@@ -231,7 +236,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         {!data.collapsed && (port.mark || added) && <span role="img" aria-label={studioName(port.mark ?? 'objective')}
           className="studio-model-port-mark" data-added={added || undefined}
           onAnimationEnd={added ? data.endTermAdded : undefined}
-          {...appTip(studioName(port.mark ?? 'objective'))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
+          {...appTip(studioName(port.mark ?? 'objective'))}>{portMarks[port.mark ?? 'objective']}</span>}
         {!data.collapsed && problem && <FieldProblem reason={problem} />}
         {!data.collapsed && change && <ChangeMark className="nodrag nopan" {...change} />}
         {!data.collapsed && reason && verdict === 'refused' && <span className="studio-model-port-reason" role="status">{reason}</span>}
@@ -318,11 +323,22 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
     }))));
   }, [labelled, path, labelX, labelY, cards]);
   const mid = place?.point ?? { x: labelX, y: labelY };
+  const initial = data?.attachments?.find((item) => item.initial)?.initial;
+  const initialFrom = useStore((state) => {
+    const node = initial && state.nodeLookup.get(initial.card);
+    const handle = node?.internals.handleBounds?.source?.find((bounds) => bounds.id === initial!.handle);
+    return node && handle ? `${node.internals.positionAbsolute.x + handle.x + handle.width / 2},${node.internals.positionAbsolute.y + handle.y + handle.height / 2}` : undefined;
+  });
+  const initialPath = initialFrom && (() => {
+    const [x, y] = initialFrom.split(',').map(Number);
+    return getBezierPath({ sourceX: x, sourceY: y, sourcePosition: Position.Right, targetX: mid.x, targetY: mid.y + 9, targetPosition: Position.Bottom })[0];
+  })();
   /** Solid from the source to the delay's square, dashed from it to the target. */
   const dash = delayed && place
     ? `${place.along} 0 ${'5 3 '.repeat(Math.min(1000, Math.ceil((pathRef.current?.getTotalLength() ?? 0) / 8)))}` : undefined;
   return <>
     {(delayed || labelled) && <path d={path} ref={pathRef} visibility="hidden" aria-hidden="true" />}
+    {initialPath && <path d={initialPath} className="studio-model-wire" fill="none" strokeWidth={1.3} strokeDasharray="5 3" aria-hidden="true" />}
     <BaseEdge id={id} path={path} markerEnd={markerEnd} className="studio-model-wire"
       style={{ strokeWidth: data?.selected || data?.bundleCount ? 3 : physical ? 2.4 : 1.3,
         strokeDasharray: data?.ghost ? '4 3' : delayed ? dash : undefined }} />

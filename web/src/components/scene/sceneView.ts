@@ -1,6 +1,6 @@
 import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
 import type { ElementAddress } from '@/features/projectWindow/elementSelection';
-import type { TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace } from '@/generated/studioContracts';
+import type { Marker, TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace } from '@/generated/studioContracts';
 import type { ScenePoint } from './planarProjection';
 
 /** A class of element the Scene draws, in Layers' order; Layers shows or hides each. */
@@ -31,10 +31,21 @@ export interface SceneElement {
   readonly possible?: readonly ScenePoint[];
   readonly values: readonly SceneValue[];
   /** Which end of the trial a task element marks: the start the Model is placed at, or a goal. */
-  readonly mark?: 'start' | 'goal';
+  readonly mark?: SceneMark;
+  /** How a task element is drawn: its variable's marker, or its mark's. */
+  readonly marker?: Marker;
   /** Why the element is not drawn as authored, marked on it. */
   readonly problem?: string;
 }
+
+/** Which end of the trial a task element marks. */
+export type SceneMark = 'start' | 'goal';
+
+/** The marker of a task element whose variable chooses none. */
+export const markMarkers: Readonly<Record<SceneMark, Marker>> = {
+  start: { shape: 'square', filled: false },
+  goal: { shape: 'circle', filled: false },
+};
 
 /** A mechanism, or the task, with the elements of it the Scene draws. */
 export interface SceneGroup {
