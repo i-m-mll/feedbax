@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from math import prod
 
@@ -13,6 +13,7 @@ from jax.tree_util import DictKey, GetAttrKey, SequenceKey
 
 from feedbax.builtins.runtime.channel import toggle_channel_noise
 from feedbax.builtins.runtime.components import Noise
+from feedbax.compiler.model_reset import ModelResetError
 from feedbax.contracts.expression_values import Problem, ProblemCode
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_address import (
@@ -21,7 +22,8 @@ from feedbax.contracts.model_address import (
 from feedbax.contracts.model_values import SignalLeafPath
 from feedbax.execution.trial_execution import sample_trial
 from feedbax.execution.trial_resolution import PreparedTrialExecution
-from feedbax.runtime._signal_schedule import ScopedPort, resolve_signal_schedule
+from feedbax.objectives.document import ObjectiveExecutor
+from feedbax.runtime._signal_schedule import ScopedPort, SignalScheduleError, resolve_signal_schedule
 from feedbax.runtime.graph import Graph, GraphSignalEdits, GraphTraceRequest, _nested_cycle_key, signal_leaf_value
 from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
 from feedbax.tasks.document import PendingTrial, TaskParameters, Trial
@@ -54,6 +56,91 @@ class Linearization:
     outputs: jax.Array
     steps: tuple[int, ...]
     dt: float
+
+
+@dataclass(frozen=True)
+class QuadraticCost:
+    """Stage blocks and terminal block of the compiled Objective."""
+
+    Q: jax.Array
+    R: jax.Array
+    N: jax.Array
+    Qf: jax.Array
+    state_gradient: jax.Array
+    command_gradient: jax.Array
+    constant: jax.Array
+
+    def evaluate(self, states: jax.Array, commands: jax.Array) -> jax.Array:
+        x, terminal = states[:-1], states[-1]
+        return (
+            jnp.einsum("ti,tij,tj->", x, self.Q, x)
+            + jnp.einsum("ti,tij,tj->", commands, self.R, commands)
+            + 2 * jnp.einsum("ti,tij,tj->", x, self.N, commands)
+            + terminal @ self.Qf @ terminal
+            + jnp.vdot(states, self.state_gradient)
+            + jnp.vdot(commands, self.command_gradient)
+            + self.constant
+        )
+
+
+def quadratic_cost(
+    objective: ObjectiveExecutor,
+    task: Trial,
+    observe: Callable[[jax.Array, jax.Array], Mapping[str, jax.Array]],
+    *,
+    state_width: int,
+    command_width: int,
+) -> QuadraticCost | tuple[Problem, ...]:
+    """Lower the actual B3 evaluator on independent state and command samples.
+
+    The observation function receives T+1 states and T commands and produces
+    the retained signals at the evaluator's usual step alignment.
+    """
+    steps = objective.n_steps
+    width = state_width + command_width
+    key = jax.random.key(0)
+    base = jnp.zeros((steps + 1, width), dtype=float)
+    seeds = jnp.broadcast_to(jnp.eye(width, dtype=base.dtype)[:, None, :], (width, *base.shape))
+
+    def score(values):
+        states, commands = values[:, :state_width], values[:-1, state_width:]
+        terms = objective.evaluate_trial(observe(states, commands), task, key, key)
+        return sum(
+            (jnp.where(term.covered, term.value, 0) for term in terms.values()),
+            jnp.asarray(0.0, dtype=values.dtype),
+        )
+
+    scalar_and_gradient = jax.jit(jax.value_and_grad(score))
+    constant, gradient = scalar_and_gradient(base)
+
+    @jax.jit
+    def half_blocks(directions):
+        # For a stage-separable Objective each time block responds independently.
+        # Sharing the basis across time avoids materializing a dense T² Hessian.
+        hv = jax.vmap(lambda v: jax.jvp(jax.grad(score), (base,), (v,))[1])(directions)
+        h = jnp.moveaxis(hv, 0, -1)
+        return (h + h.swapaxes(-1, -2)) / 4
+
+    blocks = half_blocks(seeds)
+    tolerance = 128 * np.finfo(base.dtype).eps
+    for index in range(3):
+        probe = jax.random.normal(jax.random.fold_in(key, index), base.shape, dtype=base.dtype)
+        value, slope = scalar_and_gradient(probe)
+        change = jnp.einsum("tij,tj->ti", blocks, probe)
+        predicted = constant + jnp.vdot(gradient + change, probe)
+        if not (
+            np.allclose(value, predicted, rtol=tolerance, atol=tolerance)
+            and np.allclose(slope, gradient + 2 * change, rtol=tolerance, atol=tolerance)
+        ):
+            return (Problem(
+                code=ProblemCode.STRUCTURE, path=("objective",),
+                reason="The Objective is not a stage-separable quadratic in state and command.",
+            ),)
+    return QuadraticCost(
+        blocks[:-1, :state_width, :state_width], blocks[:-1, state_width:, state_width:],
+        blocks[:-1, :state_width, state_width:], blocks[-1, :state_width, :state_width],
+        gradient[:, :state_width], gradient[:-1, state_width:], constant,
+    )
 
 
 class _Refused(ValueError):
@@ -138,9 +225,12 @@ def _leaf_path(path):
 
 
 def _adjust(value, leaf, change):
+    def requested(part):
+        return part + jnp.asarray(change, dtype=part.dtype)
+
     if not leaf:
-        return value + change
-    return jax.tree.map_with_path(lambda path, part: part + change if _leaf_path(path) == leaf else part, value)
+        return requested(value)
+    return jax.tree.map_with_path(lambda path, part: requested(part) if _leaf_path(path) == leaf else part, value)
 
 
 def _state_samples(graph: Graph, state, carry):
@@ -238,6 +328,10 @@ def linearize(
         return _linearize(model, task, tuple(inputs), tuple(outputs), tuple(openings), about)
     except _Refused as error:
         return (error.problem(),)
+    except ModelResetError as error:
+        return (error.problem,)
+    except SignalScheduleError as error:
+        return (_Refused(str(error), model.lowered.source_address(error.authored_path)).problem(),)
     except StateLayoutError as error:
         return (Problem(code=ProblemCode.STRUCTURE, reason=error.reason, path=tuple(error.path.strip("/").split("/"))),)
 
