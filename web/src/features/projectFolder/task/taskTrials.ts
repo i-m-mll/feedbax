@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { sampleTaskTrials } from '@/api/studioAuthoring';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
-import type { ModelDocument, StudioTrialAuthoring, TaskDocument, TaskTrialSampleRequest, TaskTrialSampleResponse } from '@/generated/studioContracts';
+import type {
+  ModelDocument, StudioRunTaskTrialSampleRequest, StudioSavedTrainKey, StudioTrialAuthoring, TaskDocument, TaskTrialSampleResponse,
+} from '@/generated/studioContracts';
 import type { EpochBounds } from './taskModel';
 import type { ShelfTask } from './shelfRows';
 import { modelInterventions } from '../model/modelGraph';
@@ -61,19 +63,17 @@ function drawnAs<Kind extends 'trials' | 'aggregate'>(drawn: Drawn, kind: Kind):
 /** Which trials a request draws: the nominal trial, `count` samples under `seed`, or their aggregate. */
 type Draw = { readonly nominal: true } | { readonly nominal: false; readonly seed: number; readonly count: number; readonly aggregate: boolean };
 
-/** The request that draws `draw` from the step's pairing: its Task, its Model, its bindings and its Objective. */
-function sampleRequest(view: StudioTrialAuthoring, task: TaskDocument, model: ModelDocument | undefined, draw: Draw): TaskTrialSampleRequest {
-  return {
-    task, input_bindings: view.input_bindings, ...draw,
-    ...model && { model },
-    ...view.objective && { objective: view.objective },
-  };
+/** The saved run whose pairing of documents the shelf draws trials from. */
+export interface SampledRun {
+  readonly projectId: string;
+  readonly revision: string;
+  readonly run: StudioSavedTrainKey;
 }
 
-function useDrawn<Shown>(view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, draw: Draw, enabled: boolean,
-  read: (drawn: Drawn) => Shown) {
-  const task = view && taskDocumentOf(view);
-  const body = view && task ? sampleRequest(view, task, model, draw) : undefined;
+function useDrawn<Shown>(source: SampledRun | undefined, draw: Draw, enabled: boolean, read: (drawn: Drawn) => Shown) {
+  const body: StudioRunTaskTrialSampleRequest | undefined = source && {
+    project_id: source.projectId, revision: source.revision, run: source.run, ...draw,
+  };
   return useQuery({
     queryKey: ['task-trials', body],
     queryFn: async ({ signal }) => read((await sampleTaskTrials(body!, signal)).drawn),
@@ -87,15 +87,14 @@ const records = (drawn: Drawn) => {
   return answer.kind === 'problems' ? answer : answer.trials;
 };
 
-/** The step's nominal trial, as one record, when `enabled`. */
-export const useNominalTrial = (view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, enabled: boolean) =>
-  useDrawn(view, model, { nominal: true }, enabled, records);
+/** The run's nominal trial, as one record, when `enabled`. */
+export const useNominalTrial = (source: SampledRun | undefined, enabled: boolean) =>
+  useDrawn(source, { nominal: true }, enabled, records);
 
-/** The `count` trials drawn under `seed` from the step's pairing, when `enabled`. */
-export const useTaskSamples = (view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, seed: number, count: number,
-  enabled: boolean) => useDrawn(view, model, { nominal: false, seed, count, aggregate: false }, enabled, records);
+/** The `count` trials drawn under `seed` from the run's pairing, when `enabled`. */
+export const useTaskSamples = (source: SampledRun | undefined, seed: number, count: number, enabled: boolean) =>
+  useDrawn(source, { nominal: false, seed, count, aggregate: false }, enabled, records);
 
-/** The aggregate of the `count` trials drawn under `seed` from the step's pairing, when `enabled`. */
-export const useTaskBatch = (view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, seed: number, count: number,
-  enabled: boolean) => useDrawn(view, model, { nominal: false, seed, count, aggregate: true }, enabled,
-  (drawn) => drawnAs(drawn, 'aggregate'));
+/** The aggregate of the `count` trials drawn under `seed` from the run's pairing, when `enabled`. */
+export const useTaskBatch = (source: SampledRun | undefined, seed: number, count: number, enabled: boolean) =>
+  useDrawn(source, { nominal: false, seed, count, aggregate: true }, enabled, (drawn) => drawnAs(drawn, 'aggregate'));
