@@ -153,6 +153,8 @@ def resolve_rollout(
     import jax
 
     from feedbax.objectives.document import ObjectiveUse
+    from feedbax.compiler.model_anchors import anchored_outputs
+    from feedbax.execution.trial_places import bind_trial_places
     from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
     from feedbax.host.rollout_scoring import RolloutScorer
 
@@ -181,7 +183,11 @@ def resolve_rollout(
             raise variant.task_refusal(varied[0])
         paired = varied.paired
     try:
-        scorer = RolloutScorer(paired.execution, paired.objective, params.seed, params.trials)
+        places = bind_trial_places(
+            paired.objective, paired.execution.task,
+            anchored_outputs(initial.document, registry.components, paired.signal_scope.leaves),
+        )
+        scorer = RolloutScorer(paired.execution, paired.objective, params.seed, params.trials, places=places)
     except ValueError as error:
         raise CannotRun("/params/trials", str(error)) from error
     return ResolvedRollout(paired, variant, source_pair, scorer)
@@ -347,6 +353,7 @@ def rollout_dataset(
     trial_fields, trial_coordinates, record_layout = trial_dataset_fields(
         paired.execution.task, evaluated, layout, leading=leading, labels=labels, document=document,
         observation_origins=paired.execution.observation_origins,
+        places=prepared.scorer.places,
     )
     variables.update(trial_fields)
     state_coordinates.update(trial_coordinates)
