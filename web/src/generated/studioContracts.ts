@@ -610,6 +610,11 @@ export interface DelayAttachment {
   initial?: JsonValue;
 }
 
+export interface HoldAttachment {
+  kind: "hold";
+  id: string;
+}
+
 export interface InterventionAttachment {
   kind: "intervention";
   id: string;
@@ -657,7 +662,7 @@ export interface ModelPortAttachments {
 export interface ModelWire {
   source: ComponentPortEnd | InputBoundaryEnd;
   target: ComponentPortEnd | OutputBoundaryEnd;
-  attachments?: Array<DelayAttachment | InterventionAttachment | ProbeAttachment>;
+  attachments?: Array<DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment>;
 }
 
 export interface ModelPhysicalConnection {
@@ -868,14 +873,14 @@ export interface VariantRuns {
 export interface AddModelAttachment {
   op: "add";
   owner: ModelAddress;
-  attachment: DelayAttachment | InterventionAttachment | ProbeAttachment;
+  attachment: DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
   after: string | null;
 }
 
 export interface ChangeModelAttachment {
   address: ModelAddress;
   op: "change";
-  attachment: DelayAttachment | InterventionAttachment | ProbeAttachment;
+  attachment: DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
   after?: string | null;
 }
 
@@ -1091,7 +1096,7 @@ export interface ModelAddedElement {
 export interface ModelRemovedElement {
   change: "removed";
   address: ModelAddress;
-  definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | DelayAttachment | InterventionAttachment | ProbeAttachment;
+  definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
   position?: ModelPosition | null;
   wires?: Record<string, ModelWire>;
   connections?: Record<string, ModelPhysicalConnection>;
@@ -1209,6 +1214,11 @@ export interface StudioSweepSampler {
   can_list: boolean;
 }
 
+export interface TimeValue {
+  value: number;
+  unit: "s" | "st";
+}
+
 export interface StudioFieldView {
   label: string;
   text: string;
@@ -1216,7 +1226,7 @@ export interface StudioFieldView {
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
-  conversion?: string | null;
+  conversion?: TimeValue | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -1233,7 +1243,7 @@ export interface ModelFieldView {
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
-  conversion?: string | null;
+  conversion?: TimeValue | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -1253,7 +1263,7 @@ export interface TrainFieldView {
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
-  conversion?: string | null;
+  conversion?: TimeValue | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -1432,7 +1442,6 @@ export interface WireSpec {
   source_port: string;
   target_node: string;
   target_port: string;
-  temporality?: "instant" | "recurrent";
   recurrent_initializer?: Record<string, unknown> | null;
 }
 
@@ -2179,7 +2188,7 @@ export interface TaskTimelineCue {
   label: string;
   start: number;
   end: number;
-  outcome: number;
+  outcome: 0 | 1 | 2 | 3;
 }
 
 export interface TrialBoundarySummary {
@@ -3069,7 +3078,7 @@ export type DuplicateRun = {
   "kind": "duplicate_run";
 };
 
-export type End = Length | Rest;
+export type End = Length | Rest | Until;
 
 export type EnsureDocumentCollection = {
   "op": "ensure";
@@ -5025,7 +5034,7 @@ export type StudioTrialField = {
   "effective"?: string | null;
   "mixed"?: boolean;
   "unit"?: string | null;
-  "conversion"?: string | null;
+  "conversion"?: TimeValue | null;
   "site": SiteProjection;
   "sweep"?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   "selected_value"?: string | null;
@@ -5191,6 +5200,12 @@ export type TrialSetField = {
 export type UnresolvedValue = {
   "kind"?: "unresolved";
   "text": string;
+};
+
+export type Until = {
+  "kind"?: "until";
+  "condition": Expression;
+  "limit": TimeValue;
 };
 
 export type UpdateCadence = {
@@ -6944,6 +6959,15 @@ export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<DelayAttachment>;
 
+export const HoldAttachmentSchema: z.ZodType<HoldAttachment> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("hold"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<HoldAttachment>;
+
 export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z.lazy(() =>
   z
     .object({
@@ -7033,7 +7057,7 @@ export const ModelWireSchema: z.ZodType<ModelWire> = z.lazy(() =>
     .object({
       "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
       "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
-      "attachments": z.array(z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])).optional(),
+      "attachments": z.array(z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelWire>;
@@ -7416,7 +7440,7 @@ export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(()
     .object({
       "op": z.literal("add"),
       "owner": ModelAddressSchema,
-      "attachment": z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "attachment": z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
       "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable(),
     })
     .strict()
@@ -7427,6 +7451,12 @@ export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(()
           message: "Expected a wire or port owner",
         });
       }
+      if (value.attachment.kind === "hold" && value.owner.element.kind !== "wire") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A Hold requires a wire",
+        });
+      }
     })
 ) as unknown as z.ZodType<AddModelAttachment>;
 
@@ -7435,7 +7465,7 @@ export const ChangeModelAttachmentSchema: z.ZodType<ChangeModelAttachment> = z.l
     .object({
       "address": ModelAddressSchema,
       "op": z.literal("change"),
-      "attachment": z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "attachment": z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
       "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
     })
     .strict()
@@ -7818,7 +7848,7 @@ export const ModelRemovedElementSchema: z.ZodType<ModelRemovedElement> = z.lazy(
     .object({
       "change": z.literal("removed"),
       "address": ModelAddressSchema,
-      "definition": z.union([LeafComponentSchema, CompositeComponentSchema, ModelWireSchema, ModelPhysicalConnectionSchema, z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])]),
+      "definition": z.union([LeafComponentSchema, CompositeComponentSchema, ModelWireSchema, ModelPhysicalConnectionSchema, z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])]),
       "position": ModelPositionSchema.nullable().optional(),
       "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema).optional(),
       "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema).optional(),
@@ -7998,6 +8028,15 @@ export const StudioSweepSamplerSchema: z.ZodType<StudioSweepSampler> = z.lazy(()
     .strict()
 ) as unknown as z.ZodType<StudioSweepSampler>;
 
+export const TimeValueSchema: z.ZodType<TimeValue> = z.lazy(() =>
+  z
+    .object({
+      "value": z.number().finite(),
+      "unit": z.union([z.literal("s"), z.literal("st")]),
+    })
+    .strict()
+) as unknown as z.ZodType<TimeValue>;
+
 export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
   z
     .object({
@@ -8007,7 +8046,7 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
-      "conversion": z.string().nullable().optional(),
+      "conversion": TimeValueSchema.nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -8028,7 +8067,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
-      "conversion": z.string().nullable().optional(),
+      "conversion": TimeValueSchema.nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -8052,7 +8091,7 @@ export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
-      "conversion": z.string().nullable().optional(),
+      "conversion": TimeValueSchema.nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -8384,7 +8423,6 @@ export const WireSpecSchema: z.ZodType<WireSpec> = z.lazy(() =>
       "source_port": z.string(),
       "target_node": z.string(),
       "target_port": z.string(),
-      "temporality": z.union([z.literal("instant"), z.literal("recurrent")]).optional(),
       "recurrent_initializer": z.record(z.string(), z.unknown()).nullable().optional(),
     })
     .strict()
@@ -9713,7 +9751,7 @@ export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
       "label": z.string(),
       "start": z.number().int().safe(),
       "end": z.number().int().safe(),
-      "outcome": z.number().int().safe(),
+      "outcome": z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
     })
     .strict()
 ) as unknown as z.ZodType<TaskTimelineCue>;
@@ -11078,7 +11116,7 @@ export const DuplicateRunSchema: z.ZodType<DuplicateRun> = z.lazy(() =>
 ) as unknown as z.ZodType<DuplicateRun>;
 
 export const EndSchema: z.ZodType<End> = z.lazy(() =>
-  z.union([LengthSchema, RestSchema])
+  z.union([LengthSchema, RestSchema, UntilSchema])
 ) as unknown as z.ZodType<End>;
 
 export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
@@ -13650,7 +13688,7 @@ export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
     "effective": z.union([z.string(), z.null()]).optional(),
     "mixed": z.boolean().optional(),
     "unit": z.union([z.string(), z.null()]).optional(),
-    "conversion": z.union([z.string(), z.null()]).optional(),
+    "conversion": z.union([TimeValueSchema, z.null()]).optional(),
     "site": SiteProjectionSchema,
     "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
     "selected_value": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
@@ -13872,6 +13910,14 @@ export const UnresolvedValueSchema: z.ZodType<UnresolvedValue> = z.lazy(() =>
     "text": z.string(),
   }).strict()
 ) as unknown as z.ZodType<UnresolvedValue>;
+
+export const UntilSchema: z.ZodType<Until> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("until").optional(),
+    "condition": ExpressionSchema,
+    "limit": TimeValueSchema,
+  }).strict()
+) as unknown as z.ZodType<Until>;
 
 export const UpdateCadenceSchema: z.ZodType<UpdateCadence> = z.lazy(() =>
   z.object({

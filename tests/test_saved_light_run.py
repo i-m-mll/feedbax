@@ -2,6 +2,8 @@
 
 from base64 import b64decode, b64encode
 from copy import deepcopy
+from dataclasses import replace
+from datetime import timedelta
 from hashlib import sha256
 import re
 
@@ -12,7 +14,9 @@ from fastapi.testclient import TestClient
 from feedbax.builtins.figure_templates import SpeedByTrial, SpeedByTrialSettings
 from feedbax.cli import main
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.code_validity import SourcePath
 from feedbax.contracts.project import Project
+from feedbax.contracts.receipt_validity import FileDifference, ReceiptValidity
 from feedbax.planner.project_plan import ElementKey, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.studio_figure import FigureProduct
@@ -21,12 +25,14 @@ from feedbax.host.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
+from feedbax.validity.project_admission import ProjectValidity
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
 from tests.support.host import admit, held_until_released, job_row, run_job, token, wait_until
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_project_analyze_plan import _operations
+from tests.test_project_history_replay import _replay_body
 from tests.test_project_report_plan import _report_project
 
 _TRIALS = ["0", "1"]
@@ -357,7 +363,7 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
         assert response.status_code == code, response.text
         return response.json()
 
-    with TestClient(create_app(projects_dir=projects)) as client:
+    with TestClient(create_app(projects_dir=projects, quick_duration=timedelta(minutes=5))) as client:
         def plan(revision):
             return expect(client.get(f"{path}/train-runs", params={"revision": revision, "window_map": True}))
 
@@ -371,8 +377,19 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
                     "revision": revision, "job_id": job_id, "key": key(step), "trial": _TRIALS[0],
                 }), code)
 
-        snapshot = expect(client.get(path))
-        revision = snapshot["revision"]
+        original_snapshot = expect(client.get(path))
+        model_address = {"composites": [], "element": {
+            "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
+        }}
+        edited = expect(client.post(f"{path}/model/edit", json={
+            "revision": original_snapshot["revision"],
+            "presentation_revision": original_snapshot["presentation_revision"],
+            "document": "point-mass", "command": {"operation": {
+                "op": "set_field", "address": model_address, "value": 2.5,
+            }},
+        }))
+        assert edited["result"]["status"] == "applied", edited
+        revision = expect(client.get(path))["revision"]
         release = tmp_path / "release"
         gate = run_job("gate", held_until_released(release), project=project_id)
         admit(host, token("gate"), gate)
@@ -428,19 +445,15 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
         (binding,) = (row for row in projection["task_inputs"] if row["signal_id"] == "target_pos")
         assert binding["element"]["end"]["port"] == "target_pos"
         assert next(row["label"] for row in projection["task_signals"] if row["id"] == "target_pos") == "Aim"
-        model_address = {"composites": [], "element": {
-            "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
-        }}
-        edited = expect(client.post(f"{path}/model/edit", json={
-            "revision": revision, "presentation_revision": snapshot["presentation_revision"],
-            "document": "point-mass", "command": {"operation": {
-                "op": "set_field", "address": model_address, "value": 2.5,
-            }},
-        }))
-        assert edited["result"]["status"] == "applied", edited
-        changed = expect(client.get(path))["revision"]
+        jobs_before_undo = {job["id"] for job in host.jobs(project=project_id)}
+        expect(client.post(f"{path}/history/replay", json=_replay_body(
+            snapshot, original_snapshot, ("document", "point-mass"),
+        )))
+        undone = expect(client.get(path))
+        changed = undone["revision"]
         assert changed != revision
         after = plan(changed)
+        assert {job["id"] for job in host.jobs(project=project_id)} == jobs_before_undo
         (old_train,) = after["rows"]
         assert old_train["status"] == "stale"
         assert old_train["request_id"] != old_train["previous"]["request_id"]
@@ -473,6 +486,36 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
         response = client.get(profile["previous"]["products"]["figure"])
         assert response.status_code == 200
         assert response.content == original_figure.content
+
+        # Redo restores an exact quick receipt, which can now be stale after a source edit.
+        inspect = ProjectValidity.inspect
+
+        def inspect_with_changed_train_source(observer, view, published, **kwargs):
+            observation = inspect(observer, view, published, **kwargs)
+            if published.receipt.request.id != old_train["previous"]["request_id"]:
+                return observation
+            return replace(observation, decision=ReceiptValidity(
+                receipt=published.ref, state="stale",
+                reasons=(FileDifference(
+                    kind="file", path=SourcePath(scope="project", path="train.py"),
+                    before="a" * 64, after="b" * 64,
+                ),),
+            ))
+
+        monkeypatch.setattr(ProjectValidity, "inspect", inspect_with_changed_train_source)
+        expect(client.post(f"{path}/history/replay", json=_replay_body(
+            undone, snapshot, ("document", "point-mass"),
+        )))
+        restored_revision = expect(client.get(path))["revision"]
+        assert restored_revision == revision
+        restored = plan(restored_revision)
+        assert {job["id"] for job in host.jobs(project=project_id)} == jobs_before_undo
+        (restored_train,) = restored["rows"]
+        assert restored_train["status"] == "stale"
+        assert restored_train["result"]["job_id"] == train["job_id"]
+        for row in restored["window_map"]["evaluations"]:
+            assert row["result"]["job_id"] == evaluate["job_id"]
+            assert replay(restored_revision, evaluate["job_id"], row["key"]["step"]) == replayed
 
 
 def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, monkeypatch):

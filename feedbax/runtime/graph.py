@@ -248,6 +248,10 @@ class Wire(Module):
     recurrent_initializer: Optional[dict] = field(default=None, static=True)
     id: str | None = field(default=None, static=True)
 
+    @property
+    def is_recurrent(self) -> bool:
+        return self.temporality == "recurrent"
+
     def __repr__(self) -> str:
         arrow = "-[recurrent]->" if self.temporality == "recurrent" else "->"
         return (

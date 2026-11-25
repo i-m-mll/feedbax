@@ -8,6 +8,7 @@ from feedbax.contracts.expression_values import Problem
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.studio_scene import ScenePoint
+from feedbax.contracts.task_document import EpochEnd
 from feedbax.contracts.trial_clock import TrialMean, TrialMeanOptions
 
 
@@ -16,7 +17,7 @@ class TaskTimelineCue(BaseModel):
     label: str
     start: int
     end: int
-    outcome: int
+    outcome: EpochEnd
 
 
 class TrialAnchorPlace(BaseModel):

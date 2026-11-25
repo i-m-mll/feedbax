@@ -103,7 +103,6 @@ def network_recurrent_wires(
             source_port=hidden_source_port,
             target_node="cell",
             target_port="hidden",
-            temporality="recurrent",
             recurrent_initializer=hidden_initializer,
         )
     ]
@@ -118,7 +117,6 @@ def network_recurrent_wires(
                 source_port="cell",
                 target_node="cell",
                 target_port="cell",
-                temporality="recurrent",
                 recurrent_initializer=recurrent_zero_initializer(
                     hidden_size,
                     state_slot="cell",
@@ -444,7 +442,6 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
                 source_port=wire.source_port,
                 target_node=wire.target_node,
                 target_port=wire.target_port,
-                temporality=wire.temporality,
                 recurrent_initializer=wire.recurrent_initializer,
             )
             for wire in feedback_wires(1, force_filter=force_filter)

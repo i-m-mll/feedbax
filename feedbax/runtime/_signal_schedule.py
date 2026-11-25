@@ -73,7 +73,7 @@ def needs_signal_schedule(graph: GraphSpec) -> bool:
         return False
     adjacency: dict[str, set[str]] = {node: set() for node in graph.nodes}
     for wire in graph.wires:
-        if wire.temporality == "instant" and wire.source_node in adjacency:
+        if not wire.is_recurrent and wire.source_node in adjacency:
             adjacency[wire.source_node].add(wire.target_node)
     _, back_edges = detect_cycles_and_sort(adjacency)
     return bool(back_edges) or any(needs_signal_schedule(child) for child in children)
@@ -146,15 +146,15 @@ def resolve_signal_schedule(graph: GraphSpec) -> SignalSchedule:
                     f"Multiple drivers for input {target!r}", reference.authored_path,
                 )
             drivers.add(target)
-            if wire.temporality == "recurrent" and (
+            if wire.is_recurrent and (
                 (wire.recurrent_initializer or {}).get("kind") in {"graph-input", "node-output"}
             ):
                 raise SignalScheduleError(
                     "Trial-input and node-output resets require a contiguous composite schedule",
                     reference.authored_path,
                 )
-            routes.append(SignalRoute(source, target, reference, wire.temporality))
-            if wire.temporality == "instant":
+            routes.append(SignalRoute(source, target, reference, "recurrent" if wire.is_recurrent else "instant"))
+            if not wire.is_recurrent:
                 adjacency[source.node].add(target.node)
                 dependencies.setdefault((source.node, target.node), reference)
 

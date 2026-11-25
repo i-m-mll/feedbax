@@ -66,6 +66,12 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
             lambda value: value.owner.element.kind not in {"wire", "port"},
             'value.owner.element.kind !== "wire" && value.owner.element.kind !== "port"',
         ),
+        CrossFieldRefinement(
+            "model-attachment.hold-owner",
+            "A Hold requires a wire",
+            lambda value: value.attachment.kind == "hold" and value.owner.element.kind != "wire",
+            'value.attachment.kind === "hold" && value.owner.element.kind !== "wire"',
+        ),
     ),
     "ExistingModelAttachment": (
         CrossFieldRefinement(

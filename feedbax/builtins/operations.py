@@ -28,6 +28,7 @@ _REACH_FRAME = "reach-aligned"
 _VELOCITY_SCHEMA = "feedbax.analysis.aligned_velocity.v1"
 _SPEED_SCHEMA = "feedbax.analysis.trial_speed.v1"
 _SUMMARY_SCHEMA = "feedbax.analysis.velocity_summary.v1"
+_PEAK_SUMMARY_SCHEMA = "feedbax.analysis.peak_velocity_summary.v1"
 _VELOCITY_FIELDS = ("parallel_velocity", "lateral_velocity")
 
 
@@ -73,18 +74,25 @@ _SPEED = DatasetPort(
     variables={"speed": FieldDescriptor(dims=_STATE_AXES, units="m/s", frame="world")},
     coordinates=_STATE_COORDS,
 )
-_SUMMARY = DatasetPort(
-    schema_ids=(_SUMMARY_SCHEMA,),
-    optional_dimensions=_OPTIONAL_AXES,
-    variables={
-        **{
-            name: FieldDescriptor(dims=_SUMMARY_AXES, units="m/s", frame=_REACH_FRAME)
-            for name in ("mean", "standard_deviation", "lower", "upper")
+
+
+def _summary_port(schema: str, dims: tuple[str, ...]) -> DatasetPort:
+    return DatasetPort(
+        schema_ids=(schema,),
+        optional_dimensions=_OPTIONAL_AXES,
+        variables={
+            **{
+                name: FieldDescriptor(dims=dims, units="m/s", frame=_REACH_FRAME)
+                for name in ("mean", "standard_deviation", "lower", "upper")
+            },
+            "count": FieldDescriptor(dims=dims, units="1"),
         },
-        "count": FieldDescriptor(dims=_SUMMARY_AXES, units="1"),
-    },
-    coordinates={name: _STATE_COORDS[name] for name in _SUMMARY_AXES},
-)
+        coordinates={name: _STATE_COORDS[name] for name in dims},
+    )
+
+
+_SUMMARY = _summary_port(_SUMMARY_SCHEMA, _SUMMARY_AXES)
+_PEAK_SUMMARY = _summary_port(_PEAK_SUMMARY_SCHEMA, ("checkpoint", "condition"))
 
 
 class AlignedVelocityParameters(StrictModel):
@@ -220,6 +228,16 @@ def _summarize_trials(values, ddof, bounds_scale, trial_axis):
     }
 
 
+def _velocity_samples(velocity: Dataset, params: VelocitySummaryParameters) -> tuple[np.ndarray, int]:
+    trial_axis = velocity.descriptor.variables[params.variable].dims.index("trial")
+    values = np.asarray(velocity.data(params.variable))
+    if values.shape[trial_axis] <= params.ddof:
+        raise ValueError("Trial count must exceed ddof.")
+    if not np.isfinite(values).all():
+        raise ValueError("Trial summary requires finite velocity values.")
+    return values, trial_axis
+
+
 @operation(settings=VelocitySummaryParameters, label="Trial summary")
 def summarize_velocity(
     velocity: Annotated[Dataset, _VELOCITY],
@@ -227,11 +245,20 @@ def summarize_velocity(
 ) -> Annotated[Dataset, DatasetOutput("summary", _SUMMARY)]:
     """Summarize one velocity component over trials at each checkpoint, condition, and sample."""
     stacking = verify_dataset(velocity, _VELOCITY, params)
-    trial_axis = velocity.descriptor.variables[params.variable].dims.index("trial")
-    values = np.asarray(velocity.data(params.variable))
-    if values.shape[trial_axis] <= params.ddof:
-        raise ValueError("Trial count must exceed ddof.")
-    if not np.isfinite(values).all():
-        raise ValueError("Trial summary requires finite velocity values.")
+    values, trial_axis = _velocity_samples(velocity, params)
     result = _summarize_trials(values, jnp.asarray(params.ddof), jnp.asarray(params.bounds_scale), trial_axis)
     return _product(_SUMMARY, velocity, stacking, result)
+
+
+@operation(settings=VelocitySummaryParameters, label="Peak velocity summary")
+def summarize_peak_velocity(
+    velocity: Annotated[Dataset, _VELOCITY],
+    params: VelocitySummaryParameters,
+) -> Annotated[Dataset, DatasetOutput("summary", _PEAK_SUMMARY)]:
+    """Summarize each trial's maximum velocity component at each checkpoint and condition."""
+    stacking = verify_dataset(velocity, _VELOCITY, params)
+    values, trial_axis = _velocity_samples(velocity, params)
+    # The input port places state_time last, after trial and any stacking dimensions.
+    peaks = values.max(axis=-1)
+    result = _summarize_trials(peaks, jnp.asarray(params.ddof), jnp.asarray(params.bounds_scale), trial_axis)
+    return _product(_PEAK_SUMMARY, velocity, stacking, result)

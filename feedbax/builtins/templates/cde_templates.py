@@ -182,7 +182,6 @@ def cde_controller_spec(
                 "output",
                 "obs_prev_in",
                 "input",
-                temporality="recurrent",
                 recurrent_initializer={
                     "kind": "constant",
                     "value": [0.0] * obs_dim,
@@ -194,7 +193,6 @@ def cde_controller_spec(
                 "output",
                 "h_prev_in",
                 "input",
-                temporality="recurrent",
                 recurrent_initializer={
                     "kind": "node-output",
                     "source_node": "h0",

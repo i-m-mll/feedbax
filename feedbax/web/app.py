@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from functools import partial
 from pathlib import Path
-from typing import Literal
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from feedbax.contracts.studio_api import StudioErrorReport
 from feedbax.examples import load_shipped_projects
 from feedbax.host import HostClient
-from feedbax.jobs import JobService, SessionSubmission
+from feedbax.jobs import DEFAULT_AUTOMATIC_RUN, AutomaticRun, JobService, SessionSubmission
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.application.composition import compose_application
 from feedbax.validity.admission import QUICK_RECEIPT_DURATION
@@ -60,7 +59,7 @@ def create_app(
     targets: TargetRegistry | None = None,
     submit_session: SessionSubmission | None = None,
     remote_runs: StudioRemoteRuns | None = None,
-    automatic_run: Literal["all", "no_train", "off"] = "all",
+    automatic_run: AutomaticRun = DEFAULT_AUTOMATIC_RUN,
     quick_duration: timedelta = QUICK_RECEIPT_DURATION,
 ) -> FastAPI:
     project_root = projects_dir if projects_dir is not None else BASE_DIR / "projects"

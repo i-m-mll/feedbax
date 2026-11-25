@@ -224,17 +224,6 @@ def _validate_local_connections(
 
         if source is None or target is None:
             continue
-        if wire.temporality == "recurrent" and wire.recurrent_initializer is None:
-            issues.append(
-                SchemaValidationIssue(
-                    type="recurrent_initializer_missing",
-                    message=(
-                        f"Recurrent wire {wire.source_node}.{wire.source_port} -> "
-                        f"{wire.target_node}.{wire.target_port} needs an initial value"
-                    ),
-                    location={"path": f"{wire_path}/recurrent_initializer"},
-                )
-            )
         issues.extend(
             _value_schema_compatibility_issues(
                 source.value_schema,
@@ -357,7 +346,7 @@ def _concatenate_connected_input_issues(
 def _instant_cycle_issues(graph: GraphSpec, base_path: str) -> list[SchemaValidationIssue]:
     adjacency: dict[str, list[tuple[str, int]]] = {node_id: [] for node_id in graph.nodes}
     for index, wire in enumerate(graph.wires):
-        if wire.temporality == "recurrent":
+        if wire.is_recurrent:
             continue
         if wire.source_node not in graph.nodes or wire.target_node not in graph.nodes:
             continue
