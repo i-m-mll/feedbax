@@ -3948,6 +3948,20 @@ class _Compiler:
             key = run.key
             return producer_member_key(key.variant, key.row, gathers_variants=reference.variants is not None)
 
+        def rule_problem(error: RuleRefusal) -> ProjectDiagnostic:
+            problem_path = pointer(tuple(error.path.split(".")))
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name, span=error.span,
+                document=subset_document, variant=variant,
+                document_path=problem_path if subset_document is not None else None,
+                authored_file=f"documents/{subset_document}.json" if subset_document is not None else f"steps/{name}.json",
+                authored_path=f"/payload{problem_path}" if subset_document is not None else pointer(
+                    (*path.split("."), "where", *error.path.split(".")),
+                ),
+                selection_value=error.problem if isinstance(error, SelectedAxisValueRefusal) else None,
+            )
+
+        problems = []
         try:
             keyed_runs, best = select_step_rows(
                 terms,
@@ -3956,20 +3970,16 @@ class _Compiler:
                 member_key=member_key,
                 coordinates=lambda run: axis_coordinates(run.coordinates, run.input_axes),
                 coordinate_label=coordinate_text,
+                missing=problems.append,
                 producer=member_name(self.variants[variants[0]].steps, reference.step),
             )
         except RuleRefusal as error:
-            problem_path = pointer(tuple(error.path.split(".")))
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name, span=error.span,
-                document=subset_document,
-                document_path=problem_path if subset_document is not None else None,
-                authored_file=f"documents/{subset_document}.json" if subset_document is not None else f"steps/{name}.json",
-                authored_path=f"/payload{problem_path}" if subset_document is not None else pointer(
-                    (*path.split("."), "where", *error.path.split(".")),
-                ),
-                selection_value=error.problem if isinstance(error, SelectedAxisValueRefusal) else None,
-            )
+            self.diagnostics.extend(map(rule_problem, problems))
+            return rule_problem(error)
+        if problems and not keyed_runs:
+            self.diagnostics.extend(map(rule_problem, problems[1:]))
+            return rule_problem(problems[0])
+        self.diagnostics.extend(map(rule_problem, problems))
         expands_input = template.sweep is not None and any(
             isinstance(axis, InputAxis) and axis.input == role.name
             for axis in template.sweep.axes.values()

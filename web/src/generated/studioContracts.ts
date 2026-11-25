@@ -2246,7 +2246,7 @@ export interface FigurePanelMeta {
 }
 
 export interface FigureRun {
-  key: StudioSavedTrainKey;
+  job_id: string;
   request_id: string;
 }
 
@@ -3250,7 +3250,7 @@ export type InputRole = {
   "required": boolean;
   "gathers": boolean;
   "producer": InputProducer | null;
-  "documents": Array<"model" | "loaded_model" | "task">;
+  "documents": Array<"model" | "task">;
   "checkpoint_sets": boolean;
 };
 
@@ -9669,7 +9669,7 @@ export const FigurePanelMetaSchema: z.ZodType<FigurePanelMeta> = z.lazy(() =>
 export const FigureRunSchema: z.ZodType<FigureRun> = z.lazy(() =>
   z
     .object({
-      "key": StudioSavedTrainKeySchema,
+      "job_id": z.string(),
       "request_id": z.string(),
     })
     .strict()
@@ -11140,7 +11140,7 @@ export const InputRoleSchema: z.ZodType<InputRole> = z.lazy(() =>
     "required": z.boolean(),
     "gathers": z.boolean(),
     "producer": z.union([InputProducerSchema, z.null()]),
-    "documents": z.array(z.union([z.literal("model"), z.literal("loaded_model"), z.literal("task")])),
+    "documents": z.array(z.union([z.literal("model"), z.literal("task")])),
     "checkpoint_sets": z.boolean(),
   }).strict()
 ) as unknown as z.ZodType<InputRole>;

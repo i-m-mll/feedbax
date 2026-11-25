@@ -36,10 +36,10 @@ def _raw():
     over["sweep"] = {"axes": {"model": {"input": "subject"}}}
     raw["steps"]["over"] = over
     pair = deepcopy(over)
-    pair["inputs"]["subject"]["where"] = {"axes": {"rate": [{"id": value, "label": value} for value in ("r1", "r3")]}}
+    pair["inputs"]["subject"]["where"] = {"clauses": [{"rate": [{"id": value, "label": value} for value in ("r1", "r3")]}]}
     raw["steps"]["pair"] = pair
     one = deepcopy(over)
-    one["inputs"]["subject"]["where"] = {"axes": {"rate": [{"id": "r2", "label": "r2"}]}}
+    one["inputs"]["subject"]["where"] = {"clauses": [{"rate": [{"id": "r2", "label": "r2"}]}]}
     raw["steps"]["one"] = one
     return raw
 
