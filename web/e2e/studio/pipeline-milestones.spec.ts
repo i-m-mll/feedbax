@@ -4,7 +4,7 @@ import type {
   ModelFieldResponse, StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { appendManagedFiles, authorLearningRateSweep, chooseSweepValue, enter, fixture, mapStep, openResultsSlot, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { appendManagedFiles, authorLearningRateSweep, chooseSweepValue, enter, fixture, mapStep, openResultsSlot, runName, shownRunLabel, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { pick } from './fixtures/controls';
 import { conditionLabels } from '../../src/features/projectFolder/evaluateAuthoring';
@@ -332,8 +332,8 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   for (const [index, producer] of expected.entries()) {
     const group = Math.floor(index / 2);
     const position = index % 2;
-    await expect(memberLists[group].nth(position)).toHaveText(`Rank ${position + 1} · ${producer.label}`);
-    await expect(runs(page).getByRole('rowheader', { name: new RegExp(producer.label) })).toHaveCount(1);
+    await expect(memberLists[group].nth(position)).toHaveText(`Rank ${position + 1} · ${shownRunLabel(producer)}`);
+    await expect(runs(page).getByRole('rowheader', { name: new RegExp(shownRunLabel(producer)) })).toHaveCount(1);
     if (grouped) await expect(runs(page).getByRole('rowheader').nth(index))
       .toHaveAccessibleName(runName(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`));
   }
@@ -567,7 +567,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const production = complete.window_map!.edges.find(({ to_key }) => to_key.row === target.row)!;
   const checkpoint = complete.rows.find(({ key }) => key.row === production.from_key.row)!;
   await expect(lineage).toContainText('1 of 6');
-  await expect(lineage.getByRole('listitem').last()).toHaveText(checkpoint.label);
+  await expect(lineage.getByRole('listitem').last()).toHaveText(shownRunLabel(checkpoint));
   expect(finished.result?.checkpoint_source).toEqual({
     job_id: checkpoint.result!.job_id, request_id: checkpoint.request_id, completed_updates: 2,
   });
@@ -595,8 +595,8 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
 
   const picked = trainDone.filter(({ key }) => key.row.startsWith('learning-rate=Slow'));
   const rowButton = (label: string) => runs(page).getByRole('button', { name: runName(label) });
-  await rowButton(picked[0].label).click();
-  await rowButton(picked[1].label).click({ modifiers: ['Shift'] });
+  await rowButton(shownRunLabel(picked[0])).click();
+  await rowButton(shownRunLabel(picked[1])).click({ modifiers: ['Shift'] });
   await model.focus();
   await expect(mass).toBeEditable();
   await enter(mass, '3');

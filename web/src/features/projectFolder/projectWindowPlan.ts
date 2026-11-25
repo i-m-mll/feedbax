@@ -121,8 +121,8 @@ function savedResult(result: { request_id: string; job_id: string; validity?: Pl
 const noChecks: ReadonlySet<string> = new Set();
 
 /**
- * The value an optional axis gives the runs it keeps beside their copies: the axis's first mark, labelled with the
- * axis's name, as the copies' values are named after it. It is no value of the authored axis, so no edit names it.
+ * The value an optional axis gives the runs it keeps beside their copies: the axis's first mark, which the Service
+ * lists and names with the copies. It is no value of the authored axis, so no edit names it.
  */
 export const unvalued = '';
 
@@ -245,16 +245,10 @@ export function projectWindowPlan(
     subjects.set(evaluation.bound_subject.key, evaluation.bound_subject);
   }
   const sourceRows = new Map(map?.rows.map((row) => [savedRunId(row.key), row]));
-  const stepRowCounts = new Map<string, number>();
-  for (const { key } of map?.rows ?? []) {
-    const step = JSON.stringify([key.variant, key.step]);
-    stepRowCounts.set(step, (stepRowCounts.get(step) ?? 0) + 1);
-  }
-  /** A step's only run is named by its step: the row key of a step without a sweep distinguishes nothing. */
+  /** A run's name: the Service's, or its step's when the step has only that run. */
   const rowName = (id: string, fallback: string) => {
     const row = sourceRows.get(id);
-    if (!row) return fallback;
-    return stepRowCounts.get(JSON.stringify([row.key.variant, row.key.step])) === 1 ? row.key.step : row.label;
+    return row ? row.label ?? shownName(row.key.step, project.steps?.[row.key.step]) : fallback;
   };
   const stepSources = new Map(map?.steps.filter(({ variant }) => variant === scope).map(({ step_id, inputs }) =>
     [step_id, inputs.find(({ id }) => id === 'subject')?.source_step_id]));
@@ -337,8 +331,6 @@ export function projectWindowPlan(
     }
     for (const axis of optionalAxes(project, row.key.step)) {
       if (axis in row.coordinates || axis in (row.input_axes ?? {}) || !kept.get(JSON.stringify([row.key.step, axis]))?.has(row.key.row)) continue;
-      const entries = sweeps.get(axis) ?? new Map<string, string>();
-      sweeps.set(axis, new Map([[unvalued, axis], ...entries]));
       values[axis] = unvalued;
     }
     const id = savedRunId(row.key);
@@ -371,7 +363,7 @@ export function projectWindowPlan(
     /** A run's own problems; the run it waits on is its link, `blockedBy`. */
     const problems = rowProblems?.filter(({ code }) => code !== 'blocked_input');
     addRun(row.key.step, {
-      id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label), status: row.status, reason, variant: row.key.variant,
+      id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label ?? shownName(row.key.step, project.steps?.[row.key.step])), status: row.status, reason, variant: row.key.variant,
       problems,
       blockedBy: blocking ? { stepId: blocking.step, label: studioFormat('stepRun', {
         step: shownName(blocking.step, project.steps?.[blocking.step]),

@@ -7,7 +7,7 @@ import type {
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
 import { studioBytes } from '../../src/components/activity/studioVocabulary';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
-import { captureStudioWindow, chooseSweepValue, drawnRunLabel, enter, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { captureStudioWindow, chooseSweepValue, drawnRunLabel, enter, mapStep, runName, shownRunLabel, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
 import { pick, pickRecordedTrial, reveal, trialPicker } from './fixtures/controls';
@@ -138,7 +138,7 @@ test('authors Evaluate conditions from one authenticated Train checkpoint', { ta
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   for (const [index, condition] of conditions.entries()) {
     await tab(page, 'Runs').click();
-    await plans(page).getByRole('button', { name: runName(rows[index].label) }).click();
+    await plans(page).getByRole('button', { name: runName(shownRunLabel(rows[index])) }).click();
     await tab(page, 'Model').click();
     await model.locator('[data-id="plant"] header').click();
     const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
@@ -388,7 +388,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   const chooseRow = async (run = selectedKey, extend = false) => {
     const definition = (await plan()).window_map?.rows.find(({ key }) => key.step === run.step && key.row === run.row);
     expect(definition).toBeDefined();
-    await plans(page).getByRole('button', { name: runName(definition!.label) })
+    await plans(page).getByRole('button', { name: runName(shownRunLabel(definition!)) })
       .click(extend ? { modifiers: ['Shift'] } : {});
   };
   await page.goto(`/?project=${snapshot.project_id}`);
@@ -648,7 +648,7 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
     .map(({ coordinates }) => coordinates.update.value_id)).toEqual(['4', '3', '2']);
   const gap = points[1];
   const gapRow = split.window_map!.rows.find(({ key }) => key.row === gap.key.row && key.step === 'evaluate')!;
-  await plans(page).getByRole('button', { name: runName(gapRow.label) }).click();
+  await plans(page).getByRole('button', { name: runName(shownRunLabel(gapRow)) }).click();
   const [gapJob] = await submit(page, runsPath);
   expect(gapJob.disposition).toBe('admitted');
   await expect.poll(async () => (await plan(swept.revision)).window_map!.evaluations!

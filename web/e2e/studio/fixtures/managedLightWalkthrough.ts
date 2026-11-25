@@ -3,7 +3,7 @@ import type {
   StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
-import { authorLearningRateSweep, chooseSweepValue, mapStep, runName } from './canonicalTrain';
+import { authorLearningRateSweep, chooseSweepValue, mapStep, runName, shownRunLabel } from './canonicalTrain';
 import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, openView, palette, submitOption, tabTo } from './studioKeyboard';
 import { applyTo, outlineRow, pick } from './controls';
 
@@ -135,7 +135,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const inspector = stepInspector(page);
   const used = inspector.getByRole('button', { name: /^Select Used By / });
-  const sourceRow = (index: number) => table(page).getByRole('button', { name: runName(prefix[index].label) });
+  const sourceRow = (index: number) => table(page).getByRole('button', { name: runName(shownRunLabel(prefix[index])) });
 
   async function selectTwo() {
     await openRuns(page, 'train');
@@ -273,7 +273,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       },
       progress: { completed_updates: childUpdates, total_updates: childUpdates },
     })]);
-    await activate(page, table(page).getByRole('button', { name: runName(producer.label) }));
+    await activate(page, table(page).getByRole('button', { name: runName(shownRunLabel(producer)) }));
     if (index === 0) {
       await palette(page, 'splitDetails', 'Split Details');
       await openView(page, 'results');
@@ -295,7 +295,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
 
   const producer = children[0];
   const producerTable = await openFocusedRuns(child);
-  await activate(page, producerTable.getByRole('rowheader', { name: runName(producer.label) }).getByRole('button'));
+  await activate(page, producerTable.getByRole('rowheader', { name: runName(shownRunLabel(producer)) }).getByRole('button'));
   const nested = 'train-3';
   await addSuccessor('Train', nested, child);
   const nestedTable = await openFocusedRuns(nested);

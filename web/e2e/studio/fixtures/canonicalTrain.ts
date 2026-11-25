@@ -57,11 +57,14 @@ export function runName(label: string) {
 
 type RowKey = { readonly variant: string; readonly step: string; readonly row: string };
 
-/** The label the Runs table draws for a saved row: a step's only run in its variant is named by its step. */
-export function drawnRunLabel(rows: readonly { key: RowKey; label: string }[], key: RowKey) {
-  const siblings = rows.filter((row) => row.key.variant === key.variant && row.key.step === key.step);
-  if (siblings.length === 1) return key.step;
-  return siblings.find((row) => row.key.row === key.row)!.label;
+/** The name the Runs table draws for a saved row: its label, or for a step's only run, which has none, its step. */
+export function shownRunLabel(row: { readonly key: RowKey; readonly label: string | null }) {
+  return row.label ?? row.key.step;
+}
+
+/** The name the Runs table draws for the saved row at `key`. */
+export function drawnRunLabel(rows: readonly { key: RowKey; label: string | null }[], key: RowKey) {
+  return shownRunLabel(rows.find((row) => row.key.variant === key.variant && row.key.step === key.step && row.key.row === key.row)!);
 }
 
 export function mapStep(page: Page, stepId: string) {
