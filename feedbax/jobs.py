@@ -73,6 +73,7 @@ from feedbax.contracts.receipt_validity import CodeDifference, InputDifference, 
 from feedbax.contracts.effective_success import EvaluationSubjectValue, TerminalTrainSubject
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.live_evaluate import DELEGATION_EVENT
@@ -99,7 +100,7 @@ if TYPE_CHECKING:
     from feedbax.persistence.store_sync import StoreEndpoint
     from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.persistence.canonical_evaluate import EvaluationResult, RolloutParameters
+    from feedbax.persistence.canonical_evaluate import EvaluationResult
     from feedbax.project_folder import ProjectFolder, SavedProjectPlans, SettledProjectPlan
 
 
