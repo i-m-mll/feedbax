@@ -69,6 +69,8 @@ class StudioAnalyzeAuthoring(StrictModel):
     variables: dict[str, dict[str, list[str]]]
     """Each operation's parameter choices: the matching variables of a dataset selector, and the bound label
     dimensions of a parameter that lists the dimensions a port takes whole."""
+    variable_names: dict[str, str] = Field(default_factory=dict)
+    """Display names for the dataset field IDs offered in ``variables``."""
     figure: FigureDocument
     changed: list[Pointer] = Field(default_factory=list)
     """The pointers at which the document's composed content differs from its base's."""
