@@ -156,6 +156,12 @@ def test_recorded_trial_matches_preview_and_its_weighted_steps_reduce(initial_ro
             terms = restored.terms["effort"]
             assert terms.covered and any(terms.steps) and not all(terms.steps)
             assert terms.values is not None
+            (samples,) = restored.observations.values()
+            oracle = np.sum(np.asarray(samples) ** 2, axis=-1)
+            np.testing.assert_allclose(
+                np.asarray(terms.values)[terms.steps], oracle[terms.steps] * np.asarray(terms.weights)[terms.steps].astype(float),
+                atol=1e-7,
+            )
             measured = np.asarray(terms.values)[terms.steps].mean()
             expected = recorded.data("objective/trial_values/effort", selection).item()
             assert measured == pytest.approx(expected)
@@ -168,6 +174,95 @@ def test_recorded_trial_matches_preview_and_its_weighted_steps_reduce(initial_ro
     assert combined.value == pytest.approx(expected)
     assert combined.covered == 1.0 and combined.percentiles is not None
     assert any(band is None for band in combined.percentiles)
+
+
+def test_measures_share_post_step_velocity_and_record_its_origin_once(tmp_path):
+    from feedbax.compiler.model_signals import boundary_signal_port
+    from feedbax.contracts.expression_values import LENGTH, TIME, NameValue, ValueBase, ValueType
+    from feedbax.contracts.model_address import ModelAddress
+    from feedbax.contracts.model_document import ModelDocument
+    from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
+    from feedbax.contracts.semantic_values import semantic_key
+    from feedbax.contracts.task_document import TaskDocument
+    from feedbax.examples import load_shipped_projects
+    from feedbax.objectives.document import ObjectiveUse, compile_objective
+    from feedbax.persistence.dataset import open_stored_dataset
+    from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_trial_record
+
+    project = load_shipped_projects()["point-mass-reaching"]
+    raw = project.documents["point-mass"].payload
+    raw["ports"]["outputs"].append({"id": "effector", "name": "effector", "type": {}})
+    raw["interior"]["wires"]["whole-effector"] = {
+        "source": {"owner": "component", "component": "plant", "port": "effector"},
+        "target": {"owner": "outputs", "port": "effector"},
+    }
+    model = ModelDocument.model_validate(raw)
+    task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
+    root = boundary_signal_port((), "outputs", "velocity")
+    structured = ModelAddress.model_validate({
+        "composites": [], "element": {
+            "kind": "field", "parent": {
+                "kind": "port", "end": {"owner": "outputs", "port": "effector"},
+            }, "path": ["vel"],
+        },
+    })
+    interior = ModelAddress.model_validate({
+        "composites": [], "element": {
+            "kind": "field", "parent": {
+                "kind": "port", "end": {
+                    "owner": "component", "component": "plant", "port": "effector", "direction": "output",
+                },
+            }, "path": ["vel"],
+        },
+    })
+    velocity2 = ValueType(base=ValueBase.REAL, dimensions=LENGTH.combine(TIME, -1).raised(2))
+    objective = ObjectiveDocument(id="velocity-aliases", terms=tuple(
+        ObjectiveTerm(
+            id=name, measure_type=velocity2,
+            measure=CallValue(function="sqnorm", args=(NameValue(reference=address.to_text()),)),
+        )
+        for name, address in (("root", root), ("structured", structured), ("interior", interior))
+    ))
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
+    refs = {}
+    for role, document in {
+        "subject": InitialModelSource(document=model, seed=19), "task": task, "objective": objective,
+    }.items():
+        refs[role], blob = encode_document_input(document)
+        store.store_object(blob)
+    params = RolloutParameters(trials=task.condition_ids[:2], seed=29, trial_policy="paired", variation=())
+    bundle = load_application().bundle
+    prepared = _prepare_initial_rollout(refs, params, registry=bundle, store=store)
+    scope = prepared.paired.signal_scope
+    assert scope.paths[structured.to_text()] == ("effector", "vel")
+    assert scope.paths[interior.to_text()][-2:] == ("effector", "vel")
+    (problem,) = compile_objective(
+        objective, tuple(name for name in scope.names if name.id != interior.to_text()),
+        bundle.expression_functions, task=prepared.paired.execution.task, use=ObjectiveUse.INHERITED,
+    )
+    assert problem.path == ("terms", "interior", "measure", "args", 0)
+    assert problem.model_address == interior
+    result = _rollouts(
+        prepared, params, lambda: False, update_axis=None,
+        computation=EvaluationComputation(store), executables=RolloutExecutables(),
+    )
+    assert result is not None
+    saved = publish_dataset(store, result[0])
+    addr = ModelAddress.at_state((), "plant", "effector/velocity").to_text()
+    field = semantic_key("model", "state", ("plant",), "effector/velocity")
+    with open_stored_dataset(store, saved, verify=True) as recorded:
+        layout = RecordedTrialLayout.model_validate(recorded.descriptor.attrs["trial_record"])
+        assert layout.observations == {addr: field}
+        assert not any(name.startswith("/v1/model/output/") for name in recorded.descriptor.variables)
+        for index, trial in enumerate(params.trials):
+            selection = (0, index)
+            restored = read_trial_record(recorded, trial, selection, layout)
+            raw_velocity = recorded.data(field, selection)
+            assert np.any(raw_velocity[1:] != raw_velocity[:-1])
+            np.testing.assert_array_equal(restored.observations[addr], raw_velocity[1:])
+            oracle = np.sum(raw_velocity[1:] ** 2, axis=-1)
+            for term in restored.terms.values():
+                np.testing.assert_allclose(term.values, oracle, atol=1e-7)
 
 
 def test_managed_rollout_relowers_without_compiling_and_detects_changed_scoring(initial_rollout, monkeypatch):

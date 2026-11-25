@@ -49,6 +49,7 @@ class TrialExecution:
     reset: ModelResetPlan
     input_bindings: tuple[tuple[str, str], ...]
     observations: tuple[GraphTraceRequest, ...]
+    observation_origins: tuple[tuple[str, str], ...]
 
     def rollout(
         self, graph: Graph, trial: Trial, key: jax.Array, *,
@@ -69,7 +70,7 @@ class TrialExecution:
             trace=self.observations,
             capture_state=capture_state,
         )
-        return retained, history
+        return {operand: retained[origin] for operand, origin in self.observation_origins}, history
 
     def rollouts(self, graph: Graph, trials: Trial, keys: jax.Array) -> dict[str, jax.Array]:
         return jax.vmap(lambda trial, key: self.rollout(graph, trial, key)[0])(trials, keys)

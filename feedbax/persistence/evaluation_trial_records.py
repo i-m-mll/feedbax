@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pydantic import Field
+
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import LENGTH, DrawValue, Level, ValueBase
 from feedbax.contracts.project_sources import pointer
@@ -29,6 +31,8 @@ class RecordedTrialLayout(StrictModel):
     positions: tuple[str, ...]
     configurations: tuple[str, ...]
     discrete_variables: tuple[TrialClockChoice, ...] = ()
+    observations: dict[str, str] = Field(default_factory=dict)
+    """Model origin addresses and their dataset variables, including shared raw state."""
 
     def mean_options(self) -> TrialMeanOptions:
         return TrialMeanOptions(
@@ -50,6 +54,7 @@ def _term_field(facet: str, name: str) -> str:
 def trial_dataset_fields(
     task: TrialSource, evaluated: TrialEvaluation, layout: RawStateLayout, *,
     leading: tuple[str, ...], labels: dict[str, str], document: TaskDocument | None = None,
+    observation_origins: tuple[tuple[str, str], ...] = (),
 ) -> tuple[dict[str, Variable], dict[str, Variable], RecordedTrialLayout]:
     import numpy as np
 
@@ -104,6 +109,23 @@ def trial_dataset_fields(
             put(_term_field("weight_defined", name), defined, transition_axes)
         put(_term_field("trial_coverage", name), trace.covered, trial_axes)
         put(_term_field("trial_values", name), np.where(trace.covered, trace.reduced.value, 0.0), trial_axes)
+    raw_states = {
+        model_state_address(value.key).to_text(): value.key for value in layout.values
+        if value.key.startswith("/v1/model/state/")
+    }
+    observations = {}
+    for operand, origin in observation_origins:
+        if origin in observations:
+            continue
+        if origin in raw_states:
+            observations[origin] = raw_states[origin]
+        else:
+            path = semantic_key("model", "output", (), origin)
+            samples = evaluated.retained[operand]
+            if not np.isfinite(samples).all():
+                raise FloatingPointError(f"Nonfinite observations at {origin}")
+            put(path, samples, transition_axes)
+            observations[origin] = path
     choices = {
         variable.id for variable in document.variables
         if isinstance(variable.value, DrawValue) and variable.value.family == "choice"
@@ -117,6 +139,7 @@ def trial_dataset_fields(
             for value in task.interface.variables
             if value.level < Level.STEP and (value.type.base != ValueBase.REAL or value.id in choices)
         ),
+        observations=observations,
     )
 
 
@@ -192,6 +215,10 @@ def read_trial_record(
         configurations={
             model_state_address(name).to_text(): dataset.data(name, selection).tolist()
             for name in layout.configurations
+        },
+        observations={
+            origin: dataset.data(path, selection)[1 if path.startswith("/v1/model/state/") else 0:].tolist()
+            for origin, path in layout.observations.items()
         },
     )
 
