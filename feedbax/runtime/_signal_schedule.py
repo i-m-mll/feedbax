@@ -58,10 +58,12 @@ class SignalSchedule:
 class SignalScheduleError(ValueError):
     def __init__(
         self, message: str, authored_path: str, *, issue_type: str = "invalid_signal_route",
+        cycle: tuple[ScopedWire, ...] = (),
     ):
         super().__init__(message)
         self.authored_path = authored_path
         self.issue_type = issue_type
+        self.cycle = cycle
 
 
 def needs_signal_schedule(graph: GraphSpec) -> bool:
@@ -161,10 +163,10 @@ def resolve_signal_schedule(graph: GraphSpec) -> SignalSchedule:
     order, back_edges = detect_cycles_and_sort(adjacency)
     if back_edges:
         source, target = back_edges[0]
+        cycle = _cycle_wires(adjacency, dependencies, source, target)
         raise SignalScheduleError(
             f"Instant signal wires contain a same-step cycle at {source!r} → {target!r}",
-            dependencies[source, target].authored_path,
-            issue_type="instant_cycle",
+            cycle[0].authored_path, issue_type="instant_cycle", cycle=cycle,
         )
     output_aliases = tuple(
         (ScopedPort(owner, port), resolve(
@@ -181,3 +183,22 @@ def resolve_signal_schedule(graph: GraphSpec) -> SignalSchedule:
         for port in sorted(interior.input_bindings)
     )
     return SignalSchedule(tuple(order), tuple(routes), inputs, input_aliases, outputs, output_aliases)
+
+
+def _cycle_wires(
+    adjacency: dict[Scope, set[Scope]], dependencies: dict[tuple[Scope, Scope], ScopedWire],
+    source: Scope, target: Scope,
+) -> tuple[ScopedWire, ...]:
+    previous: dict[Scope, Scope | None] = {target: None}
+    pending = [target]
+    while source not in previous:
+        current = pending.pop()
+        for following in sorted(adjacency[current] - previous.keys()):
+            previous[following] = current
+            pending.append(following)
+    cycle = []
+    current = source
+    while (parent := previous[current]) is not None:
+        cycle.append(dependencies[parent, current])
+        current = parent
+    return (dependencies[source, target], *reversed(cycle))
