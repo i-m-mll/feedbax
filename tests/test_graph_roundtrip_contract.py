@@ -442,3 +442,20 @@ def test_programmatic_recurrent_controller_graph_round_trips() -> None:
     assert roundtrip.nodes["cell"].params["dtype"] == "float16"
     assert roundtrip.nodes["readout"].params["initialization"] == "zero_bias"
     assert roundtrip.nodes["hidden_noise"].params["input_dtype"] == "float16"
+
+
+
+def test_compiled_graph_input_shapes_are_rebuilt_from_input_prototypes() -> None:
+    spec = GraphSpec(
+        nodes={"drive": ComponentSpec(type="feedbax.Input", input_ports=["input"], output_ports=["output"])},
+        input_ports=["command"],
+        input_bindings={"command": ("drive", "input")},
+        output_ports=["response"],
+        output_bindings={"response": ("drive", "output")},
+    )
+    prototypes = {("drive", "input"): jax.ShapeDtypeStruct((2, 3), jnp.float32)}
+    registry = ComponentRegistry()
+    graph = spec_to_graph(spec, registry, prototypes)
+    encoded = graph_to_spec(graph)
+    restored = spec_to_graph(encoded, registry, prototypes)
+    assert graph.input_shapes == restored.input_shapes == {"command": (2, 3)}

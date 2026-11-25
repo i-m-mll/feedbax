@@ -122,6 +122,11 @@ class TrainingContext[S: BaseModel]:
     _parameters: TaskParameters
     _batch_size: int
 
+    @property
+    def n_steps(self) -> int:
+        """Maximum number of transitions in each trial of this Train."""
+        return self._execution.task.n_steps
+
     def sample_trials(
         self, count: int | None = None, *, key: jax.Array | None = None, set_fields: bool = True,
     ) -> tuple[Trial | PendingTrial, jax.Array]:
