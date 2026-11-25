@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Iterable, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass
 from operator import attrgetter
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Literal, TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -21,6 +21,7 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.loaded_model import ModelSlotFitProblem
 from feedbax.contracts.method_checkpoint import MethodCheckpointModel
 from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_GRAPH_PATH as _GRAPH,
@@ -328,19 +329,49 @@ def _array_bytes(value: jax.Array | np.ndarray) -> bytes:
 
 
 def _verify_values(expected, declarations, tensors, saved_declarations) -> None:
-    keys = expected.keys()
-    unexpected = (keys ^ saved_declarations.keys()) | (keys ^ tensors.keys())
-    if unexpected:
-        raise ModelCheckpointError(min(unexpected), "missing or unexpected authoritative value")
-    for path in sorted(keys):
+    if problem := next(_value_differences(expected, declarations, tensors, saved_declarations), None):
+        _, path, reason = problem
+        raise ModelCheckpointError(path, reason)
+
+
+def _value_differences(
+    expected: Mapping[str, jax.Array | np.ndarray],
+    declarations: Mapping[str, object],
+    tensors: Mapping[str, jax.Array | np.ndarray],
+    saved_declarations: Mapping[str, object],
+) -> Iterator[tuple[Literal["missing_slot", "unexpected_slot", "mismatched_slot"], str, str]]:
+    present = saved_declarations.keys() | tensors.keys()
+    for path in sorted(expected.keys() - tensors.keys()):
+        yield "missing_slot", path, "missing authoritative tensor"
+    for path in sorted(present - expected.keys()):
+        yield "unexpected_slot", path, "unexpected authoritative value"
+    for path in sorted(expected.keys() & tensors.keys()):
         current, restored = expected[path], tensors[path]
-        if saved_declarations[path] != declarations[path]:
-            raise ModelCheckpointError(path, "owner, revision or value schema differs")
+        differences = []
+        if saved_declarations.get(path) != declarations[path]:
+            differences.append("owner, revision, value schema or representation differs")
         if restored.shape != current.shape or restored.dtype != current.dtype:
-            raise ModelCheckpointError(
-                path, f"authoritative value shape or dtype differs: "
-                f"checkpoint {restored.shape} {restored.dtype}, destination {current.shape} {current.dtype}",
+            differences.append(
+                f"expected {current.shape} {current.dtype}, found {restored.shape} {restored.dtype}",
             )
+        if differences:
+            yield "mismatched_slot", path, ", ".join(differences)
+
+
+def model_slot_fit_problems(
+    graph: GraphSpec, template: Graph, replica: str, tensors: Mapping[str, np.ndarray],
+    metadata: Mapping[str, object], *, unsupported: Iterable[tuple[str, ...]],
+) -> Iterator[ModelSlotFitProblem]:
+    unsupported = frozenset(unsupported)
+    excluded = tuple(semantic_key("model", "value", path[:-1], path[-1]) + "/" for path in unsupported)
+    retained = {path for path, _ in graph_leaf_specs(graph)} - unsupported
+    expected, declarations = _describe(graph, template, retained=retained)
+    for kind, address, detail in _value_differences(
+        expected, declarations,
+        {path: value for path, value in tensors.items() if not path.startswith(excluded)},
+        {path: value for path, value in metadata.items() if not path.startswith(excluded)},
+    ):
+        yield ModelSlotFitProblem(kind=kind, replica=replica, address=address or "/", detail=detail)
 
 
 def _describe(
@@ -392,7 +423,7 @@ def _describe(
         if (
             owner is None or node.type != binding.type_id or node.revision not in (None, binding.revision)
             or not owner.supports_checkpoint(node, physical)
-            or (physical is None and not isinstance(component, binding.owner_class))
+            or (physical is None and (binding.owner_class is None or not isinstance(component, binding.owner_class)))
         ):
             raise ModelCheckpointError(owner_path, "unsupported runtime owner identity or revision")
         if owner.is_fixed_configuration(node):
