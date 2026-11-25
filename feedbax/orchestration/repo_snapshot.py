@@ -174,6 +174,7 @@ def seal_repo_snapshot(
     *,
     snapshot_parent: Path | str,
     exclude_gitlinks: Sequence[str] = (),
+    require_clean: bool = False,
 ) -> SealedRepoSnapshot:
     """Seal one Git top-level, excluding explicitly out-of-scope submodules."""
     source_root = Path(root).expanduser().resolve()
@@ -184,6 +185,8 @@ def seal_repo_snapshot(
 
     commit = _head_commit(source_root)
     dirty = _is_dirty(source_root)
+    if require_clean and dirty:
+        raise RepoSnapshotSourceFault("Commit the package's uncommitted changes before running remotely.")
     tracked = _tracked_entries(source_root)
     gitlinks = {entry.path.as_posix() for entry in tracked if entry.mode == b"160000"}
     if gitlinks != set(exclude_gitlinks):
@@ -236,8 +239,7 @@ def seal_repo_snapshot(
             expected_dirty=dirty,
         )
         content_sha256, file_count = snapshot_tree_identity(build_root)
-        name_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
-        staging_root = parent / name_key / content_sha256
+        staging_root = repo_snapshot_path(parent, name, content_sha256)
         staging_root.parent.mkdir(parents=True, exist_ok=True)
         _publish_sealed_snapshot(build_root, staging_root, content_sha256, file_count)
         record = RepoSnapshotRecord(
@@ -260,6 +262,11 @@ def seal_repo_snapshot(
         raise
 
 
+def repo_snapshot_path(parent: Path, name: str, content_sha256: str) -> Path:
+    name_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+    return parent / name_key / content_sha256
+
+
 def restore_repo_snapshots(
     repos: Mapping[str, Path | str],
     manifest: RepoSnapshotManifest,
@@ -273,8 +280,7 @@ def restore_repo_snapshots(
     snapshots: dict[str, SealedRepoSnapshot] = {}
     for name, root in sorted(repos.items()):
         record = manifest.repos[name]
-        name_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
-        staging_root = parent / name_key / record.content_sha256
+        staging_root = repo_snapshot_path(parent, name, record.content_sha256)
         if not staging_root.is_dir():
             raise RepoSnapshotCacheFault(f"sealed repo snapshot is unavailable: {staging_root}")
         if not _cache_entry_matches(staging_root, record.content_sha256, record.file_count):

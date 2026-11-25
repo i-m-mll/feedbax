@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 import logging
@@ -10,6 +10,8 @@ from pathlib import Path
 from threading import Lock
 from time import monotonic, time_ns
 from uuid import UUID, uuid4
+
+from packaging.utils import canonicalize_name
 
 from feedbax.contracts.artifact_custody import StoreTransferProgress
 from feedbax.contracts.execution_target import (
@@ -21,7 +23,13 @@ from feedbax.contracts.jobs import (
     StudioMachineQuote, StudioMachineQuoteRow, StudioRemoteSession, StudioSavedMachineQuoteRequest, StudioVenueCursor,
     StudioVenueStream,
 )
-from feedbax.planner.project_plan import RunKey
+from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.orchestration.project_packages import ProjectPackagePin
+from feedbax.orchestration.repo_snapshot import RepoSnapshotError
+from feedbax.planner.project_plan import PlannedRun, RunKey
+from feedbax.plugins.declarations import DistributionSource
+from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.host import HostError
 from feedbax.host.protocol import JsonObject
 from feedbax.jobs import JobConflict, JobNotFound, JobService
@@ -52,6 +60,39 @@ class StudioVenue:
     jobs: Callable[[SessionDriver, UUID], SessionJobs]
     authorization_seconds: int
     review_quote: Callable[[SessionRequest], StudioVenueQuote]
+    pin_project_package: Callable[[DistributionSource], ProjectPackagePin] | None = None
+
+
+def _project_packages(
+    reviewed: SettledProjectPlan, runs: Mapping[RunKey, PlannedRun], keys: tuple[RunKey, ...],
+    methods: TrainingMethodRegistry, venue: StudioVenue,
+) -> tuple[ProjectPackagePin, ...]:
+    plan = reviewed.plan
+    pending, visited = list(reversed(keys)), set()
+    pinned: dict[str, ProjectPackagePin] = {}
+    while pending:
+        key = pending.pop()
+        if key in visited or key not in runs:
+            continue
+        visited.add(key)
+        row = runs[key]
+        pending.extend(source for binding in row.inputs.values() for source in binding.sources)
+        if row.kind != "train":
+            continue
+        spec = decode_request(plan.requests[row.request_id], plan.documents.__getitem__).spec
+        assert isinstance(spec, DocumentTrainingRequestSpec)
+        source = methods.resolve(spec.method).source
+        name = canonicalize_name(source.distribution)
+        if name == "feedbax" or name in pinned:
+            continue
+        prefix = f"Train {key.step!r}, method {spec.method!r}, package {source.distribution!r}"
+        if venue.pin_project_package is None:
+            raise JobConflict(f"{prefix}: this machine does not support project packages.")
+        try:
+            pinned[name] = venue.pin_project_package(source)
+        except (OSError, RepoSnapshotError, ValueError) as error:
+            raise JobConflict(f"{prefix}: {error}") from error
+    return tuple(pinned[name] for name in sorted(pinned))
 
 
 @dataclass(frozen=True)
@@ -148,11 +189,13 @@ class StudioRemoteRuns:
         else:
             self._provider_response(outage.request)
 
-    def quote(self, reviewed: SettledProjectPlan, body: StudioSavedMachineQuoteRequest) -> StudioMachineQuote:
+    def quote(
+        self, reviewed: SettledProjectPlan, body: StudioSavedMachineQuoteRequest, *, methods: TrainingMethodRegistry,
+    ) -> StudioMachineQuote:
         if body.target == LOCAL_TARGET_ID:
             raise JobConflict("This Mac does not need approval.")
         keys = tuple(RunKey(key.variant, key.step, key.row) for key in body.run_keys)
-        runs = {run.key: run for run in reviewed.plan.runs}
+        runs = {run.key: run for run in reviewed.plan.runs if isinstance(run, PlannedRun)}
         if len(set(keys)) != len(keys) or any(key not in runs or runs[key].admission_problem for key in keys):
             raise JobConflict("Machine approval requires distinct runnable saved rows.")
         selected = [runs[key] for key in keys]
@@ -161,7 +204,10 @@ class StudioRemoteRuns:
             raise JobConflict("This machine cannot run the selection.")
         profile = self.registry.require_session(body.target)
         venue = self._venues[profile.driver]
-        request = self.registry.session_request(profile.id, session_id=uuid4(), environment=venue.environment)
+        packages = _project_packages(reviewed, runs, keys, methods, venue)
+        request = self.registry.session_request(
+            profile.id, session_id=uuid4(), environment=venue.environment, project_packages=packages,
+        )
         try:
             offer = venue.review_quote(request)
         except ProviderUnreachable as error:
