@@ -10,7 +10,7 @@ from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.studio_place import StudioAnalysisPlace, StudioStepPlace
 from feedbax.host import HostClient
 from feedbax.host.plan_history import plan_ref_key
-from feedbax.jobs import JobService
+from feedbax.jobs import JobService, plan_attempt_key
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
@@ -71,10 +71,14 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(host, tmp_path,
 
     def snapshot_rpc(
         self, *, project, start_host, record_keys, include_launch, checkpoint_progress_root, checkpoint_admission,
+        attempt_addresses,
     ):
         assert project == reviewed.project_id
         assert not start_host and record_keys == (plan_key,)
         assert include_launch and checkpoint_progress_root == str(root / "results")
+        scope, addresses = attempt_addresses
+        assert scope == checkpoint_progress_root
+        assert plan_attempt_key(key) in addresses
         return snapshot
 
     monkeypatch.setattr(HostClient, "jobs_snapshot", snapshot_rpc)
@@ -110,8 +114,9 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(host, tmp_path,
         assert counts["train"] == {history.status.value: 1}
         assert counts["baseline"] == {evaluation.status.value: 1}
         (profile,) = (item for item in mounted.analysis_elements if item.name == "profile")
-        assert table["analyze/profile"][1] == profile.status == "not_run"
-        assert mounted_rows["report"] == "not_run"
+        dependent_status = "stale" if state is JobStatus.STALE else "waiting"
+        assert table["analyze/profile"][1] == profile.status == dependent_status
+        assert mounted_rows["report"] == dependent_status
         return history
 
     assert compare(JobStatus.SUCCEEDED).result is not None
@@ -168,11 +173,11 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     output = capsys.readouterr()
     table = _status_table(output.out)
     assert table["analyze"][1] == "cannot_run"
-    assert table["analyze/profile"][1] == "not_run"
+    assert table["analyze/profile"][1] == "waiting"
     assert table["analyze/bad"][1] == "cannot_run"
     _, state, reason = table["analyze/unused"]
     assert state == "cannot_run" and "feedbax.unknown" in reason
-    assert table["report"][1] == "not_run"
+    assert table["report"][1] == "waiting"
     assert "steps/analyze.json" in output.err
     assert "documents/bad-figure.json:payload.layers.0.style.band_alpha" in output.err
     assert _files(root) == files
@@ -192,7 +197,7 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
         == (StudioAnalysisPlace(part="analysis", element="bad"), "payload.layers.0.style.band_alpha")
         for problem in mounted.problems
     )
-    assert any(element.name == "profile" and element.status == "not_run" for element in mounted.analysis_elements)
+    assert any(element.name == "profile" and element.status == "waiting" for element in mounted.analysis_elements)
 
 
 def test_status_does_not_start_a_missing_host(tmp_path, monkeypatch, capsys):
