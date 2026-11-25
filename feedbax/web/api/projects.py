@@ -367,9 +367,9 @@ def read_model_projection(
 ) -> ModelProjection:
     from feedbax.web.services.model_projection import model_projection
 
-    components = request.app.state.bootstrap_state.bundle.components
+    bundle = request.app.state.bootstrap_state.bundle
     return _project_response(
-        response, lambda: model_projection(request.app.state.project_folders, project_id, body, components)
+        response, lambda: model_projection(request.app.state.project_folders, project_id, body, bundle)
     )
 
 

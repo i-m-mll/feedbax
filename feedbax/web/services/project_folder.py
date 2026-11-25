@@ -122,6 +122,7 @@ class ProjectFolderService(ProjectFolder):
     def review_model_connections(
         self, project_id: str, body: ModelConnectionReviewRequest, components: ComponentRegistry,
     ) -> ModelConnectionReview:
+        from feedbax.compiler.model_document import inspect_model_signals
         from feedbax.contracts.model_document import ModelDocument
         from feedbax.contracts.model_edit import EvaluateModelRequest, TaskSignalSource
         from feedbax.compiler.model_edit import review_model_connections
@@ -163,9 +164,10 @@ class ProjectFolderService(ProjectFolder):
                 "kind": "leaf", "type": item.identity.type_id if item.identity else item.name,
                 "revision": item.revision, "fields": {}, "port_counts": {},
             } for item in components.list_all() if not item.is_composite)
+            model = ModelDocument.model_validate(payload)
             return review_model_connections(
-                ModelDocument.model_validate(payload), body, layout=authority.layout, next_input=authority.next_input,
-                library=library, task_signal=task_signal,
+                model, body, layout=authority.layout, next_input=authority.next_input,
+                library=library, task_signal=task_signal, signals=inspect_model_signals(model, components),
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
@@ -215,6 +217,7 @@ class ProjectFolderService(ProjectFolder):
         ))
 
     def undo_model(self, project_id: str, body: ModelUndoRequest) -> ModelEditResponse:
+        from feedbax.compiler.model_document import inspect_model_signals
         from feedbax.contracts.model_edit import ModelEditApplied, ModelEditResponse
         from feedbax.contracts.model_document import ModelDocument
         from feedbax.compiler.model_ports import ModelRegistryPorts
@@ -244,8 +247,14 @@ class ProjectFolderService(ProjectFolder):
             snapshot, edit.document, payload, layout,
             had_entry=edit.had_entry, had_documents=edit.had_documents,
         )
-        problems = tuple(ModelRegistryPorts(self.components).problems(ModelDocument.model_validate(payload))) \
-            if self.components is not None else ()
+        problems = ()
+        if self.components is not None:
+            model = ModelDocument.model_validate(payload)
+            found = (
+                *ModelRegistryPorts(self.components).problems(model),
+                *inspect_model_signals(model, self.components).problems,
+            )
+            problems = tuple({(item.address.to_text(), item.reason): item for item in found}.values())
         return ModelEditResponse(result=ModelEditApplied(
             status="applied", snapshot=snapshot, changed=edit.changed, undo_token=token, problems=problems,
         ))

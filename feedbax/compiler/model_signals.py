@@ -15,7 +15,7 @@ from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
     DIMENSIONLESS, Dimensions, Level, ScopedValue, SignalSpace, ValueBase, ValueType,
 )
-from feedbax.contracts.graph import StudioTaskDataSpec
+from feedbax.contracts.graph import ComponentSpec, StudioTaskDataSpec
 from feedbax.contracts.model_address import (
     ComponentPortAddress, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress, OutputBoundaryEnd,
     PortElement, SignalSource, SignalTarget, WireElement,
@@ -31,10 +31,29 @@ class ResolvedSignalLeaf:
     port: ModelAddress
     path: SignalLeafPath
     name: str
-    type: ValueType | None
-    dimensions: Dimensions | None
-    unit: str | None
+    _facts: _Facts
     origin: ModelAddress | None
+
+    @property
+    def type(self) -> ValueType | None:
+        facts = self._facts
+        if facts.base is not None and facts.shape is not None:
+            return ValueType(base=facts.base, shape=facts.shape, dimensions=facts.dimensions or DIMENSIONLESS,
+                             space=facts.space)
+        return None
+
+    @property
+    def dimensions(self) -> Dimensions | None:
+        return self._facts.dimensions
+
+    @property
+    def unit(self) -> str | None:
+        return self._facts.unit
+
+    @property
+    def signal_type(self) -> SignalType:
+        facts = self._facts
+        return SignalType(base=facts.base, shape=facts.shape, unit=facts.unit, space=facts.space)
 
     @property
     def address(self) -> ModelAddress:
@@ -52,6 +71,7 @@ class ResolvedSignalLeaf:
 class ModelSignalTable:
     _ports: Mapping[str, tuple[ResolvedSignalLeaf, ...]] = field(default_factory=dict)
     problems: tuple[ModelGraphProblem, ...] = ()
+    _claims: Mapping[str, Mapping[SignalLeafPath, _Facts]] = field(default_factory=dict)
 
     def at(self, address: ModelAddress) -> ResolvedSignalLeaf | None:
         element = address.element
@@ -63,6 +83,20 @@ class ModelSignalTable:
 
     def at_port(self, address: ModelAddress) -> tuple[ResolvedSignalLeaf, ...]:
         return self._ports.get(address.to_text(), ())
+
+    def connection_problem(
+        self, scope: tuple[str, ...], source: SignalSource | None, target: SignalTarget,
+        provided: SignalType, required: SignalType,
+    ) -> str | None:
+        """Compare a proposed source with the target's own claims before any wire it might replace."""
+        offered = {} if source is None else {
+            leaf.path: leaf._facts for leaf in self.at_port(_end_address(scope, source, "output"))
+        }
+        expected = self._claims.get(_end_address(scope, target, "input").to_text(), {(): _Facts.from_claim(required)})
+        for path, facts in (offered or {(): _Facts.from_claim(provided)}).items():
+            if (claim := expected.get(path)) is not None and (reason := claim.conflict(facts)):
+                return f"Signal type does not fit: {reason}"
+        return None
 
     @property
     def readable_leaves(self) -> tuple[ResolvedSignalLeaf, ...]:
@@ -222,6 +256,12 @@ class _Facts:
                      and rule.dimensions == value.dimensions), None)
         return cls(value.base, value.shape, value.dimensions, unit, value.space)
 
+    @classmethod
+    def from_claim(cls, claim: SignalType) -> _Facts:
+        unit = UNITS.get(claim.unit) if claim.unit is not None else None
+        return cls(_port_base(claim.base), _concrete_shape(claim.shape), unit.dimensions if unit else None,
+                   claim.unit, claim.space)
+
     def fill(self, source: _Facts) -> _Facts:
         return _Facts(
             self.base if self.base is not None else source.base,
@@ -371,17 +411,14 @@ class _Resolve:
 
         for name, component in owner.interior.components.items():
             node = graph.nodes.get(name) if graph else physical.nodes.get(name) if physical else None
-            if node is None:
-                continue
             if component.kind == "composite":
                 if physical is not None:
                     if (branch := (physical.subgraphs or {}).get(name)) is not None:
                         self.collect(component, (*scope, name), None, physical=branch)
                     continue
-                assert graph is not None and resolution is not None
                 peers = {}
                 for direction in ("inputs", "outputs"):
-                    found = resolution.node_inputs if direction == "inputs" else resolution.node_outputs
+                    found = {} if resolution is None else getattr(resolution, "node_" + direction)
                     for declaration in getattr(component.ports, direction):
                         port = declaration.id
                         address = _component_port(scope, name, "input" if direction == "inputs" else "output", port)
@@ -389,10 +426,14 @@ class _Resolve:
                             address, declaration.name, found.get((name, port)),
                             declaration.type if direction == "inputs" else None, attachments=bool(component.attachments.sources.get(port)),
                         )
-                child = (graph.subgraphs or {}).get(name)
-                self.collect(component, (*scope, name), resolution.subgraphs.get(name), outer=peers,
+                child = (graph.subgraphs or {}).get(name) if graph is not None else None
+                self.collect(component, (*scope, name), resolution.subgraphs.get(name) if resolution else None, outer=peers,
                              physical=child if isinstance(child, AcausalGraphSpec) else None)
                 continue
+            if node is None:
+                node = self.authored_node(component)
+                if node is None:
+                    continue
             declared_owner = model_owner_class(node, self.components)
             if declared_owner is None or (ports := declared_owner.ports) is None:
                 continue
@@ -438,10 +479,27 @@ class _Resolve:
             target = self.ports.get(_end_address(scope, wire.target, "input").to_text())
             if source is None or target is None:
                 continue
-            address = target.address if isinstance(_port_element(target.address).end, OutputBoundaryEnd) else ModelAddress(
-                composites=scope, element=WireElement(kind="wire", id=name),
-            )
+            address = ModelAddress(composites=scope, element=WireElement(kind="wire", id=name))
             self.routes.append(_Route(source, target, address, bool(wire.attachments)))
+
+    def authored_node(self, component) -> ComponentSpec | None:
+        declaration = self.components.get(component.type)
+        if declaration is None or declaration.is_composite:
+            return None
+        params = dict(component.fields)
+        policy = declaration.dynamic_port_policy
+        if policy and policy.count_param in component.port_counts:
+            params[policy.count_param] = component.port_counts[policy.count_param]
+        try:
+            params = declaration.params.require(params).model_dump(mode="json")
+            layout = self.components.dynamic_port_layout(component.type, params)
+        except ValueError:
+            return None
+        return ComponentSpec(
+            type=component.type, revision=component.revision, params=params,
+            input_ports=list(layout.input_ports if layout else declaration.input_ports),
+            output_ports=list(layout.output_ports if layout else declaration.output_ports),
+        )
 
     def connect(self) -> dict[tuple[str, SignalLeafPath], _Incoming]:
         for port in self.ports.values():
@@ -477,7 +535,7 @@ class _Resolve:
                 incoming[target.key, path] = _Incoming((source.key, path), route.problem, origin)
         return incoming
 
-    def local(self, port: _Port, path: SignalLeafPath) -> _Local:
+    def local(self, port: _Port, path: SignalLeafPath, *, connected: bool) -> _Local:
         address = _leaf_address(port.address, path)
         end = _port_element(port.address).end
         claim = SignalType() if path else port.claim
@@ -492,13 +550,12 @@ class _Resolve:
         dims = UNITS.get(unit) if unit is not None else None
         if unit is not None and dims is None:
             self.problem(address, f"Unknown expression unit {unit!r}")
-        stated = _Facts(_port_base(claim.base), _concrete_shape(claim.shape), dims.dimensions if dims else None,
-                        unit, claim.space or properties.space)
+        stated = _Facts.from_claim(claim.model_copy(update={"unit": unit, "space": claim.space or properties.space}))
         base, shape = port.prototypes.get(path, (None, None))
         proto = _Facts(base, shape)
-        if shape is not None and not _shape_accepts(claim.shape, shape):
+        if not connected and shape is not None and not _shape_accepts(claim.shape, shape):
             self.problem(address, f"Resolved shape of {port.name!r} conflicts with its port")
-        if (not _base_accepts(stated.base, base) and not isinstance(end, ComponentPortAddress)):
+        if not connected and not _base_accepts(stated.base, base) and not isinstance(end, ComponentPortAddress):
             self.problem(address, f"Resolved base of {port.name!r} conflicts with its port")
         if isinstance(end, InputBoundaryEnd) and not port.address.composites and not path:
             if (task_type := self.task_inputs.get(port.name)) is not None:
@@ -514,7 +571,7 @@ class _Resolve:
             end = _port_element(port.address).end
             for path in port.paths:
                 item = key, path
-                local[item] = self.local(port, path)
+                local[item] = self.local(port, path, connected=item in incoming)
                 if isinstance(end, ComponentPortAddress) and end.direction == "output":
                     declaration = signal_leaf_declaration(port.declarations, path)
                     if isinstance(declaration, PassedSignal):
@@ -574,6 +631,7 @@ class _Resolve:
                 resolved[member] = previous
 
         by_port = {}
+        claims = {}
         for key, port in self.ports.items():
             leaves = []
             for path in port.paths:
@@ -586,17 +644,16 @@ class _Resolve:
                 proto = local[item].prototype
                 base = proto.base or facts.base
                 shape = proto.shape if proto.shape is not None else facts.shape
-                type_ = ValueType(base=base, shape=shape, dimensions=facts.dimensions or DIMENSIONLESS,
-                                  space=facts.space) if base is not None and shape is not None else None
                 leaves.append(ResolvedSignalLeaf(
-                    port.address, path, port.name, type_, facts.dimensions, facts.unit, row.origin,
+                    port.address, path, port.name, _Facts(base, shape, facts.dimensions, facts.unit, facts.space), row.origin,
                 ))
             by_port[key] = tuple(leaves)
-        return ModelSignalTable(by_port, tuple(self.problems.values()))
+            claims[key] = {path: local[key, path].facts for path in port.paths}
+        return ModelSignalTable(by_port, tuple(self.problems.values()), claims)
 
 
 def resolve_model_signals(
-    model: ModelDocument, resolution: GraphParameterResolution, components: ComponentRegistry,
+    model: ModelDocument, resolution: GraphParameterResolution | None, components: ComponentRegistry,
     *, task_inputs: Mapping[str, ValueType] | None = None,
 ) -> ModelSignalTable:
     resolver = _Resolve(components, task_inputs or {})
