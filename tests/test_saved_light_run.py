@@ -160,6 +160,8 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
     projects = tmp_path / "projects"
     project = "reaching"
     definition = _saved_light_definition()
+    model_key = definition["steps"]["train"]["base"]["inline"]["trial_documents"]["model"]["document"]
+    definition["documents"][model_key]["payload"]["interior"]["components"]["plant"]["name"] = "Point mass"
     folders = ProjectFolderService(projects)
     _save_project(folders, project, Project.model_validate(definition))
     project_id = folders.open(project).snapshot.project_id
@@ -212,6 +214,14 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         assert {job["kind"] for job in activity["jobs"]} == {
             "train", "evaluate", "analyze", "render", "report",
         }
+        catalog = expect(client.post(f"{path}/authoring/analyze", json={
+            "revision": rev, "key": {"variant": "default", "step": "analyze", "row": "default"},
+        })).json()
+        assert catalog["states"] is not None
+        assert {"input": "states"} in catalog["sources"]["align"]["states"]
+        velocity = "/v1/model/state/plant/effector~1velocity"
+        assert velocity in catalog["variables"]["feedbax.aligned_velocity"]["velocity"]
+        assert catalog["variable_names"][velocity] == "Point mass · effector velocity"
         root = projects / project / "results"
         store = SuccessView(ImmutableArtifactBlobProvider(root))
         for job in light:
