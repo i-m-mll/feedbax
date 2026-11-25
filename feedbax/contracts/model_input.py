@@ -55,14 +55,23 @@ class InitialModelSource(ReferenceValue):
         return source
 
 
-class CheckpointModelSource(ReferenceValue):
-    kind: Literal["checkpoint"] = "checkpoint"
+class ParameterModelSource(ReferenceValue):
     tree: ContentTreeRef
     encoding: SemanticModelEncoding
     initial: InitialModelSource
 
 
-type ModelSource = Annotated[InitialModelSource | CheckpointModelSource, Field(discriminator="kind")]
+class CheckpointModelSource(ParameterModelSource):
+    kind: Literal["checkpoint"] = "checkpoint"
+
+
+class SynthesizedModelSource(ParameterModelSource):
+    kind: Literal["synthesized"] = "synthesized"
+
+
+type ModelSource = Annotated[
+    InitialModelSource | CheckpointModelSource | SynthesizedModelSource, Field(discriminator="kind"),
+]
 type TaskInputSource = TaskDocument | PythonTaskSelection
 type DocumentInput = InitialModelSource | TaskInputSource | ObjectiveDocument | ImportedModelSource
 

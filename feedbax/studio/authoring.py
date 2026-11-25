@@ -59,12 +59,13 @@ from feedbax.contracts.studio_authoring import (
     StudioClassField,
     StudioClassSweepChange,
 )
+from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_field import FieldResetEdit, TrainFieldRequest, TrainFieldResponse, TrainFieldView
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.application.bundle import (
-    COMPONENTS, EXPRESSION_FUNCTIONS, FIGURE_TEMPLATES, OPERATIONS, PYTHON_TASKS, TRAINING_METHODS,
+    COMPONENTS, EXPRESSION_FUNCTIONS, FIGURE_TEMPLATES, OPERATIONS, PYTHON_TASKS, SYNTHESIS_METHODS, TRAINING_METHODS,
 )
 from feedbax.application.bundle import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
@@ -139,6 +140,17 @@ def authoring_surface(
         for record in method_records
         for method in (record.value,)
     ]
+    synthesis_records = [bundle.synthesis_methods.declaration_record(key) for key in bundle.synthesis_methods.keys()]
+    synthesis_methods = [
+        StudioAuthoringDeclaration(
+            key=entry.key, label=entry.declaration.label or entry.key,
+            renamed_from=entry.declaration.renamed_from,
+            settings_schema=entry.declaration.settings_model.model_json_schema(),
+            outputs=dict(entry.declaration.outputs),
+        )
+        for record in synthesis_records
+        for entry in (record.value,)
+    ]
     project_grammar = Project.model_json_schema(by_alias=True)
     train_documents = {
         name: (schema, model.model_json_schema())
@@ -147,9 +159,9 @@ def authoring_surface(
     if not catalog:
         return StudioAuthoringSurface(
             project_grammar=project_grammar,
-            step_payloads={"train": _TRAIN.model_json_schema()},
+            step_payloads={"train": _TRAIN.model_json_schema(), "synthesize": SynthesisStepPayload.model_json_schema()},
             document_schemas=dict(train_documents.values()),
-            training_methods=methods,
+            training_methods=methods, synthesis_methods=synthesis_methods,
         )
 
     documents = {
@@ -175,8 +187,8 @@ def authoring_surface(
                 if kind in _STEP_DOCUMENT_FAMILY
                 else REQUEST_KINDS[kind].spec_type.model_json_schema()
             )
-            for kind in get_args(StepKind.__value__)
-        },
+            for kind in get_args(StepKind.__value__) if kind != "synthesize"
+        } | {"synthesize": SynthesisStepPayload.model_json_schema()},
         document_families=documents,
         step_inputs=step_input_roles(),
         analyze_inputs=analyze_input_roles(),
@@ -198,6 +210,9 @@ def authoring_surface(
                 origins={},
             ),
             TRAINING_METHODS.family: StudioAuthoringRegistry(entries=methods, origins=_origins(method_records)),
+            SYNTHESIS_METHODS.family: StudioAuthoringRegistry(
+                entries=synthesis_methods, origins=_origins(synthesis_records),
+            ),
             PYTHON_TASKS.family: StudioAuthoringRegistry(
                 entries=[
                     StudioAuthoringDeclaration(

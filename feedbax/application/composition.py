@@ -9,6 +9,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.component_registry.registry import installed_components
 from feedbax.plot.templates import FigureTemplateDeclaration
 from feedbax.registry_errors import RegistryCollisionError
+from feedbax.synthesis.methods import SynthesisMethodDeclaration
 from feedbax.tasks.registry import PythonTask, PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodDeclaration
 
@@ -45,6 +46,8 @@ def build_application(
                     bundle.operations.register_declaration(function, declaration, key=key, source=source)
                 elif isinstance(declaration, TrainingMethodDeclaration):
                     bundle.training_methods.register_declaration(function, declaration, key=key, source=source)
+                elif isinstance(declaration, SynthesisMethodDeclaration):
+                    bundle.synthesis_methods.register_declaration(function, declaration, key=key, source=source)
                 elif isinstance(declaration, FigureTemplateDeclaration):
                     bundle.figure_templates.register_declaration(function, declaration, key=key, source=source)
                 else:

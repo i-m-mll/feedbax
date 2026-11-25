@@ -29,7 +29,7 @@ from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, Tra
 type Payload = dict[str, JsonValue]
 type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
-type StepKind = Literal["train", "evaluate", "analyze", "report"]
+type StepKind = Literal["train", "synthesize", "evaluate", "analyze", "report"]
 
 
 class _LabelledMember(Protocol):

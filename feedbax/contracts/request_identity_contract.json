@@ -558,6 +558,44 @@
         "absent": null
       }
     },
+    "feedbax.contracts.model_address.AttachmentElement": {
+      "id": {},
+      "kind": {
+        "values": [
+          "attachment"
+        ]
+      },
+      "parent": {
+        "families": [
+          "feedbax.contracts.model_address.PortElement",
+          "feedbax.contracts.model_address.WireElement"
+        ]
+      }
+    },
+    "feedbax.contracts.model_address.ComponentElement": {
+      "id": {},
+      "kind": {
+        "values": [
+          "component"
+        ]
+      }
+    },
+    "feedbax.contracts.model_address.ComponentPortAddress": {
+      "component": {},
+      "direction": {
+        "values": [
+          "input",
+          "output",
+          "physical"
+        ]
+      },
+      "owner": {
+        "values": [
+          "component"
+        ]
+      },
+      "port": {}
+    },
     "feedbax.contracts.model_address.ComponentPortEnd": {
       "component": {},
       "owner": {
@@ -567,6 +605,31 @@
       },
       "port": {}
     },
+    "feedbax.contracts.model_address.FieldElement": {
+      "kind": {
+        "values": [
+          "field"
+        ]
+      },
+      "parent": {
+        "families": [
+          "feedbax.contracts.model_address.AttachmentElement",
+          "feedbax.contracts.model_address.ComponentElement",
+          "feedbax.contracts.model_address.GraphElement",
+          "feedbax.contracts.model_address.PhysicalConnectionElement",
+          "feedbax.contracts.model_address.PortElement",
+          "feedbax.contracts.model_address.WireElement"
+        ]
+      },
+      "path": {}
+    },
+    "feedbax.contracts.model_address.GraphElement": {
+      "kind": {
+        "values": [
+          "graph"
+        ]
+      }
+    },
     "feedbax.contracts.model_address.InputBoundaryEnd": {
       "owner": {
         "values": [
@@ -574,6 +637,29 @@
         ]
       },
       "port": {}
+    },
+    "feedbax.contracts.model_address.InputsElement": {
+      "kind": {
+        "values": [
+          "inputs"
+        ]
+      }
+    },
+    "feedbax.contracts.model_address.ModelAddress": {
+      "composites": {},
+      "element": {
+        "families": [
+          "feedbax.contracts.model_address.AttachmentElement",
+          "feedbax.contracts.model_address.ComponentElement",
+          "feedbax.contracts.model_address.FieldElement",
+          "feedbax.contracts.model_address.GraphElement",
+          "feedbax.contracts.model_address.InputsElement",
+          "feedbax.contracts.model_address.OutputsElement",
+          "feedbax.contracts.model_address.PhysicalConnectionElement",
+          "feedbax.contracts.model_address.PortElement",
+          "feedbax.contracts.model_address.WireElement"
+        ]
+      }
     },
     "feedbax.contracts.model_address.OutputBoundaryEnd": {
       "owner": {
@@ -583,6 +669,13 @@
       },
       "port": {}
     },
+    "feedbax.contracts.model_address.OutputsElement": {
+      "kind": {
+        "values": [
+          "outputs"
+        ]
+      }
+    },
     "feedbax.contracts.model_address.PhysicalBoundaryEnd": {
       "owner": {
         "values": [
@@ -590,6 +683,37 @@
         ]
       },
       "port": {}
+    },
+    "feedbax.contracts.model_address.PhysicalConnectionElement": {
+      "id": {},
+      "kind": {
+        "values": [
+          "physical_connection"
+        ]
+      }
+    },
+    "feedbax.contracts.model_address.PortElement": {
+      "end": {
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortAddress",
+          "feedbax.contracts.model_address.InputBoundaryEnd",
+          "feedbax.contracts.model_address.OutputBoundaryEnd",
+          "feedbax.contracts.model_address.PhysicalBoundaryEnd"
+        ]
+      },
+      "kind": {
+        "values": [
+          "port"
+        ]
+      }
+    },
+    "feedbax.contracts.model_address.WireElement": {
+      "id": {},
+      "kind": {
+        "values": [
+          "wire"
+        ]
+      }
     },
     "feedbax.contracts.model_document.CompositeComponent": {
       "attachments": {
@@ -1245,6 +1369,25 @@
       "numerical_settings": {
         "absent": {}
       }
+    },
+    "feedbax.contracts.request_specs.SynthesisRequestSpec": {
+      "method": {},
+      "numerical_settings": {
+        "absent": {
+          "floating_point_bits": 64
+        }
+      },
+      "settings": {},
+      "target": {
+        "absent": {
+          "composites": [],
+          "element": {
+            "$family": "feedbax.contracts.model_address.GraphElement",
+            "kind": "graph"
+          }
+        }
+      },
+      "trial_documents": {}
     },
     "feedbax.contracts.request_specs.TrainContinuation": {
       "mode": {

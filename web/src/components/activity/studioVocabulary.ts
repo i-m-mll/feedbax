@@ -1,4 +1,4 @@
-import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
+import { BarChart3, FileText, FlaskConical, PlayCircle, Wand2 } from 'lucide-react';
 import type { ResultStatus } from '@/components/ui/StatusMark';
 import type {
   ValueType,
@@ -19,6 +19,7 @@ export type StudioResultState = ResultStatus;
 const runStatus = vocabulary.status.run satisfies Record<StudioResultState, string>;
 const stepGlyphs = {
   flask: FlaskConical,
+  wand: Wand2,
   play: PlayCircle,
   chart: BarChart3,
   page: FileText,
