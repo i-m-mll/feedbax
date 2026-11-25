@@ -78,11 +78,9 @@ export async function authorFirstTrain(
     const component = model?.interior.components?.[linearId!];
     return component?.kind === 'leaf' ? component.fields?.[field] : undefined;
   }
-  function setLinearSize(name: string, field: string) {
-    return setNumber(inspector.getByRole('textbox', { name, exact: true }), 2, (project) => linearField(project, field));
-  }
-  await setLinearSize('Input size', 'input_size');
-  await setLinearSize('Output size', 'output_size');
+  await expect(inspector.getByRole('textbox', { name: 'Input size', exact: true })).toHaveCount(0);
+  await setNumber(inspector.getByRole('textbox', { name: 'Output size', exact: true }), 2,
+    (project) => linearField(project, 'output_size'));
   if (forceComparison) {
     const activation = inspector.getByRole('combobox', { name: 'Activation', exact: true });
     await pick(activation, new RegExp(`^${forceComparison.activation}$`, 'i'));
@@ -198,10 +196,11 @@ export async function authorFirstTrain(
   const savedModel = rootPayload(saved.project.documents?.model) as unknown as ModelDocument;
   expect(savedModel.interior.components).toMatchObject({
     [linearId!]: { kind: 'leaf', type: 'feedbax.Linear', fields: {
-      input_size: 2, output_size: 2, ...(forceComparison && { activation: forceComparison.activation }),
+      output_size: 2, ...(forceComparison && { activation: forceComparison.activation }),
     } },
     [plantId!]: { kind: 'leaf', type: 'feedbax.PointMass' },
   });
+  expect(linearField(saved.project, 'input_size')).toBeUndefined();
   const reachPort = savedModel.ports.inputs?.find(({ name }) => name === 'target_pos');
   const commandPort = savedModel.ports.outputs?.find(({ name }) => name === 'output');
   expect(reachPort?.id).toBeTruthy();
