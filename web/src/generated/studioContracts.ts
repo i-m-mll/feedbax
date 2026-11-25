@@ -4007,6 +4007,7 @@ export type StudioAnalyzeAuthoring = {
   "states": DatasetPort | null;
   "sources": Record<string, Record<string, Array<StepInput | OperationDataset>>>;
   "variables": Record<string, Record<string, Array<string>>>;
+  "variable_names"?: Record<string, string>;
   "figure": FigureDocument;
   "changed"?: Array<Pointer>;
   "files"?: Array<StudioProjectFilePatch>;
@@ -12249,6 +12250,7 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "states": z.union([DatasetPortSchema, z.null()]),
     "sources": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([StepInputSchema, OperationDatasetSchema])))),
     "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
+    "variable_names": z.record(z.string(), z.string()).optional(),
     "figure": FigureDocumentSchema,
     "changed": z.array(PointerSchema).optional(),
     "files": z.array(StudioProjectFilePatchSchema).optional(),
