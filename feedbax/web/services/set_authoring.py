@@ -463,7 +463,7 @@ def _move_set(project: Project, command: SetToField | SetToSweep) -> StoredEdit:
             for key, exception in sweep.exceptions.items()
         ):
             raise ProjectFolderInvalid("The Set axis has run exceptions that cannot move into trials.")
-        field = TrialSetField(axis=axis, sampling=WeightedSetTrials(kind="weighted"), condition=command.condition)
+        field = TrialSetField(axis=axis, sampling=WeightedSetTrials(kind="weighted"))
         field_sets[command.axis] = field.model_dump(mode="json", exclude_unset=True)
         if isinstance(step.base, StepBase | RunBase):
             axes[command.axis] = None
