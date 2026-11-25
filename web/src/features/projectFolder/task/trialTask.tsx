@@ -26,6 +26,7 @@ const fits = (field: ValueType, variable: ValueType) => {
   const offset = target.length - source.length;
   return offset >= 0 && source.every((size, index) => size === 1 || size === target[offset + index])
     && canonicalJsonV2(field.dimensions ?? {}) === canonicalJsonV2(variable.dimensions ?? {})
+    && (field.space == null || variable.space == null || field.space === variable.space)
     && (field.base === variable.base || field.base === 'real' && variable.base === 'integer');
 };
 
