@@ -3921,6 +3921,7 @@ export type ScopedValue = {
   "type": ValueType;
   "level": Level;
   "list_count"?: number | null;
+  "set_entry"?: SetVariableOrigin | null;
 };
 
 export type SelectedAxisValue = {
@@ -4044,6 +4045,14 @@ export type SetVariableCount = {
   "op": "set_variable_count";
   "id": string;
   "count": Expression | null;
+};
+
+export type SetVariableOrigin = {
+  "step": string;
+  "axis": string;
+  "set": string;
+  "entry": string;
+  "variable": string;
 };
 
 export type Sha256 = string;
@@ -12496,6 +12505,7 @@ export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
     "type": ValueTypeSchema,
     "level": LevelSchema,
     "list_count": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
+    "set_entry": z.union([SetVariableOriginSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<ScopedValue>;
 
@@ -12663,6 +12673,16 @@ export const SetVariableCountSchema: z.ZodType<SetVariableCount> = z.lazy(() =>
     "count": z.union([ExpressionSchema, z.null()]),
   }).strict()
 ) as unknown as z.ZodType<SetVariableCount>;
+
+export const SetVariableOriginSchema: z.ZodType<SetVariableOrigin> = z.lazy(() =>
+  z.object({
+    "step": z.string(),
+    "axis": z.string(),
+    "set": z.string(),
+    "entry": z.string(),
+    "variable": z.string(),
+  }).strict()
+) as unknown as z.ZodType<SetVariableOrigin>;
 
 export const Sha256Schema: z.ZodType<Sha256> = z.lazy(() =>
   z.string().regex(new RegExp("^[a-f0-9]{64}$"))
