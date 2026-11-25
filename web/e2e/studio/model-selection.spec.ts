@@ -82,7 +82,8 @@ test('Duplicate selects the cards it made', async ({ page, request }) => {
 
 /**
  * An attachment dragged onto another wire is drawn on that wire while it is dragged, and moved there on release (catches
- * an attachment that appears on its new wire only on drop).
+ * an attachment that appears on its new wire only on drop). The `target` wire's middle lies under a card, and the
+ * attachment is drawn where no card hides it (catches a wire label drawn under a card).
  */
 test('an attachment dragged onto another wire is drawn there before it is dropped', async ({ page, request }) => {
   const { model, errors, edit } = await openModel(page, request, (document) => {
@@ -113,11 +114,17 @@ test('an attachment dragged onto another wire is drawn there before it is droppe
     return middle.x > target.x - 20 && middle.x < target.x + target.width + 20
       && middle.y > target.y - 20 && middle.y < target.y + target.height + 20;
   }, { message: 'The attachment is drawn on the wire under the pointer' }).toBe(true);
+  const uncovered = () => attachment.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest('button') === element;
+  });
+  await expect.poll(uncovered, { message: 'No card covers the attachment while it is dragged' }).toBe(true);
   const moved = edit();
   await page.mouse.up();
   const request_ = (await moved).request().postDataJSON();
   expect(request_.command.operation).toMatchObject({
     op: 'move_wire_attachment', destination: { element: { kind: 'wire', id: 'target' } },
   });
+  await expect.poll(uncovered, { message: 'No card covers the dropped attachment' }).toBe(true);
   expect(errors).toEqual([]);
 });

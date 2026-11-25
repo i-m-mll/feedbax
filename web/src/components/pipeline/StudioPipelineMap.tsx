@@ -587,7 +587,7 @@ function MapDiagram({
   } : undefined;
   return (
     <div ref={ref} className="min-h-0 min-w-0 flex-1" data-map-canvas>
-      <StudioCanvas contentBounds={bounds} viewportRef={viewportRef} navigateContent minZoom={0.02}
+      <StudioCanvas contentBounds={bounds} viewportRef={viewportRef} navigateContent minZoom={0.02} refit="overflow"
         fitReady={fitReady !== false && geometry?.compact === compact && !!width && !!height}
         elementsSelectable={false} nodesFocusable={false} edgesFocusable={false} onPaneClick={clearFocus}>
         <ViewportPortal>
