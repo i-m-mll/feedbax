@@ -6,13 +6,34 @@ from pydantic import Field
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
+from feedbax.contracts.model_document import ModelDocument, restore_model_display_names
 from feedbax.contracts.request_refs import Name, ReferenceValue, Sha256
+from feedbax.contracts.strict_json import strict_json_loads
 
 
 LOADED_MODEL_SCHEMA_ID = "feedbax.spec.loaded_model"
 LOADED_MODEL_SCHEMA_VERSION = "feedbax.spec.loaded_model.v1"
 IMPORTED_MODEL_MEDIA_TYPE = "application/vnd.feedbax.imported-model+json"
+
+
+def encode_imported_model_document(model: ModelDocument) -> bytes:
+    return canonical_json_v2_bytes(model.scientific_projection())
+
+
+def decode_imported_model_document(raw: bytes) -> ModelDocument:
+    projection = strict_json_loads(raw)
+    if not isinstance(projection, dict):
+        raise ValueError("Imported Model projection must be an object")
+    try:
+        restore_model_display_names(projection)
+    except (AttributeError, KeyError, TypeError) as error:
+        raise ValueError("Invalid imported Model projection") from error
+    model = ModelDocument.model_validate(projection)
+    if encode_imported_model_document(model) != raw:
+        raise ValueError("Imported Model must use its canonical scientific projection")
+    return model
 
 
 class ImportedModelSource(ReferenceValue):
