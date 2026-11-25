@@ -32,6 +32,7 @@ from feedbax.persistence.artifact_custody import (
     ImmutableArtifactBlobProvider,
     content_object_relative_path,
 )
+from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.evaluation_subject import read_terminal_train_subject
 from feedbax.persistence.receipt_content import success_content_objects
 from feedbax.persistence.reachability import (
@@ -347,13 +348,19 @@ def inspect_project_retention(text: TextProject, host: HostClient) -> ProjectRet
         elif any(job["request"].startswith("train:") for job in jobs.values()):
             gaps.append("admitted Train Plan root is unavailable")
         successes = set()
+        success_view = None
         for job in reversed(jobs.values()):
             request = job["request"]
             if job["state"] == "succeeded":
                 if request.startswith("train:"):
                     verified = _verified_training_receipt(job, store.root)
                 elif request.startswith("evaluate:"):
-                    verified = _verified_evaluation_result(job, store.root)
+                    try:
+                        if success_view is None:
+                            success_view = SuccessView(store)
+                        verified = _verified_evaluation_result(job, success_view)
+                    except (OSError, TypeError, ValueError, KeyError):
+                        verified = None
                 else:
                     verified = None
                 if verified is None:
