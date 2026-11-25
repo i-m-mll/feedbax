@@ -114,9 +114,12 @@ test("choosing another step shows that step, not the last step's selected term",
   await page.getByRole('menu').getByRole('menuitem', { name: 'Evaluate', exact: true }).click();
   await expect(mapStep(page, 'evaluate')).toBeVisible();
   await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   await table.getByRole('textbox', { name: 'Measure', exact: true }).click();
   const term = inspector.getByRole('combobox', { name: 'Function', exact: true });
   await expect(term).toBeVisible();
   await mapStep(page, 'evaluate').click();
+  await expect(page.getByRole('tab', { name: 'Objective', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(table.getByRole('row', { name: /^Term/ }).first()).toBeVisible();
   await expect(term).toHaveCount(0);
 });
