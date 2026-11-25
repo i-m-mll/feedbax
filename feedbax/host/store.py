@@ -617,8 +617,8 @@ class Store:
         ):
             raise ValueError("Light launch differs from its admitted project, Store or request.")
         decoded = Store._success_view(root).read_request(request)
-        if decoded.kind not in ("analyze", "render", "report"):
-            raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
+        if decoded.kind not in ("analyze", "render", "report", "synthesize"):
+            raise ValueError("Managed light jobs require an Analyze, Render, Report or Synthesize request.")
         return decoded
 
     @staticmethod
@@ -1258,12 +1258,14 @@ class Store:
                 )
         if job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT:
             from feedbax.contracts.operation import OperationDefinition
+            from feedbax.contracts.synthesis import SynthesisMethodExecution
             from feedbax.host.light_jobs import validate_light_requirements
 
             payload = job["launch"]["payload"]
             try:
                 decoded = self._light_request(job["launch"], job["project"], job["request"])
-                definition = OperationDefinition.model_validate(light_definition) if light_definition is not None else None
+                metadata_type = SynthesisMethodExecution if decoded.kind == "synthesize" else OperationDefinition
+                definition = metadata_type.model_validate(light_definition) if light_definition is not None else None
                 validate_light_requirements(decoded, definition)
                 numerical = definition.numerical if definition is not None else None
                 if job["slot"] != ("compute" if numerical else "light") or (

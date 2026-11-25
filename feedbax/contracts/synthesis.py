@@ -6,6 +6,7 @@ from pydantic import Field, JsonValue, field_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.operation import DatasetPort, JaxOperation
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project import DocumentReference
@@ -23,6 +24,12 @@ class SynthesisStepPayload(StrictModel):
     target: ModelAddress = ModelAddress.at_stored_path(())
 
     _method_key = field_validator("method")(validate_declaration_key)
+
+
+class SynthesisMethodExecution(StrictModel):
+    key: str
+    numerical: JaxOperation
+    outputs: dict[str, DatasetPort]
 
 
 class ModelProductKey(StrictModel):

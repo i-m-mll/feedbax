@@ -695,7 +695,7 @@ class ProjectPlan:
     @property
     def light_requests(self) -> Mapping[RunKey | ElementKey, PlannedRun | PlannedElement]:
         requests: dict[RunKey | ElementKey, PlannedRun | PlannedElement] = {
-            run.key: run for run in self.runs if run.kind == "report"
+            run.key: run for run in self.runs if run.kind in {"report", "synthesize"}
         }
         requests.update(self.elements)
         return requests

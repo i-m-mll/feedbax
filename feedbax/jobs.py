@@ -132,7 +132,7 @@ _ACTIVE_PLAN_STATUSES = frozenset({
     JobStatus.RUNNING, JobStatus.STOPPING, JobStatus.COLLECTING,
 })
 EVALUATION_SUBJECT_REQUIRED = "select an unambiguous admitted Train subject"
-_LIGHT_KINDS = frozenset({"analyze", "render", "report"})
+_LIGHT_KINDS = frozenset({"analyze", "render", "report", "synthesize"})
 
 
 _log = logging.getLogger(__name__)

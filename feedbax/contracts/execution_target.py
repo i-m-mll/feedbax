@@ -14,7 +14,7 @@ TargetId = Annotated[str, Field(min_length=1, pattern=r"^\S+$")]
 TargetRunKind = Literal["train", "evaluate", "analyze", "render", "report", "synthesize"]
 OpeningStep = Literal["acquiring", "connecting", "copying", "installing", "starting_host"]
 SESSION_RUN_KINDS: frozenset[TargetRunKind] = frozenset({"train", "evaluate"})
-LOCAL_RUN_KINDS: tuple[TargetRunKind, ...] = ("train", "evaluate", "analyze", "render", "report")
+LOCAL_RUN_KINDS: tuple[TargetRunKind, ...] = ("train", "evaluate", "analyze", "render", "report", "synthesize")
 
 
 class TargetModel(StrictModel):

@@ -17,6 +17,7 @@ from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.artifact_custody import (
     ArtifactBlobCustodyError,
     ContentObjectRef,
+    ContentRetentionTarget,
     ContentTreeRef,
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -105,6 +106,16 @@ class SemanticModelWriter:
         templates: Sequence[Graph], replica_ids: tuple[str, ...],
     ) -> MethodCheckpointModel:
         store = ImmutableArtifactBlobProvider(transaction.absolute() / _MODEL_STORE)
+        return self.publish_to(
+            store, models, templates=templates, replica_ids=replica_ids,
+            root_id="checkpoint:model", root_kind="logical-ref",
+        )
+
+    def publish_to(
+        self, store: ImmutableArtifactBlobProvider, models: Sequence[Graph], *,
+        templates: Sequence[Graph], replica_ids: tuple[str, ...], root_id: str,
+        root_kind: Literal["logical-ref", "run"], additional_targets: tuple[ContentRetentionTarget, ...] = (),
+    ) -> MethodCheckpointModel:
         if not len(models) == len(templates) == len(replica_ids) or not replica_ids:
             raise ModelCheckpointError("/model", "models must match a nonempty ordered list of unique replicas")
         graph = effective_model_graph(self.graph, models[0])
@@ -137,7 +148,7 @@ class SemanticModelWriter:
                 raise ModelCheckpointError(path, "model asset bytes differ from the authored reference")
             members[model_tree_asset_path(asset)] = asset
         tree, _ = store.publish_rooted_tree(
-            members, root_id="checkpoint:model", root_kind="logical-ref",
+            members, root_id=root_id, root_kind=root_kind, additional_targets=additional_targets,
         )
         encoding = SemanticModelEncoding(descriptor_sha256=members[_MANIFEST].sha256)
         return MethodCheckpointModel(tree=tree, encoding=encoding)

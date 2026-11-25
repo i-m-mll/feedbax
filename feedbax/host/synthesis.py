@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from feedbax.analysis.operation_inputs import verify_dataset
 from feedbax.contracts.expression_values import Problem, ProblemCode
-from feedbax.contracts.method_checkpoint import MethodCheckpointModel
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.contracts.request_specs import SynthesisRequestSpec
@@ -25,11 +23,14 @@ if TYPE_CHECKING:
     from feedbax.contracts.artifact_custody import ArtifactBlobProvider
     from feedbax.dataset import Dataset
     from feedbax.plugins.declarations import DistributionSource
+    from feedbax.runtime.graph import Graph
 
 
 @dataclass(frozen=True)
-class SynthesisDelivery:
-    model: MethodCheckpointModel
+class PreparedSynthesis:
+    writer: SemanticModelWriter
+    model: Graph
+    template: Graph
     datasets: Mapping[str, Dataset]
     provider: DistributionSource
 
@@ -46,9 +47,9 @@ def _slot_problem(address: str, reason: str) -> Problem:
 
 def synthesize_model(
     spec: SynthesisRequestSpec, *, registry: ApplicationRegistryBundle,
-    artifacts: ArtifactBlobProvider, transaction: Path,
-) -> SynthesisDelivery | tuple[Problem, ...]:
-    """Fit a method result to every parameter before releasing a portable tree."""
+    artifacts: ArtifactBlobProvider,
+) -> PreparedSynthesis | tuple[Problem, ...]:
+    """Fit a method result to every parameter before publishing."""
     method = registry.synthesis_methods.resolve(spec.method)
     if method.key != spec.method:
         raise ValueError(f"Use the canonical synthesis method key {method.key!r} in a managed request.")
@@ -91,9 +92,8 @@ def synthesize_model(
         for name, dataset in result.datasets.items():
             verify_dataset(dataset, outputs[name], settings)
         model = layout.apply(result.parameters)
-        written = SemanticModelWriter(layout.graph, artifacts).publish(
-            transaction, (model,), templates=(template,), replica_ids=("0",),
+        return PreparedSynthesis(
+            SemanticModelWriter(layout.graph, artifacts), model, template, result.datasets, method.source,
         )
-        return SynthesisDelivery(written, result.datasets, method.source)
     except ModelCheckpointError as error:
         return (Problem(code=ProblemCode.STRUCTURE, path=json_pointer_parts(error.path), reason=str(error)),)

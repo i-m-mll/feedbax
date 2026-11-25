@@ -5,19 +5,26 @@ import numpy as np
 
 from feedbax.application.composition import load_application
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.effective_success import success_content_ref
+from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import SynthesisRequestSpec, TrialDocuments
 from feedbax.examples import load_shipped_projects
-from feedbax.host.synthesis import SynthesisDelivery, synthesize_model
+from feedbax.host.synthesis import PreparedSynthesis, synthesize_model
+from feedbax.jobs import JobService
 from feedbax.persistence.array_container import decode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE, read_model_tree
-from feedbax.planner.project_plan import compile_project
+from feedbax.planner.project_plan import RunKey, compile_project
+from feedbax.web.services.project_folder import ProjectFolderService
+from tests.support.host import job_row, token, wait_until
 from tests.support.managed_train_fixture import managed_evaluation_step
+from tests.test_canonical_evaluate_admission import _save_project
 
 
-def test_synthesize_and_evaluate_plan_from_authored_documents():
+def synthesis_project():
     raw = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     evaluate = managed_evaluation_step("synthesize")
     evaluate["inputs"]["subject"].pop("checkpoint")
@@ -30,6 +37,11 @@ def test_synthesize_and_evaluate_plan_from_authored_documents():
         }}},
         "baseline": evaluate,
     }
+    return raw
+
+
+def test_synthesize_and_evaluate_plan_from_authored_documents():
+    raw = synthesis_project()
     plan = compile_project(Project.model_validate(raw))
     assert not plan.diagnostics, plan.diagnostics
     runs = {run.kind: run for run in plan.runs}
@@ -49,6 +61,35 @@ def test_synthesize_and_evaluate_plan_from_authored_documents():
     assert all(run.request_id != before[run.key] for run in changed.runs)
 
 
+def test_saved_synthesize_is_admitted_and_owns_a_model_product(host, tmp_path):
+    registry = load_application().bundle
+    jobs = JobService(host, registry)
+    folders = ProjectFolderService(tmp_path / "projects")
+    project = "synthesized-reaching"
+    _save_project(folders, project, Project.model_validate(synthesis_project()))
+    plan = folders.read_plan(project, revision=None)
+    synthesis = RunKey("default", "synthesize", "default")
+    (admitted,) = jobs.admit_plan(folders, plan, run_keys=(synthesis,), token=token("synthesize")).items
+    assert admitted.disposition == "admitted", admitted
+    job = wait_until(lambda: (
+        job if (job := job_row(host, admitted.job_id)) and job["outcome"] is not None else None
+    ))
+    assert job["state"] == "succeeded", job["outcome"]
+    store = ImmutableArtifactBlobProvider(plan.store_path)
+    view = SuccessView(store)
+    receipt = view.read_attempt(admitted.job_id).receipt
+    assert tuple(receipt.products) == ("model",)
+    product, = receipt.products["model"]
+    assert product.content.tree and product.content.media_type == MODEL_TREE_MEDIA_TYPE
+    assert receipt.request.id.startswith("synthesize:")
+    model = read_model_tree(store, success_content_ref(product.content), SemanticModelEncoding.model_validate(product.descriptor))
+    replica, = model.replicas
+    parameters = decode_array_container(
+        store.get_object(replica.arrays), expected_descriptor_sha256=replica.descriptor.array_descriptor_sha256,
+    ).tensors
+    assert parameters and all(value.dtype == np.float64 for value in parameters.values())
+
+
 def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):
     project = load_shipped_projects()["point-mass-reaching"]
     spec = SynthesisRequestSpec(
@@ -64,10 +105,11 @@ def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):
     artifacts = ImmutableArtifactBlobProvider(tmp_path / "artifacts")
     transaction = tmp_path / "attempt"
     with jax.enable_x64():
-        result = synthesize_model(spec, registry=registry, artifacts=artifacts, transaction=transaction)
-    assert isinstance(result, SynthesisDelivery), result
+        result = synthesize_model(spec, registry=registry, artifacts=artifacts)
+        assert isinstance(result, PreparedSynthesis), result
+        published = result.writer.publish(transaction, (result.model,), templates=(result.template,), replica_ids=("0",))
     store = ImmutableArtifactBlobProvider(transaction / MODEL_CHECKPOINT_STORE)
-    model = read_model_tree(store, result.model.tree, result.model.encoding)
+    model = read_model_tree(store, published.tree, published.encoding)
     replica, = model.replicas
     assert replica.descriptor.id == "0"
     arrays = decode_array_container(
@@ -84,6 +126,6 @@ def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):
 
     restricted = spec.model_copy(update={"target": ModelAddress.at_stored_path(("interior", "components", "plant"))})
     with jax.enable_x64():
-        problems = synthesize_model(restricted, registry=registry, artifacts=artifacts, transaction=transaction)
+        problems = synthesize_model(restricted, registry=registry, artifacts=artifacts)
     assert isinstance(problems, tuple) and problems
     assert all(problem.model_address is not None and "parameters" in problem.path for problem in problems)
