@@ -1,7 +1,9 @@
 import clsx from 'clsx';
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
-import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
+import {
+  catalogEntries, isExpiredExpressionContext, readStudioTrialAuthoring, readTrialExpressionMenu, useAuthoringCatalog,
+} from '@/api/studioAuthoring';
 import { shownError } from '@/api/shownErrors';
 import {
   studioAccessibleName, studioCountOf, studioDefinitionStatus, studioEvaluateValueSource, studioName,
@@ -13,7 +15,7 @@ import { editedElement } from '@/components/ui/ChoiceMenu';
 import { MenuItem } from '@/components/ui/Menu';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import {
-  evaluateChange, reasonOf, type ChangeMark, type ChangeSource, type FieldModel, type FieldRefusal,
+  evaluateChange, reasonOf, type ChangeMark, type ChangeSource, type FieldModel, type FieldRefusal, type PartMenus,
 } from '@/components/values/fieldModel';
 import { Drawer, DrawerSection, focusField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import {
@@ -27,6 +29,7 @@ import { changeTip, FieldChange, ValueField } from '@/components/values/ValueFie
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { isRecord, rawField } from '@/components/values/adapters/raw';
 import { fromFieldView, type FieldViewOptions } from '@/components/values/adapters/fieldView';
+import { partMenuKey } from '@/components/values/partMenu';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
   FieldKind, JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
@@ -57,6 +60,8 @@ export type Commit = (name: string, change: Change, removes?: boolean) => Promis
 /** A step's Trial authoring, with what the changed values of its Task and Objective documents differ from. */
 export type TrialView = StudioTrialAuthoring & {
   readonly changedFrom: { readonly task?: ChangeSource; readonly objective?: ChangeSource };
+  /** The menus of the parts of the expression at a field's path, which the service sends as each opens. */
+  menus(field: string): PartMenus;
 };
 
 const has = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
@@ -82,11 +87,12 @@ export function expressionKind(value: JsonValue | undefined): FieldKind {
 }
 
 /** A field the service projects in a step's Task or Objective, marked with its first stored Problem. */
-export function trialField(projection: StudioTrialField, label: string, runs: TrialRuns | undefined, options: FieldViewOptions): FieldModel {
+export function trialField(view: TrialView, projection: StudioTrialField, label: string, runs: TrialRuns | undefined,
+  options: FieldViewOptions): FieldModel {
   const [problem] = projection.problems ?? [];
   return {
     ...fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, options),
-    reason: problem?.reason, span: problem?.span ?? undefined,
+    reason: problem?.reason, span: problem?.span ?? undefined, menus: view.menus(projection.path),
   };
 }
 
@@ -117,8 +123,26 @@ export function useTrialAuthoring(
       const base = baseOf(authored.documents, document);
       return base === undefined ? undefined : { kind: 'base', document: base };
     };
-    return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) } };
-  }, [data, authored, run]);
+    /** Reads a menu of this view; once the service no longer holds it, reads the view again and asks that one. */
+    const menuKey = (context: string, field: string) => [project, context, field];
+    const menus = (field: string): PartMenus => ({
+      kind: 'served', key: menuKey(data.expression_context, field),
+      read: async (part, signal) => {
+        const ask = (expression_context: string) =>
+          readTrialExpressionMenu(project, { revision: data.revision, run, expression_context, field, part }, signal);
+        try {
+          return await ask(data.expression_context);
+        } catch (error) {
+          if (!isExpiredExpressionContext(error)) throw error;
+          const fresh = await queryClient.fetchQuery({ ...trialAuthoringQuery(project, data.revision, run), staleTime: 0 });
+          const site = await ask(fresh.expression_context);
+          queryClient.setQueryData(partMenuKey(menuKey(fresh.expression_context, field), part), site);
+          return site;
+        }
+      },
+    });
+    return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) }, menus };
+  }, [data, authored, run, project, queryClient]);
   /** Stores a change, answering with what the service made of it, or why the write was refused. */
   const send = editable && run && query.data ? (name: string, change: Change, removes?: boolean) => {
     const committedFrom = document.activeElement;
@@ -356,7 +380,7 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
     if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
     const kind = expressionKind(term[field] as JsonValue | undefined);
     const sweep = projection.sweep?.id;
-    const model = trialField(projection, label, runs, {
+    const model = trialField(view, projection, label, runs, {
       id: term.id + field, kind, changed: changed(field),
       commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', path: projection.path, edit })),
       selectedMembers: sweep ? runs?.values(sweep) : undefined,
@@ -397,7 +421,7 @@ function termWindow(view: TrialView, term: ObjectiveTerm, index: number, commit?
       const projection = view.fields.find((field) => field.path === pointer);
       if (!projection) throw new Error(`The Objective's window offset ${pointer} has no field`);
       const label = studioName(site[2]);
-      return trialField(projection, label, runs, {
+      return trialField(view, projection, label, runs, {
         id: term.id + site.join('-'), kind: expressionKind(valueAt(term.window, site)),
         changed: changedAt(view, 'objective', path + '/' + site.join('/'), commit),
         commit: commit && ((edit) => commit(studioAccessibleName('set', label), { kind: 'expression', path: projection.path, edit })),
