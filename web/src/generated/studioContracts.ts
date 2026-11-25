@@ -2959,6 +2959,7 @@ export type DatasetInputPort = {
   "variables"?: Record<string, FieldDescriptor>;
   "selected_variables"?: Record<string, FieldDescriptor>;
   "coordinates"?: Record<string, FieldDescriptor>;
+  "optional_dimensions"?: Array<string>;
   "kind"?: "dataset";
   "takes"?: Takes;
 };
@@ -2968,6 +2969,7 @@ export type DatasetOutputPort = {
   "variables"?: Record<string, FieldDescriptor>;
   "selected_variables"?: Record<string, FieldDescriptor>;
   "coordinates"?: Record<string, FieldDescriptor>;
+  "optional_dimensions"?: Array<string>;
   "carries"?: string | null;
 };
 
@@ -2976,6 +2978,7 @@ export type DatasetPort = {
   "variables"?: Record<string, FieldDescriptor>;
   "selected_variables"?: Record<string, FieldDescriptor>;
   "coordinates"?: Record<string, FieldDescriptor>;
+  "optional_dimensions"?: Array<string>;
 };
 
 export type DetachMember = {
@@ -10820,6 +10823,7 @@ export const DatasetInputPortSchema: z.ZodType<DatasetInputPort> = z.lazy(() =>
     "variables": z.record(z.string(), FieldDescriptorSchema).optional(),
     "selected_variables": z.record(z.string(), FieldDescriptorSchema).optional(),
     "coordinates": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "optional_dimensions": z.array(z.string()).optional(),
     "kind": z.literal("dataset").optional(),
     "takes": TakesSchema.optional(),
   }).strict()
@@ -10831,6 +10835,7 @@ export const DatasetOutputPortSchema: z.ZodType<DatasetOutputPort> = z.lazy(() =
     "variables": z.record(z.string(), FieldDescriptorSchema).optional(),
     "selected_variables": z.record(z.string(), FieldDescriptorSchema).optional(),
     "coordinates": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "optional_dimensions": z.array(z.string()).optional(),
     "carries": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DatasetOutputPort>;
@@ -10841,6 +10846,7 @@ export const DatasetPortSchema: z.ZodType<DatasetPort> = z.lazy(() =>
     "variables": z.record(z.string(), FieldDescriptorSchema).optional(),
     "selected_variables": z.record(z.string(), FieldDescriptorSchema).optional(),
     "coordinates": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "optional_dimensions": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<DatasetPort>;
 
