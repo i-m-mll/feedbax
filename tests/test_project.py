@@ -36,6 +36,8 @@ def _write(root: Path, files: dict[str, bytes]) -> None:
 
 def test_both_project_readers_round_trip_and_resolve(tmp_path):
     repeat = {"clauses": [{"attempt": [{"id": "high_repeat", "label": "High repeated"}]}]}
+    high_seed = {"seed": {"value": 61}}
+    repeated_reach = {"reach": {"value": 2.0}}
     project = Project.model_validate(
         {
             "documents": {
@@ -55,14 +57,16 @@ def test_both_project_readers_round_trip_and_resolve(tmp_path):
                     "requires": ["graph.units", "reach"],
                     "sweep": {
                         "axes": {"attempt": {"values": {
-                            "high": {"patches": {"seed": {"value": 61}}},
-                            "high_repeat": {"label": "High repeated", "patches": {
-                                "seed": {"value": 61}, "reach": {"value": 2.0},
-                            }},
+                            "high": {"patches": high_seed},
+                            "high_repeat": {"label": "High repeated", "patches": high_seed | repeated_reach},
                         }}},
+                        "rows": {
+                            "high": {"patches": high_seed},
+                            "high_repeat": {"from": "high", "patches": repeated_reach},
+                        },
                     },
                 },
-                "resume": {"kind": "train", "base": {"step": "train", "row": "attempt=high_repeat"}},
+                "resume": {"kind": "train", "base": {"step": "train", "row": "high_repeat"}},
                 "evaluate": {
                     "kind": "evaluate",
                     "base": {"inline": {"condition": 0}},
