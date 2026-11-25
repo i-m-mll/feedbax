@@ -12,6 +12,7 @@ from feedbax.contracts.request_refs import Sha256
 from feedbax.contracts.studio_authoring import StudioRunSelection
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scope import StudioStoreChoice
+from feedbax.contracts.task_document import Link, Variable
 
 
 class DuplicateRun(StudioRunSelection):
@@ -89,13 +90,24 @@ class AddSetEntry(StrictModel):
     axis: ProjectName
 
 
+class SetEntryTask(StrictModel):
+    """Write the Task variables or links held by one Set entry."""
+
+    kind: Literal["set_entry_task"]
+    step: ProjectName
+    axis: ProjectName
+    entry: ProjectName
+    task_variables: tuple[Variable, ...] | None = None
+    task_links: tuple[Link, ...] | None = None
+
+
 class StudioSetEditRequest(StrictModel):
     revision: Sha256
     selection: StudioRunSelection | None = None
     store_choice: Sha256 | None = None
     command: Annotated[
         DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | SetFieldWeight
-        | RemoveAxisValue | AddSetEntry,
+        | RemoveAxisValue | AddSetEntry | SetEntryTask,
         Field(discriminator="kind"),
     ]
 
