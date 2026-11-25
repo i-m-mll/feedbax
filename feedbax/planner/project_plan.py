@@ -142,7 +142,7 @@ from feedbax.contracts.request_specs import (
     TrainContinuation,
     ReportRequestSpec,
 )
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, TaskAdditions, TaskDocument, add_to_task
 from feedbax.contracts.train_settings import normalize_train_method
 
 if TYPE_CHECKING:
@@ -551,6 +551,7 @@ class SelectedRunDefinition:
     document_problems: tuple[ProjectDiagnostic, ...] = ()
     input_documents: Mapping[str, RootDocument] = field(default_factory=dict)
     pinned_model: ModelDocument | None = None
+    task_additions: tuple[TaskAdditions, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2189,25 +2190,28 @@ class _Compiler:
         if not row.task_additions or isinstance(resolved, ProjectDiagnostic):
             return resolved
         raw = resolved.payload.get("trial_documents")
+        explicit = resolved.input_documents.get("task")
         if not isinstance(raw, dict) or "task" not in raw:
-            if project.steps[key.step].kind == "evaluate":
-                return resolved
-            return ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents.task",
-                "A Set entry's Task variables and links need a Task document.", key.step, row=key.row, variant=key.variant,
-            )
-        from feedbax.contracts.task_document import add_to_task
-
+            if resolved.kind == "evaluate" and explicit is None:
+                return resolved  # The selected checkpoint supplies the Task later.
+            if explicit is None:
+                return ProjectDiagnostic(
+                    ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents.task",
+                    "A Set entry's Task variables and links need a Task document.", key.step, row=key.row, variant=key.variant,
+                )
+        path = "inputs.task" if explicit is not None else "payload.trial_documents.task"
         try:
-            selected = add_to_task(TaskDocument.model_validate(raw["task"]), row.task_additions)
+            content = explicit.payload if explicit is not None else raw["task"]
+            selected = add_to_task(TaskDocument.model_validate(content), row.task_additions).model_dump(mode="json")
         except ValueError as error:
             return ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents.task", str(error),
-                key.step, row=key.row, variant=key.variant,
+                ResolutionCode.INVALID_PAYLOAD, path, str(error), key.step, row=key.row, variant=key.variant,
             )
-        return replace(resolved, payload=resolved.payload | {
-            "trial_documents": raw | {"task": selected.model_dump(mode="json")},
-        })
+        if explicit is not None:
+            return replace(resolved, input_documents=resolved.input_documents | {
+                "task": explicit.model_copy(update={"payload": selected}),
+            })
+        return replace(resolved, payload=resolved.payload | {"trial_documents": raw | {"task": selected}})
 
     def project_definition(
         self,
@@ -2231,7 +2235,7 @@ class _Compiler:
                 resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids), resolved.document_uses,
                 MappingProxyType(resolved.document_pointers),
                 resolved.document_problems,
-                MappingProxyType(resolved.input_documents),
+                MappingProxyType(resolved.input_documents), task_additions=row.task_additions,
             )
 
         if self.previous is None:
@@ -2399,7 +2403,7 @@ class _Compiler:
             lowering_stamp = (
                 _RowLoweringStamp(kind, sha256_bytes(to_json((
                     payload, tuple(sorted(document_ids.items())), tuple(sorted(document_pointers.items())),
-                    source_stamp, model_lineage,
+                    source_stamp, model_lineage, tuple(entry.model_dump(mode="json") for entry in row.task_additions),
                 ))), member)
                 if basis is not None and not fields else None
             )
@@ -2478,11 +2482,11 @@ class _Compiler:
                 if isinstance(reference, BestRank):
                     assert subject is not None
                     payload = self.lower_best_evaluate(
-                        key, payload, subject, reference, has_differences, document_ids, read,
+                        key, payload, subject, reference, has_differences, document_ids, read, row.task_additions,
                     )
                 else:
                     payload = self.lower_evaluate_payload(
-                        key, payload, model_source, reference, has_differences, document_ids, read,
+                        key, payload, model_source, reference, has_differences, document_ids, read, row.task_additions,
                     )
             if isinstance(payload, ProjectDiagnostic):
                 payload = self.locate_sweep_problem(payload, composition, key, row)
@@ -2620,9 +2624,10 @@ class _Compiler:
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
+        task_additions: tuple[TaskAdditions, ...],
     ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         original = payload.get("params")
-        slots = self.evaluation_slots(key, payload, model_source, reference, document_ids, read)
+        slots = self.evaluation_slots(key, payload, model_source, reference, document_ids, read, task_additions)
         if isinstance(slots, ProjectDiagnostic):
             return slots
         lowered, model, task = slots
@@ -2645,6 +2650,7 @@ class _Compiler:
     def evaluation_slots(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
+        task_additions: tuple[TaskAdditions, ...],
     ) -> tuple[Payload, _EvaluationModel | None, bool] | ProjectDiagnostic:
         """Lower an Evaluate step's own Model and Task documents against its subject run's.
 
@@ -2652,9 +2658,9 @@ class _Compiler:
         subject's task. The Model slot becomes the differences of its content from the nearest document it
         shares with the subject run's Model document.
         """
-        if "trial_documents" not in payload:
+        if "trial_documents" not in payload and not task_additions:
             return payload, None, False
-        slots = payload["trial_documents"]
+        slots = payload.get("trial_documents", {})
         payload = {name: value for name, value in payload.items() if name != "trial_documents"}
 
         def problem(path: str, detail: str) -> ProjectDiagnostic:
@@ -2691,15 +2697,22 @@ class _Compiler:
             if differences := diff(base.payload, content):
                 model = _EvaluationModel(name, differences)
         task = False
-        if "task" in slots:
+        if "task" in slots or task_additions:
             params = payload.get("params")
             if not isinstance(params, dict):
                 return problem("payload.params", "Declare rollout parameters.")
+            authored = model_source.trial.task if model_source.trial is not None else None
+            inherited = authored or train.trial_documents.task_source
+            selected = slots.get("task")
+            if "task" not in slots:
+                if not isinstance(inherited, TaskDocument):
+                    return problem(EVALUATION_TASK, "A Set entry's Task variables and links need a Task document.")
+                try:
+                    selected = add_to_task(inherited, task_additions).model_dump(mode="json")
+                except ValueError as error:
+                    return problem(EVALUATION_TASK, str(error))
             try:
-                authored = model_source.trial.task if model_source.trial is not None else None
-                variation = own_task_variation(
-                    authored or train.trial_documents.task_source, slots["task"], params.get("variation", []),
-                )
+                variation = own_task_variation(inherited, selected, params.get("variation", []))
             except ValueError as error:
                 return problem("payload.params.variation", str(error))
             if variation is not None:
@@ -2867,6 +2880,7 @@ class _Compiler:
     def lower_best_evaluate(
         self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
+        task_additions: tuple[TaskAdditions, ...],
     ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         def problem(detail: str) -> ProjectDiagnostic:
             return ProjectDiagnostic(
@@ -2888,7 +2902,7 @@ class _Compiler:
             if refusal := _authored_graph_variation_problem(key, payload):
                 return refusal
             lowered = self.lower_evaluate_payload(
-                key, payload, model, candidate.reference, has_differences, document_ids, read,
+                key, payload, model, candidate.reference, has_differences, document_ids, read, task_additions,
             )
             if isinstance(lowered, ProjectDiagnostic):
                 return replace(lowered, detail=f"Best candidate {name}: {lowered.detail}")
@@ -3035,7 +3049,7 @@ class _Compiler:
         from feedbax.project_model_selection import matched_task_inputs, model_task_signals
         from feedbax.compiler.graph_schema import validate_graph_connection_schema
         from feedbax.contracts.rollout import CannotRun
-        from feedbax.training.evaluation_variant import resolve_evaluation_variant
+        from feedbax.training.evaluation_variant import resolve_evaluation_task, resolve_evaluation_variant
 
         address = None
         document = model_source.document if model_source is not None else None
@@ -3071,28 +3085,36 @@ class _Compiler:
                     )
                 except ValueError as error:
                     return _model_difference_problem(key, model.document, None, str(error), path=EVALUATION_MODEL)
+            raw_params = payload["params"]
+            params = authored_rollout_settings(raw_params)
+            prior = params.variation
+            if isinstance(prior, dict):
+                prior = tuple(prior[name] for name in sorted(prior))
+            source_task = documents.task_source
+            chosen_task = resolve_evaluation_task(source_task, prior)
             try:
-                before, lowered, derived = lower_evaluate_attachments(
+                attached = lower_evaluate_attachments(
                     model_source.model, evaluated, None, components, differences, functions=self.functions,
+                    trained_task=source_task if isinstance(source_task, TaskDocument) else None,
+                    evaluated_task=chosen_task if isinstance(chosen_task, TaskDocument) else None,
                 )
             except ValueError as error:
                 if model is not None and not isinstance(error, ModelCompilationProblem):
                     address = _refused_difference(model, model_source.model, components, self.functions)
                 raise
-            raw_params = payload["params"]
-            params = authored_rollout_settings(raw_params)
-            if not derived:
+            if not attached.edits and (attached.task is None or attached.task == chosen_task):
                 return stripped
-            prior = params.variation
-            if isinstance(prior, dict):
-                prior = tuple(prior[name] for name in sorted(prior))
-            variation = (*prior, *derived)
+            variation = (*prior, *attached.edits)
+            if attached.task is not None and attached.task != chosen_task:
+                variation = (*variation, OverridePatch(
+                    path="task", op="replace", value=attached.task.model_dump(mode="json"),
+                ))
             effective = resolve_evaluation_variant(
-                before.graph, documents.task_source, variation, components=components,
+                attached.before.graph, source_task, variation, components=components,
             )
             signals = model_task_signals(effective.task, self.python_tasks)
-            bound = matched_task_inputs(evaluated, signals, documents.input_bindings | params.input_bindings)
-            prototypes = model_input_prototypes(effective.graph, evaluated, {
+            bound = matched_task_inputs(attached.model, signals, documents.input_bindings | params.input_bindings)
+            prototypes = model_input_prototypes(effective.graph, attached.model, {
                 port.name: signal.type for port, signal in bound
             })
             resolution = resolve_graph_parameters(effective.graph, prototypes, components, allow_incomplete=True)
@@ -3101,7 +3123,7 @@ class _Compiler:
             )
             if issue := next((issue for issue in issues if issue.severity == "error"), None):
                 issue_path = (issue.location or {}).get("path", "/graph")
-                address = lowered.source_address(issue_path) or address
+                address = attached.after.source_address(issue_path) or address
                 raise ValueError(issue.message)
             return stripped | {"params": raw_params | {
                 "variation": [edit.model_dump(mode="json", exclude_unset=True) for edit in variation],
