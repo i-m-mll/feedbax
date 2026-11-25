@@ -18,8 +18,7 @@ test('New makes a Synthesize step whose Method and settings are edited in its in
   await page.goto(`/?project=${snapshot.project_id}`);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();
   await chooseStepKind(page, 'Synthesize');
-  const card = page.getByRole('article', { name: 'Synthesize synthesize', exact: true });
-  await expect(card).toContainText('Constant parameters');
+  await expect(page.locator('[data-map-step="synthesize"]')).toContainText('Constant parameters');
   expect(await saved()).toMatchObject({ kind: 'synthesize', base: { inline: {
     model: { document: expect.any(String) }, task: { document: expect.any(String) },
     objective: { document: expect.any(String) }, method: 'feedbax.constant_parameters',
@@ -79,7 +78,7 @@ test('a Synthesize step on the shipped Model is run, read by an Evaluate made fr
   for (const [view, label] of [['Task', 'Task'], ['Objective', 'Objective']] as const) {
     await tab(page, view).click();
     await picker(label).click();
-    await page.getByRole('menuitemradio', { name: 'Simple reaches', exact: true }).click();
+    await page.getByRole('menuitemradio', { name: /^Simple reaches/ }).click();
   }
   await tab(page, 'Task').click();
   await reveal(page, 'Drawer');
@@ -87,10 +86,10 @@ test('a Synthesize step on the shipped Model is run, read by an Evaluate made fr
     .getByRole('tree', { name: 'Model Inputs', exact: true }).getByRole('treeitem').filter({ hasText: 'target_pos' }).click();
   await reveal(page, 'Inspector');
   await pick(page.getByRole('complementary', { name: 'Inspector', exact: true })
-    .getByRole('combobox', { name: 'Signals', exact: true }), 'Goal');
+    .getByRole('combobox', { name: 'Signals', exact: true }), 'Target Position');
   await expect.poll(async () => (await step('synthesize'))?.base).toMatchObject({ inline: {
     model: { document: 'point-mass' }, task: { document: 'simple-reaches-task' },
-    objective: { document: 'simple-reaches-objective' }, input_bindings: { target_pos: 'goal' },
+    objective: { document: 'simple-reaches-objective' }, input_bindings: { target_pos: 'target_pos' },
   } });
   await run('synthesize');
 
@@ -102,13 +101,13 @@ test('a Synthesize step on the shipped Model is run, read by an Evaluate made fr
   await tab(page, 'Results').click();
   const results = page.locator('[data-slot="primary"]').getByRole('tabpanel');
   await expect(results.getByText('Synthesized', { exact: true })).toBeVisible();
-  await expect(results.getByRole('button', { name: 'synthesize', exact: true })).toBeVisible();
+  await expect(results.getByRole('button', { name: 'Synthesize', exact: true })).toBeVisible();
   await expect(tab(page, 'Scene')).toBeEnabled();
 
   await mapStep(page, 'simple-reaches').click();
   await tab(page, 'Runs').click();
   await pick(page.getByRole('complementary', { name: 'Inspector', exact: true })
-    .getByRole('combobox', { name: 'Start', exact: true }), 'synthesize');
+    .getByRole('combobox', { name: 'Start', exact: true }), 'Synthesize');
   await expect.poll(async () => JSON.stringify(await step('simple-reaches'))).toContain('"step":"synthesize"');
   await run('simple-reaches');
 });
