@@ -969,9 +969,10 @@ def _dependency_state(
 def _dependency_status(
     dependency: tuple[JobStatus, str] | None, status: JobStatus, reason: str | None,
 ) -> tuple[JobStatus, str | None]:
+    """Explain open or stale rows while preserving a current receipt's validity."""
     if dependency is not None and (
         status in {JobStatus.NOT_RUN, JobStatus.QUEUED}
-        or dependency[0] is JobStatus.STALE and status in {JobStatus.STALE, JobStatus.SUCCEEDED}
+        or dependency[0] is JobStatus.STALE and status is JobStatus.STALE
     ):
         return dependency
     return status, reason
@@ -989,7 +990,7 @@ def _light_histories(
             return histories[key]
         node = nodes[key]
         row = _light_history(settled, jobs, node)
-        if row.status in {JobStatus.NOT_RUN, JobStatus.STALE, JobStatus.QUEUED, JobStatus.SUCCEEDED}:
+        if row.status in {JobStatus.NOT_RUN, JobStatus.STALE, JobStatus.QUEUED}:
             inputs: dict[RunKey | ElementKey, JobStatus] = {}
             for bindings in planned_input_groups(node).values():
                 for binding in bindings:
