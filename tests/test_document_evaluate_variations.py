@@ -353,7 +353,7 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
 
     controller = _model_controller(raw)
     controller["components"]["passthrough"] = {
-        "kind": "leaf", "name": "Passthrough", "type": "feedbax.Gain", "fields": {"gain": 1.0},
+        "kind": "leaf", "name": "Passthrough", "type": "feedbax.Activation", "fields": {"activation": "identity"},
     }
     original = controller["wires"]["read"]
     original["target"], output = _end("passthrough", "input"), original["target"]
@@ -373,7 +373,7 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
         "element": {"kind": "component", "id": "passthrough"},
     })
     assert problem.path == "/inputs/subject/graph/subgraphs/wrapper/subgraphs/controller/nodes/passthrough"
-    assert "feedbax.Gain" in problem.detail and "no declared Evaluate layout" in problem.detail
+    assert "feedbax.Activation" in problem.detail and "no declared Evaluate layout" in problem.detail
     assert train.admission_problem is not None
     assert train.admission_problem.model_address == problem.model_address
     assert "no typed model checkpoint owner" in train.admission_problem.detail

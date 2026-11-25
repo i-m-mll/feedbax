@@ -13,6 +13,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.code_validity import ReceiptEvidence
 from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.effective_success import INDEX_REF
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.planner.project_plan import RunKey
@@ -253,6 +254,16 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         assert attempt.checkpoint_source.job_id == source.job_id
         assert attempt.output_size_bytes == outcomes[key].size_bytes
     position = "/v1/model/state/plant/effector~1position"
+    command_origin = ModelAddress.model_validate({
+        "composites": ["wrapper", "controller"],
+        "element": {"kind": "port", "end": {
+            "owner": "component", "component": "readout", "direction": "output", "port": "output",
+        }},
+    }).to_text()
+    command_variable = f"/v1/model/output/{command_origin}"
+    (command_operand,) = [
+        operand for operand, origin in fresh.execution.observation_origins if origin == command_origin
+    ]
     carry = next(name for name in reference.history if name.startswith("/v1/model/carry/"))
     plant_fields = {
         state_key("plant", f"{state}/{symbol}"): (state, leaf, units)
@@ -278,7 +289,11 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             assert {name: descriptor.dimensions[name] for name in (
                 "checkpoint", "condition", "trial", "state_time", "transition", "xy",
             )} == {"checkpoint": 1, "condition": 1, "trial": 28, "state_time": 81, "transition": 80, "xy": 2}
-            assert {key for key in descriptor.variables if key.startswith("/v1/model/")} == set(reference.history)
+            assert {key for key in descriptor.variables if key.startswith("/v1/model/")} == {
+                *reference.history, command_variable,
+            }
+            assert descriptor.attrs["trial_record"]["observations"][command_origin] == command_variable
+            np.testing.assert_allclose(dataset.data(command_variable)[0, 0], reference.retained[command_operand], atol=1e-7)
             state_axes = ("checkpoint", "condition", "trial", "state_time")
             for key, (_, _, units) in plant_fields.items():
                 field = descriptor.variables[key]
@@ -503,7 +518,7 @@ def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, mon
     assert isinstance(prepared, PreparedTrialExecution), prepared
     graph = prepared.executable.resolved.graph
     graph.nodes["passthrough"] = ComponentSpec(
-        type="feedbax.Gain", params={"gain": 1.0}, input_ports=["input"], output_ports=["output"],
+        type="feedbax.Activation", params={"activation": "identity"}, input_ports=["input"], output_ports=["output"],
     )
     graph.wires.append(WireSpec(
         source_node="wrapper", source_port="force", target_node="passthrough", target_port="input",
