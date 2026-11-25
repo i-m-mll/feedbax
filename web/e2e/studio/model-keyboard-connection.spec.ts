@@ -60,7 +60,7 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   }
   await expectVisibleFocus(input);
   await expect(input).toHaveRole('button');
-  await expect(input).toHaveAccessibleDescription(/^Input · /);
+  await expect(input).toHaveAccessibleDescription('Input · real [2]');
   const edit = post('edit');
   await page.keyboard.press('Space');
   const applied = await edit;
@@ -155,7 +155,7 @@ test('a wire drawn to an occupied input of another type replaces its wire, keepi
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await expect(model.locator('.studio-model-attachments').getByRole('img', { name: 'Problems', exact: true }))
-    .toHaveAccessibleDescription(/m ≠ .*s/);
+    .toHaveAccessibleDescription(/expected unit s, received m/);
   // Problems lists each Problem the canvas marks.
   const marked = await model.locator('[role="img"][aria-label="Problems"][aria-description]')
     .evaluateAll((marks) => marks.map((mark) => mark.getAttribute('aria-description')!));
