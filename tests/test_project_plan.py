@@ -330,7 +330,7 @@ def test_chained_train_requires_a_row_match_or_explicit_checkpoint_mapping():
     assert all("manual, seed=a, seed=b" in problem.detail for problem in plan.diagnostics)
     assert all(run.key.step != "flat" for run in plan.runs)
 
-    flat["inputs"]["checkpoint"]["where"] = {"axes": {"seed": [{"id": "b", "label": "b"}]}}
+    flat["inputs"]["checkpoint"]["where"] = {"clauses": [{"seed": [{"id": "b", "label": "b"}]}]}
     flat["sweep"]["axes"]["parent"] = {"input": "checkpoint"}
     mapped = compile_project(Project.model_validate(data))
     assert not mapped.diagnostics
@@ -359,7 +359,7 @@ def test_checkpoint_subset_pairs_surviving_ids_even_with_one_candidate():
     assert [row for row in plan.rows if row.key.step == "rewarm"] == rewarm
     assert [run.inputs["checkpoint"].producer for run in rewarm] == [run.key for run in flat]
 
-    checkpoint["where"] = {"axes": {"seed": [{"id": "b", "label": "b"}]}}
+    checkpoint["where"] = {"clauses": [{"seed": [{"id": "b", "label": "b"}]}]}
     explicit = compile_project(Project.model_validate(data), memo=memo)
     assert explicit == compile_project(Project.model_validate(data))
     assert not explicit.diagnostics
@@ -496,7 +496,7 @@ def test_generated_variant_ids_can_be_named_in_references():
     assert reader.inputs["subject"].producer.variant == first.id
 
 
-def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
+def test_axis_clauses_choose_current_rows_and_rank_binding_keeps_exact_keys():
     from tests.test_saved_update_series import definition
 
     data = definition("last")
@@ -515,15 +515,15 @@ def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
     reference = evaluation["inputs"]["subject"]
     reference["where"] = {
         "rule": "seed=a,c",
-        "axes": {"seed": [{"id": key, "label": key} for key in ("c", "a")]},
+        "clauses": [{"seed": [{"id": key, "label": key} for key in ("c", "a")]}],
     }
     plan = compile_project(Project.model_validate(data))
     assert not plan.diagnostics
     evaluation_runs = [run for run in plan.runs if run.kind == "evaluate"]
-    assert [run.coordinates["seed"].value_id for run in evaluation_runs] == ["c", "a"]
+    assert [run.coordinates["seed"].value_id for run in evaluation_runs] == ["a", "c"]
     subset = plan.subsets["default", "baseline", "subject"]
     assert subset.candidates == 3
-    assert tuple(key.row for key in subset.members) == ("seed=c", "seed=a")
+    assert tuple(key.row for key in subset.members) == ("seed=a", "seed=c")
 
     data["documents"]["selected"] = {"schema": "subset", "payload": reference["where"]}
     reference["where"] = {"subset": "selected"}
@@ -635,7 +635,7 @@ def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
         },
     }
     data["steps"]["child"] = {"kind": "train", "base": {"step": "fit"}}
-    data["steps"]["evaluate"]["inputs"]["subject"].update({"step": "child", "where": {"axes": {"seed": [{"id": "a", "label": "a"}]}}})
+    data["steps"]["evaluate"]["inputs"]["subject"].update({"step": "child", "where": {"clauses": [{"seed": [{"id": "a", "label": "a"}]}]}})
     requested = RunKey("default", "child", "seed=a")
     consumer = RunKey("default", "evaluate", "default")
     project = Project.model_validate(data)

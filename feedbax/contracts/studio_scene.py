@@ -14,6 +14,12 @@ from feedbax.contracts.request_refs import Sha256
 type ScenePoint = tuple[FiniteFloat, FiniteFloat]
 
 
+class SceneAnchorGeometry(StrictModel):
+    address: ModelAddress
+    signal: ModelAddress | None
+    position: ScenePoint
+
+
 class SceneLinkGeometry(StrictModel):
     body: ModelAddress
     body_name: str
@@ -67,6 +73,7 @@ class StudioSceneGeometryRequest(StudioSceneModelSource):
 class StudioSceneGeometryFrame(StrictModel):
     mechanisms: list[SceneMechanismGeometry]
     diagnostics: list[DomainDiagnostic]
+    anchors: list[SceneAnchorGeometry] = Field(default_factory=list)
 
 
 class StudioSceneGeometryResponse(StudioSceneModelSource):

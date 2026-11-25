@@ -63,11 +63,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     page.on('request', (request) => {
       if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/projects') creates += 1;
     });
-    const creating = responseFor(page, '/api/projects');
-    await startProject(page);
-    const created = await creating;
-    expect(created.status()).toBe(201);
-    const { snapshot, configuration } = await created.json() as StudioProjectDocument;
+    const { snapshot, configuration } = await startProject(page);
     const id = snapshot.project_id;
     await expect(page).toHaveURL(new RegExp('project=' + id + '$'));
     const { projectPath } = await appendManagedFiles(request, snapshot, await fixture('ordinary-files', '1200'));
@@ -404,7 +400,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   expect(response.status(), await response.text()).toBe(201);
   const authored = (await response.json() as StudioProjectDocument).snapshot.project.steps!.evaluate;
   expect(authored).toMatchObject({
-    inputs: { subject: { step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': rates.slice(0, 2) } } } },
+    inputs: { subject: { step: 'train', checkpoint: 'last', where: { clauses: [{ 'learning-rate': rates.slice(0, 2).sort((left, right) => left.id.localeCompare(right.id)) }] } } },
     sweep: { axes: { subject: { input: 'subject' } } },
   });
   const rule = inspector.getByRole('combobox', { name: 'Runs', exact: true });
@@ -499,7 +495,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   expect(secondCreated.status(), await secondCreated.text()).toBe(201);
   const { snapshot: withSecond } = await secondCreated.json() as StudioProjectDocument;
   expect(withSecond.project.steps!['evaluate-2'].inputs?.subject).toMatchObject({
-    where: { axes: { 'learning-rate': [rates[0], rates[2]] } },
+    where: { clauses: [{ 'learning-rate': [rates[0], rates[2]].sort((left, right) => left.id.localeCompare(right.id)) }] },
   });
   await expect(ruleRow).toContainText('Rows2/3');
   await expect(trialSet.getByRole('combobox')).toHaveText('Every Condition');

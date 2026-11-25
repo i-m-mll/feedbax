@@ -53,12 +53,18 @@ export interface RuleProblem {
 const ruleProblem = (problem: StudioProjectWindowMapProblem): RuleProblem =>
   ({ reason: problem.detail, ...problem.span && { span: problem.span }, ...problem.selection_value && { value: problem.selection_value } });
 
-/** `terms` with the missing value of `value`'s axis replaced by `chosen`, or dropped where `chosen` is already selected. */
+/**
+ * `terms` with the missing value of `value`'s clause and axis replaced by `chosen`, or dropped where that clause already
+ * wants `chosen`.
+ */
 export function replacedAxisValue(terms: SubsetTerms, value: SelectedAxisValueProblem, chosen: SelectedAxisValue): SubsetTerms {
-  const values = terms.axes?.[value.axis] ?? [];
+  const clauses = terms.clauses ?? [];
+  const clause = clauses[value.clause_index];
+  if (!clause?.[value.axis]) throw new Error(`Selection has no clause ${value.clause_index} naming ${value.axis}.`);
+  const values = clause[value.axis];
   const kept = values.flatMap((selected) => selected.id !== value.missing.id ? [selected]
     : values.some(({ id }) => id === chosen.id) ? [] : [chosen]);
-  return { ...terms, axes: { ...terms.axes, [value.axis]: kept } };
+  return { ...terms, clauses: clauses.map((each, index) => index === value.clause_index ? { ...each, [value.axis]: kept } : each) };
 }
 
 /** A selection's problems, each on the field its path names. */

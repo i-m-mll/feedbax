@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field, JsonValue
 
 from feedbax.contracts.expression_values import Problem
 from feedbax.contracts.jobs import JobReceipt
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.studio_scene import ScenePoint
 from feedbax.contracts.trial_clock import TrialMean, TrialMeanOptions
 
 
@@ -15,6 +17,37 @@ class TaskTimelineCue(BaseModel):
     start: int
     end: int
     outcome: int
+
+
+class TrialAnchorPlace(BaseModel):
+    kind: Literal["anchor"]
+    address: ModelAddress
+
+
+class TrialVariablePlace(BaseModel):
+    kind: Literal["variable"]
+    id: str
+
+
+class TrialSignalPlace(BaseModel):
+    kind: Literal["signal"]
+    id: str
+
+
+class TrialComputedPlace(BaseModel):
+    kind: Literal["computed"]
+    samples: list[ScenePoint | None]
+    """World point at each trial step, or null where the expression is undefined."""
+
+
+type TrialPlace = Annotated[
+    TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | TrialComputedPlace, Field(discriminator="kind")
+]
+
+
+class TrialRelation(BaseModel):
+    first: TrialPlace
+    second: TrialPlace
 
 
 class TrialTerm(BaseModel):
@@ -29,6 +62,8 @@ class TrialTerm(BaseModel):
     """The weighted measure at each step, when recorded."""
     value: float | None = None
     """The reduced value for the entire recorded trial, when covered."""
+    relations: list[TrialRelation] = Field(default_factory=list)
+    places: list[TrialPlace] = Field(default_factory=list)
 
 
 class TrialStateTrack(BaseModel):

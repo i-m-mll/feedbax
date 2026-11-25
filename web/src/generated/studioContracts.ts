@@ -304,6 +304,7 @@ export interface StudioSavedEvaluationResult {
   trials?: string[] | null;
   receipt: JobReceipt;
   checkpoint_source: StudioTrainCheckpointSource | null;
+  loaded_model?: ImportedModelProvenance | null;
   size_bytes: number;
   validity?: ReceiptValidity | null;
   provenance?: AttemptProvenance | null;
@@ -1072,6 +1073,7 @@ export interface ModelConnectionReview {
 export interface ModelPortProjection {
   address: ModelAddress;
   type: SignalType;
+  readers?: string[];
 }
 
 export interface ModelPhysicalPortProjection {
@@ -1105,6 +1107,7 @@ export interface ModelProjection {
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelAddress[];
   objective_ports?: ModelAddress[];
+  problems?: ModelGraphProblem[];
   resolved_model?: ModelDocument | null;
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
@@ -2025,6 +2028,12 @@ export interface DomainDiagnostic {
   details?: Record<string, unknown>;
 }
 
+export interface SceneAnchorGeometry {
+  address: ModelAddress;
+  signal: ModelAddress | null;
+  position: [number, number];
+}
+
 export interface SceneLinkGeometry {
   body: ModelAddress;
   body_name: string;
@@ -2060,6 +2069,7 @@ export interface ScenePointGeometry {
 export interface StudioSceneGeometryFrame {
   mechanisms: Array<ScenePointGeometry | ScenePlanarGeometry>;
   diagnostics: DomainDiagnostic[];
+  anchors?: SceneAnchorGeometry[];
 }
 
 export interface StudioSceneGeometryRequest {
@@ -2245,7 +2255,7 @@ export interface FigurePanelMeta {
 }
 
 export interface FigureRun {
-  key: StudioSavedTrainKey;
+  job_id: string;
   request_id: string;
 }
 
@@ -2280,6 +2290,31 @@ export interface StudioTrialReplayResponse {
   mean?: TrialMean | null;
 }
 
+export interface TrialAnchorPlace {
+  kind: "anchor";
+  address: ModelAddress;
+}
+
+export interface TrialComputedPlace {
+  kind: "computed";
+  samples: Array<[number, number] | null>;
+}
+
+export interface TrialRelation {
+  first: TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | TrialComputedPlace;
+  second: TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | TrialComputedPlace;
+}
+
+export interface TrialSignalPlace {
+  kind: "signal";
+  id: string;
+}
+
+export interface TrialVariablePlace {
+  kind: "variable";
+  id: string;
+}
+
 export interface TrialRecord {
   id: string;
   inits: Record<string, JsonValue>;
@@ -2311,6 +2346,8 @@ export interface TrialTerm {
   covered: boolean;
   values?: number[] | null;
   value?: number | null;
+  relations?: TrialRelation[];
+  places?: Array<TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | TrialComputedPlace>;
 }
 
 export interface TrialTermAggregate {
@@ -2756,6 +2793,8 @@ export type AxisLabels = {
   "z"?: string | null;
 };
 
+export type AxisSelectionClause = Record<string, Array<SelectedAxisValue>>;
+
 export type AxisValue = {
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
@@ -2884,6 +2923,13 @@ export type ContentRef = {
   "tree"?: boolean;
 };
 
+export type ContentTreeRef = {
+  "schema_id"?: "feedbax.spec.content_tree_ref";
+  "schema_version"?: "feedbax.spec.content_tree_ref.v1";
+  "tree_id": string;
+  "descriptor": ContentObjectRef;
+};
+
 export type CooccurringSetTrials = {
   "kind": "cooccurring";
   "weights"?: Record<string, SetEntryParts>;
@@ -2961,7 +3007,7 @@ export type DocumentBase = {
 
 export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
 
-export type DocumentInputReference = InitialModelReference_DocumentReference_ | TaskDocumentReference_DocumentReference_ | ObjectiveDocumentReference_DocumentReference_;
+export type DocumentInputReference = InitialModelReference_DocumentReference_ | TaskDocumentReference_DocumentReference_ | ObjectiveDocumentReference_DocumentReference_ | LoadedModelReference;
 
 export type DocumentPresentation = {
   "positions"?: Record<string, PresentationPosition>;
@@ -3181,6 +3227,20 @@ export type GroupCombination = {
   "groups": Record<string, AxisGroup>;
 };
 
+export type ImportedModelProvenance = {
+  "kind": "imported";
+  "model_revision": string;
+  "weights_sha256": string;
+  "replicas": Array<string>;
+};
+
+export type ImportedModelSource = {
+  "kind": "imported";
+  "model": ContentObjectRef;
+  "weights": ContentTreeRef;
+  "encoding": SemanticModelEncoding;
+};
+
 export type IndexSelection = {
   "index": number;
 };
@@ -3298,6 +3358,17 @@ export type LiteralValue = {
   "unit"?: string | null;
 };
 
+export type LoadedModelDocument = {
+  "schema_version": "feedbax.spec.loaded_model.v1";
+  "model": DocumentReference;
+  "source": ImportedModelSource;
+};
+
+export type LoadedModelReference = {
+  "kind": "loaded_model";
+  "source": DocumentReference;
+};
+
 export type LocatedSpan = {
   "path": NodePath;
   "span": TextSpan;
@@ -3338,8 +3409,27 @@ export type MergeCards = {
   "others": Array<string>;
 };
 
+export type ModelFitProblem = ModelSlotFitProblem | ModelGraphFitProblem;
+
+export type ModelFitReport = {
+  "problems": Array<ModelFitProblem>;
+};
+
+export type ModelGraphFitProblem = {
+  "kind": "unsupported_owner" | "unresolved_model" | "graph_mismatch";
+  "address": string;
+  "detail": string;
+};
+
 export type ModelPort = {
   "kind"?: "model";
+};
+
+export type ModelSlotFitProblem = {
+  "kind": "missing_slot" | "unexpected_slot" | "mismatched_slot";
+  "replica": string;
+  "address": string;
+  "detail": string;
 };
 
 export type MoveMember = {
@@ -3663,6 +3753,8 @@ export type SaveSet = {
 
 export type Scalar = boolean | number;
 
+export type ScenePoint = [number, number];
+
 export type ScopedValue = {
   "id": string;
   "name": string;
@@ -3677,9 +3769,14 @@ export type SelectedAxisValue = {
 };
 
 export type SelectedAxisValueProblem = {
+  "clause_index": number;
   "axis": string;
   "missing": SelectedAxisValue;
   "remaining": Array<SelectedAxisValue>;
+};
+
+export type SemanticModelEncoding = {
+  "descriptor_sha256": string;
 };
 
 export type SetAxis = {
@@ -3883,7 +3980,7 @@ export type StoreKind = "all_readers" | "selected_readers" | "sweep_value" | "se
 export type StoreSubset = {
   "rule"?: string;
   "bound_ranks"?: Array<BoundRank> | null;
-  "axes"?: Record<string, Array<SelectedAxisValue>>;
+  "clauses"?: Array<AxisSelectionClause>;
   "query": ManifestPredicate;
 };
 
@@ -4183,6 +4280,38 @@ export type StudioLibraryDocument = {
   "document": RootDocument;
 };
 
+export type StudioLoadedModelDoesNotFit = {
+  "status": "does_not_fit";
+  "report": ModelFitReport;
+};
+
+export type StudioLoadedModelExportRequest = {
+  "revision": string;
+  "key": StudioSavedTrainKey;
+  "job_id": string;
+  "completed_updates": number;
+};
+
+export type StudioLoadedModelImportQuery = {
+  "revision": string;
+  "name": string;
+  "model": string;
+};
+
+export type StudioLoadedModelImportResult = StudioLoadedModelImported | StudioLoadedModelDoesNotFit | StudioLoadedModelUnreadableArchive;
+
+export type StudioLoadedModelImported = {
+  "status": "imported";
+  "document": string;
+  "snapshot": StudioProjectSnapshot;
+};
+
+export type StudioLoadedModelUnreadableArchive = {
+  "status": "unreadable_archive";
+  "path": string;
+  "detail": string;
+};
+
 export type StudioMemberCommand = {
   "revision": Sha256;
   "presentation_revision": Sha256;
@@ -4465,6 +4594,16 @@ export type StudioProjectWindowMapSubset = {
   "rank_groups"?: Array<StudioBestRankGroup>;
 };
 
+export type StudioRelatePoint = {
+  "kind": "point";
+  "position": ScenePoint;
+};
+
+export type StudioRelatePort = {
+  "kind": "port";
+  "address": ModelAddress;
+};
+
 export type StudioRemoveClassMember = {
   "kind": "remove_member";
   "value_id": string;
@@ -4683,7 +4822,7 @@ export type StudioTrainStartEdit = {
 
 export type StudioTrainStartRequest = {
   "revision": Sha256;
-  "source"?: StepReference | null;
+  "source"?: StepReference | LoadedModelReference | null;
 };
 
 export type StudioTrainStep = {
@@ -4735,6 +4874,7 @@ export type StudioTrialAuthoring = {
   "resets": Array<StudioTrialReset>;
   "fields": Array<StudioTrialField>;
   "problems": Array<Problem>;
+  "related_term"?: string | null;
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "store_choices"?: Array<StudioStoreChoice> | null;
@@ -4743,7 +4883,7 @@ export type StudioTrialAuthoring = {
 export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
-  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | StudioTrialStructureEdit | null;
+  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | StudioTrialStructureEdit | StudioTrialRelate | null;
   "store_choice"?: Sha256 | null;
   "scope"?: StudioTrialStepScope | AxisValueRuns | ListedRuns | null;
 };
@@ -4823,6 +4963,12 @@ export type StudioTrialOutput = {
   "value": ScopedValue;
 };
 
+export type StudioTrialRelate = {
+  "kind": "relate";
+  "first": TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | StudioRelatePort;
+  "second"?: TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | StudioRelatePort | StudioRelatePoint | null;
+};
+
 export type StudioTrialReset = {
   "address": ModelAddress;
   "path": Array<string>;
@@ -4856,7 +5002,7 @@ export type StudioValueStructure = {
 export type SubsetTerms = {
   "rule"?: string;
   "bound_ranks"?: Array<BoundRank> | null;
-  "axes"?: Record<string, Array<SelectedAxisValue>>;
+  "clauses"?: Array<AxisSelectionClause>;
 };
 
 export type Sweep = {
@@ -5137,6 +5283,8 @@ export const blankTask = {
     }
   ]
 };
+
+export const loadedModelDocumentSchemaId = "feedbax.spec.loaded_model";
 
 export const firstTrainTask: Document = {
   "schema": "feedbax.spec.task_document",
@@ -6212,6 +6360,7 @@ export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationR
       "trials": z.array(z.string()).nullable().optional(),
       "receipt": JobReceiptSchema,
       "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
+      "loaded_model": ImportedModelProvenanceSchema.nullable().optional(),
       "size_bytes": z.number().int().safe().gte(0),
       "validity": ReceiptValiditySchema.nullable().optional(),
       "provenance": AttemptProvenanceSchema.nullable().optional(),
@@ -7531,6 +7680,7 @@ export const ModelPortProjectionSchema: z.ZodType<ModelPortProjection> = z.lazy(
     .object({
       "address": ModelAddressSchema,
       "type": SignalTypeSchema,
+      "readers": z.array(z.string()).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelPortProjection>;
@@ -7584,6 +7734,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
       "task_inputs": z.array(ModelAddressSchema).optional(),
       "objective_ports": z.array(ModelAddressSchema).optional(),
+      "problems": z.array(ModelGraphProblemSchema).optional(),
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
@@ -9232,6 +9383,16 @@ export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<DomainDiagnostic>;
 
+export const SceneAnchorGeometrySchema: z.ZodType<SceneAnchorGeometry> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "signal": ModelAddressSchema.nullable(),
+      "position": z.tuple([z.number().finite(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<SceneAnchorGeometry>;
+
 export const SceneLinkGeometrySchema: z.ZodType<SceneLinkGeometry> = z.lazy(() =>
   z
     .object({
@@ -9285,6 +9446,7 @@ export const StudioSceneGeometryFrameSchema: z.ZodType<StudioSceneGeometryFrame>
     .object({
       "mechanisms": z.array(z.union([ScenePointGeometrySchema, ScenePlanarGeometrySchema])),
       "diagnostics": z.array(DomainDiagnosticSchema),
+      "anchors": z.array(SceneAnchorGeometrySchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSceneGeometryFrame>;
@@ -9575,7 +9737,7 @@ export const FigurePanelMetaSchema: z.ZodType<FigurePanelMeta> = z.lazy(() =>
 export const FigureRunSchema: z.ZodType<FigureRun> = z.lazy(() =>
   z
     .object({
-      "key": StudioSavedTrainKeySchema,
+      "job_id": z.string(),
       "request_id": z.string(),
     })
     .strict()
@@ -9630,6 +9792,51 @@ export const StudioTrialReplayResponseSchema: z.ZodType<StudioTrialReplayRespons
     .strict()
 ) as unknown as z.ZodType<StudioTrialReplayResponse>;
 
+export const TrialAnchorPlaceSchema: z.ZodType<TrialAnchorPlace> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("anchor"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<TrialAnchorPlace>;
+
+export const TrialComputedPlaceSchema: z.ZodType<TrialComputedPlace> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("computed"),
+      "samples": z.array(z.tuple([z.number().finite(), z.number().finite()]).nullable()),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialComputedPlace>;
+
+export const TrialRelationSchema: z.ZodType<TrialRelation> = z.lazy(() =>
+  z
+    .object({
+      "first": z.union([TrialAnchorPlaceSchema, TrialVariablePlaceSchema, TrialSignalPlaceSchema, TrialComputedPlaceSchema]),
+      "second": z.union([TrialAnchorPlaceSchema, TrialVariablePlaceSchema, TrialSignalPlaceSchema, TrialComputedPlaceSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialRelation>;
+
+export const TrialSignalPlaceSchema: z.ZodType<TrialSignalPlace> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("signal"),
+      "id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialSignalPlace>;
+
+export const TrialVariablePlaceSchema: z.ZodType<TrialVariablePlace> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("variable"),
+      "id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialVariablePlace>;
+
 export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
   z
     .object({
@@ -9675,6 +9882,8 @@ export const TrialTermSchema: z.ZodType<TrialTerm> = z.lazy(() =>
       "covered": z.boolean(),
       "values": z.array(z.number().finite()).nullable().optional(),
       "value": z.number().finite().nullable().optional(),
+      "relations": z.array(TrialRelationSchema).optional(),
+      "places": z.array(z.union([TrialAnchorPlaceSchema, TrialVariablePlaceSchema, TrialSignalPlaceSchema, TrialComputedPlaceSchema])).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialTerm>;
@@ -10382,6 +10591,10 @@ export const AxisLabelsSchema: z.ZodType<AxisLabels> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<AxisLabels>;
 
+export const AxisSelectionClauseSchema: z.ZodType<AxisSelectionClause> = z.lazy(() =>
+  z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1))
+) as unknown as z.ZodType<AxisSelectionClause>;
+
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
   z.object({
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
@@ -10560,6 +10773,15 @@ export const ContentRefSchema: z.ZodType<ContentRef> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<ContentRef>;
 
+export const ContentTreeRefSchema: z.ZodType<ContentTreeRef> = z.lazy(() =>
+  z.object({
+    "schema_id": z.literal("feedbax.spec.content_tree_ref").optional(),
+    "schema_version": z.literal("feedbax.spec.content_tree_ref.v1").optional(),
+    "tree_id": z.string().regex(new RegExp("^content-tree://sha256/[0-9a-f]{64}$")),
+    "descriptor": ContentObjectRefSchema,
+  }).strict()
+) as unknown as z.ZodType<ContentTreeRef>;
+
 export const CooccurringSetTrialsSchema: z.ZodType<CooccurringSetTrials> = z.lazy(() =>
   z.object({
     "kind": z.literal("cooccurring"),
@@ -10666,7 +10888,7 @@ export const DocumentEditSchema: z.ZodType<DocumentEdit> = z.lazy(() =>
 ) as unknown as z.ZodType<DocumentEdit>;
 
 export const DocumentInputReferenceSchema: z.ZodType<DocumentInputReference> = z.lazy(() =>
-  z.union([InitialModelReference_DocumentReference_Schema, TaskDocumentReference_DocumentReference_Schema, ObjectiveDocumentReference_DocumentReference_Schema])
+  z.union([InitialModelReference_DocumentReference_Schema, TaskDocumentReference_DocumentReference_Schema, ObjectiveDocumentReference_DocumentReference_Schema, LoadedModelReferenceSchema])
 ) as unknown as z.ZodType<DocumentInputReference>;
 
 export const DocumentPresentationSchema: z.ZodType<DocumentPresentation> = z.lazy(() =>
@@ -10953,6 +11175,24 @@ export const GroupCombinationSchema: z.ZodType<GroupCombination> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<GroupCombination>;
 
+export const ImportedModelProvenanceSchema: z.ZodType<ImportedModelProvenance> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("imported"),
+    "model_revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "weights_sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "replicas": z.array(z.string().min(1)).min(1),
+  }).strict()
+) as unknown as z.ZodType<ImportedModelProvenance>;
+
+export const ImportedModelSourceSchema: z.ZodType<ImportedModelSource> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("imported"),
+    "model": ContentObjectRefSchema,
+    "weights": ContentTreeRefSchema,
+    "encoding": SemanticModelEncodingSchema,
+  }).strict()
+) as unknown as z.ZodType<ImportedModelSource>;
+
 export const IndexSelectionSchema: z.ZodType<IndexSelection> = z.lazy(() =>
   z.object({
     "index": z.number().int().safe().min(0),
@@ -11114,6 +11354,21 @@ export const LiteralValueSchema: z.ZodType<LiteralValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<LiteralValue>;
 
+export const LoadedModelDocumentSchema: z.ZodType<LoadedModelDocument> = z.lazy(() =>
+  z.object({
+    "schema_version": z.literal("feedbax.spec.loaded_model.v1"),
+    "model": DocumentReferenceSchema,
+    "source": ImportedModelSourceSchema,
+  }).strict()
+) as unknown as z.ZodType<LoadedModelDocument>;
+
+export const LoadedModelReferenceSchema: z.ZodType<LoadedModelReference> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("loaded_model"),
+    "source": DocumentReferenceSchema,
+  }).strict()
+) as unknown as z.ZodType<LoadedModelReference>;
+
 export const LocatedSpanSchema: z.ZodType<LocatedSpan> = z.lazy(() =>
   z.object({
     "path": NodePathSchema,
@@ -11170,11 +11425,38 @@ export const MergeCardsSchema: z.ZodType<MergeCards> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<MergeCards>;
 
+export const ModelFitProblemSchema: z.ZodType<ModelFitProblem> = z.lazy(() =>
+  z.union([ModelSlotFitProblemSchema, ModelGraphFitProblemSchema])
+) as unknown as z.ZodType<ModelFitProblem>;
+
+export const ModelFitReportSchema: z.ZodType<ModelFitReport> = z.lazy(() =>
+  z.object({
+    "problems": z.array(ModelFitProblemSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<ModelFitReport>;
+
+export const ModelGraphFitProblemSchema: z.ZodType<ModelGraphFitProblem> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("unsupported_owner"), z.literal("unresolved_model"), z.literal("graph_mismatch")]),
+    "address": z.string().min(1),
+    "detail": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<ModelGraphFitProblem>;
+
 export const ModelPortSchema: z.ZodType<ModelPort> = z.lazy(() =>
   z.object({
     "kind": z.literal("model").optional(),
   }).strict()
 ) as unknown as z.ZodType<ModelPort>;
+
+export const ModelSlotFitProblemSchema: z.ZodType<ModelSlotFitProblem> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("missing_slot"), z.literal("unexpected_slot"), z.literal("mismatched_slot")]),
+    "replica": z.string().min(1),
+    "address": z.string().min(1),
+    "detail": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<ModelSlotFitProblem>;
 
 export const MoveMemberSchema: z.ZodType<MoveMember> = z.lazy(() =>
   z.object({
@@ -11617,6 +11899,10 @@ export const ScalarSchema: z.ZodType<Scalar> = z.lazy(() =>
   z.union([z.boolean(), z.number().int().safe(), z.number().finite()])
 ) as unknown as z.ZodType<Scalar>;
 
+export const ScenePointSchema: z.ZodType<ScenePoint> = z.lazy(() =>
+  z.tuple([z.number().finite(), z.number().finite()])
+) as unknown as z.ZodType<ScenePoint>;
+
 export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
   z.object({
     "id": z.string().min(1),
@@ -11636,11 +11922,18 @@ export const SelectedAxisValueSchema: z.ZodType<SelectedAxisValue> = z.lazy(() =
 
 export const SelectedAxisValueProblemSchema: z.ZodType<SelectedAxisValueProblem> = z.lazy(() =>
   z.object({
+    "clause_index": z.number().int().safe().min(0),
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "missing": SelectedAxisValueSchema,
     "remaining": z.array(SelectedAxisValueSchema),
   }).strict()
 ) as unknown as z.ZodType<SelectedAxisValueProblem>;
+
+export const SemanticModelEncodingSchema: z.ZodType<SemanticModelEncoding> = z.lazy(() =>
+  z.object({
+    "descriptor_sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+  }).strict()
+) as unknown as z.ZodType<SemanticModelEncoding>;
 
 export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
   z.object({
@@ -11912,7 +12205,7 @@ export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
     "bound_ranks": z.union([z.array(BoundRankSchema), z.null()]).optional(),
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).optional(),
+    "clauses": z.array(AxisSelectionClauseSchema).min(1).optional(),
     "query": ManifestPredicateSchema,
   }).strict()
 ) as unknown as z.ZodType<StoreSubset>;
@@ -12303,6 +12596,50 @@ export const StudioLibraryDocumentSchema: z.ZodType<StudioLibraryDocument> = z.l
   }).strict()
 ) as unknown as z.ZodType<StudioLibraryDocument>;
 
+export const StudioLoadedModelDoesNotFitSchema: z.ZodType<StudioLoadedModelDoesNotFit> = z.lazy(() =>
+  z.object({
+    "status": z.literal("does_not_fit"),
+    "report": ModelFitReportSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioLoadedModelDoesNotFit>;
+
+export const StudioLoadedModelExportRequestSchema: z.ZodType<StudioLoadedModelExportRequest> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "key": StudioSavedTrainKeySchema,
+    "job_id": z.string().min(1),
+    "completed_updates": z.number().int().safe().gt(0).max(9007199254740991),
+  }).strict()
+) as unknown as z.ZodType<StudioLoadedModelExportRequest>;
+
+export const StudioLoadedModelImportQuerySchema: z.ZodType<StudioLoadedModelImportQuery> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "model": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioLoadedModelImportQuery>;
+
+export const StudioLoadedModelImportResultSchema: z.ZodType<StudioLoadedModelImportResult> = z.lazy(() =>
+  z.union([StudioLoadedModelImportedSchema, StudioLoadedModelDoesNotFitSchema, StudioLoadedModelUnreadableArchiveSchema])
+) as unknown as z.ZodType<StudioLoadedModelImportResult>;
+
+export const StudioLoadedModelImportedSchema: z.ZodType<StudioLoadedModelImported> = z.lazy(() =>
+  z.object({
+    "status": z.literal("imported"),
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "snapshot": StudioProjectSnapshotSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioLoadedModelImported>;
+
+export const StudioLoadedModelUnreadableArchiveSchema: z.ZodType<StudioLoadedModelUnreadableArchive> = z.lazy(() =>
+  z.object({
+    "status": z.literal("unreadable_archive"),
+    "path": z.string().min(1),
+    "detail": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioLoadedModelUnreadableArchive>;
+
 export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -12661,6 +12998,20 @@ export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMa
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
 
+export const StudioRelatePointSchema: z.ZodType<StudioRelatePoint> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("point"),
+    "position": ScenePointSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioRelatePoint>;
+
+export const StudioRelatePortSchema: z.ZodType<StudioRelatePort> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("port"),
+    "address": ModelAddressSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioRelatePort>;
+
 export const StudioRemoveClassMemberSchema: z.ZodType<StudioRemoveClassMember> = z.lazy(() =>
   z.object({
     "kind": z.literal("remove_member"),
@@ -12942,7 +13293,7 @@ export const StudioTrainStartEditSchema: z.ZodType<StudioTrainStartEdit> = z.laz
 export const StudioTrainStartRequestSchema: z.ZodType<StudioTrainStartRequest> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
-    "source": z.union([StepReferenceSchema, z.null()]).optional(),
+    "source": z.union([StepReferenceSchema, LoadedModelReferenceSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainStartRequest>;
 
@@ -13000,6 +13351,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "resets": z.array(StudioTrialResetSchema),
     "fields": z.array(StudioTrialFieldSchema),
     "problems": z.array(ProblemSchema),
+    "related_term": z.union([z.string(), z.null()]).optional(),
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "store_choices": z.union([z.array(StudioStoreChoiceSchema).min(1), z.null()]).optional(),
@@ -13010,7 +13362,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
   z.object({
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
-    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema, StudioTrialStructureEditSchema]), z.null()]).optional(),
+    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema, StudioTrialStructureEditSchema, StudioTrialRelateSchema]), z.null()]).optional(),
     "store_choice": z.union([Sha256Schema, z.null()]).optional(),
     "scope": z.union([z.union([StudioTrialStepScopeSchema, AxisValueRunsSchema, ListedRunsSchema]), z.null()]).optional(),
   }).strict()
@@ -13111,6 +13463,14 @@ export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<StudioTrialOutput>;
 
+export const StudioTrialRelateSchema: z.ZodType<StudioTrialRelate> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("relate"),
+    "first": z.union([TrialAnchorPlaceSchema, TrialVariablePlaceSchema, TrialSignalPlaceSchema, StudioRelatePortSchema]),
+    "second": z.union([z.union([TrialAnchorPlaceSchema, TrialVariablePlaceSchema, TrialSignalPlaceSchema, StudioRelatePortSchema, StudioRelatePointSchema]), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialRelate>;
+
 export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
   z.object({
     "address": ModelAddressSchema,
@@ -13155,7 +13515,7 @@ export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
     "bound_ranks": z.union([z.array(BoundRankSchema), z.null()]).optional(),
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).optional(),
+    "clauses": z.array(AxisSelectionClauseSchema).min(1).optional(),
   }).strict()
 ) as unknown as z.ZodType<SubsetTerms>;
 
@@ -13502,8 +13862,18 @@ export const contractSchemas = {
   ObjectiveDocument: ObjectiveDocumentSchema,
   TrainingDocument: TrainingDocumentSchema,
   TrialDocuments: TrialDocumentsSchema,
+  ImportedModelProvenance: ImportedModelProvenanceSchema,
+  LoadedModelDocument: LoadedModelDocumentSchema,
+  LoadedModelReference: LoadedModelReferenceSchema,
+  ModelFitReport: ModelFitReportSchema,
+  StudioLoadedModelExportRequest: StudioLoadedModelExportRequestSchema,
+  StudioLoadedModelImportQuery: StudioLoadedModelImportQuerySchema,
+  StudioLoadedModelImportResult: StudioLoadedModelImportResultSchema,
   StudioTrialAuthoring: StudioTrialAuthoringSchema,
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequestSchema,
+  StudioTrialRelate: StudioTrialRelateSchema,
+  StudioRelatePoint: StudioRelatePointSchema,
+  StudioRelatePort: StudioRelatePortSchema,
   StudioCheckpointRuleEdit: StudioCheckpointRuleEditSchema,
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequestSchema,
   StudioSubsetToRowsEdit: StudioSubsetToRowsEditSchema,
@@ -13672,8 +14042,18 @@ export interface ContractTypeMap {
   ObjectiveDocument: ObjectiveDocument;
   TrainingDocument: TrainingDocument;
   TrialDocuments: TrialDocuments;
+  ImportedModelProvenance: ImportedModelProvenance;
+  LoadedModelDocument: LoadedModelDocument;
+  LoadedModelReference: LoadedModelReference;
+  ModelFitReport: ModelFitReport;
+  StudioLoadedModelExportRequest: StudioLoadedModelExportRequest;
+  StudioLoadedModelImportQuery: StudioLoadedModelImportQuery;
+  StudioLoadedModelImportResult: StudioLoadedModelImportResult;
   StudioTrialAuthoring: StudioTrialAuthoring;
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequest;
+  StudioTrialRelate: StudioTrialRelate;
+  StudioRelatePoint: StudioRelatePoint;
+  StudioRelatePort: StudioRelatePort;
   StudioCheckpointRuleEdit: StudioCheckpointRuleEdit;
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequest;
   StudioSubsetToRowsEdit: StudioSubsetToRowsEdit;

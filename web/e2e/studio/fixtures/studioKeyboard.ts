@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { studioName } from '../../../src/components/activity/studioVocabulary';
 import type { ProjectWindowView } from '../../../src/features/projectWindow/projectWindowState';
-import type { StudioProjectSnapshot } from '../../../src/generated/studioContracts';
+import type { StudioProjectDocument, StudioProjectSnapshot } from '../../../src/generated/studioContracts';
 import { popupListbox } from './controls';
 
 export async function tabTo(page: Page, target: Locator, limit = 100) {
@@ -138,14 +138,24 @@ export async function chooseOutlineRow(page: Page, row: Locator, name: string) {
   await expect(row).toHaveAttribute('aria-selected', 'true');
 }
 
-/** Opens the Studio home and makes a new project with its `+`, which opens the new project's window. */
-export async function startProject(page: Page) {
+/**
+ * Makes a named project with the start page's New Project, which opens the new project's window, and returns the
+ * project as its window opened it. The creating response's body is gone once the page navigates, so it is read again.
+ */
+export async function startProject(page: Page): Promise<StudioProjectDocument> {
   await page.goto('/');
-  await page.getByRole('table', { name: 'Projects', exact: true }).getByRole('button', { name: 'New Project', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Studio', exact: true }).getByRole('button', { name: 'New Project', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'New Project', exact: true });
   await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill(testProjectName());
+  const creation = page.waitForResponse((response) => response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === '/api/projects');
   await dialog.getByRole('button', { name: 'New Project', exact: true }).click();
+  expect((await creation).status()).toBe(201);
   await page.waitForURL(/[?&]project=/);
+  const id = new URL(page.url()).searchParams.get('project')!;
+  const opened = await page.request.get(`/api/projects/${encodeURIComponent(id)}/open`);
+  expect(opened.ok(), await opened.text()).toBe(true);
+  return await opened.json() as StudioProjectDocument;
 }
 
 let projectSequence = 0;

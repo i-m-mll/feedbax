@@ -20,6 +20,12 @@ export interface ViewOffer {
 
 export const noViews: ViewOffer = { available: [], absent: {} };
 
+/** A pinned slot's step, which it keeps while another is selected, and the run of it the slot shows. */
+export interface SlotPin {
+  readonly stepId: string;
+  readonly runId?: string;
+}
+
 export interface ProjectWindowState {
   mode: ProjectWindowMode;
   primaryView: ProjectWindowView;
@@ -35,6 +41,8 @@ export interface ProjectWindowState {
   secondaryWidth: number;
   modelPaths?: Partial<Record<ProjectWindowSlot, { document: string; path: string[] }>>;
   sections?: Partial<Record<ProjectWindowSection, boolean>>;
+  /** The pinned slots of a split. */
+  pins?: Partial<Record<ProjectWindowSlot, SlotPin>>;
   /** The selected step, which the window opens on when no run is in focus. */
   stepId?: string;
   /** The run in focus, which the Results show. */
@@ -88,15 +96,21 @@ export function showProjectWindowView(
   };
 }
 
-/** Close one of two open slots; the other stays open, as the primary slot. */
+/** Close one of two open slots; the other stays open, as the primary slot, and follows the selection. */
 export function closeProjectWindowSlot(state: ProjectWindowState, slot: ProjectWindowSlot): ProjectWindowState {
   if (!state.secondaryView) return state;
-  if (slot === 'secondary') return { ...state, secondaryView: null, focusedSlot: 'primary' };
+  if (slot === 'secondary') return { ...state, secondaryView: null, focusedSlot: 'primary', pins: {} };
   const { secondary } = state.modelPaths ?? {};
   return {
     ...state, primaryView: state.secondaryView, secondaryView: null, focusedSlot: 'primary',
-    modelPaths: secondary ? { primary: secondary } : {},
+    modelPaths: secondary ? { primary: secondary } : {}, pins: {},
   };
+}
+
+/** Pin `slot` to `pin`, or unpin it. */
+export function pinProjectWindowSlot(state: ProjectWindowState, slot: ProjectWindowSlot, pin: SlotPin | undefined): ProjectWindowState {
+  const { [slot]: _held, ...others } = state.pins ?? {};
+  return { ...state, pins: pin ? { ...others, [slot]: pin } : others };
 }
 
 export function projectWindowSlotView(
@@ -136,6 +150,13 @@ function windowArrangement(value: unknown): ProjectWindowState {
   for (const [key, open] of Object.entries(prefs.sections ?? {})) {
     if (typeof open === 'boolean' && isView(key.split('.')[0])) sections[key as ProjectWindowSection] = open;
   }
+  const pins: NonNullable<ProjectWindowState['pins']> = {};
+  for (const slot of secondaryView ? ['primary', 'secondary'] as const : []) {
+    const pin = prefs.pins?.[slot];
+    if (pin && typeof pin.stepId === 'string') {
+      pins[slot] = { stepId: pin.stepId, ...typeof pin.runId === 'string' && { runId: pin.runId } };
+    }
+  }
   const focus = prefs.focus && typeof prefs.focus.stepId === 'string' && typeof prefs.focus.runId === 'string'
     ? { stepId: prefs.focus.stepId, runId: prefs.focus.runId } : undefined;
   const clock = trialClockOf(prefs.clock);
@@ -154,6 +175,7 @@ function windowArrangement(value: unknown): ProjectWindowState {
     secondaryWidth: preferredSize('secondaryWidth'),
     modelPaths,
     sections,
+    pins,
     ...(typeof prefs.stepId === 'string' && { stepId: prefs.stepId }),
     ...(focus && { focus }),
     ...(clock && { clock }),

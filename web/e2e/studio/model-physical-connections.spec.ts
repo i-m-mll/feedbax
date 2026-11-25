@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures/studio';
-import { type Locator, type Page } from '@playwright/test';
+import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { palette } from './fixtures/studioKeyboard';
@@ -25,6 +25,22 @@ async function revealModel(page: Page, url: string) {
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
 }
 
+/** The physical connections stored in the fixture's Equations interior. */
+function storedConnections(current: StudioProjectDocument['snapshot']) {
+  const document = rootPayload(current.project.documents?.['reach-model']) as unknown as ModelDocument;
+  const component = document.interior.components?.equations;
+  if (component?.kind !== 'composite' || !('connections' in component.interior)) {
+    throw new Error('Expected a stored Equations interior');
+  }
+  return component.interior.connections ?? {};
+}
+
+async function openSaved(request: APIRequestContext, projectPath: string) {
+  const response = await request.get(projectPath + '/open');
+  expect(response.ok(), await response.text()).toBe(true);
+  return (await response.json() as StudioProjectDocument).snapshot;
+}
+
 test('edits a conserving connection only inside its physical interior', async ({ page, request, studio }, info) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'equations');
@@ -36,19 +52,7 @@ test('edits a conserving connection only inside its physical interior', async ({
   const massPort = card(model, 'mass').locator('[data-handleid="physical:flange"]');
   const connectionLine = model.locator('.react-flow__connection-path');
   const root = { composites: ['equations'], element: { kind: 'graph' } };
-  const stored = (current: StudioProjectDocument['snapshot']) => {
-    const document = rootPayload(current.project.documents?.['reach-model']) as unknown as ModelDocument;
-    const component = document.interior.components?.equations;
-    if (component?.kind !== 'composite' || !('connections' in component.interior)) {
-      throw new Error('Expected a stored Equations interior');
-    }
-    return component.interior.connections ?? {};
-  };
-  const openSaved = async () => {
-    const response = await request.get(projectPath + '/open');
-    expect(response.ok(), await response.text()).toBe(true);
-    return (await response.json() as StudioProjectDocument).snapshot;
-  };
+  const stored = storedConnections;
   async function apply(kind: 'edit' | 'undo', action: () => Promise<void>) {
     const [response] = await Promise.all([page.waitForResponse((response) => response.request().method() === 'POST' &&
       new URL(response.url()).pathname === `${projectPath}/model/${kind}`, { timeout: 6_000 }), action()]);
@@ -72,7 +76,7 @@ test('edits a conserving connection only inside its physical interior', async ({
   await fit();
   await expect(rootPort).toBeVisible();
   await expect(rootPort).toHaveCSS('border-radius', '50%');
-  const initial = await openSaved();
+  const initial = await openSaved(request, projectPath);
   const point = await rootPort.boundingBox();
   if (!point) throw new Error('The Graph physical handle is not measurable');
   await rootPort.hover();
@@ -80,7 +84,7 @@ test('edits a conserving connection only inside its physical interior', async ({
   await page.mouse.move(point.x - 45, point.y + 30, { steps: 6 });
   await expect(connectionLine).toHaveCount(0);
   await page.mouse.up();
-  expect((await openSaved()).revision).toBe(initial.revision);
+  expect((await openSaved(request, projectPath)).revision).toBe(initial.revision);
 
   await enterEquations();
   await expect(massPort).toHaveCSS('border-radius', '50%');
@@ -121,7 +125,77 @@ test('edits a conserving connection only inside its physical interior', async ({
   await revealModel(page, url);
   await reopenedInEquations();
   await expect(savedPath).toHaveAttribute('d', /^M/);
-  expect(stored(await openSaved())).toEqual({ [id]: connection });
+  expect(stored(await openSaved(request, projectPath))).toEqual({ [id]: connection });
+});
+
+/**
+ * A Spring dropped from the Library onto the connection between a Mass and the boundary's physical port is stored as
+ * two physical connections through it, which a reopened window draws (catches a connection drawn and not stored).
+ */
+test('a Library element dropped on a physical connection is joined into it', async ({ page, request, studio }) => {
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'equations');
+  const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
+  const model = modelPanel(page);
+  const boundaryPort = model.locator('[data-boundary="true"] [data-handleid="physical:free"]');
+  const massPort = card(model, 'mass').locator('[data-handleid="physical:flange"]');
+  const connections = model.locator('.react-flow__edge');
+  const edited = async (action: () => Promise<void>) => {
+    const [response] = await Promise.all([page.waitForResponse((response) => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `${projectPath}/model/edit`), action()]);
+    const { result } = await response.json() as ModelEditResponse;
+    if (result.status !== 'applied') throw new Error(JSON.stringify(result));
+    return result;
+  };
+
+  await revealModel(page, url);
+  await card(model, 'equations').locator('header').dblclick();
+  await model.getByRole('button', { name: 'Fit View', exact: true }).click();
+  await edited(async () => {
+    await massPort.hover();
+    await page.mouse.down();
+    await boundaryPort.hover();
+    await page.mouse.up();
+  });
+  await expect(connections).toHaveCount(1);
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('LinearSpring');
+  const spring = drawer.getByRole('option', { name: 'LinearSpring', exact: true });
+  const path = connections.first().locator('path.react-flow__edge-path');
+  // A point of the connection that no card covers.
+  const middle = await path.evaluate((line: SVGPathElement) => {
+    const length = line.getTotalLength();
+    for (const fraction of [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8]) {
+      const { x, y } = line.getPointAtLength(length * fraction).matrixTransform(line.getScreenCTM()!);
+      if (document.elementFromPoint(x, y)?.closest('.react-flow__edge')) return { x, y };
+    }
+    throw new Error('Every point of the connection is covered');
+  });
+  const inserted = await edited(async () => {
+    await spring.hover();
+    await page.mouse.down();
+    await page.mouse.move(middle.x, middle.y, { steps: 6 });
+    await expect(model.locator('.react-flow__edge.studio-carried')).toHaveCount(2);
+    await page.mouse.up();
+  });
+  const saved = storedConnections(inserted.snapshot);
+  const ends = Object.values(saved).flatMap(({ a, b }) => [a, b]);
+  const springId = ends.find((end) => end.owner === 'component' && end.component !== 'mass');
+  if (springId?.owner !== 'component') throw new Error('Expected a connection to the dropped Spring');
+  expect(Object.values(saved)).toHaveLength(2);
+  expect(ends).toEqual(expect.arrayContaining([
+    { owner: 'component', component: 'mass', port: 'flange' },
+    { owner: 'boundary', port: 'free' },
+    { owner: 'component', component: springId.component, port: 'flange_a' },
+    { owner: 'component', component: springId.component, port: 'flange_b' },
+  ]));
+
+  await revealModel(page, url);
+  await expect(boundaryPort).toBeVisible();
+  for (const id of Object.keys(saved)) {
+    await expect(model.locator(`.react-flow__edge[data-id="${id}"] path.react-flow__edge-path`)).toHaveAttribute('d', /^M/);
+  }
+  expect(storedConnections(await openSaved(request, projectPath))).toEqual(saved);
 });
 
 for (const { scope, element, composites, target } of [

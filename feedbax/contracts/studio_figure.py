@@ -4,7 +4,6 @@ from pydantic import ConfigDict, Field, JsonValue, StrictBool, StrictFloat, Stri
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import TrialFigureTime
-from feedbax.contracts.jobs import StudioSavedTrainKey
 
 
 type FigureGroupValue = StrictStr | StrictInt | StrictFloat | StrictBool | None
@@ -22,7 +21,7 @@ class FigurePanelMeta(StrictModel):
 
 
 class FigureRun(StrictModel):
-    key: StudioSavedTrainKey
+    job_id: str
     request_id: str
 
 

@@ -53,7 +53,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   });
   expect(saved.project.documents).toMatchObject({
     model: { schema: 'feedbax.spec.model', payload: { ports: {}, interior: {} } },
-    'simple-reaches': firstTrainTask,
+    'simple-reaches': { ...firstTrainTask, payload: { ...rootPayload(firstTrainTask) as object, links: [] } },
     objective: { schema: 'feedbax.spec.objective_document', payload: { terms: [] } },
   });
 
@@ -92,14 +92,14 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(run).toMatchObject({ key: { step: 'train', row: 'default' }, status: 'cannot_run', attempts: [] });
   expect(plan.window_map?.rows.map(({ key }) => key)).toEqual([run.key]);
   expect(plan.window_map?.problems).toMatchObject([
-    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//), place: { document: 'simple-reaches' } },
+    { code: 'cannot_run', path: '/trial_documents/model/interior/components', place: { document: 'model' } },
   ]);
   const refused = await request.post(`${projectPath}/train-runs`, {
     data: { revision: saved.revision, run_keys: [run.key], token: crypto.randomUUID() },
   });
   expect(refused.status(), await refused.text()).toBe(202);
   expect((await refused.json() as StudioJobSubmission).items).toMatchObject([
-    { disposition: 'rejected', reason: expect.stringMatching(/^cannot_run \/trial_documents\/task\/links\/.*: start is linked to a field the Model does not have\.$/) },
+    { disposition: 'rejected', reason: expect.stringMatching(/^cannot_run \/trial_documents\/model\/interior\/components: /) },
   ]);
 
   const tab = (name: string) => page.getByRole('tab', { name, exact: true });
@@ -120,7 +120,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   const reopened = await readPlan(persisted.revision);
   expect(reopened.rows).toMatchObject([{ key: run.key, status: 'cannot_run', attempts: [] }]);
   expect(reopened.window_map?.problems).toMatchObject([
-    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//), place: { document: 'simple-reaches' } },
+    { code: 'cannot_run', path: '/trial_documents/model/interior/components', place: { document: 'model' } },
   ]);
 });
 
@@ -232,12 +232,12 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(createdEvaluate.status(), await createdEvaluate.text()).toBe(201);
   const { snapshot: evaluated }: StudioProjectDocument = await createdEvaluate.json();
   expect(evaluated.project.steps!.evaluate.inputs?.subject).toEqual({
-    step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': [{
+    step: 'train', checkpoint: 'last', where: { clauses: [{ 'learning-rate': [{
       id: selected.coordinates['learning-rate'].value_id, label: String(selected.coordinates['learning-rate'].value),
-    }] } },
+    }] }] },
   });
   const subject = page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('list', { name: 'Subject', exact: true });
-  await expect(subject.getByRole('combobox', { name: 'Runs', exact: true })).toHaveValue('learning-rate=0.001');
+  await expect(subject.getByRole('combobox', { name: 'Runs', exact: true })).toHaveValue('');
   await expect(subject).toContainText('1/3');
   const projection = await plan(evaluated.revision);
   const [pending] = projection.window_map!.evaluations!;
@@ -604,9 +604,9 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   expect(selected.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.003]);
   expect(authored.project.steps?.[child]).toMatchObject({
     base: { step: 'train' },
-    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': selected.map(({ coordinates }) => ({
+    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { clauses: [{ 'learning-rate': selected.map(({ coordinates }) => ({
       id: coordinates['learning-rate'].value_id, label: String(coordinates['learning-rate'].value),
-    })) } } } },
+    })).sort((left, right) => left.id.localeCompare(right.id)) }] } } },
   });
   expect(plan.rows.filter(({ key }) => key.step === child).map(({ key }) => key.row)).toEqual(sourceKeys.map(({ row }) => row));
 

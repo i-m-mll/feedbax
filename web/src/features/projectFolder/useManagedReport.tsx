@@ -33,8 +33,8 @@ function figureAddress({ key, name, figure }: ReportFigureSource) {
 /** A figure pin's IDs, independent of the displayed value labels. */
 function figurePin(where: StepReference['where']) {
   if (where && ('subset' in where || where.rule || where.bound_ranks)) return undefined;
-  return Object.entries(where?.axes ?? {}).sort(([left], [right]) => left.localeCompare(right))
-    .map(([axis, values]) => [axis, values.map(({ id }) => id).sort()]);
+  return (where?.clauses ?? [{}]).map((clause) => Object.entries(clause).sort(([left], [right]) => left.localeCompare(right))
+    .map(([axis, values]) => [axis, values.map(({ id }) => id).sort()]));
 }
 
 /** Where a refusal lands: a field, a block by index, or the open dialog. */
