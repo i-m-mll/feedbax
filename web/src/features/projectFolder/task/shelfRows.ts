@@ -128,21 +128,25 @@ export function trialRows(task: ShelfTask, record: TrialRecord, stepSeconds: num
 }
 
 /**
- * Where a share of trials is above 0, in runs: heavy where every trial is counted, light where only some are. The
- * share's first entry is the step `first` steps from zero.
+ * Where a share of trials is above 0, in runs: heavy where every trial is counted, light where only some are. Share
+ * `index` is of the interval from `times[index]` to `times[index + 1]`.
  */
-function shareBars(share: readonly number[], stepSeconds: number, first = 0): ShelfBar[] {
+function shareBars(share: readonly number[], times: readonly number[]): ShelfBar[] {
   const bars: ShelfBar[] = [];
   share.forEach((value, index) => {
     if (value <= 0) return;
-    const step = first + index;
     const some = value < 1;
     const last = bars.at(-1);
-    if (last && last.end === step * stepSeconds && !!last.some === some) bars[bars.length - 1] = { ...last, end: (step + 1) * stepSeconds };
-    else bars.push({ start: step * stepSeconds, end: (step + 1) * stepSeconds, ...some && { some } });
+    if (last && last.end === times[index] && !!last.some === some) bars[bars.length - 1] = { ...last, end: times[index + 1] };
+    else bars.push({ start: times[index], end: times[index + 1], ...some && { some } });
   });
   return bars;
 }
+
+/** A share per step's edges, in seconds. */
+const stepEdges = (share: readonly number[], stepSeconds: number) =>
+  Array.from({ length: share.length + 1 }, (_, step) => step * stepSeconds);
+const stepShareBars = (share: readonly number[], stepSeconds: number) => shareBars(share, stepEdges(share, stepSeconds));
 
 /**
  * A batch of trials' rows: one per epoch, since epochs of different trials overlap in time, one per signal and one per
@@ -151,76 +155,36 @@ function shareBars(share: readonly number[], stepSeconds: number, first = 0): Sh
 export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSeconds: number): ShelfRow[] {
   return [
     ...aggregate.epochs.map(({ epoch, label, share }): ShelfRow => ({
-      kind: 'bars', key: `epoch:${epoch}`, name: label, selects: named(task.document, `epoch:${epoch}`), bars: shareBars(share, stepSeconds),
+      kind: 'bars', key: `epoch:${epoch}`, name: label, selects: named(task.document, `epoch:${epoch}`), bars: stepShareBars(share, stepSeconds),
     })),
     ...task.signals.map((signal): ShelfRow => ({
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
-      bars: shareBars(aggregate.signals[signal.id]?.presence ?? [], stepSeconds),
+      bars: stepShareBars(aggregate.signals[signal.id]?.presence ?? [], stepSeconds),
     })),
     ...termRows(task, (term) => ({
-      bars: shareBars(aggregate.terms?.[term]?.steps ?? [], stepSeconds), problems: aggregate.terms?.[term]?.problems,
+      bars: stepShareBars(aggregate.terms?.[term]?.steps ?? [], stepSeconds), problems: aggregate.terms?.[term]?.problems,
     })),
   ];
 }
 
 /**
- * The bars of the steps `held` gives of each trial of every condition, on time from Align's epoch: heavy where every
- * trial holds, light where some do.
+ * Under Mean, on time from Align's epoch, the Service's shelf: the epochs row, each epoch instance from its mean start
+ * to its mean end over every trial of every condition with a whisker from where its end falls least to greatest; and
+ * one row per signal and per term, each heavy where every trial holds and light where some do.
  */
-function alignedBars(mean: TrialMean, records: ReadonlyMap<string, TrialRecord>, stepSeconds: number,
-  held: (record: TrialRecord) => readonly unknown[]): ShelfBar[] {
-  const counts = new Map<number, number>();
-  let trials = 0;
-  for (const condition of mean.conditions) {
-    for (const [id, { origin }] of Object.entries(condition.trials)) {
-      const record = records.get(id);
-      if (!record) continue;
-      trials += 1;
-      const shift = Math.round(origin / stepSeconds);
-      held(record).forEach((value, step) => {
-        if (value) counts.set(step - shift, (counts.get(step - shift) ?? 0) + 1);
-      });
-    }
-  }
-  if (!counts.size) return [];
-  const first = Math.min(...counts.keys());
-  const share = Array.from({ length: Math.max(...counts.keys()) - first + 1 }, (_, index) => (counts.get(first + index) ?? 0) / trials);
-  return shareBars(share, stepSeconds, first);
-}
-
-/**
- * Under Mean, on time from Align's epoch: the epochs row, each epoch instance from its mean start to its mean end over
- * every trial of every condition with a whisker from where its end falls least to greatest; and one row per signal
- * and per term, over every trial `records` holds.
- */
-export function meanRows(task: ShelfTask, mean: TrialMean, records: readonly TrialRecord[], stepSeconds: number): ShelfRow[] {
-  const pooled = new Map<string, { epoch: string; label: string; trials: number; start: number; end: number; least: number; greatest: number }>();
-  for (const condition of mean.conditions) {
-    const trials = Object.keys(condition.trials).length;
-    for (const { epoch, label, occurrence, start, end } of condition.epochs) {
-      const key = `${epoch}:${occurrence}`;
-      const prior = pooled.get(key);
-      pooled.set(key, prior ? {
-        ...prior, trials: prior.trials + trials, start: prior.start + start.mean * trials, end: prior.end + end.mean * trials,
-        least: Math.min(prior.least, end.lower), greatest: Math.max(prior.greatest, end.upper),
-      } : { epoch, label, trials, start: start.mean * trials, end: end.mean * trials, least: end.lower, greatest: end.upper });
-    }
-  }
-  const segments = [...pooled].flatMap(([key, { epoch, label, trials, start, end, least, greatest }]): ShelfSegment[] =>
-    trials > 0 && end > start ? [{
-      key, name: label, start: start / trials, end: end / trials, selects: named(task.document, `epoch:${epoch}`),
-      ...greatest > least && { spread: { least, greatest } },
-    }] : []).sort((a, b) => a.start - b.start);
-  const byId = new Map(records.map((record) => [record.id, record]));
+export function meanRows(task: ShelfTask, { shelf }: TrialMean): ShelfRow[] {
+  const segments = shelf.epochs.flatMap(({ epoch, label, occurrence, start, end }): ShelfSegment[] => end.mean > start.mean ? [{
+    key: `${epoch}:${occurrence}`, name: label, start: start.mean, end: end.mean, selects: named(task.document, `epoch:${epoch}`),
+    ...end.upper > end.lower && { spread: { least: end.lower, greatest: end.upper } },
+  }] : []).sort((a, b) => a.start - b.start);
   return [
     { kind: 'segments', key: 'epochs', name: studioName('epochs'), segments },
     ...task.signals.map((signal): ShelfRow => ({
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
-      bars: alignedBars(mean, byId, stepSeconds, (record) => signalSteps(record, signal.id)),
+      bars: shareBars(shelf.signals[signal.id] ?? [], shelf.times),
     })),
     ...termRows(task, (term) => ({
-      bars: alignedBars(mean, byId, stepSeconds, (record) => record.terms?.[term]?.steps ?? []),
-      problems: records.flatMap((record) => record.terms?.[term]?.problems ?? []),
+      bars: shareBars(shelf.terms[term]?.steps ?? [], shelf.times), problems: shelf.terms[term]?.problems,
     })),
   ];
 }

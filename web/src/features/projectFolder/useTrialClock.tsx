@@ -118,8 +118,8 @@ const noRecords: readonly TrialRecord[] = [];
  * the recorded trials' shares on time from Align's epoch.
  */
 function rowsOf(task: ShelfTask, pick: TrialPick, shown: TrialShown | TrialsUnavailable | undefined, stepSeconds: number,
-  mean: { value: TrialMean; records: readonly TrialRecord[] } | undefined): ShelfRow[] | undefined {
-  if (pick.showing.kind === 'mean') return mean && meanRows(task, mean.value, mean.records, stepSeconds);
+  mean: TrialMean | undefined): ShelfRow[] | undefined {
+  if (pick.showing.kind === 'mean') return mean && meanRows(task, mean);
   if (pick.trials === 'nominal') {
     return [...nominalRows(task), ...shown?.kind === 'one' ? trialTermRows(task, shown.record, stepSeconds) : []];
   }
@@ -179,8 +179,7 @@ export function useTrialClock({
       ? { start: 0, duration: stateTime[stateTime.length - 1], frameTimes: [...stateTime] } : null;
   /** A recorded trial's step is its run's; any other trial's is the step's Model's. */
   const step = replayTimeline && stateTime ? stateTime[1] : period;
-  const averaged = mean && recordedTrial && { value: mean, records: recordedTrial.records };
-  const rows = pick && (drawn && step != null ? rowsOf(drawn, pick, shown, step, averaged) : shown && []);
+  const rows = pick && (drawn && step != null ? rowsOf(drawn, pick, shown, step, mean) : shown && []);
   const epochs = rows?.find((row) => row.kind === 'segments');
   const timeline: ClockTimeline = replayTimeline
     ? { ...replayTimeline, bands: [] }
