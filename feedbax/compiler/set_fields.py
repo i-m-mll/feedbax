@@ -10,8 +10,11 @@ from itertools import product
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.contracts.expression_check import references
+from feedbax.contracts.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_text import resolve_expression
 from feedbax.contracts.expression_values import (
-    CallValue, DrawValue, Expression, LiteralValue, NameValue, ValueBase, ValueType,
+    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, ScopedValue, Site, ValueBase, ValueType, walk,
 )
 from feedbax.contracts.model_address import (
     AttachmentElement, AttachmentOwner, ComponentElement, ComponentPortAddress, ComponentPortEnd, FieldElement,
@@ -32,10 +35,11 @@ from feedbax.contracts.window import Window
 
 
 class SetFieldProblem(ValueError):
-    def __init__(self, axis: str, set_name: str, entry: str | None, reason: str):
+    def __init__(self, axis: str, set_name: str, entry: str | None, reason: str, *, condition: bool = False):
         self.axis = axis
         self.set_name = set_name
         self.entry = entry
+        self.condition = condition
         super().__init__(reason)
 
 
@@ -125,6 +129,7 @@ class _Union:
         self.port_attachments = model.interior.attachments
         self.alternatives: dict[str, list[_Alternative]] = defaultdict(list)
         self.conditions: list[tuple[dict[str, int], ...]] = []
+        self.condition_origins: dict[str, str] = {}
         self.curl_activation: dict[str, tuple[bool, list[Expression]]] = {}
 
     def variable(
@@ -251,7 +256,52 @@ class _Union:
         selectors.append(predicate)
         return True
 
-    def placement(self, axis: str, placement: TrialSetField, read: Callable[[str], Document | None]):
+    def eligibility(self, axis: str, placement: TrialSetField, functions: FunctionRegistry) -> NameValue | None:
+        if placement.condition is None:
+            return None
+
+        def refused(reason: str) -> SetFieldProblem:
+            return SetFieldProblem(axis, placement.axis.set, None, reason, condition=True)
+
+        if isinstance(placement.sampling, ListedSetTrials):
+            raise refused("A trial condition needs Weighted or Co-occurring sampling.")
+        scope = tuple(
+            ScopedValue(id=var.id, name=var.name, type=var.type, level=Level.TRIAL)
+            for var in self.task.variables
+        )
+        parsed = resolve_expression(placement.condition, Site(expected=_BOOL, finest=Level.TRIAL, names=scope), functions)
+        if isinstance(parsed, tuple):
+            raise refused(parsed[0].reason)
+        if unavailable := references(parsed.value) - {item.id for item in scope}:
+            raise refused(f"Task variable {min(unavailable)!r} is not in scope for this condition.")
+        if any(
+            isinstance(node, DrawValue)
+            or isinstance(node, CallValue) and (function := functions.resolve(node.function)) and function.info.random
+            for _, node in walk(parsed.value)
+        ):
+            raise refused("A trial condition can read sampled Task variables and cannot make its own draw.")
+        try:
+            id = _id("eligibility", axis, "condition")
+            eligible = self.variable(id, _BOOL, parsed.value)
+        except ValueError as error:
+            raise refused(str(error)) from error
+        self.condition_origins[id] = axis
+        return eligible
+
+    def placement(
+        self, axis: str, placement: TrialSetField, read: Callable[[str], Document | None], functions: FunctionRegistry,
+    ):
+        eligible = self.eligibility(axis, placement, functions)
+
+        def select(
+            id: str, kind: ValueType, draw: DrawValue, none: bool | int, entries: tuple[str | None, ...],
+        ) -> NameValue:
+            value: Expression = draw
+            if eligible is not None:
+                value = _call("where", eligible, draw, LiteralValue(value=none))
+                self.condition_origins[id] = axis
+            return self.variable(id, kind, value, choices=SetVariableChoices(set=placement.axis.set, entries=entries))
+
         try:
             entries = read_set(read, placement.axis.set).entries
             sample = placement.sampling
@@ -272,16 +322,18 @@ class _Union:
                     parts = sample.weights.get(entry, SetEntryParts())
                     if not (parts.off or parts.on):
                         raise SetFieldProblem(axis, placement.axis.set, entry, "The switch has zero total parts.")
-                    gates.append(self.variable(_id(axis, entry), _BOOL, DrawValue(
+                    draw = DrawValue(
                         family="choice", args=(LiteralValue(value=False), LiteralValue(value=True)),
                         weights=(parts.off, parts.on),
-                    ), choices=SetVariableChoices(set=placement.axis.set, entries=(None, entry))))
+                    )
+                    gates.append(select(_id(axis, entry), _BOOL, draw, False, (None, entry)))
             else:
                 if not any(weights):
                     raise ValueError("The choice has zero total parts.")
-                selected = self.variable(axis, _INT, DrawValue(
+                draw = DrawValue(
                     family="choice", args=tuple(LiteralValue(value=value) for value in choices), weights=weights,
-                ), choices=SetVariableChoices(set=placement.axis.set, entries=(None, *by_id)))
+                )
+                selected = select(axis, _INT, draw, 0, (None, *by_id))
                 if isinstance(sample, ListedSetTrials):
                     self.conditions.append(tuple({selected.reference: value} for value in choices))
                 gates = [_call("eq", selected, LiteralValue(value=index)) for index in range(1, len(by_id) + 1)]
@@ -545,16 +597,18 @@ def _insertions(base: ModelWire, variant: ModelWire) -> list[tuple[int, Interven
 
 def lower_trial_sets(
     model: ModelDocument, task: TaskDocument, fields: Mapping[str, TrialSetField],
-    read: Callable[[str], Document | None], components: ComponentRegistry,
-) -> tuple[ModelDocument, TaskDocument]:
+    read: Callable[[str], Document | None], components: ComponentRegistry, *, functions: FunctionRegistry,
+) -> tuple[ModelDocument, TaskDocument, dict[str, str]]:
     model, links = _attachment_links(model, task.links, components)
     task = task.model_copy(update={"links": links}) if links != task.links else task
     union = _Union(model, task, components)
     for axis, placement in sorted(fields.items()):
         if placement.axis.where is not None:
             raise SetFieldProblem(axis, placement.axis.set, None, "Trial Set placements apply to all runs of the step.")
-        union.placement(axis, placement, read)
-    return union.finish()
+        union.placement(axis, placement, read, functions)
+    compiled_model, compiled_task = union.finish()
+    return compiled_model, compiled_task, union.condition_origins
+
 
 
 def lower_trial_interventions(
