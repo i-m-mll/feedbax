@@ -385,6 +385,7 @@
     "replay": "Replay",
     "timing": "Timing",
     "addDelay": "Add Delay",
+    "addHold": "Add Hold",
     "addIntervention": "Add Intervention",
     "addProbe": "Add Probe",
     "removeAttachment": "Remove Attachment",
@@ -453,6 +454,8 @@
     "cells": "Cells",
     "allTrials": "All",
     "oneTrial": "One",
+    "sampledTrials": "Sampled",
+    "recordedTrials": "Recorded",
     "meanBy": "By",
     "meanAlign": "Align",
     "trialStart": "Trial Start",
@@ -499,6 +502,7 @@
   "status": {
     "run": {
       "not_run": "Not run",
+      "not_chosen": "Not chosen",
       "cannot_run": "Can't run",
       "stale": "Out of date",
       "queued": "Queued",
@@ -628,6 +632,8 @@
     "sampleOf": "sample {index} of {count}",
     "trialOf": "trial {index} of {count}",
     "trialCount": "{count} trials",
+    "meanByText": "mean by {by}",
+    "meanOfCount": "mean of {count} trials",
     "elementCount": "{count} {name}",
     "lastValueAtUpdate": "Last value at update {end}",
     "metricIntervalDescription": "Interval means with minimum and maximum bars",

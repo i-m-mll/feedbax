@@ -2,6 +2,7 @@ import type { APIRequestContext } from '@playwright/test';
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, TaskTrialSampleResponse } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { trialPopup } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -26,7 +27,7 @@ async function routeTrials(request: APIRequestContext, documents: Documents, see
 // length, a shelf that does not shorten the slots, a sample drawn with other boundaries than the runtime's under the
 // same seed, a signal bar before its first cell, a seed that does not reach the sampler or is lost on reload, a shelf
 // row that does not select its signal, a count beyond the step's batch size, and a timeline left in the Task view. In
-// All, catches a shelf that keeps one epochs row, an epoch drawn as present in every trial (or none) where only some
+// All, catches a trial list left in the picker's popup, a shelf that keeps one epochs row, an epoch drawn as present in every trial (or none) where only some
 // trials are in it, and a Drawn column that shows one trial's value instead of the range.
 test('the clock picks the nominal trial or a sample of a task document, and the shelf draws that trial', async ({ page, request }) => {
   test.setTimeout(60_000);
@@ -106,8 +107,12 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   await expect(picker).toHaveText('sample 1 of 4');
   await expect(hold).toHaveAttribute('data-end', String(holdEnd(reseeded, 0)));
 
-  await expect(clock.getByRole('button', { name: 'Mean', exact: true })).toBeDisabled();
-  await clock.getByRole('button', { name: 'All', exact: true }).click();
+  await picker.click();
+  const showing = trialPopup(page).getByRole('group', { name: 'Trials', exact: true });
+  await expect(showing.getByRole('button', { name: 'Mean', exact: true })).toBeDisabled();
+  await showing.getByRole('button', { name: 'All', exact: true }).click();
+  await expect(trialPopup(page).getByRole('radio', { name: /^sample / })).toHaveCount(0);
+  await page.keyboard.press('Escape');
   await expect(picker).toHaveText(`${batchSize} trials`);
   await expect(epochs).toHaveCount(0);
   for (const name of ['hold', 'cue', 'move']) await expect(shelf.getByRole('group', { name, exact: true })).toHaveCount(1);

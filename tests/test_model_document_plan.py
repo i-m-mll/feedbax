@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
-from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
+from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document, model_input_prototypes
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.builtins.templates.mechanics_templates import two_link_arm_6muscle_template_graph
 from feedbax.contracts import request_identity
@@ -23,6 +23,7 @@ from feedbax.contracts.studio_place import StudioModelPlace
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
 from feedbax.contracts.graph import StudioTaskBindingSpec
+from feedbax.examples import load_shipped_projects
 from feedbax.contracts.jobs import JobStatus
 from feedbax.component_registry import ComponentRegistry
 from tests.support.component_owners import register_owners
@@ -182,10 +183,10 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
 def _nested_model() -> dict:
     leaves = {
         "cell": {"kind": "leaf", "name": "Cell", "type": "feedbax.GRU", "fields": {
-            "input_size": 2, "hidden_size": 100, "dtype": "float32",
+            "hidden_size": 100, "dtype": "float32",
         }},
         "readout": {"kind": "leaf", "name": "Readout", "type": "feedbax.Linear", "fields": {
-            "input_size": 100, "output_size": 2, "use_bias": True, "activation": "identity",
+            "output_size": 2, "use_bias": True, "activation": "identity",
             "initialization": "random", "dtype": "float32", "trainable": False,
         }},
         "plant": {"kind": "leaf", "name": "Plant", "type": "feedbax.PointMass", "fields": {"mass": 1.0}},
@@ -233,13 +234,17 @@ def _rename_components(model):
             _rename_components(component)
 
 
-@pytest.mark.parametrize(("delay", "conversion"), [
-    ({"value": 0.06, "unit": "s"}, "6 st"),
-    ({"value": 3, "unit": "st"}, "0.03 s"),
+@pytest.mark.parametrize(("delay", "step", "conversion", "delay_steps"), [
+    ({"value": 0.05, "unit": "s"}, 0.02, {"value": 3, "unit": "st"}, 3),
+    ({"value": 0.05, "unit": "s"}, 0.01, {"value": 5, "unit": "st"}, 5),
+    ({"value": 3, "unit": "st"}, 0.01, {"value": 0.03, "unit": "s"}, 3),
+    ({"value": 0.001, "unit": "s"}, 0.01, None, None),
 ])
-def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_path, delay, conversion):
+def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_path, delay, step, conversion, delay_steps):
     raw = _model_project()
-    controller = raw["documents"]["reach-model"]["payload"]["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
+    model = raw["documents"]["reach-model"]["payload"]
+    model["step_seconds"] = step
+    controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
     controller["interior"]["wires"]["carry"]["attachments"][0]["delay"] = delay
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "delay", Project.model_validate(raw))
@@ -254,7 +259,12 @@ def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_pat
         })
         assert fields.status_code == 200, fields.text
         (shown,) = [field for field in fields.json()["fields"] if field["label"] == "Delay"]
-        assert shown["conversion"] == conversion
+        assert shown.get("conversion") == conversion
+        if delay["unit"] == "st":
+            assert shown["text"] == "3 st"
+        projected = client.post(url + "/model/projection", json={"revision": revision, "document": "reach-model"})
+        assert projected.status_code == 200, projected.text
+        assert projected.json()["delay_steps"][ModelAddress.model_validate(owner).to_text()] == delay_steps
 
 
 def test_addressed_field_range_sample_and_row_provenance(tmp_path):
@@ -355,7 +365,7 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
     components = model["interior"]["components"]
     components["rnn"] = {
         "kind": "leaf", "name": "RNN", "type": "feedbax.VanillaRNN",
-        "fields": {"tau": 2, "input_size": 4, "hidden_size": 4},
+        "fields": {"tau": 2, "hidden_size": 4},
     }
     _save_project(ProjectFolderService(tmp_path), "duration", Project.model_validate(raw))
     url = "/api/projects/duration"
@@ -389,12 +399,14 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
 
         field, value = prepare("Tau", "30 ms")
         assert field["text"] == "2 st"
+        assert field["conversion"] == {"value": 0.02, "unit": "s"}
         assert value == {"kind": "literal", "value": 0.03, "unit": "s"}
         field, value = prepare("Hidden size", "8")
         assert field["text"] == "4"
         assert value == 8
         field, snapshot = prepare("Tau", "linspace(20 ms, 40 ms, 3)", files=True)
         assert field["text"] == "0.03 s"
+        assert field["conversion"] == {"value": 3, "unit": "st"}
         axis = snapshot["project"]["steps"]["train"]["sweep"]["axes"]["tau"]
         assert ModelAddress.from_text(axis["path"]).element.path == ("fields", "tau")
         assert axis["range"] == {"start": 0.02, "stop": 0.04, "count": 3}
@@ -1028,19 +1040,15 @@ def test_plan_reports_all_authored_graph_problems_for_train_and_initial_evaluate
         assert {item.model_address.element.id for item in row.problems} == {"dangling-first", "dangling-second"}
 
 
-@pytest.mark.parametrize("source", ["linear", "task"])
-def test_model_projection_keeps_the_declared_input_size_after_wiring(tmp_path, source):
-    """Catch a connected sample's shape overwriting the field that constrains its target."""
+@pytest.mark.parametrize("source", ["gru", "task"])
+def test_model_projection_and_compilation_get_input_size_from_the_wire(tmp_path, source):
+    """Changing a GRU's hidden size also changes the wired Linear's input width."""
     raw = _model_project()
     interior = raw["documents"]["reach-model"]["payload"]["interior"]
-    before_size, after_size = (1, 3) if source == "linear" else (2, 7)
-    interior["components"]["receiver"] = {
-        "kind": "leaf", "name": "Receiver", "type": "feedbax.Linear" if source == "linear" else "feedbax.GRU",
-        "fields": {"input_size": before_size},
-    }
-    if source == "linear":
+    interior["components"]["receiver"] = {"kind": "leaf", "name": "Receiver", "type": "feedbax.Linear"}
+    if source == "gru":
         interior["components"]["sender"] = {
-            "kind": "leaf", "name": "Sender", "type": "feedbax.Linear", "fields": {"input_size": 2, "output_size": 1},
+            "kind": "leaf", "name": "Sender", "type": "feedbax.GRU", "fields": {"hidden_size": 4},
         }
         interior["wires"]["sender-input"] = _wire({"owner": "inputs", "port": "task-input"}, _end("sender", "input"))
         interior["wires"]["receiver-input"] = _wire(_end("sender", "output"), _end("receiver", "input"))
@@ -1088,23 +1096,24 @@ def test_model_projection_keeps_the_declared_input_size_after_wiring(tmp_path, s
             assert task_port["type"] == task_type
             assert projected_type(projection(snapshot), {"owner": "inputs", "port": task_port["id"]}) == task_type
 
-        edited = apply({
-            "op": "set_field", "address": {"composites": [], "element": {
-                "kind": "field", "parent": {"kind": "component", "id": "receiver"}, "path": ["fields", "input_size"],
-            }}, "value": after_size,
-        })
+        if source == "gru":
+            apply({
+                "op": "set_field", "address": {"composites": [], "element": {
+                    "kind": "field", "parent": {"kind": "component", "id": "sender"}, "path": ["fields", "hidden_size"],
+                }}, "value": 7,
+            })
         saved = folders.read("nested")
-        wires = saved.project.documents[document].payload["interior"]["wires"]
-        wire_id, = (key for key, wire in wires.items() if wire["target"] == _end("receiver", "input"))
         view = projection(saved)
-        assert projected_type(view, _end("receiver", "input") | {"direction": "input"})["shape"] == [after_size]
-        address = {"composites": [], "element": {"kind": "wire", "id": wire_id}}
-        message = next(problem["reason"] for problem in edited["problems"] if problem["address"] == address)
-        assert "Receiver · input" in message
-        assert ("Sender · output" if source == "linear" else "Inputs · target_pos") in message
-        plan = folders.read_plan("nested", revision=saved.revision).plan
-        row, = (row for row in plan.rows if row.key.step == "train")
-        assert ModelAddress.model_validate(address) in [problem.model_address for problem in row.problems]
+        assert projected_type(view, _end("receiver", "input") | {"direction": "input"})["shape"] == (
+            [7] if source == "gru" else [2]
+        )
+        model = saved.project.documents[document].payload
+        assert "input_size" not in model["interior"]["components"]["receiver"].get("fields", {})
+        row, = (row for row in folders.read_plan("nested", revision=saved.revision).plan.rows if row.key.step == "train")
+        assert not row.problems, row.problems
+        linear = client.get("/api/components/feedbax.Linear").json()["data"]
+        assert "input_size" not in linear["default_params"]
+        assert "input_size" not in {item["name"] for item in linear["param_schema"]}
 
 
 def test_unresolved_relative_link_is_reported_at_the_task():
@@ -1328,7 +1337,7 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
 
 # The ids the variant's evaluation had at a9b3bb7d, where the change was stored in the step's payload.
 # The fixture pins requests that bind Task signals by stable Model input ID (8a0009c3).
-_VARIANT_WIRE = "evaluate:f284d8251b66faaddb83eff6ef1b61e0e24c51a1bfbcad769c64433013d0e190"
+_VARIANT_WIRE = "evaluate:6e7d27fc542e8eafe09d7f0c8245faf24eccf49182fbbaf7244aeb6f4a4c1647"
 _VARIANT_FIELD = "evaluate:3277dacdfdaa2b47fa4da1e6875e362941f9ae9fdb57d832cd659d4540332c85"
 
 
@@ -1600,7 +1609,7 @@ def test_root_period_resolves_leaky_cell_tau_and_model_interface(tau, alpha):
         "interior": {
             "components": {"cell": {
                 "kind": "leaf", "name": "Cell", "type": "feedbax.VanillaRNN",
-                "fields": {"input_size": 2, "hidden_size": 2, "tau": tau},
+                "fields": {"hidden_size": 2, "tau": tau},
             }},
             "wires": {
                 "drive": _wire({"owner": "inputs", "port": "setpoint"}, _end("cell", "input")),
@@ -1660,7 +1669,7 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
     arm["interior"]["physical_domain"] = domain
     model["interior"]["components"].update(arm=arm, readout={
         "kind": "leaf", "name": "Arm Command", "type": "feedbax.Linear",
-        "fields": {"input_size": 2, "output_size": 6, "initialization": "zeros"},
+        "fields": {"output_size": 6, "initialization": "zeros"},
     })
     model["interior"]["wires"].update(
         command_arm=_wire({"owner": "inputs", "port": model["ports"]["inputs"][0]["id"]},
@@ -1714,24 +1723,80 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
     assert not host.jobs(project=snapshot.project_id)
 
 
-def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
+def test_shipped_reaching_matches_the_original_plant_feedback():
+    document = load_shipped_projects()["point-mass-reaching"].documents["point-mass"]
+    model = ModelDocument.model_validate(document.payload)
+    assert not model.interior.wires["sense-hand"].attachments
+    registry = ComponentRegistry()
+    lowered = lower_model_document(model, registry).graph
+    baseline = lowered.model_copy(deep=True)
+    sample = next(wire for wire in baseline.wires if (wire.recurrent_initializer or {}).get("model_state_sample"))
+    feedback = next(wire for wire in baseline.wires if wire.source_node == sample.target_node)
+    del baseline.nodes[sample.target_node]
+    baseline.wires.remove(sample)
+    feedback.source_node, feedback.source_port = sample.source_node, sample.source_port
+    feedback.recurrent_initializer = {"kind": "state_output"}
+    target = jnp.linspace(-0.1, 0.1, 128, dtype=jnp.float32).reshape((64, 2))
+    inputs = {"target_pos": target}
+    initialization_key, rollout_key = jax.random.split(jax.random.key(42))
+
+    def roll_out(spec):
+        graph = compile_graph(
+            GraphDocument(graph=spec), registry, model_input_prototypes(spec, model, {}),
+            initialization_key=initialization_key,
+        ).graph
+        return graph(inputs, graph.init_state(key=rollout_key), key=rollout_key, n_steps=64)[0]
+
+    before, after = roll_out(baseline), roll_out(lowered)
+    for expected, actual in zip(jax.tree.leaves(before), jax.tree.leaves(after), strict=True):
+        assert np.asarray(actual).tobytes() == np.asarray(expected).tobytes()
+
+
+def test_discrete_mechanics_feedback_reads_the_start_state():
+    inputs = {"target": jnp.ones((4, 1), dtype=jnp.float32)}
+    document = ModelDocument.model_validate({
+        "step_seconds": 0.01,
+        "ports": {"inputs": [_port("target", "target", shape=[1])],
+                  "outputs": [_port("after", "after", shape=[1]), _port("before", "before", shape=[1])]},
+        "interior": {
+            "components": {
+                "plant": {"kind": "leaf", "name": "Plant", "type": "feedbax.StructuralLinearStateSpace", "fields": {
+                    "A": [[1.0]], "B": [[1.0]], "delta_A": [[0.0]], "initial_state": [3.0],
+                    "pos_slice": [0, 1], "vel_slice": [0, 1],
+                }},
+                "gain": {"kind": "leaf", "name": "Gain", "type": "feedbax.Gain", "fields": {"gain": 1.0}},
+            },
+            "wires": {
+                "drive": _wire({"owner": "inputs", "port": "target"}, _end("plant", "force")),
+                "sense": _wire(_end("plant", "state"), _end("gain", "input")),
+                "sample": _wire(_end("gain", "output"), {"owner": "outputs", "port": "before"}),
+                "observe": _wire(_end("plant", "state"), {"owner": "outputs", "port": "after"}),
+            },
+        },
+    })
+    registry = ComponentRegistry()
+    spec = lower_model_document(document, registry).graph
+    graph = compile_graph(GraphDocument(graph=spec), registry, model_input_prototypes(spec, document, {})).graph
+    key = jax.random.key(4)
+    outputs, _ = graph(inputs, graph.init_state(key=key), key=key, n_steps=4)
+    np.testing.assert_array_equal(outputs["before"], [[3], [4], [5], [6]])
+    np.testing.assert_array_equal(outputs["after"], [[4], [5], [6], [7]])
+
+
+def test_serial_mechanics_hold_samples_this_step_and_delay_adds_five_steps():
     pytest.importorskip("mujoco.mjx")
     plant = _planar_arm()
-    hold = {
-        "kind": "leaf", "name": "Hold", "type": "feedbax.ZeroOrderHold",
-        "fields": {"hold_steps": 1, "n_dims": 2},
-    }
+    hold = {"kind": "hold", "id": "hold"}
     linear = {
         "kind": "leaf", "name": "Readout", "type": "feedbax.Linear",
-        "fields": {"input_size": 2, "output_size": 6, "initialization": "zeros"},
+        "fields": {"output_size": 6, "initialization": "zeros"},
     }
     payload = {
         "step_seconds": 0.01,
         "world": {"gravity": [0.0, -9.81, 0.0]},
         "ports": {"outputs": [_port("pos", "position", shape=[2])]},
-        "interior": {"components": {"arm": plant, "hold": hold, "linear": linear}, "wires": {
-            "sample": _wire(_end("arm", "pos"), _end("hold", "input")),
-            "sampled": _wire(_end("hold", "output"), _end("linear", "input")),
+        "interior": {"components": {"arm": plant, "linear": linear}, "wires": {
+            "sample": _wire(_end("arm", "pos"), _end("linear", "input"), (hold,)),
             "drive": _wire(_end("linear", "output"), _end("arm", "drive")),
             "observed": _wire(_end("arm", "pos"), {"owner": "outputs", "port": "pos"}),
         }},
@@ -1742,9 +1807,10 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
     key = jax.random.key(7)
     state = graph.init_state(key=key)
     initial = graph.nodes["arm"].initial_outputs(graph.nodes["arm"].state_view(state))["pos"]
-    trace = (GraphTraceRequest("port", "sample", node="hold", port="output"),)
+    (hold_node,) = [name for name in lowered.graph.nodes if name.startswith("_model_hold_")]
+    trace = (GraphTraceRequest("port", "sample", node=hold_node, port="output"),)
     outputs, _, traces = graph.rollout_with_trace(
-        {}, state, n_steps=5, key=key, trace=trace,
+        {}, state, n_steps=10, key=key, trace=trace,
     )
     np.testing.assert_array_equal(traces["sample"][0], initial)
     np.testing.assert_array_equal(traces["sample"][1:], outputs["position"][:-1])
@@ -1756,23 +1822,28 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
         "composites": [],
         "element": {"kind": "port", "end": {**_end("arm", "pos"), "direction": "output"}},
     })
-    payload["interior"]["wires"]["sample"]["attachments"] = [{
-        "kind": "delay", "id": "lag", "delay": {"value": 2, "unit": "st"},
+    lag = {
+        "kind": "delay", "id": "lag", "delay": {"value": 0.05, "unit": "s"},
         "initial": {"kind": "name", "reference": reference.to_text()},
-    }]
+    }
+    payload["interior"]["wires"]["sample"]["attachments"] = [lag, hold]
     linked = lower_model_document(ModelDocument.model_validate(payload), registry)
     delayed = compile_graph(GraphDocument(graph=linked.graph), registry).graph
     carries = delayed.initial_cycle_port_values(delayed.init_state(key=key))
-    np.testing.assert_array_equal(carries["hold", "input"], np.stack([initial, initial]))
+    np.testing.assert_array_equal(carries[hold_node, "input"], np.stack([initial] * 5))
     _, _, delayed_traces = delayed.rollout_with_trace(
-        {}, delayed.init_state(key=key), n_steps=5, key=key, trace=trace,
+        {}, delayed.init_state(key=key), n_steps=10, key=key, trace=trace,
     )
-    np.testing.assert_array_equal(delayed_traces["sample"][:2], np.stack([initial, initial]))
-    np.testing.assert_array_equal(delayed_traces["sample"][2:], traces["sample"][:-2])
+    np.testing.assert_array_equal(delayed_traces["sample"][:5], np.stack([initial] * 5))
+    np.testing.assert_array_equal(delayed_traces["sample"][5:], traces["sample"][:-5])
+
+    lag["delay"]["value"] = 0.001
+    with pytest.raises(ModelCompilationProblem, match="round to at least one step") as error:
+        lower_model_document(ModelDocument.model_validate(payload), registry)
+    assert error.value.address.element.path == ("delay",)
+    assert error.value.address.element.parent.id == "lag"
+
     payload["interior"]["wires"]["sample"]["attachments"] = []
-    payload["interior"]["components"].pop("hold")
-    payload["interior"]["wires"].pop("sampled")
-    payload["interior"]["wires"]["sample"]["target"] = _end("linear", "input")
     with pytest.raises(ModelCompilationProblem, match="within-step") as error:
         lower_model_document(ModelDocument.model_validate(payload), registry)
     assert error.value.address.element.id == "drive"

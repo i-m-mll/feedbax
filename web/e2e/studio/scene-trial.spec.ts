@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioTrialReplayResponse, TrialMean } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
-import { pick, popupListbox, trialPicker } from './fixtures/controls';
+import { alignMean, showTrials, trialPicker, trialPopup } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -112,7 +112,9 @@ test('with a Done evaluation the mechanism at the last step is at its path\'s en
 
   await mapStep(page, 'conditions').click();
   await expect(trialPicker(page)).toHaveText(/^trial 1 of \d+$/);
-  await expect(footer(page).getByRole('group', { name: 'Trials', exact: true })).toBeVisible();
+  await trialPicker(page).click();
+  await expect(trialPopup(page).getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'All', exact: true })).toBeEnabled();
+  await page.keyboard.press('Escape');
 });
 
 // Catches All that does not reach recorded trials, a Scene that draws only the picked trial's path under All or draws
@@ -123,7 +125,7 @@ test('All on a Done evaluation draws every trial\'s path, the picked one heavier
   await expect(trialPicker(page)).toHaveText('trial 1 of 8');
   await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
   const shelf = page.getByRole('region', { name: 'Shelf', exact: true });
-  await footer(page).getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'All', exact: true }).click();
+  await showTrials(page, 'All');
   await expect(trialPicker(page)).toHaveText('8 trials');
   const tracks = scene(page).locator('[data-scene-track]');
   await expect(tracks).toHaveCount(8);
@@ -148,8 +150,9 @@ const meanPathCount = (mean: TrialMean) => mean.conditions
 // Catches Mean that does not reach the Service's Mean, a Scene that draws no mean path or spread per condition or
 // still poses the mechanism, a clock that stays on the trial's own time rather than Align's or does not reach the
 // earliest aligned trial, a mean path that is not the mean of the trials aligned to Align's epoch, a shelf under Mean
-// that lists fewer Task rows than one trial's or draws a row empty, By that does not change the conditions, a By menu that Escape or opening Align leaves open, Align's label drawn over its value, and a
-// clock that overflows the bottom bar of a narrow window.
+// that lists fewer Task rows than one trial's or draws a row empty, By that does not change the conditions, By and
+// Align that Escape leaves open, an Align control left on the bar, a clock that overflows the bottom bar of a narrow
+// window, and an Evaluate bar whose buttons share the scrubber's line.
 test('Mean by condition aligned to an epoch draws one mean path with its spread per condition, on time from that epoch', { tag: '@round' }, async ({ page, studio }) => {
   test.setTimeout(80_000);
   await doneEvaluationScene(page, studio.home, 'seed-mean-conditions', 'scene-mean');
@@ -161,12 +164,12 @@ test('Mean by condition aligned to an epoch draws one mean path with its spread 
   const oneTrialRows = await rows.evaluateAll((groups) => groups.map((group) => group.getAttribute('aria-label')));
   expect(oneTrialRows.length).toBeGreaterThan(1);
   const opened = meanReply(page, null);
-  await clock.getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'Mean', exact: true }).click();
+  await showTrials(page, 'Mean');
   const { reply: first } = await opened;
   const options = first.mean_options!;
   const epoch = options.align.at(-1)!;
   const aligned = meanReply(page, epoch.id);
-  await pick(clock.getByRole('combobox', { name: 'Align', exact: true }), epoch.label);
+  await alignMean(page, epoch.label);
   const { reply } = await aligned;
   const mean = reply.mean!;
   expect(mean.conditions.length).toBeGreaterThan(1);
@@ -196,30 +199,24 @@ test('Mean by condition aligned to an epoch draws one mean path with its spread 
 
   const pooled = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/evaluate-replay') &&
     (response.request().postDataJSON() as { mean?: { by?: string[] } }).mean?.by?.length === 0);
-  await clock.getByRole('button', { name: /^By / }).click();
-  for (const { label } of options.by) await page.getByRole('menuitemcheckbox', { name: label, exact: true }).click();
+  const byMenu = trialPopup(page).getByRole('group', { name: 'By', exact: true });
+  await trialPicker(page).click();
+  for (const { label } of options.by) await byMenu.getByRole('checkbox', { name: label, exact: true }).click();
   const pooledMean = (await (await pooled).json() as StudioTrialReplayResponse).mean!;
   expect(pooledMean.conditions).toHaveLength(1);
   await expect(scene(page).locator('[data-scene-mean]')).toHaveCount(meanPathCount(pooledMean));
 
-  const byMenu = page.getByRole('menu', { name: 'By', exact: true });
   await expect(byMenu).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(byMenu).toBeHidden();
-  await clock.getByRole('button', { name: /^By / }).click();
-  await expect(byMenu).toBeVisible();
-  await clock.getByRole('combobox', { name: 'Align', exact: true }).click();
-  await expect(popupListbox(page)).toBeVisible();
-  await expect(byMenu).toBeHidden();
-  await page.keyboard.press('Escape');
-  await expect(popupListbox(page)).toBeHidden();
-
-  const label = (await clock.getByText('Align', { exact: true }).boundingBox())!;
-  const value = (await clock.getByRole('combobox', { name: 'Align', exact: true }).getByText(epoch.label, { exact: true }).boundingBox())!;
-  expect(label.x + label.width).toBeLessThanOrEqual(value.x);
+  await expect(footer(page).getByRole('combobox', { name: 'Align', exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 900, height: 800 });
   await expect.poll(() => clock.evaluate((group) => [...group.querySelectorAll('*')]
-    .filter((node) => node.getBoundingClientRect().right > group.getBoundingClientRect().right + 0.5).length)).toBe(0);
+    .filter((node) => node.getBoundingClientRect().right > group.closest('footer')!.getBoundingClientRect().right + 0.5).length)).toBe(0);
+  const track = (await clock.locator('[data-clock-track]').boundingBox())!;
+  for (const button of await footer(page).getByRole('button').all()) {
+    expect((await button.boundingBox())!.y).toBeGreaterThanOrEqual(track.y + track.height);
+  }
 });
 
 // Catches a figure pane that draws its saved product under Mean, or asks for a Mean other than the clock's, a By menu
@@ -228,7 +225,6 @@ test('Mean by condition aligned to an epoch draws one mean path with its spread 
 test('under Mean a figure draws the Service\'s Mean rendering for the clock\'s By and Align', { tag: '@round' }, async ({ page, studio }) => {
   test.setTimeout(90_000);
   await doneEvaluationScene(page, studio.home, 'seed-mean-figure', 'figure-mean', ['analyze']);
-  const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
   await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
   const shelf = page.getByRole('region', { name: 'Shelf', exact: true });
   const rows = shelf.locator('[data-shelf-rows] > [role="group"]');
@@ -236,10 +232,10 @@ test('under Mean a figure draws the Service\'s Mean rendering for the clock\'s B
   const oneTrialRows = await rows.evaluateAll((groups) => groups.map((group) => group.getAttribute('aria-label')));
   expect(oneTrialRows.length).toBeGreaterThan(1);
   const opened = meanReply(page, null);
-  await clock.getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'Mean', exact: true }).click();
+  await showTrials(page, 'Mean');
   const epoch = (await opened).reply.mean_options!.align.at(-1)!;
   const aligned = meanReply(page, epoch.id);
-  await pick(clock.getByRole('combobox', { name: 'Align', exact: true }), epoch.label);
+  await alignMean(page, epoch.label);
   await aligned;
 
   const meanFigure = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/figures/mean'));
@@ -255,12 +251,11 @@ test('under Mean a figure draws the Service\'s Mean rendering for the clock\'s B
 
   // Pooled, the trials whose epochs start at different times share one condition, whose mean covers only their
   // common time; the clock still spans every trial the figure draws.
-  const by = clock.getByRole('button', { name: /^By / });
-  const byMenu = page.getByRole('menu', { name: 'By', exact: true });
-  await by.click();
-  await expect(byMenu.getByRole('menuitemcheckbox').first()).toBeVisible();
+  const byMenu = trialPopup(page).getByRole('group', { name: 'By', exact: true });
+  await trialPicker(page).click();
+  await expect(byMenu.getByRole('checkbox').first()).toBeVisible();
   let pooled: Awaited<typeof meanFigure> | undefined;
-  for (const item of await byMenu.getByRole('menuitemcheckbox').all()) {
+  for (const item of await byMenu.getByRole('checkbox').all()) {
     const redrawn = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/figures/mean'));
     await item.click();
     pooled = await redrawn;

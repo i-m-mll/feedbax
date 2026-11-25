@@ -18,13 +18,14 @@ from feedbax.contracts.project_sweep import (
     AxisCondition, AxisValue, NamedAxis, RemoveValue, SetAxis, SetValue, Sweep, SweepExpansionCode,
     SweepExpansionError,
 )
+from feedbax.contracts.task_document import TaskAdditions
 
 SET_DOCUMENT_SCHEMA_ID = "feedbax.set_document.v1"
 MODEL_SLOT = "payload.trial_documents.model"
 """Where a Train or Evaluate step reads its Model document."""
 
 
-class SetEntry(StrictModel):
+class SetEntry(TaskAdditions):
     label: str | None = None
     differences: Differences = Field(default_factory=dict)
 
@@ -97,7 +98,8 @@ def axis_from_set(
             )
             for path, difference in entry.differences.items()
         }
-        values[key] = AxisValue(patches=patches) if entry.label is None else AxisValue(label=entry.label, patches=patches)
+        label = {"label": entry.label} if entry.label is not None else {}
+        values[key] = AxisValue(patches=patches, task_variables=entry.task_variables, task_links=entry.task_links, **label)
     return NamedAxis(values=values) if where is None else NamedAxis(values=values, where=where)
 
 
@@ -115,7 +117,9 @@ def set_from_axis(axis: NamedAxis, model: str) -> SetDocument:
             )
             for target, write in value.patches.items() if write is not None
         }
-        entries[key] = SetEntry(label=value.label, differences=differences)
+        entries[key] = SetEntry(
+            label=value.label, differences=differences, task_variables=value.task_variables, task_links=value.task_links,
+        )
     return SetDocument(entries=entries)
 
 
