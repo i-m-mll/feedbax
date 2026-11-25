@@ -64,7 +64,10 @@ from feedbax.contracts.studio_figure import (
     FigureLayoutMeta, FigurePanelMeta, FigureProduct, FigureRun, FigureTraceMeta, PlotlyLayout, PlotlyTrace,
 )
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
+from feedbax.contracts.dataset import DatasetDescriptor
+from feedbax.contracts.studio_analyze import (
+    StudioAnalyzeAuthoring, StudioAnalyzeRequest, StudioOperationDatasetPage,
+)
 from feedbax.contracts.studio_scene import (
     SceneAnchorGeometry,
     SceneLinkGeometry,
@@ -549,6 +552,8 @@ AUTHORED_CONTRACT_MODELS = (
     SampleValues,
     SiteProjection,
     StudioAnalyzeAuthoring,
+    DatasetDescriptor,
+    StudioOperationDatasetPage,
     StudioAnalyzeRequest,
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
