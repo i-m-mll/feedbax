@@ -1337,12 +1337,28 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       choose: (target) => { if (target.kind === 'port') void set({ kind: 'wire', port: target.address }); },
     } });
   }
+  /** The size of the signal an attachment acts on, as its port or its wire's ends type it; 1 when no type says. */
+  function signalWidth(attachment: ModelAddress) {
+    if (attachment.element.kind !== 'attachment') return 1;
+    const parent = attachment.element.parent;
+    const wire = parent.kind === 'wire' ? interior?.wires?.[parent.id] : undefined;
+    const ends = wire ? [[wire.source, 'output'], [wire.target, 'input']] as const
+      : parent.kind === 'port' ? [[parent.end, 'output']] as const : [];
+    for (const [end, direction] of ends) {
+      const type = portMap.get(idFor(end))?.find((candidate) => candidate.end.port === end.port && candidate.direction === direction)?.type;
+      const shape = typeof type === 'object' ? type.shape : undefined;
+      if (shape?.length === 1 && typeof shape[0] === 'number') return shape[0];
+    }
+    return 1;
+  }
   function labelOfPort(address: ModelAddress) {
     if (address.element.kind !== 'port') return '';
     const end = address.element.end;
     const candidate = portMap.get(idFor(end))?.find((item) =>
       addressKey(at(graph, { kind: 'port', end: item.end })) === addressKey(address));
-    return [end.owner === 'component' ? interior?.components?.[end.component]?.name : end.owner, candidate?.name].filter(Boolean).join('.');
+    const owner = end.owner === 'component' ? interior?.components?.[end.component]?.name
+      : studioName(end.owner === 'outputs' ? 'outputs' : 'inputs');
+    return [owner, candidate?.name].filter(Boolean).join('.');
   }
   function attachmentCommands(address: ModelAddress) {
     const wire = address.element.kind === 'wire';
@@ -1515,7 +1531,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function attachmentInspector(address: ModelAddress, item: Attachment) {
     const change = fieldEditing ? (next: Attachment) => updateAttachment(address, next) : undefined;
     const byId = new Map(projectedFields.map((field) => [field.id, field]));
-    const sources = attachmentSources(item, graph, change);
+    const sources = attachmentSources(item, graph, change, signalWidth(address));
     const sourceRows = sources.map((source) => {
       const { read } = source;
       const linked = read.kind === 'task' ? variableName(read.variable)
@@ -1546,7 +1562,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     })] : [];
     return <Inspector name={attachmentName(item)}>
       {fieldRegion}
-      {rows(fieldScope, [...ownFields, ...attachmentFields(item, change, projectedNames)])}
+      {rows(fieldScope, [...ownFields, ...attachmentFields(item, change, projectedNames, signalWidth(address))])}
       {sourceRows}
       {window}
       {rows(addressKey(address), order)}

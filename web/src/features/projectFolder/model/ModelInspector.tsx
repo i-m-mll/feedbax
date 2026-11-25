@@ -64,11 +64,11 @@ export function componentFields(component: Component, definition: ComponentDefin
 }
 
 /**
- * An attachment's raw fields. Its sources (`attachmentSources`) and an intervention's Window are the caller's rows,
+ * An attachment's raw fields; `width` is the size of the signal it acts on, which a new Add's value has. Its sources (`attachmentSources`) and an intervention's Window are the caller's rows,
  * since each can read a Task variable or a port.
  */
 export function attachmentFields(item: Attachment, change?: AttachmentChange,
-  projected?: ReadonlySet<string>): FieldModel[] {
+  projected?: ReadonlySet<string>, width = 1): FieldModel[] {
   const write = (next: Attachment): ReturnType<RawChange> => change?.(next);
   if (item.kind === 'hold') return [];
   if (item.kind === 'delay') {
@@ -92,7 +92,10 @@ export function attachmentFields(item: Attachment, change?: AttachmentChange,
   return [rawField({
     id: 'operation', label: studioName('operation'), value: operationOf(item) ?? item.operation,
     type: { kind: 'choice', options: operations.map((operation) => ({ value: operation, label: studioName(operation) })) },
-    change: change && ((operation) => write({ ...item, operation: String(operation), fields: operationDefaults[operation as Operation] })),
+    change: change && ((operation) => write({
+      ...item, operation: String(operation),
+      fields: operationValues(operation as Operation, width),
+    })),
   })];
 }
 
@@ -101,6 +104,10 @@ type Operation = typeof operations[number];
 const operationDefaults: Record<Operation, Record<string, JsonValue>> = {
   add: { value: [0] }, scale: { factor: 1 }, clamp: { low: -1, high: 1 },
 };
+
+/** A new intervention's fields: Add's value is zero on each of the signal's `width` elements. */
+const operationValues = (operation: Operation, width: number) =>
+  operation === 'add' ? { value: Array.from({ length: width }, () => 0) } : operationDefaults[operation];
 
 /** An intervention's operation, by its stored name; none for a name no operation has, which the Service refuses. */
 export function operationOf(item: InterventionAttachment): Operation | undefined {
@@ -169,8 +176,8 @@ function storedField(value: SourceValue, unlinked: JsonValue): JsonValue {
   }
 }
 
-/** The sources of an attachment in `graph`, the graph that holds it. */
-export function attachmentSources(item: Attachment, graph: ModelAddress, change?: AttachmentChange): AttachmentSource[] {
+/** The sources of an attachment in `graph`, the graph that holds it, acting on a signal of `width` elements. */
+export function attachmentSources(item: Attachment, graph: ModelAddress, change?: AttachmentChange, width = 1): AttachmentSource[] {
   if (item.kind === 'delay') {
     const initial = item.initial_source ?? { kind: 'value', value: 0 };
     const read: SourceValue = initial.kind === 'wire' ? { kind: 'wire', port: portAddress(graph, initial.source) }
@@ -187,7 +194,7 @@ export function attachmentSources(item: Attachment, graph: ModelAddress, change?
   }
   if (item.kind !== 'intervention') return [];
   const operation = operationOf(item);
-  return Object.entries(operation ? operationDefaults[operation] : {}).map(([name, unlinked]) => ({
+  return Object.entries(operation ? operationValues(operation, width) : {}).map(([name, unlinked]) => ({
     id: name, label: humanizeLabel(name), field: `fields.${name}`, read: fieldSource(item.fields?.[name]), unlinked,
     set: change && ((value) => change({ ...item, fields: { ...item.fields, [name]: storedField(value, unlinked) } })),
   }));
