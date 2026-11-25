@@ -2245,7 +2245,7 @@ export interface FigurePanelMeta {
 }
 
 export interface FigureRun {
-  key: StudioSavedTrainKey;
+  job_id: string;
   request_id: string;
 }
 
@@ -9576,7 +9576,7 @@ export const FigurePanelMetaSchema: z.ZodType<FigurePanelMeta> = z.lazy(() =>
 export const FigureRunSchema: z.ZodType<FigureRun> = z.lazy(() =>
   z
     .object({
-      "key": StudioSavedTrainKeySchema,
+      "job_id": z.string(),
       "request_id": z.string(),
     })
     .strict()
