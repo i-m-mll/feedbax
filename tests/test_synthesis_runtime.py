@@ -5,12 +5,48 @@ import numpy as np
 
 from feedbax.application.composition import load_application
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project import Project
+from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import SynthesisRequestSpec, TrialDocuments
 from feedbax.examples import load_shipped_projects
 from feedbax.host.synthesis import SynthesisDelivery, synthesize_model
 from feedbax.persistence.array_container import decode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE, read_model_tree
+from feedbax.planner.project_plan import compile_project
+from tests.support.managed_train_fixture import managed_evaluation_step
+
+
+def test_synthesize_and_evaluate_plan_from_authored_documents():
+    raw = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    evaluate = managed_evaluation_step("synthesize")
+    evaluate["inputs"]["subject"].pop("checkpoint")
+    raw["steps"] = {
+        "synthesize": {"kind": "synthesize", "base": {"inline": {
+            "model": {"document": "point-mass"},
+            "task": {"document": "simple-reaches-task"},
+            "objective": {"document": "simple-reaches-objective"},
+            "method": "feedbax.constant_parameters",
+        }}},
+        "baseline": evaluate,
+    }
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    runs = {run.kind: run for run in plan.runs}
+    assert set(runs) == {"synthesize", "evaluate"}
+    assert not any(run.admission_problem for run in runs.values())
+    synthesis = runs["synthesize"]
+    decoded = decode_request(plan.requests[synthesis.request_id], plan.documents.__getitem__)
+    assert isinstance(decoded.spec, SynthesisRequestSpec)
+    assert decoded.spec.settings == {"value": 0}
+    chosen = runs["evaluate"].inputs["subject"].member.reference
+    assert chosen.request_id == synthesis.request_id and chosen.role == "model" and chosen.select is None
+
+    raw["documents"]["point-mass"]["payload"]["interior"]["components"]["plant"]["fields"]["mass"] = 1.5
+    changed = compile_project(Project.model_validate(raw))
+    before = {run.key: run.request_id for run in plan.runs}
+    assert len(changed.runs) == len(before)
+    assert all(run.request_id != before[run.key] for run in changed.runs)
 
 
 def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):

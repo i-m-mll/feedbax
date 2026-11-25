@@ -73,6 +73,7 @@ def create_app(
             functions=app.state.bootstrap_state.bundle.expression_functions,
             python_tasks=app.state.bootstrap_state.bundle.python_tasks,
             training_methods=app.state.bootstrap_state.bundle.training_methods,
+            synthesis_methods=app.state.bootstrap_state.bundle.synthesis_methods,
             figure_templates=app.state.bootstrap_state.bundle.figure_templates,
             load_examples=load_shipped_projects,
         )
