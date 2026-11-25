@@ -154,10 +154,10 @@ test('a wire drawn to an occupied input of another type replaces its wire, keepi
   await page.reload();
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  await expect(model.locator('.studio-model-attachments').getByRole('img', { name: 'Problems', exact: true }))
+  await expect(model.locator('.studio-model-attachments').getByRole('img', { name: 'Problem', exact: true }))
     .toHaveAccessibleDescription(/expected unit s, received m/);
   // Problems lists each Problem the canvas marks.
-  const marked = await model.locator('[role="img"][aria-label="Problems"][aria-description]')
+  const marked = await model.locator('[role="img"][aria-label="Problem"][aria-description]')
     .evaluateAll((marks) => marks.map((mark) => mark.getAttribute('aria-description')!));
   expect(marked.length).toBeGreaterThan(0);
   await palette(page, 'problems', 'Problems');

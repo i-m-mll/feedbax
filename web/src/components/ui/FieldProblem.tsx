@@ -12,9 +12,9 @@ export interface FieldProblemProps {
   className?: string;
 }
 
-/** A field's problem: the exception mark at the trailing end inside the field, its tip the reason. */
+/** A Problem's mark, as at the trailing end inside a field: its tip and its description the reason. */
 export function FieldProblem({ reason, id, className }: FieldProblemProps) {
-  return <span role="img" aria-label={studioName('problem')} data-field-problem="" {...appTip(reason)}
+  return <span role="img" aria-label={studioName('problem')} aria-description={reason} data-field-problem="" {...appTip(reason)}
     className={clsx('inline-flex size-[1.5em] shrink-0 items-center justify-center text-shell-status-failure [&_svg]:size-[1.15em]', className)}>
     <TriangleAlert aria-hidden="true" />
     {id && <FieldProblemReason reason={reason} id={id} />}

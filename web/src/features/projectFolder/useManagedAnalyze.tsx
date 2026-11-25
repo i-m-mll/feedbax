@@ -370,9 +370,16 @@ export function useManagedAnalyze({
   const mapped = selectedElement && selectedElement.requests.length > 1;
   const chosenMember = chosenRequest?.scope === scope && chosenRequest.element === selected ? chosenRequest.member : undefined;
   /** The request whose status and result the inspector shows: the element's own, or the chosen one of a mapped element. */
-  const selectedPlan = mapped
-    ? selectedElement.requests.find((request) => requestMember(request) === chosenMember)
-    : selectedElement?.requests[0];
+  const planOf = (name: string, member: string | undefined) => {
+    const element = planned.get(name);
+    return element && element.requests.length > 1
+      ? element.requests.find((request) => requestMember(request) === member)
+      : element?.requests[0];
+  };
+  const selectedPlan = selected ? planOf(selected, chosenMember) : undefined;
+  /** The figure the Figures view draws: the selected one, else the first, so a window reopened there draws it. */
+  const shownFigure = figure ? selected : Object.keys(figures)[0];
+  const shownPlan = shownFigure && planOf(shownFigure, shownFigure === selected ? chosenMember : undefined);
   const shownStatus = selectedPlan ?? selectedElement;
   function writeParameter(path: readonly string[], value: JsonValue) {
     if (!operation || !selected) return;
@@ -491,7 +498,7 @@ export function useManagedAnalyze({
     const caption = figureDefinition(name, view.figure)?.caption;
     const result = planned.get(name);
     return <li key={name} className="flex items-center gap-2">
-      <Button pressed={selected === name} onClick={() => selectElement(name)}>{shown(name)}</Button>
+      <Button pressed={shownFigure === name} onClick={() => selectElement(name)}>{shown(name)}</Button>
       {caption && <span>{caption}</span>}
       {result && <span>{studioRunStatus(result.status)}</span>}
     </li>;
@@ -511,8 +518,8 @@ export function useManagedAnalyze({
       drawer, inspector: libraryInspector || inspector,
     },
     figures: { body: <>{figureList}
-      {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
-        history={selectedPlan} name={selected} project={saved.project_id} revision={saved.revision} mean={mean} />}
+      {shownFigure && shownPlan && <SavedFigureResult key={JSON.stringify([scope, shownFigure])}
+        history={shownPlan} name={shownFigure} project={saved.project_id} revision={saved.revision} mean={mean} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
     commands: document && focusedView === 'analysis' ? [addCommand, removeCommand, ...selectedCommands, ...viewport]
       : document && focusedView === 'figures' ? [addCommand, removeCommand, ...selectedCommands] : [],
