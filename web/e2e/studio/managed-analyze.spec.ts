@@ -12,7 +12,8 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-test('places the installed Speed by trial figure from the Analyze Library', async ({ page, request, studio }) => {
+// Catches a placed figure that reads its key ("speed-by-trial") on its card while the Library names it "Speed by trial".
+test('places the installed Speed by trial figure from the Analyze Library under the Library name', async ({ page, request, studio }) => {
   const project: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'speed-library',
   ));
@@ -41,8 +42,10 @@ test('places the installed Speed by trial figure from the Analyze Library', asyn
   expect(saved.ok(), await saved.text()).toBe(true);
   const after = await saved.json() as StudioProjectSnapshot;
   expect(rootPayload(after.project.documents?.analysis)).toMatchObject({
-    views: { 'speed-by-trial': { figure: { template: 'feedbax.SpeedByTrial' } } },
+    views: { 'speed-by-trial': { label: 'Speed by trial', figure: { template: 'feedbax.SpeedByTrial' } } },
   });
+  await expect(page.getByRole('tabpanel', { name: 'Analysis', exact: true })
+    .getByRole('group', { name: 'Select Speed by trial', exact: true })).toBeVisible();
 });
 
 test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@round' }, async ({ page, request, studio }, info) => {
@@ -142,7 +145,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   release();
   await page.unroute(reviews);
   await expect(item('Trial summary')).toBeFocused();
-  await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
+  await analysis.getByRole('group', { name: 'Select Aligned velocity', exact: true }).click();
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
   ] as const) {
@@ -152,7 +155,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   const role = (name: string) => inspector.getByRole('combobox', { name, exact: true });
   await edit(() => pick(role('States'), 'states'));
 
-  await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
+  await analysis.getByRole('group', { name: 'Select Trial summary', exact: true }).click();
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '1.5'));
   const beforeRefusal = await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
@@ -163,34 +166,34 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await expect(role('Velocity')).toHaveAccessibleDescription(/Requires dataset schemas/);
   await expect(role('Velocity').getByRole('img', { name: 'Problem', exact: true })).toHaveAttribute('data-app-tip', /Requires dataset schemas/);
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
-  await edit(() => pick(role('Velocity'), 'aligned_velocity.velocity'));
+  await edit(() => pick(role('Velocity'), 'Aligned velocity.velocity'));
 
   const pane = analysis.locator('.react-flow__pane');
   await analysis.getByRole('button', { name: 'Zoom Out', exact: true }).click();
   const [paneBox, summaryBox] = await Promise.all([
-    pane.boundingBox(), analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).boundingBox(),
+    pane.boundingBox(), analysis.getByRole('group', { name: 'Select Trial summary', exact: true }).boundingBox(),
   ]);
   await edit(() => item('Velocity Summary').dragTo(pane, { targetPosition: {
     x: summaryBox!.x - paneBox!.x + summaryBox!.width + 100, y: summaryBox!.y - paneBox!.y,
   } }));
-  await analysis.getByRole('group', { name: 'Select velocity_summary', exact: true }).click();
-  const wired = await edit(() => pick(role('Summary'), 'summarize_velocity.summary'));
+  await analysis.getByRole('group', { name: 'Select Velocity Summary', exact: true }).click();
+  const wired = await edit(() => pick(role('Summary'), 'Trial summary.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(
     projection.analysis_elements!.filter(({ key }) => key.step === 'analyze')
       .map(({ name, requests: [{ request_id }] }) => [name, request_id]),
   );
-  expect(Object.keys(requests(original)).sort()).toEqual(['aligned_velocity', 'summarize_velocity', 'velocity_summary']);
+  expect(Object.keys(requests(original)).sort()).toEqual(['aligned-velocity', 'trial-summary', 'velocity-summary']);
   expect(original.problems.filter(({ step }) => step === 'analyze')).toEqual([]);
   expect(original.edges).toContainEqual(expect.objectContaining({ from_key: upstream.key, to_key: expect.objectContaining({ step: 'analyze' }) }));
 
-  await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
+  await analysis.getByRole('group', { name: 'Select Trial summary', exact: true }).click();
   const revised = await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '2'));
   const changed = requests(await plan(revised.revision));
-  expect(changed.aligned_velocity).toBe(requests(original).aligned_velocity);
-  expect(changed.summarize_velocity).not.toBe(requests(original).summarize_velocity);
-  expect(changed.velocity_summary).not.toBe(requests(original).velocity_summary);
+  expect(changed['aligned-velocity']).toBe(requests(original)['aligned-velocity']);
+  expect(changed['trial-summary']).not.toBe(requests(original)['trial-summary']);
+  expect(changed['velocity-summary']).not.toBe(requests(original)['velocity-summary']);
   await analysis.focus();
   const undone = await edit(() => page.keyboard.press('Meta+Z'));
   expect(requests(await plan(undone.revision))).toEqual(requests(original));
@@ -198,12 +201,12 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   expect(requests(await plan(redone.revision))).toEqual(changed);
 
   await tab(page, 'Figures').click();
-  await figures.getByRole('button', { name: 'velocity_summary', exact: true }).click();
+  await figures.getByRole('button', { name: 'Velocity Summary', exact: true }).click();
   await expect(figures.getByText('Waiting', { exact: true })).toBeVisible();
   await expect(inspector.getByRole('status')).toContainText('Waiting for analyze.');
   const caption = inspector.getByRole('textbox', { name: 'Caption', exact: true });
   const captioned = await edit(async () => { await caption.fill('Velocity by condition'); await caption.press('Enter'); });
-  expect(graph(captioned).views?.velocity_summary.figure).toMatchObject({ caption: 'Velocity by condition' });
+  expect(graph(captioned).views?.['velocity-summary'].figure).toMatchObject({ caption: 'Velocity by condition' });
   await page.reload();
   await mapStep(page, 'analyze').click();
   await tab(page, 'Figures').click();

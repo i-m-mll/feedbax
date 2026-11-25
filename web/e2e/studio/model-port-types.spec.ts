@@ -27,9 +27,9 @@ test('a drag dims the input that states another type yet still stores a wire to 
   await page.keyboard.press('Meta+2');
   await expect(source).toHaveAttribute('aria-disabled', 'false');
   await expect(command.locator('..').locator('.studio-model-port-type')).toHaveText('[2] s');
-  // A port whose type has no unit still shows its type.
+  // A port whose type has no unit still names its kind, not only its shape.
   await expect(model.locator('[data-id="readout"] [data-handleid="output:output"]').locator('..').locator('.studio-model-port-type'))
-    .toHaveText('[2]');
+    .toHaveText('Real [2]');
 
   await source.hover();
   const reviewed = post('connections');
@@ -84,8 +84,8 @@ test("a port's + asks for a term on that port, and a refusal lands on the port",
 });
 
 // Catches a + on a port whose value is a record of fields (the Point mass's effector) that asks for a term on the whole
-// record, which no term can read, instead of on the field chosen.
-test("a struct port's + offers its fields, and the one chosen is related", async ({ page, request }) => {
+// record, which no term can read, instead of on the field chosen; and a term added with nothing on the canvas showing it.
+test("a struct port's + offers its fields, relates the one chosen, and marks the port", async ({ page, request }) => {
   const files = await fixture('ordinary-files', '2');
   const { snapshot } = await seedManagedProject(request, files);
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
@@ -95,9 +95,12 @@ test("a struct port's + offers its fields, and the one chosen is related", async
     && (response.request().postDataJSON() as StudioTrialAuthoringRequest).change?.kind === 'relate');
 
   await page.goto(`/?project=${snapshot.project_id}`);
+  // The add's mark holds while its animation is paused, so the check does not race the animation's end.
+  await page.addStyleTag({ content: '.studio-model-port-mark { animation-play-state: paused !important; }' });
   await mapStep(page, 'train').click();
   await page.keyboard.press('Meta+2');
   await expect(port.locator('.studio-model-port-type')).toHaveText('State');
+  await expect(port.locator('.studio-model-port-mark[data-added]')).toHaveCount(0);
   await port.hover();
   await port.getByRole('button', { name: 'Add Term effector', exact: true }).click();
   await page.getByRole('menu', { name: 'Add Term effector' }).getByRole('menuitem', { name: 'effector.pos', exact: true }).click();
@@ -106,6 +109,7 @@ test("a struct port's + offers its fields, and the one chosen is related", async
   const { change } = response.request().postDataJSON() as StudioTrialAuthoringRequest;
   expect(change).toMatchObject({ kind: 'relate', first: { kind: 'port', address: { element: { kind: 'field', path: ['pos'] } } } });
   await expect(port.getByRole('img', { name: 'Problem', exact: true })).toHaveCount(0);
+  await expect(port.getByRole('img', { name: 'Objective', exact: true })).toHaveAttribute('data-added');
 });
 
 // Catches the Inputs card reordering its task signals when one of them is wired and becomes a Model input.
