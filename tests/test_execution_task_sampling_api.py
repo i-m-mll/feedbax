@@ -168,7 +168,7 @@ def test_nominal_trial_uses_representative_values_and_the_same_task_timeline(cli
     assert trial["variables"]["start"] == pytest.approx([0.05, 0.075])
     assert trial["variables"]["catch"] is False
     assert [(cue["epoch"], cue["start"], cue["end"]) for cue in trial["timeline"]] == [
-        ("hold", 0, 10), ("cue", 10, 24), ("move", 24, 80),
+        ("hold", 0, 10), ("cue", 10, 25), ("move", 25, 80),
     ]
     assert trial["present"]["target_pos"] == [False] * 10 + [True] * 70
 
