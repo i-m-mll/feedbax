@@ -831,6 +831,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         result_dimensions=_known_result,
         reset=StateReset.TRIAL,
         bind=None,
+        binding_value_argument=None,
         label=None,
         parameters=(),
         density=None,
@@ -863,6 +864,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
                 bind,
                 density,
                 nominal,
+                binding_value_argument,
             )
         )
 
@@ -1038,6 +1040,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         level=Level.STEP,
         initial_state=partial(_lag_state, 1),
         bind=_bind_lag,
+        binding_value_argument=0,
     )
     time = ValueType(base=_REAL, dimensions=TIME)
     add(

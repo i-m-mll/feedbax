@@ -544,3 +544,53 @@ def test_shapes_on_the_local_axis(functions):
     observed = scan_expression(noise, env, entries).value
     assert len(jnp.unique(observed)) == len(timeline)
     assert jnp.array_equal(scan_expression(noise, env, entries).value, observed)
+
+
+@pytest.mark.parametrize("text", [
+    "choice(point(1 m, 2 m), point(3 m, 4 m))",
+    "lag(goal + offset, 2)",
+    "lag(goal + offset, 0)",
+    "index(goals, i)",
+    "lag(index(goals, 1) + offset, 2)",
+])
+def test_projected_replacements_agree_with_whole_expression_check(functions, text):
+    from feedbax.contracts.expression_site import _replace_part, _with_function
+    from feedbax.contracts.expression_values import walk
+
+    types = dict(VALUE_TYPES)
+    point = types["Point"]
+    scope = Site(
+        expected=point, finest=Level.STEP, repeat_count=2,
+        names=(
+            ScopedValue(id="goal", name="goal", type=point, level=Level.RUN),
+            ScopedValue(id="next_goal", name="next_goal", type=point, level=Level.RUN),
+            ScopedValue(id="goals", name="goals", type=point, level=Level.RUN, list_count=2),
+            ScopedValue(id="offset", name="offset", type=types["Displacement"], level=Level.TRIAL),
+            ScopedValue(id="other_offset", name="other_offset", type=types["Displacement"], level=Level.TRIAL),
+            ScopedValue(id="length", name="length", type=ValueType(base=ValueBase.REAL, dimensions=LENGTH),
+                        level=Level.TRIAL),
+            ScopedValue(id="i", name="i", type=ValueType(base=ValueBase.INTEGER), level=Level.RUN),
+            ScopedValue(id="j", name="j", type=ValueType(base=ValueBase.INTEGER), level=Level.RUN),
+        ),
+    )
+    tree = parsed(text, scope)
+    baseline = check(tree, scope, functions)
+    projection = project_site(scope, functions, tree)
+
+    def eligible(path, replacement):
+        candidate = check(_replace_part(tree, path, replacement), scope, functions)
+        return isinstance(candidate, Checked) or (
+            isinstance(baseline, tuple)
+            and all(item in baseline and item.path[:len(path)] != path for item in candidate)
+        )
+
+    for part, (path, node) in zip(projection.parts, walk(tree), strict=True):
+        assert part.path == path
+        assert part.functions == tuple(
+            info.id for info in projection.functions
+            if (replacement := _with_function(node, info, scope.finest)) is not None
+            and eligible(path, replacement)
+        )
+        assert part.names == tuple(
+            name.id for name in scope.names if eligible(path, NameValue(reference=name.id))
+        )
