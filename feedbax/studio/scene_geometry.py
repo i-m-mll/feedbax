@@ -19,8 +19,10 @@ from feedbax.contracts.model_address import ComponentElement, FieldElement, Fiel
 from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, GraphInterior, LeafComponent, ModelDocument,
 )
+from feedbax.contracts.portable import StateSignal
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.representation import RepresentationStateAnchorSelectorBinding
 from feedbax.contracts.studio_scene import (
     SceneLinkGeometry,
     SceneMechanismGeometry,
@@ -122,24 +124,36 @@ def _prepare_portable_geometry(
     if facts is None or not facts.states:
         return None
 
-    points = [state for state in facts.states if state.space == "point" and state.frame == "world"]
-    position = next(
-        (point for point in points if all(
-            other is point or other.fields in point.aliases for other in points
-        )),
-        None,
-    )
-    configurations = [state for state in facts.states if state.configuration]
     representation = declaration.representation
-    planar = representation is not None and any(
-        element.archetype == "planar_chain" for element in representation.elements
-    )
-    if not planar and (position is None or configurations):
+    if representation is None:
         return None
 
     resolved = registry.resolve_component_spec(
         component.type, component.fields, revision=component.revision,
     )
+    states_by_symbol = {state.symbol: state for state in facts.states}
+    position = None
+    for anchor in representation.anchors:
+        binding = anchor.binding
+        if not isinstance(binding, RepresentationStateAnchorSelectorBinding):
+            continue
+        selector = binding.selector
+        if selector.target_id is None or selector.path is None:
+            continue
+        leaf = owner_class.ports.output_leaf(
+            (selector.target_id, *selector.path.split(".")), resolved.params,
+        )
+        if isinstance(leaf, StateSignal):
+            state = states_by_symbol[leaf.symbol]
+            if state.space == "point":
+                position = state
+                break
+
+    configurations = [state for state in facts.states if state.configuration]
+    planar = any(element.archetype == "planar_chain" for element in representation.elements)
+    if not planar and (position is None or configurations):
+        return None
+
     owner = resolved.meta.owner_class(**resolved.params)
     rest = owner.state_view(init_state_from_component(owner))
     address = _component_address(path)
@@ -148,7 +162,7 @@ def _prepare_portable_geometry(
     if not planar and position is not None:
         point = _geometry_address(path, ("point",))
         keys = (position_key, *(
-            _state_key(path, companion.symbol) for companion in points
+            _state_key(path, companion.symbol) for companion in facts.states
             if position.fields in companion.aliases
         ))
 

@@ -32,18 +32,15 @@ def _two_model_definition(masses=None):
     steps = definition["steps"]
     del steps["baseline"]
     steps["train_b"] = deepcopy(steps["train"]) | {"sweep": {"axes": {"rate": {
-        "path": "settings.optimizer.learning_rate.value", "values": [0.001, 0.003],
+        "values": {
+            key: {"value": rate, "patches": {"settings.optimizer.learning_rate.value": {"value": rate}}}
+            for key, rate in (("low", 0.001), ("high", 0.003))
+        },
     }}}}
-    upstream = compile_project(Project.model_validate(definition | {"steps": {
-        name: steps[name] for name in ("train", "train_b")
-    }}))
-    chosen = [run.key.row for run in upstream.runs if run.key.step == "train_b"][1]
     conditions = steps["conditions"]
     conditions["inputs"]["subject"] = [
         {"step": "train", "checkpoint": "last"},
-        {"step": "train_b", "checkpoint": "last", "where": {"rows": [
-            {"key": chosen, "variant": "default", "row": chosen},
-        ]}},
+        {"step": "train_b", "checkpoint": "last", "where": {"axes": {"rate": [{"id": "high", "label": "0.003"}]}}},
     ]
     conditions["sweep"]["axes"] = {"model": {"input": "subject"}, **conditions["sweep"]["axes"]}
     steps["conditions_b"] = deepcopy(conditions)
@@ -127,11 +124,9 @@ def test_zip_pairs_two_inputs_by_label_and_refuses_a_partial_pairing():
     analysis["inputs"] = {"left": {"kind": "dataset"}, "right": {"kind": "dataset"}}
     analysis["operations"]["align"]["inputs"]["states"] = {"input": "left"}
     del analysis["views"]
-    plan = compile_project(Project.model_validate(definition))
-    rows = [run.key.row for run in plan.runs if run.key.step == "conditions_b"]
-    reordered = [{"key": row, "variant": "default", "row": row} for row in reversed(rows)]
+    reordered = [{"id": value, "label": value} for value in ("heavy", "nominal")]
     analyze = definition["steps"]["analyze"]
-    analyze["inputs"] = {"left": {"step": "conditions"}, "right": {"step": "conditions_b", "where": {"rows": reordered}}}
+    analyze["inputs"] = {"left": {"step": "conditions"}, "right": {"step": "conditions_b", "where": {"axes": {"mass": reordered}}}}
     analyze["sweep"] = {"axes": {"a": {"input": "left"}, "b": {"input": "right"}}, "combination": "zip"}
     del definition["steps"]["report"]
     plan = compile_project(Project.model_validate(definition), operations=_operations())
@@ -142,7 +137,7 @@ def test_zip_pairs_two_inputs_by_label_and_refuses_a_partial_pairing():
         (left,), (right,) = run.inputs["left"], run.inputs["right"]
         assert left.producer.row == right.producer.row
 
-    analyze["inputs"]["right"]["where"]["rows"] = reordered[:3]
+    analyze["inputs"]["right"]["where"]["axes"]["mass"] = reordered[:1]
     (problem,) = compile_project(Project.model_validate(definition), operations=_operations()).diagnostics
     assert (problem.step, problem.path) == ("analyze", "sweep.combination")
     assert "one to one" in problem.detail

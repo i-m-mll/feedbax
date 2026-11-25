@@ -20,11 +20,12 @@ from feedbax.contracts.expression_values import (
     ValueType,
 )
 from feedbax.expression_builtins import register_builtins
-from feedbax.contracts.expression_check import check, dependency_order
+from feedbax.contracts.expression_check import Checked, check, dependency_order
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import Function, FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.contracts.expression_site import FieldKind, field_kind, project_site, read_field
 from feedbax.contracts.expression_text import ParsedField, parse, print_field
+from feedbax.contracts.task_document import VALUE_TYPES
 
 
 @pytest.fixture
@@ -40,6 +41,25 @@ def site(base=ValueBase.REAL, *, shape=(), level=Level.RUN, names=(), dimensions
         base=base, shape=shape, **({} if dimensions is None else {"dimensions": dimensions})
     )
     return Site(expected=value, finest=level, names=names)
+
+
+def test_point_expression_accepts_offset_but_marks_free_vectors(functions):
+    types = dict(VALUE_TYPES)
+    expected = Site(
+        expected=types["Point"],
+        finest=Level.TRIAL,
+        names=tuple(
+            ScopedValue(id=name, name=name, type=types[kind], level=Level.TRIAL)
+            for name, kind in (("start", "Point"), ("offset", "Displacement"), ("velocity", "Velocity"))
+        ),
+    )
+    result = check(parsed("start + offset", expected), expected, functions)
+    assert isinstance(result, Checked)
+    assert result.root.type == types["Point"]
+    path = ("variables", "target", "value")
+    for name, code in (("offset", ProblemCode.TYPE_MISMATCH), ("velocity", ProblemCode.UNIT_MISMATCH)):
+        (problem,) = check(parsed(name, expected), expected, functions, path=path)
+        assert (problem.code, problem.path) == (code, path)
 
 
 def parsed(text, expected):

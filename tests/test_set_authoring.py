@@ -36,12 +36,10 @@ def _raw():
     over["sweep"] = {"axes": {"model": {"input": "subject"}}}
     raw["steps"]["over"] = over
     pair = deepcopy(over)
-    pair["inputs"]["subject"]["where"] = {"rows": [
-        {"key": key, "variant": "default", "row": row} for key, row in (("a", "rate=r1"), ("b", "rate=r3"))
-    ]}
+    pair["inputs"]["subject"]["where"] = {"axes": {"rate": [{"id": value, "label": value} for value in ("r1", "r3")]}}
     raw["steps"]["pair"] = pair
-    one = deepcopy(raw["steps"]["baseline"])
-    one["inputs"]["subject"] |= {"step": "five", "row": "rate=r2"}
+    one = deepcopy(over)
+    one["inputs"]["subject"]["where"] = {"axes": {"rate": [{"id": "r2", "label": "r2"}]}}
     raw["steps"]["one"] = one
     return raw
 
@@ -138,7 +136,7 @@ def test_duplicate_run_selected_by_a_carried_coordinate_is_conditioned_on_it(stu
     assert row in after and "run" not in after[row].coordinates
 
 
-def test_duplicate_run_keeps_every_run_and_every_reader_of_it(studio):
+def test_duplicate_run_also_widens_readers_of_its_axis_values(studio):
     folders, client = studio
     readers = ("pair", "one", "over")
     before = {step: _runs(folders, step) for step in ("five", *readers)}
@@ -148,8 +146,9 @@ def test_duplicate_run_keeps_every_run_and_every_reader_of_it(studio):
     after = {step: _runs(folders, step) for step in ("five", *readers)}
     assert len(after["five"]) == 10 and before["five"].items() <= after["five"].items()
     assert set(after["five"].values()) == set(before["five"].values())
-    assert {step: after[step] for step in ("pair", "one")} == {step: before[step] for step in ("pair", "one")}
-    assert before["over"].items() <= after["over"].items() and len(after["over"]) == 10
+    for step in readers:
+        assert before[step].items() <= after[step].items()
+        assert len(after[step]) == 2 * len(before[step])
     assert {step: folders.read(PROJECT).project.steps[step] for step in readers} == authored
 
 

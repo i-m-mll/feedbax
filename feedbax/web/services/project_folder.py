@@ -111,9 +111,6 @@ class ProjectFolderService(ProjectFolder):
         location = self._folder(project_id)
         return self._open_folder(location), location
 
-    def new_native_project(self) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
-        return self._new_folder()
-
     def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:
         if location.path.parent == self.root:
             return super()._base_readers(location, text)

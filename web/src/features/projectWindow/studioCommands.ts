@@ -72,7 +72,7 @@ const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
 
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
   'check' | 'accept' | 'newStep' | 'newSweep' | 'duplicateStep' | 'duplicateRun' | 'removeValue' | 'addEntry' | 'split' | 'merge' | 'saveSet' | 'inlineSet' | 'toField' | 'toSweep' | 'changeKey' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
-  'pivot' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
+  'pivot' | 'pin' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
   'fitView' | 'zoomIn' | 'zoomOut' | 'rename';
@@ -92,7 +92,7 @@ const selectionCommands = new Set<StudioCommandId>([
  */
 const viewCommands = new Set<StudioCommandId>([
   ...projectWindowViews, 'commandPalette', 'settings', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer',
-  'showInspector', 'splitDetails', 'switchSlot', 'back', 'forward', 'nextRegion', 'previousRegion', 'activity', 'problems',
+  'showInspector', 'splitDetails', 'switchSlot', 'pin', 'back', 'forward', 'nextRegion', 'previousRegion', 'activity', 'problems',
   'fitView', 'zoomIn', 'zoomOut', 'enter', 'leave',
 ]);
 
@@ -203,6 +203,12 @@ export function commandAttributes(command: StudioCommand, placement?: 'bottom' |
     'aria-description': command.reason,
     ...appTip(command.shortcut ? `${label} · ${shortcutLabel(command.shortcut)}` : label, placement),
   };
+}
+
+/** A command's attributes for a control whose accessible name says more than the command's, such as a count. */
+export function commandTip(command: StudioCommand, placement?: 'bottom' | 'right') {
+  const { 'aria-label': _, ...attributes } = commandAttributes(command, placement);
+  return attributes;
 }
 
 const punctuation: Record<string, string> = {

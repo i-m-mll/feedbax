@@ -1,13 +1,15 @@
 """Project the selected run's compiler and task facts onto stored Model addresses."""
 
+from typing import cast, get_args
+
 from feedbax.compiler.model_document import lower_model_document
-from feedbax.compiler.model_edit import model_ungroup_eligibility
+from feedbax.compiler.model_edit import conserving_port_type, model_ungroup_eligibility
 from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.compiler.resolution import resolve_graph_parameters
 from feedbax.contracts.model_address import ComponentPortAddress, ModelAddress, PortElement
-from feedbax.contracts.model_document import ModelDocument, SignalType
+from feedbax.contracts.model_document import ModelDocument, PhysicalPortType, SignalType
 from feedbax.contracts.objective_document import ObjectiveDocument
-from feedbax.contracts.model_edit import ModelPortProjection, ModelProjection
+from feedbax.contracts.model_edit import ModelPhysicalPortProjection, ModelPortProjection, ModelProjection
 from feedbax.contracts.expression_check import references
 from feedbax.compiler.graph_schema import _enumerate_graph_ports
 from feedbax.contracts.project import BasedDocument
@@ -30,7 +32,7 @@ def _port(composites, component, direction, port):
 def _boundary_port(composites, direction, port):
     return ModelAddress.model_validate({
         "composites": composites,
-        "element": {"kind": "port", "end": {"owner": direction + "s", "port": port}},
+        "element": {"kind": "port", "end": {"owner": "boundary" if direction == "physical" else direction + "s", "port": port}},
     })
 
 
@@ -38,11 +40,15 @@ def _declared_ports(authority: ModelRegistryPorts, owner, scope=()):
     for direction, ports in (("input", owner.ports.inputs), ("output", owner.ports.outputs)):
         for port in ports:
             yield ModelPortProjection(address=_boundary_port(scope, direction, port.id), type=port.type)
+    for port in owner.ports.physical:
+        yield ModelPhysicalPortProjection(address=_boundary_port(scope, "physical", port.id), type=port.type)
     for key, component in owner.interior.components.items():
         if component.kind == "composite":
             for direction, ports in (("input", component.ports.inputs), ("output", component.ports.outputs)):
                 for port in ports:
                     yield ModelPortProjection(address=_port(scope, key, direction, port.id), type=port.type)
+            for port in component.ports.physical:
+                yield ModelPhysicalPortProjection(address=_port(scope, key, "physical", port.id), type=port.type)
             yield from _declared_ports(authority, component, (*scope, key))
             continue
         try:
@@ -52,6 +58,12 @@ def _declared_ports(authority: ModelRegistryPorts, owner, scope=()):
         for (direction, port), declaration in declarations.items():
             if isinstance(declaration.type, SignalType):
                 yield ModelPortProjection(address=_port(scope, key, direction, port), type=declaration.type)
+            if direction == "physical":
+                type_ = conserving_port_type(declaration, owner.interior.physical_domain)
+                if type_ in get_args(PhysicalPortType):
+                    yield ModelPhysicalPortProjection(
+                        address=_port(scope, key, direction, port), type=cast(PhysicalPortType, type_),
+                    )
 
 
 def _dumped(payload) -> dict:
@@ -99,7 +111,13 @@ def model_projection(folders, project_id, body, components):
     )
     supplied = {port.name for port in bound}
     authority = ModelRegistryPorts(components)
-    ports = {port.address.to_text(): port for port in _declared_ports(authority, model)}
+    ports: dict[str, ModelPortProjection] = {}
+    physical_ports: list[ModelPhysicalPortProjection] = []
+    for port in _declared_ports(authority, model):
+        if isinstance(port, ModelPhysicalPortProjection):
+            physical_ports.append(port)
+        else:
+            ports[port.address.to_text()] = port
     task_inputs = tuple(
         ModelAddress.model_validate({
             "composites": [],
@@ -107,7 +125,7 @@ def model_projection(folders, project_id, body, components):
         }) for port in bound
     )
     known = dict(
-        task_signals=task_signals, task_inputs=task_inputs, resolved_model=model,
+        task_signals=task_signals, task_inputs=task_inputs, resolved_model=model, physical_ports=tuple(physical_ports),
         ungroup=model_ungroup_eligibility(model), **differences,
     )
     try:

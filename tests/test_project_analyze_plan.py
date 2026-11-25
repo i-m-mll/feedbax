@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
+from feedbax.contracts.project_inputs import StepReference
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.model_address import ModelAddress
@@ -492,24 +493,62 @@ def test_analyze_collects_static_rows_in_each_named_variant():
     assert compile_project(project, operations=operations).elements == plan.elements
 
 
+def test_axis_pin_widens_when_its_source_gains_an_unconstrained_axis():
+    project = _project()
+    project.steps["analyze"].inputs["states"] = StepReference.model_validate({
+        "step": "baseline", "where": {},
+    })
+    operations = _operations()
+    before = compile_project(project, operations=operations)
+    assert not before.diagnostics
+    assert len(_decode(before, "align").inputs["states"]) == 1
+
+    project.steps["baseline"].sweep = Sweep.model_validate({"axes": {
+        "seed": {"path": "params.seed", "values": [0, 1, 2]},
+    }})
+    after = compile_project(project, operations=operations)
+    assert not after.diagnostics
+    assert len(_decode(after, "align").inputs["states"]) == 3
+
+
+def test_missing_axis_value_points_to_the_original_pin_and_names_remaining_values():
+    project = _project()
+    project.steps["conditions"] = _conditions()
+    project.steps["analyze"].inputs["states"] = StepReference.model_validate({
+        "step": "conditions",
+        "where": {"axes": {"mass": [{"id": "heavy", "label": "Heavy load"}]}},
+    })
+    operations = _operations()
+    assert not compile_project(project, operations=operations).diagnostics
+
+    values = project.steps["conditions"].sweep.axes["mass"].values
+    del values["heavy"]
+    values["nominal"].label = "Nominal load"
+    broken = compile_project(project, operations=operations)
+    (problem,) = broken.diagnostics
+    assert (problem.step, problem.path) == ("analyze", "inputs.states.where.axes.mass.0")
+    assert (problem.authored_file, problem.authored_path) == (
+        "steps/analyze.json", "/inputs/states/where/axes/mass/0",
+    )
+    assert problem.selection_value.model_dump() == {
+        "axis": "mass",
+        "missing": {"id": "heavy", "label": "Heavy load"},
+        "remaining": [{"id": "nominal", "label": "Nominal load"}],
+    }
+    assert {row.key.step for row in broken.runs} == {"train", "baseline", "conditions"}
+
+
 def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
     project = _project()
     operations = _operations()
     project.steps["conditions"] = _conditions()
-    baseline = compile_project(project, operations=operations)
-    conditions = {
-        run.coordinates["mass"].value_id: run for run in baseline.runs if run.key.step == "conditions"
-    }
-    selection = [
-        {"key": key, "variant": "default", "row": conditions[key].key.row}
-        for key in ("heavy", "nominal")
-    ]
+    selection = [{"id": key, "label": key} for key in ("heavy", "nominal")]
 
     def choose(rows):
         project.steps["analyze"] = Step.model_validate({
             "kind": "analyze",
             "base": {"document": "velocity-analysis"},
-            "inputs": {"states": {"step": "conditions", "where": {"rows": rows}}},
+            "inputs": {"states": {"step": "conditions", "where": {"axes": {"mass": rows}}}},
         })
         return compile_project(project, operations=operations)
 
@@ -528,7 +567,7 @@ def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
     assert {
         tuple(binding.member.key for binding in element.inputs["states"])
         for element in expanded.elements.values() if element.key.name == "align"
-    } == {("heavy",), ("nominal",)}
+    } == {("mass=heavy",), ("mass=nominal",)}
 
 
 def test_operation_cycle_keeps_independent_elements_plannable():

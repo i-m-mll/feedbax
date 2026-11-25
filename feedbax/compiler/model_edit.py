@@ -6,12 +6,13 @@ from collections import Counter
 from collections.abc import Callable, Iterator, MutableMapping
 from dataclasses import dataclass
 from functools import cache
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 from uuid import uuid4
 
 from pydantic import ValidationError
 
 from feedbax.contracts import model_edit as edits
+from feedbax.contracts.acausal import EquationsDomain
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import AddModelAttachment, ChangeModelAttachment, ModelAttachmentDifference
 from feedbax.contracts.model_document import (
@@ -36,6 +37,14 @@ _EMPTY_BOUNDARY_PORT = "__new_port__"
 class Port:
     type: SignalType | str | None
     reads_state_only: bool = False
+
+
+def conserving_port_type(port: Port, domain: str | None) -> str | None:
+    if isinstance(port.type, str):
+        return port.type
+    if port.type is None and domain in get_args(EquationsDomain):
+        return domain
+    return None
 
 
 type LeafPorts = Callable[[Record, Direction, str], Port | None]
@@ -261,11 +270,8 @@ class ModelEditDraft:
                 return None
             if component["kind"] == "leaf":
                 port = self.leaf_ports(component, direction, end["port"])
-                domain = graph["physical_domain"]
-                if port is not None and port.type is None and direction == "physical" and domain in {
-                    "translational", "rotational",
-                }:
-                    return Port(domain)
+                if port is not None and port.type is None and direction == "physical":
+                    return Port(conserving_port_type(port, graph["physical_domain"]))
                 return port
         port = _listed_port(component, direction, end["port"])
         if port is None:
@@ -647,6 +653,32 @@ class ModelEditDraft:
             raise _Refusal(address, "The inserted component cannot feed this wire's target")
         wire["source"] = output
         self.connect(graph_address, source, _component(created.element.id, command.input_port))
+        self.changed.append(address)
+
+    def insert_physical_component(self, command: edits.InsertComponentOnPhysicalConnection) -> None:
+        address = command.address
+        owner, graph = self.context(address)
+        element = address.element
+        if element.kind != "physical_connection" or element.id not in graph.get("connections", {}):
+            raise _Refusal(address, "Physical connection does not exist")
+        if command.a_port == command.b_port:
+            raise _Refusal(address, "Insertion requires two distinct conserving ports")
+        connection = graph["connections"][element.id]
+        graph_address = _address(address.composites, "graph")
+        self.add_component(edits.AddComponent(
+            op="add_component", graph=graph_address, component=command.component, position=command.position, id=command.id,
+        ))
+        created = self.changed[-1]
+        assert created.element.kind == "component"
+        if command.flipped:
+            self.flipped[created.to_text()] = True
+        a = _component(created.element.id, command.a_port)
+        b = _component(created.element.id, command.b_port)
+        if self.port(owner, graph, b, "physical") is None or self.port(owner, graph, connection["b"], "physical") is None:
+            raise _Refusal(address, "Physical endpoints must be distinct local ports")
+        old_a = connection["a"]
+        connection["a"] = b
+        self.physical(graph_address, {"a": old_a, "b": a})
         self.changed.append(address)
 
     def field_slot(self, address: ModelAddress, *, functions=None, attachment=None):
@@ -1400,7 +1432,7 @@ def apply_model_edit(
             case edits.ConnectPhysical(graph=primary, connection=connection):
                 edit.physical(primary, connection.model_dump(mode="json"))
             case edits.InsertComponentOnPhysicalConnection(address=primary):
-                raise _Refusal(primary, "Physical insertion is unavailable")
+                edit.insert_physical_component(operation)
             case edits.AddPort(graph=primary):
                 edit.add_port(operation)
             case edits.RemovePort(address=primary):

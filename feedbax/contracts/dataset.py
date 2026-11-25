@@ -36,6 +36,14 @@ type Name = Annotated[StrictStr, AfterValidator(_valid_name)]
 type DimensionSize = Annotated[int, Field(ge=0, strict=True)]
 
 
+class TrialFigureTime(StrictModel):
+    """A recorded trial clock, measured from the named epoch or the trial start."""
+
+    model_config = ConfigDict(frozen=True)
+
+    zero_epoch: StrictStr | None = None
+
+
 class FieldDescriptor(StrictModel):
     """A field's labelled dimensions and scientific metadata."""
 
@@ -45,6 +53,7 @@ class FieldDescriptor(StrictModel):
     units: StrictStr | None = None
     quantity: StrictStr | None = None
     frame: StrictStr | None = None
+    trial_time: TrialFigureTime | None = None
     inline_values: tuple[JsonValue, ...] | None = None
 
     @field_validator("inline_values", mode="before")
