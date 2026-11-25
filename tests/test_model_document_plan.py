@@ -2003,6 +2003,8 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     slot = read_method_checkpoint(checkpoint.checkpoint_root, checkpoint.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None
     restored = slot.restore()
+    assert restored.input_shapes == {"reach_target": (2,)}
+    assert slot.input_arrays["reach_target"].dtype == "float32"
     assert restored.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
     evaluated = finished(evaluation_job)
     assert evaluated["state"] == "succeeded", evaluated.get("outcome")
