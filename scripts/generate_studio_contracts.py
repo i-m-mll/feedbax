@@ -438,6 +438,7 @@ from feedbax.contracts.studio_loaded_model import (
     StudioLoadedModelExportRequest, StudioLoadedModelImportQuery, StudioLoadedModelImportResult,
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.set_document import SetDocument, SetEntry
 from feedbax.contracts.window import Window
 from feedbax.contracts.training_document import TrainingDocument
 from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
@@ -516,6 +517,8 @@ AUTHORED_CONTRACT_MODELS = (
     ValidityAcceptance,
     AnalysisDocument,
     TaskDocument,
+    SetDocument,
+    SetEntry,
     PythonTaskSelection,
     ObjectiveDocument,
     Window,
