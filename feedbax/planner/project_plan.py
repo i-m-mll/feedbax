@@ -3005,7 +3005,9 @@ class _Compiler:
         model: _EvaluationModel | None = None,
     ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
-        from feedbax.compiler.model_document import ModelCompilationProblem
+        from feedbax.compiler.model_document import ModelCompilationProblem, model_input_prototypes
+        from feedbax.compiler.resolution import resolve_graph_parameters
+        from feedbax.project_model_selection import matched_task_inputs, model_task_signals
         from feedbax.compiler.graph_schema import validate_graph_connection_schema
         from feedbax.contracts.rollout import CannotRun
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -3063,9 +3065,14 @@ class _Compiler:
             effective = resolve_evaluation_variant(
                 before.graph, documents.task_source, variation, components=components,
             )
+            signals = model_task_signals(effective.task, self.python_tasks)
+            bound = matched_task_inputs(evaluated, signals, documents.input_bindings | params.input_bindings)
+            prototypes = model_input_prototypes(effective.graph, evaluated, {
+                port.name: signal.type for port, signal in bound
+            })
+            resolution = resolve_graph_parameters(effective.graph, prototypes, components, allow_incomplete=True)
             issues = validate_graph_connection_schema(
-                effective.graph, "/graph",
-                component_registry=components,
+                effective.graph, "/graph", component_registry=components, _resolution=resolution,
             )
             if issue := next((issue for issue in issues if issue.severity == "error"), None):
                 issue_path = (issue.location or {}).get("path", "/graph")

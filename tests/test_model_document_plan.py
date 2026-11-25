@@ -1337,8 +1337,8 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
 
 # The ids the variant's evaluation had at a9b3bb7d, where the change was stored in the step's payload.
 # The fixture pins requests that bind Task signals by stable Model input ID (8a0009c3).
-_VARIANT_WIRE = "evaluate:6e7d27fc542e8eafe09d7f0c8245faf24eccf49182fbbaf7244aeb6f4a4c1647"
-_VARIANT_FIELD = "evaluate:3277dacdfdaa2b47fa4da1e6875e362941f9ae9fdb57d832cd659d4540332c85"
+_VARIANT_WIRE = "evaluate:4f26103959b7ccd1c1f27ba1acd2f8b53bb8f7446751b8c279f7345bdc3f7a4e"
+_VARIANT_FIELD = "evaluate:86530315779f1c0f14fc177396bae4f98e4f8ceb8a5600d09bd6b21232ba0374"
 
 
 @pytest.mark.parametrize(("operation", "expected"), [
