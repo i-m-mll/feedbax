@@ -25,6 +25,13 @@ class SetVariableChoices(ValueRecord):
     entries: tuple[str | None, ...]
 
 
+class Marker(ValueRecord):
+    """The Scene mark for a Task point."""
+
+    shape: Literal["circle", "square", "triangle"]
+    filled: bool
+
+
 class Variable(ValueRecord):
     id: str
     name: str
@@ -32,6 +39,7 @@ class Variable(ValueRecord):
     value: Expression
     count: Expression | None = Field(default=None, exclude_if=lambda value: value is None)
     set_choices: SetVariableChoices | None = Field(default=None, exclude_if=lambda value: value is None)
+    marker: Marker | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class Length(ValueRecord):

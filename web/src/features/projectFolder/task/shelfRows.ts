@@ -4,8 +4,9 @@ import type { ShelfBar, ShelfRow, ShelfSegment } from '@/components/timeline/She
 import type { NamedElementAddress } from '@/features/projectWindow/elementSelection';
 import { viewGlyphs } from '@/features/projectWindow/ProjectWindow';
 import type { EpochBounds } from './taskModel';
-import type { Problem, TrialAggregate, TrialMean, TrialRecord } from '@/generated/studioContracts';
+import { ModelAddressSchema, type Problem, type TrialAggregate, type TrialMean, type TrialRecord } from '@/generated/studioContracts';
 import { endedBy, signalSteps } from './trialSample';
+import { addressKey, type ModelIntervention } from '../model/modelGraph';
 
 /**
  * What the shelf draws of a task document: its epochs' bounds in the order of one trial, a repeated epoch once per
@@ -27,6 +28,11 @@ export interface ShelfTask {
   readonly objective?: {
     readonly document: string;
     readonly terms: readonly { readonly id: string; readonly name: string }[];
+  };
+  /** The Model's interventions, and the Model document whose elements their rows select. */
+  readonly interventions?: {
+    readonly document: string;
+    readonly items: readonly ModelIntervention[];
   };
 }
 
@@ -101,10 +107,32 @@ function termRows(task: ShelfTask, drawn: (term: string) => { bars: ShelfBar[]; 
   });
 }
 
-/** The terms' rows for one trial: each term where `record` has it apply. */
-export const trialTermRows = (task: ShelfTask, record: TrialRecord, stepSeconds: number) => termRows(task, (term) => ({
-  bars: presence(record.terms?.[term]?.steps ?? [], stepSeconds), problems: record.terms?.[term]?.problems,
-}));
+/**
+ * One row per intervention, with the bars `drawn` gives of its steps' mask, keyed by its address: each of the Model's,
+ * then each one only the records name, which a run's own Model (a Set entry's) adds.
+ */
+function interventionRows(task: ShelfTask, recorded: readonly string[], drawn: (key: string) => ShelfBar[]): ShelfRow[] {
+  const interventions = task.interventions;
+  if (!interventions) return [];
+  const known = new Map(interventions.items.map((item) => [addressKey(item.address), item]));
+  const added = [...new Set(recorded)].filter((key) => !known.has(key)).flatMap((key) => {
+    const parsed = ModelAddressSchema.safeParse(JSON.parse(key));
+    return parsed.success && parsed.data.element.kind === 'attachment' ? [[key, { address: parsed.data, name: studioName('intervention') }] as const] : [];
+  });
+  const glyph = createElement('span', { 'aria-hidden': true, className: 'shrink-0 text-xs' }, '◇');
+  return [...known, ...added].map(([key, { address, name }]): ShelfRow => ({
+    kind: 'bars', key: `intervention:${key}`, name, glyph, selects: { document: interventions.document, address }, bars: drawn(key),
+  }));
+}
+
+/** The rows one trial's record gives beyond its epochs and signals: each term where it applies, each intervention where it acts. */
+export const trialTermRows = (task: ShelfTask, record: TrialRecord, stepSeconds: number) => [
+  ...termRows(task, (term) => ({
+    bars: presence(record.terms?.[term]?.steps ?? [], stepSeconds), problems: record.terms?.[term]?.problems,
+  })),
+  ...interventionRows(task, Object.keys(record.intervention_windows ?? {}),
+    (key) => presence(record.intervention_windows?.[key] ?? [], stepSeconds)),
+];
 
 /**
  * One trial's rows: each epoch instance where it began and ended, one that ends on a condition marked with how; each
@@ -222,5 +250,7 @@ export function meanRows(task: ShelfTask, mean: TrialMean, records: readonly Tri
       bars: alignedBars(mean, byId, stepSeconds, (record) => record.terms?.[term]?.steps ?? []),
       problems: records.flatMap((record) => record.terms?.[term]?.problems ?? []),
     })),
+    ...interventionRows(task, records.flatMap((record) => Object.keys(record.intervention_windows ?? {})),
+      (key) => alignedBars(mean, byId, stepSeconds, (record) => record.intervention_windows?.[key] ?? [])),
   ];
 }

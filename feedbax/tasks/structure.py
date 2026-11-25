@@ -10,7 +10,7 @@ from feedbax.contracts.expression_values import LiteralValue, Problem, ProblemCo
 from feedbax.contracts.task_document import Cell, Epoch, Length, Link, Repeat, Signal, TaskDocument, Variable
 from feedbax.contracts.task_structure import (
     AddMember, MakeAbsent, MakePresent, MoveMember, RemoveMember, RenameMember, SetLink, SetSpan, SetType,
-    RemoveRepeat, RepeatEpochs, SetRepeatCount, SetVariableCount, TaskStructureChange,
+    RemoveRepeat, RepeatEpochs, SetRepeatCount, SetVariableCount, SetVariableMarker, TaskStructureChange,
 )
 from feedbax.tasks.document import zero
 
@@ -71,11 +71,12 @@ def restructure(document: TaskDocument, change: TaskStructureChange) -> TaskDocu
                 if not isinstance(change, RemoveRepeat) or item.id != change.id
             )
             return document.model_copy(update={"repeats": repeats})
-        case SetVariableCount():
+        case SetVariableCount() | SetVariableMarker():
             if all(item.id != change.id for item in document.variables):
                 return _missing("variable", change.id)
+            update = {"count": change.count} if isinstance(change, SetVariableCount) else {"marker": change.marker}
             return document.model_copy(update={"variables": tuple(
-                item.model_copy(update={"count": change.count}) if item.id == change.id else item
+                item.model_copy(update=update) if item.id == change.id else item
                 for item in document.variables
             )})
         case _:

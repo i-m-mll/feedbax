@@ -1,4 +1,4 @@
-import { ChartLine, Database, Minus, RectangleHorizontal, ScatterChart } from 'lucide-react';
+import { ChartLine, Database, Minus, RectangleHorizontal, ScatterChart, Spline } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { studioName, studioReason, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { InspectorAddRow } from '@/components/ui/Inspector';
@@ -19,6 +19,7 @@ type AddedMark = 'points' | 'rule' | 'span';
 
 const markGlyphs: Record<Layer['mark'], ReactNode> = {
   line: <ChartLine />, band: <ChartLine />, points: <ScatterChart />, rule: <Minus />, span: <RectangleHorizontal />,
+  trajectory: <Spline />,
 };
 const addedMarks: readonly AddedMark[] = ['points', 'rule', 'span'];
 const axes: readonly FieldOption[] = [{ value: 'x', label: studioName('xAxis') }, { value: 'y', label: studioName('yAxis') }];
