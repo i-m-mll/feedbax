@@ -618,17 +618,25 @@ class Store:
 
     @staticmethod
     def _light_request(launch: dict, project: str, request_id: str):
-        payload = launch["payload"]
-        root = Path(payload["manifest_root"])
-        request = RequestObject.model_validate(payload["request"])
+        from feedbax.host.light_jobs import LightDelivery
+        from feedbax.persistence.metric_exclusion import exclusion_objects
+
+        delivery = LightDelivery.model_validate(launch["payload"])
+        root, request = delivery.manifest_root, delivery.request
         if (
-            payload["project_id"] != project or request.id != request_id
+            delivery.project_id != project or request.id != request_id
             or not root.is_absolute() or root.resolve() != root
         ):
             raise ValueError("Light launch differs from its admitted project, Store or request.")
-        decoded = Store._success_view(root).read_request(request)
+        view = Store._success_view(root)
+        decoded = view.read_request(request)
         if decoded.kind not in ("analyze", "render", "report"):
             raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
+        if delivery.excluded:
+            if not delivery.excluded.keys() <= Store._light_requests(decoded):
+                raise ValueError("Excluded deliveries must name authored ordinary light inputs.")
+            for source, proof in delivery.excluded.items():
+                exclusion_objects(view.store, proof, source)
         return decoded
 
     @staticmethod
@@ -685,13 +693,14 @@ class Store:
         payload = launch["payload"]
         root = payload["manifest_root"]
         try:
-            expected = self._light_requests(self._light_request(launch, row["project"], row["request"]))
+            excluded = payload.get("excluded", {})
+            expected = self._light_requests(self._light_request(launch, row["project"], row["request"])) - excluded.keys()
             parents = tuple(edge["parent"] for edge in self.db.execute(
                 "SELECT parent FROM edges WHERE job=? AND NOT authenticated_completion ORDER BY parent", (row["id"],)
             ))
             sources = self._light_parents(row["project"], root, expected, parents)
             view = self._success_view(root)
-            origins = {}
+            origins = dict(excluded)
             for source in sources:
                 if source["state"] == "not_chosen":
                     origins[source["request"]] = json.loads(source["outcome"])["excluded_product"]
@@ -1317,7 +1326,8 @@ class Store:
                 ):
                     raise ValueError("Managed delivery worker does not match the declared numerical requirements")
                 self._light_parents(
-                    job["project"], payload["manifest_root"], self._light_requests(decoded),
+                    job["project"], payload["manifest_root"],
+                    self._light_requests(decoded) - payload.get("excluded", {}).keys(),
                     tuple(
                         aliases.get(edge["job_id"], edge["job_id"])
                         for edge in job["edges"] if not edge.get("authenticated_completion")

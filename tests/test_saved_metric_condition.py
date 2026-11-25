@@ -66,14 +66,17 @@ def test_final_metric_condition_excludes_one_replicated_candidate(host, tmp_path
     trained = settle(jobs.admit_plan(
         folders, saved, run_keys=tuple(run.key for run in trains), token=token("metric-train"),
     ))
-    assert all(row["state"] == "succeeded" for row in trained.values()), trained
+    assert all(row["state"] == "succeeded" for row in trained.values()), [row["outcome"] for row in trained.values()]
     status = {row.key: row.status for row in service.read(project, revision=None).status_rows()}
     zero, = [run.key for run in evaluations if run.coordinates["seed"].value == 0]
     assert status[zero] is JobStatus.NOT_CHOSEN
+    pass_run, = [run for run in evaluations if run.key != zero]
     results = settle(jobs.admit_plan(
-        folders, saved, run_keys=tuple(run.key for run in evaluations) + (gathered.key.run,),
-        token=token("metric-evaluate"),
+        folders, saved, run_keys=(pass_run.key, gathered.key.run), token=token("metric-chosen-only"),
     ))
+    assert not any(row["request"] == next(run.request_id for run in evaluations if run.key == zero)
+                   for row in host.jobs(project=saved.project_id))
+    results.update(settle(jobs.admit_plan(folders, saved, run_keys=(zero,), token=token("metric-false"))))
     view = SuccessView(ImmutableArtifactBlobProvider(saved.store_path))
     rows = {row.key: row for row in service.read(project, revision=None).status_rows()}
     for run in evaluations:

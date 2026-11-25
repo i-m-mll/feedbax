@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from pydantic import TypeAdapter, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, render as render_report
 from feedbax.contracts.artifact_custody import (
@@ -21,6 +21,7 @@ from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
 from feedbax.contracts.effective_success import (
     Bindings,
     BoundMember,
+    ExcludedProduct,
     LightOrigins,
     Product,
     Products,
@@ -33,7 +34,7 @@ from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_M
 from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE
 from feedbax.contracts.operation import DatasetPort, ModelPort, OperationDefinition, TaskPort
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef
+from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef, RequestId
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
     NumericalSettings,
@@ -55,6 +56,7 @@ class LightDelivery(StrictModel):
     project_id: str
     manifest_root: Path
     request: RequestObject
+    excluded: dict[RequestId, ExcludedProduct] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
     @field_validator("manifest_root")
     @classmethod
