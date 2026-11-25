@@ -58,7 +58,8 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainRuns,
 )
 from feedbax.contracts.project_inputs import (
-    BatchCheckpoint, InputBinding, SelectedRow, StepReference, SubsetTerms, producer_member_key, subset_to_rows,
+    BatchCheckpoint, BoundRank, InputBinding, SelectedAxisValue, StepReference, SubsetTerms,
+    producer_member_key, subset_to_rows,
 )
 from feedbax.contracts.studio_place import (
     StudioStepPlace, definition_place, document_path, path_parts, variation_targets,
@@ -72,12 +73,12 @@ from feedbax.contracts.project_io import project_declaration_name
 from feedbax.planner.project_plan import (
     BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, ProjectPlan, RunKey,
     RunProblem,
-    authored_request_change,
+    authored_request_change, planned_input_groups,
 )
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
-from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates
+from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates, coordinate_text
 from feedbax.contracts.run_rule import RuleRefusal, choose
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
@@ -378,6 +379,28 @@ class ProjectPlanRead:
             at: value for _, values in gathered.values() for at, value in values.items()
         }
 
+        def figure_reference(key: RunKey, element: str) -> StepReference | None:
+            candidates = [
+                axis_coordinates(row.coordinates, row.input_axes)
+                for row in step_rows[key.variant, key.step]
+            ]
+            row = plan.row(key)
+            assert row is not None
+            axes = {}
+            for axis, value in axis_coordinates(row.coordinates, row.input_axes).items():
+                others = [
+                    values for values in candidates if axis in values and values[axis].value_id == value.value_id
+                ]
+                if len(others) != len(candidates):
+                    axes[axis] = [SelectedAxisValue(id=value.value_id, label=coordinate_text(value))]
+                    candidates = others
+            if len(candidates) != 1:
+                return None
+            return StepReference(
+                step=key.step, where=SubsetTerms(axes=axes) if axes else None,
+                element=element, product=PLOTLY_FIGURE_ROLE,
+            )
+
         return StudioProjectWindowMap(
             variants=[variant for variant in plan.variants if includes(variant)],
             steps=[
@@ -455,9 +478,8 @@ class ProjectPlanRead:
                     key=StudioSavedTrainKey.model_validate(run, from_attributes=True),
                     name=name, kind=requests[0].kind,
                     status=statuses[ElementKey(run, name)].status, reason=statuses[ElementKey(run, name)].reason,
-                    figure=StepReference(
-                        step=run.step, row=run.row, element=name, product=PLOTLY_FIGURE_ROLE,
-                    ) if isinstance(requests[0].outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
+                    figure=figure_reference(run, name)
+                    if isinstance(requests[0].outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
                     requests=[
                         StudioProjectWindowMapRequest(
                             labels=dict(parse_labels(element.key.member or "")),
@@ -555,7 +577,7 @@ def _analysis_status(
     for status in (
         JobStatus.CORRUPT, JobStatus.CANNOT_RUN, JobStatus.FAILED, JobStatus.BLOCKED,
         JobStatus.STOPPING, JobStatus.RUNNING, JobStatus.STARTING, JobStatus.QUEUED,
-        JobStatus.INTERRUPTED, JobStatus.STOPPED, JobStatus.STALE, JobStatus.NOT_RUN,
+        JobStatus.INTERRUPTED, JobStatus.STOPPED, JobStatus.STALE, JobStatus.WAITING, JobStatus.NOT_RUN,
     ):
         if (child := next((row for row in elements if row.status == status), None)) is not None:
             return PlanStatusRow(key, label, status, child.reason)
@@ -701,7 +723,7 @@ class ProjectPlanService:
         ):
             raise ProjectFolderInvalid("The chosen attempts do not share one complete Best selection.")
         frozen = subset_to_rows(subset.terms, (
-            SelectedRow(key=key, variant=by_rank[key].variant, row=by_rank[key].row) for key in subset.ranks
+            BoundRank(key=key, variant=by_rank[key].variant, row=by_rank[key].row) for key in subset.ranks
         ))
         address = AuthoredFileAddress(kind="step", id=body.step)
         authored = step.model_dump(mode="json", exclude_unset=True)
@@ -750,7 +772,7 @@ class ProjectPlanService:
 
     def _evaluation_result(
         self, project_id: str, body: StudioSavedEvaluationRead,
-    ) -> tuple[ProjectPlanRead, StudioSavedEvaluationRow, EvaluationResult]:
+    ) -> tuple[ProjectPlanRead, EvaluationResult]:
         view = self.read(project_id, revision=body.revision)
         key = RunKey(body.key.variant, body.key.step, body.key.row)
         row = view.evaluations.get(key)
@@ -758,27 +780,25 @@ class ProjectPlanService:
             attempt.successful_receipt for attempt in view.attempts_by_run.get(key, ())
             if attempt.job_id == body.job_id
         ), None)
-        if row is None or receipt is None:
+        if row is None:
             raise JobNotFound(body.job_id)
-        if (
-            isinstance(body, StudioSavedEvaluationReplayRequest)
-            and body.trial is not None
-            and body.trial not in row.trials
-        ):
-            raise ProjectFolderInvalid("The selected trial is absent from the saved Evaluate request.")
+        if receipt is None and row.previous is not None and row.previous.job_id == body.job_id:
+            receipt = row.previous.receipt
+        if receipt is None:
+            raise JobNotFound(body.job_id)
         result = self.jobs.read_evaluation_result(
             project=view.settled.project_id, store=view.settled.store_path, job_id=body.job_id,
         )
         if result.receipt != receipt:
             raise JobConflict("The selected Evaluate receipt changed.")
-        return view, row, result
+        return view, result
 
     def evaluation_replay(
         self, project_id: str, body: StudioSavedEvaluationReplayRequest,
     ) -> StudioTrialReplayResponse:
-        _, _, result = self._evaluation_result(project_id, body)
+        _, result = self._evaluation_result(project_id, body)
         try:
-            return result.replay(body.trial, checkpoint=body.checkpoint, aggregate=body.aggregate)
+            return result.replay(body.trial, checkpoint=body.checkpoint, aggregate=body.aggregate, mean=body.mean)
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, ValueError, KeyError) as error:
@@ -795,15 +815,18 @@ class ProjectPlanService:
         if run is None:
             raise JobNotFound(body.job_id)
         try:
+            result = self.jobs.read_evaluation_objective_attempt(
+                project=settled.project_id, store=settled.store_path, job_id=body.job_id, request_id=run.request_id,
+            )
+        except JobNotFound:
+            return self._retained_evaluation_objective(project_id, body)
+        try:
             _, params, subject = decode_rollout_request(run.request_id, plan.requests[run.request_id])
             if not isinstance(subject, ProductRef) or not isinstance(subject.select, UpdateSeriesMember):
                 raise JobNotFound(body.job_id)
             train = decode_request(plan.requests[subject.request_id], plan.documents.__getitem__).spec
             if not isinstance(train, DocumentTrainingRequestSpec):
                 raise ValueError("Evaluate subject has no authored Objective.")
-            result = self.jobs.read_evaluation_objective_attempt(
-                project=settled.project_id, store=settled.store_path, job_id=body.job_id, request_id=run.request_id,
-            )
             requested = list(subject.select.updates)
             objective = train.trial_documents.objective
             if isinstance(result, EvaluationResult):
@@ -817,6 +840,31 @@ class ProjectPlanService:
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise JobConflict("The selected Evaluate objective could not be read and authenticated.") from error
 
+    def _retained_evaluation_objective(
+        self, project_id: str, body: StudioSavedEvaluationRead,
+    ) -> StudioEvaluationObjectiveSeries:
+        view, result = self._evaluation_result(project_id, body)
+        try:
+            store = ImmutableArtifactBlobProvider(view.settled.store_path)
+            receipts = SuccessView(store)
+            ref = receipts.attempt_ref(body.job_id)
+            if ref is None:
+                raise JobNotFound(body.job_id)
+            saved = receipts.read_receipt(ref)
+            _, _, subject = decode_rollout_request(saved.request.id, store.get_object(saved.request.object))
+            if not isinstance(subject, ProductRef) or not isinstance(subject.select, UpdateSeriesMember):
+                raise JobNotFound(body.job_id)
+            (bound,) = saved.inputs["subject"]
+            producer = bound.evaluation_subject
+            if producer is None or producer.producer.id != subject.request_id:
+                raise ValueError("Saved Evaluate names a different Train request.")
+            train = receipts.read_request(producer.producer).spec
+            if not isinstance(train, DocumentTrainingRequestSpec):
+                raise ValueError("Evaluate subject has no authored Objective.")
+            return result.objective_series(list(subject.select.updates), objective=train.trial_documents.objective)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise JobConflict("The retained Evaluate objective could not be read and authenticated.") from error
+
 
 def read_settled_project_plan(
     settled: SettledProjectPlan, reader: PlanJobReader, *, stopped_checkpoint_jobs: Sequence[str] = (),
@@ -825,11 +873,13 @@ def read_settled_project_plan(
 ) -> ProjectPlanRead:
     """Join one saved Plan to the verified Host evidence used by Studio."""
     light = settled.plan.light_requests
-    requests = {run.request_id for run in settled.plan.runs} | {node.request_id for node in light.values()}
+    runs = settled.plan.runs
+    requests = {run.request_id for run in runs} | {node.request_id for node in light.values()}
     jobs = reader.read_plan_attempts(
         project=settled.project_id, store=settled.store_path, requests=requests,
         stopped_checkpoint_jobs=stopped_checkpoint_jobs,
-        light_addresses={plan_attempt_key(key) for key in light}, project_root=settled.project_root,
+        addresses={plan_attempt_key(run.key) for run in runs} | {plan_attempt_key(key) for key in light},
+        project_root=settled.project_root,
     )
     if remote_attempts:
         by_request = dict(jobs.by_request)
@@ -844,34 +894,96 @@ def read_settled_project_plan(
                 continues=observed.continues, collection_progress=observed.collection_progress,
             ))
         jobs = replace(jobs, by_request=MappingProxyType(by_request))
-    evaluations = {}
-    evaluation_problems = []
-    for run in settled.plan.runs:
-        if run.kind == "evaluate":
-            row, problem = _evaluation_row(settled, run, jobs, reader)
-            evaluations[run.key] = row
-            if problem is not None:
-                evaluation_problems.append(problem)
     history = dict(_train_history(settled, jobs))
     for key, opening in (openings or {}).items():
         if key in history:
             history[key] = replace(history[key], status=opening.status, reason=opening.reason)
-        if key in evaluations:
-            evaluations[key] = evaluations[key].model_copy(update={"status": opening.status, "reason": opening.reason})
+    evaluations = {}
+    evaluation_problems = []
+    for run in runs:
+        if run.kind == "evaluate":
+            row, problem = _evaluation_row(settled, run, jobs, reader, history)
+            if (opening := (openings or {}).get(run.key)) is not None:
+                row = row.model_copy(update={"status": opening.status, "reason": opening.reason})
+            evaluations[run.key] = row
+            if problem is not None:
+                evaluation_problems.append(problem)
     return ProjectPlanRead(
         settled,
         jobs,
         MappingProxyType({
             run.key: attempts
-            for run in settled.plan.runs
+            for run in runs
             if (attempts := jobs.by_request.get(run.request_id)) is not None
         }),
         MappingProxyType(history),
         MappingProxyType(evaluations),
         tuple(evaluation_problems),
-        MappingProxyType({key: _light_history(settled, jobs, node) for key, node in light.items()}),
+        _light_histories(settled, jobs, history, evaluations),
         openings or {},
     )
+
+
+def _dependency_state(
+    plan: ProjectPlan, inputs: Mapping[RunKey | ElementKey, JobStatus],
+) -> tuple[JobStatus, str] | None:
+    waiting = {
+        JobStatus.NOT_RUN, JobStatus.WAITING, JobStatus.QUEUED, JobStatus.STARTING,
+        JobStatus.RUNNING, JobStatus.STOPPING, JobStatus.AWAITING_AUTHORIZATION, JobStatus.COLLECTING,
+    }
+    for states, status, message in (
+        ({JobStatus.STALE}, JobStatus.STALE, "{} is out of date."),
+        (waiting, JobStatus.WAITING, "Waiting for {}."),
+    ):
+        if (source := next((key for key, state in inputs.items() if state in states), None)) is not None:
+            key = source.run if isinstance(source, ElementKey) else source
+            label = plan.steps[key.variant, key.step].label or key.step
+            return status, message.format(label)
+    return None
+
+
+def _dependency_status(
+    dependency: tuple[JobStatus, str] | None, status: JobStatus, reason: str | None,
+) -> tuple[JobStatus, str | None]:
+    if dependency is not None and (
+        status in {JobStatus.NOT_RUN, JobStatus.QUEUED}
+        or dependency[0] is JobStatus.STALE and status in {JobStatus.STALE, JobStatus.SUCCEEDED}
+    ):
+        return dependency
+    return status, reason
+
+
+def _light_histories(
+    settled: SettledProjectPlan, jobs: PlanJobAttempts,
+    trains: Mapping[RunKey, TrainRowHistory], evaluations: Mapping[RunKey, StudioSavedEvaluationRow],
+) -> Mapping[RunKey | ElementKey, LightHistory]:
+    nodes = settled.plan.light_requests
+    histories: dict[RunKey | ElementKey, LightHistory] = {}
+
+    def visit(key: RunKey | ElementKey) -> LightHistory:
+        if key in histories:
+            return histories[key]
+        node = nodes[key]
+        row = _light_history(settled, jobs, node)
+        if row.status in {JobStatus.NOT_RUN, JobStatus.STALE, JobStatus.QUEUED, JobStatus.SUCCEEDED}:
+            inputs: dict[RunKey | ElementKey, JobStatus] = {}
+            for bindings in planned_input_groups(node).values():
+                for binding in bindings:
+                    if binding.terminal is not None:
+                        continue
+                    for source in (binding.element,) if binding.element is not None else binding.sources:
+                        if source in nodes:
+                            inputs[source] = visit(source).status
+                        elif isinstance(source, RunKey) and (upstream := trains.get(source) or evaluations.get(source)):
+                            inputs[source] = upstream.status
+            status, reason = _dependency_status(_dependency_state(settled.plan, inputs), row.status, row.reason)
+            row = replace(row, status=status, reason=reason)
+        histories[key] = row
+        return row
+
+    for key in nodes:
+        visit(key)
+    return MappingProxyType(histories)
 
 
 def _light_history(
@@ -882,7 +994,7 @@ def _light_history(
     attempts = jobs.by_request.get(node.request_id, ())
     successes = tuple(attempt for attempt in attempts if attempt.light_success is not None)
     current = successes[-1] if successes else None
-    addressed = jobs.light_by_address.get(plan_attempt_key(key), ())
+    addressed = jobs.by_address.get(plan_attempt_key(key), ())
     prior = next((attempt for attempt in reversed(addressed) if (
         attempt.light_success is not None and attempt != current
     )), None)
@@ -918,7 +1030,7 @@ def _light_result(settled: SettledProjectPlan, attempt: PlanJobAttempt | None) -
         if role in success.products:
             products[role] = f"{base}/{role}/{entry}"
     return StudioSavedLightResult(
-        job_id=attempt.job_id, request_id=success.request.id, receipt=attempt.successful_receipt,
+        job_id=attempt.job_id, request_id=success.request.id, revision=attempt.revision, receipt=attempt.successful_receipt,
         products=products, validity=attempt.validity, provenance=attempt.provenance,
     )
 
@@ -930,6 +1042,7 @@ def _evaluation_params(settled: SettledProjectPlan, run: PlannedRun) -> Mapping[
 
 def _evaluation_row(
     settled: SettledProjectPlan, run: PlannedRun, jobs: PlanJobAttempts, reader: PlanJobReader,
+    history: Mapping[RunKey, TrainRowHistory],
 ) -> tuple[StudioSavedEvaluationRow, StudioProjectWindowMapProblem | None]:
     key = StudioSavedTrainKey.model_validate(run.key, from_attributes=True)
     series = None
@@ -947,8 +1060,12 @@ def _evaluation_row(
                 rule = BatchCheckpoint(at=batch)
             case LastMember():
                 rule = "last"
+    sources = planned.sources if planned is not None and planned.terminal is None else ()
+    inputs: dict[RunKey | ElementKey, JobStatus] = {source: upstream.status for source in sources if (upstream := history.get(source)) is not None}
+    dependency = _dependency_state(settled.plan, inputs)
     trials = []
     problem = None
+    can_run = False
     try:
         params, subject = reader.evaluation_parameters(settled.plan, run)
         trials = list(params.trials)
@@ -959,9 +1076,10 @@ def _evaluation_row(
                 producers = tuple(candidate.reference.request_id for candidate in candidates)
             case _:
                 producers = ()
-        if not set(producers) <= jobs.checkpoint_producers:
+        can_run = set(producers) <= jobs.checkpoint_producers
+        if not can_run and dependency is None:
             raise CannotRun("/inputs/subject", EVALUATION_SUBJECT_REQUIRED)
-        if isinstance(subject, ProductRef) and isinstance(subject.select, BatchSetMember) and not set(subject.select.batches) <= set(
+        if can_run and isinstance(subject, ProductRef) and isinstance(subject.select, BatchSetMember) and not set(subject.select.batches) <= set(
             jobs.checkpoint_catalogs.get(subject.request_id, ())
         ):
             raise CannotRun("/inputs/subject/checkpoint", "admitted Train catalogue omits requested batches")
@@ -977,6 +1095,7 @@ def _evaluation_row(
                 f"which saved updates {', '.join(map(str, held)) or 'none'}.",
             )
     except CannotRun as error:
+        can_run = False
         problem = StudioProjectWindowMapProblem(
             code="cannot_run", path=error.path, detail=error.reason,
             variant=key.variant, step=key.step, row=key.row,
@@ -990,36 +1109,50 @@ def _evaluation_row(
         attempt.successful_receipt is not None
         and attempt.output_size_bytes is not None
     )), None)
-    result = None
-    if success is not None:
-        assert success.successful_receipt is not None and success.output_size_bytes is not None
-        result = StudioSavedEvaluationResult(
-            job_id=success.job_id, receipt=success.successful_receipt,
-            checkpoint_source=success.checkpoint_source, size_bytes=success.output_size_bytes,
-            checkpoint_sources=list(success.checkpoint_sources) or None,
-            checkpoint_gaps=list(success.checkpoint_gaps) if success.checkpoint_gaps is not None else None,
-            placement=success.evaluation_placement if series is not None else None,
-            bound_subject=_planned_bound(success.bound_subject, planned), validity=success.validity,
-            provenance=success.provenance,
-        )
+    previous = next((attempt for attempt in reversed(jobs.by_address.get(plan_attempt_key(run.key), ())) if (
+        attempt.request_id != run.request_id and attempt.successful_receipt is not None
+        and attempt.output_size_bytes is not None
+    )), None)
+    result = _saved_evaluation_result(success, planned)
+    prior = _saved_evaluation_result(previous, None)
     retained = bool(attempts and attempts[-1].collected_evaluate) or (
         success is not None and success.collected_evaluate
     )
     status, reason = saved_request_status(
-        attempts, success=success, refused=problem is not None and not retained,
+        attempts, success=success, refused=problem is not None and not retained, changed=prior is not None,
     )
+    if problem is None:
+        status, reason = _dependency_status(dependency, status, reason)
     displayed_attempt = active_plan_attempt(attempts)
     if displayed_attempt is None and attempts:
         displayed_attempt = success if status is JobStatus.SUCCEEDED else attempts[-1]
     return StudioSavedEvaluationRow(
         key=key, request_id=run.request_id,
         status=status, reason=reason,
-        can_run=problem is None, trials=trials, result=result, checkpoint_series=series, checkpoint_rule=rule,
+        can_run=can_run, trials=trials, result=result, previous=prior, checkpoint_series=series, checkpoint_rule=rule,
         checkpoint_attempt=displayed_attempt.checkpoint_attempt if series is not None and displayed_attempt else None,
         subject_rank_key=planned.member.key if isinstance(reference, BestRank) and reference.group else None,
         bound_subject=_planned_bound(attempts[-1].bound_subject, planned) if attempts else None,
     ), problem
 
+
+
+def _saved_evaluation_result(
+    attempt: PlanJobAttempt | None, planned: PlannedInput | None,
+) -> StudioSavedEvaluationResult | None:
+    if attempt is None:
+        return None
+    assert attempt.successful_receipt is not None and attempt.output_size_bytes is not None
+    return StudioSavedEvaluationResult(
+        job_id=attempt.job_id, request_id=attempt.request_id, revision=attempt.revision,
+        receipt=attempt.successful_receipt, trials=list(attempt.trials),
+        checkpoint_source=attempt.checkpoint_source, size_bytes=attempt.output_size_bytes,
+        checkpoint_sources=list(attempt.checkpoint_sources) or None,
+        checkpoint_gaps=list(attempt.checkpoint_gaps) if attempt.checkpoint_gaps is not None else None,
+        placement=attempt.evaluation_placement if attempt.checkpoint_gaps is not None else None,
+        bound_subject=_planned_bound(attempt.bound_subject, planned), validity=attempt.validity,
+        provenance=attempt.provenance,
+    )
 
 def _subject_checkpoint_path(settled: SettledProjectPlan, run: PlannedRun, planned: PlannedInput) -> str:
     """Where the checkpoint of the selection that chose ``planned`` is authored: its list item's, or the role's."""
@@ -1075,6 +1208,15 @@ def _train_history(
             previous = _success(run.request_id, results[-2])
         else:
             previous = prior
+        if previous is None:
+            addressed = jobs.by_address.get(plan_attempt_key(run.key), ())
+            former = next((
+                attempt for attempt in reversed(addressed)
+                if attempt.request_id is not None and attempt.request_id != run.request_id
+                and (attempt.request_id, attempt.job_id) in by_attempt
+            ), None)
+            if former is not None and former.request_id is not None:
+                previous = _success(former.request_id, former)
         older = _result(previous, by_attempt)
         change = None
         if older is not None and older.request_id != run.request_id:
@@ -1122,7 +1264,7 @@ def _result(
     assert attempt.successful_receipt is not None
     return StudioSavedTrainResult(
         request_id=pointer["request_id"], job_id=attempt.job_id,
-        receipt=attempt.successful_receipt, progress=attempt.progress,
+        receipt=attempt.successful_receipt, progress=attempt.progress, revision=attempt.revision,
         validity=attempt.validity, provenance=attempt.provenance,
     )
 

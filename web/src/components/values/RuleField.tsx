@@ -5,7 +5,8 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { TermText } from '@/components/ui/TextField';
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuItem } from '@/components/ui/Menu';
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger, Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
+import { Button } from '@/components/ui/Button';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { fieldBox, fieldInput, popupItem, popupSurface, primaryText } from '@/components/ui/styles';
 import { contextMenuKey } from '@/components/pipeline/CommandContextMenu';
@@ -17,6 +18,8 @@ import { ruleCompletions, type RuleCompletion, type RuleVocabulary } from './run
 export interface RuleFieldProblem {
   readonly reason: string;
   readonly term?: { readonly text: string; readonly start: number; readonly end: number };
+  /** What the mark offers in place of what the rule names that no longer exists. */
+  readonly offers?: readonly RuleFieldCommand[];
 }
 
 /** A command on the field's menu. */
@@ -33,14 +36,14 @@ export interface RuleFieldProps {
   vocabulary: RuleVocabulary;
   /** The trailing mark: how many runs the rule chooses, of how many (`4/16`). */
   count?: string;
-  /** The rows To Rows pinned beside the rule, by name. */
+  /** The pinned axes or measured ranks, by name. */
   pinned?: readonly string[];
   /** Why the rule being written, or the saved one, does not choose runs, with the term of that text it is about. */
   problem?: RuleFieldProblem;
   disabled?: boolean;
   commands?: readonly RuleFieldCommand[];
   /** While runs are picked for the rule, what the picked runs write: the rule's text, or the rows they pin; a new object for each pick. */
-  picked?: { readonly text: string; readonly pinned?: readonly string[] };
+  picked?: { readonly text: string; readonly pinned?: readonly string[]; readonly representable?: boolean };
   /** Ends picking: saving what was picked on Enter or on leaving the field and what it picks from, restoring on Escape. */
   onPickEnd?(save: boolean): void;
   /** The rule as it is being written while the field has focus; null once it is left. */
@@ -70,6 +73,7 @@ export function RuleField({
   /** The saved rule when picked runs were last saved, until which leaving the field saves nothing more. */
   const pickSaved = useRef<string>();
   const picking = picked !== undefined;
+  const canSavePick = picked?.representable !== false;
   const completions = useMemo(() => focused && !picking ? ruleCompletions(draft, caret, vocabulary) : [],
     [focused, picking, draft, caret, vocabulary]);
   const endPick = useRef(onPickEnd);
@@ -77,9 +81,9 @@ export function RuleField({
   useEffect(() => {
     if (!picking) return;
     const end = (save: boolean) => {
-      if (save) pickSaved.current = value;
+      if (save && canSavePick) pickSaved.current = value;
       else setDraft(value);
-      endPick.current?.(save);
+      endPick.current?.(save && canSavePick);
     };
     // An axis's values are picked from its menu, which is drawn outside the card.
     const leaves = (target: EventTarget | null) => target instanceof Element
@@ -89,7 +93,7 @@ export function RuleField({
       if (event.key === 'Escape' && !(event.target instanceof Element && event.target.closest('[role="menu"]'))) end(false);
       else if (event.key === 'Enter' && event.target instanceof Node && box.current?.contains(event.target)) {
         event.preventDefault();
-        end(true);
+        if (canSavePick) end(true);
       }
     };
     document.addEventListener('pointerdown', press, true);
@@ -100,7 +104,7 @@ export function RuleField({
       document.removeEventListener('focusin', press, true);
       document.removeEventListener('keydown', key, true);
     };
-  }, [picking, value]);
+  }, [picking, value, canSavePick]);
   // Each pick, including one from an axis's menu, hands the keyboard back to the field, so Enter saves what is picked.
   useEffect(() => {
     if (!picked) return;
@@ -149,7 +153,14 @@ export function RuleField({
       ? <span className="shrink-0 pr-1 text-shell-muted" aria-description={shownPinned.join(', ')}>{studioName('rows')}</span> : null}
     {count ? <span className="shrink-0 pr-control-inline tabular-nums text-shell-muted">{count}</span> : null}
     {term && element && <TermText input={element} text={draft} term={term} />}
-    {problem && <FieldProblem reason={problem.reason} id={`${id}-problem`} className="mr-1" />}
+    {problem && (problem.offers?.length ? <Menu>
+      <MenuTrigger render={<Button variant="bare" size="content" aria-label={studioName('problem')} aria-describedby={`${id}-problem`} />}>
+        <FieldProblem reason={problem.reason} id={`${id}-problem`} className="mr-1" />
+      </MenuTrigger>
+      <MenuContent align="end">
+        {problem.offers.map((offer) => <MenuItem key={offer.label} disabled={offer.disabled} onClick={offer.invoke}>{offer.label}</MenuItem>)}
+      </MenuContent>
+    </Menu> : <FieldProblem reason={problem.reason} id={`${id}-problem`} className="mr-1" />)}
   </div>;
   return <FieldRow label={label} htmlFor={id}>
     <Autocomplete.Root items={completions} filter={null} value={draft} mode="list"

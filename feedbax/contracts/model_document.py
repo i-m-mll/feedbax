@@ -7,9 +7,9 @@ from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, JsonValue, StringConstraints, model_validator
 
-from feedbax.contracts.acausal import AcausalPhysicalDomain
+from feedbax.contracts.acausal import AcausalPhysicalDomain, EquationsDomain
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import UnresolvedValue
+from feedbax.contracts.expression_values import SignalSpace, UnresolvedValue
 from feedbax.contracts.model_address import ModelElementId, PhysicalEnd, SignalSource, SignalTarget
 from feedbax.contracts.request_identity_guard import IdentityAuthoredAlternative
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
@@ -25,6 +25,7 @@ class SignalType(StrictModel):
     base: str | None = None
     shape: tuple[int | str | None, ...] | None = None
     unit: str | None = None
+    space: SignalSpace | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class ModelTime(StrictModel):
@@ -86,10 +87,13 @@ class SignalOutput(StrictModel):
     type: SignalType
 
 
+PhysicalPortType = Literal[EquationsDomain, "frame"]
+
+
 class PhysicalPort(StrictModel):
     id: ModelElementId
     name: ModelName
-    type: Literal["translational", "rotational", "frame"]
+    type: PhysicalPortType
 
 
 class ModelPorts(StrictModel):

@@ -56,6 +56,10 @@ from feedbax.contracts.execution_target import (
     SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnreachableTarget,
 )
 from feedbax.contracts.analysis_document import AnalysisDocument
+from feedbax.contracts.dataset import TrialFigureTime
+from feedbax.contracts.studio_figure import (
+    FigureLayoutMeta, FigurePanelMeta, FigureProduct, FigureRun, FigureTraceMeta, PlotlyLayout, PlotlyTrace,
+)
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
 from feedbax.contracts.studio_scene import (
@@ -285,6 +289,7 @@ from feedbax.contracts.model_edit import (
     ModelLibraryConnection,
     ModelAddedElement,
     ModelPortProjection,
+    ModelPhysicalPortProjection,
     ModelProjection,
     ModelProjectionRequest,
     ModelRemovedElement,
@@ -305,6 +310,7 @@ from feedbax.contracts.model_edit import (
     CollapseGraph,
     FlipComponent,
     InsertComponentOnWire,
+    InsertComponentOnPhysicalConnection,
     MoveWireAttachment,
     MovePort,
     PasteComponents,
@@ -319,6 +325,19 @@ from feedbax.contracts.model_edit import (
 from feedbax.contracts.studio_refinements import (
     CROSS_FIELD_REFINEMENTS,
     REGISTERED_CONSTRAINT_VALIDATORS,
+)
+from feedbax.contracts.trial_clock import (
+    StudioSavedFigureMeanRequest,
+    TrialBoundarySummary,
+    TrialClockAlignment,
+    TrialClockChoice,
+    TrialClockSpan,
+    TrialMean,
+    TrialMeanCondition,
+    TrialMeanEpoch,
+    TrialMeanOptions,
+    TrialMeanSelection,
+    TrialSeriesSummary,
 )
 from feedbax.contracts.trial_record import (
     TaskEpochShare,
@@ -388,7 +407,9 @@ from feedbax.contracts.studio_project import (
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
     StudioProjectDocument,
+    StudioProjectExamples,
     StudioProjectList,
+    StudioProjectNew,
     StudioProjectPatch,
     StudioProjectPatchBatch,
     StudioProjectFilePatch,
@@ -515,7 +536,9 @@ AUTHORED_CONTRACT_MODELS = (
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
     StudioProjectDocument,
+    StudioProjectExamples,
     StudioProjectList,
+    StudioProjectNew,
     StudioProjectWindowMap,
     StudioProjectPatch,
     StudioProjectPatchBatch,
@@ -596,6 +619,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     CollapseGraph,
     FlipComponent,
     InsertComponentOnWire,
+    InsertComponentOnPhysicalConnection,
     MoveWireAttachment,
     RouteWire,
     SetModelAttachment,
@@ -619,6 +643,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelLibraryConnection,
     ModelConnectionReview,
     ModelPortProjection,
+    ModelPhysicalPortProjection,
     ModelAddedElement,
     ModelRemovedElement,
     ModelRewiredElement,
@@ -742,6 +767,25 @@ MODEL_TYPES: list[type[BaseModel]] = [
     DocumentTrainingConfig,
     TrainContinuation,
     TaskTimelineCue,
+    TrialBoundarySummary,
+    TrialClockAlignment,
+    TrialClockChoice,
+    TrialClockSpan,
+    TrialMean,
+    TrialMeanCondition,
+    TrialMeanEpoch,
+    TrialMeanOptions,
+    TrialMeanSelection,
+    TrialSeriesSummary,
+    StudioSavedFigureMeanRequest,
+    TrialFigureTime,
+    FigureTraceMeta,
+    FigurePanelMeta,
+    FigureRun,
+    FigureLayoutMeta,
+    PlotlyTrace,
+    PlotlyLayout,
+    FigureProduct,
     StudioTrialReplayResponse,
     TrialRecord,
     TrialStateTrack,
@@ -900,6 +944,8 @@ CONTRACT_MODEL_NAMES = [
     "StudioSceneGeometryResponse",
     "StudioErrorReport",
     "StudioTrialReplayResponse",
+    "StudioSavedFigureMeanRequest",
+    "FigureProduct",
     "PenzaiBuilderListResponse",
     "PenzaiInspectorResponse",
     "PenzaiNodeRequest",
@@ -1189,6 +1235,8 @@ def emit_interface(model: type[BaseModel]) -> str:
         annotation = hints[name]
         optional = "?" if not field.is_required() else ""
         lines.append(f"  {name}{optional}: {ts_type(annotation)};")
+    if model.model_config.get("extra") == "allow":
+        lines.append("  [property: string]: unknown;")
     lines.append("}")
     return "\n".join(lines)
 
@@ -1211,10 +1259,13 @@ def emit_schema(model: type[BaseModel]) -> str:
         if not field.is_required():
             schema = f"{schema}.optional()"
         lines.append(f"      {json.dumps(name)}: {schema},")
+    extras = (
+        ".catchall(jsonValueSchema)" if model.model_config.get("extra") == "allow" else ".strict()"
+    )
     lines.extend(
         [
             "    })",
-            "    .strict()",
+            f"    {extras}",
         ]
     )
     refinements = CROSS_FIELD_REFINEMENTS.get(model.__name__, ())

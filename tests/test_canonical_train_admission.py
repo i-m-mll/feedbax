@@ -54,7 +54,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
         functions=registries.expression_functions, python_tasks=registries.python_tasks,
         training_methods=registries.training_methods,
     )
-    snapshot = folders.new().snapshot
+    snapshot = folders.new("admission").snapshot
     project = snapshot.project_id
     payload = managed_train_payload()
     for name in ("train", "stable"):
@@ -354,7 +354,7 @@ _CHAIN_UPDATES = 64
 
 
 def _saved_chain(folders):
-    snapshot = folders.new().snapshot
+    snapshot = folders.new("saved-chain").snapshot
     payload = managed_train_payload(batches=_CHAIN_UPDATES)
     payload["training_config"]["snapshot_interval"] = 16
     snapshot = _saved_step(
@@ -501,7 +501,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
         functions=registries.expression_functions, python_tasks=registries.python_tasks,
         training_methods=registries.training_methods,
     )
-    snapshot = folders.new().snapshot
+    snapshot = folders.new("authored-source").snapshot
     source_payload = managed_train_payload(batches=4)
     source_payload["seed"] = 12
     snapshot = _saved_step(folders, snapshot, "prefix", {

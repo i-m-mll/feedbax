@@ -16,6 +16,7 @@ from feedbax.contracts.expression_values import (
     Level,
     LiteralValue,
     ProblemCode,
+    SignalSpace,
     ValueBase,
     ValueType,
 )
@@ -68,6 +69,7 @@ def _elementwise(
     base: ValueBase | None = None,
     dimensions: str = "same",
     boolean: bool = False,
+    operation: str | None = None,
 ) -> ValueType | SignatureError:
     if any((arg.base == _BOOL) != boolean for arg in args):
         return _type("Expected boolean arguments." if boolean else "Expected numeric arguments.")
@@ -88,7 +90,27 @@ def _elementwise(
         base=actual_base,
         shape=next(iter(shapes), ()),
         dimensions=DIMENSIONLESS if actual_base == _BOOL else unit,
+        space=_arithmetic_space(operation, args) if operation is not None else None,
     )
+
+
+def _arithmetic_space(operation: str, args: tuple[ValueType, ...]) -> SignalSpace | None:
+    left, right = args
+    match operation, left.space, right.space:
+        case "sub", "point", "point":
+            return "free"
+        case "add" | "sub", "point", "free":
+            return "point"
+        case "add", "free", "point":
+            return "point"
+        case "add" | "sub", "free", "free":
+            return "free"
+        case "mul", _, "free" if not left.shape and left.dimensions == DIMENSIONLESS:
+            return "free"
+        case "mul", "free", _ if not right.shape and right.dimensions == DIMENSIONLESS:
+            return "free"
+        case _:
+            return None
 
 
 def _vector(
@@ -805,7 +827,10 @@ def register_builtins(registry: FunctionRegistry) -> None:
             name,
             "x, y",
             2,
-            partial(_elementwise, base=output, dimensions=dimensions),
+            partial(
+                _elementwise, base=output, dimensions=dimensions,
+                operation=name if name in {"add", "sub", "mul"} else None,
+            ),
             partial(_operation, operator),
             argument_context=_arithmetic_context
             if dimensions in ("product", "quotient")

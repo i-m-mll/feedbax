@@ -400,7 +400,7 @@ def test_recurrent_controller_without_readout_only_constrains_cell():
         2, 4, population_structure=_fixed_population_structure(), key=jax.random.key(0)
     )
 
-    assert set(network.nodes) == {"input_mux", "cell"}
+    assert set(network.nodes) == {"input_join", "cell"}
     assert [(item.node, item.role) for item in network.parameter_constraints] == [
         ("cell", "input_kernel")
     ]

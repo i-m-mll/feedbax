@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runPython } from './python';
-import { activate, activateMenuItem, chooseStepKind, number } from './studioKeyboard';
+import { activate, activateMenuItem, chooseStepKind, number, testProjectName } from './studioKeyboard';
 
 
 /** Runs a pure project-file generator (an action named `…files`) once per arguments and Python source. */
@@ -31,7 +31,7 @@ export async function fixture(...arguments_: string[]) {
 }
 
 export async function seedManagedProject(request: APIRequestContext, files: readonly unknown[], origin = '') {
-  const response = await request.post(origin + '/api/projects');
+  const response = await request.post(origin + '/api/projects', { data: { name: testProjectName() } });
   expect(response.status()).toBe(201);
   const { snapshot, configuration } = await response.json() as StudioProjectDocument;
   return { ...await appendManagedFiles(request, snapshot, files, origin), configuration };

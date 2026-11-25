@@ -25,7 +25,7 @@ from feedbax.contracts.component_history import Change, History
 from feedbax._vendor.jax_cookbook import identity
 from feedbax.contracts.component import PortType
 from feedbax.contracts.model_values import ModelFacts, StateReset, StateValue
-from feedbax.contracts.portable import ComponentOptions, Ports
+from feedbax.contracts.portable import ComponentOptions, PassedSignal, Ports
 from feedbax.runtime.graph import Component, GraphNode, TrialStateProblem
 from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 from feedbax.runtime.prototypes import (
@@ -321,7 +321,9 @@ class SignalChannel(GraphNode):
     """A noisy delay line."""
 
     ports: ClassVar[Ports] = Ports(
-        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+        output_leaves={("output",): PassedSignal(("input",), "type")},
     )
 
     input_ports: ClassVar = tuple(ports.inputs)

@@ -259,7 +259,7 @@ export function ordinaryEvaluation(step: Step): { subjects: EvaluationSubject[];
   const subjects: EvaluationSubject[] = [];
   for (const [index, reference] of selections.entries()) {
     if ((editableCheckpointRule(reference.checkpoint) === undefined && !axes.some((axis) => 'checkpoint_rule' in axis)) ||
-        reference.row != null || reference.variants != null) return undefined;
+        reference.variants != null) return undefined;
     const where = reference.where ?? {};
     const terms = 'subset' in where ? undefined : where;
     subjects.push({ reference, terms, where: listed ? `/inputs/subject/${index}/where` : '/inputs/subject/where' });
@@ -289,7 +289,7 @@ export async function createEvaluation(
 ) {
   const { saved } = editor.getSnapshot();
   if (saved.revision !== projection.revision || stopped && saved.project.sweep) throw new ProjectEditConflictError();
-  const { step, members, where } = trainSourceSubset(source, plan, projection, !!saved.project.sweep);
+  const { step, members, where } = trainSourceSubset(source, plan, projection);
   if (stopped && (
     members.length !== 1 || members[0].id !== stopped.runId ||
     !projection.rows.find(({ key }) => savedRunId(key) === stopped.runId)?.attempts.some(

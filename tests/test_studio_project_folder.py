@@ -160,7 +160,7 @@ def _read_plan(client, root, snapshot, *source_runs):
 def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path):
     app = create_app(projects_dir=tmp_path)
     client = TestClient(app)
-    response = client.post("/api/projects")
+    response = client.post("/api/projects", json={"name": "incomplete-train"})
     assert response.status_code == 201
     document = response.json()
     snapshot = document["snapshot"]
@@ -657,9 +657,7 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     root, client = study
     original = load_text_project(root)
     authored = original.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    authored["documents"]["selected"] = {"schema": "subset", "payload": {"rows": [
-        {"key": "selected-seed", "variant": "compare", "row": "seed=10"},
-    ]}}
+    authored["documents"]["selected"] = {"schema": "subset", "payload": {"axes": {"seed": [{"id": "10", "label": "First"}]}}}
     authored["steps"]["follow"] = {
         "kind": "train",
         "base": {"step": "fit"},
@@ -688,14 +686,12 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     assert len(before.requests) == 3
     for variant in before.variants:
         [follower] = [run for run in before.runs if run.key == RunKey(variant, "follow", selected.row)]
-        producer = RunKey("compare", "fit", "seed=10")
+        producer = RunKey(variant, "fit", "seed=10")
         assert follower.inputs["checkpoint"].producer == producer
-        assert follower.inputs["checkpoint"].member.key == "selected-seed"
+        assert follower.inputs["checkpoint"].member.key == "seed=10"
         subset = before.subsets[variant, "follow", "checkpoint"]
         assert (subset.document, subset.candidates, subset.members) == ("selected", 2, (producer,))
-        assert [(row.key, row.variant, row.row) for row in subset.terms.rows] == [
-            ("selected-seed", "compare", "seed=10"),
-        ]
+        assert [value.id for value in subset.terms.axes["seed"]] == ["10"]
         assert before.steps[variant, "follow"].inputs["checkpoint"].step == "fit"
     assert set(before.sources) == {selected}
     source = before.sources[selected]["/inputs/checkpoint"]
@@ -793,9 +789,7 @@ def _plan_dependencies(root: Path) -> None:
         "10": {"label": "First", "patches": {seed_path: {"value": 10}}},
         "2": {"patches": {seed_path: {"value": 2}}},
     }}}}
-    authored["documents"]["selected"] = {"schema": "subset", "payload": {"rows": [
-        {"key": "seed=10", "variant": "default", "row": "seed=10"},
-    ]}}
+    authored["documents"]["selected"] = {"schema": "subset", "payload": {"axes": {"seed": [{"id": "10", "label": "First"}]}}}
     authored["steps"]["follow"] = {
         "kind": "train",
         "base": {"step": "fit"},
@@ -945,10 +939,15 @@ def test_new_projects_are_durable_openable_and_distinct(tmp_path):
     projects = tmp_path / "projects"
     app = create_app(projects_dir=projects)
 
-    def create():
+    with TestClient(app) as client:
+        assert client.post("/api/projects").status_code == 422
+        assert client.post("/api/projects", json={"name": "untitled-123abc"}).status_code == 422
+    assert not projects.exists()
+
+    def create(name):
         client = TestClient(app)
         try:
-            response = client.post("/api/projects")
+            response = client.post("/api/projects", json={"name": name})
             assert response.status_code == 201, response.text
             assert response.headers["Cache-Control"] == "no-store"
             document = response.json()
@@ -959,7 +958,7 @@ def test_new_projects_are_durable_openable_and_distinct(tmp_path):
             client.close()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        creates = [pool.submit(create) for _ in range(2)]
+        creates = [pool.submit(create, name) for name in ("control", "experiment")]
         documents = [creation.result() for creation in creates]
 
     ids = {document["snapshot"]["project_id"] for document in documents}
@@ -968,6 +967,7 @@ def test_new_projects_are_durable_openable_and_distinct(tmp_path):
     assert len(names) == 2
     assert {entry.name for entry in projects.iterdir()} == names
     reopened = TestClient(create_app(projects_dir=projects))
+    assert reopened.post("/api/projects", json={"name": "control"}).status_code == 409
     for document in documents:
         snapshot = document["snapshot"]
         project_id = snapshot["project_id"]
@@ -1016,6 +1016,8 @@ def test_list_projects_reads_authored_folders_without_opening_or_creating_them(t
     assert response.headers["Cache-Control"] == "no-store"
     listed, = response.json()["projects"]
     assert listed["name"] == "current-project-name"
+    assert listed["folder"] == str(folder.resolve())
+    assert listed["step_count"] == 0
     assert datetime.fromisoformat(listed["modified"]) == datetime(2001, 9, 9, 1, 46, 40, tzinfo=timezone.utc)
     assert set(projects.rglob("*")) == before
 
@@ -1028,7 +1030,8 @@ def test_list_projects_reads_authored_folders_without_opening_or_creating_them(t
     })
     assert response.status_code == 201, response.text
     edited, = client.get("/api/projects").json()["projects"]
-    assert edited == {**listed, "modified": edited["modified"]}
+    assert edited["step_count"] == 1
+    assert edited == {**listed, "modified": edited["modified"], "step_count": 1}
     assert datetime.fromisoformat(edited["modified"]) > datetime.fromisoformat(listed["modified"])
 
 
@@ -1103,7 +1106,7 @@ def test_open_uses_managed_folder_ids_and_refuses_directory_symlinks(tmp_path):
 def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path):
     projects = tmp_path / "projects"
     client = TestClient(create_app(projects_dir=projects))
-    document = client.post("/api/projects").json()
+    document = client.post("/api/projects", json={"name": "named-files"}).json()
     created = document["snapshot"]
     project_id = created["project_id"]
     url = f"/api/projects/{project_id}/files"
@@ -1945,3 +1948,19 @@ def test_choosing_a_document_and_then_the_one_it_replaced_leaves_the_step_as_it_
         assert file.read_bytes() != stored
         train.save(train.choose("train-2", "training"))
         assert file.read_bytes() == stored
+
+
+def test_create_project_from_shipped_example_uses_the_requested_name(tmp_path):
+    projects = tmp_path / "projects"
+    with TestClient(create_app(projects_dir=projects)) as client:
+        examples = client.get("/api/projects/examples")
+        assert examples.status_code == 200, examples.text
+        assert "point-mass-reaching" in {entry["id"] for entry in examples.json()["examples"]}
+        assert not projects.exists()
+        missing = client.post("/api/projects", json={"name": "my-reaching", "example": "missing"})
+        assert missing.status_code == 404
+        created = client.post("/api/projects", json={"name": "my-reaching", "example": "point-mass-reaching"})
+        assert created.status_code == 201, created.text
+        assert created.json()["configuration"]["project"] == "my-reaching"
+        assert "train" in created.json()["snapshot"]["project"]["steps"]
+    assert {path.name for path in projects.iterdir()} == {"my-reaching"}

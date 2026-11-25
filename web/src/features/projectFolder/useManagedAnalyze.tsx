@@ -405,13 +405,9 @@ export function useManagedAnalyze({
           problems,
           runs: source && projection && !('subset' in where) && <SelectionRule
             scope={{ project: saved.project_id, revision: projection.revision, variant: key.variant }} source={source}
-            rule={where.rule ?? ''} pinned={where.rows?.map(({ key: row }) => row)} planned={subset} picking={selection}
+            terms={where} planned={subset} picking={selection}
             disabled={!canBind} problem={problems.rule}
-            pick={{ rows: stepSourceRows(projection, source.id, key.variant), onCommit: write }}
-            onCommit={(rule) => {
-              const { rule: _written, ...rest } = where;
-              write(rule ? { ...rest, rule } : rest);
-            }} />,
+            pick={{ rows: stepSourceRows(projection, source.id, key.variant) }} onCommit={write} />,
         };
       }}
       onChange={canBind ? (gesture) => {

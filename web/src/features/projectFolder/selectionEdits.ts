@@ -1,6 +1,7 @@
 import {
   StepReferenceSchema, type InputBinding, type JsonValue, type ProjectValueEdit, type StepReference,
-  type Step, type StepKind, type StudioProjectWindowMapProblem, type StudioSavedTrainKey, type TextSpan,
+  type SelectedAxisValue, type SelectedAxisValueProblem, type Step, type StepKind, type StudioProjectWindowMapProblem,
+  type StudioSavedTrainKey, type SubsetTerms, type TextSpan,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { savedRunId } from './projectWindowPlan';
@@ -45,10 +46,20 @@ export function bindingEdit(
 export interface RuleProblem {
   readonly reason: string;
   readonly span?: TextSpan;
+  /** The selected axis value the rule names that no longer exists, and the axis's values that do. */
+  readonly value?: SelectedAxisValueProblem;
 }
 
 const ruleProblem = (problem: StudioProjectWindowMapProblem): RuleProblem =>
-  ({ reason: problem.detail, ...problem.span && { span: problem.span } });
+  ({ reason: problem.detail, ...problem.span && { span: problem.span }, ...problem.selection_value && { value: problem.selection_value } });
+
+/** `terms` with the missing value of `value`'s axis replaced by `chosen`, or dropped where `chosen` is already selected. */
+export function replacedAxisValue(terms: SubsetTerms, value: SelectedAxisValueProblem, chosen: SelectedAxisValue): SubsetTerms {
+  const values = terms.axes?.[value.axis] ?? [];
+  const kept = values.flatMap((selected) => selected.id !== value.missing.id ? [selected]
+    : values.some(({ id }) => id === chosen.id) ? [] : [chosen]);
+  return { ...terms, axes: { ...terms.axes, [value.axis]: kept } };
+}
 
 /** A selection's problems, each on the field its path names. */
 export interface SelectionProblems {

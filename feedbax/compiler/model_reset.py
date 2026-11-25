@@ -16,7 +16,7 @@ from equinox.nn import State, StateIndex
 from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ValueBase, ValueType
+from feedbax.contracts.expression_values import Level, Problem, ProblemCode, SignalSpace, ValueBase, ValueType
 from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.runtime._graph_key_schedule import reset_key
 from feedbax.runtime._signal_schedule import ScopedPort, resolve_signal_schedule
@@ -238,6 +238,7 @@ def resolve_model_reset(
                 address: ModelAddress, dtype, shape: tuple[int, ...], unit: str,
                 path: tuple[str, ...], aliases: tuple[tuple[str, ...], ...] = (),
                 override_port: str | None = None, required: bool = False,
+                space: SignalSpace | None = None,
             ) -> None:
                 if override_port is not None and ScopedPort((*scope, name), override_port) in driven:
                     return
@@ -245,7 +246,7 @@ def resolve_model_reset(
                 if base is None:
                     raise ModelResetError(address.to_text(), "Reset storage needs a real, integer or boolean dtype")
                 field = ModelResetField(address, ValueType(
-                    base=base, shape=shape, dimensions=UNITS[unit].dimensions,
+                    base=base, shape=shape, dimensions=UNITS[unit].dimensions, space=space,
                 ), dtype.name, required=required)
                 bindings.append(_ResetBinding(
                     field, node.type, node.revision, owner_class, path, aliases, override_port,
@@ -262,6 +263,7 @@ def resolve_model_reset(
                 add(
                     ModelAddress.at_state(scope, name, state.symbol), sample.dtype, sample.shape, state.units,
                     state.fields, state.aliases, required=state.reset is not None and state.reset.required,
+                    space=state.space,
                 )
 
             config_paths = {

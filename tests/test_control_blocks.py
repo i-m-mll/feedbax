@@ -11,7 +11,7 @@ from feedbax.builtins.control.discrete import IntegratorDiscrete, UnitDelay, Zer
 from feedbax.builtins.control.pid import PID, PIDDiscrete
 
 # Signal components in components.py
-from feedbax.builtins.runtime.components import DeadZone, Demux, Mux, RateLimiter, Switch
+from feedbax.builtins.runtime.components import DeadZone, Split, Concatenate, RateLimiter, Switch
 
 # Filter components
 from feedbax.builtins.runtime.filters import BandPassFilter, HighPassFilter
@@ -223,13 +223,13 @@ class TestPIDDiscrete:
 
 
 # ===========================================================================
-# Mux / Demux
+# Concatenate / Split
 # ===========================================================================
 
-class TestMuxDemux:
-    def test_mux_concatenates(self):
-        """Mux should concatenate inputs into one vector."""
-        comp = Mux(n_inputs=3)
+class TestConcatenateAndSplit:
+    def test_concatenate_preserves_input_order(self):
+        """Concatenate should concatenate inputs into one vector."""
+        comp = Concatenate(n_inputs=3)
         state = init_state_from_component(comp)
         step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
         inputs = {
@@ -241,9 +241,9 @@ class TestMuxDemux:
         expected = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
         assert jnp.allclose(out["output"], expected)
 
-    def test_demux_splits(self):
-        """Demux should split vector into chunks of specified sizes."""
-        comp = Demux(sizes=[2, 1, 2])
+    def test_split_honors_output_sizes(self):
+        """Split should split vector into chunks of specified sizes."""
+        comp = Split(sizes=[2, 1, 2])
         state = init_state_from_component(comp)
         x = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
         out, _ = comp({"input": x}, state, key=KEY)
