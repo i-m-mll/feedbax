@@ -12,6 +12,7 @@ from pydantic import JsonValue, ValidationError
 
 from feedbax.contracts.analysis_document import (
     AnalysisDocument,
+    AnalyzeDatasetInput,
     AnalyzeInput,
     DatasetSource,
     FigureElement,
@@ -234,6 +235,27 @@ class _Lowerer:
     @property
     def planned(self) -> dict[ElementKey, PlannedElement]:
         return {element.key: element for requests in self.elements.values() for element in requests}
+
+    def dataset_ports(self) -> tuple[dict[str, DatasetPort], dict[str, dict[str, DatasetPort]]]:
+        """Resolve the sources an author can bind to, with the same stack fields as a figure wire."""
+        inputs = {}
+        for name, declaration in self.declarations.items():
+            if isinstance(declaration, AnalyzeDatasetInput):
+                try:
+                    _, inputs[name], _ = self._input(StepInput(input=name), f"inputs.{name}")
+                except _ElementIssue:
+                    # The step input's own diagnostics explain a binding which does not resolve.
+                    continue
+        outputs: dict[str, dict[str, DatasetPort]] = {}
+        for name, requests in self.elements.items():
+            for product in requests[0].datasets:
+                try:
+                    _, port, _ = self._input(OperationDataset(element=name, product=product), f"{name}.{product}")
+                except _ElementIssue:
+                    # An operation may run even when its datasets cannot be read as one stack.
+                    continue
+                outputs.setdefault(name, {})[product] = port
+        return inputs, outputs
 
     def problem(
         self,
@@ -565,6 +587,7 @@ class _Lowerer:
             self._check_roles(element.inputs, set(definition.inputs))
             inputs = {}
             entries: dict[str, _Entries] = {}
+            dataset_dimensions: set[str] = set()
             for role, expected in definition.inputs.items():
                 source = element.inputs[role]
                 wire_path = f"inputs.{role}"
@@ -572,16 +595,21 @@ class _Lowerer:
                     inputs[role] = self._step_input(source, expected.kind, wire_path)
                     continue
                 inputs[role], actual, entries[role] = self._input(source, wire_path)
-                outputs = any(binding.producer_element is not None for binding in inputs[role])
+                dataset_dimensions.update(actual.dimensions)
+                operation_output = any(binding.producer_element is not None for binding in inputs[role])
                 try:
-                    require_dataset_port(actual, expected, fields=outputs)
-                    if outputs:
-                        for parameter, requirement in expected.selected_variables.items():
+                    require_dataset_port(actual, expected, fields=operation_output)
+                    if operation_output:
+                        for parameter, requirement in expected.for_dimensions(actual.dimensions).selected_variables.items():
                             require_dataset_fields(
                                 actual.variables, {getattr(params, parameter): requirement}
                             )
                 except ValueError as error:
                     raise _ElementIssue(wire_path, str(error)) from error
+            outputs = {
+                role: port.for_dimensions(dataset_dimensions) if dataset_dimensions else port
+                for role, port in definition.outputs.items()
+            }
             ports = {role: port for role, port in definition.inputs.items() if isinstance(port, DatasetInputPort)}
             groups = {
                 role: grouped for role, port in ports.items()
@@ -591,8 +619,8 @@ class _Lowerer:
             spec = AnalysisRequestSpec(analysis_type=registered.key, params=params.model_dump(mode="json"))
             if not groups:
                 self._record(
-                    name, spec, inputs, definition.outputs, element.label, names,
-                    entries=_carried(entries, definition.outputs),
+                    name, spec, inputs, outputs, element.label, names,
+                    entries=_carried(entries, outputs),
                 )
                 return
             requests = []
@@ -608,7 +636,7 @@ class _Lowerer:
                     for role, bindings in inputs.items()
                 }
                 inner = _carried(
-                    {role: self._entries(request[role], f"inputs.{role}") for role in entries}, definition.outputs,
+                    {role: self._entries(request[role], f"inputs.{role}") for role in entries}, outputs,
                 )
                 requests.append((mapped, request, inner))
             members = _member_ids([mapped for mapped, *_ in requests], names)
@@ -616,7 +644,7 @@ class _Lowerer:
                 raise _ElementIssue("inputs", "Mapped requests repeat one combination of labels.")
             for member, (mapped, request, inner) in zip(members, requests, strict=True):
                 self._record(
-                    name, spec, request, definition.outputs, element.label, names,
+                    name, spec, request, outputs, element.label, names,
                     member=member, mapped=mapped, entries=inner,
                 )
         except _ElementIssue as error:
@@ -710,7 +738,8 @@ def lower_analyze(
     *,
     figure_templates: FigureTemplateRegistry | None = None,
 ) -> tuple[
-    dict[ElementKey, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
+    dict[ElementKey, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument],
+    dict[str, DatasetPort], dict[str, dict[str, DatasetPort]],
 ]:
     lower = _Lowerer(
         key, document_ids, document_pointers, documents, step_inputs, evaluations, upstream, operations,
@@ -729,7 +758,7 @@ def lower_analyze(
                 else None
             )
             lower.problem(".".join(map(str, ("payload", *location))), item["msg"], element)
-        return lower.planned, lower.encoded, lower.problems, lower.figures
+        return lower.planned, lower.encoded, lower.problems, lower.figures, {}, {}
 
     lower.declarations = document.inputs
     lower.element_names = {
@@ -777,4 +806,5 @@ def lower_analyze(
     for name, element in sorted(document.views.items()):
         if name not in refused:
             lower.view(name, element)
-    return lower.planned, lower.encoded, lower.problems, lower.figures
+    inputs, outputs = lower.dataset_ports()
+    return lower.planned, lower.encoded, lower.problems, lower.figures, inputs, outputs

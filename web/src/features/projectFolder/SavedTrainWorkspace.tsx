@@ -745,6 +745,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: clockView,
     taskDocument: clockView && (clockView.task_document ?? clockStep?.id),
     objectiveDocument: clockView && (clockView.objective_document ?? clockStep?.id),
+    run: clockSubject ? clockSubject.namedRun : namedRun,
     stored: clockSubject ? clockSubject.stored : stored, evaluation: clockSubject ? clockSubject.evaluation : selectedEvaluation ?? firstEvaluation ?? figureEvaluation,
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,

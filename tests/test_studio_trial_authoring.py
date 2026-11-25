@@ -1167,6 +1167,12 @@ def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):
         project = "initial-evaluate"
         _save_project(folders, project, Project.model_validate(raw))
         revision = folders.read(project).revision
+        planned = folders.read_plan(project, revision=revision).plan
+        hand = "/v1/model/state/plant/effector~1position"
+        for run in planned.runs:
+            port = run.dataset_port
+            assert port.variables[hand].dims == ("condition", "trial", "state_time", "xy")
+            assert "checkpoint" not in port.coordinates and "update" not in port.coordinates
 
         def author(step, change=None):
             response = client.post(f"/api/projects/{project}/authoring/trials", json={

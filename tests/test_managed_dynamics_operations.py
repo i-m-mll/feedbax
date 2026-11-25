@@ -3,6 +3,7 @@
 from base64 import b64decode
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.project import Project
@@ -14,11 +15,7 @@ from tests.support.host import job_row, token, wait_until
 from tests.test_canonical_evaluate_admission import _save_project
 
 
-def test_analyze_saved_activity_and_fixed_points_of_trained_example(host, tmp_path, monkeypatch):
-    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
-    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
-    monkeypatch.setenv("JAX_ENABLE_X64", "0")
-    host.policy(compute=1, light=1)
+def _dynamics_project():
     project = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task_name = "simple-reaches-task"
     task = project["documents"][task_name]["payload"]
@@ -76,6 +73,39 @@ def test_analyze_saved_activity_and_fixed_points_of_trained_example(host, tmp_pa
     }
     train_config = project["steps"]["train"]["base"]["inline"]["training_config"]
     train_config.update(batch_size=1, replicates=1)
+    analysis = project["steps"]["analyze"]["base"]["inline"]
+    project["documents"]["dynamics-analysis"] = {"schema": "feedbax.analysis_document.v1", "payload": analysis}
+    project["steps"]["analyze"]["base"] = {"document": "dynamics-analysis"}
+    return project
+
+
+@pytest.mark.parametrize(("axis", "checkpoint"), [("checkpoint", "last"), ("update", {"every": 1})])
+def test_pca_authoring_offers_only_the_bound_rollout_clock(host, tmp_path, monkeypatch, axis, checkpoint):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    project = _dynamics_project()
+    project["steps"]["rollout"]["inputs"]["subject"]["checkpoint"] = checkpoint
+    layer, = project["documents"]["dynamics-analysis"]["payload"]["views"]["pc-plane"]["figure"]["layers"]
+    layer["select"] = {axis: {"index": 0}, "condition": {"index": 0}}
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "dynamics", Project.model_validate(project))
+    with TestClient(create_app(projects_dir=folders.root, automatic_run="off")) as client:
+        key = {"variant": "default", "step": "analyze", "row": "default"}
+        response = client.post("/api/projects/dynamics/authoring/analyze", json={
+            "revision": folders.read("dynamics").revision, "key": key,
+        })
+        assert response.status_code == 200, response.text
+        catalog = response.json()
+    pca = catalog["operation_outputs"]["pca"]["pca"]
+    assert pca["variables"]["scores"]["dims"] == [axis, "condition", "trial", "state_time", "component"]
+    assert {"update", "checkpoint"} & pca["coordinates"].keys() == {axis}
+
+
+def test_analyze_saved_activity_and_fixed_points_of_trained_example(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    host.policy(compute=1, light=1)
+    project = _dynamics_project()
     _save_project(ProjectFolderService(tmp_path), "dynamics", Project.model_validate(project))
     url = "/api/projects/dynamics"
 
