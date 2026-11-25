@@ -42,7 +42,7 @@ function evaluateStep(
     window_map: {
       variants: ['base'],
       steps: [...trains, 'evaluate'].map((step_id) => ({
-        variant: 'base', step_id, kind: step_id === 'evaluate' ? 'evaluate' : 'train', group: null, document_ids: {},
+        variant: 'base', step_id, label: step_id, kind: step_id === 'evaluate' ? 'evaluate' : 'train', group: null, document_ids: {},
         status_counts: {}, axes: step_id === 'evaluate' ? evaluateAxes : axes(mapRows.filter(({ key }) => key.step === step_id)),
         inputs: step_id === 'evaluate'
           ? trains.map((source, index) => ({ id: trains.length > 1 ? `subject.${index}` : 'subject', source_step_id: source, subset: null }))
@@ -118,7 +118,7 @@ it('lists steps in one order whether or not the plan has been read', () => {
     window_map: {
       variants: ['base'], rows: [], edges: [], problems: [],
       steps: ['train-10', 'train-2', 'analyze'].map((step_id) => ({
-        variant: 'base', step_id, kind: 'train', group: null, document_ids: {}, status_counts: {}, axes: [], inputs: [],
+        variant: 'base', step_id, label: step_id, kind: 'train', group: null, document_ids: {}, status_counts: {}, axes: [], inputs: [],
       })),
     },
   };

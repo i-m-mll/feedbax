@@ -57,14 +57,21 @@ export function runName(label: string) {
 
 type RowKey = { readonly variant: string; readonly step: string; readonly row: string };
 
-/** The name the Runs table draws for a saved row: its label, or for a step's only run, which has none, its step. */
+/** The name the Runs table draws for a saved row of a swept step, which always has a label. */
 export function shownRunLabel(row: { readonly key: RowKey; readonly label: string | null }) {
-  return row.label ?? row.key.step;
+  if (row.label === null) throw new Error(`Run ${JSON.stringify(row.key)} has no label; read its step's name with drawnRunLabel.`);
+  return row.label;
 }
 
-/** The name the Runs table draws for the saved row at `key`. */
-export function drawnRunLabel(rows: readonly { key: RowKey; label: string | null }[], key: RowKey) {
-  return shownRunLabel(rows.find((row) => row.key.variant === key.variant && row.key.step === key.step && row.key.row === key.row)!);
+type DrawnMap = {
+  readonly rows: readonly { readonly key: RowKey; readonly label: string | null }[];
+  readonly steps: readonly { readonly variant: string; readonly step_id: string; readonly label: string }[];
+};
+
+/** The name the Runs table draws for the saved row at `key`: its label, or for a step's only run its step's name. */
+export function drawnRunLabel(map: DrawnMap, key: RowKey) {
+  const row = map.rows.find((item) => item.key.variant === key.variant && item.key.step === key.step && item.key.row === key.row)!;
+  return row.label ?? map.steps.find((step) => step.variant === key.variant && step.step_id === key.step)!.label;
 }
 
 export function mapStep(page: Page, stepId: string) {

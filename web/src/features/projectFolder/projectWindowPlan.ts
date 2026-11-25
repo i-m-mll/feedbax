@@ -245,10 +245,13 @@ export function projectWindowPlan(
     subjects.set(evaluation.bound_subject.key, evaluation.bound_subject);
   }
   const sourceRows = new Map(map?.rows.map((row) => [savedRunId(row.key), row]));
+  const stepNames = new Map(map?.steps.filter(({ variant }) => variant === scope).map(({ step_id, label }) => [step_id, label]));
+  /** A step's name: the Service's, or while no plan has been read, its authored label or key. */
+  const stepName = (id: string) => stepNames.get(id) ?? shownName(id, project.steps?.[id]);
   /** A run's name: the Service's, or its step's when the step has only that run. */
   const rowName = (id: string, fallback: string) => {
     const row = sourceRows.get(id);
-    return row ? row.label ?? shownName(row.key.step, project.steps?.[row.key.step]) : fallback;
+    return row ? row.label ?? stepName(row.key.step) : fallback;
   };
   const stepSources = new Map(map?.steps.filter(({ variant }) => variant === scope).map(({ step_id, inputs }) =>
     [step_id, inputs.find(({ id }) => id === 'subject')?.source_step_id]));
@@ -319,7 +322,7 @@ export function projectWindowPlan(
     if (model !== undefined && !(gatheredModelAxis in row.coordinates)) {
       let entries = modelsByStep.get(row.key.step);
       if (!entries) modelsByStep.set(row.key.step, entries = new Map());
-      entries.set(model, shownName(model, project.steps?.[model]));
+      entries.set(model, stepName(model));
       values[gatheredModelAxis] = model;
     }
     for (const [sweep, coordinate] of Object.entries(row.coordinates)) values[sweep] = coordinate.axis_value;
@@ -363,10 +366,10 @@ export function projectWindowPlan(
     /** A run's own problems; the run it waits on is its link, `blockedBy`. */
     const problems = rowProblems?.filter(({ code }) => code !== 'blocked_input');
     addRun(row.key.step, {
-      id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label ?? shownName(row.key.step, project.steps?.[row.key.step])), status: row.status, reason, variant: row.key.variant,
+      id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label ?? stepName(row.key.step)), status: row.status, reason, variant: row.key.variant,
       problems,
       blockedBy: blocking ? { stepId: blocking.step, label: studioFormat('stepRun', {
-        step: shownName(blocking.step, project.steps?.[blocking.step]),
+        step: stepName(blocking.step),
         run: sourceRows.get(savedRunId(blocking))?.label ?? blocking.row,
       }) } : undefined,
       change: change && row.status === 'stale' ? change : undefined,
@@ -421,7 +424,7 @@ export function projectWindowPlan(
     const carries = carriesByStep.get(id);
     const modelAxis = modelsByStep.get(id);
     return {
-      id, label: shownName(id, project.steps?.[id]), kind, group,
+      id, label: stepName(id), kind, group,
       documentIds: projected?.document_ids,
       documentUses: projected?.document_uses,
       inputs,

@@ -891,7 +891,7 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   await lineage.getByRole('button', { name: label, exact: true }).click();
   await expect(checkpoint.getByRole('heading')).toHaveText(label);
 
-  const plannedLabel = drawnRunLabel((await projection(saved.revision)).window_map!.rows, evaluation.key);
+  const plannedLabel = drawnRunLabel((await projection(saved.revision)).window_map!, evaluation.key);
   const replay = await showTrial(page, projectPath + '/evaluate-replay', evaluation, plannedLabel, at);
   expectPositionSamples(replayPosition(replay).samples);
   await info.attach('stopped-checkpoint-evaluation', {
@@ -906,7 +906,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
     (await runSavedEvaluation(page, request, info, studio.home))!;
   const plannedRows = completed.window_map!.rows;
   const labels = new Map(plannedRows.map(({ key, label }) => [JSON.stringify(key), label]));
-  const drawn = (key: StudioSavedEvaluationRow['key']) => drawnRunLabel(plannedRows, key);
+  const drawn = (key: StudioSavedEvaluationRow['key']) => drawnRunLabel(completed.window_map!, key);
   const conditions = single.filter(({ key }) => key.step === 'conditions');
   expect(conditions).toHaveLength(2);
   const activityRun = conditions[1];
