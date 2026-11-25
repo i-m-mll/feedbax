@@ -2324,6 +2324,7 @@ export interface TrialRecord {
   terms?: Record<string, TrialTerm>;
   states?: Record<string, TrialStateTrack>;
   configurations?: Record<string, JsonValue>;
+  observations?: Record<string, JsonValue>;
 }
 
 export interface TrialStateTrack {
@@ -9846,6 +9847,7 @@ export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
       "terms": z.record(z.string(), TrialTermSchema).optional(),
       "states": z.record(z.string(), TrialStateTrackSchema).optional(),
       "configurations": z.record(z.string(), jsonValueSchema).optional(),
+      "observations": z.record(z.string(), jsonValueSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialRecord>;
