@@ -21,7 +21,7 @@ import { Section } from '@/components/ui/Section';
 import { popupItem, popupSurface, primaryText, secondaryText } from '@/components/ui/styles';
 import { TextField, type TextTerm } from '@/components/ui/TextField';
 import {
-  callOf, callText, completions, drawCentre, drawOf, hasMark, kindEdit, kindOffers, shapeFrom, valueKind,
+  callOf, callText, completions, drawCentre, drawOf, hasMark, kindEdit, kindOffers, shapeFrom, untilText, valueKind,
   type ChangeMark as FieldChangeMark, type ChangeSource, type Completion, type FieldEdit, type FieldModel, type FieldOption,
   type FieldRefusal, type ValueKind,
 } from './fieldModel';
@@ -382,8 +382,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   const [pending, setPending] = useState<ValueKind>();
   function enter(kind: ValueKind) {
     setPending(kind);
-    const end = input.current?.value.length ?? 0;
-    input.current?.setSelectionRange(end, end);
+    const at = kind === 'until' ? 0 : input.current?.value.length ?? 0;
+    input.current?.setSelectionRange(at, at);
   }
   useEffect(() => {
     if (intent && intent.target === model.anchor) enter(intent.kind);
@@ -395,8 +395,9 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   const shownKind = pending ?? drafted?.kind ?? model.kind;
   /**
    * Replaces the value with `kind`'s form made from it: a Draw around it, a Formula holding its text with the caret in
-   * it, a Shape of it, a Link's choice opened, a Draw's centre as the Value. Sweep and Until are made by the text the
-   * field commits, Rest by its text, a sweep's Value by its own edit.
+   * it, a Shape of it, a Link's choice opened, a Draw's centre as the Value. Sweep is made by the text the field
+   * commits; Until by its text drafted with a Value's length as the limit and the caret where the condition goes; Rest
+   * by its text; a sweep's Value by its own edit.
    */
   function choose(kind: ValueKind) {
     if (kind === shownKind) return;
@@ -410,7 +411,11 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
       setPending(undefined);
     }
     switch (kind) {
-      case 'sweep': case 'until': chosen.current = kind; return;
+      case 'sweep': chosen.current = kind; return;
+      case 'until':
+        setDraft(untilText('', model.kind === 'value' ? text : ''));
+        chosen.current = kind;
+        return;
       case 'rest': void submit({ kind: 'text', text: 'rest' }); return;
       case 'draw': startDraw(model, present); return;
       case 'link': setPartDraft(model.id, { kind: 'link' }); return;
@@ -433,7 +438,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     }
   }
   const offered = draft !== undefined && !dismissed && caret !== undefined
-    ? completions(model, text.slice(0, caret)) : { token: '', items: [] };
+    ? completions({ ...model, names: model.kinds.find(({ kind }) => kind === shownKind)?.names ?? model.names }, text.slice(0, caret))
+    : { token: '', items: [] };
   const open = offered.items.length > 0;
   const mark = hasMark(model);
   const offers = kindOffers(model);
