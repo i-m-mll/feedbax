@@ -31,7 +31,7 @@ def _project(seeds, axes):
         "schema": "feedbax.spec.python_task",
         "payload": {"type": REACHING_TASK, "params": {"x": 0.1, "n_steps": 5}},
     }
-    raw["documents"]["objective"]["payload"]["terms"][0].pop("epochs")
+    raw["documents"]["objective"]["payload"]["terms"][0].pop("window")
     if seeds:
         train["sweep"] = {"axes": {"seed": _axis("seed", seeds, op="add")}}
     evaluate = raw["steps"]["baseline"]
