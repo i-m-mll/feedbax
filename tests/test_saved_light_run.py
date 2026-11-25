@@ -271,10 +271,12 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         assert stale["align"]["result"] == elements["align"]["result"]
         assert {stale[name]["status"] for name in ("summarize", "profile")} == {stale_report["status"]} == {"stale"}
         assert stale["summarize"]["changed"]["place"] == {
-            "part": "analysis", "element": "summarize", "name": "summarize",
+            "part": "analysis", "element": "summarize", "name": "summarize", "field": "/params/bounds_scale",
         }
         assert "bounds_scale" in stale["summarize"]["changed"]["path"]
-        assert stale["profile"]["changed"]["place"] == {"part": "analysis", "element": "profile", "name": "profile"}
+        assert stale["profile"]["changed"]["place"] == {
+            "part": "analysis", "element": "profile", "name": "profile", "field": "/inputs/summary",
+        }
         assert "inputs.summary" in stale["profile"]["changed"]["path"]
         assert stale_report["light"]["changed"]["place"] == {"part": "input", "role": "velocity_summary"}
         previous_url = stale["profile"]["previous"]["products"]["figure"]
@@ -407,6 +409,25 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
 
         original_figure = client.get(figure["products"]["figure"])
         assert original_figure.status_code == 200
+        rename = expect(client.post(f"{path}/authoring/trials", json={
+            "revision": revision, "run": key("train"), "change": {"kind": "structure", "changes": [{
+                "op": "rename", "member": "signal", "id": "target_pos", "name": "Aim",
+            }]},
+        }))
+        snapshot = expect(client.patch(path, json={"revision": revision, "files": rename["files"]}))
+        revision = snapshot["revision"]
+        renamed = plan(revision)
+        assert renamed["rows"][0]["status"] == "succeeded"
+        assert renamed["rows"][0]["result"]["job_id"] == train["job_id"]
+        assert all(row["can_run"] for row in renamed["window_map"]["evaluations"])
+        catalog = expect(client.post(f"{path}/authoring/analyze", json={"revision": revision, "key": key("analyze")}))
+        assert catalog["variable_names"]["/v1/task/output/target_pos"] == "Aim"
+        projection = expect(client.post(f"{path}/model/projection", json={
+            "revision": revision, "document": "point-mass", "run": key("train"),
+        }))
+        (binding,) = (row for row in projection["task_inputs"] if row["signal_id"] == "target_pos")
+        assert binding["element"]["end"]["port"] == "target_pos"
+        assert next(row["label"] for row in projection["task_signals"] if row["id"] == "target_pos") == "Aim"
         model_address = {"composites": [], "element": {
             "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
         }}
@@ -424,7 +445,7 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
         assert old_train["status"] == "stale"
         assert old_train["request_id"] != old_train["previous"]["request_id"]
         assert old_train["previous"]["job_id"] == train["job_id"]
-        assert old_train["previous"]["revision"] == revision
+        assert old_train["previous"]["revision"] == before["revision"]
 
         window = after["window_map"]
         evaluations = {row["key"]["step"]: row for row in window["evaluations"]}
@@ -434,7 +455,7 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
             assert row["reason"] == "Fit reaching controller is out of date."
             assert row["result"] is None and row["request_id"] != row["previous"]["request_id"]
             assert row["previous"]["job_id"] == evaluate["job_id"]
-            assert row["previous"]["revision"] == revision
+            assert row["previous"]["revision"] == before["revision"]
             assert row["previous"]["trials"] == _TRIALS
             assert row["previous"]["checkpoint_source"]["job_id"] == train["job_id"]
             assert replay(changed, evaluate["job_id"], step) == replayed
@@ -448,7 +469,7 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
             if element["name"] == "profile" for request in element["requests"]
         )
         assert profile["previous"]["job_id"] == figure["job_id"]
-        assert profile["previous"]["revision"] == revision
+        assert profile["previous"]["revision"] == before["revision"]
         response = client.get(profile["previous"]["products"]["figure"])
         assert response.status_code == 200
         assert response.content == original_figure.content
@@ -469,6 +490,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         "params": {"velocity": analysis["operations"]["align"]["params"]["velocity"]},
         "inputs": {"states": {"input": "states"}},
     }
+    analysis["views"]["profile"]["figure"] = {"template": "feedbax.VelocitySummary"}
     analysis["views"]["by_trial"] = {
         "figure": SpeedByTrial(SpeedByTrialSettings()).model_dump(mode="json", exclude_unset=True),
         "inputs": {"speed": {"element": "speed", "product": "speed"}},
@@ -488,7 +510,10 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     selected = [{"id": key, "label": mass_values[key]["label"]} for key in order]
     steps["analyze"]["inputs"]["states"] = {"step": "conditions", "where": {"clauses": [{"mass": selected}]}}
     del steps["baseline"]
-    folders = ProjectFolderService(projects, operations=_operations())
+    from feedbax.application.composition import load_application
+
+    bundle = load_application().bundle
+    folders = ProjectFolderService(projects, operations=bundle.operations, figure_templates=bundle.figure_templates)
     _save_project(folders, project, Project.model_validate(definition))
 
     def address(step, row="default"):
@@ -605,7 +630,10 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         figure = reopened.get(profile["result"]["products"]["figure"])
         assert figure.status_code == 200, figure.text
         traces = [trace for trace in figure.json()["data"] if trace.get("showlegend", True)]
-        assert [trace["name"] for trace in traces] == [f'mass={mass_values[key]["label"]}' for key in order]
+        assert [trace["name"] for trace in traces] == [
+            f'mass={mass_values[key]["label"]} · Run {number}' for number, key in enumerate(order, 1)
+        ]
+        assert [trace["meta"]["group"]["member"] for trace in traces] == members
         for index, trace in enumerate(traces):
             np.testing.assert_allclose(array(trace["x"]), times[0])
             np.testing.assert_allclose(array(trace["y"]), mean[index, 0, 0])
@@ -623,19 +651,19 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
             for request in evaluation_ids
         ]
         assert [trace.meta.model_dump() for trace in product.data] == [
-            {"layer": "trial-speed", "group": {"condition": condition, "trial": trial}}
-            for condition in conditions for trial in _TRIALS
+            {"layer": "trial-speed", "group": {"member": member, "condition": condition, "trial": trial}}
+            for member, condition in zip(members, conditions, strict=True) for trial in _TRIALS
         ]
         averaged = reopened.post(f"{path}/figures/mean", json={
             "revision": revision, "job_id": by_trial["result"]["job_id"], "mean": {"by": [], "align": "move"},
         })
         assert averaged.status_code == 200, averaged.text
         assert averaged.json()["layout"]["meta"]["panels"]["speed"]["time"] == {"zero_epoch": "move"}
-        for condition in conditions:
+        for member, condition in zip(members, conditions, strict=True):
             originals = [trace.y for trace in product.data if trace.meta.group["condition"] == condition]
             band = [
                 trace for trace in averaged.json()["data"]
-                if trace["meta"]["group"] == {"condition": condition}
+                if trace["meta"]["group"] == {"member": member, "condition": condition}
             ]
             assert len(band) == 3
             average = band[-1]

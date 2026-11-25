@@ -42,7 +42,7 @@ def _analyze(plan, key) -> PlannedAnalyzeRun:
 
 
 def _store(project, key, document, change, chosen, operations):
-    stored = analyze_edit(
+    stored, _ = analyze_edit(
         project, _compile(project, operations), key, document, change, frozenset(chosen), operations, _states(operations),
     )
     return preview_stored(project, stored), stored
@@ -124,7 +124,7 @@ def test_a_swept_analyze_step_takes_an_edit_of_its_document():
     project.steps.pop("report")
     plan = _compile(project, operations)
     key = next(row.key for row in plan.rows if row.key.step == "analyze")
-    stored = analyze_edit(
+    stored, _ = analyze_edit(
         project, plan, key, "velocity-analysis", _edit("/operations/summarize/params/ddof", 0), frozenset({"analyze"}),
         operations, _states(operations),
     )
