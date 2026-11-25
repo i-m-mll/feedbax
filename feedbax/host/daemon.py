@@ -42,7 +42,7 @@ SHUTDOWN_MODES = ("defer", "checkpoint", "force", "interrupt")
 RESERVE_BYTES = 2 * 1024 * 1024
 _SESSION_READS = {
     "ping", "events", "jobs_snapshot", "stopped_checkpoint", "checkpoint_producer", "jobs", "submissions",
-    "record_get", "record_get_many",
+    "record_get", "record_get_many", "checkpoint_for_export",
 }
 
 
@@ -1006,6 +1006,8 @@ class Host:
                 return self.store.checkpoint_producer(**message)
             case "stopped_checkpoint":
                 return self.store.stopped_checkpoint(**message)
+            case "checkpoint_for_export":
+                return self.store.checkpoint_for_export(**message)
             case "admit" | "admit_with_completion":
                 result = self.store.admit(
                     **message, allow_completion=op == "admit_with_completion",
