@@ -1,4 +1,5 @@
 import { useState, useSyncExternalStore } from 'react';
+import { importLoadedModel } from '@/api/projectFolders';
 import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { landsOnGesture } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
@@ -7,13 +8,14 @@ import {
 } from '@/components/activity/studioVocabulary';
 import { shownName } from '@/features/pipeline/planView';
 import type { DocumentPickerModel, PickerTemplate } from '@/features/projectWindow/DocumentPicker';
-import { blankTask, loadedModelDocumentSchemaId } from '@/generated/studioContracts';
+import { LoadedModelDocumentSchema, blankTask, loadedModelDocumentSchemaId } from '@/generated/studioContracts';
 import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import type { ProjectEditController } from './projectEditController';
 import { baseOf, documentPayload } from './documentPayload';
 import { generatedName, holds, keyOfLabel } from './generatedName';
+import { importProblems } from './loadedModels';
 
 export type DocumentRole = 'model' | 'loaded_model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
 /** The roles whose documents are written in Studio, as opposed to imported. */
@@ -71,6 +73,8 @@ export interface ProjectDocumentInputs {
   readonly selectable: ReadonlySet<DocumentRole>;
   readonly editable: boolean;
   readonly onError: (error: unknown) => void;
+  /** Shows a Loaded Model document just imported. */
+  readonly onLoaded?: (document: string) => void;
 }
 
 /** The role whose documents `document` is among. */
@@ -115,12 +119,25 @@ export function documentFamily(project: { documents?: Readonly<Record<string, Do
   return family;
 }
 
-/** The documents of `role`, each followed by the documents based on it, with its depth below its root. */
-export function documentTree(project: { documents?: Readonly<Record<string, Document>> | null }, role: DocumentRole) {
-  return documentTreeOf(project, schemas[role]);
+/** The Model document a Loaded Model document fits, by key. */
+export function fittedModel(document: Document | undefined) {
+  if (document?.schema !== loadedModelDocumentSchemaId || !('payload' in document)) return undefined;
+  const parsed = LoadedModelDocumentSchema.safeParse(document.payload);
+  return parsed.success && !parsed.data.model.unresolved ? parsed.data.model.document : undefined;
 }
 
-/** The documents of the `schemas`, each followed by the documents based on it, with its depth below its root. */
+/**
+ * The documents of `role`, each followed by the documents based on it, with its depth below its root. A Model is also
+ * followed by the Loaded Models that fit it.
+ */
+export function documentTree(project: { documents?: Readonly<Record<string, Document>> | null }, role: DocumentRole) {
+  return documentTreeOf(project, role === 'model' ? [...schemas.model, ...schemas.loaded_model] : schemas[role]);
+}
+
+/**
+ * The documents of the `schemas`, each followed by the documents based on it, or that fit it, with its depth below its
+ * root.
+ */
 export function documentTreeOf(project: { documents?: Readonly<Record<string, Document>> | null }, schemas: readonly string[]) {
   const all = project.documents ?? {};
   /** Ordered by the name each is shown by, as its key is hidden behind its label. */
@@ -128,19 +145,23 @@ export function documentTreeOf(project: { documents?: Readonly<Record<string, Do
     .sort((left, right) => shownName(left, all[left]).localeCompare(shownName(right, all[right]), undefined, { numeric: true })
       || left.localeCompare(right));
   const parent = (name: string) => {
-    const base = baseOf(all, name);
+    const base = baseOf(all, name) ?? fittedModel(all[name]);
     return base !== undefined && names.includes(base) ? base : undefined;
   };
-  const tree: { key: string; name: string; depth: number; python?: boolean }[] = [];
+  const tree: { key: string; name: string; depth: number; python?: boolean; loaded?: boolean }[] = [];
   const visit = (name: string, depth: number) => {
-    tree.push({ key: name, name: shownName(name, all[name]), depth, python: all[name].schema === pythonTask || undefined });
+    const { schema } = all[name];
+    tree.push({
+      key: name, name: shownName(name, all[name]), depth, python: schema === pythonTask || undefined,
+      loaded: schema === loadedModelDocumentSchemaId || undefined,
+    });
     for (const child of names) if (parent(child) === name) visit(child, depth + 1);
   };
   for (const name of names) if (parent(name) === undefined) visit(name, 0);
   return tree;
 }
 
-export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, onError }: ProjectDocumentInputs) {
+export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, onError, onLoaded }: ProjectDocumentInputs) {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const projectId = saved.project_id;
   const catalog = useAuthoringCatalog().data;
@@ -157,6 +178,26 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
   /** The document a step did not take in a role, and why: it lacks a parameter the step sweeps. */
   const [refused, setRefused] = useState<{ step: string; role: DocumentRole; reason: string }>();
   const refuse = (role: DocumentRole, reason?: string) => setRefused(reason && stepId ? { step: stepId, role, reason } : undefined);
+  /** Why the last archive loaded against a Model was not taken: every problem the service found. */
+  const [unfit, setUnfit] = useState<{ model: string; problems: readonly string[] }>();
+
+  /** Imports `archive` as a Loaded Model of `model`, named after its file, then shows it. */
+  async function load(model: string, archive: File) {
+    setUnfit(undefined);
+    try {
+      const outcome = await editor.publishingCommand(studioAccessibleName('load', studioName('loaded_model')), async (before, signal) => {
+        const label = archive.name.replace(/\.[^.]*$/, '');
+        const name = generatedName(keyOfLabel(label) || 'loaded-model', holds(before.project.documents));
+        const result = await importLoadedModel(projectId, { revision: before.revision, name, model }, archive, signal);
+        return { outcome: result, snapshot: result.status === 'imported' ? result.snapshot : undefined };
+      });
+      if (outcome.status === 'imported') onLoaded?.(outcome.document);
+      else setUnfit({ model, problems: importProblems(outcome) });
+    } catch (error) {
+      if (landsOnGesture(error)) setUnfit({ model, problems: [shownError(error)] });
+      else onError(error);
+    }
+  }
 
   async function use(role: DocumentRole, document: string, revision: string): Promise<StudioProjectFilePatch[]> {
     if (!stepId) return [];
@@ -199,11 +240,16 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const based = 'base' in (saved.project.documents?.[document] ?? {});
     /** Duplicate and Detach write the document's composed content, which a base chain that does not compose lacks. */
     const composes = documentPayload(saved.project.documents, saved.composed, document) !== undefined;
-    const kind = studioName(role);
+    const fitted = fittedModel(saved.project.documents?.[document]);
+    const shownRole = fitted === undefined ? role : 'loaded_model';
+    const kind = studioName(shownRole);
     const repoint = editable && !!stepId && selectable.has(role);
+    const model = fitted ?? document;
     return {
-      label: labels[role], document, name: shownName(document, saved.project.documents?.[document]), documents, count,
+      label: labels[shownRole], document, name: shownName(document, saved.project.documents?.[document]), documents, count,
       refusal: refused?.step === stepId && refused?.role === role ? refused.reason : undefined,
+      load: role === 'model' && editable ? (archive) => { void load(model, archive); } : undefined,
+      unfit: unfit?.model === model ? { problems: unfit.problems, dismiss: () => setUnfit(undefined) } : undefined,
       choose: repoint ? (next) => { void attempt(role, () => point(studioAccessibleName('select', kind), role, next)); } : undefined,
       templates: role === 'task' && taskTemplates.size ? [...taskTemplates.values()].map(({ template }) => template) : undefined,
       create: repoint && role !== 'loaded_model' ? (template) => attempt(role, async () => {
@@ -214,7 +260,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
           saved.revision, (snapshot) => use(role, id, snapshot.revision));
         return id;
       }) : undefined,
-      duplicate: repoint && composes ? () => attempt(role, async () => {
+      duplicate: repoint && composes && fitted === undefined ? () => attempt(role, async () => {
         const result = await editor.memberCommand(studioAccessibleName('duplicate', kind),
           { kind: 'duplicate', family: 'documents', member: document }, editor.getSnapshot().saved,
           (result) => use(role, result.member, result.snapshot.revision));

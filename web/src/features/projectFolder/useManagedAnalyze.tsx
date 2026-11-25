@@ -36,7 +36,7 @@ import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
 import { SelectionRule } from './SelectionRule';
 import { changedSelections, stepSelections } from './selectionEdits';
-import { InputEditor } from './InputEditor';
+import { documentBinding, InputEditor } from './InputEditor';
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { selectionProblems } from './selectionEdits';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
@@ -412,9 +412,7 @@ export function useManagedAnalyze({
       }}
       onChange={canBind ? (gesture) => {
         if (gesture.kind === 'select') bind(selected, gesture.binding);
-        else if (gesture.kind === 'document') bind(selected, inputRole.documents[0] === 'task'
-          ? { kind: 'task', source: { document: gesture.document } }
-          : { kind: 'initial_model', source: { document: gesture.document } });
+        else if (gesture.kind === 'document') bind(selected, documentBinding(gesture.role, gesture.document));
       } : undefined} />}
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}

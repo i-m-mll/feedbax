@@ -3,9 +3,10 @@ import type { ReferenceChoice, ReferenceGroup } from '@/components/values/Refere
 import type { PlanStepView } from '@/features/pipeline/planView';
 import { viewGlyphs } from '@/features/projectWindow/ProjectWindow';
 import { Package } from 'lucide-react';
-import { documentsOfRole, type DocumentRole } from './useProjectDocuments';
+import { documentsOfRole, roleOf, type DocumentRole } from './useProjectDocuments';
 
-type DocumentKind = Extract<DocumentRole, 'model' | 'loaded_model' | 'task' | 'objective'>;
+/** The roles of the documents an input reads. */
+export type DocumentKind = Extract<DocumentRole, 'model' | 'loaded_model' | 'task' | 'objective'>;
 
 const documentGlyphs = {
   model: viewGlyphs.model, loaded_model: Package, task: viewGlyphs.task, objective: viewGlyphs.objective,
@@ -24,9 +25,19 @@ export function stepChoice(step: Pick<PlanStepView, 'id' | 'label' | 'kind'>): R
   return { id: stepChoiceId(step.id), label: step.label, glyph: <Icon />, pick: { kind: 'step', step: step.id } };
 }
 
-/** The project's documents of a kind, as the Documents group of a reference field. */
-export function documentGroup(project: Parameters<typeof documentsOfRole>[0], kind: DocumentKind): ReferenceGroup {
-  return { label: studioName('documents'), choices: documentsOfRole(project, kind).map((id) => documentChoice(kind, id)) };
+type Project = Parameters<typeof documentsOfRole>[0];
+
+/** The project's documents of the kinds, as the Documents group of a reference field. */
+export function documentGroup(project: Project, kinds: DocumentKind | readonly DocumentKind[]): ReferenceGroup {
+  return { label: studioName('documents'), choices: [kinds].flat().flatMap((kind) =>
+    documentsOfRole(project, kind).map((id) => documentChoice(kind, id))) };
+}
+
+/** The kind among `kinds` of the project's document `document`. */
+export function documentKind(project: Project, document: string, kinds: readonly DocumentKind[]): DocumentKind | undefined {
+  const stored = project.documents?.[document];
+  const role = stored && roleOf(stored);
+  return kinds.find((kind) => kind === role);
 }
 
 /** Steps whose output a reference reads, as its Steps group. */

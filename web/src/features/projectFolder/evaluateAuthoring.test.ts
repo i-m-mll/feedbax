@@ -50,15 +50,36 @@ it('moves an Evaluate subject between a checkpoint and an initial Model and back
     return (applyAuthoredEdits(project, { kind: 'step', id: 'evaluate' }, evaluateSubjectEdits(step, next)).project
       .steps as Record<string, Step>).evaluate;
   };
-  const initial = apply(evaluate, { kind: 'document', document: 'arm', task: 'reach', objective: 'loss' });
+  const initial = apply(evaluate, { kind: 'document', reads: 'initial_model', document: 'arm', task: 'reach', objective: 'loss' });
   expect(initial.inputs).toEqual({
     subject: { kind: 'initial_model', source: { document: 'arm' } },
     task: { kind: 'task', source: { document: 'reach' } },
     objective: { kind: 'objective', source: { document: 'loss' } },
   });
   expect(initial.sweep).toBeUndefined();
-  expect(evaluateSubject(initial)).toEqual({ kind: 'document', document: 'arm', task: 'reach', objective: 'loss' });
+  expect(evaluateSubject(initial)).toEqual({ kind: 'document', reads: 'initial_model', document: 'arm', task: 'reach', objective: 'loss' });
   expect(apply(initial, { kind: 'step', step: 'train' })).toEqual(evaluate);
+});
+
+// Catches a Loaded Model chosen as the subject but still read as an initial Model, which would evaluate untrained weights.
+it('reads a Loaded Model subject with its weights, on the Task and Objective the step already declares', () => {
+  const initial: Step = {
+    kind: 'evaluate',
+    base: { inline: { evaluation_type: 'feedbax.rollout', params: { trial_set: { kind: 'every_condition' } } } },
+    inputs: {
+      subject: { kind: 'initial_model', source: { document: 'arm' } },
+      task: { kind: 'task', source: { document: 'reach' } },
+    },
+  };
+  const project = { steps: { evaluate: initial } } as unknown as ProjectEditContent;
+  const loaded = (applyAuthoredEdits(project, { kind: 'step', id: 'evaluate' }, evaluateSubjectEdits(initial, {
+    kind: 'document', reads: 'loaded_model', document: 'arm-trained', task: 'reach',
+  })).project.steps as Record<string, Step>).evaluate;
+  expect(loaded.inputs).toEqual({
+    subject: { kind: 'loaded_model', source: { document: 'arm-trained' } },
+    task: { kind: 'task', source: { document: 'reach' } },
+  });
+  expect(evaluateSubject(loaded)).toEqual({ kind: 'document', reads: 'loaded_model', document: 'arm-trained', task: 'reach' });
 });
 
 // Catches a condition shown as its raw JSON id, or named by a variable every condition shares.

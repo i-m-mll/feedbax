@@ -54,7 +54,7 @@ import { pinnableViews, stepModelSource, usePinnedSubject } from './pinnedSlot';
 import {
   ModelAddressSchema, StepReferenceSchema, StudioProjectRenameSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
-  type StudioSavedTrainKey, type StudioSavedTrainRuns, type StepReference, type SubsetTerms,
+  type LoadedModelReference, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StepReference, type SubsetTerms,
   type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type StudioPlanReviewSource, type StudioProjectWindowMapException, type ModelAddress, type PatchValue,
   type StudioClassField, type StudioProjectSnapshot,
 } from '@/generated/studioContracts';
@@ -94,6 +94,8 @@ import { documentChoice } from './referenceChoices';
 import { documentsOfRole } from './useProjectDocuments';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
+import { exportLoadedModel } from '@/api/projectFolders';
+import { saveFile } from '@/components/ui/chooseFile';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
 import { AskStoreContext, askStoreWith, sendWithStore } from './storeChoice';
 import {
@@ -105,7 +107,8 @@ import {
 } from './StudioTrialAuthoring';
 import { inGrid, TrialGridInspector } from './task/trialGrid';
 import { selectedVariable, TrialTaskDocument, TrialVariableInspector, unfedTasks } from './task/trialTask';
-import { documentFamily, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
+import { documentFamily, fittedModel, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
+import { LoadedModelFacts } from './LoadedModelFacts';
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useSavedPlan } from './useSavedPlan';
 import { stepReport, useManagedReport } from './useManagedReport';
@@ -322,8 +325,26 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }, [plan]);
   const runMenu: RunMenu = (runs, anchor) => {
     const owner = runs[0] && plan.steps.find(({ id }) => id === (JSON.parse(runs[0].id) as string[])[1]);
-    return [...validity.commands(runs, anchor), ...owner ? [sets.duplicateRun(owner, runs)] : []];
+    return [
+      ...validity.commands(runs, anchor), ...owner ? [sets.duplicateRun(owner, runs)] : [],
+      ...owner?.kind === 'train' && runs.length === 1 ? [exportModel(runs[0])] : [],
+    ];
   };
+  /** Export: the Model and weights of a Train run's latest successful result, as a model file. */
+  function exportModel(run: PlanRunView) {
+    const row = shown?.rows.find(({ key }) => savedRunId(key) === run.id);
+    const result = row?.result;
+    const updates = result?.progress?.completed_updates;
+    return bindStudioCommand('export', () => {
+      if (!row || !result || !updates) return;
+      void perform(async (current) => {
+        const { archive, name } = await exportLoadedModel(current.project_id, {
+          revision: current.revision, key: row.key, job_id: result.job_id, completed_updates: updates,
+        }, editor.signal);
+        saveFile(archive, name);
+      }, (reason) => ({ kind: 'runs', reasons: { [run.id]: reason } }));
+    }, { subject: run.label, instance: run.id, enabled: !!updates });
+  }
   const runRemoval = useRunRemovalDialog(plans.read);
   const choiceMenu = useChoiceMenu();
   const sets = setAuthoring({
@@ -408,6 +429,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const namedRun = namedRow?.key;
   const modelSource = stepModelSource(plan, step);
   const stored = useStoredModel(editor, step, modelSource);
+  /** The Loaded Model the Model view shows in place of the step's Model, which the step does not read. */
+  const [viewedLoaded, setViewedLoaded] = useState<{ step: string | undefined; document: string }>();
+  const viewing = viewedLoaded?.step === step?.id ? viewedLoaded?.document : undefined;
+  const viewedModel = useStoredModel(editor, undefined, fittedModel(viewing ? saved.project.documents?.[viewing] : undefined));
+  const loaded = viewing && viewedModel ? { document: viewing, model: viewedModel } : undefined;
   const restGeometry = useSceneGeometry(saved.project_id, stored ? { document_id: stored.id, revision: saved.revision } : null, restPose)?.(0);
   const scoredBy = authored?.kind === 'evaluate' ? evaluateSubject(authored) : undefined;
   /** An Evaluate is scored by the Objective of the Train that made its checkpoint, or by the one it names itself. */
@@ -716,6 +742,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       ...documentEditable && wholeStep ? ['analysis', 'report'] as const : [],
     ]),
     onError: setCommandError,
+    onLoaded: (document) => setViewedLoaded({ step: step?.id, document }),
   });
   const chosenAxis = evaluateScope && evaluateScope.kind === 'axis_value'
     ? authored?.sweep?.axes?.[evaluateScope.axis] : undefined;
@@ -768,6 +795,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** A slot's inputs: the selection's, or those of the step it is pinned to, which it shows without editing. */
   function slotDetailInputs(slot: ProjectWindowSlot) {
     const subject = held[slot];
+    if (!subject.step && loaded) {
+      return {
+        ...detailInputs, focus: null, selection: null, namedRun: undefined, documentScopes: { graph: undefined, task: undefined },
+        valueEditing: false, evaluateScope: undefined, stored: loaded.model, modelProblems: [],
+        selectedSweepValues: new Map<string, Set<string>>(), fieldRows: undefined, fieldAxes: undefined,
+      };
+    }
     if (!subject.step) {
       return clockSubject ? { ...detailInputs, sceneTrial: restTrial, checkpoints: undefined } : detailInputs;
     }
@@ -1255,8 +1289,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const name = studioName('subject');
     const current = evaluateSubject(evaluateInputs);
     if (gesture.kind === 'document') {
-      const next: EvaluateSubject = current?.kind === 'document' ? { ...current, document: gesture.document }
-        : { kind: 'document', document: gesture.document, ...trainDocuments(current?.kind === 'steps' ? current.selections[0]?.step : undefined) };
+      const reads = gesture.role === 'loaded_model' ? 'loaded_model' : 'initial_model';
+      const next: EvaluateSubject = current?.kind === 'document' ? { ...current, reads, document: gesture.document }
+        : { kind: 'document', reads, document: gesture.document, ...trainDocuments(current?.kind === 'steps' ? current.selections[0]?.step : undefined) };
       return editEvaluateSubject(name, evaluateSubjectEdits(evaluateInputs, next),
         [next.document, next.task, next.objective].filter((id): id is string => id !== undefined));
     }
@@ -1293,7 +1328,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
    * Starts the Train step from `source`'s checkpoint as that step's continuation, or from its Model when `source` is
    * null. The service writes the step so that its runs keep their definition.
    */
-  function startTrain(source: StepReference | null, field: StepField) {
+  function startTrain(source: StepReference | LoadedModelReference | null, field: StepField) {
     if (!step || !applies) return;
     const stepId = step.id;
     void perform(async (current) => {
@@ -1304,7 +1339,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       const based = 'step' in own.base ? [own.base.step] : [];
       editor.editFiles(studioName('start'), files, {
         reviewedRevision: current.revision,
-        dependencies: [...new Set([...based, ...source ? [source.step] : []])].map((id) => ({ kind: 'step' as const, id })),
+        dependencies: [
+          ...[...new Set([...based, ...source && 'step' in source ? [source.step] : []])].map((id) => ({ kind: 'step' as const, id })),
+          ...source && 'kind' in source ? [{ kind: 'document' as const, id: source.source.document }] : [],
+        ],
       });
       await editor.flush();
     }, refuseField(field));
@@ -1313,6 +1351,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   function changeTrainStart(gesture: InputGesture) {
     if (gesture.kind === 'select') startTrain(stepSelections(gesture.binding)?.[0] ?? null, 'input');
     else if (gesture.kind === 'absent') startTrain(null, 'input');
+    else if (gesture.role === 'loaded_model') startTrain({ kind: 'loaded_model', source: { document: gesture.document } }, 'input');
   }
 
   function editEvaluation(field: Exclude<StepField, 'input' | 'checkpoint'>, name: string, patch: ProjectValueEdit) {
@@ -1978,8 +2017,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           }
           if (view === 'model' || view === 'scene') {
             const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
-            const picker = pickDocument('model', details[view].documentId, scope);
-            return { ...details[view], picker: picker && { ...picker, refusal: picker.refusal ?? details[view].refusal },
+            const own = stored?.id;
+            const picker = pickDocument('model', view === 'model' && loaded ? loaded.document : details[view].documentId, scope);
+            const shows = picker && view === 'model' ? {
+              ...picker,
+              documents: picker.documents.map((entry) => ({ ...entry, unavailable: !entry.loaded && entry.key !== own && !picker.choose })),
+              choose: (next: string) => {
+                const document = saved.project.documents?.[next];
+                if (fittedModel(document) !== undefined) return setViewedLoaded({ step: step?.id, document: next });
+                setViewedLoaded(undefined);
+                if (next !== own) picker.choose?.(next);
+              },
+            } : picker;
+            const inspector = view === 'model' && loaded
+              ? <><LoadedModelFacts project={saved.project} document={loaded.document} />{details[view].inspector}</>
+              : details[view].inspector;
+            return { ...details[view], inspector, picker: shows && { ...shows, refusal: shows.refusal ?? details[view].refusal },
               header: details[view].path, body: withProblem(details[view].body) };
           }
           if (!step) return { body: null };
