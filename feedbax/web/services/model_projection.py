@@ -106,13 +106,12 @@ def _publishes_origin(leaf: ResolvedSignalLeaf, origin: ModelAddress) -> bool:
     )
 
 
-def _objective_readers(objective: object, signals: ModelSignalTable) -> dict[str, dict[str, None]]:
+def _objective_readers(objective: ObjectiveDocument | None, signals: ModelSignalTable) -> dict[str, dict[str, None]]:
     readers: dict[str, dict[str, None]] = defaultdict(dict)
     if objective is None:
         return readers
-    document = ObjectiveDocument.model_validate(objective)
     readable = signals.readable_leaves
-    for term in document.terms:
+    for term in objective.terms:
         for reference in references(term.measure) | references(term.weight):
             if not reference.startswith("{"):
                 continue
@@ -168,10 +167,7 @@ def model_projection(folders, project_id, body, bundle):
     elif body.evaluate_scope is not None:
         raise ProjectFolderInvalid("Choose an Evaluate run for this Model selection.")
     elif body.run is not None:
-        try:
-            selected = selected_model_and_task(folders, project_id, body)
-        except ProjectFolderInvalid:
-            pass
+        selected = selected_model_and_task(folders, project_id, body)
     model, task, objective, overrides = selected or (authored, (), None, {})
     model = model or authored
     task_signals = tuple(task_signal(item) for item in task)
