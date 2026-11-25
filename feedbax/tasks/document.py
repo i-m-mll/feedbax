@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from enum import IntEnum
 from itertools import groupby
 from math import isfinite
 from typing import Any, NamedTuple, Protocol
@@ -35,6 +34,7 @@ from feedbax.contracts.expression_values import (
 from feedbax.contracts.task_document import (
     Cell as Cell,
     Epoch as Epoch,
+    EpochEnd as EpochEnd,
     EpochSteps,
     Length,
     Link as Link,
@@ -51,7 +51,7 @@ from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices
 from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.runtime._graph_key_schedule import map_trial_samples, validation_trial_keys
-from feedbax.runtime.epoch_windows import EpochRecord, in_epoch
+from feedbax.runtime.epoch_windows import CompiledWindow, EpochRecord, compile_window, in_epoch
 
 
 @dataclass(frozen=True)
@@ -60,11 +60,6 @@ class TaskInterface:
     signals: tuple[ScopedValue, ...]
     links: tuple[tuple[str, str], ...]
     model_outputs: tuple[ScopedValue, ...] = ()
-
-
-class EpochEnd(IntEnum):
-    UNREACHED = 0
-    LENGTH = 1
 
 
 class Trial(NamedTuple):
@@ -114,6 +109,7 @@ class _Prepared(NamedTuple):
     absent: Mapping[str, Any]
     run_key: jax.Array
     trial_key: jax.Array
+    windows: Mapping[str, jax.Array] | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +168,7 @@ class _Signal:
     id: str
     absent: _Field
     cells: tuple[_Cell, ...]
+    window: CompiledWindow | None = None
 
 
 @dataclass(frozen=True)
@@ -231,7 +228,12 @@ class DocumentTask:
             signal.id: signal.absent.evaluate(parameters, prepared, values)
             for signal in self.signals
         }
-        prepared = prepared._replace(epochs=epochs, absent=absent)
+        inputs = Inputs((), values, run_key, trial_key)
+        windows = {
+            signal.id: signal.window.mask(epochs, self.n_steps, inputs)
+            for signal in self.signals if signal.window is not None
+        }
+        prepared = prepared._replace(epochs=epochs, absent=absent, windows=windows)
         variable_state = {
             variable.id: field.prepare(parameters, prepared, values)
             for variable, field in self.variable_fields
@@ -273,6 +275,9 @@ class DocumentTask:
             output = variables.absent[signal.id]
             available = False
             next_signal = []
+            within = True
+            if signal.window is not None:
+                within = variables.windows[signal.id][k] if self.n_steps else False
             for cell, previous in zip(signal.cells, cell_states, strict=True):
                 start = variables.epochs.starts[cell.first]
                 end = variables.epochs.ends[cell.last]
@@ -290,7 +295,7 @@ class DocumentTask:
                 )._replace(defined=defined)
                 result, next_state = cell.field.code.evaluate_step(inputs, previous)
                 next_signal.append(next_state)
-                supplied = active & result.defined
+                supplied = within & active & result.defined
                 output = jnp.where(supplied, result.value, output)
                 available = available | supplied
             outputs[signal.id] = output
@@ -888,11 +893,27 @@ def compile_task(
 
         signals = [instantiate(signal) for signal in signals]
     epoch_ids = tuple(epochs)
+    instance_ids = tuple(epoch_ids[index] for index in instances)
+    windows = {signal.id: signal.window for signal in document.signals if signal.window is not None}
+    for index, signal in enumerate(signals):
+        if signal.id not in windows:
+            continue
+        path = ("signals", signal.id, "window")
+        compiled = compile_window(
+            windows[signal.id], epochs=instance_ids, period=period, names=tuple(scope.values()),
+            functions=functions, field_address=(document.id, *path), path=path, nominal=nominal,
+        )
+        if isinstance(compiled, tuple):
+            problems.extend(compiled)
+        else:
+            signals[index] = replace(signal, window=compiled)
+    if problems:
+        return tuple(problems)
     return DocumentTask(
         TaskInterface(tuple(scope.values()), tuple(declared_signals), tuple(links.items())),
         n_steps,
         period,
-        tuple(epoch_ids[index] for index in instances),
+        instance_ids,
         tuple(fields),
         tuple(lengths[index] for index in instances),
         tuple(bounds[index] for index in instances),

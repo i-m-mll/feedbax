@@ -50,6 +50,31 @@ class BandEncodings(LineEncodings):
     upper: Encoding
 
 
+class ErrorBounds(StrictModel):
+    """Absolute bounds of the error bar around a point's y sample."""
+
+    lower: Encoding
+    upper: Encoding
+
+
+class PointsEncodings(LineEncodings):
+    error_y: ErrorBounds | None = None
+
+
+ReferenceValue = Encoding | Annotated[StrictFloat, Field(allow_inf_nan=False)]
+
+
+class RuleEncodings(StrictModel):
+    axis: Literal["x", "y"]
+    at: ReferenceValue
+
+
+class SpanEncodings(StrictModel):
+    axis: Literal["x", "y"]
+    start: ReferenceValue
+    end: ReferenceValue
+
+
 class LineStyle(StrictModel):
     label: str | None = None
     color: str | None = None
@@ -60,6 +85,14 @@ class LineStyle(StrictModel):
 
 class BandStyle(LineStyle):
     band_alpha: float = Field(default=0.2, ge=0, le=1, allow_inf_nan=False)
+
+
+class PointsStyle(LineStyle):
+    marker_size: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
+class SpanStyle(LineStyle):
+    fill_alpha: float = Field(default=0.15, ge=0, le=1, allow_inf_nan=False)
 
 
 class _Layer(StrictModel):
@@ -83,7 +116,29 @@ class BandLayer(_Layer):
     style: BandStyle = Field(default_factory=BandStyle)
 
 
-FigureLayer = Annotated[LineLayer | BandLayer, Field(discriminator="mark")]
+class PointsLayer(_Layer):
+    mark: Literal["points"]
+    encode: PointsEncodings
+    style: PointsStyle = Field(default_factory=PointsStyle)
+
+
+class RuleLayer(_Layer):
+    """One reference position across the other axis of its panel."""
+
+    mark: Literal["rule"]
+    encode: RuleEncodings
+    style: LineStyle = Field(default_factory=LineStyle)
+
+
+class SpanLayer(_Layer):
+    """One shaded interval across the other axis of its panel."""
+
+    mark: Literal["span"]
+    encode: SpanEncodings
+    style: SpanStyle = Field(default_factory=SpanStyle)
+
+
+FigureLayer = Annotated[LineLayer | BandLayer | PointsLayer | RuleLayer | SpanLayer, Field(discriminator="mark")]
 
 
 class FigurePanel(StrictModel):
@@ -182,9 +237,22 @@ class PlotlyFigureProduct(StrictModel):
         return self
 
 
-def layer_encodings(layer: FigureLayer) -> tuple[tuple[str, Encoding], ...]:
-    """Read each mark's declared channels in order."""
-    return tuple((name, getattr(layer.encode, name)) for name in type(layer.encode).model_fields)
+def layer_encodings(layer: FigureLayer) -> tuple[tuple[str, ReferenceValue], ...]:
+    """Read each mark's declared channels, preserving paths for diagnostics."""
+    match layer:
+        case PointsLayer(encode=encoding):
+            channels = (("x", encoding.x), ("y", encoding.y))
+            if (bounds := encoding.error_y) is not None:
+                return (*channels, ("error_y.lower", bounds.lower), ("error_y.upper", bounds.upper))
+            return channels
+        case RuleLayer(encode=encoding):
+            return (("at", encoding.at),)
+        case SpanLayer(encode=encoding):
+            return (("start", encoding.start), ("end", encoding.end))
+        case LineLayer(encode=encoding):
+            return (("x", encoding.x), ("y", encoding.y))
+        case BandLayer(encode=encoding):
+            return (("x", encoding.x), ("y", encoding.y), ("lower", encoding.lower), ("upper", encoding.upper))
 
 
 class FigureBindingError(ValueError):
@@ -216,6 +284,8 @@ def validate_figure_bindings(
                 for name, field in coords.items()
             }
         for channel, encoding in layer_encodings(layer):
+            if isinstance(encoding, float):
+                continue
             variable = encoding if isinstance(encoding, str) else encoding.variable
             if variable not in fields:
                 raise FigureBindingError(

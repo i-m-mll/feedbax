@@ -15,7 +15,7 @@ const centre = async (target: Locator) => {
 
 // Catches a nominal trial whose start, target and hand coincide, so that Relate cannot drag between them, and a Relate
 // that writes a term the Scene then cannot draw: a term whose relation does not end at the hand and
-// the target, a write that adds no row or more than one, a new term that is not selected with its Measure focused,
+// the target, a write that adds no row or more than one, a new term that is not selected with its Measure focused and read from its first character,
 // and a second relation of the same two places drawn exactly over the first.
 test('Relate dragged from the hand to the target adds one Objective term and its dashed line', async ({ page, request }) => {
   test.setTimeout(45_000);
@@ -58,7 +58,9 @@ test('Relate dragged from the hand to the target adds one Objective term and its
     [[element.x1.baseVal.value, element.y1.baseVal.value], [element.x2.baseVal.value, element.y2.baseVal.value]]);
   expect(ends).toEqual(expect.arrayContaining([await at(hand), await at(target)]));
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  await expect(inspector.getByRole('textbox', { name: 'Measure', exact: true })).toBeFocused();
+  const measure = inspector.getByRole('textbox', { name: 'Measure', exact: true });
+  await expect(measure).toBeFocused();
+  expect(await measure.evaluate((input: HTMLInputElement) => [input.selectionStart, input.scrollLeft])).toEqual([0, 0]);
 
 
   // A second relation of the same two places is drawn beside the first, not over it.
