@@ -79,6 +79,28 @@ def test_synthesize_and_evaluate_plan_from_authored_documents():
     assert any("needs a Task signal" in problem.detail for problem in refused.problems)
 
 
+def test_synthesize_resolves_model_sweeps_and_trial_set_fields():
+    raw = synthesis_project()
+    raw["steps"].pop("baseline")
+    mass = ModelAddress.at_stored_path(("interior", "components", "plant", "fields", "mass"))
+    step = raw["steps"]["synthesize"]
+    step["sweep"] = {"axes": {"mass": {"values": {
+        name: {"value": value, "patches": {mass.to_text(): {"value": value}}}
+        for name, value in (("light", 1.0), ("heavy", 1.5))
+    }}}}
+    raw["documents"]["bank"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}, "two": {}}}}
+    step["set_fields"] = {"bank": {"axis": {"set": "bank"}, "sampling": {"kind": "weighted", "none": 0}}}
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    assert len(plan.runs) == 2 and not any(run.admission_problem for run in plan.runs)
+    for run in plan.runs:
+        spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        assert isinstance(spec, SynthesisRequestSpec)
+        documents = spec.trial_documents
+        assert documents.model.interior.components["plant"].fields["mass"] == run.coordinates["mass"].value
+        assert any(variable.set_choices is not None for variable in documents.task.variables)
+
+
 def test_served_synthesis_documents_bind_in_trials_and_model_view(host, tmp_path, monkeypatch):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     raw = synthesis_project()
