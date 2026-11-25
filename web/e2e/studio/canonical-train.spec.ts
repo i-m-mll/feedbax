@@ -46,7 +46,7 @@ test('standalone Activity opens an existing run and hydrates its retained histor
 
 test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(48_000);
-  const created = await request.post('/api/projects');
+  const created = await request.post('/api/projects', { data: { name: 'canonical-successor' } });
   expect(created.status()).toBe(201);
   let { snapshot } = await created.json() as StudioProjectDocument;
   const id = snapshot.project_id;
@@ -188,7 +188,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
 test('Saved Train compares authenticated receipts after a partial run and stopped edit', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(65_000);
   await page.setViewportSize({ width: 1440, height: 900 });
-  const created = await request.post('/api/projects');
+  const created = await request.post('/api/projects', { data: { name: 'canonical-resume' } });
   expect(created.status()).toBe(201);
   let { snapshot } = await created.json() as StudioProjectDocument;
   const id = snapshot.project_id;

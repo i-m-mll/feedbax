@@ -4200,6 +4200,15 @@ export type StudioProjectDocument = {
   "snapshot": StudioProjectSnapshot;
 };
 
+export type StudioProjectExample = {
+  "id": string;
+  "name": string;
+};
+
+export type StudioProjectExamples = {
+  "examples": Array<StudioProjectExample>;
+};
+
 export type StudioProjectFilePatch = {
   "address": AuthoredFileAddress;
   "patches": Array<ProjectValueEdit>;
@@ -4212,7 +4221,14 @@ export type StudioProjectList = {
 export type StudioProjectListEntry = {
   "project_id": string;
   "name": string;
+  "folder": string;
   "modified": string;
+  "step_count": number;
+};
+
+export type StudioProjectNew = {
+  "name": string;
+  "example"?: string | null;
 };
 
 export type StudioProjectPatch = {
@@ -12244,6 +12260,19 @@ export const StudioProjectDocumentSchema: z.ZodType<StudioProjectDocument> = z.l
   }).strict()
 ) as unknown as z.ZodType<StudioProjectDocument>;
 
+export const StudioProjectExampleSchema: z.ZodType<StudioProjectExample> = z.lazy(() =>
+  z.object({
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "name": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectExample>;
+
+export const StudioProjectExamplesSchema: z.ZodType<StudioProjectExamples> = z.lazy(() =>
+  z.object({
+    "examples": z.array(StudioProjectExampleSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectExamples>;
+
 export const StudioProjectFilePatchSchema: z.ZodType<StudioProjectFilePatch> = z.lazy(() =>
   z.object({
     "address": AuthoredFileAddressSchema,
@@ -12261,9 +12290,18 @@ export const StudioProjectListEntrySchema: z.ZodType<StudioProjectListEntry> = z
   z.object({
     "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "folder": z.string(),
     "modified": z.string().datetime({ offset: true }),
+    "step_count": z.number().int().safe().min(0),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectListEntry>;
+
+export const StudioProjectNewSchema: z.ZodType<StudioProjectNew> = z.lazy(() =>
+  z.object({
+    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "example": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectNew>;
 
 export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(() =>
   z.object({
@@ -13375,7 +13413,9 @@ export const contractSchemas = {
   StudioProjectCreateFile: StudioProjectCreateFileSchema,
   StudioProjectCreateFiles: StudioProjectCreateFilesSchema,
   StudioProjectDocument: StudioProjectDocumentSchema,
+  StudioProjectExamples: StudioProjectExamplesSchema,
   StudioProjectList: StudioProjectListSchema,
+  StudioProjectNew: StudioProjectNewSchema,
   StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
   StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
@@ -13542,7 +13582,9 @@ export interface ContractTypeMap {
   StudioProjectCreateFile: StudioProjectCreateFile;
   StudioProjectCreateFiles: StudioProjectCreateFiles;
   StudioProjectDocument: StudioProjectDocument;
+  StudioProjectExamples: StudioProjectExamples;
   StudioProjectList: StudioProjectList;
+  StudioProjectNew: StudioProjectNew;
   StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;
   StudioProjectPatchBatch: StudioProjectPatchBatch;

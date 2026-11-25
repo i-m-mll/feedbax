@@ -30,7 +30,10 @@ from feedbax.contracts.studio_project import (
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
     StudioProjectDocument,
+    StudioProjectExample,
+    StudioProjectExamples,
     StudioProjectList,
+    StudioProjectNew,
     StudioProjectPatch,
     StudioProjectPatchBatch,
     StudioProjectRename,
@@ -305,6 +308,17 @@ def read_scene_geometry(
     return _project_response(response, prepare)
 
 
+@router.get("/examples")
+def list_project_examples(response: Response) -> StudioProjectExamples:
+    from feedbax.contracts.project import member_display_name
+    from feedbax.examples import load_shipped_projects
+
+    return _project_response(response, lambda: StudioProjectExamples(examples=[
+        StudioProjectExample(id=key, name=member_display_name(key))
+        for key in load_shipped_projects()
+    ]))
+
+
 @router.get("/{project_id}", response_model_exclude_unset=True)
 def read_project(
     project_id: ProjectName, request: Request, response: Response
@@ -422,8 +436,8 @@ def list_projects(request: Request, response: Response) -> StudioProjectList:
 
 
 @router.post("", status_code=201, response_model_exclude_unset=True)
-def new_project(request: Request, response: Response) -> StudioProjectDocument:
-    document = _project_response(response, request.app.state.project_folders.new)
+def new_project(body: StudioProjectNew, request: Request, response: Response) -> StudioProjectDocument:
+    document = _project_response(response, lambda: request.app.state.project_folders.new(body.name, example=body.example))
     response.headers["Location"] = request.url_for(
         "open_project", project_id=document.snapshot.project_id
     ).path
