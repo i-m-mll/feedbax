@@ -7,7 +7,7 @@ const evaluate = (subject: unknown): Step => ({ kind: 'evaluate', base: { inline
 
 it('changes a selection without carrying the old step restriction, and writes a list of one as its reference', () => {
   const selections = [
-    { step: 'a', checkpoint: 'last' as const, where: { rows: [] } },
+    { step: 'a', checkpoint: 'last' as const, where: { clauses: [{}] } },
     { step: 'b', checkpoint: { at: 4 } },
   ];
   expect(changedSelections(selections, { kind: 'replace', index: 0, reference: { step: 'c' } }))

@@ -22,6 +22,7 @@ from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
 from feedbax.host.io import OWNER_ENV
 from feedbax.host.platform import end_with
+from feedbax.host.source import host_source
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
@@ -93,6 +94,21 @@ def try_test_lock(lease: BinaryIO, mode: int, offset: int) -> bool:
 def stop_isolated_host(root: Path) -> None:
     if root.exists():
         HostClient(root).shutdown("force")
+
+
+def require_matching_host(host: HostClient) -> None:
+    expected = host_source()
+    running = host.ping()
+    source = running.get("source")
+    if source != expected:
+        reported_path = source.get("package", "unreported") if isinstance(source, dict) else "unreported"
+        reported_digest = source.get("sha256", "unreported") if isinstance(source, dict) else "unreported"
+        raise SystemExit(
+            f"Studio cannot use Host PID {running['pid']} at {host.root}. "
+            f"The Host loaded {reported_path} ({reported_digest}); "
+            f"this launch uses {expected['package']} ({expected['sha256']}). "
+            "Stop that Host when its jobs are safe to stop, then relaunch Studio."
+        )
 
 
 def seed_jax_cache(shared: Path, host_root: Path) -> None:
@@ -174,7 +190,7 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
     os.environ.pop("VITE_FEEDBAX_E2E", None)
     print(f"Studio data home: {home}", flush=True)
     # Saved-project reads observe the host without starting it, so the launcher starts it.
-    HostClient(paths.host).ping()
+    require_matching_host(HostClient(paths.host))
 
     # The backend ends with this launcher however it ends, SIGKILL included.
     backend = [

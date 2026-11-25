@@ -7,3 +7,8 @@ commands.allow = ["publish_studio_menu"]
 identifier = "allow-studio-window-action"
 description = "Drag, zoom, or name the registered Studio project webview."
 commands.allow = ["studio_window_action"]
+
+[[permission]]
+identifier = "allow-open-project-folder"
+description = "Choose a project folder from the registered Studio start webview."
+commands.allow = ["open_project_folder"]

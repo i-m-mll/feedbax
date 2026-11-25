@@ -89,19 +89,19 @@ def test_split_and_merge_keep_a_broken_analyze_input_and_the_readable_operations
     project = _report_project()
     analysis = project.documents["velocity-analysis"]
     analysis.payload["views"]["profile"]["inputs"]["summary"] = {"input": "missing_role"}
-    references = [StepReference(step="missing_evaluate", row="draw")]
+    references = [StepReference(step="missing_evaluate")]
     project.steps["analyze"].inputs["missing_role"] = references
     _save_project(folders, PROJECT, project)
 
     moved = _command(client, {"kind": "split", "member": "analyze", "elements": ["profile"]})
     card = moved["member"]
     assert moved["snapshot"]["project"]["steps"][card]["inputs"]["missing_role"] == [
-        {"step": "missing_evaluate", "row": "draw"},
+        {"step": "missing_evaluate"},
     ]
     assert any(item["step"] == card and item["path"] == "inputs.missing_role" for item in moved["problems"])
     merged = _command(client, {"kind": "merge", "member": "analyze", "others": [card]})
     assert merged["snapshot"]["project"]["steps"]["analyze"]["inputs"]["missing_role"] == [
-        {"step": "missing_evaluate", "row": "draw"},
+        {"step": "missing_evaluate"},
     ]
     response = client.post(f"{URL}/authoring/analyze", json={
         "revision": merged["snapshot"]["revision"],

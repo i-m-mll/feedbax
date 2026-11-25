@@ -6,8 +6,8 @@ import { StudioJobsProvider } from '@/hooks/useStudioJobs';
 import { StudioActivityPane } from '@/components/activity/StudioActivity';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
-import { PendingProjectWindow, ProjectWindowPalette } from '@/features/projectWindow/ProjectWindow';
-import { ProjectHome } from '@/features/projectWindow/ProjectHome';
+import { ProjectlessWindow, ProjectWindowPalette } from '@/features/projectWindow/ProjectWindow';
+import { StartPage } from '@/features/projectWindow/StartPage';
 
 const StudioProjectWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
@@ -29,7 +29,7 @@ function ProjectEntry({ requestedId }: { requestedId: string }) {
 
   if (project.data) return (
     <StudioJobsProvider key={id} projectId={project.data.snapshot.project_id}>
-      <Suspense fallback={<PendingProjectWindow />}>
+      <Suspense fallback={<ProjectlessWindow pending />}>
         <StudioProjectWorkspace document={project.data} />
       </Suspense>
     </StudioJobsProvider>
@@ -40,7 +40,7 @@ function ProjectEntry({ requestedId }: { requestedId: string }) {
       <Button onClick={() => void project.refetch()}>{studioName('retry')}</Button>
     </main>
   );
-  return <PendingProjectWindow />;
+  return <ProjectlessWindow pending />;
 }
 
 export default function App({ projectId, activity }: { projectId: string | null; activity?: boolean }) {
@@ -52,6 +52,10 @@ export default function App({ projectId, activity }: { projectId: string | null;
       </main>
     </StudioJobsProvider>
   );
-  if (projectId === null) return <ProjectHome />;
+  if (projectId === null) return (
+    <StudioJobsProvider projectId={null}>
+      <ProjectWindowPalette><StartPage /></ProjectWindowPalette>
+    </StudioJobsProvider>
+  );
   return <ProjectWindowPalette><ProjectEntry requestedId={projectId} /></ProjectWindowPalette>;
 }

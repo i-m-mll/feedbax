@@ -116,7 +116,7 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
         "kind": "evaluate",
         "base": {"inline": {"evaluation_type": "test.unsupported"}},
         "inputs": {"subject": {"step": "fit", "where": {
-            "rows": [{"key": "seed=a", "variant": "default", "row": "seed=a"}],
+            "clauses": [{"seed": [{"id": "a", "label": "11"}]}],
         }}},
     }
     data["steps"]["report"] = {
@@ -172,9 +172,7 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
     assert (invalid["path"], invalid["code"]) == ("payload.trial_documents", "invalid_payload")
     [subject] = steps["evaluate"]["inputs"]
     assert subject["source_step_id"] == "fit"
-    assert subject["subset"]["terms"]["rows"] == [
-        {"key": "seed=a", "variant": "default", "row": "seed=a"},
-    ]
+    assert subject["subset"]["terms"]["clauses"] == [{"seed": [{"id": "a", "label": "11"}]}]
     assert (subject["subset"]["count"], subject["subset"]["total"]) == (1, 2)
     assert steps["evaluate"]["status_counts"] == {"cannot_run": 1}
     [evaluation] = window["evaluations"]

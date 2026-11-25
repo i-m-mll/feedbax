@@ -53,6 +53,8 @@ export type ModelCardData = {
   /** Previews the connection being drawn ending at `port`, or at none. */
   previewPort?: (port: Port | undefined) => void;
   portProblems?: ReadonlyMap<string, string>;
+  /** The side each connected physical port is drawn on, by port id, which Flip does not change. */
+  portSides?: ReadonlyMap<string, 'left' | 'right'>;
   onPort(port: Port): void;
   keyboardConnect(port: Port): void;
   enter?: () => void;
@@ -91,8 +93,14 @@ const attachmentCarry = carryKind<CarriedAttachment>('attachment');
 /** What a Library item dropped would make: its card, and the wires into and out of it when it splits a wire. */
 export type LibraryPreview = { cards: ModelCard[]; wires: ModelEdge[] };
 
-function side(port: Port, flipped: boolean) {
-  return (port.direction === 'input') !== flipped ? Position.Left : Position.Right;
+/**
+ * Inputs are on the left and outputs on the right; of several physical ports the first is on the left, as an element
+ * that joins two others is drawn between them. Flip swaps the sides.
+ */
+function side(port: Port, ports: readonly Port[], flipped: boolean) {
+  const physical = ports.filter((each) => each.direction === 'physical');
+  const left = port.direction === 'physical' ? physical.length > 1 && physical[0] === port : port.direction === 'input';
+  return left !== flipped ? Position.Left : Position.Right;
 }
 
 const HandleUpdates = createContext<(id: string) => void>(() => {
@@ -130,7 +138,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
       : available ? 'allowed' : available === false ? 'refused' : undefined;
     return { port, key, reason, available, problem, verdict };
   });
-  const geometry = JSON.stringify([!!data.collapsed, !!data.flipped, ports.map(({ port, key, verdict, problem }) =>
+  const geometry = JSON.stringify([!!data.collapsed, !!data.flipped, [...data.portSides ?? []], ports.map(({ port, key, verdict, problem }) =>
     [key, port.name, port.mark, verdict === 'allowed' || verdict === 'marked', !!problem])]);
   useEffect(() => { update(id); }, [id, update, geometry]);
   useEffect(() => { if (data.renaming) input.current?.select(); }, [data.renaming]);
@@ -156,7 +164,8 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
     </CardHead>
     {ports.map(({ port, key, reason, available, problem, verdict }) => {
       const change = data.portChanges?.get(key);
-      const location = side(port, Boolean(data.flipped));
+      const facing = data.portSides?.get(key);
+      const location = facing ? facing === 'left' ? Position.Left : Position.Right : side(port, data.ports, Boolean(data.flipped));
       const physical = port.direction === 'physical';
       const interactive = !data.locked && !data.canPick;
       const connectable = interactive && (!physical || data.physicalConnections);

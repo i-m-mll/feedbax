@@ -70,7 +70,9 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
     }
     steps["child"] = {"kind": "train", "base": {"step": "train"}}
     steps["evaluate"] = managed_evaluation_step("child")
-    steps["evaluate"]["inputs"]["subject"]["row"] = "seed=a"
+    steps["evaluate"]["inputs"]["subject"]["where"] = {
+        "clauses": [{"seed": [{"id": "a", "label": "a"}]}],
+    }
     variant_path = "steps.train.base.inline.training_config.batch_size"
     base["sweep"] = {"rows": {"control": {}, "variant": {"patches": {
         variant_path: {"value": 8},
@@ -92,7 +94,7 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
     swept = ("steps", "train", "sweep", "axes", "seed", "values", "b", "patches", "seed", "value")
     exception = ("steps", "train", "sweep", "exceptions", "restore", "patches", "settings.grad_clip", "value")
     variant = ("sweep", "rows", "variant", "patches", variant_path, "value")
-    subject = ("steps", "evaluate", "inputs", "subject", "row")
+    subject = ("steps", "evaluate", "inputs", "subject", "where", "clauses", 0, "seed")
     model_source = source("document", "point-mass", "/interior/components/plant/fields/mass")
     step_source = source("step", "train", "/base/inline/training_config/batch_size", step="train")
     sweep_source = source(
@@ -110,7 +112,7 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
         (swept, 7, RunKey("control", "child", "seed=b"), sweep_source, sweep_source),
         (exception, 2.0, RunKey("control", "child", "seed=a"), exception_source, exception_source),
         (variant, 12, RunKey("variant", "child", "seed=a"), variant_source, variant_source),
-        (subject, "seed=b", RunKey("control", "evaluate", "default"), upstream("seed=a"), upstream("seed=b")),
+        (subject, [{"id": "b", "label": "b"}], RunKey("control", "evaluate", "default"), upstream("seed=a"), upstream("seed=b")),
     )
     save(base)
     baseline = tmp_path / "baseline.json"

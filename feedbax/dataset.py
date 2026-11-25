@@ -10,7 +10,7 @@ import jax
 import numpy as np
 from pydantic import JsonValue
 
-from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor
+from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor, TrialFigureTime
 
 
 type Array = jax.Array | np.ndarray
@@ -30,6 +30,14 @@ class Variable:
     units: str | None = field(default=None, kw_only=True)
     quantity: str | None = field(default=None, kw_only=True)
     frame: str | None = field(default=None, kw_only=True)
+    trial_time: TrialFigureTime | None = field(default=None, kw_only=True)
+
+    @classmethod
+    def from_field(cls, data: Array, field: FieldDescriptor, dims: Dimensions) -> Variable:
+        return cls(
+            data, dims, units=field.units, quantity=field.quantity, frame=field.frame,
+            trial_time=field.trial_time,
+        )
 
 
 @jax.tree_util.register_dataclass
@@ -134,6 +142,7 @@ class Dataset:
                 units=variable.units,
                 quantity=variable.quantity,
                 frame=variable.frame,
+                trial_time=variable.trial_time,
                 inline_values=inline_values,
             )
 

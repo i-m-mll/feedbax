@@ -23,7 +23,7 @@ def _shared():
     project.steps["other"] = project.steps["analyze"].model_copy(deep=True)
     project.steps["other-report"] = Step.model_validate(
         project.steps["report"].model_dump(mode="json", exclude_unset=True)
-        | {"inputs": {"velocity_summary": {"step": "other", "row": "default", "element": "profile", "product": "figure"}}}
+        | {"inputs": {"velocity_summary": {"step": "other", "element": "profile", "product": "figure"}}}
     )
     return project
 

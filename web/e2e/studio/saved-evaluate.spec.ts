@@ -871,7 +871,7 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   const { snapshot: saved } = await created.json() as StudioProjectDocument;
   expect(saved.project.steps!.evaluate.inputs?.subject).toMatchObject({
     step: 'train',
-    where: { rows: [{ key: train.key.row, variant: train.key.variant, row: train.key.row }] },
+    where: { clauses: [{}] },
     checkpoint: { at },
   });
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })).toContainText(label);

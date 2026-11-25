@@ -445,7 +445,9 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const childId = 'train-2';
   expect(snapshot.project.steps?.[childId]).toMatchObject({
     base: { step: 'train' },
-    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { rule: `learning-rate=${selected.map(({ coordinates }) => coordinates['learning-rate'].value).join(',')}` } } },
+    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { clauses: [{ 'learning-rate': selected.map(({ coordinates }) => ({
+      id: coordinates['learning-rate'].value_id, label: String(coordinates['learning-rate'].value),
+    })).sort((left, right) => left.id.localeCompare(right.id)) }] } } },
     deltas: [{ patches: [{ value: 'initialize_from' }] }],
   });
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
@@ -546,7 +548,9 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     base: { step: 'train' },
     inputs: { checkpoint: {
       step: 'train', checkpoint: 'last',
-      where: { rows: [{ key: rowKeys[0], variant: selected[0].key.variant, row: rowKeys[0] }] },
+      where: { clauses: [{ 'learning-rate': [{
+        id: selected[0].coordinates['learning-rate'].value_id, label: String(selected[0].coordinates['learning-rate'].value),
+      }] }] },
     } },
   });
   const reopened = await plan();

@@ -4,7 +4,7 @@ from pydantic import ValidationError
 from feedbax.builtins.training import StandardTrainingSettings
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_inputs import SelectedRow, SubsetTerms, subset_to_rows
+from feedbax.contracts.project_inputs import BoundRank, SubsetTerms, subset_to_rows
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
@@ -330,16 +330,14 @@ def test_chained_train_requires_a_row_match_or_explicit_checkpoint_mapping():
     assert all("manual, seed=a, seed=b" in problem.detail for problem in plan.diagnostics)
     assert all(run.key.step != "flat" for run in plan.runs)
 
-    flat["inputs"]["checkpoint"]["where"] = {"rows": [
-        {"key": row, "variant": "default", "row": row} for row in ("manual", "seed=b")
-    ]}
+    flat["inputs"]["checkpoint"]["where"] = {"clauses": [{"seed": [{"id": "b", "label": "b"}]}]}
     flat["sweep"]["axes"]["parent"] = {"input": "checkpoint"}
     mapped = compile_project(Project.model_validate(data))
     assert not mapped.diagnostics
     parents = [
         run.inputs["checkpoint"].producer.row for run in mapped.runs if run.key.step == "flat"
     ]
-    assert sorted(parents) == ["manual", "manual", "seed=b", "seed=b"]
+    assert sorted(parents) == ["seed=b", "seed=b"]
 
 
 def test_checkpoint_subset_pairs_surviving_ids_even_with_one_candidate():
@@ -361,13 +359,12 @@ def test_checkpoint_subset_pairs_surviving_ids_even_with_one_candidate():
     assert [row for row in plan.rows if row.key.step == "rewarm"] == rewarm
     assert [run.inputs["checkpoint"].producer for run in rewarm] == [run.key for run in flat]
 
-    del checkpoint["where"]
-    checkpoint["row"] = "seed=b"
+    checkpoint["where"] = {"clauses": [{"seed": [{"id": "b", "label": "b"}]}]}
     explicit = compile_project(Project.model_validate(data), memo=memo)
     assert explicit == compile_project(Project.model_validate(data))
     assert not explicit.diagnostics
     flat = [run for run in explicit.runs if run.key.step == "flat"]
-    assert len(flat) == 5
+    assert {run.key.row for run in flat} == {"rate=fast--seed=b", "rate=slow--seed=b"}
     assert all(run.inputs["checkpoint"].producer.row == "seed=b" for run in flat)
 
 
@@ -499,7 +496,7 @@ def test_generated_variant_ids_can_be_named_in_references():
     assert reader.inputs["subject"].producer.variant == first.id
 
 
-def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
+def test_axis_clauses_choose_current_rows_and_rank_binding_keeps_exact_keys():
     from tests.test_saved_update_series import definition
 
     data = definition("last")
@@ -518,15 +515,15 @@ def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
     reference = evaluation["inputs"]["subject"]
     reference["where"] = {
         "rule": "seed=a,c",
-        "rows": [{"key": row, "variant": "default", "row": row} for row in ("seed=c", "seed=a")],
+        "clauses": [{"seed": [{"id": key, "label": key} for key in ("c", "a")]}],
     }
     plan = compile_project(Project.model_validate(data))
     assert not plan.diagnostics
     evaluation_runs = [run for run in plan.runs if run.kind == "evaluate"]
-    assert [run.coordinates["seed"].value_id for run in evaluation_runs] == ["c", "a"]
+    assert [run.coordinates["seed"].value_id for run in evaluation_runs] == ["a", "c"]
     subset = plan.subsets["default", "baseline", "subject"]
     assert subset.candidates == 3
-    assert tuple(key.row for key in subset.members) == ("seed=c", "seed=a")
+    assert tuple(key.row for key in subset.members) == ("seed=a", "seed=c")
 
     data["documents"]["selected"] = {"schema": "subset", "payload": reference["where"]}
     reference["where"] = {"subset": "selected"}
@@ -540,17 +537,13 @@ def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
     assert not ranked.diagnostics, ranked.diagnostics
     assert ranked.subsets["default", "baseline", "subject"].ranks == ("rank-1",)
     reference["where"] = subset_to_rows(measured, [
-        SelectedRow(key="rank-1", variant="default", row="seed=c"),
+        BoundRank(key="rank-1", variant="default", row="seed=c"),
     ]).model_dump(exclude_unset=True)
     frozen = compile_project(Project.model_validate(data))
     assert not frozen.diagnostics
     [reader] = [run for run in frozen.runs if run.kind == "evaluate"]
     assert reader.inputs["subject"].producer.row == "seed=c"
     assert reader.inputs["subject"].member.key == "rank-1"
-    reference["where"] = {"rows": []}
-    empty = compile_project(Project.model_validate(data))
-    assert not empty.diagnostics and all(run.kind == "train" for run in empty.runs)
-    assert empty.subsets["default", "baseline", "subject"].members == ()
     reference["where"] = {"rule": "seed=typo"}
     [problem] = compile_project(Project.model_validate(data)).diagnostics
     assert problem.path == "inputs.subject.where.rule"
@@ -642,7 +635,7 @@ def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
         },
     }
     data["steps"]["child"] = {"kind": "train", "base": {"step": "fit"}}
-    data["steps"]["evaluate"]["inputs"]["subject"].update({"step": "child", "row": "seed=a"})
+    data["steps"]["evaluate"]["inputs"]["subject"].update({"step": "child", "where": {"clauses": [{"seed": [{"id": "a", "label": "a"}]}]}})
     requested = RunKey("default", "child", "seed=a")
     consumer = RunKey("default", "evaluate", "default")
     project = Project.model_validate(data)

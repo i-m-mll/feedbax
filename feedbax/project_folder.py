@@ -12,6 +12,8 @@ from functools import lru_cache, partial
 import os
 from pathlib import Path
 import re
+from secrets import token_hex
+from shutil import rmtree
 import stat
 from tempfile import TemporaryDirectory
 from threading import Lock
@@ -763,7 +765,7 @@ class _LockedProjectFolder:
 @contextmanager
 def _folder_lock(
     location: ProjectFolderLocation, *, write: bool = True, declaration: str | None = None,
-    verify_project: bool = False,
+    verify_project: bool = False, detach: Callable[[int], None] | None = None,
 ) -> Iterator[_LockedProjectFolder]:
     root = location.path
     with _project_directory_chain(root) as chain:
@@ -805,8 +807,42 @@ def _folder_lock(
                 _finish_patch_at(root, directory)
             yield _LockedProjectFolder(location, directory, check_folder)
             check_folder()
+            if detach is not None:
+                detach(chain[-2][1])
         finally:
             os.close(descriptor)
+
+
+def _delete_project_folder(location: ProjectFolderLocation, parent: int) -> None:
+    """Detach the verified directory before removing any of its contents."""
+    staging = f".studio-delete-{token_hex(16)}"
+    os.mkdir(staging, mode=0o700, dir_fd=parent)
+    empty = True
+    try:
+        staged = os.open(staging, directory_open_flags(error_factory=OSError), dir_fd=parent)
+        try:
+            rename_no_replace(
+                location.path.name, "project", source_dir_fd=parent, destination_dir_fd=staged,
+                error_factory=OSError, context="Studio project deletion",
+            )
+            empty = False
+            moved = os.stat("project", dir_fd=staged, follow_symlinks=False)
+            if not stat.S_ISDIR(moved.st_mode) or (moved.st_dev, moved.st_ino) != location.identity:
+                rename_no_replace(
+                    "project", location.path.name, source_dir_fd=staged, destination_dir_fd=parent,
+                    error_factory=OSError, context="restore replaced Studio project folder",
+                )
+                empty = True
+                raise ProjectFolderNotFound("The selected project folder was replaced")
+            rmtree("project", dir_fd=staged)
+            empty = True
+        finally:
+            os.close(staged)
+    finally:
+        # A failed restore or removal leaves recoverable files inside staging.
+        if empty:
+            os.rmdir(staging, dir_fd=parent)
+    os.fsync(parent)
 
 
 def check_revision(resource: _Resource, expected: str, current: str) -> None:
@@ -1152,6 +1188,17 @@ class ProjectFolder:
         except OSError as error:
             raise ProjectFolderInvalid(str(error)) from error
         return self._open_folder(ProjectFolderLocation.selected(destination))
+
+    def delete(self, project_id: str) -> None:
+        if not _CANONICAL_PROJECT_ID.fullmatch(project_id):
+            raise ProjectFolderNotFound(project_id)
+        location = self._folder(project_id)
+        if location.path.parent != self.root:
+            raise ProjectFolderNotFound(project_id)
+        with _folder_lock(location, verify_project=True, detach=partial(_delete_project_folder, location)) as folder:
+            self._load(folder.path)
+        with self._known_locations_lock:
+            self._known_locations.pop(project_id, None)
 
     def rename(self, project_id: str, body: StudioProjectRename) -> StudioProjectDocument:
         with self._locked_folder(project_id) as folder:

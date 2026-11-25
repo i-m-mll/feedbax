@@ -10,7 +10,7 @@ import { bindStudioCommand, commandAttributes, type StudioCommand, type StudioCo
 import type { PlanView } from '@/features/pipeline/planView';
 import {
   ProjectValueEditSchema, ReportDocumentSchema, StepReferenceSchema, type ReportDocument, type StudioProjectFilePatch,
-  type StudioSavedTrainKey, type StudioSavedTrainRuns,
+  type StepReference, type StudioSavedTrainKey, type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { isReportFigureSource, reportFigureRole, type ReportFigureSource } from './createManagedStep';
 import type { ProjectEditController, ProjectEditSnapshot } from './projectEditController';
@@ -28,6 +28,13 @@ function figureLabel(source: ReportFigureSource) {
 
 function figureAddress({ key, name, figure }: ReportFigureSource) {
   return JSON.stringify([key.variant, key.step, key.row, name, figure.product]);
+}
+
+/** A figure pin's IDs, independent of the displayed value labels. */
+function figurePin(where: StepReference['where']) {
+  if (where && ('subset' in where || where.rule || where.bound_ranks)) return undefined;
+  return (where?.clauses ?? [{}]).map((clause) => Object.entries(clause).sort(([left], [right]) => left.localeCompare(right))
+    .map(([axis, values]) => [axis, values.map(({ id }) => id).sort()]));
 }
 
 /** Where a refusal lands: a field, a block by index, or the open dialog. */
@@ -175,9 +182,11 @@ export function useManagedReport({
       const existing = Object.entries(inputs).find(([, binding]) => {
         const reference = StepReferenceSchema.safeParse(binding);
         if (!reference.success) return false;
-        const { step, row, element, product, where, checkpoint, variants } = reference.data;
-        return step === source.figure.step && row === source.figure.row && element === source.figure.element &&
-          product === source.figure.product && where == null && checkpoint == null && variants == null;
+        const { step, element, product, where, checkpoint, variants } = reference.data;
+        const pin = figurePin(where);
+        return step === source.figure.step && element === source.figure.element &&
+          product === source.figure.product && checkpoint == null && variants == null && pin !== undefined &&
+          JSON.stringify(pin) === JSON.stringify(figurePin(source.figure.where));
       });
       const prefix = reportFigureRole(source);
       let role = existing?.[0] ?? prefix;

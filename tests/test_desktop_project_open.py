@@ -44,14 +44,14 @@ def _desktop_clients(app):
     return transport, control, browser
 
 
-def test_native_entry_creates_and_opens_project_windows(tmp_path, monkeypatch):
+def test_native_entry_opens_start_and_project_windows(tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     app = create_app(projects_dir=projects)
     folders = app.state.project_folders
-    first_document, first_location = folders.new_native_project()
-    second_document, second_location = folders.new_native_project()
-    first = first_document.snapshot
-    second = second_document.snapshot
+    first = folders.new("first").snapshot
+    second = folders.new("second").snapshot
+    first_location = folders.open_native_id(first.project_id)[1]
+    second_location = folders.open_native_id(second.project_id)[1]
     for project in (first, second):
         folders.rename(
             project.project_id,
@@ -87,16 +87,22 @@ def test_native_entry_creates_and_opens_project_windows(tmp_path, monkeypatch):
         "project_folder": str(first_location.path),
     }).status_code == 422
 
-    default_ticket = control.post(ticket_url, json={}).json()
-    created_id = default_ticket["project"]["id"]
-    assert created_id not in (first.project_id, second.project_id)
+    before_start = set(projects.iterdir())
+    response = control.post(ticket_url, json={})
+    assert response.status_code == 200, response.text
+    default_ticket = response.json()
+    assert set(default_ticket) == {"ticket"}
     default = exchange(default_ticket["ticket"])
     assert default.status_code == 204
-    assert default.headers["x-feedbax-project"] == created_id
+    assert default.headers["x-feedbax-start"] == "1"
+    assert "x-feedbax-project" not in default.headers
+    assert "x-feedbax-activity" not in default.headers
     assert "HttpOnly" in default.headers["set-cookie"]
-    created = browser.get(f"/api/projects/{created_id}/open")
-    assert created.status_code == 200
-    assert created.json()["snapshot"]["project_id"] == created_id
+    listed = browser.get("/api/projects")
+    assert listed.status_code == 200
+    assert {entry["project_id"] for entry in listed.json()["projects"]} == {first.project_id, second.project_id}
+    assert set(projects.iterdir()) == before_start
+    assert exchange(default_ticket["ticket"]).status_code == 403
     assert browser.post(ticket_url, json={}, headers={"Origin": endpoint.origin}).status_code == 403
     browser.cookies.clear()
 
@@ -189,7 +195,8 @@ def test_external_git_project_opens_saves_and_reopens_in_place(tmp_path, monkeyp
         monkeypatch.setattr(
             app.state.job_service, "read_plan_attempts", lambda **_scope: PlanJobAttempts(0, {}),
         )
-        created = control.post(ticket_url, json={}).json()
+        local = app.state.project_folders.new("local").snapshot
+        created = control.post(ticket_url, json={"project_id": local.project_id}).json()
         exchange(created)
         created_id = created["project"]["id"]
         created_path = Path(created["folder"]["path"])
@@ -433,7 +440,15 @@ def test_recent_ticket_returns_the_latest_acknowledged_title(tmp_path):
     projects = tmp_path / "projects"
     transport, control, browser = _desktop_clients(create_app(projects_dir=projects))
     origin = {"Origin": transport.endpoint.origin}
-    issued = control.post("/_desktop/ticket", json={}).json()
+    start = control.post("/_desktop/ticket", json={}).json()
+    assert browser.post(
+        "/_desktop/exchange", headers={**origin, "X-Feedbax-Ticket": start["ticket"]},
+    ).headers["x-feedbax-start"] == "1"
+    created = browser.post("/api/projects", json={"name": "first_title"}, headers=origin)
+    assert created.status_code == 201, created.text
+    issued = control.post("/_desktop/ticket", json={
+        "project_id": created.json()["snapshot"]["project_id"],
+    }).json()
     project_id = issued["project"]["id"]
     location = issued["folder"]
     assert list(projects.iterdir()) == [Path(location["path"])]

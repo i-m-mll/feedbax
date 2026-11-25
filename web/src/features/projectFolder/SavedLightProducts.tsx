@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { z } from 'zod';
 import { requestJson, sentBody } from '@/api/request';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { StatusMark } from '@/components/ui/StatusMark';
-import type { StudioSavedLightHistory, TrialMeanSelection } from '@/generated/studioContracts';
+import { parseContract, type StudioSavedLightHistory, type TrialMeanSelection } from '@/generated/studioContracts';
 import { Button } from '@/components/ui/Button';
 import { Section } from '@/components/ui/Section';
 
@@ -36,12 +35,6 @@ function themedLayout(layout: Fields | undefined): Fields {
   };
 }
 
-const figureProduct = z.object({
-  data: z.array(z.record(z.unknown())),
-  layout: z.record(z.unknown()).optional(),
-  frames: z.array(z.record(z.unknown())).optional(),
-});
-
 /**
  * Where a figure's product is read: its saved product, or under Mean the Service's rendering of its job for the
  * clock's By and Align, which is not saved.
@@ -66,7 +59,7 @@ function SavedPlot({ source, name }: { source: FigureSource; name: string }) {
   const theme = useRootAttribute('data-theme');
   const figure = useQuery({
     queryKey: ['saved-plotly-figure', source],
-    queryFn: async ({ signal }) => figureProduct.parse(await readFigure(source, signal)),
+    queryFn: async ({ signal }) => parseContract('FigureProduct', await readFigure(source, signal)),
   });
   useEffect(() => {
     const node = target.current;
@@ -80,7 +73,7 @@ function SavedPlot({ source, name }: { source: FigureSource; name: string }) {
         if (!active) return;
         purge = () => Plotly.purge(node);
         await Plotly.newPlot(node, {
-          ...structuredClone({ data, layout: themedLayout(layout), frames }), config: { responsive: true },
+          ...structuredClone({ data, layout: themedLayout(layout), frames: frames ?? undefined }), config: { responsive: true },
         });
         if (active) setReady(true);
       } catch (error) {

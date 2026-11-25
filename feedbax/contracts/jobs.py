@@ -13,6 +13,7 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.code_validity import AttemptProvenance
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, OpeningObservation, OpeningStep, TargetId
 from feedbax.contracts.expression_values import TextSpan
+from feedbax.contracts.loaded_model import ImportedModelProvenance
 from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import SelectedAxisValueProblem, StepReference, SubsetTerms
@@ -142,6 +143,7 @@ class StudioSavedEvaluationResult(StrictModel):
     trials: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
+    loaded_model: ImportedModelProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
     size_bytes: int = Field(ge=0)
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
     provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
