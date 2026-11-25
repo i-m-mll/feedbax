@@ -621,9 +621,11 @@ export function ProjectWindow({
             <WindowButton command={drawer} pressed={detailsDrawerVisible} controls={ids.detailsDrawer} />
           </div>
           <div className="studio-window-bottom__clock">{clock}</div>
-          <div className="studio-window-bottom__right">
+          <div className="studio-window-bottom__notice">
             <StudioConnectionStatus />
             {failure}
+          </div>
+          <div className="studio-window-bottom__right">
             {problems}
             {activity}
             <WindowButton command={inspector} pressed={inspectorVisible} controls={ids.inspector} />
