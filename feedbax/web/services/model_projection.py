@@ -11,6 +11,7 @@ from feedbax.contracts.model_address import (
     AttachmentElement, ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement, WireElement,
 )
 from feedbax.contracts.model_document import DelayAttachment, ModelDocument, ModelTime, PhysicalPortType, SignalType
+from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.time_units import length_steps
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_edit import (
@@ -168,14 +169,15 @@ def evaluate_projection(folders, project_id, body, bundle):
     model = reading.state.resolved_model
     definition = plan.selected_definitions.get(key)
     if definition is None:
-        return model, (), None, {}
+        return model, (), None, {}, None
     try:
         documents, _, _ = _pairing(plan, key, bundle, definition=definition)
     except ValueError:
-        return model, (), None, {}
+        return model, (), None, {}, None
     if definition.document_ids.get("inputs.subject") == body.document:
         model = documents.model
-    return model, model_task_signals(documents.task_source, folders.python_tasks), documents.objective, documents.input_bindings
+    source = documents.task_source
+    return model, model_task_signals(source, folders.python_tasks), documents.objective, documents.input_bindings, source
 
 
 def model_projection(folders, project_id, body, bundle):
@@ -191,13 +193,15 @@ def model_projection(folders, project_id, body, bundle):
         raise ProjectFolderInvalid("Choose an Evaluate run for this Model selection.")
     elif body.run is not None:
         selected = selected_model_and_task(folders, project_id, body)
-    model, task, objective, overrides = selected or (authored, (), None, {})
+    model, task, objective, overrides, source = selected or (authored, (), None, {}, None)
     model = model or authored
     task_signals = tuple(task_signal(item) for item in task)
     bound = matched_task_inputs(model, task, overrides)
     supplied = {port.name: signal.type for port, signal in bound}
     authority = ModelRegistryPorts(bundle.components)
-    table = inspect_model_signals(model, bundle.components, supplied)
+    table = inspect_model_signals(
+        model, bundle.components, supplied, task=source if isinstance(source, TaskDocument) else None,
+    )
     readers = _objective_readers(objective, table)
     ports: list[ModelPortProjection] = []
     physical_ports: list[ModelPhysicalPortProjection] = []

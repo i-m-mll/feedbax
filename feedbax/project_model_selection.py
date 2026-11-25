@@ -103,7 +103,7 @@ def selected_model_and_task(
     return (
         _trial_document("model", model, ModelDocument), model_task_signals(source, folders.python_tasks),
         _trial_document("objective", objective, ObjectiveDocument) if objective is not None else None,
-        managed.get("input_bindings", {}),
+        managed.get("input_bindings", {}), source,
     )
 
 
@@ -113,7 +113,7 @@ def selected_task_signal(folders: ProjectFolder, project_id: str, body: ModelPro
     selected = selected_model_and_task(folders, project_id, body)
     if selected is None:
         raise ProjectFolderInvalid("The selected run does not use this Model")
-    _, task, _, _ = selected
+    _, task, _, _, _ = selected
     item = next((item for item in task if item.id == signal), None)
     if item is None:
         raise ProjectFolderInvalid("The selected task does not expose this signal")
