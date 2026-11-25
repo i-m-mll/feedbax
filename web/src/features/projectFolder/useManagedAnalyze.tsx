@@ -44,6 +44,7 @@ import { savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, placedField, type Reveal } from './projectWindowProblems';
 import { ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
+import { holdsProducts, OperationProducts } from './OperationProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName, keyOfLabel } from './generatedName';
 import type { GestureFailures } from './refusals';
@@ -414,6 +415,11 @@ export function useManagedAnalyze({
   const shownFigure = figure ? selected : Object.keys(figures)[0];
   const shownPlan = shownFigure && planOf(shownFigure, shownFigure === selected ? chosenMember : undefined);
   const shownStatus = selectedPlan ?? selectedElement;
+  /** Each operation's request the Results read: the chosen one of the selected mapped operation, else its first with products. */
+  const operationResults = Object.keys(operations).flatMap((name) => {
+    const history = planOf(name, name === selected ? chosenMember : undefined) ?? planned.get(name)?.requests.find(holdsProducts);
+    return history && holdsProducts(history) ? [{ name, label: shown(name), history }] : [];
+  });
   function writeParameter(path: readonly string[], value: JsonValue) {
     if (!operation || !selected) return;
     const [name, ...rest] = path;
@@ -558,6 +564,8 @@ export function useManagedAnalyze({
       {shownFigure && shownPlan && <SavedFigureResult key={JSON.stringify([scope, shownFigure])}
         history={shownPlan} name={shownFigure} project={saved.project_id} revision={saved.revision} mean={mean} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
+    results: operationResults.length > 0 ? { body: <OperationProducts operations={operationResults} />, drawer,
+      inspector: libraryInspector || (operation ? inspector : undefined) } : undefined,
     commands: document && focusedView === 'analysis' ? [addCommand, removeCommand, ...selectedCommands, ...viewport]
       : document && focusedView === 'figures' ? [addCommand, removeCommand, ...selectedCommands] : [],
     overlay: opened && <Dialog ariaLabel={studioName('addOperation')}
