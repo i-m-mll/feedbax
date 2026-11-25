@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 from functools import cache
+from typing import get_args
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.component_registry.declarations import DeclaredComponent
 from feedbax.compiler.graph_schema import _component_port_dimension
+from feedbax.contracts.acausal import EquationsDomain
+from feedbax.contracts.acausal_interface import is_acausal_type
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.component import derive_dynamic_port_count, derive_dynamic_port_layout
 from feedbax.contracts.model_document import ModelDocument, SignalType
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.compiler.model_edit import Direction, Port, Record, model_graph_problems
+
+
+BOUNDARY_PORT_PLACEMENT_REASON = "Declare conserving interfaces on the composite port list"
 
 
 class ModelRegistryPorts:
@@ -38,6 +44,8 @@ class ModelRegistryPorts:
         declaration = self._leaf(component)
         if isinstance(declaration, str):
             return declaration
+        if is_acausal_type(declaration.name, "BoundaryPort"):
+            return BOUNDARY_PORT_PLACEMENT_REASON
         if component.get("revision") not in (None, declaration.revision):
             return unavailable
         if domain is None:
@@ -46,7 +54,14 @@ class ModelRegistryPorts:
             domain in {"planar_multibody", "spatial_multibody"}
             and declaration.domain == "feedbax.domain.mechanics"
         )
-        return None if allowed else unavailable
+        if not allowed:
+            return unavailable
+        types = declaration.port_types
+        if domain in get_args(EquationsDomain) and types is not None:
+            for port in (*types.inputs.values(), *types.outputs.values()):
+                if port.kind == "conserving" and port.physical_domain not in (None, domain):
+                    return f"This component requires a {port.physical_domain} interior, but this interior is {domain}"
+        return None
 
     def port(self, component: Record, direction: Direction, port: str) -> Port | None:
         return self.layout(component).get((direction, port))

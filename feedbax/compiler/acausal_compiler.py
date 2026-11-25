@@ -150,6 +150,7 @@ def compile_acausal_authoring_report(
     node_path: list[str],
     component_registry: Any,
     authored_interior: dict[str, Any] | None = None,
+    element_names: Mapping[str, str] | None = None,
 ) -> DomainCompileReport:
     """Return a structural authoring compile report without constructing JAX closures."""
 
@@ -158,6 +159,7 @@ def compile_acausal_authoring_report(
         interior_spec,
         component_registry=component_registry,
         path=".".join(node_path) if node_path else "<root>",
+        element_names=element_names,
     )
     derived_interface = None
     analysis: StructuralAnalysis | None = None
@@ -234,6 +236,8 @@ def _diagnose_acausal_spec(
     component_registry: Any,
     path: str,
     nested: bool = False,
+    element_names: Mapping[str, str] | None = None,
+    namespace: str = "",
 ) -> list[DomainDiagnostic]:
     diagnostics: list[DomainDiagnostic] = []
     if not nested:
@@ -278,6 +282,8 @@ def _diagnose_acausal_spec(
                 component_registry=component_registry,
                 path=f"{path}.{node_id}",
                 nested=True,
+                element_names=element_names,
+                namespace=f"{namespace}{node_id}.",
             )
         )
     if graph.physical_domain == "planar_multibody":
@@ -303,7 +309,9 @@ def _diagnose_acausal_spec(
                         analyze_system(
                             flattened.elements,
                             flattened.connections,
-                        )
+                        ),
+                        element_names=element_names,
+                        namespace=namespace,
                     )
                 )
         except CoordinateOwnershipError as exc:
@@ -712,7 +720,18 @@ def _diagnose_planar_multibody_graph(
     return diagnostics
 
 
-def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDiagnostic]:
+def _diagnose_structural_analysis(
+    analysis: StructuralAnalysis, *, element_names: Mapping[str, str] | None, namespace: str,
+) -> list[DomainDiagnostic]:
+    def display(identifier: str) -> str:
+        if element_names:
+            owner = identifier
+            while owner:
+                if name := element_names.get(namespace + owner):
+                    return name + identifier[len(owner):]
+                owner = owner.rpartition(".")[0]
+        return identifier
+
     diagnostics: list[DomainDiagnostic] = []
     for network in analysis.networks:
         counts = network.counts
@@ -723,9 +742,9 @@ def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDi
                     code="acausal.unbalanced",
                     message=(
                         "Acausal network is structurally unbalanced: "
-                        f"elements={list(network.elements)!r}, "
+                        f"elements={[display(item) for item in network.elements]!r}, "
                         f"equations={counts['equations']}, unknowns={counts['unknowns']}, "
-                        f"free coordinates require inertia: {list(network.massless_variables)!r}."
+                        f"free coordinates require inertia: {[display(item) for item in network.massless_variables]!r}."
                     ),
                     node_ids=list(network.elements),
                     variables=list(network.massless_variables),
@@ -739,7 +758,7 @@ def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDi
                     code="acausal.ungrounded_network",
                     message=(
                         "Acausal network has no Ground, RotationalGround, or prescribed motion: "
-                        f"elements={list(network.elements)!r}."
+                        f"elements={[display(item) for item in network.elements]!r}."
                     ),
                     node_ids=list(network.elements),
                     counts={"n_elements": len(network.elements)},
@@ -752,7 +771,7 @@ def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDi
                     code="acausal.series_through_sources",
                     message=(
                         "Acausal network has multiple through-variable sources in one "
-                        f"connected path: elements={list(network.source_elements)!r}."
+                        f"connected path: elements={[display(item) for item in network.source_elements]!r}."
                     ),
                     node_ids=list(network.source_elements),
                     counts={"n_sources": len(network.source_elements)},
@@ -765,7 +784,7 @@ def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDi
                 code="acausal.series_through_sources",
                 message=(
                     "Acausal through-variable equations contain a cycle: "
-                    f"variables={list(analysis.through_equation_cycle)!r}."
+                    f"variables={[display(item) for item in analysis.through_equation_cycle]!r}."
                 ),
                 variables=list(analysis.through_equation_cycle),
                 counts={"n_variables": len(analysis.through_equation_cycle)},

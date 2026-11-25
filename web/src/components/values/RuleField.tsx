@@ -1,12 +1,13 @@
 import { Autocomplete } from '@base-ui/react/autocomplete';
 import clsx from 'clsx';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { TermText } from '@/components/ui/TextField';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger, Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
-import { Button } from '@/components/ui/Button';
+import { Button, IconButton } from '@/components/ui/Button';
+import { X } from 'lucide-react';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { fieldBox, fieldInput, popupItem, popupSurface, primaryText } from '@/components/ui/styles';
 import { contextMenuKey } from '@/components/pipeline/CommandContextMenu';
@@ -20,6 +21,24 @@ export interface RuleFieldProblem {
   readonly term?: { readonly text: string; readonly start: number; readonly end: number };
   /** What the mark offers in place of what the rule names that no longer exists. */
   readonly offers?: readonly RuleFieldCommand[];
+}
+
+/** One clause of a choice of several: its text, its problem, and the edit that removes it. */
+export interface RuleFieldClause {
+  readonly text: string;
+  readonly problem?: RuleFieldProblem;
+  remove?(): void;
+}
+
+/** A problem's mark; one that offers replacements opens them as a menu. */
+function ProblemMark({ problem, id }: { problem: RuleFieldProblem; id: string }) {
+  const mark = <FieldProblem reason={problem.reason} id={id} className="mr-1" />;
+  return problem.offers?.length ? <Menu>
+    <MenuTrigger render={<Button variant="bare" size="content" aria-label={studioName('problem')} aria-describedby={id} />}>{mark}</MenuTrigger>
+    <MenuContent align="end">
+      {problem.offers.map((offer) => <MenuItem key={offer.label} disabled={offer.disabled} onClick={offer.invoke}>{offer.label}</MenuItem>)}
+    </MenuContent>
+  </Menu> : mark;
 }
 
 /** A command on the field's menu. */
@@ -38,6 +57,8 @@ export interface RuleFieldProps {
   count?: string;
   /** The pinned axes or measured ranks, by name. */
   pinned?: readonly string[];
+  /** A choice of several clauses, one line each beneath the field, with the clause's problem and its removal. */
+  clauses?: readonly RuleFieldClause[];
   /** Why the rule being written, or the saved one, does not choose runs, with the term of that text it is about. */
   problem?: RuleFieldProblem;
   disabled?: boolean;
@@ -58,7 +79,7 @@ export interface RuleFieldProps {
  * field saves; Escape restores the saved rule.
  */
 export function RuleField({
-  label, value, vocabulary, count, pinned, problem, disabled, commands, picked, onPickEnd, onDraft, onCommit,
+  label, value, vocabulary, count, pinned, clauses, problem, disabled, commands, picked, onPickEnd, onDraft, onCommit,
 }: RuleFieldProps) {
   const id = useId();
   const [draft, setDraft] = useDraft(value);
@@ -153,16 +174,17 @@ export function RuleField({
       ? <span className="shrink-0 pr-1 text-shell-muted" aria-description={shownPinned.join(', ')}>{studioName('rows')}</span> : null}
     {count ? <span className="shrink-0 pr-control-inline tabular-nums text-shell-muted">{count}</span> : null}
     {term && element && <TermText input={element} text={draft} term={term} />}
-    {problem && (problem.offers?.length ? <Menu>
-      <MenuTrigger render={<Button variant="bare" size="content" aria-label={studioName('problem')} aria-describedby={`${id}-problem`} />}>
-        <FieldProblem reason={problem.reason} id={`${id}-problem`} className="mr-1" />
-      </MenuTrigger>
-      <MenuContent align="end">
-        {problem.offers.map((offer) => <MenuItem key={offer.label} disabled={offer.disabled} onClick={offer.invoke}>{offer.label}</MenuItem>)}
-      </MenuContent>
-    </Menu> : <FieldProblem reason={problem.reason} id={`${id}-problem`} className="mr-1" />)}
+    {problem && <ProblemMark problem={problem} id={`${id}-problem`} />}
   </div>;
-  return <FieldRow label={label} htmlFor={id}>
+  const lines = !picking && clauses && clauses.length > 1 && <ul aria-label={studioName('rows')} className="grid gap-0.5">
+    {clauses.map((clause, index) => <li key={clause.text} className="flex min-w-0 items-center gap-1 font-mono text-xs">
+      <span className="min-w-0 truncate">{clause.text}</span>
+      {clause.problem && <ProblemMark problem={clause.problem} id={`${id}-clause-${index}`} />}
+      {clause.remove && <IconButton label={studioAccessibleName('remove', clause.text)} icon={<X aria-hidden="true" />}
+        disabled={disabled} onClick={clause.remove} />}
+    </li>)}
+  </ul>;
+  return <FieldRow label={label} htmlFor={id} below={lines || undefined}>
     <Autocomplete.Root items={completions} filter={null} value={draft} mode="list"
       itemToStringValue={(item: RuleCompletion) => item.text}
       open={focused && !dismissed && completions.length > 0}
