@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -931,6 +931,7 @@ class ProjectFolder:
         figure_templates: FigureTemplateRegistry | None = None,
         local_folder: ProjectFolderLocation | None = None,
         training_methods: TrainingMethodRegistry | None = None,
+        load_examples: Callable[[], Mapping[str, Project]] = dict,
     ) -> None:
         self.root = root.resolve()
         self._local_folder = local_folder
@@ -940,6 +941,7 @@ class ProjectFolder:
         self.functions = functions
         self.python_tasks = python_tasks
         self.training_methods = training_methods
+        self._load_examples = load_examples
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: SavedPlanMemo())
         self._known_locations: dict[str, ProjectFolderLocation] = {}
         self._known_locations_lock = Lock()
@@ -1168,15 +1170,16 @@ class ProjectFolder:
             folder.check()
             yield plan
 
+    def project_examples(self) -> Mapping[str, Project]:
+        return self._load_examples()
+
     def new(self, name: str, *, example: str | None = None) -> StudioProjectDocument:
         if re.fullmatch(r"untitled-[0-9a-f]+", name, re.IGNORECASE):
             raise ProjectFolderInvalid("Choose a name for the project.")
         configuration = ProjectConfiguration(project=name, store="results")
         project = Project()
         if example is not None:
-            from feedbax.examples import load_shipped_projects
-
-            project = load_shipped_projects().get(example)
+            project = self.project_examples().get(example)
             if project is None:
                 raise ProjectFolderNotFound(example)
         self.root.mkdir(parents=True, exist_ok=True)
