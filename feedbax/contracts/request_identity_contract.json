@@ -642,6 +642,14 @@
         "absent": {}
       }
     },
+    "feedbax.contracts.model_document.HoldAttachment": {
+      "id": {},
+      "kind": {
+        "values": [
+          "hold"
+        ]
+      }
+    },
     "feedbax.contracts.model_document.InputDefault": {
       "value": {}
     },
@@ -745,6 +753,7 @@
         "absent": [],
         "families": [
           "feedbax.contracts.model_document.DelayAttachment",
+          "feedbax.contracts.model_document.HoldAttachment",
           "feedbax.contracts.model_document.InterventionAttachment",
           "feedbax.contracts.model_document.ProbeAttachment"
         ]

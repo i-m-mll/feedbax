@@ -244,6 +244,7 @@ from feedbax.contracts.model_address import (
 from feedbax.contracts.model_document import (
     CompositeComponent,
     DelayAttachment,
+    HoldAttachment,
     GraphInterior,
     InputDefault,
     InterventionAttachment,
@@ -599,6 +600,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelTime,
     InputDefault,
     DelayAttachment,
+    HoldAttachment,
     InterventionAttachment,
     ProbeAttachment,
     SignalInput,
