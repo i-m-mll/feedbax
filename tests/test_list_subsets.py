@@ -31,7 +31,7 @@ def listed_best():
     steps = raw["steps"]
     steps["train_b"] = deepcopy(steps["train"]) | {"sweep": _rates({"d": 0.004, "e": 0.0005, "f": 0.0015})}
     best = {"rule": "lowest 2 train_loss"}
-    raw["documents"]["chosen"] = {"schema": "subset", "payload": {"axes": {"rate": [{"id": "b", "label": "b"}]}}}
+    raw["documents"]["chosen"] = {"schema": "subset", "payload": {"clauses": [{"rate": [{"id": "b", "label": "b"}]}]}}
     steps["baseline"]["inputs"]["subject"] = [
         {"step": "train", "checkpoint": "last", "where": deepcopy(best)},
         {"step": "train_b", "checkpoint": "last", "where": deepcopy(best)},
