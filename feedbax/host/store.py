@@ -1489,6 +1489,7 @@ class Store:
         self, *, record_keys: list[str] | None = None, checkpoint_progress_root: str | None = None,
         checkpoint_objective_root: str | None = None, terminal_train: tuple[str, list[str]] | None = None,
         checkpoint_admission: tuple[str, list[str]] | None = None,
+        attempt_addresses: tuple[str, list[str]] | None = None,
         **filters,
     ) -> dict:
         snapshot = {"cursor": self.event_head, "oldest_cursor": 0, "jobs": self.jobs(**filters)}
@@ -1528,7 +1529,34 @@ class Store:
             snapshot.update(
                 checkpoint_differences=differences, checkpoint_producers=producers, finished_checkpoints=held,
             )
+        if attempt_addresses is not None:
+            if (project := filters.get("project")) is None:
+                raise HostError("invalid_request", "Attempt addresses require one project.")
+            snapshot["attempt_addresses"] = self._attempt_addresses(project, *attempt_addresses)
         return snapshot
+
+    def _attempt_addresses(self, project: str, root: str, addresses: list[str]) -> dict[str, list[str]]:
+        """Read which authored rows were given each exact attempt, including attached aliases."""
+        result: dict[str, list[str]] = {}
+        for job, address in self.db.execute(
+            """
+            SELECT DISTINCT j.id, run.key
+            FROM submission_projects p
+            JOIN submissions s ON s.id=p.submission
+            JOIN json_each(s.response, '$.record.runs') run
+            JOIN json_each(s.response, '$.items') item ON json_extract(item.value, '$.run_key')=run.key
+            JOIN jobs j ON j.id=json_extract(item.value, '$.job_id')
+            WHERE p.project=? AND j.project=p.project
+              AND json_extract(s.response, '$.record.project')=p.project
+              AND json_extract(s.response, '$.record.command.store')=?
+              AND json_extract(j.data, '$.manifest_root')=?
+              AND j.request=json_extract(run.value, '$.request_id')
+              AND run.key IN (SELECT value FROM json_each(?))
+            """,
+            (project, root, root, dump(addresses)),
+        ):
+            result.setdefault(job, []).append(address)
+        return result
 
     @inspect_without_recording()
     def _terminal_train_for_anchor(self, anchor: str) -> TerminalTrainSubject | None:
