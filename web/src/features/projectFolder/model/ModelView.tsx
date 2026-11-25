@@ -165,7 +165,7 @@ function linkedAddress(value: string) {
 }
 
 function stepCount(item: Attachment, step: ModelDocument['step_seconds'] | undefined) {
-  if (item.kind === 'hold') return '□';
+  if (item.kind === 'hold') return '⊓';
   if (item.kind !== 'delay') return item.kind === 'probe' ? '⌖' : '◇';
   if ('text' in item.delay) return '';
   if (item.delay.unit === 'st') return String(item.delay.value);
@@ -1297,10 +1297,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (evaluate) return applyEvaluate(attachmentName(item), difference, true);
     return (await attempt(attachmentName(item), { op: 'set_attachment', difference }, false))?.reason;
   }
-  function addAttachment(address: ModelAddress, kind: 'delay' | 'intervention' | 'probe') {
+  function addAttachment(address: ModelAddress, kind: Attachment['kind']) {
     const list = effective.get(addressKey(address)) ?? [];
     const id = crypto.randomUUID();
     const item: Attachment = kind === 'delay' ? { id, kind, delay: { unit: 'st', value: 1 }, initial: 0 }
+      : kind === 'hold' ? { id, kind }
       : kind === 'intervention' ? { id, kind, operation: 'scale', fields: { factor: 1 } }
       : { id, kind, name: port?.name ?? 'Probe' };
     const difference = { op: 'add', owner: address, after: list.at(-1)?.id ?? null, attachment: item } as const;
@@ -1343,7 +1344,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       address.element.end.owner !== 'boundary';
     if (!(wire || signalPort) || !(editTopology || canEvaluate)) return [];
     return [
-      ...(wire && editTopology ? [bindStudioCommand('addDelay', () => addAttachment(address, 'delay'), { instance: addressKey(address) })] : []),
+      ...(wire && editTopology ? [bindStudioCommand('addDelay', () => addAttachment(address, 'delay'), { instance: addressKey(address) }),
+        bindStudioCommand('addHold', () => addAttachment(address, 'hold'), { instance: addressKey(address) })] : []),
       ...(wire || source ? [bindStudioCommand('addIntervention', () => addAttachment(address, 'intervention'), { instance: addressKey(address) })] : []),
       bindStudioCommand('addProbe', () => addAttachment(address, 'probe'), { instance: addressKey(address) }),
     ];
