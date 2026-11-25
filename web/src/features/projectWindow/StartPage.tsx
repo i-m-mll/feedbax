@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BookOpen, Plus, Search } from 'lucide-react';
+import { BookOpen, FolderOpen, Plus, Search } from 'lucide-react';
 import { useId, useState, type ReactNode } from 'react';
 import { createProjectFolder, deleteProjectFolder, listProjectExamples, listProjectFolders } from '@/api/projectFolders';
 import { shownError } from '@/api/shownErrors';
@@ -17,6 +17,17 @@ import {
 import { ProjectlessWindow } from './ProjectWindow';
 
 const projectsKey = ['studio-home-projects'];
+
+/** The desktop start window's native host: it chooses a folder, whose project window then replaces this one. */
+interface StartHost {
+  openFolder(): Promise<void>;
+}
+
+declare global {
+  interface Window {
+    readonly __FEEDBAX_STUDIO_START__?: StartHost;
+  }
+}
 
 function projectHref(id: string) {
   return `?project=${encodeURIComponent(id)}`;
@@ -123,6 +134,7 @@ export function StartPage() {
   const [filter, setFilter] = useState('');
   const [naming, setNaming] = useState<Naming>();
   const [deleting, setDeleting] = useState<StudioProjectListEntry>();
+  const startHost = window.__FEEDBAX_STUDIO_START__;
   const rows = [...projects.data ?? []].filter((project) => matches(project, filter))
     .sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
   const actions: StartAction[] = [
@@ -135,6 +147,10 @@ export function StartPage() {
           <MenuItem key={example.id} onClick={() => setNaming({ name: example.id, example })}>{example.name}</MenuItem>
         )),
     },
+    ...startHost ? [{
+      name: 'openFolder', glyph: <FolderOpen aria-hidden="true" />,
+      invoke: () => void startHost.openFolder(),
+    } satisfies StartAction] : [],
   ];
   return <>
     <ProjectlessWindow pending={false} />
