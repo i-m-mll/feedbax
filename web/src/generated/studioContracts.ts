@@ -916,6 +916,17 @@ export interface InsertComponentOnWire {
   id?: string | null;
 }
 
+export interface InsertComponentOnPhysicalConnection {
+  op: "insert_physical_component";
+  address: ModelAddress;
+  component: LeafComponent | CompositeComponent;
+  a_port: string;
+  b_port: string;
+  position: ModelPosition;
+  flipped?: boolean;
+  id?: string | null;
+}
+
 export interface MoveWireAttachment {
   op: "move_wire_attachment";
   address: ModelAddress;
@@ -951,7 +962,7 @@ export interface ResetDifference {
 }
 
 export interface ModelEditCommand {
-  operation: AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite | ResetDifference;
+  operation: AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | InsertComponentOnPhysicalConnection | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite | ResetDifference;
 }
 
 export interface ModelEditProblem {
@@ -1060,6 +1071,11 @@ export interface ModelPortProjection {
   type: SignalType;
 }
 
+export interface ModelPhysicalPortProjection {
+  address: ModelAddress;
+  type: "translational" | "rotational" | "frame";
+}
+
 export interface ModelAddedElement {
   change: "added";
   address: ModelAddress;
@@ -1082,6 +1098,7 @@ export interface ModelRewiredElement {
 
 export interface ModelProjection {
   ports?: ModelPortProjection[];
+  physical_ports?: ModelPhysicalPortProjection[];
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelAddress[];
   objective_ports?: ModelAddress[];
@@ -2106,6 +2123,7 @@ export interface ComponentDefinition {
   is_composite?: boolean;
   template_graph?: GraphSpec | AcausalGraphSpec | null;
   placement_reason?: string | null;
+  equations_domains?: Array<"translational" | "rotational">;
   template_ui_state?: GraphUIState | null;
   template_id?: string | null;
   template_kind?: string | null;
@@ -7119,6 +7137,21 @@ export const InsertComponentOnWireSchema: z.ZodType<InsertComponentOnWire> = z.l
     .strict()
 ) as unknown as z.ZodType<InsertComponentOnWire>;
 
+export const InsertComponentOnPhysicalConnectionSchema: z.ZodType<InsertComponentOnPhysicalConnection> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("insert_physical_component"),
+      "address": ModelAddressSchema,
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "a_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "b_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "position": ModelPositionSchema,
+      "flipped": z.boolean().optional(),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<InsertComponentOnPhysicalConnection>;
+
 export const MoveWireAttachmentSchema: z.ZodType<MoveWireAttachment> = z.lazy(() =>
   z
     .object({
@@ -7180,7 +7213,7 @@ export const ResetDifferenceSchema: z.ZodType<ResetDifference> = z.lazy(() =>
 export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
   z
     .object({
-      "operation": z.union([AddComponentSchema, MoveCardsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema, ResetDifferenceSchema]),
+      "operation": z.union([AddComponentSchema, MoveCardsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, InsertComponentOnPhysicalConnectionSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema, ResetDifferenceSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditCommand>;
@@ -7364,6 +7397,15 @@ export const ModelPortProjectionSchema: z.ZodType<ModelPortProjection> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<ModelPortProjection>;
 
+export const ModelPhysicalPortProjectionSchema: z.ZodType<ModelPhysicalPortProjection> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "type": z.union([z.literal("translational"), z.literal("rotational"), z.literal("frame")]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPhysicalPortProjection>;
+
 export const ModelAddedElementSchema: z.ZodType<ModelAddedElement> = z.lazy(() =>
   z
     .object({
@@ -7400,6 +7442,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
   z
     .object({
       "ports": z.array(ModelPortProjectionSchema).optional(),
+      "physical_ports": z.array(ModelPhysicalPortProjectionSchema).optional(),
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
       "task_inputs": z.array(ModelAddressSchema).optional(),
       "objective_ports": z.array(ModelAddressSchema).optional(),
@@ -9203,6 +9246,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "is_composite": z.boolean().optional(),
       "template_graph": z.union([GraphSpecSchema, AcausalGraphSpecSchema, z.null()]).optional(),
       "placement_reason": z.string().nullable().optional(),
+      "equations_domains": z.array(z.union([z.literal("translational"), z.literal("rotational")])).optional(),
       "template_ui_state": GraphUIStateSchema.nullable().optional(),
       "template_id": z.string().nullable().optional(),
       "template_kind": z.string().nullable().optional(),

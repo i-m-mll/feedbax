@@ -1399,6 +1399,8 @@ def apply_model_edit(
                 edit.connect(primary, left, right)
             case edits.ConnectPhysical(graph=primary, connection=connection):
                 edit.physical(primary, connection.model_dump(mode="json"))
+            case edits.InsertComponentOnPhysicalConnection(address=primary):
+                raise _Refusal(primary, "Physical insertion is unavailable")
             case edits.AddPort(graph=primary):
                 edit.add_port(operation)
             case edits.RemovePort(address=primary):
