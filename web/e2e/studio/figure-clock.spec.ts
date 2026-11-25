@@ -150,9 +150,7 @@ test('with the Scene pinned on an Evaluate and its Analyze selected, scrubbing m
   await expect.poll(async () => { const { drawn, expected } = await playheadAt(plot, half.time); return Math.abs(drawn - expected); })
     .toBeLessThan(1);
 
-  await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
-  await page.getByRole('region', { name: 'Shelf', exact: true }).getByRole('group', { name: 'Trials', exact: true })
-    .getByRole('button', { name: 'All', exact: true }).click();
+  await footer(page).getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'All', exact: true }).click();
   await expect(trialPicker(page)).toHaveText('64 trials');
   await expect.poll(() => shownTrials(plot)).toHaveLength(64);
   await expect.poll(() => heavyTrial(plot)).toEqual([trials[3]]);
