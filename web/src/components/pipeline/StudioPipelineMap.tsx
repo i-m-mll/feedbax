@@ -666,7 +666,7 @@ function MapDrawer({ steps, newStep, framed = false, pending = false, selection,
   const tree = useRef<TreeHandle>(null);
   const commands = stepMenu && ((step: PlanStepView) =>
     stepMenu(step, { start: () => tree.current?.rename(step.id), surface: 'drawer' }));
-  useCommandSource(commands && (() => steps.forEach(commands)));
+  useCommandSource(commands && (() => steps.forEach((step) => { if (!step.adding) commands(step); })));
   const menu = commands && ((node: TreeNode) => {
     const step = steps.find(({ id }) => id === node.id);
     return step && <CommandMenuItems commands={() => commands(step)} />;
@@ -678,7 +678,8 @@ function MapDrawer({ steps, newStep, framed = false, pending = false, selection,
     return {
       id: step.id, name: step.label, glyph: <Icon aria-hidden="true" />,
       description: linked ? studioCountOf(count, step.runs.length) : undefined,
-      muted: Boolean(linked && !count) || documentLevel(documentScope, step.id) === 'faint',
+      muted: Boolean(linked && !count) || documentLevel(documentScope, step.id) === 'faint' || step.adding,
+      disabled: step.adding,
       trailing: stepTrailing(step, applySelection),
     };
   });
@@ -734,6 +735,21 @@ export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newSte
     focusedStepId={state.focus?.stepId} documentScope={documentScope} applySelection={applySelection}
     chooseStep={chooseMapStep(applySelection, onChooseStep)} rename={rename} enterStep={onEnterStep} stepMenu={stepMenu}
     newStep={newStepCommand?.() ?? unboundStudioCommand('newStep')} framed pending={pending} />;
+}
+
+/** A step being added, drawn where it will be until the plan that has it is read. */
+function AddingCard({ step, compact }: { step: PlanStepView; compact: boolean }) {
+  const { Icon, tint } = studioStep(step.kind);
+  return <Card data-map-card data-map-step={step.id} data-map-density={compact ? 'compact' : 'full'} data-map-adding=""
+    tint={tint} role="article" aria-busy="true" aria-label={studioAccessibleName(step.kind, step.label)}
+    className="studio-map-card pointer-events-auto border-dashed text-sm opacity-60"
+    style={{ width: compact ? compactMapCardWidth : mapCardWidth }}>
+    <CardHead className="relative flex items-center gap-2 px-3 py-2">
+      <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-px top-1/2" />
+      <Icon aria-hidden="true" className="size-4 shrink-0" />
+      <span className="truncate font-medium">{step.label}</span>
+    </CardHead>
+  </Card>;
 }
 
 function MapLine({
@@ -930,7 +946,7 @@ export function StudioPipelineMap({
           )}
           <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus} fullSteps={fullSteps}
             strongEdges={strongEdges} viewportRef={viewportRef} fitReady={fitReady} wiring={wiring}
-            card={(step, compact) => (
+            card={(step, compact) => step.adding ? <AddingCard step={step} compact={compact} /> : (
               <StepCard
                 step={step}
                 selection={stepSelection(state.selection, step.id)}
