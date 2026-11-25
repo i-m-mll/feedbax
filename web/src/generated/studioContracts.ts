@@ -2026,6 +2026,12 @@ export interface DomainDiagnostic {
   details?: Record<string, unknown>;
 }
 
+export interface SceneAnchorGeometry {
+  address: ModelAddress;
+  signal: ModelAddress | null;
+  position: [number, number];
+}
+
 export interface SceneLinkGeometry {
   body: ModelAddress;
   body_name: string;
@@ -2061,6 +2067,7 @@ export interface ScenePointGeometry {
 export interface StudioSceneGeometryFrame {
   mechanisms: Array<ScenePointGeometry | ScenePlanarGeometry>;
   diagnostics: DomainDiagnostic[];
+  anchors?: SceneAnchorGeometry[];
 }
 
 export interface StudioSceneGeometryRequest {
@@ -2281,6 +2288,31 @@ export interface StudioTrialReplayResponse {
   mean?: TrialMean | null;
 }
 
+export interface TrialAnchorPlace {
+  kind: "anchor";
+  address: ModelAddress;
+}
+
+export interface TrialComputedPlace {
+  kind: "computed";
+  samples: Array<[number, number] | null>;
+}
+
+export interface TrialRelation {
+  first: TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | TrialComputedPlace;
+  second: TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | TrialComputedPlace;
+}
+
+export interface TrialSignalPlace {
+  kind: "signal";
+  id: string;
+}
+
+export interface TrialVariablePlace {
+  kind: "variable";
+  id: string;
+}
+
 export interface TrialRecord {
   id: string;
   inits: Record<string, JsonValue>;
@@ -2312,6 +2344,8 @@ export interface TrialTerm {
   covered: boolean;
   values?: number[] | null;
   value?: number | null;
+  relations?: TrialRelation[];
+  places?: Array<TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | TrialComputedPlace>;
 }
 
 export interface TrialTermAggregate {
@@ -3717,6 +3751,8 @@ export type SaveSet = {
 
 export type Scalar = boolean | number;
 
+export type ScenePoint = [number, number];
+
 export type ScopedValue = {
   "id": string;
   "name": string;
@@ -4556,6 +4592,16 @@ export type StudioProjectWindowMapSubset = {
   "rank_groups"?: Array<StudioBestRankGroup>;
 };
 
+export type StudioRelatePoint = {
+  "kind": "point";
+  "position": ScenePoint;
+};
+
+export type StudioRelatePort = {
+  "kind": "port";
+  "address": ModelAddress;
+};
+
 export type StudioRemoveClassMember = {
   "kind": "remove_member";
   "value_id": string;
@@ -4826,6 +4872,7 @@ export type StudioTrialAuthoring = {
   "resets": Array<StudioTrialReset>;
   "fields": Array<StudioTrialField>;
   "problems": Array<Problem>;
+  "related_term"?: string | null;
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "store_choices"?: Array<StudioStoreChoice> | null;
@@ -4834,7 +4881,7 @@ export type StudioTrialAuthoring = {
 export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
-  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | StudioTrialStructureEdit | null;
+  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | StudioTrialStructureEdit | StudioTrialRelate | null;
   "store_choice"?: Sha256 | null;
   "scope"?: StudioTrialStepScope | AxisValueRuns | ListedRuns | null;
 };
@@ -4912,6 +4959,12 @@ export type StudioTrialObjectiveSource = {
 export type StudioTrialOutput = {
   "address": ModelAddress;
   "value": ScopedValue;
+};
+
+export type StudioTrialRelate = {
+  "kind": "relate";
+  "first": TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | StudioRelatePort;
+  "second"?: TrialAnchorPlace | TrialVariablePlace | TrialSignalPlace | StudioRelatePort | StudioRelatePoint | null;
 };
 
 export type StudioTrialReset = {
@@ -9326,6 +9379,16 @@ export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<DomainDiagnostic>;
 
+export const SceneAnchorGeometrySchema: z.ZodType<SceneAnchorGeometry> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "signal": ModelAddressSchema.nullable(),
+      "position": z.tuple([z.number().finite(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<SceneAnchorGeometry>;
+
 export const SceneLinkGeometrySchema: z.ZodType<SceneLinkGeometry> = z.lazy(() =>
   z
     .object({
@@ -9379,6 +9442,7 @@ export const StudioSceneGeometryFrameSchema: z.ZodType<StudioSceneGeometryFrame>
     .object({
       "mechanisms": z.array(z.union([ScenePointGeometrySchema, ScenePlanarGeometrySchema])),
       "diagnostics": z.array(DomainDiagnosticSchema),
+      "anchors": z.array(SceneAnchorGeometrySchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSceneGeometryFrame>;
@@ -9724,6 +9788,51 @@ export const StudioTrialReplayResponseSchema: z.ZodType<StudioTrialReplayRespons
     .strict()
 ) as unknown as z.ZodType<StudioTrialReplayResponse>;
 
+export const TrialAnchorPlaceSchema: z.ZodType<TrialAnchorPlace> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("anchor"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<TrialAnchorPlace>;
+
+export const TrialComputedPlaceSchema: z.ZodType<TrialComputedPlace> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("computed"),
+      "samples": z.array(z.tuple([z.number().finite(), z.number().finite()]).nullable()),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialComputedPlace>;
+
+export const TrialRelationSchema: z.ZodType<TrialRelation> = z.lazy(() =>
+  z
+    .object({
+      "first": z.union([TrialAnchorPlaceSchema, TrialVariablePlaceSchema, TrialSignalPlaceSchema, TrialComputedPlaceSchema]),
+      "second": z.union([TrialAnchorPlaceSchema, TrialVariablePlaceSchema, TrialSignalPlaceSchema, TrialComputedPlaceSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialRelation>;
+
+export const TrialSignalPlaceSchema: z.ZodType<TrialSignalPlace> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("signal"),
+      "id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialSignalPlace>;
+
+export const TrialVariablePlaceSchema: z.ZodType<TrialVariablePlace> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("variable"),
+      "id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialVariablePlace>;
+
 export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
   z
     .object({
@@ -9769,6 +9878,8 @@ export const TrialTermSchema: z.ZodType<TrialTerm> = z.lazy(() =>
       "covered": z.boolean(),
       "values": z.array(z.number().finite()).nullable().optional(),
       "value": z.number().finite().nullable().optional(),
+      "relations": z.array(TrialRelationSchema).optional(),
+      "places": z.array(z.union([TrialAnchorPlaceSchema, TrialVariablePlaceSchema, TrialSignalPlaceSchema, TrialComputedPlaceSchema])).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialTerm>;
@@ -11784,6 +11895,10 @@ export const ScalarSchema: z.ZodType<Scalar> = z.lazy(() =>
   z.union([z.boolean(), z.number().int().safe(), z.number().finite()])
 ) as unknown as z.ZodType<Scalar>;
 
+export const ScenePointSchema: z.ZodType<ScenePoint> = z.lazy(() =>
+  z.tuple([z.number().finite(), z.number().finite()])
+) as unknown as z.ZodType<ScenePoint>;
+
 export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
   z.object({
     "id": z.string().min(1),
@@ -12879,6 +12994,20 @@ export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMa
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
 
+export const StudioRelatePointSchema: z.ZodType<StudioRelatePoint> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("point"),
+    "position": ScenePointSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioRelatePoint>;
+
+export const StudioRelatePortSchema: z.ZodType<StudioRelatePort> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("port"),
+    "address": ModelAddressSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioRelatePort>;
+
 export const StudioRemoveClassMemberSchema: z.ZodType<StudioRemoveClassMember> = z.lazy(() =>
   z.object({
     "kind": z.literal("remove_member"),
@@ -13218,6 +13347,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "resets": z.array(StudioTrialResetSchema),
     "fields": z.array(StudioTrialFieldSchema),
     "problems": z.array(ProblemSchema),
+    "related_term": z.union([z.string(), z.null()]).optional(),
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "store_choices": z.union([z.array(StudioStoreChoiceSchema).min(1), z.null()]).optional(),
@@ -13228,7 +13358,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
   z.object({
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
-    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema, StudioTrialStructureEditSchema]), z.null()]).optional(),
+    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema, StudioTrialStructureEditSchema, StudioTrialRelateSchema]), z.null()]).optional(),
     "store_choice": z.union([Sha256Schema, z.null()]).optional(),
     "scope": z.union([z.union([StudioTrialStepScopeSchema, AxisValueRunsSchema, ListedRunsSchema]), z.null()]).optional(),
   }).strict()
@@ -13328,6 +13458,14 @@ export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =
     "value": ScopedValueSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioTrialOutput>;
+
+export const StudioTrialRelateSchema: z.ZodType<StudioTrialRelate> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("relate"),
+    "first": z.union([TrialAnchorPlaceSchema, TrialVariablePlaceSchema, TrialSignalPlaceSchema, StudioRelatePortSchema]),
+    "second": z.union([z.union([TrialAnchorPlaceSchema, TrialVariablePlaceSchema, TrialSignalPlaceSchema, StudioRelatePortSchema, StudioRelatePointSchema]), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialRelate>;
 
 export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
   z.object({
@@ -13729,6 +13867,9 @@ export const contractSchemas = {
   StudioLoadedModelImportResult: StudioLoadedModelImportResultSchema,
   StudioTrialAuthoring: StudioTrialAuthoringSchema,
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequestSchema,
+  StudioTrialRelate: StudioTrialRelateSchema,
+  StudioRelatePoint: StudioRelatePointSchema,
+  StudioRelatePort: StudioRelatePortSchema,
   StudioCheckpointRuleEdit: StudioCheckpointRuleEditSchema,
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequestSchema,
   StudioSubsetToRowsEdit: StudioSubsetToRowsEditSchema,
@@ -13906,6 +14047,9 @@ export interface ContractTypeMap {
   StudioLoadedModelImportResult: StudioLoadedModelImportResult;
   StudioTrialAuthoring: StudioTrialAuthoring;
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequest;
+  StudioTrialRelate: StudioTrialRelate;
+  StudioRelatePoint: StudioRelatePoint;
+  StudioRelatePort: StudioRelatePort;
   StudioCheckpointRuleEdit: StudioCheckpointRuleEdit;
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequest;
   StudioSubsetToRowsEdit: StudioSubsetToRowsEdit;
