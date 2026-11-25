@@ -106,7 +106,8 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   await expect(picker).toHaveText('sample 1 of 4');
   await expect(hold).toHaveAttribute('data-end', String(holdEnd(reseeded, 0)));
 
-  await shelf.getByRole('button', { name: 'All', exact: true }).click();
+  await expect(clock.getByRole('button', { name: 'Mean', exact: true })).toBeDisabled();
+  await clock.getByRole('button', { name: 'All', exact: true }).click();
   await expect(picker).toHaveText(`${batchSize} trials`);
   await expect(epochs).toHaveCount(0);
   for (const name of ['hold', 'cue', 'move']) await expect(shelf.getByRole('group', { name, exact: true })).toHaveCount(1);

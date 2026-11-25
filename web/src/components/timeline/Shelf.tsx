@@ -46,8 +46,9 @@ export type ShelfRow = {
 
 export interface ShelfProps {
   readonly rows: readonly ShelfRow[];
-  /** The trial's length, in seconds: the axis runs from 0 to it, as the scrubber does. */
+  /** The axis's length, in seconds: it runs from `start` (0 unless given) for this long, as the scrubber does. */
   readonly duration: number;
+  readonly start?: number;
   /** The step, in seconds: ticks also carry step counts. */
   readonly stepSeconds?: number;
   readonly time: number;
@@ -73,14 +74,15 @@ function tickStep(span: number, count = 6) {
 
 const seconds = (value: number, step: number) => value.toFixed(Math.max(0, -Math.floor(Math.log10(step) + 1e-9)));
 
-function Ticks({ duration, stepSeconds }: { duration: number; stepSeconds?: number }) {
+function Ticks({ start, duration, stepSeconds }: { start: number; duration: number; stepSeconds?: number }) {
   const step = tickStep(duration);
-  const ticks = Array.from({ length: Math.floor(duration / step + 1e-9) + 1 }, (_, index) => index * step);
+  const first = Math.ceil(start / step - 1e-9);
+  const ticks = Array.from({ length: Math.floor((start + duration) / step + 1e-9) - first + 1 }, (_, index) => (first + index) * step);
   return <div aria-hidden="true" className="relative h-4 text-xs tabular-nums text-shell-muted">
     {ticks.map((tick) => <span key={tick} className="absolute top-0 flex -translate-x-1/2 flex-col items-center whitespace-nowrap leading-none"
-      style={{ left: percent(tick, duration) }}>
+      style={{ left: percent(tick - start, duration) }}>
       <span className="h-1 w-px bg-shell-divider" />
-      <span>{seconds(tick, step)}{tick === 0 ? ` ${studioUnit('second')}` : ''}
+      <span>{seconds(tick, step)}{tick === first * step ? ` ${studioUnit('second')}` : ''}
         {stepSeconds && tick > 0 ? <span> · {Math.round(tick / stepSeconds)}</span> : null}
       </span>
     </span>)}
@@ -93,7 +95,7 @@ const markAttribute = 'data-shelf-mark';
 const elementOf = (address: ElementAddress) =>
   elementKey(isModelAddress(address) ? address : { ...address, element: { kind: 'named', id: address.element.id } });
 
-function Segment({ segment, duration, chosen }: { segment: ShelfSegment; duration: number; chosen: boolean }) {
+function Segment({ segment, origin, duration, chosen }: { segment: ShelfSegment; origin: number; duration: number; chosen: boolean }) {
   const { key, name, start, end, spread, dashedFrom, selects } = segment;
   const width = end - start;
   return <>
@@ -101,7 +103,7 @@ function Segment({ segment, duration, chosen }: { segment: ShelfSegment; duratio
       aria-pressed={selects ? chosen : undefined} {...{ [markAttribute]: key }} data-start={start} data-end={end}
       className={clsx('absolute inset-y-0 flex min-w-0 items-center overflow-hidden rounded-sm border px-1 text-xs',
         chosen ? 'border-shell-foreground' : 'border-shell-control', dashedFrom === undefined && 'bg-shell-field')}
-      style={{ left: percent(start, duration), width: percent(width, duration) }}>
+      style={{ left: percent(start - origin, duration), width: percent(width, duration) }}>
       {dashedFrom !== undefined && <>
         <span aria-hidden="true" className="absolute inset-y-0 left-0 bg-shell-field" style={{ width: percent(dashedFrom - start, width) }} />
         <span aria-hidden="true" className="absolute inset-y-[-1px] right-[-1px] rounded-r-sm border border-dashed border-shell-muted"
@@ -113,7 +115,7 @@ function Segment({ segment, duration, chosen }: { segment: ShelfSegment; duratio
       aria-label={`${name} ${seconds(spread.least, 0.01)}–${seconds(spread.greatest, 0.01)} ${studioUnit('second')}`}
       data-least={spread.least} data-greatest={spread.greatest}
       className="pointer-events-none absolute -bottom-1 h-1.5 border-x border-shell-foreground"
-      style={{ left: percent(spread.least, duration), width: percent(spread.greatest - spread.least, duration) }}>
+      style={{ left: percent(spread.least - origin, duration), width: percent(spread.greatest - spread.least, duration) }}>
       <span className="absolute inset-x-0 top-1/2 h-px bg-shell-foreground" />
     </span>}
   </>;
@@ -124,7 +126,7 @@ function Segment({ segment, duration, chosen }: { segment: ShelfSegment; duratio
  * segments or bars. The rows scroll inside the shelf's height; the axis stays below them. A row, or a segment, selects what it stands for; dragging along the axis moves the playhead,
  * which runs through every row. The shelf knows what its rows select, not what they are.
  */
-export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selected, onSelect, trailing, axis, unavailable }: ShelfProps) {
+export function Shelf({ rows, start = 0, duration, stepSeconds, time, onTimeChange, selected, onSelect, trailing, axis, unavailable }: ShelfProps) {
   const section = useRef<HTMLElement>(null);
   const span = useAxisWithin(axis, section);
   const chosen = new Set(selected.map(elementOf));
@@ -135,7 +137,7 @@ export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selecte
   const drag = useRef<{ mark?: string; x: number; moved: boolean }>();
   const timeAt = (event: PointerEvent<HTMLElement>) => {
     const box = event.currentTarget.getBoundingClientRect();
-    return Math.min(duration, Math.max(0, (event.clientX - box.left) / box.width * duration));
+    return start + Math.min(duration, Math.max(0, (event.clientX - box.left) / box.width * duration));
   };
   const along = (row: ShelfRow) => ({
     onPointerDown: (event: PointerEvent<HTMLElement>) => {
@@ -162,7 +164,7 @@ export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selecte
     },
     onPointerCancel: () => { drag.current = undefined; },
   });
-  const head = Math.min(duration, Math.max(0, time));
+  const head = Math.min(duration, Math.max(0, time - start));
   const columns: CSSProperties = span
     ? { gridTemplateColumns: `${Math.max(0, span.left)}px ${span.width}px minmax(0,1fr)` }
     : { gridTemplateColumns: '7rem minmax(0,1fr) auto' };
@@ -187,12 +189,12 @@ export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selecte
           : <span className={clsx(nameCell, 'flex h-5 min-w-0 items-center gap-1 text-xs text-shell-muted')}>{name}</span>}
         <div className="relative h-5 touch-none" {...unavailable ? {} : along(row)}>
           {row.kind === 'segments'
-            ? row.segments.map((segment) => <Segment key={segment.key} segment={segment} duration={duration}
+            ? row.segments.map((segment) => <Segment key={segment.key} segment={segment} origin={start} duration={duration}
               chosen={isChosen(segment.selects)} />)
             : row.bars.map((bar) => <span key={bar.start} data-start={bar.start} data-end={bar.end} data-share={bar.some ? 'some' : 'all'}
               className={clsx('absolute inset-y-1 rounded-sm bg-shell-foreground',
                 bar.some ? rowChosen ? 'opacity-30' : 'opacity-[0.15]' : rowChosen ? 'opacity-70' : 'opacity-40')}
-              style={{ left: percent(bar.start, duration), width: percent(bar.end - bar.start, duration) }} />)}
+              style={{ left: percent(bar.start - start, duration), width: percent(bar.end - bar.start, duration) }} />)}
           {!unavailable && <span aria-hidden="true" data-shelf-playhead="" className="pointer-events-none absolute -inset-y-0.5 w-px bg-shell-accent"
             style={{ left: percent(head, duration) }} />}
         </div>
@@ -201,7 +203,7 @@ export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selecte
     {unavailable && <div className="col-start-2 text-xs text-shell-muted" style={{ gridRow: rows.length + 1 }}>{unavailable}</div>}
     </div>
     <div className="col-start-2 row-start-2">
-      <Ticks duration={duration} stepSeconds={stepSeconds} />
+      <Ticks start={start} duration={duration} stepSeconds={stepSeconds} />
     </div>
     {trailing && <div className="col-start-3 row-start-1 flex justify-end pr-3">{trailing}</div>}
   </section>;

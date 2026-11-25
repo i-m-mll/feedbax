@@ -79,6 +79,20 @@ export interface Scene {
   /** The terms of the picked trial's Objective, drawn at the playhead. */
   readonly relations: readonly SceneRelation[];
   readonly places: readonly ScenePlace[];
+  /** Under Mean, each condition's mean of each world-frame path, drawn over the tracks. */
+  readonly means: readonly SceneMeanPath[];
+}
+
+/**
+ * A condition's mean of a world-frame path: the mean at each aligned time, with its spread from `lower` to `upper` at
+ * the same times; how many points are drawn; and where the mean is at the playhead.
+ */
+export interface SceneMeanPath {
+  readonly points: readonly ScenePoint[];
+  readonly lower: readonly ScenePoint[];
+  readonly upper: readonly ScenePoint[];
+  readonly drawn: number;
+  readonly head?: ScenePoint;
 }
 
 /**
@@ -92,7 +106,7 @@ export interface SceneTrack {
   readonly picked: boolean;
 }
 
-export const emptyScene: Scene = { groups: [], rest: [], tracks: [], ends: [], relations: [], places: [] };
+export const emptyScene: Scene = { groups: [], rest: [], tracks: [], means: [], ends: [], relations: [], places: [] };
 
 export type SceneView =
   | { kind: 'drawn'; scene: Scene }
