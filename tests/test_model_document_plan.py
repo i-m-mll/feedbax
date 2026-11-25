@@ -2136,6 +2136,7 @@ def test_reading_the_plan_refuses_an_acausal_leaf_in_a_causal_model(monkeypatch)
 def test_shipped_effector_delay_keeps_the_full_recorded_value(tmp_path):
     from feedbax.runtime.raw_state import bind_raw_state
     from feedbax.tasks.document import TaskParameters
+    from feedbax.validity.computation import capture_arguments, pytree_operands
 
     example = load_shipped_projects()["point-mass-reaching"]
     name = "simple-reaches"
@@ -2167,6 +2168,13 @@ def test_shipped_effector_delay_keeps_the_full_recorded_value(tmp_path):
     prepared = _prepare_request(spec, new_application_registry_bundle())
     executable = prepared.executable
     graph = executable.graph
+    rebuilt = _prepare_request(spec, new_application_registry_bundle()).executable.graph
+
+    def identity(model):
+        arrays, static = pytree_operands(model)
+        return capture_arguments(arrays, static=static)
+
+    assert identity(graph) == identity(rebuilt)
     task = prepared.execution.task
     layout = bind_raw_state(graph, executable.resolved.graph)
     delay_wire, = [

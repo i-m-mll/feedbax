@@ -103,6 +103,8 @@ class Signal(ValueRecord):
     cells: tuple[Cell, ...]
     absent: Expression | None = None
     window: Window | None = Field(default=None, exclude_if=lambda value: value is None)
+    intervention: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The canonical Model address of the intervention this generated signal gates."""
 
 
 class Link(ValueRecord):
