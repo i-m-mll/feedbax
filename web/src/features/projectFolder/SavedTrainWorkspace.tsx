@@ -124,7 +124,7 @@ type EditorSession = ReturnType<typeof bindProjectEditor>;
 /** The Model's own initial state, at which the Scene's geometry tells whether the Model has anything to draw. */
 const restPose: readonly StateValues[] = [{}];
 /** What a Scene draws of a step the clock does not read: its Model at rest. */
-const restTrial: SceneTrial = { picked: undefined, possible: [], frame: 0, task: undefined, trails: false };
+const restTrial: SceneTrial = { picked: undefined, possible: [], reading: false, frame: 0, task: undefined, trails: false };
 const slots = ['primary', 'secondary'] as const;
 /** The anchor of an Evaluate's sampled number of trials, which the Trials editor draws. */
 const trialCount = '/params/trial_set/count';
