@@ -41,6 +41,7 @@ def verify_dataset(
     descriptor = dataset.descriptor
     if descriptor.schema_id not in port.schema_ids:
         raise ValueError(f"Operation dataset requires one of {port.schema_ids}, got {descriptor.schema_id!r}")
+    port = port.for_dimensions(descriptor.dimensions)
     variables = dict(port.variables)
     if parameters is not None:
         variables.update({getattr(parameters, parameter): field for parameter, field in port.selected_variables.items()})
