@@ -92,7 +92,7 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
   }
   const offered = problem?.value;
   const shownProblem: RuleFieldProblem | undefined = picked?.size && !pickedWrites
-    ? { reason: 'These axis values also select unpicked runs.' }
+    ? { reason: 'The producer’s axes do not distinguish these runs.' }
     : !writing && problem ? {
       reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } },
       ...offered && { offers: offered.remaining.map((value) => ({
