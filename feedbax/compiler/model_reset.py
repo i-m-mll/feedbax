@@ -276,7 +276,7 @@ def resolve_model_reset(
                     raise ValueError("Trial parameter must belong to a declared configuration slot")
                 dtype = (
                     resolved.node_outputs[name, parameter.dtype_from].dtype if parameter.dtype_from else
-                    jnp.dtype(jnp.bool_ if parameter.kind == "boolean" else jnp.float32)
+                    jnp.result_type(bool if parameter.kind == "boolean" else float)
                 )
                 address = ModelAddress(
                     composites=scope, element=FieldElement(
