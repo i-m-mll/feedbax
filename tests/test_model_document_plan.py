@@ -1073,7 +1073,7 @@ def test_model_projection_keeps_the_declared_input_size_after_wiring(tmp_path, s
         def projected_type(view, end):
             return next(
                 item["type"] for item in view["ports"]
-                if not item["address"]["composites"] and item["address"]["element"]["end"] == end
+                if not item["address"]["composites"] and item["address"]["element"].get("end") == end
             )
 
         if source == "task":
@@ -1084,7 +1084,7 @@ def test_model_projection_keeps_the_declared_input_size_after_wiring(tmp_path, s
             snapshot = folders.read("nested")
             model = snapshot.project.documents[document].payload
             task_port = next(port for port in model["ports"]["inputs"] if port["name"] == "target_pos")
-            task_type = {"base": "float", "shape": [2], "unit": "m"}
+            task_type = {"base": "real", "shape": [2], "unit": "m"}
             assert task_port["type"] == task_type
             assert projected_type(projection(snapshot), {"owner": "inputs", "port": task_port["id"]}) == task_type
 

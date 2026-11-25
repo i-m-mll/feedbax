@@ -329,6 +329,7 @@ class _Route:
     target: _Port
     problem: ModelAddress
     makes_value: bool = False
+    label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -336,6 +337,12 @@ class _Incoming:
     source: tuple[str, SignalLeafPath]
     problem: ModelAddress
     origin: ModelAddress | None = None
+    label: str | None = None
+
+
+def _wire_end_label(owner: ModelDocument | CompositeComponent, end: SignalSource | SignalTarget, port: _Port) -> str:
+    card = owner.interior.components[end.component].name if isinstance(end, ComponentPortEnd) else end.owner.title()
+    return f"{card} · {port.name}"
 
 
 @dataclass(frozen=True)
@@ -468,15 +475,20 @@ class _Resolve:
                     selected = {path[1:]: item for path, item in declarations.items() if path[0] == port}
                     registered = SignalType(base=spec.dtype, shape=tuple(spec.shape) if spec.shape is not None else None) if spec else SignalType()
                     prototype = prototypes.get((name, port))
-                    if direction == "input" and prototype is None:
+                    if direction == "input":
                         dimension = _component_port_dimension(
                             component_type=node.type, node_params=node.params, port=port, direction="input",
                         )
-                        if dimension is not None:
+                        if dimension is not None and (
+                            prototype is None or dimension["metadata"]["dimension_param"] is None
+                            or dimension["metadata"]["dimension_param"] in component.fields
+                        ):
                             dtype = node.params.get("dtype")
+                            base = registered.base
+                            if prototype is None and _port_base(base) is None and isinstance(dtype, str):
+                                base = dtype
                             registered = SignalType(
-                                base=dtype if _port_base(registered.base) is None and isinstance(dtype, str) else registered.base,
-                                shape=tuple(dimension["shape"]),
+                                base=base, shape=tuple(dimension["shape"]),
                             )
                     leaf_port = self.port(
                         address, port, prototype, registered, declarations=selected, states=states,
@@ -494,7 +506,8 @@ class _Resolve:
             if source is None or target is None:
                 continue
             address = ModelAddress(composites=scope, element=WireElement(kind="wire", id=name))
-            self.routes.append(_Route(source, target, address, bool(wire.attachments)))
+            label = f"{_wire_end_label(owner, wire.source, source)} → {_wire_end_label(owner, wire.target, target)}"
+            self.routes.append(_Route(source, target, address, bool(wire.attachments), label))
 
     def authored_node(self, component) -> ComponentSpec | None:
         declaration = self.components.get(component.type)
@@ -546,7 +559,7 @@ class _Resolve:
                 origin = _leaf_address(target.address, path) if route.makes_value else (
                     _leaf_address(source.address, path) if source.attachments else None
                 )
-                incoming[target.key, path] = _Incoming((source.key, path), route.problem, origin)
+                incoming[target.key, path] = _Incoming((source.key, path), route.problem, origin, route.label)
         return incoming
 
     def local(self, port: _Port, path: SignalLeafPath, *, connected: bool) -> _Local:
@@ -652,12 +665,15 @@ class _Resolve:
                 item = key, path
                 row = resolved[item]
                 if row.conflict is not None:
-                    address = incoming[item].problem
-                    self.problem(address, f"Signal type does not fit: {row.conflict}")
+                    wire = incoming[item]
+                    reason = f"Signal type does not fit: {row.conflict}"
+                    self.problem(wire.problem, f"{wire.label}: {reason}" if wire.label is not None else reason)
                 facts = row.facts
                 proto = local[item].prototype
                 base = proto.base or facts.base
-                shape = proto.shape if proto.shape is not None else facts.shape
+                shape = local[item].facts.shape
+                if shape is None:
+                    shape = proto.shape if proto.shape is not None else facts.shape
                 leaves.append(ResolvedSignalLeaf(
                     port.address, path, port.name, _Facts(base, shape, facts.dimensions, facts.unit, facts.space), row.origin,
                 ))
