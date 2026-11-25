@@ -139,18 +139,23 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
     assert second.record.key_schedule.scoped_node_order == resolve_signal_schedule(lowered).order
 
     def run(graph, signal):
+        requests = (GraphTraceRequest("graph_output", "result", port="result"),)
+        if graph is second.graph:
+            requests += (GraphTraceRequest("port", "first scale", node="a", port="output", scope=(group,)),)
         outputs, _, trace = graph.rollout_with_trace(
             {"signal": signal}, graph.init_state(key=jax.random.key(5)), n_steps=signal.size,
             key=jax.random.key(5),
-            trace=(GraphTraceRequest("graph_output", "result", port="result"),),
+            trace=requests,
         )
-        return outputs["result"], trace["result"]
+        return outputs["result"], trace
 
     signal = jnp.arange(1, 5, dtype=jnp.float32)
     for graph in (first.graph, second.graph):
         output, trace = run(graph, signal)
         np.testing.assert_array_equal(output, expected)
-        np.testing.assert_array_equal(trace, output)
+        np.testing.assert_array_equal(trace["result"], output)
+        if graph is second.graph:
+            np.testing.assert_array_equal(trace["first scale"], np.asarray(expected) / 4)
         derivative = jax.grad(lambda data: run(graph, data)[0].sum())(signal)
         np.testing.assert_array_equal(derivative, gradient)
 

@@ -22,7 +22,7 @@ import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.contracts.array_values import ArrayValueSpec
-from feedbax.contracts.model_values import ModelFacts
+from feedbax.contracts.model_values import ModelFacts, SignalLeafPath
 from feedbax.contracts.portable import ComponentOwner
 from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.contracts.model_delay import ModelDelayCarry
@@ -313,6 +313,14 @@ class GraphTraceRequest:
     target_port: str | None = None
     path: str | None = None
     timing: Literal["input", "output", "step", "initial", "final"] | None = None
+    scope: tuple[str, ...] = ()
+    leaf: SignalLeafPath = ()
+
+
+def _trace_leaf(value: PyTree, path: SignalLeafPath) -> PyTree:
+    for part in path:
+        value = value[part] if isinstance(part, int) or isinstance(value, dict) else getattr(value, part)
+    return value
 
 
 @dataclasses.dataclass(frozen=True)
@@ -942,6 +950,8 @@ class Graph(GraphNode):
             if ext_port in inputs and ext_port not in trial_scope_sources:
                 port_values[(node_name, node_port)] = inputs[ext_port]
 
+        trace_values: dict[str, PyTree] = {}
+        scoped_traces = tuple(request for request in trace if request.scope)
         if self._scoped_schedule is None:
             port_values, new_state = self._execute_step(
                 port_values,
@@ -951,12 +961,13 @@ class Graph(GraphNode):
                 t=t,
                 initializer_upstream_nodes=initializer_upstream_nodes,
                 rollout_step_hook=rollout_step_hook,
+                trace=scoped_traces, observed=trace_values,
             )
         else:
             if rollout_step_hook is not None:
                 raise ValueError("A composite rollout hook requires a contiguous composite schedule")
             port_values, new_state = self._execute_scoped_step(
-                self._scoped_schedule, port_values, state, key=key,
+                self._scoped_schedule, port_values, state, key=key, trace=scoped_traces, observed=trace_values,
             )
 
         new_cycle_port_values: dict[tuple[str, str], PyTree] = {}
@@ -976,15 +987,16 @@ class Graph(GraphNode):
             for port in self.output_ports
             if port in self.output_bindings
         }
-        trace_values = {}
         if trace:
-            trace_values = self._collect_trace_values(
-                trace,
+            if missing := {request.selector for request in scoped_traces} - trace_values.keys():
+                raise ValueError(f"Trace scope did not produce {sorted(missing)!r}")
+            trace_values.update(self._collect_trace_values(
+                tuple(request for request in trace if not request.scope),
                 outputs=outputs,
                 port_values=port_values,
                 cycle_port_values=new_cycle_port_values,
                 state=new_state,
-            )
+            ))
         return outputs, new_state, new_cycle_port_values, trace_values
 
     def _execute_scoped_step(
@@ -994,6 +1006,8 @@ class Graph(GraphNode):
         state: State,
         *,
         key: PRNGKeyArray,
+        trace: tuple[GraphTraceRequest, ...],
+        observed: dict[str, PyTree],
     ) -> tuple[dict[tuple[str, str], PyTree], State]:
         """Interleave leaves while retaining hierarchical state and carry addresses."""
         owners = {(): self}
@@ -1043,6 +1057,12 @@ class Graph(GraphNode):
         for alias, source in schedule.output_aliases:
             if source in values:
                 values[alias] = values[source]
+        for request in trace:
+            if request.kind != "port" or request.node is None or request.port is None:
+                raise ValueError(f"Scoped trace {request.selector!r} needs a node port")
+            endpoint = ScopedPort((*request.scope, request.node), request.port)
+            if endpoint in values:
+                observed[request.selector] = _trace_leaf(values[endpoint], request.leaf)
         for endpoint, value in values.items():
             if len(endpoint.node) == 1:
                 root_values[endpoint.node[0], endpoint.port] = value
@@ -1078,6 +1098,8 @@ class Graph(GraphNode):
         t: PyTree,
         initializer_upstream_nodes: set[str],
         rollout_step_hook: Optional[RolloutStepHook] = None,
+        trace: tuple[GraphTraceRequest, ...],
+        observed: dict[str, PyTree],
     ) -> tuple[dict[tuple[str, str], PyTree], State]:
         execution_order = self._execution_order
         cycle_wire_set = set(self._cycle_wires)
@@ -1087,6 +1109,11 @@ class Graph(GraphNode):
             if _is_nested_cycle_key(port_key):
                 nested_cycle_values[port_key[1]] = port_values.pop(port_key)
         next_nested_cycle_values: dict[str, dict[tuple[str, str], PyTree]] = {}
+        child_traces: dict[str, list[GraphTraceRequest]] = {}
+        for request in trace:
+            child_traces.setdefault(request.scope[0], []).append(
+                dataclasses.replace(request, scope=request.scope[1:]),
+            )
 
         for node_name, node_key in keyed_nodes(execution_order, key):
             node = self.nodes[node_name]
@@ -1127,14 +1154,16 @@ class Graph(GraphNode):
                         f"Missing recurrent carry for subgraph {node_name!r}. "
                         "Pass the previous step's full carry, or None to seed a trial."
                     )
-                node_outputs, state, node_cycle_values, _ = node._transition(
+                node_outputs, state, node_cycle_values, child_observed = node._transition(
                     node_inputs,
                     state,
                     child_carry,
                     key=node_key,
                     t=t,
                     rollout_step_hook=rollout_step_hook,
+                    trace=tuple(child_traces.get(node_name, ())),
                 )
+                observed.update(child_observed)
                 if node_cycle_values:
                     next_nested_cycle_values[node_name] = node_cycle_values
             else:
@@ -1212,7 +1241,7 @@ class Graph(GraphNode):
                         f"Trace selector {request.selector!r} did not produce "
                         f"port {request.node}.{request.port}"
                     )
-                values[request.selector] = port_values[key]
+                values[request.selector] = _trace_leaf(port_values[key], request.leaf)
                 continue
 
             if request.kind == "edge":
@@ -1253,7 +1282,7 @@ class Graph(GraphNode):
                         f"Trace selector {request.selector!r} references missing "
                         f"graph output {output_name!r}"
                     )
-                values[request.selector] = outputs[output_name]
+                values[request.selector] = _trace_leaf(outputs[output_name], request.leaf)
                 continue
 
             if request.kind == "recurrent_carry":
