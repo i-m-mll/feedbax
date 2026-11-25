@@ -523,6 +523,7 @@ class SweepCoordinate:
     value_id: str
     label: str | None = None
     value: JsonValue = None
+    axis_label: str | None = field(default=None, kw_only=True)
     unit: str | None = field(default=None, kw_only=True)
     explicit_null: bool = field(default=False, kw_only=True)
 
@@ -1128,7 +1129,7 @@ def sweep_value_name(axis: str, coordinate: SweepCoordinate) -> str:
     if value is None and not coordinate.explicit_null:
         return member_display_name(coordinate.value_id)
     text = value if isinstance(value, str) else canonical_json_v2_bytes(_generated_key_value(value)).decode()
-    return " ".join(part for part in (member_display_name(axis), text, unit) if part)
+    return " ".join(part for part in (member_display_name(axis, coordinate.axis_label), text, unit) if part)
 
 
 def sweep_row_name(values: Iterator[tuple[str, SweepCoordinate]]) -> str | None:
