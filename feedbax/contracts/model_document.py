@@ -13,6 +13,8 @@ from feedbax.contracts.expression_values import SignalSpace, UnresolvedValue
 from feedbax.contracts.model_address import ModelElementId, PhysicalEnd, SignalSource, SignalTarget
 from feedbax.contracts.request_identity_guard import IdentityAuthoredAlternative
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
+from feedbax.contracts.time_units import TimeValue
+from feedbax.contracts.window import Window
 
 MODEL_DOCUMENT_SCHEMA_ID = "feedbax.spec.model"
 MODEL_DOCUMENT_SCHEMA_VERSION = "feedbax.spec.model.v1"
@@ -28,9 +30,10 @@ class SignalType(StrictModel):
     space: SignalSpace | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
-class ModelTime(StrictModel):
-    value: Annotated[float, Field(gt=0, allow_inf_nan=False)]
-    unit: Literal["s", "st"]
+class ModelTime(TimeValue):
+    """A positive time, such as a Delay or a component's physical time constant."""
+
+    value: PositivePeriod
 
 
 class DelayAttachment(StrictModel):
@@ -40,12 +43,9 @@ class DelayAttachment(StrictModel):
     initial: JsonValue = 0
 
 
-class InterventionWindow(StrictModel):
-    """A pulse starting a whole number of steps after the named Task epoch begins."""
-
-    epoch: str
-    offsets: tuple[Annotated[int, Field(ge=0)], ...] = Field(min_length=1)
-    duration: Annotated[int, Field(gt=0)]
+class HoldAttachment(StrictModel):
+    kind: Literal["hold"]
+    id: ModelElementId
 
 
 class InterventionAttachment(StrictModel):
@@ -53,7 +53,7 @@ class InterventionAttachment(StrictModel):
     id: ModelElementId
     operation: str
     fields: dict[str, JsonValue] = Field(default_factory=dict)
-    window: InterventionWindow | None = None
+    window: Window | None = None
 
 
 class ProbeAttachment(StrictModel):
@@ -63,7 +63,7 @@ class ProbeAttachment(StrictModel):
 
 
 WireAttachment = Annotated[
-    DelayAttachment | InterventionAttachment | ProbeAttachment, Field(discriminator="kind")
+    DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment, Field(discriminator="kind")
 ]
 SourceAttachment = Annotated[
     InterventionAttachment | ProbeAttachment, Field(discriminator="kind")

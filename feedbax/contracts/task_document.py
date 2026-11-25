@@ -1,5 +1,6 @@
 """Stored task document values."""
 
+from enum import IntEnum
 from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue
@@ -9,6 +10,8 @@ from feedbax.contracts.expression_values import (
     ANGLE, LENGTH, TIME, Expression, LiteralValue, Scalar, ValueBase, ValueRecord, ValueType,
 )
 
+from feedbax.contracts.time_units import TimeValue
+from feedbax.contracts.window import Window
 
 TASK_DOCUMENT_SCHEMA_ID = "feedbax.spec.task_document"
 
@@ -43,7 +46,22 @@ class Rest(ValueRecord):
     kind: Literal["rest"] = "rest"
 
 
-type End = Annotated[Length | Rest, Field(discriminator="kind")]
+class Until(ValueRecord):
+    """Test a Boolean condition on entry and each step, up to a required time limit."""
+
+    kind: Literal["until"] = "until"
+    condition: Expression
+    limit: TimeValue
+
+
+type End = Annotated[Length | Rest | Until, Field(discriminator="kind")]
+
+
+class EpochEnd(IntEnum):
+    UNREACHED = 0
+    LENGTH = 1
+    CONDITION = 2
+    LIMIT = 3
 
 
 class Epoch(ValueRecord):
@@ -82,6 +100,7 @@ class Signal(ValueRecord):
     type: ValueType
     cells: tuple[Cell, ...]
     absent: Expression | None = None
+    window: Window | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class Link(ValueRecord):

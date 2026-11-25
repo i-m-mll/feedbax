@@ -15,7 +15,7 @@ class _Wire(Protocol):
     @property
     def target_port(self) -> str: ...
     @property
-    def temporality(self) -> str: ...
+    def is_recurrent(self) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -52,8 +52,9 @@ def input_driver_conflicts(
 
     for index, wire in enumerate(wires):
         target = (wire.target_node, wire.target_port)
+        mode = "recurrent" if wire.is_recurrent else "instant"
         driver = _Driver(
-            f"{wire.temporality} wire {wire.source_node}.{wire.source_port}",
+            f"{mode} wire {wire.source_node}.{wire.source_port}",
             f"{base_path}/wires/{index}",
         )
         first = owners.setdefault(target, driver)
