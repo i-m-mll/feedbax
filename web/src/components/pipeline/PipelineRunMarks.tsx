@@ -2,7 +2,7 @@ import clsx from 'clsx';
 import { Check } from 'lucide-react';
 import { memo, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
-import { StatusMark, statusTone } from '@/components/ui/StatusMark';
+import { StatusMark, statusCounted, statusTone, uncountedRun } from '@/components/ui/StatusMark';
 import {
   studioAccessibleName,
   studioCountOf,
@@ -265,7 +265,8 @@ function MarkButton({
       data-boxed={boxed ? runs.some(({ id }) => boxed.has(id)) ? '' : undefined
         : selectionKind === 'rows' && selectedCount > 0 ? '' : undefined}
       data-group-member={selectionKind === 'values' && selectedCount > 0 && mark.kind === 'run' ? '' : undefined}
-      className={clsx('studio-map-run-mark relative flex shrink-0', markRadius[size.id])}
+      className={clsx('studio-map-run-mark relative flex shrink-0', markRadius[size.id],
+        !runs.some(({ state }) => statusCounted(state)) && uncountedRun)}
       style={{ width: size.mark, height: size.mark }}
       {...choose}
     >
