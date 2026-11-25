@@ -4000,6 +4000,7 @@ export type StudioAnalysisPlace = {
   "part": "analysis";
   "element": string;
   "name": string;
+  "field"?: Pointer | null;
 };
 
 export type StudioAnalyzeAuthoring = {
@@ -12257,6 +12258,7 @@ export const StudioAnalysisPlaceSchema: z.ZodType<StudioAnalysisPlace> = z.lazy(
     "part": z.literal("analysis"),
     "element": z.string(),
     "name": z.string(),
+    "field": z.union([PointerSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalysisPlace>;
 
