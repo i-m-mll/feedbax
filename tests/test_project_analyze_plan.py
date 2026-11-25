@@ -210,6 +210,46 @@ def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp
         assert [request["request_id"] for request in elements["profile"]["requests"]] == [figure.id]
 
 
+def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(host, tmp_path, monkeypatch):
+    project = _project()
+    analysis = project.documents["velocity-analysis"].payload
+    velocity = analysis["operations"]["align"]["params"]["velocity"]
+    analysis["views"]["profile"] = {"figure": {"template": "feedbax.SpeedByTrial"}, "inputs": {}}
+    project.steps["other-analysis"] = project.steps["analyze"]
+    for name, content in dump_text_project(project, ProjectConfiguration(project="reach", store="results")).items():
+        path = tmp_path / "reach" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    url = "/api/projects/reach"
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        revision = client.get(url).json()["revision"]
+        body = {"revision": revision, "key": {"variant": "default", "step": "analyze", "row": "default"}}
+        initial = client.post(f"{url}/authoring/analyze", json=body)
+        assert initial.status_code == 200, initial.text
+        before = initial.json()
+        assert before["states"] is None
+        assert before["sources"]["profile"]["speed"] == []
+        assert before["sources"]["summarize"]["velocity"] == [{"element": "align", "product": "velocity"}]
+        assert before["problems"] == []
+
+        edit = client.post(f"{url}/authoring/analyze", json=body | {
+            "change": {"kind": "edit", "edits": [{
+                "op": "add", "path": "/operations/trial_speed", "value": {
+                    "operation": "feedbax.trial_speed", "params": {"velocity": velocity},
+                    "inputs": {"states": {"input": "states"}},
+                },
+            }]},
+        })
+        assert edit.status_code == 200, edit.text
+        after = edit.json()
+        assert after["document"] == after["created"][0]["id"] != before["document"]
+        assert "/operations/trial_speed" in after["changed"]
+        assert after["sources"]["profile"]["speed"] == [{"element": "trial_speed", "product": "speed"}]
+        assert after["problems"] == []
+        assert client.get(url).json()["revision"] == revision
+
+
 def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     import pytest
 
