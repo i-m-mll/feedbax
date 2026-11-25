@@ -6,7 +6,7 @@ import { RuleField, type RuleFieldCommand, type RuleFieldProblem } from '@/compo
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import type { StudioProjectWindowMapRow, StudioRunRuleRequest, SubsetTerms } from '@/generated/studioContracts';
-import { pinnedSelectionLabels, savedRunId, selectedRowTerms } from './projectWindowPlan';
+import { clauseText, pinnedSelectionLabels, savedRunId, selectedRowTerms } from './projectWindowPlan';
 import { replacedAxisValue, type RuleProblem } from './selectionEdits';
 
 /** Where a rule is checked: the saved revision and variant whose plan holds the producer's runs. */
@@ -61,6 +61,8 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
     ? new Set(result.runs.map((row) => savedRunId({ variant: scope.variant, step: source.id, row }))) : undefined,
   [result, scope.variant, source.id]);
   const [picked, setPicked] = useState<ReadonlySet<string>>();
+  /** The check reads the rule's text alone, so it boxes the runs a saved choice of clauses reads only once the text is rewritten. */
+  const boxesDraft = !terms.clauses?.length || (draft ?? '').trim() !== rule.trim();
   const pickedWrites = useMemo(() => picked && pick && selectedRowTerms(pick.rows, picked), [picked, pick?.rows]);
   useEffect(() => {
     if (!picking) return;
@@ -72,8 +74,8 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
         for (const id of toggled) if (all) next.delete(id); else next.add(id);
         return next;
       }),
-    } : draft !== null && runs ? { step: source.id, runs } : null });
-  }, [picking, picked, draft, runs, source.id]);
+    } : draft !== null && runs && boxesDraft ? { step: source.id, runs } : null });
+  }, [picking, picked, draft, runs, source.id, boxesDraft]);
   useEffect(() => () => picking?.setState({ choosing: null }), [picking]);
   /** An empty rule reads every run, which the plan does not count as a selection. */
   const shown = planned ?? (!rule.trim() && !pinned?.length ? { count: source.runs.length, total: source.runs.length } : undefined);
@@ -91,19 +93,24 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
     onCommit(pickedWrites);
   }
   const offered = problem?.value;
-  const shownProblem: RuleFieldProblem | undefined = picked?.size && !pickedWrites
-    ? { reason: 'These axis values also select unpicked runs.' }
-    : !writing && problem ? {
-      reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } },
-      ...offered && { offers: offered.remaining.map((value) => ({
-        label: value.label, disabled, invoke: () => onCommit(replacedAxisValue(terms, offered, value)),
-      })) },
-    } : undefined;
+  const offers = offered && offered.remaining.map((value) => ({
+    label: value.label, disabled, invoke: () => onCommit(replacedAxisValue(terms, offered, value)),
+  }));
+  const clauses = terms.clauses ?? [];
+  /** A choice of several clauses draws each on its own line, its problem there; a choice of one reads as its rule. */
+  const lines = clauses.length > 1 ? clauses.map((clause, index) => ({
+    text: clauseText(clause),
+    ...offered?.clause_index === index && problem && { problem: { reason: problem.reason, offers } },
+    remove: () => onCommit({ ...terms, clauses: clauses.filter((_, at) => at !== index) }),
+  })) : undefined;
+  const shownProblem: RuleFieldProblem | undefined = !writing && problem && !(lines && offered) ? {
+    reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } }, ...offers && { offers },
+  } : undefined;
   const commands: RuleFieldCommand[] = [
     ...pick ? [{ label: studioName('pickRuns'), disabled: disabled || !source.runs.length, invoke: () => setPicked(new Set()) }] : [],
     ...onToRows ? [{ label: studioName('toRows'), disabled: disabled || writing, invoke: onToRows }] : [],
   ];
-  return <RuleField label={label} value={rule} disabled={disabled} count={count} pinned={pinned}
+  return <RuleField label={label} value={rule} disabled={disabled} count={count} pinned={pinned} clauses={lines}
     vocabulary={{ axes: Object.fromEntries(Object.entries(source.ruleAxes ?? {}).map(([axis, values]) => [axis, Object.values(values)])),
       metrics: ranked ? source.ruleMetrics ?? [] : undefined }}
     problem={shownProblem} picked={shownPicks}
