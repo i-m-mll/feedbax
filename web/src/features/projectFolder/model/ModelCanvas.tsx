@@ -99,6 +99,9 @@ type WireAttachment = NonNullable<ModelEdgeData['attachments']>[number];
 type CarriedAttachment = { wire: string; attachment: WireAttachment };
 const attachmentCarry = carryKind<CarriedAttachment>('attachment');
 
+/** The glyph of each port mark, distinct from every attachment's mark. */
+const portMarks: Record<NonNullable<Port['mark']>, string> = { task: '▥', objective: '◎', intervention: '◇' };
+
 /** What a Library item dropped would make: its card, and the wires into and out of it when it splits a wire. */
 export type LibraryPreview = { cards: ModelCard[]; wires: ModelEdge[] };
 
@@ -233,7 +236,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         {!data.collapsed && (port.mark || added) && <span role="img" aria-label={studioName(port.mark ?? 'objective')}
           className="studio-model-port-mark" data-added={added || undefined}
           onAnimationEnd={added ? data.endTermAdded : undefined}
-          {...appTip(studioName(port.mark ?? 'objective'))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
+          {...appTip(studioName(port.mark ?? 'objective'))}>{portMarks[port.mark ?? 'objective']}</span>}
         {!data.collapsed && problem && <FieldProblem reason={problem} />}
         {!data.collapsed && change && <ChangeMark className="nodrag nopan" {...change} />}
         {!data.collapsed && reason && verdict === 'refused' && <span className="studio-model-port-reason" role="status">{reason}</span>}
