@@ -16,6 +16,8 @@ from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.loaded_model import ImportedModelProvenance
 from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
+from feedbax.contracts.request_refs import RequestKind
+from feedbax.contracts.synthesis import ModelOrigin, ModelProductKey
 from feedbax.contracts.project_inputs import SelectedAxisValueProblem, StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
 from feedbax.contracts.project_sources import SourceKind
@@ -89,10 +91,8 @@ class StudioSavedTrainAttempt(StrictModel):
     stopped_checkpoint: int | None = Field(default=None, gt=0, exclude_if=lambda value: value is None)
 
 
-class StudioSavedTrainKey(StrictModel):
-    variant: str
-    step: str
-    row: str
+class StudioSavedTrainKey(ModelProductKey):
+    pass
 
 
 class StudioEvaluationCheckpointGap(StrictModel):
@@ -145,6 +145,7 @@ class StudioSavedEvaluationResult(StrictModel):
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
     loaded_model: ImportedModelProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
+    origin: ModelOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
     size_bytes: int = Field(ge=0)
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
     provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -288,6 +289,7 @@ class StudioSavedLightResult(StrictModel):
     receipt: JobReceipt
     products: dict[str, str]
     """Product URLs by role. An Analyze operation's URL reads the product's DatasetDescriptor."""
+    origin: ModelOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
     provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
 
@@ -568,7 +570,7 @@ class StudioActivityJob(StrictModel):
     job_id: str
     project_id: str
     request_id: str
-    kind: Literal["train", "evaluate", "analyze", "render", "report"]
+    kind: RequestKind
     run_key: str
     stage_id: str
     scenario_id: str

@@ -205,6 +205,7 @@
     "toField": "To Field",
     "toSweep": "To Sweep",
     "train": "Train",
+    "synthesize": "Synthesize",
     "trials": "Trials",
     "true": "True",
     "updates": "Updates",
@@ -661,6 +662,7 @@
   },
   "step": {
     "train": { "glyph": "flask" },
+    "synthesize": { "glyph": "wand" },
     "evaluate": { "glyph": "play" },
     "analyze": { "glyph": "chart" },
     "report": { "glyph": "page" }
