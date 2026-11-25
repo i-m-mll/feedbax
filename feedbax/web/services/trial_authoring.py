@@ -1381,11 +1381,8 @@ def trial_authoring(
     for path, site in projected.fields.items():
         if path[1:2] == ("validation_trials",):
             continue
-        value = expression(path)
-        if _epoch_end_field(path, "condition") and value is None:
-            continue
         fields.extend(_trial_fields(
-            path, site, value, bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
+            path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
         ))
     field_problems = [
         problem for field in fields for problem in field.problems
