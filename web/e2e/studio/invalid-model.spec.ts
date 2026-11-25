@@ -77,14 +77,18 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
   expect(at.steps!.conditions.inputs!.subject).toEqual([
     { step: 'train', checkpoint: { at: 5000 } }, { step: 'train_b', checkpoint: { at: 5000 } },
   ]);
-  for (const [value, reason] of [['9000', 'train_b · 1 to 8000'], ['0', 'train · 1 to 8000']]) {
-    await update.fill(value);
-    await update.press('Enter');
+  // A checkpoint outside the range every subject run has saves, with its reason on the field.
+  for (const [value, reason] of [[9000, 'train_b · 1 to 8000'], [0, 'train · 1 to 8000']] as const) {
+    const outside = await edit(async () => {
+      await update.fill(String(value));
+      await update.press('Enter');
+    });
+    expect(outside.steps!.conditions.inputs!.subject).toEqual([
+      { step: 'train', checkpoint: { at: value } }, { step: 'train_b', checkpoint: { at: value } },
+    ]);
     await expect(update).toHaveAccessibleDescription(new RegExp(reason));
     await expect(update.locator('..').getByRole('img', { name: 'Problem', exact: true })).toBeVisible();
   }
-  const kept = await (await request.get(path)).json() as StudioProjectSnapshot;
-  expect(kept.project.steps!.conditions.inputs!.subject).toEqual(at.steps!.conditions.inputs!.subject);
 
   await mapStep(page, 'analyze').click();
   await openView(page, 'analysis');
