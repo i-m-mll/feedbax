@@ -2229,6 +2229,47 @@ export interface StudioSavedFigureMeanRequest {
   mean: TrialMeanSelection;
 }
 
+export interface TrialFigureTime {
+  zero_epoch?: string | null;
+}
+
+export interface FigureTraceMeta {
+  layer: string;
+  group: Record<string, string | number | boolean | null>;
+}
+
+export interface FigurePanelMeta {
+  x_axis: string;
+  y_axis: string;
+  time?: TrialFigureTime | null;
+}
+
+export interface FigureRun {
+  key: StudioSavedTrainKey;
+  request_id: string;
+}
+
+export interface FigureLayoutMeta {
+  panels: Record<string, FigurePanelMeta>;
+  runs: Record<string, FigureRun[]>;
+}
+
+export interface PlotlyTrace {
+  meta: FigureTraceMeta;
+  [property: string]: unknown;
+}
+
+export interface PlotlyLayout {
+  meta: FigureLayoutMeta;
+  [property: string]: unknown;
+}
+
+export interface FigureProduct {
+  data: PlotlyTrace[];
+  layout: PlotlyLayout;
+  frames?: Record<string, JsonValue>[] | null;
+}
+
 export interface StudioTrialReplayResponse {
   n_steps: number;
   state_time: number[];
@@ -3033,6 +3074,7 @@ export type FieldDescriptor = {
   "units"?: string | null;
   "quantity"?: string | null;
   "frame"?: string | null;
+  "trial_time"?: TrialFigureTime | null;
   "inline_values"?: Array<JsonValue> | null;
 };
 
@@ -9503,6 +9545,77 @@ export const StudioSavedFigureMeanRequestSchema: z.ZodType<StudioSavedFigureMean
     .strict()
 ) as unknown as z.ZodType<StudioSavedFigureMeanRequest>;
 
+export const TrialFigureTimeSchema: z.ZodType<TrialFigureTime> = z.lazy(() =>
+  z
+    .object({
+      "zero_epoch": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialFigureTime>;
+
+export const FigureTraceMetaSchema: z.ZodType<FigureTraceMeta> = z.lazy(() =>
+  z
+    .object({
+      "layer": z.string(),
+      "group": z.record(z.string(), z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), z.null()])),
+    })
+    .strict()
+) as unknown as z.ZodType<FigureTraceMeta>;
+
+export const FigurePanelMetaSchema: z.ZodType<FigurePanelMeta> = z.lazy(() =>
+  z
+    .object({
+      "x_axis": z.string(),
+      "y_axis": z.string(),
+      "time": TrialFigureTimeSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<FigurePanelMeta>;
+
+export const FigureRunSchema: z.ZodType<FigureRun> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "request_id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<FigureRun>;
+
+export const FigureLayoutMetaSchema: z.ZodType<FigureLayoutMeta> = z.lazy(() =>
+  z
+    .object({
+      "panels": z.record(z.string(), FigurePanelMetaSchema),
+      "runs": z.record(z.string(), z.array(FigureRunSchema)),
+    })
+    .strict()
+) as unknown as z.ZodType<FigureLayoutMeta>;
+
+export const PlotlyTraceSchema: z.ZodType<PlotlyTrace> = z.lazy(() =>
+  z
+    .object({
+      "meta": FigureTraceMetaSchema,
+    })
+    .catchall(jsonValueSchema)
+) as unknown as z.ZodType<PlotlyTrace>;
+
+export const PlotlyLayoutSchema: z.ZodType<PlotlyLayout> = z.lazy(() =>
+  z
+    .object({
+      "meta": FigureLayoutMetaSchema,
+    })
+    .catchall(jsonValueSchema)
+) as unknown as z.ZodType<PlotlyLayout>;
+
+export const FigureProductSchema: z.ZodType<FigureProduct> = z.lazy(() =>
+  z
+    .object({
+      "data": z.array(PlotlyTraceSchema),
+      "layout": PlotlyLayoutSchema,
+      "frames": z.array(z.record(z.string(), jsonValueSchema)).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<FigureProduct>;
+
 export const StudioTrialReplayResponseSchema: z.ZodType<StudioTrialReplayResponse> = z.lazy(() =>
   z
     .object({
@@ -10704,6 +10817,7 @@ export const FieldDescriptorSchema: z.ZodType<FieldDescriptor> = z.lazy(() =>
     "units": z.union([z.string(), z.null()]).optional(),
     "quantity": z.union([z.string(), z.null()]).optional(),
     "frame": z.union([z.string(), z.null()]).optional(),
+    "trial_time": z.union([TrialFigureTimeSchema, z.null()]).optional(),
     "inline_values": z.union([z.array(jsonValueSchema), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<FieldDescriptor>;
@@ -13447,6 +13561,7 @@ export const contractSchemas = {
   StudioErrorReport: StudioErrorReportSchema,
   StudioTrialReplayResponse: StudioTrialReplayResponseSchema,
   StudioSavedFigureMeanRequest: StudioSavedFigureMeanRequestSchema,
+  FigureProduct: FigureProductSchema,
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
   PenzaiNodeRequest: PenzaiNodeRequestSchema,
@@ -13616,6 +13731,7 @@ export interface ContractTypeMap {
   StudioErrorReport: StudioErrorReport;
   StudioTrialReplayResponse: StudioTrialReplayResponse;
   StudioSavedFigureMeanRequest: StudioSavedFigureMeanRequest;
+  FigureProduct: FigureProduct;
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;
   PenzaiNodeRequest: PenzaiNodeRequest;
