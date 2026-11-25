@@ -608,7 +608,7 @@ export interface DelayAttachment {
   kind: "delay";
   id: string;
   delay: ModelTime | UnresolvedValue;
-  initial_source?: DelayInitialValue | DelayInitialTask | DelayInitialWire;
+  initial_source?: ModelSignalSource;
 }
 
 export interface DelayInitialTask {
@@ -618,7 +618,7 @@ export interface DelayInitialTask {
 
 export interface DelayInitialValue {
   kind: "value";
-  value: number | UnresolvedValue;
+  value: number | number[] | UnresolvedValue;
 }
 
 export interface DelayInitialWire {
@@ -635,7 +635,7 @@ export interface InterventionAttachment {
   kind: "intervention";
   id: string;
   operation: string;
-  fields?: Record<string, JsonValue>;
+  operands?: Record<string, ModelSignalSource>;
   window?: Window | null;
 }
 
@@ -3541,6 +3541,8 @@ export type ModelProductKey = {
   "step": string;
   "row": string;
 };
+
+export type ModelSignalSource = DelayInitialValue | DelayInitialTask | DelayInitialWire;
 
 export type ModelSlotFitProblem = {
   "kind": "missing_slot" | "unexpected_slot" | "mismatched_slot";
@@ -7211,7 +7213,7 @@ export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
       "kind": z.literal("delay"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "delay": z.union([ModelTimeSchema, UnresolvedValueSchema]),
-      "initial_source": z.union([DelayInitialValueSchema, DelayInitialTaskSchema, DelayInitialWireSchema]).optional(),
+      "initial_source": ModelSignalSourceSchema.optional(),
     })
     .strict()
 ) as unknown as z.ZodType<DelayAttachment>;
@@ -7229,7 +7231,7 @@ export const DelayInitialValueSchema: z.ZodType<DelayInitialValue> = z.lazy(() =
   z
     .object({
       "kind": z.literal("value"),
-      "value": z.union([z.number().finite(), UnresolvedValueSchema]),
+      "value": z.union([z.number().finite(), z.array(z.number().finite()), UnresolvedValueSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<DelayInitialValue>;
@@ -7258,7 +7260,7 @@ export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z
       "kind": z.literal("intervention"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "operation": z.string(),
-      "fields": z.record(z.string(), jsonValueSchema).optional(),
+      "operands": z.record(z.string(), ModelSignalSourceSchema).optional(),
       "window": WindowSchema.nullable().optional(),
     })
     .strict()
@@ -12004,6 +12006,10 @@ export const ModelProductKeySchema: z.ZodType<ModelProductKey> = z.lazy(() =>
     "row": z.string(),
   }).strict()
 ) as unknown as z.ZodType<ModelProductKey>;
+
+export const ModelSignalSourceSchema: z.ZodType<ModelSignalSource> = z.lazy(() =>
+  z.union([DelayInitialValueSchema, DelayInitialTaskSchema, DelayInitialWireSchema])
+) as unknown as z.ZodType<ModelSignalSource>;
 
 export const ModelSlotFitProblemSchema: z.ZodType<ModelSlotFitProblem> = z.lazy(() =>
   z.object({

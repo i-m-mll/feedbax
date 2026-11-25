@@ -23,6 +23,7 @@ _RETIREMENTS = frozenset({
     "stable-task-input-bindings",
     "shared-trial-windows",
     "typed-delay-initial",
+    "typed-intervention-operands",
 })
 
 

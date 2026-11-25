@@ -103,10 +103,8 @@ def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
             }},
             "/interior/wires/curl-input": {"value": wire(effector, port("component", "effector", "curl"))},
             "/interior/wires/input/attachments": {"value": [{
-                "kind": "intervention", "id": "pulse", "operation": "add", "fields": {"value": {
-                    "kind": "name", "reference": address(
-                        "port", end=port("component", "force", "curl") | {"direction": "output"},
-                    ),
+                "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {
+                    "kind": "wire", "source": port("component", "force", "curl"),
                 }},
                 "window": {"spans": [{
                     "kind": "interval", "start": {
@@ -244,7 +242,7 @@ def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
     entries = {
         name: {"differences": {"/interior/wires/effector-wire/attachments": {
             "value": [{
-                "kind": "intervention", "id": name, "operation": "add", "fields": {"value": vector},
+                "kind": "intervention", "id": name, "operation": "add", "operands": {"value": {"kind": "value", "value": vector}},
                 "window": window,
             }],
         }}}
@@ -363,7 +361,7 @@ def test_set_free_twin_keeps_trial_values_and_matches_the_unmodified_train():
             "schema": "feedbax.set_document.v1",
             "payload": {"entries": {"pulse": {"differences": {
                 "/interior/wires/effector-wire/attachments": {"value": [{
-                    "kind": "intervention", "id": bank, "operation": "add", "fields": {"value": vector},
+                    "kind": "intervention", "id": bank, "operation": "add", "operands": {"value": {"kind": "value", "value": vector}},
                 }]},
             }}}},
         }

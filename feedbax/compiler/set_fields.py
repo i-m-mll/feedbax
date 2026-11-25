@@ -22,7 +22,7 @@ from feedbax.contracts.model_address import (
 )
 from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.model_document import (
-    CompositeComponent, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
+    CompositeComponent, DelayInitialTask, DelayInitialWire, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
     SignalInput, SignalType,
 )
 from feedbax.contracts.project import Document, apply_differences
@@ -67,6 +67,8 @@ def rename_entry_references(value, refs: Mapping[str, str]):
     if isinstance(value, dict):
         if value.get("kind") == "name" and isinstance(reference := value.get("reference"), str) and reference in refs:
             return value | {"reference": refs[reference]}
+        if value.get("kind") == "task" and isinstance(variable := value.get("variable"), str) and variable in refs:
+            return value | {"variable": refs[variable]}
         return {key: rename_entry_references(item, refs) for key, item in value.items()}
     if isinstance(value, list):
         return [rename_entry_references(item, refs) for item in value]
@@ -126,11 +128,16 @@ def _attachment_links(
             remaining.append(link)
             continue
         at = address.element
-        if isinstance(at, FieldElement) and isinstance(at.parent, AttachmentElement) and at.path[0] in {"fields", "window"}:
-            value = NameValue(reference=link.variable).model_dump(mode="json")
-            writes.append(SetField(op="set_field", address=address, value=value))
-        else:
-            remaining.append(link)
+        if isinstance(at, FieldElement) and isinstance(at.parent, AttachmentElement):
+            if at.path[0] == "operands":
+                address = address.model_copy(update={"element": at.model_copy(update={"path": at.path[:2]})})
+                writes.append(SetField(op="set_field", address=address, value={"kind": "task", "variable": link.variable}))
+                continue
+            if at.path[0] == "window":
+                value = NameValue(reference=link.variable).model_dump(mode="json")
+                writes.append(SetField(op="set_field", address=address, value=value))
+                continue
+        remaining.append(link)
     return resolve_effective_model(model, components, tuple(writes)), tuple(remaining)
 
 
@@ -188,11 +195,11 @@ class _Union:
         return InputBoundaryEnd(owner="inputs", port=gate_id)
 
     def operands(self, attachment: InterventionAttachment, context: str) -> InterventionAttachment:
-        fields = dict(attachment.fields)
-        for key, value in fields.items():
-            reference = _task_reference(value)
-            if reference is None:
+        operands = dict(attachment.operands)
+        for key, operand in operands.items():
+            if not isinstance(operand, DelayInitialTask):
                 continue
+            reference = operand.variable
             variable = next((variable for variable in self.variables if variable.id == reference), None)
             if variable is None:
                 raise ValueError(f"Intervention {attachment.id!r} links to missing Task variable {reference!r}.")
@@ -205,11 +212,8 @@ class _Union:
             self.inputs.append(SignalInput(
                 id=id, name=id, type=SignalType(base=variable.type.base.value, shape=variable.type.shape),
             ))
-            address = ModelAddress(
-                composites=self.scope, element=PortElement(kind="port", end=InputBoundaryEnd(owner="inputs", port=id)),
-            )
-            fields[key] = NameValue(reference=address.to_text()).model_dump(mode="json")
-        return attachment.model_copy(update={"fields": fields}) if fields != attachment.fields else attachment
+            operands[key] = DelayInitialWire(kind="wire", source=InputBoundaryEnd(owner="inputs", port=id))
+        return attachment.model_copy(update={"operands": operands}) if operands != attachment.operands else attachment
 
     def added_components(self, alt: _Alternative, model: ModelDocument, added_wires: set[str]):
         nominal = self.model.interior
@@ -550,21 +554,10 @@ def _has_window(wire: ModelWire) -> bool:
     return any(isinstance(item, InterventionAttachment) and item.window is not None for item in wire.attachments)
 
 
-def _task_reference(value) -> str | None:
-    if not isinstance(value, dict) or value.get("kind") != "name":
-        return None
-    reference = NameValue.model_validate(value).reference
-    try:
-        ModelAddress.from_text(reference)
-    except ValueError:
-        return reference
-    return None
-
-
 def _needs_task(attachments) -> bool:
     return any(
         isinstance(attachment, InterventionAttachment)
-        and (attachment.window is not None or any(_task_reference(value) is not None for value in attachment.fields.values()))
+        and (attachment.window is not None or any(isinstance(operand, DelayInitialTask) for operand in attachment.operands.values()))
         for attachment in attachments
     )
 
