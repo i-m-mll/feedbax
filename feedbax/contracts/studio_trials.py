@@ -6,7 +6,7 @@ from pydantic import Field, JsonValue, field_serializer
 
 from feedbax.contracts.project_sweep import SetEntryParts, SetTrialSampling
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import Level, Problem, ScopedValue, ValueType, WeightPart
+from feedbax.contracts.expression_values import Expression, Level, Problem, ScopedValue, ValueType, WeightPart
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
@@ -182,6 +182,7 @@ class StudioSetField(StrictModel):
     axis: ProjectName
     set: ProjectName
     sampling: SetTrialSampling
+    condition: Expression | None = None
     entries: list[StudioSetFieldEntry]
 
 

@@ -256,7 +256,8 @@ def test_removing_the_last_copy_removes_the_axis(studio):
     assert _runs(folders, "baseline") == before
 
 
-def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
+@pytest.mark.parametrize("condition", [None, {"kind": "literal", "value": True, "unit": None}])
+def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio, condition):
     folders, client = studio
     train_before = _runs(folders, "train")
     for _ in range(3):
@@ -266,7 +267,11 @@ def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
     sweep = _runs(folders, "other")
     assert len(sweep) == 4
 
-    _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
+    _set_edit(folders, client, {
+        "kind": "set_to_field", "step": "other", "axis": "run", "condition": condition,
+    })
+    saved = folders.read(PROJECT).project.steps["other"].set_fields["run"]
+    assert saved.model_dump(mode="json").get("condition") == condition
     assert list(_runs(folders, "other")) == ["default"]
     revision = folders.read(PROJECT).revision
     reply = client.post(f"{BASE}/authoring/trials", json={
@@ -275,6 +280,7 @@ def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
     assert reply.status_code == 200, reply.text
     (field,) = reply.json()["set_fields"]
     assert field["axis"] == "run" and field["set"] == before.set
+    assert field["condition"] == condition
     assert field["entries"][0]["entry"] is None
     assert all(item["weight"] == 1 for item in field["entries"])
     assert _runs(folders, "train") == train_before

@@ -3952,6 +3952,7 @@ export type SetToField = {
   "kind": "set_to_field";
   "step": string;
   "axis": string;
+  "condition"?: Expression | null;
 };
 
 export type SetToSweep = {
@@ -4875,6 +4876,7 @@ export type StudioSetField = {
   "axis": string;
   "set": string;
   "sampling": SetTrialSampling;
+  "condition"?: Expression | null;
   "entries": Array<StudioSetFieldEntry>;
 };
 
@@ -5256,6 +5258,7 @@ export type TrialDocuments = {
 export type TrialSetField = {
   "axis": SetAxis;
   "sampling": SetTrialSampling;
+  "condition"?: Expression | null;
 };
 
 export type UnresolvedValue = {
@@ -12407,6 +12410,7 @@ export const SetToFieldSchema: z.ZodType<SetToField> = z.lazy(() =>
     "kind": z.literal("set_to_field"),
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "condition": z.union([ExpressionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<SetToField>;
 
@@ -13606,6 +13610,7 @@ export const StudioSetFieldSchema: z.ZodType<StudioSetField> = z.lazy(() =>
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "set": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "sampling": SetTrialSamplingSchema,
+    "condition": z.union([ExpressionSchema, z.null()]).optional(),
     "entries": z.array(StudioSetFieldEntrySchema),
   }).strict()
 ) as unknown as z.ZodType<StudioSetField>;
@@ -14093,6 +14098,7 @@ export const TrialSetFieldSchema: z.ZodType<TrialSetField> = z.lazy(() =>
   z.object({
     "axis": SetAxisSchema,
     "sampling": SetTrialSamplingSchema,
+    "condition": z.union([ExpressionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<TrialSetField>;
 

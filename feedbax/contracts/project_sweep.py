@@ -17,7 +17,7 @@ from pydantic import Field, JsonValue, PrivateAttr, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import DrawValue, TextSpan, WeightPart
+from feedbax.contracts.expression_values import DrawValue, Expression, TextSpan, WeightPart
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import SetField
@@ -300,6 +300,7 @@ class TrialSetField(StrictModel):
 
     axis: SetAxis
     sampling: SetTrialSampling
+    condition: Expression | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis | SetAxis

@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import WeightPart
+from feedbax.contracts.expression_values import Expression, WeightPart
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.request_refs import Sha256
@@ -52,6 +52,7 @@ class SetToField(StrictModel):
     kind: Literal["set_to_field"]
     step: ProjectName
     axis: ProjectName
+    condition: Expression | None = None
 
 
 class SetToSweep(StrictModel):

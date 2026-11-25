@@ -55,7 +55,9 @@ def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
             else:
                 weight = sampling.weights.get(id, 1.0)
             rows.append(StudioSetFieldEntry(entry=id, label=entry.label, weight=weight))
-        fields.append(StudioSetField(axis=axis, set=field.axis.set, sampling=sampling, entries=rows))
+        fields.append(StudioSetField(
+            axis=axis, set=field.axis.set, sampling=sampling, condition=field.condition, entries=rows,
+        ))
     return fields
 
 
@@ -436,7 +438,7 @@ def _move_set(project: Project, command: SetToField | SetToSweep) -> StoredEdit:
             for key, exception in sweep.exceptions.items()
         ):
             raise ProjectFolderInvalid("The Set axis has run exceptions that cannot move into trials.")
-        field = TrialSetField(axis=axis, sampling=WeightedSetTrials(kind="weighted"))
+        field = TrialSetField(axis=axis, sampling=WeightedSetTrials(kind="weighted"), condition=command.condition)
         field_sets[command.axis] = field.model_dump(mode="json", exclude_unset=True)
         if isinstance(step.base, StepBase | RunBase):
             axes[command.axis] = None
