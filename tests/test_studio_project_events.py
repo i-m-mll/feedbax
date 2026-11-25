@@ -17,7 +17,9 @@ from feedbax.web.services.project_folder import ProjectFolderNotFound
 from tests.support.hang import HANG_SECONDS
 
 
-def _job_page(head: int, cursor: int, *event_ids: int) -> tuple[int, StudioJobEventHistory]:
+def _job_page(
+    head: int, cursor: int, *event_ids: int, kind: str = "log", project: str = "training-project",
+) -> tuple[int, StudioJobEventHistory]:
     return head, StudioJobEventHistory(
         cursor=cursor,
         oldest_cursor=0,
@@ -25,9 +27,9 @@ def _job_page(head: int, cursor: int, *event_ids: int) -> tuple[int, StudioJobEv
             StudioJobEvent(
                 cursor=event_id,
                 job_id="job",
-                project_id="training-project",
+                project_id=project,
                 request_id="request",
-                kind="log",
+                kind=kind,
                 data={"line": f"update {event_id}"},
             )
             for event_id in event_ids
@@ -160,6 +162,26 @@ def test_unsubscribed_job_stream_keeps_its_wait_and_rejects_path_queries():
     response = client.get("/api/events", params={"folder": "../outside"})
     assert response.status_code == 422
     assert len(job_events.calls) == 2
+
+
+def test_plan_changes_follow_subscribed_jobs_and_resync_after_replay():
+    folders = _FolderObservations({name: _revision(name) for name in ("training-project", "other")})
+    job_events = _JobEvents(
+        _job_page(1, 1, 1, kind="terminal"),
+        _job_page(3, 3, 2, 3, kind="progress"),
+        _job_page(4, 4, 4, project="other", kind="terminal"),
+        _job_page(5, 5, 5, kind="log"),
+        _job_page(5, 5),
+    )
+    with TestClient(_app(job_events, folders)) as client:
+        response = client.get("/api/events?folder=training-project&project=training-project")
+    assert response.status_code == 200
+    frames = _sse_frames(response.text)
+    assert [frame["event"] for frame in frames if "event" in frame] == [
+        "replay_complete", "project_revision", "project_plan_changed", "project_plan_changed", "heartbeat",
+    ]
+    notices = [frame for frame in frames if frame.get("event") == "project_plan_changed"]
+    assert notices == [{"event": "project_plan_changed", "data": '{"project_id":"training-project"}'}] * 2
 
 
 def test_disconnecting_during_a_folder_notice_stops_the_observation():
