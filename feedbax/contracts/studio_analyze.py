@@ -91,4 +91,4 @@ class StudioOperationDatasetPage(StrictModel):
     offset: DimensionSize
     total: DimensionSize
     values: list[JsonValue] = Field(max_length=MAX_OPERATION_DATASET_PAGE)
-    """Nonfinite numbers and integers outside JavaScript's exact range use their string forms."""
+    """Nonfinite numbers and wide integers use strings; complex numbers give real and imaginary parts."""
