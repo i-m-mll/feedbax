@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import cache
 from types import MappingProxyType
 
 from feedbax.contracts.expression_units import UNITS
@@ -121,6 +122,7 @@ def _known_dimension(
     node: Expression,
     scope: Mapping[str, TypedNode],
     functions: FunctionRegistry,
+    known_dimension: Callable[[Expression], Dimensions | None],
 ) -> Dimensions | None:
     if isinstance(node, LiteralValue) and node.unit in UNITS:
         return UNITS[node.unit].dimensions
@@ -140,7 +142,7 @@ def _known_dimension(
                     function, node = bound
                 assert function.result_dimensions is not None
                 return function.result_dimensions(
-                    tuple(_known_dimension(child, scope, functions) for child in node.args)
+                    tuple(known_dimension(child) for child in node.args)
                 )
     return None
 
@@ -162,12 +164,41 @@ def check(
         if isinstance(resolved, tuple):
             return tuple(problem.model_copy(update={"path": (*path, *problem.path)}) for problem in resolved)
         tree, spans = resolved.value, resolved.spans
+    run, _, _ = _checker(site, functions, path, spans, missing_functions)
+    return run(tree)
+
+
+def _checker(
+    site: Site,
+    functions: FunctionRegistry,
+    path: NodePath = (),
+    spans: Mapping[NodePath, TextSpan] | None = None,
+    missing_functions: frozenset[str] = frozenset(),
+    *,
+    reusable: frozenset[int] = frozenset(),
+):
+    """Check replacements in one scope, reusing unchanged subtrees at the same operand context."""
     scope = {value.id: TypedNode(value.type, value.level) for value in site.names}
     by_name = {value.name: value for value in site.names}
     lists = {value.id: value.list_count for value in site.names if value.list_count is not None}
     problems: list[Problem] = []
     checked: dict[NodePath, TypedNode] = {}
     calls: dict[NodePath, tuple[Function, CallValue]] = {}
+    dimensions: dict[int, tuple[Expression, Dimensions | None]] = {}
+    visits: dict[
+        tuple[int, NodePath, Dimensions | None, ValueBase | None, bool],
+        tuple[TypedNode | None, tuple[Problem, ...]],
+    ] = {}
+    contexts: dict[NodePath, tuple[Dimensions | None, ValueBase | None, bool]] = {}
+    syntax_sensitive: dict[NodePath, int | None] = {}
+    indexes: set[NodePath] = set()
+    record = True
+
+    def known_dimension(node: Expression) -> Dimensions | None:
+        key = id(node)
+        if key not in dimensions:
+            dimensions[key] = node, _known_dimension(node, scope, functions, known_dimension)
+        return dimensions[key][1]
 
     def problem(node: Expression, code: ProblemCode, reason: str, at: NodePath) -> None:
         problems.append(
@@ -185,6 +216,27 @@ def check(
         dimension: Dimensions | None = None,
         requested: ValueBase | None = None,
         *, indexed: bool = False,
+    ) -> TypedNode | None:
+        if record and reusable:
+            contexts[at] = dimension, requested, indexed
+        if id(node) not in reusable:
+            return infer(node, at, dimension, requested, indexed=indexed)
+        key = (id(node), at, dimension, requested, indexed)
+        if not record and key in visits:
+            value, errors = visits[key]
+            problems.extend(errors)
+            return value
+        before = len(problems)
+        value = infer(node, at, dimension, requested, indexed=indexed)
+        visits[key] = value, tuple(problems[before:])
+        return value
+
+    def infer(
+        node: Expression,
+        at: NodePath,
+        dimension: Dimensions | None,
+        requested: ValueBase | None,
+        *, indexed: bool,
     ) -> TypedNode | None:
         if isinstance(node, UnresolvedValue):
             problem(node, ProblemCode.PARSE, "The expression text has not resolved.", at)
@@ -273,13 +325,19 @@ def check(
                     node, ProblemCode.ARITY, f"Unknown arguments {sorted(unknown)} for {key!r}.", at
                 )
                 return None
+            if record and reusable:
+                if function.bind is not None:
+                    syntax_sensitive[at] = function.binding_value_argument
+                if key == "index":
+                    indexes.add(at)
             if isinstance(node, CallValue) and function.bind is not None:
                 bound = function.bind(function, node)
                 if isinstance(bound, SignatureError):
                     problem(node, bound.code, bound.reason, (*at, *bound.path))
                     return None
                 function, node = bound
-                calls[at[len(path) :]] = bound
+                if record:
+                    calls[at[len(path) :]] = bound
                 kwargs = node.kwargs
             implicit = tuple(
                 name for name in info.implicit_names if name != "T" or "over" not in kwargs
@@ -302,7 +360,7 @@ def check(
                         at,
                     )
                     return None
-            known = tuple(_known_dimension(arg, scope, functions) for arg in node.args)
+            known = tuple(known_dimension(arg) for arg in node.args)
             hints, named_hints = (
                 function.argument_context(OperandHint(dimension, requested), known, tuple(kwargs))
                 if function.argument_context is not None
@@ -362,43 +420,77 @@ def check(
                     return None
                 level = limit
             value = TypedNode(inferred, level)
-        checked[at[len(path) :]] = value
+        if record:
+            checked[at[len(path) :]] = value
         return value
 
-    root = visit(tree, path, site.expected.dimensions, site.expected.base)
-    if root is not None:
-        if not site.expected.accepts_shape_and_base(root.type):
-            problem(
-                tree,
-                ProblemCode.TYPE_MISMATCH,
-                f"Expected {site.expected.base} {site.expected.shape}.",
-                path,
-            )
-        elif root.type.dimensions != site.expected.dimensions:
-            problem(
-                tree,
-                ProblemCode.UNIT_MISMATCH,
-                "Expression dimensions differ from the site's dimensions.",
-                path,
-            )
-        elif not site.expected.accepts_space(root.type):
-            problem(
-                tree,
-                ProblemCode.TYPE_MISMATCH,
-                f"Expected {site.expected.space} space, got {root.type.space} space.",
-                path,
-            )
-        if root.level > site.finest:
-            problem(
-                tree,
-                ProblemCode.LEVEL_TOO_FINE,
-                f"This site accepts at most {site.finest.name.lower()} values.",
-                path,
-            )
-    if problems:
-        return tuple(problems)
-    assert root is not None
-    return Checked(tree, root, MappingProxyType(checked), MappingProxyType(calls))
+    def run(tree: Expression, *, collect: bool = True) -> Checked | tuple[Problem, ...]:
+        nonlocal record
+        record = collect
+        problems.clear()
+        root = visit(tree, path, site.expected.dimensions, site.expected.base)
+        if root is not None:
+            if not site.expected.accepts_shape_and_base(root.type):
+                problem(
+                    tree,
+                    ProblemCode.TYPE_MISMATCH,
+                    f"Expected {site.expected.base} {site.expected.shape}.",
+                    path,
+                )
+            elif root.type.dimensions != site.expected.dimensions:
+                problem(
+                    tree,
+                    ProblemCode.UNIT_MISMATCH,
+                    "Expression dimensions differ from the site's dimensions.",
+                    path,
+                )
+            elif not site.expected.accepts_space(root.type):
+                problem(
+                    tree,
+                    ProblemCode.TYPE_MISMATCH,
+                    f"Expected {site.expected.space} space, got {root.type.space} space.",
+                    path,
+                )
+            if root.level > site.finest:
+                problem(
+                    tree,
+                    ProblemCode.LEVEL_TOO_FINE,
+                    f"This site accepts at most {site.finest.name.lower()} values.",
+                    path,
+                )
+        if problems:
+            return tuple(problems)
+        assert root is not None
+        return Checked(tree, root, MappingProxyType(checked), MappingProxyType(calls)) if collect else ()
+
+    @cache
+    def insensitive(at: NodePath) -> bool:
+        for depth in range(0, len(at), 2):
+            ancestor = at[:depth]
+            if ancestor in syntax_sensitive and at[depth : depth + 2] != (
+                "args", syntax_sensitive[ancestor]
+            ):
+                return False
+            if depth == len(at) - 2 and ancestor in indexes:
+                return False
+        return True
+
+    def local(before: Expression, after: Expression, at: NodePath) -> bool | None:
+        """Decide an edit when the unchanged ancestors receive the same dimension and type."""
+        nonlocal record
+        if not insensitive(at):
+            return None
+        if at not in contexts or known_dimension(before) != known_dimension(after):
+            return None
+        dimension, requested, indexed = contexts[at]
+        problems.clear()
+        record = False
+        value = visit(after, at, dimension, requested, indexed=indexed)
+        if value is None:
+            return False
+        return True if value == checked[at] else None
+
+    return run, local, insensitive
 
 
 def _reference_label(reference: str) -> str:
