@@ -335,30 +335,48 @@ class ModelEditDraft:
     ) -> bool:
         if port.reads_state_only or "component" not in source or "component" not in target:
             return False
-        pending = [target["component"]]
-        seen = set()
-        while pending:
-            current = pending.pop()
-            if current == source["component"]:
-                return True
-            if current in seen:
-                continue
-            seen.add(current)
-            for key, wire in graph["wires"].items():
-                if key == replacing:
-                    continue
-                a, b = wire["source"], wire["target"]
-                if a.get("component") != current or "component" not in b:
-                    continue
+
+        def reaches(
+            branch: Record, interior: Record, entry: Record, *,
+            output: Record | None = None, exit: Record | None = None, exclude: str | None = None,
+        ) -> bool:
+            def feeds(incoming: Record, outgoing: Record) -> bool:
+                if incoming["owner"] == "inputs":
+                    return incoming == outgoing
+                name = incoming.get("component")
+                if name is None or outgoing.get("component") != name:
+                    return False
                 try:
-                    declaration = self.port(owner, graph, a, "output")
+                    declaration = self.port(branch, interior, outgoing, "output")
                 except ValueError:
-                    continue
-                if declaration and not declaration.reads_state_only and not any(
-                    item["kind"] == "delay" for item in wire["attachments"]
-                ):
-                    pending.append(b["component"])
-        return False
+                    return False
+                if declaration is None or declaration.reads_state_only:
+                    return False
+                component = interior["components"][name]
+                if component["kind"] == "leaf" or component["interior"]["physical_domain"] is not None:
+                    return True
+                return reaches(
+                    component, component["interior"], _card("inputs", incoming["port"]),
+                    exit=_card("outputs", outgoing["port"]),
+                )
+
+            pending = [entry]
+            seen = set()
+            wires = tuple(
+                wire for key, wire in interior["wires"].items()
+                if key != exclude and not any(item["kind"] == "delay" for item in wire["attachments"])
+            )
+            while pending:
+                current = pending.pop()
+                if current == exit or output is not None and feeds(current, output):
+                    return True
+                key = _target_key(current)
+                if key not in seen:
+                    seen.add(key)
+                    pending.extend(wire["target"] for wire in wires if feeds(current, wire["source"]))
+            return False
+
+        return reaches(owner, graph, target, output=source, exclude=replacing)
 
     def physical(self, address: ModelAddress, connection: Record) -> None:
         owner, graph = self.graph(address)

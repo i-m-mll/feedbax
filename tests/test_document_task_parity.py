@@ -37,7 +37,9 @@ from feedbax.objectives.document import (
     Reduction,
     compile_objective,
 )
-from feedbax.contracts.task_document import VALUE_TYPES, Length, Rest
+from feedbax.contracts.task_document import VALUE_TYPES, Length, Rest, Until
+from feedbax.contracts.time_units import TimeValue
+from feedbax.contracts.window import Window, WindowEpoch
 from feedbax.tasks.document import (
     Cell,
     DocumentTask,
@@ -390,6 +392,24 @@ def test_document_trial_and_objective_match_reference(kind, functions, reference
         )
 
 
+@pytest.mark.parametrize(
+    ("authored", "bounds"), [("0.025 s", (3, 3)), ("U(0.025 s, 0.045 s)", (3, 5))],
+)
+def test_epoch_lengths_pair_exact_decimal_half_steps_once(functions, authored, bounds):
+    task = TaskDocument(
+        id="clock", variables=(), signals=(),
+        epochs=(Epoch(id="move", name="move", end=Length(length=expression(authored))),),
+    )
+    compiled = compile_task(task, functions, model=PORTLESS)
+    assert isinstance(compiled, DocumentTask), compiled
+    assert (compiled.step_counts[0].least, compiled.step_counts[0].greatest) == bounds
+    key = jr.key(77)
+    lengths = jax.vmap(lambda trial: compiled.init(TaskParameters(), key, trial)[0].epochs.ends[0])(
+        jr.split(key, 48),
+    )
+    assert set(lengths.tolist()) == set(range(bounds[0], bounds[1] + 1))
+
+
 def test_zero_length_and_delayed_distribution(functions, references):
     _, zero = example("delayed", functions, zero=True)
     key = jr.key(5)
@@ -462,12 +482,12 @@ def test_objective_windows_reduce_defined_samples_with_history(functions):
             id=reduction.value,
             measure=formula,
             reduction=reduction,
-            epochs=("first", "left", "right"),
+            window=Window(spans=(WindowEpoch(kind="epoch", epoch="first"), WindowEpoch(kind="epoch", epoch="left"), WindowEpoch(kind="epoch", epoch="right"))),
         )
         for reduction in Reduction
     ) + (
-        ObjectiveTerm(id="left", measure=formula, reduction=Reduction.SUM, epochs=("left",)),
-        ObjectiveTerm(id="right", measure=formula, reduction=Reduction.SUM, epochs=("right",)),
+        ObjectiveTerm(id="left", measure=formula, reduction=Reduction.SUM, window=Window(spans=(WindowEpoch(kind="epoch", epoch="left"),))),
+        ObjectiveTerm(id="right", measure=formula, reduction=Reduction.SUM, window=Window(spans=(WindowEpoch(kind="epoch", epoch="right"),))),
         ObjectiveTerm(id="disabled", measure=expression("42"), enabled=False),
     )
     executor = compile_objective(
@@ -561,7 +581,7 @@ def test_inherited_objective_preserves_term_ids_without_observing_missing_values
         ObjectiveTerm(id="covered", measure=expression("x", (x,))),
         ObjectiveTerm(id="missing-measure", measure=expression("y", (y,))),
         ObjectiveTerm(id="missing-weight", measure=expression("x", (x,)), weight=expression("y", (y,))),
-        ObjectiveTerm(id="missing-epoch", measure=expression("x", (x,)), epochs=("probe", "move")),
+        ObjectiveTerm(id="missing-epoch", measure=expression("x", (x,)), window=Window(spans=(WindowEpoch(kind="epoch", epoch="probe"), WindowEpoch(kind="epoch", epoch="move")))),
     ))
     strict = compile_objective(document, (x,), functions, task=task)
     assert not isinstance(strict, ObjectiveExecutor)
@@ -813,7 +833,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
         measure=expression("sqnorm(command)", (command,)),
         weight=expression("2.3"),
         reduction=Reduction.SUM,
-        epochs=("move",),
+        window=Window(spans=(WindowEpoch(kind="epoch", epoch="move"),)),
     )
     executor = compile_objective(
         ObjectiveDocument(id="effort", terms=(term,)),
@@ -956,7 +976,7 @@ def test_three_reaches_draw_one_target_per_move_and_hold_and_score_every_move(fu
 
     objective = ObjectiveDocument.model_validate({
         "id": "score", "terms": [{
-            "id": "distance", "epochs": ["move"], "reduction": "sum",
+            "id": "distance", "window": {"spans": [{"kind": "epoch", "epoch": "move"}]}, "reduction": "sum",
             "measure_type": dict(VALUE_TYPES)["Distance"],
             "measure": {"kind": "call", "function": "norm", "args": [{"kind": "name", "reference": "target"}]},
         }],
@@ -975,3 +995,35 @@ def test_wrong_list_count_marks_the_cell_that_uses_the_repeat_index(functions):
     assert [(error.code, error.path) for error in result] == [
         ("list_count", ("signals", "target", "cells", "reach-target", "value"))
     ]
+
+
+
+def test_until_signal_window_refuses_only_runtime_boundaries(functions):
+    def task(window_epoch):
+        return TaskDocument(
+            id="window",
+            variables=(),
+            epochs=(
+                Epoch(id="start", name="start", end=Length(length=expression("2 st"))),
+                Epoch(id="reach", name="reach", end=Until(
+                    condition=expression("true"), limit=TimeValue(value=4, unit="st"),
+                )),
+            ),
+            signals=(Signal(
+                id="gate", name="gate", type=BOOLEAN,
+                cells=(Cell(id="always", first_epoch="start", last_epoch="reach", value=expression("true")),),
+                window=Window(spans=(WindowEpoch(kind="epoch", epoch=window_epoch),)),
+            ),),
+        )
+
+    supported = compile_task(task("start"), functions, model=PORTLESS)
+    assert isinstance(supported, DocumentTask), supported
+    key = jr.key(0)
+    record = supported.ahead(TaskParameters(), key, key)
+    np.testing.assert_array_equal(record.present["gate"], [True, True, False, False, False, False])
+
+    refused = compile_task(task("reach"), functions, model=PORTLESS)
+    assert isinstance(refused, tuple)
+    (problem,) = refused
+    assert problem.path == ("signals", "gate", "window")
+    assert "only known after Until" in problem.reason

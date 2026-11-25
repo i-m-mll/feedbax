@@ -220,7 +220,7 @@ def _selected_task_variants():
     raw = managed_evaluation_definition()
     train = raw["steps"]["train"]
     raw["documents"]["task"] = _short_reaches(5)
-    raw["documents"]["objective"]["payload"]["terms"][0].pop("epochs")
+    raw["documents"]["objective"]["payload"]["terms"][0].pop("window")
     train["sweep"] = {"axes": {"target": {"values": {
         name: {"patches": {"trial_documents.task.variables.target.value.args.1.value": {"value": y}}}
         for name, y in (("low", -0.2), ("high", 0.3))

@@ -422,6 +422,7 @@ def _run(
     from feedbax.persistence.canonical_train import (
         BoundStudioTrainingJobInput, PinnedTrainCheckpoint, read_collected_train_job, resolve_training_request_binding,
     )
+    from feedbax.execution.trial_execution import sample_trial
     from feedbax.tasks.document import TaskParameters
     from feedbax.host.method_checkpoint import write_method_checkpoint
     from feedbax.training.method_runtime import replica_value
@@ -686,7 +687,7 @@ def _run(
             if completed == last_frame or completed == start_boundary:
                 return
             frame_key = derive_key(observation_key, "trajectory", index=completed)
-            trial_sample = execution.task.ahead(TaskParameters(), frame_key, frame_key)
+            trial_sample = sample_trial(execution.task, TaskParameters(), frame_key, frame_key)
             retained, _ = execution.rollout(replica_value(state.model, 0), trial_sample, frame_key)
             events.append("frame", {"completed_updates": completed, "trajectory": {
                 "n_steps": execution.task.n_steps, "outputs": {name: value.tolist() for name, value in retained.items()},

@@ -147,7 +147,7 @@ export interface StudioActivityJob {
   scenario_id: string;
   label: string;
   coordinates: Record<string, JsonValue>;
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "not_chosen" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   submitted_at_ms: number;
   ended_at_ms: number | null;
   phase?: string | null;
@@ -319,7 +319,7 @@ export interface StudioSavedEvaluationResult {
 export interface StudioSavedEvaluationRow {
   key: StudioSavedTrainKey;
   request_id: string;
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "not_chosen" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
   can_run: boolean;
   trials: string[];
@@ -334,7 +334,7 @@ export interface StudioSavedEvaluationRow {
 
 export interface StudioSavedTrainAttempt {
   job_id: string;
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "not_chosen" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
   progress: JobProgress | null;
   successful_receipt: JobReceipt | null;
@@ -371,7 +371,7 @@ export interface StudioSavedTrainRow {
   label: string;
   request_id: string;
   attempts: StudioSavedTrainAttempt[];
-  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  status: "not_run" | "not_chosen" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
   result: StudioSavedTrainResult | null;
   previous: StudioSavedTrainResult | null;
@@ -610,12 +610,17 @@ export interface DelayAttachment {
   initial?: JsonValue;
 }
 
+export interface HoldAttachment {
+  kind: "hold";
+  id: string;
+}
+
 export interface InterventionAttachment {
   kind: "intervention";
   id: string;
   operation: string;
   fields?: Record<string, JsonValue>;
-  window?: InterventionWindow | null;
+  window?: Window | null;
 }
 
 export interface ProbeAttachment {
@@ -657,7 +662,7 @@ export interface ModelPortAttachments {
 export interface ModelWire {
   source: ComponentPortEnd | InputBoundaryEnd;
   target: ComponentPortEnd | OutputBoundaryEnd;
-  attachments?: Array<DelayAttachment | InterventionAttachment | ProbeAttachment>;
+  attachments?: Array<DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment>;
 }
 
 export interface ModelPhysicalConnection {
@@ -868,14 +873,14 @@ export interface VariantRuns {
 export interface AddModelAttachment {
   op: "add";
   owner: ModelAddress;
-  attachment: DelayAttachment | InterventionAttachment | ProbeAttachment;
+  attachment: DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
   after: string | null;
 }
 
 export interface ChangeModelAttachment {
   address: ModelAddress;
   op: "change";
-  attachment: DelayAttachment | InterventionAttachment | ProbeAttachment;
+  attachment: DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
   after?: string | null;
 }
 
@@ -1091,7 +1096,7 @@ export interface ModelAddedElement {
 export interface ModelRemovedElement {
   change: "removed";
   address: ModelAddress;
-  definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | DelayAttachment | InterventionAttachment | ProbeAttachment;
+  definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
   position?: ModelPosition | null;
   wires?: Record<string, ModelWire>;
   connections?: Record<string, ModelPhysicalConnection>;
@@ -1106,6 +1111,7 @@ export interface ModelRewiredElement {
 export interface ModelProjection {
   ports?: ModelPortProjection[];
   physical_ports?: ModelPhysicalPortProjection[];
+  delay_steps?: Record<string, number | null>;
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelTaskInput[];
   problems?: ModelGraphProblem[];
@@ -1437,7 +1443,6 @@ export interface WireSpec {
   source_port: string;
   target_node: string;
   target_port: string;
-  temporality?: "instant" | "recurrent";
   recurrent_initializer?: Record<string, unknown> | null;
 }
 
@@ -2337,6 +2342,7 @@ export interface TrialRecord {
   variable_defined: Record<string, JsonValue>;
   timeline: TaskTimelineCue[];
   terms?: Record<string, TrialTerm>;
+  intervention_windows?: Record<string, boolean[]>;
   states?: Record<string, TrialStateTrack>;
   configurations?: Record<string, JsonValue>;
   observations?: Record<string, JsonValue>;
@@ -2810,6 +2816,8 @@ export type AxisLabels = {
 export type AxisSelectionClause = Record<string, Array<SelectedAxisValue>>;
 
 export type AxisValue = {
+  "task_variables"?: Array<Variable>;
+  "task_links"?: Array<Link>;
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
   "value"?: JsonValue;
@@ -2968,6 +2976,15 @@ export type DataDerivedAxisRange = {
   "padding_fraction": number;
 };
 
+export type DatasetDescriptor = {
+  "schema_version"?: "feedbax.dataset.v1";
+  "dimensions": Record<string, DimensionSize>;
+  "variables": Record<string, FieldDescriptor>;
+  "coords"?: Record<string, FieldDescriptor>;
+  "attrs"?: Record<string, JsonValue>;
+  "schema_id"?: Name | null;
+};
+
 export type DatasetInputPort = {
   "schema_ids": Array<string>;
   "variables"?: Record<string, FieldDescriptor>;
@@ -3003,6 +3020,8 @@ export type DetachMember = {
 export type DifferencePointer = string;
 
 export type Differences = Record<string, SetDocumentValue | RemoveDocumentValue>;
+
+export type DimensionSize = number;
 
 export type Dimensions = {
   "length"?: number;
@@ -3313,18 +3332,12 @@ export type InputRole = {
   "checkpoint_sets": boolean;
 };
 
-export type InterventionWindow = {
-  "epoch": string;
-  "offsets": Array<number>;
-  "duration": number;
-};
-
 export type JaxOperation = {
   "backend": "cpu" | "gpu";
   "floating_point_bits": 32 | 64;
 };
 
-export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+export type JobStatus = "not_run" | "not_chosen" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
 
 export type KeyedFamily = "documents" | "steps" | "elements";
 
@@ -3500,7 +3513,7 @@ export type ObjectiveTerm = {
   "measure_type"?: ValueType;
   "weight"?: Expression;
   "reduction"?: Reduction;
-  "epochs"?: Array<string>;
+  "window"?: Window | null;
   "enabled"?: boolean;
   "name"?: string | null;
 };
@@ -3767,6 +3780,8 @@ export type RootDocument = {
 };
 
 export type Row = {
+  "task_variables"?: Array<Variable>;
+  "task_links"?: Array<Link>;
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
   "value"?: JsonValue;
@@ -3850,8 +3865,19 @@ export type SetAxis = {
   "optional"?: boolean;
 };
 
+export type SetDocument = {
+  "entries": Record<string, SetEntry>;
+};
+
 export type SetDocumentValue = {
   "value": JsonValue;
+};
+
+export type SetEntry = {
+  "task_variables"?: Array<Variable>;
+  "task_links"?: Array<Link>;
+  "label"?: string | null;
+  "differences"?: Differences;
 };
 
 export type SetEntryParts = {
@@ -3939,6 +3965,7 @@ export type Signal = {
   "type": ValueType;
   "cells": Array<Cell>;
   "absent"?: Expression | null;
+  "window"?: Window | null;
 };
 
 export type SignalSpace = "point" | "free";
@@ -4441,6 +4468,13 @@ export type StudioObjectivePlace = {
   "document": string | null;
 };
 
+export type StudioOperationDatasetPage = {
+  "field": Name;
+  "offset": DimensionSize;
+  "total": DimensionSize;
+  "values": Array<JsonValue>;
+};
+
 export type StudioPlanRequest = {
   "key": StudioSavedTrainKey;
   "element"?: string | null;
@@ -4616,6 +4650,7 @@ export type StudioProjectWindowMapInput = {
   "checkpoint"?: CheckpointRule | null;
   "checkpoint_axis"?: string | null;
   "can_sweep_checkpoint"?: boolean;
+  "metric_names"?: Array<string>;
 };
 
 export type StudioProjectWindowMapInputAxis = {
@@ -4744,6 +4779,7 @@ export type StudioReportStep = {
 
 export type StudioRunRuleCheck = {
   "total": number;
+  "metric_names"?: Array<string>;
   "result": StudioRunRuleChosen | StudioRunRuleRefused;
 };
 
@@ -4751,6 +4787,7 @@ export type StudioRunRuleChosen = {
   "kind"?: "chosen";
   "runs": Array<string>;
   "count": number;
+  "conditional"?: boolean;
 };
 
 export type StudioRunRuleRefused = {
@@ -5279,6 +5316,48 @@ export type WeightedSetTrials = {
 
 export type WholeDimensions = {
   "parameter": string;
+};
+
+export type Window = {
+  "spans": Array<WindowEpoch | WindowInterval | WindowMoment>;
+};
+
+export type WindowEpoch = {
+  "kind": "epoch";
+  "epoch": string;
+  "occurrence"?: number | null;
+};
+
+export type WindowEpochAnchor = {
+  "kind": "epoch";
+  "epoch": string;
+  "occurrence"?: number | null;
+  "edge": "start" | "end";
+};
+
+export type WindowInterval = {
+  "kind": "interval";
+  "start": WindowPosition;
+  "end": WindowPosition | WindowRelativePosition;
+};
+
+export type WindowMoment = {
+  "kind": "moment";
+  "at": WindowPosition;
+};
+
+export type WindowPosition = {
+  "anchor": WindowTrialAnchor | WindowEpochAnchor;
+  "offset"?: TimeValue | CallValue | DrawValue | NameValue | UnresolvedValue | null;
+};
+
+export type WindowRelativePosition = {
+  "offset": TimeValue | CallValue | DrawValue | NameValue | UnresolvedValue;
+};
+
+export type WindowTrialAnchor = {
+  "kind": "trial";
+  "edge": "start" | "end";
 };
 
 export type feedbax__contracts__studio_project__RenameMember = {
@@ -6246,7 +6325,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "scenario_id": z.string(),
       "label": z.string(),
       "coordinates": z.record(z.string(), jsonValueSchema),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("not_chosen"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "submitted_at_ms": z.number().int().safe().gte(0),
       "ended_at_ms": z.number().int().safe().gte(0).nullable(),
       "phase": z.string().nullable().optional(),
@@ -6498,7 +6577,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
     .object({
       "key": StudioSavedTrainKeySchema,
       "request_id": z.string(),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("not_chosen"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
       "can_run": z.boolean(),
       "trials": z.array(z.string()),
@@ -6517,7 +6596,7 @@ export const StudioSavedTrainAttemptSchema: z.ZodType<StudioSavedTrainAttempt> =
   z
     .object({
       "job_id": z.string(),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("not_chosen"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
       "progress": JobProgressSchema.nullable(),
       "successful_receipt": JobReceiptSchema.nullable(),
@@ -6570,7 +6649,7 @@ export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(
       "label": z.string(),
       "request_id": z.string(),
       "attempts": z.array(StudioSavedTrainAttemptSchema),
-      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "status": z.union([z.literal("not_run"), z.literal("not_chosen"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
       "result": StudioSavedTrainResultSchema.nullable(),
       "previous": StudioSavedTrainResultSchema.nullable(),
@@ -6955,6 +7034,15 @@ export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<DelayAttachment>;
 
+export const HoldAttachmentSchema: z.ZodType<HoldAttachment> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("hold"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<HoldAttachment>;
+
 export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z.lazy(() =>
   z
     .object({
@@ -6962,7 +7050,7 @@ export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "operation": z.string(),
       "fields": z.record(z.string(), jsonValueSchema).optional(),
-      "window": InterventionWindowSchema.nullable().optional(),
+      "window": WindowSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<InterventionAttachment>;
@@ -7044,7 +7132,7 @@ export const ModelWireSchema: z.ZodType<ModelWire> = z.lazy(() =>
     .object({
       "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
       "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
-      "attachments": z.array(z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])).optional(),
+      "attachments": z.array(z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelWire>;
@@ -7427,7 +7515,7 @@ export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(()
     .object({
       "op": z.literal("add"),
       "owner": ModelAddressSchema,
-      "attachment": z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "attachment": z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
       "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable(),
     })
     .strict()
@@ -7438,6 +7526,12 @@ export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(()
           message: "Expected a wire or port owner",
         });
       }
+      if (value.attachment.kind === "hold" && value.owner.element.kind !== "wire") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A Hold requires a wire",
+        });
+      }
     })
 ) as unknown as z.ZodType<AddModelAttachment>;
 
@@ -7446,7 +7540,7 @@ export const ChangeModelAttachmentSchema: z.ZodType<ChangeModelAttachment> = z.l
     .object({
       "address": ModelAddressSchema,
       "op": z.literal("change"),
-      "attachment": z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "attachment": z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
       "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
     })
     .strict()
@@ -7829,7 +7923,7 @@ export const ModelRemovedElementSchema: z.ZodType<ModelRemovedElement> = z.lazy(
     .object({
       "change": z.literal("removed"),
       "address": ModelAddressSchema,
-      "definition": z.union([LeafComponentSchema, CompositeComponentSchema, ModelWireSchema, ModelPhysicalConnectionSchema, z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])]),
+      "definition": z.union([LeafComponentSchema, CompositeComponentSchema, ModelWireSchema, ModelPhysicalConnectionSchema, z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])]),
       "position": ModelPositionSchema.nullable().optional(),
       "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema).optional(),
       "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema).optional(),
@@ -7852,6 +7946,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
     .object({
       "ports": z.array(ModelPortProjectionSchema).optional(),
       "physical_ports": z.array(ModelPhysicalPortProjectionSchema).optional(),
+      "delay_steps": z.record(z.string(), z.number().int().safe().nullable()).optional(),
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
       "task_inputs": z.array(ModelTaskInputSchema).optional(),
       "problems": z.array(ModelGraphProblemSchema).optional(),
@@ -8404,7 +8499,6 @@ export const WireSpecSchema: z.ZodType<WireSpec> = z.lazy(() =>
       "source_port": z.string(),
       "target_node": z.string(),
       "target_port": z.string(),
-      "temporality": z.union([z.literal("instant"), z.literal("recurrent")]).optional(),
       "recurrent_initializer": z.record(z.string(), z.unknown()).nullable().optional(),
     })
     .strict()
@@ -9988,6 +10082,7 @@ export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
       "variable_defined": z.record(z.string(), jsonValueSchema),
       "timeline": z.array(TaskTimelineCueSchema),
       "terms": z.record(z.string(), TrialTermSchema).optional(),
+      "intervention_windows": z.record(z.string(), z.array(z.boolean())).optional(),
       "states": z.record(z.string(), TrialStateTrackSchema).optional(),
       "configurations": z.record(z.string(), jsonValueSchema).optional(),
       "observations": z.record(z.string(), jsonValueSchema).optional(),
@@ -10738,6 +10833,8 @@ export const AxisSelectionClauseSchema: z.ZodType<AxisSelectionClause> = z.lazy(
 
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
   z.object({
+    "task_variables": z.array(VariableSchema).optional(),
+    "task_links": z.array(LinkSchema).optional(),
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
     "value": jsonValueSchema.optional(),
@@ -10955,6 +11052,17 @@ export const DataDerivedAxisRangeSchema: z.ZodType<DataDerivedAxisRange> = z.laz
   }).strict()
 ) as unknown as z.ZodType<DataDerivedAxisRange>;
 
+export const DatasetDescriptorSchema: z.ZodType<DatasetDescriptor> = z.lazy(() =>
+  z.object({
+    "schema_version": z.literal("feedbax.dataset.v1").optional(),
+    "dimensions": z.record(NameSchema, DimensionSizeSchema),
+    "variables": z.record(NameSchema, FieldDescriptorSchema),
+    "coords": z.record(NameSchema, FieldDescriptorSchema).optional(),
+    "attrs": z.record(z.string(), jsonValueSchema).optional(),
+    "schema_id": z.union([NameSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DatasetDescriptor>;
+
 export const DatasetInputPortSchema: z.ZodType<DatasetInputPort> = z.lazy(() =>
   z.object({
     "schema_ids": z.array(z.string()).min(1),
@@ -11002,6 +11110,10 @@ export const DifferencePointerSchema: z.ZodType<DifferencePointer> = z.lazy(() =
 export const DifferencesSchema: z.ZodType<Differences> = z.lazy(() =>
   z.record(DifferencePointerSchema, z.union([SetDocumentValueSchema, RemoveDocumentValueSchema]))
 ) as unknown as z.ZodType<Differences>;
+
+export const DimensionSizeSchema: z.ZodType<DimensionSize> = z.lazy(() =>
+  z.number().int().safe().min(0)
+) as unknown as z.ZodType<DimensionSize>;
 
 export const DimensionsSchema: z.ZodType<Dimensions> = z.lazy(() =>
   z.object({
@@ -11412,14 +11524,6 @@ export const InputRoleSchema: z.ZodType<InputRole> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<InputRole>;
 
-export const InterventionWindowSchema: z.ZodType<InterventionWindow> = z.lazy(() =>
-  z.object({
-    "epoch": z.string(),
-    "offsets": z.array(z.number().int().safe().min(0)).min(1),
-    "duration": z.number().int().safe().gt(0),
-  }).strict()
-) as unknown as z.ZodType<InterventionWindow>;
-
 export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
   z.object({
     "backend": z.union([z.literal("cpu"), z.literal("gpu")]),
@@ -11428,7 +11532,7 @@ export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
 ) as unknown as z.ZodType<JaxOperation>;
 
 export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
-  z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
+  z.union([z.literal("not_run"), z.literal("not_chosen"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
 ) as unknown as z.ZodType<JobStatus>;
 
 export const KeyedFamilySchema: z.ZodType<KeyedFamily> = z.lazy(() =>
@@ -11674,7 +11778,7 @@ export const ObjectiveTermSchema: z.ZodType<ObjectiveTerm> = z.lazy(() =>
     "measure_type": ValueTypeSchema.optional(),
     "weight": ExpressionSchema.optional(),
     "reduction": ReductionSchema.optional(),
-    "epochs": z.array(z.string()).optional(),
+    "window": z.union([WindowSchema, z.null()]).optional(),
     "enabled": z.boolean().optional(),
     "name": z.union([z.string().min(1), z.null()]).optional(),
   }).strict()
@@ -12035,6 +12139,8 @@ export const RootDocumentSchema: z.ZodType<RootDocument> = z.lazy(() =>
 
 export const RowSchema: z.ZodType<Row> = z.lazy(() =>
   z.object({
+    "task_variables": z.array(VariableSchema).optional(),
+    "task_links": z.array(LinkSchema).optional(),
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
     "value": jsonValueSchema.optional(),
@@ -12147,11 +12253,26 @@ export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetAxis>;
 
+export const SetDocumentSchema: z.ZodType<SetDocument> = z.lazy(() =>
+  z.object({
+    "entries": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), SetEntrySchema),
+  }).strict()
+) as unknown as z.ZodType<SetDocument>;
+
 export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
   z.object({
     "value": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<SetDocumentValue>;
+
+export const SetEntrySchema: z.ZodType<SetEntry> = z.lazy(() =>
+  z.object({
+    "task_variables": z.array(VariableSchema).optional(),
+    "task_links": z.array(LinkSchema).optional(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "differences": DifferencesSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<SetEntry>;
 
 export const SetEntryPartsSchema: z.ZodType<SetEntryParts> = z.lazy(() =>
   z.object({
@@ -12267,6 +12388,7 @@ export const SignalSchema: z.ZodType<Signal> = z.lazy(() =>
     "type": ValueTypeSchema,
     "cells": z.array(CellSchema),
     "absent": z.union([ExpressionSchema, z.null()]).optional(),
+    "window": z.union([WindowSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Signal>;
 
@@ -12926,6 +13048,15 @@ export const StudioObjectivePlaceSchema: z.ZodType<StudioObjectivePlace> = z.laz
   }).strict()
 ) as unknown as z.ZodType<StudioObjectivePlace>;
 
+export const StudioOperationDatasetPageSchema: z.ZodType<StudioOperationDatasetPage> = z.lazy(() =>
+  z.object({
+    "field": NameSchema,
+    "offset": DimensionSizeSchema,
+    "total": DimensionSizeSchema,
+    "values": z.array(jsonValueSchema).max(256),
+  }).strict()
+) as unknown as z.ZodType<StudioOperationDatasetPage>;
+
 export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =>
   z.object({
     "key": StudioSavedTrainKeySchema,
@@ -13154,6 +13285,7 @@ export const StudioProjectWindowMapInputSchema: z.ZodType<StudioProjectWindowMap
     "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
     "checkpoint_axis": z.union([z.string(), z.null()]).optional(),
     "can_sweep_checkpoint": z.boolean().optional(),
+    "metric_names": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapInput>;
 
@@ -13312,6 +13444,7 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
 export const StudioRunRuleCheckSchema: z.ZodType<StudioRunRuleCheck> = z.lazy(() =>
   z.object({
     "total": z.number().int().safe(),
+    "metric_names": z.array(z.string()).optional(),
     "result": z.union([StudioRunRuleChosenSchema, StudioRunRuleRefusedSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioRunRuleCheck>;
@@ -13321,6 +13454,7 @@ export const StudioRunRuleChosenSchema: z.ZodType<StudioRunRuleChosen> = z.lazy(
     "kind": z.literal("chosen").optional(),
     "runs": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))),
     "count": z.number().int().safe(),
+    "conditional": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioRunRuleChosen>;
 
@@ -14010,6 +14144,64 @@ export const WholeDimensionsSchema: z.ZodType<WholeDimensions> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<WholeDimensions>;
 
+export const WindowSchema: z.ZodType<Window> = z.lazy(() =>
+  z.object({
+    "spans": z.array(z.union([WindowEpochSchema, WindowIntervalSchema, WindowMomentSchema])),
+  }).strict()
+) as unknown as z.ZodType<Window>;
+
+export const WindowEpochSchema: z.ZodType<WindowEpoch> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("epoch"),
+    "epoch": z.string(),
+    "occurrence": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<WindowEpoch>;
+
+export const WindowEpochAnchorSchema: z.ZodType<WindowEpochAnchor> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("epoch"),
+    "epoch": z.string(),
+    "occurrence": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+    "edge": z.union([z.literal("start"), z.literal("end")]),
+  }).strict()
+) as unknown as z.ZodType<WindowEpochAnchor>;
+
+export const WindowIntervalSchema: z.ZodType<WindowInterval> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("interval"),
+    "start": WindowPositionSchema,
+    "end": z.union([WindowPositionSchema, WindowRelativePositionSchema]),
+  }).strict()
+) as unknown as z.ZodType<WindowInterval>;
+
+export const WindowMomentSchema: z.ZodType<WindowMoment> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("moment"),
+    "at": WindowPositionSchema,
+  }).strict()
+) as unknown as z.ZodType<WindowMoment>;
+
+export const WindowPositionSchema: z.ZodType<WindowPosition> = z.lazy(() =>
+  z.object({
+    "anchor": z.union([WindowTrialAnchorSchema, WindowEpochAnchorSchema]),
+    "offset": z.union([TimeValueSchema, z.union([CallValueSchema, DrawValueSchema, NameValueSchema, UnresolvedValueSchema]), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<WindowPosition>;
+
+export const WindowRelativePositionSchema: z.ZodType<WindowRelativePosition> = z.lazy(() =>
+  z.object({
+    "offset": z.union([TimeValueSchema, z.union([CallValueSchema, DrawValueSchema, NameValueSchema, UnresolvedValueSchema])]),
+  }).strict()
+) as unknown as z.ZodType<WindowRelativePosition>;
+
+export const WindowTrialAnchorSchema: z.ZodType<WindowTrialAnchor> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("trial"),
+    "edge": z.union([z.literal("start"), z.literal("end")]),
+  }).strict()
+) as unknown as z.ZodType<WindowTrialAnchor>;
+
 export const feedbax__contracts__studio_project__RenameMemberSchema: z.ZodType<feedbax__contracts__studio_project__RenameMember> = z.lazy(() =>
   z.object({
     "family": KeyedFamilySchema,
@@ -14112,8 +14304,11 @@ export const contractSchemas = {
   ValidityAcceptance: ValidityAcceptanceSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   TaskDocument: TaskDocumentSchema,
+  SetDocument: SetDocumentSchema,
+  SetEntry: SetEntrySchema,
   PythonTaskSelection: PythonTaskSelectionSchema,
   ObjectiveDocument: ObjectiveDocumentSchema,
+  Window: WindowSchema,
   TrainingDocument: TrainingDocumentSchema,
   TrialDocuments: TrialDocumentsSchema,
   ImportedModelProvenance: ImportedModelProvenanceSchema,
@@ -14147,6 +14342,8 @@ export const contractSchemas = {
   SampleValues: SampleValuesSchema,
   SiteProjection: SiteProjectionSchema,
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
+  DatasetDescriptor: DatasetDescriptorSchema,
+  StudioOperationDatasetPage: StudioOperationDatasetPageSchema,
   StudioAnalyzeRequest: StudioAnalyzeRequestSchema,
   StudioAuthoringCatalog: StudioAuthoringCatalogSchema,
   StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
@@ -14293,8 +14490,11 @@ export interface ContractTypeMap {
   ValidityAcceptance: ValidityAcceptance;
   AnalysisDocument: AnalysisDocument;
   TaskDocument: TaskDocument;
+  SetDocument: SetDocument;
+  SetEntry: SetEntry;
   PythonTaskSelection: PythonTaskSelection;
   ObjectiveDocument: ObjectiveDocument;
+  Window: Window;
   TrainingDocument: TrainingDocument;
   TrialDocuments: TrialDocuments;
   ImportedModelProvenance: ImportedModelProvenance;
@@ -14328,6 +14528,8 @@ export interface ContractTypeMap {
   SampleValues: SampleValues;
   SiteProjection: SiteProjection;
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;
+  DatasetDescriptor: DatasetDescriptor;
+  StudioOperationDatasetPage: StudioOperationDatasetPage;
   StudioAnalyzeRequest: StudioAnalyzeRequest;
   StudioAuthoringCatalog: StudioAuthoringCatalog;
   StudioAuthoringSurface: StudioAuthoringSurface;

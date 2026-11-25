@@ -4,21 +4,26 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from itertools import chain
+from math import isfinite, prod
 import json
 from mimetypes import guess_type
 from types import MappingProxyType
 from typing import NotRequired, TypedDict
 from urllib.parse import quote
 
+import numpy as np
+from pydantic import JsonValue
 from pydantic_core import to_json
 
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, report_content_security_policy
 from feedbax.execution.trial_resolution import evaluation_conditions
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
+from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetDescriptor
 from feedbax.contracts.effective_success import (
     RequestObject, Success, read_effective_request, read_success_request, success_content_ref,
 )
@@ -63,6 +68,7 @@ from feedbax.contracts.project_inputs import (
     BatchCheckpoint, BoundRank, InputBinding, SelectedAxisValue, StepReference, SubsetTerms,
     producer_member_key, subset_to_rows,
 )
+from feedbax.contracts.studio_analyze import StudioOperationDatasetPage
 from feedbax.contracts.studio_place import (
     StudioStepPlace, definition_place, document_path, path_parts, variation_targets,
 )
@@ -89,9 +95,12 @@ from feedbax.contracts.request_refs import (
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.trial_clock import StudioSavedFigureMeanRequest
 from feedbax.contracts.trial_record import StudioTrialReplayResponse
+from feedbax.dataset import Dataset
 from feedbax.persistence.completion import completion_file
+from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
 from feedbax.host.job_completion import training_binding_path
+from feedbax.host.light_jobs import dataset_member
 from feedbax.jobs import (
     EVALUATION_SUBJECT_REQUIRED,
     JobConflict,
@@ -666,6 +675,42 @@ class ProjectPlanService:
             raise JobConflict("The saved product could not be authenticated.") from error
 
 
+    @contextmanager
+    def _operation_dataset(self, project: str, revision: str, job_id: str, role: str) -> Iterator[Dataset]:
+        store, receipt = self._saved_light_receipt(project, revision, job_id, role)
+        if not receipt.request.id.startswith("analyze:"):
+            raise JobNotFound(job_id)
+        try:
+            product, = receipt.products[role]
+            with open_stored_dataset(store, dataset_member(product)) as dataset:
+                yield dataset
+        except (OSError, TypeError, ValueError, KeyError) as error:
+            raise JobConflict("The saved operation product could not be authenticated.") from error
+
+    def operation_dataset(self, project: str, revision: str, job_id: str, role: str) -> DatasetDescriptor:
+        """Read the labelled descriptor of a visible Analyze product."""
+        with self._operation_dataset(project, revision, job_id, role) as dataset:
+            return dataset.descriptor
+
+    def operation_dataset_page(
+        self, project: str, revision: str, job_id: str, role: str, *, field: str, offset: int, limit: int,
+    ) -> StudioOperationDatasetPage:
+        with self._operation_dataset(project, revision, job_id, role) as dataset:
+            descriptor = dataset.descriptor
+            if field not in descriptor.variables and field not in descriptor.coords:
+                raise JobNotFound(field)
+            shape = descriptor.shape(field)
+            total = prod(shape)
+            stop = min(total, offset + limit)
+            inline = descriptor.field(field).inline_values
+            if offset >= stop:
+                values = []
+            elif inline is not None:
+                values = list(inline[offset:stop])
+            else:
+                values = _operation_values(dataset, field, shape, offset, stop)
+            return StudioOperationDatasetPage(field=field, offset=offset, total=total, values=values)
+
     def figure_mean(self, project: str, body: StudioSavedFigureMeanRequest) -> SavedLightProduct:
         from feedbax.host.light_worker import render_saved_figure
 
@@ -1033,15 +1078,48 @@ def _light_history(
     return LightHistory(status, reason, _light_result(settled, current), _light_result(settled, prior), changed)
 
 
+def _operation_values(
+    dataset: Dataset, field: str, shape: tuple[int, ...], offset: int, stop: int,
+) -> list[JsonValue]:
+    """Read trailing-axis slices instead of expanding an entire tensor for a page."""
+    if not shape:
+        return [_operation_value(np.asarray(dataset.data(field)).item())]
+    values = []
+    while offset < stop:
+        *prefix, start = map(int, np.unravel_index(offset, shape))
+        count = min(shape[-1] - start, stop - offset)
+        selection = (*prefix, slice(start, start + count))
+        values.extend(_operation_value(value) for value in np.asarray(dataset.data(field, selection)).tolist())
+        offset += count
+    return values
+
+
+def _operation_value(value: bool | int | float | complex) -> JsonValue:
+    if isinstance(value, complex):
+        return {"real": _operation_value(value.real), "imag": _operation_value(value.imag)}
+    if (type(value) is int and abs(value) >= 2**53) or (type(value) is float and not isfinite(value)):
+        return str(value)
+    return value
+
+
 def _light_result(settled: SettledProjectPlan, attempt: PlanJobAttempt | None) -> StudioSavedLightResult | None:
     if attempt is None or attempt.light_success is None or attempt.successful_receipt is None:
         return None
     success = attempt.light_success
-    base = f"/api/projects/{quote(settled.project_id, safe='')}/light-results/{settled.revision}/{attempt.job_id}"
-    products = {}
-    for role, entry in ((PLOTLY_FIGURE_ROLE, "figure.json"), ("report", REPORT_HTML_NAME)):
-        if role in success.products:
-            products[role] = f"{base}/{role}/{entry}"
+    project = f"/api/projects/{quote(settled.project_id, safe='')}"
+    attempt_path = f"{settled.revision}/{attempt.job_id}"
+    if success.request.id.startswith("analyze:"):
+        products = {
+            role: f"{project}/operation-products/{attempt_path}/{quote(role, safe='')}"
+            for role, members in success.products.items()
+            if len(members) == 1 and members[0].content.media_type == DATASET_MEDIA_TYPE
+        }
+    else:
+        products = {
+            role: f"{project}/light-results/{attempt_path}/{role}/{entry}"
+            for role, entry in ((PLOTLY_FIGURE_ROLE, "figure.json"), ("report", REPORT_HTML_NAME))
+            if role in success.products
+        }
     return StudioSavedLightResult(
         job_id=attempt.job_id, request_id=success.request.id, revision=attempt.revision, receipt=attempt.successful_receipt,
         products=products, validity=attempt.validity, provenance=attempt.provenance,

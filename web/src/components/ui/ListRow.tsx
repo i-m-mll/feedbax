@@ -23,6 +23,7 @@ export const ListRow = forwardRef<HTMLDivElement, ListRowProps>(function ListRow
   return (
     <div
       ref={ref}
+      data-list-row=""
       aria-selected={selected}
       aria-disabled={disabled || undefined}
       aria-expanded={expanded ?? undefined}

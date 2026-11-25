@@ -25,6 +25,7 @@ from feedbax.contracts.expression_values import (
     ValueType,
     walk,
 )
+from feedbax.contracts.task_document import EpochEnd
 from feedbax.contracts.model_address import FieldElement, ModelAddress, OutputBoundaryEnd, PortElement
 from feedbax.contracts.objective_document import (
     ObjectiveDocument as ObjectiveDocument,
@@ -32,11 +33,12 @@ from feedbax.contracts.objective_document import (
     Reduction as Reduction,
 )
 from feedbax.contracts.expression_check import references
+from feedbax.contracts.window import window_offset_sites
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import Evaluation, FunctionRegistry
 from feedbax.objectives.base import TermTree
 from feedbax.objectives.term_points import TermPoints, measure_points
-from feedbax.runtime.epoch_windows import whole_window
+from feedbax.runtime.epoch_windows import CompiledWindow, compile_window
 from feedbax.tasks.document import Trial, TrialSource
 
 
@@ -82,7 +84,7 @@ class _Term:
     measure: Compiled
     weight: Compiled
     reduction: Reduction
-    epochs: tuple[int, ...]
+    window: CompiledWindow | None
     references: frozenset[str]
     weight_references: frozenset[str]
 
@@ -90,6 +92,33 @@ class _Term:
 @dataclass(frozen=True)
 class _UncoveredTerm:
     id: str
+
+
+@dataclass(frozen=True)
+class _EpochRead:
+    name: ScopedValue
+    slots: tuple[int, ...]
+    outcome: EpochEnd
+
+    def read(self, trial: Trial):
+        matches = jnp.take(trial.epochs.outcomes, jnp.asarray(self.slots), axis=-1) == int(self.outcome)
+        return matches if self.name.list_count else matches[0]
+
+
+def _epoch_reads(task: TrialSource) -> tuple[_EpochRead, ...]:
+    reads = []
+    for epoch, name in task.interface.epoch_conditions:
+        slots = tuple(index for index, given in enumerate(task.epochs) if given == epoch)
+        for suffix, outcome in (("condition", EpochEnd.CONDITION), ("limit", EpochEnd.LIMIT)):
+            reads.append(_EpochRead(
+                ScopedValue(
+                    id=f"epoch:{epoch}:{suffix}", name=f"epoch.{name}.{suffix}",
+                    type=ValueType(base=ValueBase.BOOLEAN), level=Level.TRIAL,
+                    list_count=len(slots) if len(slots) > 1 else None,
+                ),
+                slots, outcome,
+            ))
+    return tuple(reads)
 
 
 class ObjectiveExecutor(eqx.Module):
@@ -100,6 +129,7 @@ class ObjectiveExecutor(eqx.Module):
     names: tuple[ScopedValue, ...] = ()
     period: float = 1.0
     n_steps: int = 0
+    epochs: tuple[_EpochRead, ...] = ()
 
     def __call__(self, states, trial_specs: Trial, model: ObjectiveInputs):
         """Expose the same batch values as a loss tree."""
@@ -173,7 +203,7 @@ class ObjectiveExecutor(eqx.Module):
             None, jnp.zeros(n_steps, dtype=bool),
             TermValue(jnp.asarray(0.0), jnp.asarray(False)), None,
         )
-        fixed = {}
+        fixed = {read.name.id: read.read(trial) for read in self.epochs}
         traces = {}
         available = {}
         for name in self.names:
@@ -195,7 +225,10 @@ class ObjectiveExecutor(eqx.Module):
             if isinstance(term, _UncoveredTerm) or term.references - supplied:
                 results[term.id] = uncovered
                 continue
-            selected = whole_window(trial.epochs, n_steps, term.epochs)
+            selected = (
+                jnp.ones(n_steps, dtype=bool) if term.window is None
+                else term.window.mask(trial.epochs, n_steps, Inputs((), fixed, run_key, trial_key, defined=available))
+            )
             show_weight = not term.weight_references & unobserved
             weight_is_step = term.weight.checked.root.level == Level.STEP
             measure_is_step = term.measure.checked.root.level == Level.STEP
@@ -310,7 +343,8 @@ def compile_objective(
 ) -> ObjectiveExecutor | tuple[Problem, ...]:
     """Compile an authored objective or rebind the validated Train terms to Evaluate."""
     period = task.period
-    epoch_ids = set(task.epochs)
+    epoch_reads = _epoch_reads(task)
+    names = (*names, *(read.name for read in epoch_reads))
     problems = []
     terms = []
     seen = set()
@@ -342,6 +376,7 @@ def compile_objective(
         if sites is not None:
             sites[(*path, "measure")] = measure_site
             sites[(*path, "weight")] = Site(expected=scalar, names=weight_names, finest=Level.STEP)
+            sites.update({(*path, "window", *at): site for at, site in window_offset_sites(term.window, names).items()})
         if not term.enabled:
             continue
         if term.measure_type.shape or term.measure_type.base != ValueBase.REAL:
@@ -363,9 +398,8 @@ def compile_objective(
             if unpaired:
                 problems.extend(unpaired)
                 continue
-        absent = set(term.epochs) - epoch_ids
         if use in (ObjectiveUse.INHERITED, ObjectiveUse.PREVIEW) and (
-            absent or measure_refs - measure_ids or weight_refs - weight_ids
+            measure_refs - measure_ids or weight_refs - weight_ids
         ):
             terms.append(_UncoveredTerm(term.id))
             continue
@@ -382,14 +416,26 @@ def compile_objective(
         if not isinstance(measure, Compiled):
             problems.extend(measure)
             continue
-        if absent or term.epochs and measure.checked.root.level != Level.STEP:
-            reason = (
-                f"Unknown epochs {sorted(absent)}." if absent else "This measure has no time axis."
+        window = None
+        if term.window is not None:
+            window_path = (*path, "window")
+            if measure.checked.root.level != Level.STEP:
+                problems.append(Problem(
+                    code=ProblemCode.OUT_OF_SCOPE, path=window_path, reason="This measure has no time axis.",
+                ))
+                continue
+            window = compile_window(
+                term.window, epochs=task.epochs, period=period, names=names, functions=functions,
+                field_address=(document.id, *window_path), path=window_path, nominal=nominal,
             )
-            problems.append(
-                Problem(code=ProblemCode.OUT_OF_SCOPE, path=(*path, "epochs"), reason=reason)
-            )
-            continue
+            if isinstance(window, tuple):
+                if use in (ObjectiveUse.INHERITED, ObjectiveUse.PREVIEW) and all(
+                    problem.code == ProblemCode.UNKNOWN_NAME for problem in window
+                ):
+                    terms.append(_UncoveredTerm(term.id))
+                else:
+                    problems.extend(window)
+                continue
         limit = Level.STEP if measure.checked.root.level == Level.STEP else Level.TRIAL
         weight_site = Site(expected=scalar, names=weight_names, finest=limit)
         if sites is not None:
@@ -407,13 +453,15 @@ def compile_objective(
             problems.extend(weight)
             continue
         used = (references(measure.checked.tree) | references(weight.checked.tree)) - {"t", "T", "u"}
+        if window is not None:
+            used |= window.references
         terms.append(
             _Term(
                 term.id,
                 measure,
                 weight,
                 term.reduction,
-                tuple(index for index, epoch in enumerate(task.epochs) if epoch in term.epochs),
+                window,
                 used,
                 weight_refs,
             )
@@ -433,6 +481,7 @@ def compile_objective(
         tuple(name for name in names if name.id in referenced),
         period,
         task.n_steps,
+        tuple(read for read in epoch_reads if read.name.id in referenced),
     )
 
 

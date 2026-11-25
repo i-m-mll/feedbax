@@ -12,6 +12,7 @@ import { appTip } from '@window-shell/browser/tooltip';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
+import { roundedPath } from '@/components/canvas/cardGeometry';
 import { StudioCanvas, type CanvasViewport, type CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
@@ -245,19 +246,6 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
   </SurfaceCard>;
 });
 
-function rounded(points: readonly ModelPosition[]) {
-  let path = `M ${points[0].x},${points[0].y}`;
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const a = points[index - 1], b = points[index], c = points[index + 1];
-    const before = Math.min(6, Math.hypot(b.x - a.x, b.y - a.y) / 2);
-    const after = Math.min(6, Math.hypot(c.x - b.x, c.y - b.y) / 2);
-    path += ` L ${b.x + Math.sign(a.x - b.x) * before},${b.y + Math.sign(a.y - b.y) * before}`;
-    path += ` Q ${b.x},${b.y} ${b.x + Math.sign(c.x - b.x) * after},${b.y + Math.sign(c.y - b.y) * after}`;
-  }
-  const last = points.at(-1)!;
-  return `${path} L ${last.x},${last.y}`;
-}
-
 /** The clearance a wire's label keeps from a card's edge: about half the label's height. */
 const LABEL_CLEARANCE = 12;
 
@@ -265,22 +253,23 @@ const LABEL_CLEARANCE = 12;
  * Where a wire's label sits so no card hides it: `mid` when no card covers it, else the point along the wire nearest its
  * middle that no card covers, or `mid` when cards cover the whole wire.
  */
-function uncoveredPoint(path: SVGPathElement, mid: ModelPosition,
-  cards: readonly { x: number; y: number; width: number; height: number }[]): ModelPosition | undefined {
+/** Where a wire's attachments sit: `mid`, or the point of the wire nearest it that no card covers; `along` is its distance along the wire. */
+function labelPlace(path: SVGPathElement, mid: ModelPosition,
+  cards: readonly { x: number; y: number; width: number; height: number }[]): { point: ModelPosition; along: number } {
   const covered = ({ x, y }: ModelPosition) => cards.some((card) =>
     x > card.x - LABEL_CLEARANCE && x < card.x + card.width + LABEL_CLEARANCE &&
     y > card.y - LABEL_CLEARANCE && y < card.y + card.height + LABEL_CLEARANCE);
-  if (!covered(mid)) return undefined;
   const length = path.getTotalLength();
   const samples = Math.max(2, Math.ceil(length / 4));
-  let best: { point: ModelPosition; distance: number } | undefined;
+  const free = !covered(mid);
+  let best: { point: ModelPosition; along: number; distance: number } | undefined;
   for (let index = 0; index <= samples; index += 1) {
     const along = (length * index) / samples;
     const { x, y } = path.getPointAtLength(along);
-    const distance = Math.abs(along - length / 2);
-    if (!covered({ x, y }) && (!best || distance < best.distance)) best = { point: { x, y }, distance };
+    const distance = free ? Math.hypot(x - mid.x, y - mid.y) : Math.abs(along - length / 2);
+    if ((free || !covered({ x, y })) && (!best || distance < best.distance)) best = { point: { x, y }, along, distance };
   }
-  return best?.point;
+  return { point: free || !best ? mid : best.point, along: best?.along ?? length / 2 };
 }
 
 const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourceY, targetX, targetY,
@@ -315,27 +304,23 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
   const geometry = { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition };
   const [path, labelX, labelY] = physical ? getBezierPath(geometry)
     : !under && !waypoints?.length ? getSmoothStepPath({ ...geometry, borderRadius: 6, offset: 16 })
-      : [rounded(turns), (a.x + b.x) / 2, bend];
+      : [roundedPath(turns), (a.x + b.x) / 2, bend];
   const delayed = data?.attachments?.some((item) => item.delay);
   const labelled = !!(data?.attachments?.length || data?.bundleCount || data?.problem || data?.change);
   const pathRef = useRef<SVGPathElement>(null);
-  const [dash, setDash] = useState<string>();
-  useEffect(() => {
-    if (!delayed) return;
-    const length = pathRef.current?.getTotalLength() ?? 0;
-    const half = length / 2;
-    setDash(`${half} 0 ${'5 3 '.repeat(Math.min(1000, Math.ceil(half / 8)))}0 ${length}`);
-  }, [delayed, path]);
   const cards = useStoreApi<ModelCard, ModelEdge>();
-  const [clear, setClear] = useState<ModelPosition>();
+  const [place, setPlace] = useState<{ point: ModelPosition; along: number }>();
   useLayoutEffect(() => {
     const measured = pathRef.current;
-    if (!labelled || !measured) return setClear(undefined);
-    setClear(uncoveredPoint(measured, { x: labelX, y: labelY }, [...cards.getState().nodeLookup.values()].map((node) => ({
+    if (!labelled || !measured) return setPlace(undefined);
+    setPlace(labelPlace(measured, { x: labelX, y: labelY }, [...cards.getState().nodeLookup.values()].map((node) => ({
       ...node.internals.positionAbsolute, width: node.measured.width ?? 0, height: node.measured.height ?? 0,
     }))));
   }, [labelled, path, labelX, labelY, cards]);
-  const mid = clear ?? { x: labelX, y: labelY };
+  const mid = place?.point ?? { x: labelX, y: labelY };
+  /** Solid from the source to the delay's square, dashed from it to the target. */
+  const dash = delayed && place
+    ? `${place.along} 0 ${'5 3 '.repeat(Math.min(1000, Math.ceil((pathRef.current?.getTotalLength() ?? 0) / 8)))}` : undefined;
   return <>
     {(delayed || labelled) && <path d={path} ref={pathRef} visibility="hidden" aria-hidden="true" />}
     <BaseEdge id={id} path={path} markerEnd={markerEnd} className="studio-model-wire"
@@ -362,7 +347,8 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
         {data.bundleCount && <span className="rounded-row border border-shell-divider bg-shell-chrome px-1 text-xs">{data.bundleCount}</span>}
         {data.change && <ChangeMark {...data.change} />}
         {data.attachments?.map((attachment) => <span key={attachment.id} className="contents">
-          <Button size="mark" aria-label={studioAccessibleName('attachment', attachment.label)}
+          <Button size="mark" className={attachment.delay ? 'min-w-[1.5em] justify-center !rounded-none' : undefined}
+            aria-label={studioAccessibleName('attachment', attachment.label)}
             aria-description={attachment.description} data-ghost={attachment.ghost || undefined}
             {...appTip(studioAccessibleName('attachment', attachment.label))}
             onPointerDown={attachment.drag ? (event) => carry(event, attachmentCarry, { wire: id, attachment }) : undefined}

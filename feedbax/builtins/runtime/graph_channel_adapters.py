@@ -100,7 +100,6 @@ def _materialize_edge_adapter(
                 source_port=wire.source_port,
                 target_node=node_name,
                 target_port="a",
-                temporality=wire.temporality,
                 recurrent_initializer=wire.recurrent_initializer,
             ),
             WireSpec(

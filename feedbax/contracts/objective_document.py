@@ -11,6 +11,7 @@ from feedbax.contracts.expression_values import (
     ValueRecord,
     ValueType,
 )
+from feedbax.contracts.window import Window
 
 
 OBJECTIVE_DOCUMENT_SCHEMA_ID = "feedbax.spec.objective_document"
@@ -29,7 +30,7 @@ class ObjectiveTerm(ValueRecord):
     measure_type: ValueType = ValueType(base=ValueBase.REAL)
     weight: Expression = LiteralValue(value=1)
     reduction: Reduction = Reduction.MEAN
-    epochs: tuple[str, ...] = ()
+    window: Window | None = None
     enabled: bool = True
     name: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
 

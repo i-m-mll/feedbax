@@ -37,6 +37,7 @@ JobAction = Literal["checkpoint", "force", "resume"]
 
 class JobStatus(StrEnum):
     NOT_RUN = "not_run"
+    NOT_CHOSEN = "not_chosen"
     CANNOT_RUN = "cannot_run"
     STALE = "stale"
     QUEUED = "queued"
@@ -286,6 +287,7 @@ class StudioSavedLightResult(StrictModel):
     revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     products: dict[str, str]
+    """Product URLs by role. An Analyze operation's URL reads the product's DatasetDescriptor."""
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
     provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
 
@@ -340,6 +342,8 @@ class StudioProjectWindowMapInput(StrictModel):
     checkpoint: CheckpointRule | None = Field(default=None, exclude_if=lambda value: value is None)
     checkpoint_axis: str | None = Field(default=None, exclude_if=lambda value: value is None)
     can_sweep_checkpoint: bool = Field(default=False, exclude_if=lambda value: not value)
+    metric_names: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
+    """Final scalar metrics declared by every candidate Train method."""
 
 
 class StudioProjectWindowMapException(StrictModel):

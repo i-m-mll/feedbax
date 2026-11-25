@@ -77,7 +77,6 @@
           "name": "Recurrent controller",
           "type": "feedbax.GRU",
           "fields": {
-            "input_size": 6,
             "hidden_size": 4
           }
         },
@@ -86,7 +85,6 @@
           "name": "Motor command",
           "type": "feedbax.Linear",
           "fields": {
-            "input_size": 4,
             "output_size": 2
           }
         }

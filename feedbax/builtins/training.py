@@ -42,14 +42,17 @@ def _init_supervised(settings: StandardTrainingSettings, model: Graph, _key: Arr
     return TrainingState(model, state)
 
 
-@training_method(settings=StandardTrainingSettings, init=_init_supervised, label="Supervised gradient")
+@training_method(
+    settings=StandardTrainingSettings, init=_init_supervised, label="Supervised gradient",
+    metrics=("train_loss", "grad_norm"),
+)
 def supervised_gradient(
     state: TrainingState, ctx: TrainingContext[StandardTrainingSettings],
 ) -> tuple[TrainingState, TrainingMetrics]:
     trials, trial_keys = ctx.sample_trials()
 
     def loss(model: Graph):
-        result = ctx.objective(ctx.rollout(model, trials, trial_keys), trials, trial_keys)
+        result = ctx.score(model, trials, trial_keys)
         return result.loss, {name: term.value for name, term in result.terms.items()}
 
     optimizer = ctx.optimizer(ctx.settings.optimizer, gradient_clip=ctx.settings.grad_clip)

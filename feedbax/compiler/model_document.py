@@ -17,7 +17,7 @@ from feedbax.compiler.model_signals import (
 )
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
 from feedbax.compiler.model_edit import model_graph_problems
-from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts
+from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts, WIRED_VECTOR_INPUT_TYPES
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, PlanarDynamicsSpec, SolverConfigSpec
 from feedbax.contracts.acausal_interface import (
     PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
@@ -25,17 +25,21 @@ from feedbax.contracts.acausal_interface import (
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec
+from feedbax.contracts.graph import (
+    ComponentSpec, DerivedDimensionRuleSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec,
+)
 from feedbax.contracts.model_address import (
-    ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource, SignalTarget,
+    AttachmentElement, ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource, SignalTarget,
 )
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.model_edit import ModelGraphProblem
 from feedbax.contracts.model_document import (
-    DelayAttachment, GraphInterior, InterventionAttachment, ModelDocument, ModelPorts,
+    DelayAttachment, GraphInterior, HoldAttachment, InterventionAttachment, ModelDocument, ModelPorts,
     PhysicalInterior, ProbeAttachment, SignalInput, SignalType,
 )
 from feedbax.contracts.project import json_pointer_parts
+from feedbax.contracts.time_units import TimeValue, length_steps, time_in_seconds
+from feedbax.mechanics.mechanics import Mechanics
 from feedbax.runtime.task_data_roles import task_data_role
 from feedbax.compiler.model_reset import ModelResetPlan, resolve_model_reset
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
@@ -97,8 +101,8 @@ def model_tau_seconds(tau: object, period: float) -> float:
     time = LiteralValue.model_validate(tau) if isinstance(tau, dict) else LiteralValue(value=tau, unit="st")
     if time.unit not in {"st", "s"} or type(time.value) not in {float, int} or time.value <= 0:
         raise ValueError("Tau requires a positive value in seconds or steps")
-    value = time.value * (period if time.unit == "st" else 1)
-    if not isfinite(value) or value <= 0:
+    value = time_in_seconds(TimeValue(value=time.value, unit=time.unit), period)
+    if value <= 0:
         raise ValueError("Tau does not resolve to a positive finite duration")
     return value
 
@@ -129,6 +133,7 @@ class _Lower:
     model: ModelDocument
     components: ComponentRegistry
     origins: dict[tuple[str, ...], ModelAddress] = field(default_factory=dict)
+    holds: set[tuple[str, ...]] = field(default_factory=set)
     links: list[ResolvedModelLink] = field(default_factory=list)
     plugins: set[str] = field(default_factory=set)
 
@@ -416,6 +421,7 @@ class _Lower:
         nodes, subgraphs = {}, {}
         input_bindings, output_bindings = {}, {}
         wires = []
+        derived_dimensions = []
         input_sources = {}
         sampled_outputs = {}
         output_names = {port.id: port.id if path else port.name for port in ports.outputs}
@@ -500,7 +506,6 @@ class _Lower:
             wires.append(WireSpec(
                 id=key, source_node=source[0], source_port=source[1],
                 target_node=target[0], target_port=target[1],
-                temporality="recurrent" if reset is not None else "instant",
                 recurrent_initializer=reset,
             ))
 
@@ -521,16 +526,19 @@ class _Lower:
                 origin = {"kind": "attachment", "parent": at, "id": attachment.id}
                 if isinstance(attachment, ProbeAttachment):
                     raise self.problem(path, "attachment", "probe observation is unavailable in this milestone", parent=at, id=attachment.id)
+                if isinstance(attachment, HoldAttachment):
+                    relay = _generated("hold", key, attachment.id)
+                    add_generated(relay, "feedbax.Input", {}, origin=origin)
+                    self.holds.add((*path, relay))
+                    emit(source, (relay, "input"), _generated("hold_input", key, attachment.id), origin, reset=pending_reset)
+                    source, pending_reset = (relay, "output"), None
+                    continue
                 if isinstance(attachment, DelayAttachment):
                     delay = self.numeric_field(attachment.delay, path, origin, ("delay",))
-                    length = delay.value
-                    if delay.unit == "s":
-                        length /= self.period
-                    if not isfinite(length):
-                        raise self.problem(path, "attachment", "delay step count is not finite", parent=at, id=attachment.id)
-                    steps = round(length)
-                    if steps < 1 or delay.unit == "st" and steps != length:
-                        raise self.problem(path, "attachment", "delay must resolve to at least one whole step", parent=at, id=attachment.id)
+                    try:
+                        steps = length_steps(delay, self.period)
+                    except ValueError as error:
+                        raise self.problem(path, "field", str(error), parent=origin, path=("delay",)) from error
                     if signal is None or signal.shape is None:
                         raise self.problem(path, "attachment", "delay has no resolved reset shape", parent=at, id=attachment.id)
                     if signal.dtype != "float32":
@@ -687,9 +695,17 @@ class _Lower:
                 if any(w.target_node == b.component and w.target_port == b.port for w in wires):
                     raise self.problem(path, "wire", "target port already has a driver", id=key)
                 transform(source, wire.attachments, key, at, finish=(b.component, b.port), signal=signal)
+                if b.port == "input" and target.type in WIRED_VECTOR_INPUT_TYPES:
+                    if "input_size" in target.params:
+                        raise self.problem(
+                            path, "field", "The input wire determines this width",
+                            parent={"kind": "component", "id": b.component}, path=("fields", "input_size"),
+                        )
+                    derived_dimensions.append(DerivedDimensionRuleSpec(node=b.component, param="input_size", port=b.port))
         return GraphSpec(
             step_seconds=self.period if not path else None,
             nodes=nodes, wires=wires, input_ports=list(input_bindings), output_ports=list(output_names.values()),
+            derived_dimensions=derived_dimensions,
             input_bindings=input_bindings, output_bindings=output_bindings, subgraphs=subgraphs or None,
         )
 
@@ -726,25 +742,38 @@ class _Lower:
             if (
                 isinstance(child, AcausalGraphSpec) and child.physical_domain == "planar_multibody"
                 or declaration is not None and declaration.compiler.state_only_outputs
+                and issubclass(declaration.params.runtime_type, Mechanics)
             ):
                 mechanics.add(scope)
-            elif declaration is not None and declaration.compiler.instantaneous:
+            elif scope not in self.holds and declaration is not None and declaration.compiler.instantaneous:
                 instant.add(scope)
-        if not mechanics:
-            return
         try:
             schedule = resolve_signal_schedule(graph)
         except SignalScheduleError as error:
+            if error.cycle:
+                addresses = {}
+                for wire in error.cycle:
+                    address = self.origins[json_pointer_parts(wire.authored_path)]
+                    if isinstance(address.element, AttachmentElement):
+                        address = address.model_copy(update={"element": address.element.parent})
+                    addresses[address.to_text()] = address
+                first, *related = addresses.values()
+                reason = "Add a Delay to a wire in this same-step loop."
+                raise ModelCompilationProblem(
+                    first, reason, related=tuple(ModelGraphProblem(address=place, reason=reason) for place in related),
+                ) from error
             address = self.origins.get(json_pointer_parts(error.authored_path))
             if address is not None:
                 raise ModelCompilationProblem(address, str(error)) from error
             raise
+        if not mechanics:
+            return
         outgoing = {}
         samples = []
         for route in schedule.routes:
             if route.temporality == "instant":
                 outgoing.setdefault(route.source.node, []).append(route)
-            else:
+            elif route.source.node in mechanics:
                 wire = interior(route.wire.owner).wires[route.wire.index]
                 if (wire.recurrent_initializer or {}).get("model_state_sample"):
                     samples.append(route)

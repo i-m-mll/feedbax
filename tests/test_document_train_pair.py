@@ -23,6 +23,7 @@ from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_reques
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.window import Window, WindowEpoch
 from feedbax.contracts.jobs import JobStatus
 from feedbax.expression_builtins import register_builtins
 from feedbax.contracts.expression_registry import FunctionRegistry
@@ -53,7 +54,7 @@ def authored_documents():
         id="movement-effort",
         terms=(
             ObjectiveTerm(
-                id="effort", measure=expression("sqnorm(command)", (command,)), epochs=("move",)
+                id="effort", measure=expression("sqnorm(command)", (command,)), window=Window(spans=(WindowEpoch(kind="epoch", epoch="move"),))
             ),
         ),
     )

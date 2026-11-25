@@ -17,6 +17,17 @@ from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.compiler.model_edit import Direction, Port, Record, model_graph_problems
 
 
+# These vector components read their input width from the signal on the input port.
+WIRED_VECTOR_INPUT_TYPES = frozenset({
+    "feedbax.Linear", "feedbax.MLP", "feedbax.GRU", "feedbax.LSTM", "feedbax.VanillaRNN",
+})
+
+
+def model_unstored_fields(type_id: str) -> frozenset[str]:
+    periods = frozenset({"dt", "control_dt"})
+    return periods | {"input_size"} if type_id in WIRED_VECTOR_INPUT_TYPES else periods
+
+
 BOUNDARY_PORT_PLACEMENT_REASON = "Declare conserving interfaces on the composite port list"
 
 

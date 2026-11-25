@@ -14,6 +14,7 @@ from feedbax.contracts.model_address import ModelElementId, PhysicalEnd, SignalS
 from feedbax.contracts.request_identity_guard import IdentityAuthoredAlternative
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.time_units import TimeValue
+from feedbax.contracts.window import Window
 
 MODEL_DOCUMENT_SCHEMA_ID = "feedbax.spec.model"
 MODEL_DOCUMENT_SCHEMA_VERSION = "feedbax.spec.model.v1"
@@ -42,20 +43,20 @@ class DelayAttachment(StrictModel):
     initial: JsonValue = 0
 
 
-class InterventionWindow(StrictModel):
-    """A pulse starting a whole number of steps after the named Task epoch begins."""
-
-    epoch: str
-    offsets: tuple[Annotated[int, Field(ge=0)], ...] = Field(min_length=1)
-    duration: Annotated[int, Field(gt=0)]
+class HoldAttachment(StrictModel):
+    kind: Literal["hold"]
+    id: ModelElementId
 
 
 class InterventionAttachment(StrictModel):
     kind: Literal["intervention"]
     id: ModelElementId
     operation: str
-    fields: dict[str, JsonValue] = Field(default_factory=dict)
-    window: InterventionWindow | None = None
+    fields: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Operation values are numbers, numeric arrays, or NameValue references to a Task variable or local Model output.",
+    )
+    window: Window | None = None
 
 
 class ProbeAttachment(StrictModel):
@@ -65,7 +66,7 @@ class ProbeAttachment(StrictModel):
 
 
 WireAttachment = Annotated[
-    DelayAttachment | InterventionAttachment | ProbeAttachment, Field(discriminator="kind")
+    DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment, Field(discriminator="kind")
 ]
 SourceAttachment = Annotated[
     InterventionAttachment | ProbeAttachment, Field(discriminator="kind")
