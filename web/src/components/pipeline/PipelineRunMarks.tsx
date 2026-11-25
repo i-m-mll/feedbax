@@ -365,15 +365,9 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
       (sweep) => [sweep.id, new Map(sweep.values.map(({ id, label }) => [id, label]))],
     ));
     const present = ({ mark }: MarkCell): MarkPresentation => {
-      if (mark.kind === 'run') {
-        const coordinates = sweeps.flatMap((sweep) => {
-          const value = valuesBySweep.get(sweep.id)?.get(mark.run.values[sweep.id]);
-          return value === undefined ? [] : [`${sweep.label} ${value}`];
-        });
-        return { mark, label: coordinates.join(' · ') || mark.run.label, statuses: [[mark.run.state, 1]] };
-      }
+      if (mark.kind === 'run') return { mark, label: mark.run.label, statuses: [[mark.run.state, 1]] };
       const scope = (mark.terms ?? []).map(({ sweepId, valueIds }) =>
-        `${sweeps.find(({ id }) => id === sweepId)?.label} ${valueIds.map((id) => valuesBySweep.get(sweepId)?.get(id) ?? id).join(', ')}`);
+        valueIds.map((id) => valuesBySweep.get(sweepId)?.get(id) ?? id).join(', '));
       const counts = new Map<StudioResultState, number>();
       for (const run of mark.runs) counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
       return { mark, label: [...scope, `${mark.runs.length} ${studioName('runs')}`].join(' · '), statuses: [...counts] };

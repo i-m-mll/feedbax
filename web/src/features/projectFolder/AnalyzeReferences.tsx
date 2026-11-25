@@ -4,6 +4,7 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { ReferenceField, type ReferenceChoice } from '@/components/values/ReferenceField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
+import { outputName } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import type { AnalysisDocument, OperationDataset, StepInput } from '@/generated/studioContracts';
 
@@ -11,7 +12,7 @@ type Declaration = NonNullable<AnalysisDocument['inputs']>[string];
 type Source = StepInput | OperationDataset;
 export type RoleKind = Declaration['kind'];
 
-/** An operation's output in another Analyze card, shown as `card/operation.product`. */
+/** An operation's output in another Analyze card, shown as `card · operation · product`. */
 export interface CardOutput {
   readonly step: string;
   readonly element: string;
@@ -56,7 +57,7 @@ export function AnalyzeElementInputs({ document, element, roles, inputs, declara
       .map(([input]): ReferenceChoice => ({ id: sourceId({ input }), label: input, pick: named(input) })).filter(offered);
     const products = kind !== 'dataset' ? [] : outputs.filter((output) => output.element !== element)
       .flatMap(({ element: source, name: shown, products }) => products
-        .map((product): ReferenceChoice => ({ id: sourceId({ element: source, product }), label: shown + '.' + product }))
+        .map((product): ReferenceChoice => ({ id: sourceId({ element: source, product }), label: outputName(shown, product) }))
         .filter(offered).map((choice, index) => index === 0 ? { ...choice, pick: named(source) } : choice));
     const choices = new Map([...documentInputs, ...products].map((choice) => [choice.id, choice]));
     const wired = inputs[name];
@@ -74,7 +75,7 @@ export function AnalyzeElementInputs({ document, element, roles, inputs, declara
           { label: studioName('operations'), choices: products },
         ]}
         value={wired ? choices.get(sourceId(wired)) ?? { id: sourceId(wired), label: 'input' in wired ? wired.input
-          : (outputs.find((output) => output.element === wired.element)?.name ?? wired.element) + '.' + wired.product } : null}
+          : outputName(outputs.find((output) => output.element === wired.element)?.name ?? wired.element, wired.product) } : null}
         onChoose={onWire && ((choice) => {
           const source = sources.get(choice.id);
           if (source) onWire(name, source);

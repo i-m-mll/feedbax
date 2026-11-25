@@ -162,10 +162,10 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   // A role offers only the sources that fit it: the saved states are no velocity a summary reads.
   await role('Velocity').click();
-  await expect(popupListbox(page).getByRole('option', { name: 'Aligned velocity.velocity', exact: true })).toBeVisible();
+  await expect(popupListbox(page).getByRole('option', { name: 'Aligned velocity · velocity', exact: true })).toBeVisible();
   await expect(popupListbox(page).getByRole('option', { name: 'states', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
-  await edit(() => pick(role('Velocity'), 'Aligned velocity.velocity'));
+  await edit(() => pick(role('Velocity'), 'Aligned velocity · velocity'));
 
   const pane = analysis.locator('.react-flow__pane');
   await analysis.getByRole('button', { name: 'Zoom Out', exact: true }).click();
@@ -176,7 +176,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
     x: summaryBox!.x - paneBox!.x + summaryBox!.width + 100, y: summaryBox!.y - paneBox!.y,
   } }));
   await analysis.getByRole('group', { name: 'Select Velocity Summary', exact: true }).click();
-  const wired = await edit(() => pick(role('Summary'), 'Trial summary.summary'));
+  const wired = await edit(() => pick(role('Summary'), 'Trial summary · summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(
@@ -214,7 +214,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await edit(() => page.keyboard.press('Enter'));
   await analysis.getByRole('group', { name: 'Select Peak velocity summary', exact: true }).click();
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
-  await edit(() => pick(role('Velocity'), 'Aligned velocity.velocity'));
+  await edit(() => pick(role('Velocity'), 'Aligned velocity · velocity'));
   await tab(page, 'Figures').click();
   await figures.getByRole('button', { name: 'Velocity Summary', exact: true }).click();
   const addMark = async (name: string) => {
@@ -222,7 +222,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
     await edit(() => page.getByRole('menuitem', { name, exact: true }).click());
   };
   await addMark('Data');
-  await edit(() => pick(role('Data 2'), 'Peak velocity summary.summary'));
+  await edit(() => pick(role('Data 2'), 'Peak velocity summary · summary'));
   await addMark('Points');
   await edit(() => pick(role('Data'), 'data-2'));
   await edit(() => pick(role('X'), 'peak_time'));

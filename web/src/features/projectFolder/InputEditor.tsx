@@ -6,7 +6,7 @@ import { FieldProblem } from '@/components/ui/FieldProblem';
 import { StatusMark } from '@/components/ui/StatusMark';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { ReferenceField, type ReferenceChoice, type ReferenceGroup } from '@/components/values/ReferenceField';
-import type { PlanStepView } from '@/features/pipeline/planView';
+import { outputName, type PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import type { InputBinding, InputRole, StepReference, StudioSavedTrainKey } from '@/generated/studioContracts';
 import type { AuthoredProject } from './authoredEdits';
@@ -140,11 +140,11 @@ export function InputEditor({ label, role, binding, self, steps, project, output
   };
   const shown = (reference: StepReference): ReferenceChoice => {
     if (reference.unresolved) return unresolvedChoice(reference.element != null && reference.product != null
-      ? `${reference.step}/${reference.element}.${reference.product}` : reference.step);
+      ? outputName(reference.step, reference.element, reference.product) : reference.step);
     if (reference.element != null && reference.product != null) {
       const output = { step: reference.step, element: reference.element, product: reference.product };
       return outputChoice(offered.find((item) => outputChoiceId(item) === outputChoiceId(output))
-        ?? { ...output, name: `${output.step}/${output.element}.${output.product}` });
+        ?? { ...output, name: outputName(output.step, output.element, output.product) });
     }
     const step = steps.find(({ id }) => id === reference.step);
     return step ? stepChoice(step) : { id: stepChoiceId(reference.step), label: reference.step };

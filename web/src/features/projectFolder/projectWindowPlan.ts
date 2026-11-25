@@ -291,8 +291,7 @@ export function projectWindowPlan(
     if (groups.length) {
       const sweeps = sweepsByStep.get(producer);
       return groups.map(({ coordinates, ranks }) => {
-        const label = Object.entries(coordinates).map(([axis, value]) =>
-          `${axis} ${sweeps?.get(axis)?.get(value) ?? value}`).join(' · ');
+        const label = Object.entries(coordinates).map(([axis, value]) => sweeps?.get(axis)?.get(value) ?? value).join(' · ');
         return { label, members: ranks.map((id, index) => {
           const bound = subjectsByStep.get(consumer)?.get(id);
           const rank = index + 1;

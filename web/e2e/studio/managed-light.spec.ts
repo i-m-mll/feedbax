@@ -229,11 +229,11 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await page.keyboard.type('states');
   await expect(popupListbox(page).getByRole('option')).toHaveCount(0);
   await page.keyboard.press('Escape');
-  await edit(() => chooseOption(page, roleField('Velocity'), 'Aligned velocity.velocity'));
+  await edit(() => chooseOption(page, roleField('Velocity'), 'Aligned velocity · velocity'));
 
   await place('Velocity Summary');
   await selectElement('Velocity Summary');
-  const wired = await edit(() => chooseOption(page, roleField('Summary'), 'Trial summary.summary'));
+  const wired = await edit(() => chooseOption(page, roleField('Summary'), 'Trial summary · summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   if (first) {
     const authored = rootPayload(wired.project.documents!.analysis) as unknown as AnalysisDocument;

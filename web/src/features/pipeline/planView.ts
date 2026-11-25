@@ -106,6 +106,11 @@ export function shownName(key: string, labelled?: { readonly label?: string | nu
   return labelled?.label ?? key;
 }
 
+/** An output's name: its card (when another card's), its operation's shown name, and its product. */
+export function outputName(...parts: readonly string[]) {
+  return parts.join(' · ');
+}
+
 const settled = new Set<StudioRunStatusId>(["succeeded", "stale"]);
 
 export function runResultState(

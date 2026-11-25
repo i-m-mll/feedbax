@@ -13,13 +13,13 @@ const train: PlanStepView = {
   label: "Train arm",
   inputs: [],
   sweeps: [
-    { id: "rate", label: "Rate", values: [{ id: "low", label: "0.001" }, { id: "high", label: "0.003" }] },
-    { id: "seed", label: "Seed", values: [{ id: "one", label: "1" }, { id: "two", label: "2" }] },
+    { id: "rate", label: "Rate", values: [{ id: "low", label: "Rate 0.001" }, { id: "high", label: "Rate 0.003" }] },
+    { id: "seed", label: "Seed", values: [{ id: "one", label: "Seed 1" }, { id: "two", label: "Seed 2" }] },
   ],
   runs: [
-    { id: "a", label: "A", values: { rate: "low", seed: "one" }, status: "succeeded", state: "succeeded", results: [] },
-    { id: "b", label: "B", values: { rate: "high", seed: "one" }, status: "succeeded", state: "succeeded", results: [] },
-    { id: "c", label: "C", values: { rate: "high", seed: "two" }, status: "stale", state: "stale", results: [], reason: "Learning rate 0.001 → 0.003" },
+    { id: "a", label: "Rate 0.001 · Seed 1", values: { rate: "low", seed: "one" }, status: "succeeded", state: "succeeded", results: [] },
+    { id: "b", label: "Rate 0.003 · Seed 1", values: { rate: "high", seed: "one" }, status: "succeeded", state: "succeeded", results: [] },
+    { id: "c", label: "Rate 0.003 · Seed 2", values: { rate: "high", seed: "two" }, status: "stale", state: "stale", results: [], reason: "Learning rate 0.001 → 0.003" },
   ],
   statusCounts: { succeeded: 2, stale: 1 },
 };
@@ -66,9 +66,9 @@ it("identifies runs by ordinal and the fields that differ, and runs the selected
   expect(within(table).queryByRole("cell", { name: "B" })).toBeNull();
   expect(screen.queryByRole("group", { name: "Rate" })).toBeNull();
 
-  fireEvent.click(within(table).getByRole("button", { name: /^\d+ B$/ }));
-  fireEvent.click(within(table).getByRole("button", { name: /^\d+ C$/ }), { metaKey: true });
-  expect(within(table).getByRole("button", { name: /^\d+ C$/ }).getAttribute("aria-current")).toBe("true");
+  fireEvent.click(within(table).getByRole("button", { name: /^\d+ Rate 0.003 · Seed 1$/ }));
+  fireEvent.click(within(table).getByRole("button", { name: /^\d+ Rate 0.003 · Seed 2$/ }), { metaKey: true });
+  expect(within(table).getByRole("button", { name: /^\d+ Rate 0.003 · Seed 2$/ }).getAttribute("aria-current")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "Run" }));
   expect(perform).toHaveBeenLastCalledWith({ kind: "rows", stepId: "train", runIds: ["b", "c"] });
   expect(within(table).queryByText("Learning rate 0.001 → 0.003")).toBeNull();
@@ -92,7 +92,7 @@ it("puts the opening stage in the status tooltip and keeps provider error lines 
   expect(table.getAllByRole("cell").filter((cell) => cell.getAttribute("aria-description")).map((cell) => cell.querySelector<HTMLElement>("[data-app-tip]")?.dataset.appTip))
     .toEqual(["Opening machine: connecting", summary]);
   expect(table.queryByText(line)).toBeNull();
-  fireEvent.click(table.getByRole("button", { name: /^\d+ B$/ }));
+  fireEvent.click(table.getByRole("button", { name: /^\d+ Rate 0.003 · Seed 1$/ }));
   expect(screen.getByText(line)).toBeDefined();
 });
 
