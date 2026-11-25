@@ -738,12 +738,19 @@ class _Role:
     """Whether a selection's checkpoint may name a finite set of updates, each a row of the reading step."""
 
     @property
+    def producers(self) -> tuple[InputProducer, ...]:
+        primary = InputProducer(
+            kind=self.producer_kind, product=self.product_role, operation_outputs=self.operation_outputs,
+        )
+        if self.producer_kind == "train" and self.product_role == "checkpoint":
+            return primary, InputProducer(kind="synthesize", product="model", operation_outputs=False)
+        return (primary,)
+
+    @property
     def entry(self) -> InputRole:
         return InputRole(
             required=self.required, gathers=self.gathers,
-            producer=InputProducer(
-                kind=self.producer_kind, product=self.product_role, operation_outputs=self.operation_outputs,
-            ),
+            producers=list(self.producers),
             documents=list(self.documents), checkpoint_sets=self.checkpoint_sets,
         )
 
@@ -754,7 +761,7 @@ _ROLES = {
         "subject", True, "train", "checkpoint", gathers=True, documents=("model", "loaded_model"), checkpoint_sets=True,
     ),
 }
-_ANALYZE_TASK_ROLE = InputRole(required=True, gathers=False, producer=None, documents=["task"], checkpoint_sets=False)
+_ANALYZE_TASK_ROLE = InputRole(required=True, gathers=False, producers=[], documents=["task"], checkpoint_sets=False)
 
 
 def _analyze_role(name: str, declaration: AnalyzeInput) -> _Role | None:

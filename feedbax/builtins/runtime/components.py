@@ -1299,8 +1299,8 @@ class Linear(LinearLayer, Component):
     component_presentation = PresentationOverride(headline_field="output_size")
     component_history = History(Change(2, migrate=lambda params: {**params, "initialization": "random"}))
     model_facts = ModelFacts(values=(
-        ModelValue("kernel", "layer.weight", "learned"),
-        ModelValue("bias", "layer.bias", "learned"),
+        ModelValue("kernel", "layer.weight", "parameter"),
+        ModelValue("bias", "layer.bias", "parameter"),
     ))
 
     ports: ClassVar = LinearLayer.ports
@@ -1428,10 +1428,10 @@ class GRU(Component):
     component_presentation = PresentationOverride(headline_field="hidden_size")
     model_facts = ModelFacts(
         values=(
-            ModelValue("input_kernel", "cell.weight_ih", "learned"),
-            ModelValue("recurrent_kernel", "cell.weight_hh", "learned"),
-            ModelValue("gate_bias", "cell.bias", "learned"),
-            ModelValue("candidate_bias", "cell.bias_n", "learned"),
+            ModelValue("input_kernel", "cell.weight_ih", "parameter"),
+            ModelValue("recurrent_kernel", "cell.weight_hh", "parameter"),
+            ModelValue("gate_bias", "cell.bias", "parameter"),
+            ModelValue("candidate_bias", "cell.bias_n", "parameter"),
         ),
         states=(
             StateValue(

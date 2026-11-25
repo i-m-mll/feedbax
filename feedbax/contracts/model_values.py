@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 class ModelValue:
     symbol: str
     field: str
-    kind: Literal["source", "learned"]
+    kind: Literal["source", "parameter"]
 
 
 type SignalLeafPath = tuple[str | int, ...]
