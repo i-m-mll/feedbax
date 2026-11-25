@@ -363,6 +363,8 @@ def _edit_value(value, change):
 
 def _changed_value(documents, definition, kind):
     field = _task_field(documents.task_source) if kind == "task" else "objective"
+    if isinstance(documents, _InitialTrialDocuments):
+        return field, definition.input_documents[kind].payload
     return field, definition.payload["trial_documents"][field]
 
 
@@ -636,9 +638,8 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
     document_path = None
     edited_role = (change.document if isinstance(change, StudioTrialDocumentReset)
                    else change.kind if isinstance(change, StudioTrialDocumentEdit) else None)
-    own_objective = isinstance(documents, _InitialTrialDocuments) and edited_role == "objective"
-    if own_objective:
-        document_path = "inputs.objective"
+    if isinstance(documents, _InitialTrialDocuments) and edited_role is not None:
+        document_path = f"inputs.{edited_role}"
     elif step.kind == "train" and edited_role is not None:
         field, _ = _changed_value(documents, definition, edited_role)
         document_path = f"payload.trial_documents.{field}"
