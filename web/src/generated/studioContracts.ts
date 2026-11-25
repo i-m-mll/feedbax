@@ -3482,6 +3482,11 @@ export type ManualCombination = {
   "manual": Array<Record<string, string>>;
 };
 
+export type Marker = {
+  "shape": "circle" | "square" | "triangle";
+  "filled": boolean;
+};
+
 export type MatrixCompositionDelta = {
   "layer_id": string;
   "patches"?: Array<OverridePatch>;
@@ -4042,6 +4047,12 @@ export type SetVariableCount = {
   "op": "set_variable_count";
   "id": string;
   "count": Expression | null;
+};
+
+export type SetVariableMarker = {
+  "op": "set_variable_marker";
+  "id": string;
+  "marker": Marker | null;
 };
 
 export type Sha256 = string;
@@ -5333,7 +5344,7 @@ export type TaskPort = {
   "task_key"?: string | null;
 };
 
-export type TaskStructureChange = AddMember | RemoveMember | feedbax__contracts__task_structure__RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink | RepeatEpochs | SetRepeatCount | RemoveRepeat | SetVariableCount;
+export type TaskStructureChange = AddMember | RemoveMember | feedbax__contracts__task_structure__RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink | RepeatEpochs | SetRepeatCount | RemoveRepeat | SetVariableCount | SetVariableMarker;
 
 export type TextSpan = {
   "start": number;
@@ -5455,6 +5466,7 @@ export type Variable = {
   "value": Expression;
   "count"?: Expression | null;
   "set_choices"?: SetVariableChoices | null;
+  "marker"?: Marker | null;
 };
 
 export type VariableBinding = {
@@ -11894,6 +11906,13 @@ export const ManualCombinationSchema: z.ZodType<ManualCombination> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<ManualCombination>;
 
+export const MarkerSchema: z.ZodType<Marker> = z.lazy(() =>
+  z.object({
+    "shape": z.union([z.literal("circle"), z.literal("square"), z.literal("triangle")]),
+    "filled": z.boolean(),
+  }).strict()
+) as unknown as z.ZodType<Marker>;
+
 export const MatrixCompositionDeltaSchema: z.ZodType<MatrixCompositionDelta> = z.lazy(() =>
   z.object({
     "layer_id": z.string(),
@@ -12657,6 +12676,14 @@ export const SetVariableCountSchema: z.ZodType<SetVariableCount> = z.lazy(() =>
     "count": z.union([ExpressionSchema, z.null()]),
   }).strict()
 ) as unknown as z.ZodType<SetVariableCount>;
+
+export const SetVariableMarkerSchema: z.ZodType<SetVariableMarker> = z.lazy(() =>
+  z.object({
+    "op": z.literal("set_variable_marker"),
+    "id": z.string(),
+    "marker": z.union([MarkerSchema, z.null()]),
+  }).strict()
+) as unknown as z.ZodType<SetVariableMarker>;
 
 export const Sha256Schema: z.ZodType<Sha256> = z.lazy(() =>
   z.string().regex(new RegExp("^[a-f0-9]{64}$"))
@@ -14316,7 +14343,7 @@ export const TaskPortSchema: z.ZodType<TaskPort> = z.lazy(() =>
 ) as unknown as z.ZodType<TaskPort>;
 
 export const TaskStructureChangeSchema: z.ZodType<TaskStructureChange> = z.lazy(() =>
-  z.union([AddMemberSchema, RemoveMemberSchema, feedbax__contracts__task_structure__RenameMemberSchema, MoveMemberSchema, SetTypeSchema, SetSpanSchema, MakeAbsentSchema, MakePresentSchema, SetLinkSchema, RepeatEpochsSchema, SetRepeatCountSchema, RemoveRepeatSchema, SetVariableCountSchema])
+  z.union([AddMemberSchema, RemoveMemberSchema, feedbax__contracts__task_structure__RenameMemberSchema, MoveMemberSchema, SetTypeSchema, SetSpanSchema, MakeAbsentSchema, MakePresentSchema, SetLinkSchema, RepeatEpochsSchema, SetRepeatCountSchema, RemoveRepeatSchema, SetVariableCountSchema, SetVariableMarkerSchema])
 ) as unknown as z.ZodType<TaskStructureChange>;
 
 export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
@@ -14480,6 +14507,7 @@ export const VariableSchema: z.ZodType<Variable> = z.lazy(() =>
     "value": ExpressionSchema,
     "count": z.union([ExpressionSchema, z.null()]).optional(),
     "set_choices": z.union([SetVariableChoicesSchema, z.null()]).optional(),
+    "marker": z.union([MarkerSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Variable>;
 
