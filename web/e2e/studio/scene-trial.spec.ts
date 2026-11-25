@@ -26,8 +26,10 @@ async function openScene(page: Page, projectId: string, step: string) {
 }
 
 /** Where the shown trial's mark is drawn, in the canvas's coordinates. */
-const shown = (mark: Locator) => mark.locator('[data-scene-shown]').evaluate((circle: SVGCircleElement) =>
-  [circle.cx.baseVal.value, circle.cy.baseVal.value]);
+const shown = (mark: Locator) => mark.locator('[data-scene-shown]').evaluate((drawn: SVGGraphicsElement) => {
+  const box = drawn.getBBox();
+  return [box.x + box.width / 2, box.y + box.height / 2].map((coordinate) => Math.round(coordinate * 100) / 100);
+});
 
 // Catches a Scene that draws only the mechanism before a run, a task Point placed by name rather than by type, a
 // mechanism not posed by the trial's initial values (the point mass apart from the linked start), the start and goal
@@ -46,7 +48,7 @@ test('with nothing run, the Scene draws the nominal trial\'s start and goal and 
   const plant = element(page, 'Point mass');
   await expect.poll(() => shown(plant)).toEqual(await shown(start));
   await page.getByRole('complementary', { name: 'Details Drawer', exact: true }).getByRole('tree', { name: 'Outline', exact: true })
-    .getByRole('treeitem', { name: 'target', exact: true }).click();
+    .getByRole('treeitem', { name: 'target Marker', exact: true }).click();
   await expect(target).toHaveAttribute('aria-pressed', 'true');
 });
 

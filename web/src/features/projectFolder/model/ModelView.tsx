@@ -1316,7 +1316,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const id = crypto.randomUUID();
     const item: Attachment = kind === 'delay' ? { id, kind, delay: { unit: 'st', value: 1 }, initial_source: { kind: 'value', value: 0 } }
       : kind === 'hold' ? { id, kind }
-      : kind === 'intervention' ? { id, kind, operation: 'scale', fields: { factor: 1 } }
+      : kind === 'intervention' ? { id, kind, operation: 'scale', operands: { factor: { kind: 'value', value: 1 } } }
       : { id, kind, name: port?.name ?? 'Probe' };
     const difference = { op: 'add', owner: address, after: list.at(-1)?.id ?? null, attachment: item } as const;
     if (evaluate) void applyEvaluate(studioAccessibleName('add', attachmentName(item)), difference);

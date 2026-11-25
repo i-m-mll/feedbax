@@ -13,6 +13,7 @@ from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanOptions, TrialMeanSelection
 from feedbax.contracts.trial_record import TaskTimelineCue, TrialRecord, TrialTerm
 from feedbax.execution.trial_clock import mean_trial_paths
+from feedbax.execution.trial_record import aggregate_trials
 from feedbax.dataset import Dataset, Variable
 from feedbax.persistence.canonical_evaluate import EvaluationResult
 from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout
@@ -94,6 +95,12 @@ def test_mean_shelf_pools_epoch_rows_and_held_samples_on_the_alignment_clock():
 
     first = trial("first", 1, 4, [False, True, True, False], [True, False, True, False])
     second = trial("second", 2, 3, [False, False, True, False], [False, True, True, False])
+    first.intervention_windows["pulse"] = [False, True, True, False]
+    second.intervention_windows["only-second"] = [False, False, True, False]
+    aggregate = aggregate_trials([item.model_copy(update={"variables": {}}) for item in (first, second)], n_steps=4)
+    assert aggregate.interventions == {
+        "pulse": [0, .5, .5, 0], "only-second": [0, 0, .5, 0],
+    }
     options = TrialMeanOptions(
         by=[TrialClockChoice(id="group", label="Group")],
         align=[TrialClockChoice(id="move", label="Move")],
@@ -103,6 +110,9 @@ def test_mean_shelf_pools_epoch_rows_and_held_samples_on_the_alignment_clock():
     assert result.shelf.times == [-2, -1, 0, 1, 2, 3]
     assert result.shelf.signals["target"] == [0, 0, 1, .5, 0]
     assert result.shelf.terms["cost"].steps == [0, 1, .5, .5, 0]
+    assert result.shelf.interventions == {
+        "pulse": [0, 0, .5, .5, 0], "only-second": [0, 0, .5, 0, 0],
+    }
     (move,) = result.shelf.epochs
     assert (move.start.mean, move.end.mean, move.end.lower, move.end.upper) == (0, 2, 1, 3)
 

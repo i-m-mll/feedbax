@@ -157,8 +157,9 @@ export function TaskVariables({ variables, sets = [], unstarted = [], selected, 
 }
 
 /**
- * A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts, and on the
- * row beneath it the condition a trial meets to receive one.
+ * A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts on the row's
+ * one line, scrolling within their cell where they are wider than it, and on the row beneath it the condition a trial
+ * meets to receive one.
  */
 function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: StudioCommand }; drawn: boolean }) {
   const { toSweep, weigh } = set;
@@ -168,10 +169,10 @@ function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: St
     <TableRowHeader className="font-mono">{set.set}</TableRowHeader>
     <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
     <TableCell>
-      <ul aria-label={studioAccessibleName('values', set.set)} className="flex h-full min-w-0 flex-wrap items-center gap-x-3">
+      <ul aria-label={studioAccessibleName('values', set.set)} className="flex h-full min-w-0 items-center gap-x-3 overflow-x-auto">
         {set.entries.map(({ id, label, weight }) => {
           const part = (side?: WeightSide) => weigh && ((value: number) => weigh(id, side, value));
-          return <li key={id ?? ''} className="flex h-full items-center gap-1">
+          return <li key={id ?? ''} className="flex h-full shrink-0 items-center gap-1">
             <span>{label}</span>
             {typeof weight === 'number' && <WeightField weight={weight} entry={label} weigh={part()} />}
             {typeof weight === 'object' && <>
@@ -208,8 +209,9 @@ function WeightField({ weight, entry, side, weigh }: {
   const label = side ? `${entry} ${studioName(side)}` : entry;
   if (!weigh) return <span className="font-mono tabular-nums text-shell-muted">{weight}</span>;
   return <span className="flex h-full items-center">
+    <span className="w-12 shrink-0">
     <InlineEdit form="cell" value={String(shown)} editing={editing} onEditingChange={setEditing} aria-label={studioAccessibleName('weight', label)}
-      className="w-12 px-1 font-mono tabular-nums"
+      className="px-1 font-mono tabular-nums"
       unavailable={(text) => Number(text) >= 0 && Number.isFinite(Number(text)) ? undefined : studioReason('takesWeight', studioAccessibleName('weight', label))}
       onCommit={(text) => {
         const to = Number(text);
@@ -222,6 +224,7 @@ function WeightField({ weight, entry, side, weigh }: {
           if (edit.kind === 'refused') setRefusal(edit.reason);
         });
       }} />
+    </span>
     {refusal && <FieldProblem reason={refusal} />}
   </span>;
 }
