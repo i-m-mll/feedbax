@@ -43,6 +43,7 @@ from feedbax.contracts.rollout import (
     rollout_objective_sha256,
 )
 from feedbax.contracts.semantic_values import model_state_address, semantic_key
+from feedbax.contracts.trial_clock import TrialMeanSelection
 from feedbax.contracts.trial_record import StudioTrialReplayResponse, TrialAggregate, TrialRecords
 from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_trial_record
 from feedbax.persistence.checkpoint_selection import selected_coordinates
@@ -468,8 +469,11 @@ class EvaluationResult:
 
     def replay(
         self, trial: str | None = None, *, checkpoint: int | None = None, aggregate: bool = False,
+        mean: TrialMeanSelection | None = None,
     ) -> StudioTrialReplayResponse:
         """Read trial records at one exact preserved Evaluate checkpoint."""
+        if mean is not None and trial is not None:
+            raise CannotRun("/mean", "Mean requires all recorded trials")
         with self.open_states() as dataset:
             descriptor = dataset.descriptor
             update_axis = next((axis for axis in ("update", "checkpoint") if axis in descriptor.dimensions), None)
@@ -491,7 +495,7 @@ class EvaluationResult:
             indices = range(len(trials)) if trial is None else (trials.index(trial),)
             if descriptor.dimensions["condition"] != 1:
                 raise ValueError("The retained trial has more than one condition.")
-            state_time = dataset.data("state_time").tolist()
+            state_time = dataset.data("state_time")
             n_steps = len(state_time) - 1
             selection = (*selected, 0)
             raw_layout = descriptor.attrs.get("trial_record")
@@ -503,6 +507,12 @@ class EvaluationResult:
                 read_trial_record(dataset, trials[index], (*selection, index), layout)
                 for index in indices
             ]
+            mean_options = layout.mean_options() if trials else None
+            mean_result = None
+            if mean is not None and mean_options is not None:
+                from feedbax.execution.trial_clock import mean_trial_paths
+
+                mean_result = mean_trial_paths(records, state_time, mean_options, mean)
 
             drawn: TrialRecords | TrialAggregate = TrialRecords(kind="trials", trials=records)
             if aggregate:
@@ -511,10 +521,12 @@ class EvaluationResult:
                 drawn = aggregate_trials(records, n_steps)
             return StudioTrialReplayResponse(
                 n_steps=n_steps,
-                state_time=state_time,
+                state_time=state_time.tolist(),
                 position=model_state_address(position_key).to_text() if position_key is not None else None,
                 receipt=self.receipt,
                 drawn=drawn,
+                mean_options=mean_options,
+                mean=mean_result,
             )
 
     def objective_series(self, requested: list[int], *, objective: ObjectiveDocument) -> StudioEvaluationObjectiveSeries:
