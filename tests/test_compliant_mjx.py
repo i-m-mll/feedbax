@@ -121,7 +121,7 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         imported = client.post("/api/graphs/assets/mujoco", content=fixture.get_object(asset))
         assert imported.status_code == 200
         assert imported.json() == asset.model_dump(mode="json")
-        created = client.post("/api/projects").json()["snapshot"]
+        created = client.post("/api/projects", json={"name": "compliant-model"}).json()["snapshot"]
         project_id = created["project_id"]
         path = f"/api/projects/{project_id}"
         saved = client.post(path + "/files", json={

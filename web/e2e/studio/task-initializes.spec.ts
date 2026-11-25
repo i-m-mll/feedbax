@@ -97,7 +97,7 @@ test('Initializes opens on the Model\'s components and descends to the states a 
 // Catches a link's problem named by a pointer or a document member no view shows, and a reveal that marks the Task as a
 // whole instead of the cell of the variable whose link it is.
 test('a link to a field the Model lacks is named and revealed at its variable\'s Initializes', async ({ page, request }) => {
-  const response = await request.post('/api/projects');
+  const response = await request.post('/api/projects', { data: { name: 'missing-initializes' } });
   expect(response.status()).toBe(201);
   const { snapshot } = await response.json() as { snapshot: StudioProjectSnapshot };
   await page.goto(`/?project=${snapshot.project_id}`);

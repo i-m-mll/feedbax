@@ -97,11 +97,21 @@ const rootModelPath: string[] = [];
 const noStateValues: StateValues = {};
 const shownLayers = new Set<SceneLayer>();
 
+/**
+ * The result a saved evaluation's views draw: its current one, else the one an edit put out of date, with the trials
+ * that result recorded.
+ */
+export function drawnEvaluation(evaluation: StudioSavedEvaluationRow | undefined) {
+  const result = evaluation?.result ?? evaluation?.previous;
+  return result ? { result, trials: result.trials ?? evaluation!.trials, outOfDate: !evaluation!.result } : undefined;
+}
+
 /** The trials a saved evaluation recorded, which the clock's picker lists, with each one's condition. */
 export function recordedTrials(evaluation: StudioSavedEvaluationRow | undefined) {
-  if (!evaluation?.result?.job_id) return { ids: [], labels: [] };
-  const labels = conditionLabels(evaluation.trials);
-  return { ids: evaluation.trials, labels: evaluation.trials.map((id) => labels.get(id) ?? id) };
+  const drawn = drawnEvaluation(evaluation);
+  if (!drawn) return { ids: [], labels: [], outOfDate: false };
+  const labels = conditionLabels(drawn.trials);
+  return { ids: drawn.trials, labels: drawn.trials.map((id) => labels.get(id) ?? id), outOfDate: drawn.outOfDate };
 }
 
 /**
@@ -120,14 +130,15 @@ export type RecordedTrialRead =
  */
 export function useSavedEvaluationScene(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined,
   showing: TrialShowing | undefined, playhead: PlayheadStore) {
-  const result = evaluation?.result;
+  const drawn = drawnEvaluation(evaluation);
+  const result = drawn?.result;
   const jobId = result?.job_id;
   const coordinates = result?.checkpoint_sources?.map(({ completed_updates }) => completed_updates);
   const [chosenCheckpoint, setCheckpoint] = useState<{ jobId: string; coordinate: number }>();
   const chosen = chosenCheckpoint?.jobId === jobId ? chosenCheckpoint?.coordinate : undefined;
   const checkpoint = chosen !== undefined && coordinates?.includes(chosen) ? chosen : coordinates?.[0];
   const all = showing?.kind === 'all';
-  const trial = jobId && showing ? all ? null : evaluation?.trials[showing.index] : undefined;
+  const trial = jobId && showing ? all ? null : drawn?.trials[showing.index] : undefined;
   const readable = trial !== undefined && (!evaluation?.checkpoint_series || checkpoint !== undefined);
   const read = (aggregate: boolean) => ({ signal }: { signal: AbortSignal }) => {
     if (!evaluation || !jobId || trial === undefined) throw new Error('Select a saved Evaluate trial.');
@@ -163,7 +174,7 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
  */
 export function useRecordedTerms(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined,
   checkpoint: number | undefined, enabled: boolean) {
-  const jobId = evaluation?.result?.job_id;
+  const jobId = drawnEvaluation(evaluation)?.result.job_id;
   const query = useQuery({
     queryKey: ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, null, checkpoint, 'aggregate'],
     queryFn: ({ signal }) => fetchSavedEvaluationReplay(projectId,
