@@ -101,7 +101,11 @@ def run_operation(
             model = reconstruct_model(source, registry=registry, artifacts=artifacts)
         else:
             paired = prepare_model_task(source, task_source, registry=registry, artifacts=artifacts)
-            model = paired if isinstance(paired, tuple) else paired.model
+            if isinstance(paired, tuple):
+                raise ValueError(paired[0].reason)
+            model = paired.model
+            if (role := operation.value.prepared_task_role) is not None:
+                arguments[role] = paired.paired.execution
         if isinstance(model, tuple):
             raise ValueError(model[0].reason)
 
