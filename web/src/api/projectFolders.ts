@@ -12,6 +12,7 @@ import {
   type StudioPresentationWrite,
   type StudioProjectCreateFile,
   type StudioProjectCreateFiles,
+  type StudioProjectNew,
   type StudioProjectPatch,
   type StudioProjectPatchBatch,
   type StudioProjectRename,
@@ -48,8 +49,10 @@ export async function listProjectFolders(signal?: AbortSignal) {
   }
 }
 
-export function createProjectFolder(signal?: AbortSignal) {
-  return readFolder('StudioProjectDocument', undefined, projectsPath, { method: 'POST', signal });
+export function createProjectFolder(body: StudioProjectNew, signal?: AbortSignal) {
+  return readFolder('StudioProjectDocument', undefined, projectsPath, {
+    method: 'POST', body: sentBody('StudioProjectNew', body, projectsPath), signal,
+  });
 }
 
 export function openProjectFolder(id: string, signal?: AbortSignal) {

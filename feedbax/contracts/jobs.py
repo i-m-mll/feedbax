@@ -20,6 +20,7 @@ from feedbax.contracts.project_inputs import CheckpointRule
 from feedbax.contracts.project_sources import SourceKind
 from feedbax.contracts.project_sweep import SweepException
 from feedbax.contracts.studio_place import StudioPlace, definition_place, path_parts
+from feedbax.contracts.trial_clock import TrialMeanSelection
 from feedbax.contracts.validation_placement import ValidationPlacement
 
 
@@ -185,6 +186,7 @@ class StudioSavedEvaluationReplayRequest(StudioSavedEvaluationRead):
     """When absent, select every retained trial at the checkpoint."""
     aggregate: bool = False
     checkpoint: int | None = Field(default=None, ge=0)
+    mean: TrialMeanSelection | None = None
 
 
 class StudioEvaluationCheckpoint(StudioTrainCheckpointSource):

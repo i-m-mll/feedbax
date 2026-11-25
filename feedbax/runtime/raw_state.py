@@ -12,6 +12,8 @@ from jax.tree_util import DictKey, GetAttrKey, KeyPath, SequenceKey, keystr
 import numpy as np
 from pydantic import ValidationError
 
+from feedbax.contracts.expression_units import UNITS
+from feedbax.contracts.expression_values import ANGLE, LENGTH, TIME, SignalSpace
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.project_sources import pointer
@@ -31,10 +33,30 @@ class BoundStateValue:
     key: str
     dimension: str | tuple[str, ...] | None
     units: str | None
-    frame: str | None
     read: Callable[[State, dict | None], jax.Array]
+    space: SignalSpace | None = None
     position: bool = False
     configuration: bool = False
+
+    @property
+    def quantity(self) -> str | None:
+        unit = UNITS.get(self.units)
+        if unit is None:
+            return None
+        if self.space == "point":
+            return "position"
+        if self.space == "free" and unit.dimensions == LENGTH:
+            return "displacement"
+        return _STATE_QUANTITIES.get(unit.dimensions)
+
+
+_STATE_QUANTITIES = {
+    LENGTH.combine(TIME, -1): "velocity",
+    ANGLE: "angle",
+    ANGLE.combine(TIME, -1): "angular_velocity",
+    UNITS["N"].dimensions: "force",
+    UNITS["N*m"].dimensions: "torque",
+}
 
 
 @dataclass(frozen=True)
@@ -62,7 +84,8 @@ class RawStateLayout:
                     coordinates[axis] = Variable(np.asarray(labels), (axis,))
             variables[value.key] = Variable(
                 samples.reshape((1,) * (len(axes) - 1) + samples.shape),
-                dims, units=value.units, frame=value.frame,
+                dims, units=value.units, quantity=value.quantity,
+                frame="world" if value.space is not None else None,
             )
         return variables, coordinates
 
@@ -154,8 +177,8 @@ def _bind_owner(
             elif len(shape) != 1:
                 raise StateLayoutError(path, f"{leaf.symbol} requires a one-dimensional owner axis")
             values.append(BoundStateValue(
-                key, dimension, leaf.units, leaf.frame, _leaf_reader(index, fields),
-                position=leaf.space == "point" and leaf.frame == "world",
+                key, dimension, leaf.units, _leaf_reader(index, fields), space=leaf.space,
+                position=leaf.space == "point",
                 configuration=leaf.configuration,
             ))
     if covered != leaves.keys():
@@ -260,14 +283,14 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
         BoundStateValue(
             semantic_key("model", "carry", scope, delay.model_delay_id, wire=delay.model_wire_id),
             _delay_dimensions(delay, scope),
-            delay.units, None, _carry_reader(target, scope, delay),
+            delay.units, _carry_reader(target, scope, delay),
         )
         for target, delay in model_delays.items()
     ) + tuple(
         BoundStateValue(
             semantic_key("model", "carry", scope, state.symbol, wire=f"{node}:{port}"),
-            f"{'/'.join((*scope, node))}:{state.axis}", state.units, state.frame,
-            _carry_reader((node, port), scope),
+            f"{'/'.join((*scope, node))}:{state.axis}", state.units,
+            _carry_reader((node, port), scope), space=state.space,
         )
         for (node, port), state in state_loops.items()
     )

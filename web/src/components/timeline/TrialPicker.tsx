@@ -53,10 +53,10 @@ export function TrialPicker({ offer, clock, shown, recordedLabels, recordedOutOf
   const groups = (['nominal', 'samples', 'recorded'] as const)
     .map((trials) => picks.filter((pick) => pick.trials === trials)).filter((group) => group.length);
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger render={<Button variant="ghost" className="min-w-0 gap-1 px-1 tabular-nums" />}
+    <PopoverTrigger render={<Button variant="ghost" className="w-40 shrink-0 gap-1 px-1 tabular-nums" />}
       aria-label={`${studioName('trial')} ${shownText}`} aria-description={outOfDate ? studioRunStatus('stale') : undefined}>
       {outOfDate && <StatusMark status="stale" />}
-      <span className="truncate">{shownText}</span>
+      <span className="grow truncate text-left">{shownText}</span>
       <ChevronDown aria-hidden="true" />
     </PopoverTrigger>
     <PopoverContent side="top" aria-label={studioName('trial')} className="grid w-56 gap-1 !p-1">

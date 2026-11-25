@@ -59,7 +59,8 @@ from feedbax.contracts.project_inputs import (
     ProjectName,
     Reference,
     RunReference,
-    SelectedRow,
+    BoundRank,
+    SelectedAxisValueRefusal,
     StepReference,
     SubsetTerms,
     TaskDocumentReference,
@@ -185,7 +186,7 @@ class SubsetSource:
 
     origin: ValueSource
     producer_step: str
-    rows: tuple[SelectedRow, ...] = ()
+    rows: tuple[BoundRank, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -873,7 +874,6 @@ def _paired_checkpoint_step(step: Step, reference: InputBinding | None) -> str |
         and isinstance(reference, StepReference)
         and not reference.unresolved
         and reference.step == step.base.step
-        and reference.row is None
         and reference.variants is None
     ):
         return reference.step
@@ -3431,6 +3431,8 @@ class _Compiler:
             resolved = self.select_input(variant, name, template, role, active)
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
+                if resolved.selection_value is not None:
+                    return ()
                 continue
             members, _, subsets = resolved
             if isinstance(declaration, AnalyzeModelInput) and reference.checkpoint is None:
@@ -3913,14 +3915,14 @@ class _Compiler:
                 "variants must name a nonempty set of distinct variants",
                 name,
             )
-        if terms is not None and terms.rows:
-            addressed_variants = tuple(dict.fromkeys(row.variant for row in terms.rows))
+        if terms is not None and terms.bound_ranks:
+            addressed_variants = tuple(dict.fromkeys(rank.variant for rank in terms.bound_ranks))
             if reference.variants is None:
                 variants = addressed_variants
             elif outside := sorted(set(addressed_variants).difference(variants)):
                 return ProjectDiagnostic(
-                    ResolutionCode.BAD_REFERENCE, f"{path}.where.rows",
-                    f"row variants outside reference scope: {outside!r}", name,
+                    ResolutionCode.BAD_REFERENCE, f"{path}.where.bound_ranks",
+                    f"measured member variants outside reference scope: {outside!r}", name,
                 )
         runs: tuple[PlannedRow, ...] = ()
         for source_variant in variants:
@@ -3946,17 +3948,6 @@ class _Compiler:
             key = run.key
             return producer_member_key(key.variant, key.row, gathers_variants=reference.variants is not None)
 
-        if reference.row is not None:
-            selected = [
-                SelectedRow(key=member_key(run), variant=run.key.variant, row=run.key.row)
-                for run in runs if run.key.row == reference.row
-            ]
-            if not selected:
-                return ProjectDiagnostic(
-                    ResolutionCode.BAD_REFERENCE, f"{path}.row",
-                    f"unknown row ID {reference.row!r}", name,
-                )
-            terms = SubsetTerms(rows=selected)
         try:
             keyed_runs, best = select_step_rows(
                 terms,
@@ -3964,17 +3955,20 @@ class _Compiler:
                 address=lambda run: (run.key.variant, run.key.row),
                 member_key=member_key,
                 coordinates=lambda run: axis_coordinates(run.coordinates, run.input_axes),
+                coordinate_label=coordinate_text,
                 producer=member_name(self.variants[variants[0]].steps, reference.step),
             )
         except RuleRefusal as error:
+            problem_path = pointer(tuple(error.path.split(".")))
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name, span=error.span,
                 document=subset_document,
-                document_path=f"/{error.path}" if subset_document is not None else None,
-                authored_file=f"documents/{subset_document}.json" if subset_document is not None else None,
-                authored_path=f"/payload/{error.path}" if subset_document is not None else pointer(
-                    (*path.split("."), "where", error.path),
+                document_path=problem_path if subset_document is not None else None,
+                authored_file=f"documents/{subset_document}.json" if subset_document is not None else f"steps/{name}.json",
+                authored_path=f"/payload{problem_path}" if subset_document is not None else pointer(
+                    (*path.split("."), "where", *error.path.split(".")),
                 ),
+                selection_value=error.problem if isinstance(error, SelectedAxisValueRefusal) else None,
             )
         expands_input = template.sweep is not None and any(
             isinstance(axis, InputAxis) and axis.input == role.name
@@ -4065,10 +4059,10 @@ class _Compiler:
                 source = SubsetSource(
                     self.subset_origin(variant, name, path, subset_document, "rule"), reference.step,
                 )
-            elif reference.row is None and terms.rows is not None:
+            elif terms.bound_ranks is not None:
                 source = SubsetSource(
-                    self.subset_origin(variant, name, path, subset_document, "rows"), reference.step,
-                    tuple(SelectedRow(key=key, variant=run.key.variant, row=run.key.row) for key, run in keyed_runs),
+                    self.subset_origin(variant, name, path, subset_document, "bound_ranks"), reference.step,
+                    tuple(BoundRank(key=key, variant=run.key.variant, row=run.key.row) for key, run in keyed_runs),
                 )
         subset = (
             PlannedSubset(

@@ -1,10 +1,10 @@
 import { studioFormat, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
-import { valuesRule } from '@/components/values/runRule';
 import {
   runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanSweepView, type PlanView,
 } from '@/features/pipeline/planView';
 import type {
-  Project, SelectedRow, StudioProjectWindowMapProblem, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
+  Project, SelectedAxisValue, StudioProjectWindowMapProblem, StudioProjectWindowMapRow, StudioSavedLightResult,
+  StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
   SubsetTerms,
 } from '@/generated/studioContracts';
 
@@ -20,24 +20,36 @@ export function renamedSavedRunId(id: string, to: string) {
   return savedRunId({ variant, step: to, row });
 }
 
-export function stepSourceRows(saved: StudioSavedTrainRuns, step: string, variant: string): SelectedRow[] {
-  return saved.window_map?.rows.flatMap(({ key, member_key }) => key.step === step && key.variant === variant && member_key != null
-    ? [{ key: member_key, variant: key.variant, row: key.row }] : []) ?? [];
+export function stepSourceRows(saved: StudioSavedTrainRuns, step: string, variant: string): StudioProjectWindowMapRow[] {
+  return saved.window_map?.rows.filter(({ key, member_key }) =>
+    key.step === step && key.variant === variant && member_key != null) ?? [];
 }
 
-/** The rule choosing exactly `members` of the step by their values, when one does. */
-export function sharedRowTerms(
-  step: PlanStepView, members: readonly PlanRunView[],
-): SubsetTerms | undefined {
-  if (!members.length) return undefined;
-  const axes = Object.fromEntries(step.sweeps.flatMap(({ id, values }) => {
-    const selected = new Set<string | undefined>(members.map((member) => member.values[id]));
-    return selected.has(undefined) || selected.has(unvalued) ? [] : [[id, values.filter((value) => selected.has(value.id)).map(({ id }) => id)]];
-  }));
-  const selected = new Set(members.map(({ id }) => id));
-  const matches = step.runs.filter(({ values }) => Object.entries(axes).every(([axis, ids]) => ids.includes(values[axis])));
-  return matches.length === selected.size && matches.every(({ id }) => selected.has(id))
-    ? { rule: valuesRule(step.ruleAxes ?? {}, axes) } : undefined;
+/** Pins the axes that distinguish the requested members, leaving every other axis open. */
+export function selectedRowTerms(rows: readonly StudioProjectWindowMapRow[], picked: ReadonlySet<string>): SubsetTerms | undefined {
+  const selected = rows.filter(({ key }) => picked.has(savedRunId(key)));
+  if (!selected.length || selected.length !== picked.size) return undefined;
+  const axes: Record<string, SelectedAxisValue[]> = {};
+  const matches = (row: StudioProjectWindowMapRow) => Object.entries(axes).every(([axis, values]) =>
+    values.some(({ id }) => id === (row.input_axes?.[axis] ?? row.coordinates[axis])?.value_id));
+  for (const axis of new Set([
+    ...rows.flatMap(({ coordinates }) => Object.keys(coordinates)),
+    ...rows.flatMap(({ input_axes }) => Object.keys(input_axes ?? {})),
+  ])) {
+    const values = selected.map(({ coordinates, input_axes }) => input_axes?.[axis] ?? coordinates[axis]);
+    if (values.some((value) => value === undefined)) continue;
+    const chosen = new Map(values.map((coordinate) => {
+      const { value_id: id, label } = coordinate;
+      const value = 'value' in coordinate ? coordinate.value : null;
+      return [id, { id, label: label ?? (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string'
+        ? String(value) : id) }];
+    }));
+    if (rows.some((row) => matches(row) && !chosen.has((row.input_axes?.[axis] ?? row.coordinates[axis])?.value_id))) {
+      axes[axis] = [...chosen.values()];
+    }
+  }
+  if (rows.filter(matches).length !== selected.length) return undefined;
+  return { clauses: [axes] };
 }
 
 export function planVariants(saved: StudioSavedTrainRuns | undefined) {
@@ -50,9 +62,11 @@ export function bestRankGroups(subset: StudioProjectWindowMapSubset | null | und
 }
 
 export function pinnedSelectionLabels(terms: SubsetTerms): string[] | undefined {
-  const axes = Object.entries(terms.axes ?? {}).map(([axis, values]) =>
-    `${axis}=${values.map(({ label }) => label).join(', ')}`);
-  return axes.length ? axes : terms.rows?.map(({ key }) => key);
+  const clauses = (terms.clauses ?? []).flatMap((clause) => {
+    const axes = Object.entries(clause).map(([axis, values]) => `${axis}=${values.map(({ label }) => label).join(', ')}`);
+    return axes.length ? [axes.join(' ')] : [];
+  });
+  return clauses.length ? clauses : terms.bound_ranks?.map(({ key }) => key);
 }
 
 function subsetTerms(terms: SubsetTerms): string[] {
