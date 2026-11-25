@@ -130,6 +130,8 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
   const anchor = context.anchor?.(path);
   const projection = context.projected?.(path);
   if (projection) {
+    // A projection that marks its own change (a selected run's value) keeps it; otherwise it takes its path's.
+    if (projection.change) return { ...projection, path, anchor };
     const changed = context.changed?.(path);
     return { ...projection, path, anchor, change: changed, commit: withReset(projection.commit, changed) };
   }

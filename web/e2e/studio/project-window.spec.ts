@@ -99,6 +99,8 @@ test('a failed Train run draws the Host\'s reason in its row', async ({ page, re
     .getByRole('row').filter({ hasText: 'Failed' });
   await expect(rows.first()).toBeVisible();
   for (const row of await rows.all()) await expect(row).toContainText(message);
+  // The Service's plan change events read the plan again; a read still in the route when the test ends is dropped.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 test('a real Model edit updates map, drawer, and Runs from the saved plan', { tag: '@round' }, async ({ page, request }, info) => {
