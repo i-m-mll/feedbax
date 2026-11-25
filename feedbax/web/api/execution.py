@@ -10,6 +10,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.compiler.model_anchors import anchored_outputs
 from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ValueBase
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument
@@ -18,6 +19,7 @@ from feedbax.contracts.studio_refinements import validate_cross_field_refinement
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.trial_record import TrialDisplay, TrialRecords, TrialTerm, TrialUnavailable
 from feedbax.execution.trial_execution import sample_evaluation_trials
+from feedbax.execution.trial_places import TrialPlacePlan, bind_trial_places, project_term_places
 from feedbax.execution.trial_record import aggregate_trials, trial_record, trial_weight_values
 from feedbax.execution.trial_resolution import preview_trial_source
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
@@ -124,6 +126,7 @@ async def sample_task_trials(
         samples, keys = sample_evaluation_trials(task, parameters, key=key, trial_ids=ids)
 
     term_traces = {}
+    places = TrialPlacePlan()
     term_problems: dict[str, list[Problem]] = defaultdict(list)
     if payload.objective is not None:
         preview_problems: list[Problem] = []
@@ -141,26 +144,39 @@ async def sample_task_trials(
             for output in scorer.names
             if output.level == Level.STEP and output in preview.outputs
         }
+        anchors = (
+            anchored_outputs(payload.model, bundle.components, preview.signal_scope.leaves)
+            if preview.signal_scope is not None else {}
+        )
+        places = bind_trial_places(scorer, task, anchors, unobserved=frozenset(outputs))
         term_traces = map_trial_samples(
-            lambda item: scorer.trial_terms(outputs, item[0], key, item[1], unobserved=outputs.keys()),
+            lambda item: scorer.trial_terms(
+                outputs, item[0], key, item[1], unobserved=outputs.keys(), observed_points=places.observations,
+            ),
             (samples, keys), keys,
         )
 
     samples, term_traces = jax.device_get((samples, term_traces))
     labels = {epoch.id: epoch.name for epoch in selected.epochs} if isinstance(selected, TaskDocument) else {}
+
+    def term_record(name, trace, index):
+        relations, lone = project_term_places(
+            places.terms.get(name),
+            lambda slot: jax.tree.map(lambda values: values[index], trace.points[slot]) if trace.points else None,
+        )
+        return TrialTerm(
+            steps=trace.steps[index].tolist(), covered=bool(trace.covered[index]),
+            problems=term_problems.get(name, []),
+            weights=trial_weight_values(trace.weight.value[index], trace.weight.defined[index])
+            if trace.weight is not None and not aggregate else None,
+            relations=relations, places=lone,
+        )
+
     trials = [
         trial_record(
             jax.tree.map(lambda values: values[index], samples),
             id=id, epoch_ids=task.epochs, epoch_labels=labels,
-            terms={
-                name: TrialTerm(
-                    steps=trace.steps[index].tolist(), covered=bool(trace.covered[index]),
-                    problems=term_problems.get(name, []),
-                    weights=trial_weight_values(trace.weight.value[index], trace.weight.defined[index])
-                    if trace.weight is not None and not aggregate else None,
-                )
-                for name, trace in term_traces.items()
-            },
+            terms={name: term_record(name, trace, index) for name, trace in term_traces.items()},
         )
         for index, id in enumerate(ids)
     ]

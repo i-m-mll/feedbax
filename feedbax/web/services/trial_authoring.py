@@ -39,7 +39,8 @@ from feedbax.contracts.studio_trials import (
     StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialEpochInstance,
     StudioTrialExpressionEdit, StudioTrialField,
     StudioTrialInput, StudioTrialObjectiveSource,
-    StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope, StudioTrialStructureEdit,
+    StudioTrialOutput, StudioTrialRelate, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope,
+    StudioTrialStructureEdit,
 )
 from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, Rest, TaskDocument,
@@ -583,8 +584,8 @@ def _pairing(plan, key, bundle, *, definition=None):
     raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
 
 
-def _prepare_edits(body, folders, project_id, project, settled, key, bundle, definition, documents, projected):
-    change, scope = body.change, body.scope
+def _prepare_edits(body, folders, project_id, project, settled, key, bundle, definition, documents, projected, *, change):
+    scope = body.scope
     plan = settled.plan
     step = plan.steps[key.variant, key.step]
     expression = change if isinstance(change, StudioTrialExpressionEdit) else None
@@ -1161,12 +1162,28 @@ def trial_authoring(
             definition = _definition(plan, key)
         documents, projected, graph = _pairing(plan, key, bundle, definition=definition)
         stored, refused = StoredEdit([]), ()
+        related = None
         store_choices = None
         if body.store_choice is not None and body.change is None:
             raise ProjectFolderInvalid("A store choice requires the edit it was offered for.")
-        if body.change is not None:
+        if isinstance(change, StudioTrialRelate):
+            from feedbax.web.services.trial_relate import related_term
+
+            if projected.pair is None or documents.objective is None:
+                raise ProjectFolderInvalid("Relate needs a paired Model, Task, and Objective.")
+            term = related_term(change, documents.model, projected.pair, documents.objective, bundle.components)
+            raw = documents.objective.model_dump(mode="json", exclude_unset=True)
+            value = term.model_dump(mode="json")
+            edit = (
+                SetProjectValue(op="add", path="/terms/-", value=value)
+                if "terms" in raw else SetProjectValue(op="add", path="/terms", value=[value])
+            )
+            change = StudioTrialDocumentEdit(kind="objective", edits=[edit])
+            related = term.id
+        if change is not None:
             stored, refused, preview = _prepare_edits(
                 body, folders, project_id, snapshot.project, settled, key, bundle, definition, documents, projected,
+                change=change,
             )
             if isinstance(refused, list):
                 store_choices, refused = refused, ()
@@ -1283,6 +1300,7 @@ def trial_authoring(
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
         fields=fields, problems=[*projected.problems, *field_problems, *refused],
+        related_term=related if stored.files or stored.created else None,
         files=stored.files, created=list(stored.created),
         store_choices=store_choices,
     )
