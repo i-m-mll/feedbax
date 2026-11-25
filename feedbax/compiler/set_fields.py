@@ -10,11 +10,11 @@ from itertools import product
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_attachment import resolve_effective_model
-from feedbax.contracts.expression_check import references
 from feedbax.contracts.expression_registry import FunctionRegistry
-from feedbax.contracts.expression_text import resolve_expression
+from feedbax.contracts.expression_text import ParsedField, resolve_expression
 from feedbax.contracts.expression_values import (
-    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, ScopedValue, Site, ValueBase, ValueType, walk,
+    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, Site,
+    ValueBase, ValueType, walk,
 )
 from feedbax.contracts.model_address import (
     AttachmentElement, AttachmentOwner, ComponentElement, ComponentPortAddress, ComponentPortEnd, FieldElement,
@@ -26,7 +26,7 @@ from feedbax.contracts.model_document import (
     SignalInput, SignalType,
 )
 from feedbax.contracts.project import Document, apply_differences
-from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, TrialSetField
+from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField
 from feedbax.contracts.set_document import SetEntry, read_set
 from feedbax.contracts.task_document import (
     Cell, Link, SetVariableChoices, Signal, TaskAdditions, TaskDocument, ValidationTrial, Variable, add_to_task,
@@ -71,6 +71,37 @@ def rename_entry_references(value, refs: Mapping[str, str]):
     if isinstance(value, list):
         return [rename_entry_references(item, refs) for item in value]
     return value
+
+
+def trial_set_condition_site(variables: tuple[ScopedValue, ...]) -> Site:
+    return Site(expected=_BOOL, finest=Level.TRIAL, names=variables, structural=True)
+
+
+def resolve_trial_set_condition(
+    expression: Expression, sampling: SetTrialSampling, site: Site, functions: FunctionRegistry,
+) -> ParsedField[Expression] | tuple[Problem, ...]:
+    if isinstance(sampling, ListedSetTrials):
+        return (Problem(code=ProblemCode.STRUCTURE, reason="A trial condition needs Weighted or Co-occurring sampling."),)
+    parsed = resolve_expression(expression, site, functions)
+    if isinstance(parsed, tuple):
+        return parsed
+    names = {item.id for item in site.names}
+    problems = []
+    for path, node in walk(parsed.value):
+        if isinstance(node, NameValue) and node.reference not in names:
+            problems.append(Problem(
+                code=ProblemCode.UNKNOWN_NAME, reason=f"Task variable {node.reference!r} is not in scope for this condition.",
+                path=path, span=parsed.spans.get(path),
+            ))
+        elif isinstance(node, DrawValue) or (
+            isinstance(node, CallValue) and (function := functions.resolve(node.function)) and function.info.random
+        ):
+            problems.append(Problem(
+                code=ProblemCode.OUT_OF_SCOPE,
+                reason="A trial condition can read sampled Task variables and cannot make its own draw.",
+                path=path, span=parsed.spans.get(path),
+            ))
+    return tuple(problems) if problems else parsed
 
 
 def _entry_scope(axis: str, entry: str, source: SetEntry) -> SetEntry:
@@ -267,23 +298,13 @@ class _Union:
         def refused(reason: str) -> SetFieldProblem:
             return SetFieldProblem(axis, placement.axis.set, None, reason, condition=True)
 
-        if isinstance(placement.sampling, ListedSetTrials):
-            raise refused("A trial condition needs Weighted or Co-occurring sampling.")
         scope = tuple(
             ScopedValue(id=var.id, name=var.name, type=var.type, level=Level.TRIAL)
             for var in self.task.variables
         )
-        parsed = resolve_expression(placement.condition, Site(expected=_BOOL, finest=Level.TRIAL, names=scope), functions)
+        parsed = resolve_trial_set_condition(placement.condition, placement.sampling, trial_set_condition_site(scope), functions)
         if isinstance(parsed, tuple):
             raise refused(parsed[0].reason)
-        if unavailable := references(parsed.value) - {item.id for item in scope}:
-            raise refused(f"Task variable {min(unavailable)!r} is not in scope for this condition.")
-        if any(
-            isinstance(node, DrawValue)
-            or isinstance(node, CallValue) and (function := functions.resolve(node.function)) and function.info.random
-            for _, node in walk(parsed.value)
-        ):
-            raise refused("A trial condition can read sampled Task variables and cannot make its own draw.")
         try:
             id = _id("eligibility", axis, "condition")
             eligible = self.variable(id, _BOOL, parsed.value)
