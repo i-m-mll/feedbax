@@ -15,7 +15,7 @@ import {
   type StudioTrainAuthoring,
   type StudioTrainAuthoringRequest,
   type StudioTrainStartRequest,
-  type TaskTrialSampleRequest,
+  type StudioRunTaskTrialSampleRequest,
   type TaskTrialSampleResponse,
   type TrainFieldRequest,
   type TrainFieldResponse,
@@ -198,12 +198,12 @@ export async function checkRunRule(projectId: string, body: StudioRunRuleRequest
   }
 }
 
-/** Trials drawn from a task without a model, through the function that draws training trials. */
-export async function sampleTaskTrials(body: TaskTrialSampleRequest, signal: AbortSignal): Promise<TaskTrialSampleResponse> {
+/** Trials drawn from a saved run's documents, through the function that draws training trials. */
+export async function sampleTaskTrials(body: StudioRunTaskTrialSampleRequest, signal: AbortSignal): Promise<TaskTrialSampleResponse> {
   const path = '/api/execution/task-trials/sample';
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: sentBody('TaskTrialSampleRequest', body, path), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('StudioRunTaskTrialSampleRequest', body, path), cache: 'no-store', signal,
     });
     return parseContract('TaskTrialSampleResponse', response);
   } catch (error) {

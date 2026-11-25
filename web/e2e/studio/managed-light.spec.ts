@@ -42,7 +42,7 @@ async function expectSeparateVelocityLines(figure: Locator) {
 }
 
 async function savedLightGate(context: WalkthroughContext, info: TestInfo, studio?: Studio) {
-  test.setTimeout(studio ? 190_000 : 60_000);
+  test.setTimeout(studio ? 190_000 : 120_000);
   const start = performance.now();
   const first = studio ? await test.step('Author, Stop, Resume and recover the first Train', () =>
     authorAndRecoverTrain(context.page, context.request, info, studio)) : undefined;
@@ -237,6 +237,9 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await page.keyboard.type('states');
   await expect(popupListbox(page).getByRole('option')).toHaveCount(0);
   await page.keyboard.press('Escape');
+  // Closing the popup gives focus back to its field once it has closed; the next choice starts from there.
+  await expect(popupListbox(page)).toBeHidden();
+  await expect(roleField('Velocity')).toBeFocused();
   await edit(() => chooseOption(page, roleField('Velocity'), 'Aligned velocity.velocity'));
 
   await place('Velocity Summary');
@@ -337,6 +340,8 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
       .toEqual(['succeeded', 'succeeded', 'succeeded', 'succeeded']);
     return projection!;
   }
+  /** Fetching a saved figure, loading Plotly and drawing it is the work these waits see through; under load it takes seconds. */
+  const drawing = 20_000;
   async function showReport(url: string) {
     await expect(document.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('**Velocity** by condition.');
     const result = document.getByRole('button', { name: 'Result', exact: true });
@@ -347,7 +352,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     const rendered = frame.contentFrame();
     await expect(rendered.getByText('Velocity', { exact: true })).toBeVisible();
     const reportFigure = rendered.locator('[data-report-source] svg.main-svg').first();
-    await expect(reportFigure).toBeVisible();
+    await expect(reportFigure).toBeVisible({ timeout: drawing });
     if (paired) await expectSeparateVelocityLines(reportFigure);
   }
   async function showFigure() {
@@ -356,7 +361,9 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     await activate(page, figures.getByRole('button', { name: 'Velocity Summary', exact: true }));
   }
   async function drawnFigure(name: 'Current Result' | 'Previous Result') {
-    const plot = figures.getByRole('region', { name, exact: true }).locator('svg.main-svg').first();
+    const region = figures.getByRole('region', { name, exact: true });
+    await expect(region.locator('[role="img"]:not([aria-busy])')).toBeVisible({ timeout: drawing });
+    const plot = region.locator('svg.main-svg').first();
     await expect(plot).toBeVisible();
     if (paired) await expectSeparateVelocityLines(plot);
   }
