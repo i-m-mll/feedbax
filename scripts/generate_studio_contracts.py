@@ -393,6 +393,7 @@ from feedbax.web.models.trajectory import (
 from feedbax.contracts.expression_values import FieldTextResult, Problem
 from feedbax.contracts.expression_site import SiteProjection
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
+from feedbax.contracts.time_units import TimeValue
 from feedbax.contracts.studio_field import (
     FieldKindEdit, FieldNameEdit, FieldResetEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
     StudioFieldView, StudioSweepList, StudioSweepRange, StudioSweepSampler, StudioSweepValue,
@@ -688,6 +689,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     StudioSweepList,
     StudioSweepRange,
     StudioSweepSampler,
+    TimeValue,
     StudioFieldView,
     ModelFieldView,
     TrainFieldView,
