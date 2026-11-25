@@ -88,6 +88,7 @@ def scan_rollout(
     save_history: bool = True,
     state_filter: PyTree[bool] = True,
     streaming_loss_fn: Optional[Callable] = None,
+    finish_outputs: Callable[[PyTree, PyTree], PyTree] | None = None,
 ) -> tuple[PyTree, State, PyTree | None]:
     """Scan ``step_fn`` over ``n_steps`` timesteps.
 
@@ -111,11 +112,15 @@ def scan_rollout(
             accumulates a scalar loss instead of storing history. A function
             advertising ``streaming_order > 0`` is passed a rolling state
             window instead of a single state view.
+        finish_outputs: Optionally combine stacked outputs and the final per-step carry.
 
     Returns:
         ``(outputs, final_state, aux)``, where ``aux`` is the accumulated
         streaming loss, the prepended state history, or ``None``.
     """
+    def finish(outputs, carry):
+        return outputs if finish_outputs is None else finish_outputs(outputs, carry)
+
     # --- streaming-loss path: accumulate scalar, skip history storage ---
     if streaming_loss_fn is not None:
         streaming_order = getattr(streaming_loss_fn, "streaming_order", 0)
@@ -141,12 +146,12 @@ def scan_rollout(
         if checkpoint:
             step_streaming = jax.checkpoint(step_streaming)
 
-        (final_state, _, _, total_loss), outputs = lax.scan(
+        (final_state, final_carry, _, total_loss), outputs = lax.scan(
             step_streaming,
             (init_state, init_step_carry, state_window, init_loss),
             ((step_inputs, keys), jnp.arange(n_steps)),
         )
-        return outputs, final_state, total_loss
+        return finish(outputs, final_carry), final_state, total_loss
 
     # --- standard paths (history or no-history) ---
     init_state_view = None
@@ -173,7 +178,7 @@ def scan_rollout(
         step_body = jax.checkpoint(step_body)
 
     if save_history:
-        (final_state, _), (outputs, state_history) = lax.scan(
+        (final_state, final_carry), (outputs, state_history) = lax.scan(
             step_body,
             (init_state, init_step_carry),
             ((step_inputs, keys), jnp.arange(n_steps)),
@@ -182,11 +187,11 @@ def scan_rollout(
         # Prepend initial state to history
         init_state_view = eqx.filter(init_state_view, state_filter)
         state_history = jt.map(_prepend_initial, init_state_view, state_history)
-        return outputs, final_state, state_history
+        return finish(outputs, final_carry), final_state, state_history
 
-    (final_state, _), outputs = lax.scan(
+    (final_state, final_carry), outputs = lax.scan(
         step_body,
         (init_state, init_step_carry),
         ((step_inputs, keys), jnp.arange(n_steps)),
     )
-    return outputs, final_state, None
+    return finish(outputs, final_carry), final_state, None

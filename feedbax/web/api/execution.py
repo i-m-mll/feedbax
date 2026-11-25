@@ -18,13 +18,13 @@ from feedbax.contracts.rollout import trial_indices
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.trial_record import TrialDisplay, TrialRecords, TrialTerm, TrialUnavailable
-from feedbax.execution.trial_execution import sample_evaluation_trials
+from feedbax.execution.trial_execution import sample_evaluation_trials, sample_trial
 from feedbax.execution.trial_places import TrialPlacePlan, bind_trial_places, project_term_places
 from feedbax.execution.trial_record import aggregate_trials, trial_record, trial_weight_values
-from feedbax.execution.trial_resolution import preview_trial_source
+from feedbax.execution.trial_resolution import preview_trial_source, resolve_trial_execution
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
-from feedbax.runtime._graph_key_schedule import map_trial_samples, sample_training_trials
-from feedbax.tasks.document import TaskParameters
+from feedbax.runtime._graph_key_schedule import map_trial_samples, model_initialization_key, sample_training_trials
+from feedbax.tasks.document import PendingTrial, TaskParameters
 
 router = APIRouter()
 
@@ -104,17 +104,27 @@ async def sample_task_trials(
     if isinstance(preview, tuple):
         return unavailable(*preview)
     task = preview.task
+    executable = None
     if task.reads_model:
-        return unavailable(Problem(
-            code=ProblemCode.STRUCTURE, path=("task",),
-            reason="This task needs model outputs to produce a trial.",
-        ))
+        resolved = resolve_trial_execution(
+            payload.model, selected, bundle.components, bundle.expression_functions,
+            python_tasks=bundle.python_tasks, input_bindings=payload.input_bindings,
+            objective=payload.objective, objective_use=ObjectiveUse.PREVIEW, nominal=payload.nominal,
+        )
+        if isinstance(resolved, tuple):
+            return unavailable(*resolved)
+        executable = resolved.realize(initialization_key=model_initialization_key(seed))
+        if isinstance(executable, tuple):
+            return unavailable(*executable)
+        task = executable.execution.task
 
     key = jax.random.PRNGKey(seed)
     parameters = TaskParameters()
     if payload.nominal or payload.evaluation_trials is None:
         ids = ("nominal",) if payload.nominal else tuple(f"trial:{index}" for index in range(count))
-        samples, keys = sample_training_trials(lambda sample: (task.ahead(parameters, key, sample), sample), key, count)
+        samples, keys = sample_training_trials(
+            lambda sample: (sample_trial(task, parameters, key, sample), sample), key, count,
+        )
     else:
         ids = tuple(payload.evaluation_trials)
         try:
@@ -124,6 +134,11 @@ async def sample_task_trials(
                 code=ProblemCode.STRUCTURE, path=("evaluation_trials",), reason=str(error),
             ))
         samples, keys = sample_evaluation_trials(task, parameters, key=key, trial_ids=ids)
+
+    retained = None
+    if isinstance(samples, PendingTrial):
+        assert executable is not None
+        retained, _, samples = executable.execution.execute_batch(executable.executable.graph, samples, keys)
 
     term_traces = {}
     places = TrialPlacePlan()
@@ -148,12 +163,15 @@ async def sample_task_trials(
             anchored_outputs(payload.model, bundle.components, preview.signal_scope.leaves)
             if preview.signal_scope is not None else {}
         )
-        places = bind_trial_places(scorer, task, anchors, unobserved=frozenset(outputs))
+        unobserved = frozenset(outputs) if retained is None else frozenset()
+        if retained is None:
+            retained = jax.tree.map(lambda value: jnp.broadcast_to(value, (count, *value.shape)), outputs)
+        places = bind_trial_places(scorer, task, anchors, unobserved=unobserved)
         term_traces = map_trial_samples(
             lambda item: scorer.trial_terms(
-                outputs, item[0], key, item[1], unobserved=outputs.keys(), observed_points=places.observations,
+                item[2], item[0], key, item[1], unobserved=unobserved, observed_points=places.observations,
             ),
-            (samples, keys), keys,
+            (samples, keys, retained), keys,
         )
 
     samples, term_traces = jax.device_get((samples, term_traces))
@@ -177,6 +195,7 @@ async def sample_task_trials(
             jax.tree.map(lambda values: values[index], samples),
             id=id, epoch_ids=task.epochs, epoch_labels=labels,
             terms={name: term_record(name, trace, index) for name, trace in term_traces.items()},
+            document=preview.document,
         )
         for index, id in enumerate(ids)
     ]

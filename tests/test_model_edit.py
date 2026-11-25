@@ -17,6 +17,7 @@ from feedbax.contracts.project import RootDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.compiler import model_edit
 from feedbax.compiler.model_edit import Port, apply_model_edit
+from feedbax.examples import load_shipped_projects
 from feedbax.studio.model_undo import apply_delta, inverse_delta
 from feedbax.web.app import create_app
 
@@ -86,6 +87,58 @@ def test_boundary_growth_reviews_and_stores_a_port(scope, grow_source):
     assert port["name"] == ("in" if grow_source else "out")
     expected = SCALAR.type if grow_source else SignalType()
     assert port["type"] == expected.model_dump(mode="json")
+
+
+def test_composite_without_input_to_output_path_needs_no_delay():
+    def port(id_):
+        return {"id": id_, "name": id_, "type": {"shape": []}}
+
+    junction = {
+        "kind": "composite", "name": "Junction",
+        "ports": {"inputs": [port("left"), port("right")], "outputs": [port("out-left"), port("out-right")]},
+        "interior": {"wires": {
+            side: {"source": {"owner": "inputs", "port": side}, "target": {"owner": "outputs", "port": f"out-{side}"}}
+            for side in ("left", "right")
+        }},
+    }
+    state = ModelEditState.model_validate({"document": {
+        "step_seconds": 0.01,
+        "ports": {},
+        "interior": {
+            "components": {"gain": _leaf(), "junction": junction},
+            "wires": {"forward": {"source": _end("gain", "out"), "target": _end("junction", "left")}},
+        },
+    }})
+    result = _execute(
+        state, "connect", graph=_address(), source=_end("junction", "out-right"), target=_end("gain", "in"),
+    )
+    returned = result.changed[0].element.id
+    assert not result.state.document.interior.wires[returned].attachments
+    result = _execute(
+        result.state, "connect", graph=_address(), source=_end("junction", "out-left"), target=_end("gain", "in"),
+    )
+    (delay,) = result.state.document.interior.wires[returned].attachments
+    assert delay.kind == "delay" and (delay.delay.value, delay.delay.unit) == (1, "st")
+
+
+@pytest.mark.parametrize("initial_source", [
+    {"kind": "value", "value": 2.5},
+    {"kind": "task", "variable": "context"},
+    {"kind": "wire"},
+    {"kind": "wire", "source": _end("same", "out")},
+])
+def test_delay_initial_modes_are_authored_by_the_attachment_command(initial_source):
+    owner = _address(("outer",), "wire", id="in")
+    attachment = {
+        "kind": "delay", "id": "lag", "delay": {"value": 5, "unit": "st"}, "initial_source": initial_source,
+    }
+    result = _execute(_start(), "set_attachment", difference={
+        "op": "add", "owner": owner, "attachment": attachment, "after": None,
+    })
+    assert not isinstance(result, ModelEditProblem), result
+    archived = ModelEditState.model_validate_json(result.state.model_dump_json())
+    graph = archived.document.interior.components["outer"].interior
+    assert graph.wires["in"].attachments[0].model_dump(mode="json") == attachment
 
 
 def _start(deep_name="inner", *, decorated=False, fanout=False, default=False):
@@ -466,6 +519,74 @@ def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambi
         ports = {p["address"]["element"]["end"]["port"] for p in renamed["problems"]
                  if p["address"]["element"]["kind"] == "port"}
         assert ports == {"old", "new"}
+
+
+def test_served_connect_adds_and_undoes_one_delay_and_can_move_it(tmp_path):
+    shipped = load_shipped_projects()["point-mass-reaching"].documents["point-mass"]
+    payload = shipped.model_dump(mode="json")["payload"]
+    interior = payload["interior"]
+    drive = interior["wires"].pop("drive")
+    interior["components"]["carry"] = {
+        "kind": "leaf", "type": "feedbax.Gain", "name": "Carry", "fields": {"gain": 1},
+    }
+    interior["wires"]["carry-input"] = {"source": _end("cell", "hidden"), "target": _end("carry", "input")}
+    project = Project(documents={"model": RootDocument(schema="feedbax.spec.model", payload=payload)})
+    for name, data in dump_text_project(project, ProjectConfiguration(project="project", store="store")).items():
+        path = tmp_path / "project" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    url = "/api/projects/project"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        before = client.get(url).json()
+
+        def edit(snapshot, operation):
+            response = client.post(url + "/model/edit", json={
+                "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+                "document": "model", "command": {"operation": operation},
+            })
+            assert response.status_code == 200, response.text
+            result = response.json()["result"]
+            assert result["status"] == "applied", result
+            return result
+
+        def wires(snapshot):
+            return snapshot["project"]["documents"]["model"]["payload"]["interior"]["wires"]
+
+        drive = edit(before, {"op": "connect", "graph": _address(), **drive})["snapshot"]
+        (plant_input,) = [wire for wire in wires(drive).values() if wire["target"] == _end("plant", "force")]
+        assert not plant_input.get("attachments")
+        close_loop = {"op": "connect", "graph": _address(), "source": _end("carry", "output"), "target": _end("cell", "hidden")}
+        result = edit(drive, close_loop)
+        closed = result["snapshot"]
+        (closing, wire), = [(key, wire) for key, wire in wires(closed).items() if wire["target"] == _end("cell", "hidden")]
+        (delay,) = wire["attachments"]
+        assert delay["kind"] == "delay" and delay["delay"] == {"value": 1, "unit": "st"}
+
+        undo = client.post(url + "/model/undo", json={
+            "revision": closed["revision"], "presentation_revision": closed["presentation_revision"],
+            "token": result["undo_token"],
+        })
+        assert undo.status_code == 200, undo.text
+        undone = undo.json()["result"]["snapshot"]
+        assert wires(undone) == wires(drive)
+
+        result = edit(undone, close_loop)
+        closed = result["snapshot"]
+        (closing, wire), = [(key, wire) for key, wire in wires(closed).items() if wire["target"] == _end("cell", "hidden")]
+        (delay,) = wire["attachments"]
+        src = _address(kind="attachment", parent={"kind": "wire", "id": closing}, id=delay["id"])
+        dst = _address(kind="wire", id="carry-input")
+        moved = edit(closed, {"op": "move_wire_attachment", "address": src, "destination": dst})
+        assert not moved["problems"], moved["problems"]
+        after = moved["snapshot"]
+        assert not wires(after)[closing].get("attachments")
+        assert wires(after)["carry-input"]["attachments"] == [delay]
+
+        dst_delay = _address(kind="attachment", parent=dst["element"], id=delay["id"])
+        deleted = edit(after, {"op": "delete", "selection": [dst_delay]})
+        loop = {issue["address"]["element"]["id"] for issue in deleted["problems"] if "same-step loop" in issue["reason"]}
+        assert loop == {closing, "carry-input"}
 
 
 def test_incompatible_local_physical_ports_keep_an_addressed_connection():

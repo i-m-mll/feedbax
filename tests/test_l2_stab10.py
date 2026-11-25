@@ -1,6 +1,9 @@
 """The archived stab10 topology can train and publish native semantic weights."""
 
 import json
+import os
+import subprocess
+import sys
 from operator import attrgetter
 from pathlib import Path
 
@@ -8,6 +11,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from feedbax.application.composition import load_application
 from feedbax.builtins.training import StandardTrainingSettings
@@ -79,9 +83,9 @@ def _model():
         "interior": {
             "components": {
                 "carry": _leaf("Gain", gain=1.0),
-                "cell": _leaf("GRU", input_size=7, hidden_size=180, dtype="float32"),
+                "cell": _leaf("GRU", hidden_size=180, dtype="float32"),
                 "input_join": _leaf("Concatenate", n_inputs=2),
-                "readout": _leaf("Linear", input_size=180, output_size=2, activation="identity", use_bias=True, dtype="float32"),
+                "readout": _leaf("Linear", output_size=2, activation="identity", use_bias=True, dtype="float32"),
             },
             "wires": {
                 "context": _wire("inputs.context", "input_join.in_1"),
@@ -125,7 +129,7 @@ def _model():
             "wires": {
                 "target_input": _wire("inputs.target", "target.input"),
                 "target_feedback": _wire("target.output", "feedback.target"),
-                "state_feedback": _wire("mechanics.state", "feedback.state", delayed=True),
+                "state_feedback": _wire("mechanics.state", "feedback.state"),
                 "add_feedback": _wire("feedback.feedback", "feedback_sum.a"),
                 "feedback_disturbance": _wire("inputs.feedback_disturbance", "feedback_sum.b"),
                 "noise_feedback": _wire("feedback_sum.output", "sensory_noise.input"),
@@ -170,24 +174,31 @@ def _task():
     })
 
 
-def test_stab10_trains_and_restores_a_semantic_checkpoint(tmp_path):
-    model, task = _model(), _task()
+def _objective():
     command = ModelAddress.model_validate({
         "composites": [], "element": {"kind": "port", "end": {"owner": "outputs", "port": "command"}},
     }).to_text()
-    objective = ObjectiveDocument.model_validate({"id": "stab10", "terms": [{
+    return ObjectiveDocument.model_validate({"id": "stab10", "terms": [{
         "id": "effort", "reduction": "last",
         "measure": {"kind": "call", "function": "sqnorm", "args": [{"kind": "name", "reference": command}]},
     }]})
+
+
+def _realize(model, task, objective, bundle, seed):
+    result = compile_trial_execution(
+        model, task, bundle.components, bundle.expression_functions, python_tasks=bundle.python_tasks,
+        objective=objective, initialization_key=jax.random.key(seed),
+    )
+    assert isinstance(result, PreparedTrialExecution), result
+    return result
+
+
+def test_stab10_trains_and_restores_a_semantic_checkpoint(tmp_path):
+    model, task, objective = _model(), _task(), _objective()
     bundle = load_application().bundle
 
     def realize(seed):
-        result = compile_trial_execution(
-            model, task, bundle.components, bundle.expression_functions, python_tasks=bundle.python_tasks,
-            objective=objective, initialization_key=jax.random.key(seed),
-        )
-        assert isinstance(result, PreparedTrialExecution), result
-        return result
+        return _realize(model, task, objective, bundle, seed)
 
     initial = realize(19)
     runtime, graph = initial.executable.graph, initial.executable.resolved.graph
@@ -197,7 +208,7 @@ def test_stab10_trains_and_restores_a_semantic_checkpoint(tmp_path):
     key = jax.random.key(13)
     feedback = runtime.nodes["feedback"]
     output, _ = feedback(
-        {"state": jnp.arange(36, dtype=jnp.float32), "target": jnp.array([7.0, 11.0])},
+        {"state": jnp.arange(36, dtype=float), "target": jnp.array([7.0, 11.0])},
         feedback.init_state(key=key), key=key,
     )
     np.testing.assert_array_equal(output["feedback"], [-23.0, -20.0, -32.0, -33.0, 34.0, 35.0])
@@ -247,3 +258,41 @@ def test_stab10_trains_and_restores_a_semantic_checkpoint(tmp_path):
         return trial.retained, trial.history
 
     assert eqx.tree_equal(rollout(trained), rollout(restored), typematch=True)
+
+
+@pytest.mark.parametrize("precision", ["float32", "float64"])
+def test_authored_stab10_uses_process_precision(precision):
+    env = {**os.environ, "JAX_ENABLE_X64": str(int(precision == "float64")), "JAX_PLATFORMS": "cpu"}
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.test_l2_stab10", precision],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _check_authored_precision(precision):
+    bundle = load_application().bundle
+    paired = _realize(_model(), _task(), _objective(), bundle, 19)
+    graph, spec = paired.executable.graph, paired.executable.resolved.graph
+    layout = bind_raw_state(graph, spec)
+    trial = paired.execution.evaluate(
+        graph, paired.objective, TaskParameters(), key=jax.random.key(13), trial_ids=("0",),
+        capture_state=layout.capture,
+    )
+    for label, value in {
+        "parameters": graph,
+        "task inputs": trial.trials.inputs,
+        "retained outputs": trial.retained,
+        "carry and state": trial.history,
+        "objective": trial.objective,
+    }.items():
+        dtypes = {
+            leaf.dtype.name for leaf in jax.tree.leaves(value)
+            if eqx.is_array(leaf) and jnp.issubdtype(leaf.dtype, jnp.floating)
+        }
+        assert dtypes == {precision}, (label, dtypes)
+    assert np.isfinite(trial.objective.loss)
+
+
+if __name__ == "__main__":
+    _check_authored_precision(sys.argv[1])

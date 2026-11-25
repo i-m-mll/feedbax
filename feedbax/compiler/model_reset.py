@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from operator import attrgetter
@@ -153,7 +153,9 @@ class ModelResetPlan:
 
     def prepare(
         self, graph: Graph, inits: Mapping[str, Any], *,
-        key: PRNGKeyArray, inputs: dict[str, PyTree] | None = None,
+        key: PRNGKeyArray,
+        inputs: dict[str, PyTree] | Callable[[dict[str, PyTree]], dict[str, PyTree]] | None = None,
+        input_series: bool = False, reset_values: Mapping[str, PyTree] | None = None,
     ) -> PreparedModelReset:
         """Apply a single trial's values and seed reset outputs and cycle carry."""
         writes = []
@@ -208,10 +210,12 @@ class ModelResetPlan:
                 elif bool(invalid):
                     raise ModelResetError(address, reason)
         state = graph.state_consistency_update(state)
-        return PreparedModelReset(
-            state, graph.initial_outputs(graph.state_view(state)),
-            graph.initial_cycle_port_values(state, inputs=inputs, key=reset_key(key)),
+        outputs = graph.initial_outputs(graph.state_view(state))
+        seed_inputs = inputs(outputs) if callable(inputs) else inputs
+        carry = graph.initial_cycle_port_values(
+            state, inputs=seed_inputs, key=reset_key(key), input_series=input_series, reset_values=reset_values,
         )
+        return PreparedModelReset(state, outputs, carry)
 
 
 def resolve_model_reset(
@@ -276,7 +280,7 @@ def resolve_model_reset(
                     raise ValueError("Trial parameter must belong to a declared configuration slot")
                 dtype = (
                     resolved.node_outputs[name, parameter.dtype_from].dtype if parameter.dtype_from else
-                    jnp.dtype(jnp.bool_ if parameter.kind == "boolean" else jnp.float32)
+                    jnp.result_type(bool if parameter.kind == "boolean" else float)
                 )
                 address = ModelAddress(
                     composites=scope, element=FieldElement(

@@ -15,11 +15,13 @@ from feedbax.contracts.project_sweep import (
     SetEntryParts, SweepExpansionError, TrialSetField, WeightedSetTrials,
 )
 from feedbax.contracts.set_document import (
-    SET_DOCUMENT_SCHEMA_ID, SetMisfit, axis_from_set, check_fit, entry_pointer, read_set, resolve_set_axes, set_from_axis, sets_offered, step_model,
+    SET_DOCUMENT_SCHEMA_ID, SetMisfit, SetEntry, axis_from_set, check_fit, entry_pointer,
+    read_set, resolve_set_axes, set_from_axis, sets_offered, step_model,
 )
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_sets import (
-    AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetFieldWeight, SetToField, SetToSweep,
+    AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetEntryTask,
+    SetFieldWeight, SetToField, SetToSweep,
     StudioAxisValue, StudioSetEdit, StudioSetEditRequest,
     StudioSetsOffered, StudioSetsOfferedRequest,
 )
@@ -55,7 +57,9 @@ def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
             else:
                 weight = sampling.weights.get(id, 1.0)
             rows.append(StudioSetFieldEntry(entry=id, label=entry.label, weight=weight))
-        fields.append(StudioSetField(axis=axis, set=field.axis.set, sampling=sampling, entries=rows))
+        fields.append(StudioSetField(
+            axis=axis, set=field.axis.set, sampling=sampling, condition=field.condition, entries=rows,
+        ))
     return fields
 
 
@@ -88,6 +92,8 @@ def set_edit(folders, project_id: str, body: StudioSetEditRequest) -> StudioSetE
         stored = _set_field_weight(project, command)
     elif isinstance(command, AddSetEntry):
         stored, selected = _add_set_entry(project, command)
+    elif isinstance(command, SetEntryTask):
+        stored = _set_entry_task(project, command)
     else:
         stored = _remove_value(project, command)
     result = _set_store(folders, project_id, project, step, body, stored)
@@ -348,6 +354,27 @@ def _add_set_entry(project: Project, command: AddSetEntry) -> tuple[StoredEdit, 
     return _insert_set_entry(project, command.axis, axis.set)
 
 
+def _set_entry_task(project: Project, command: SetEntryTask) -> StoredEdit:
+    field = project.steps[command.step].set_fields.get(command.axis)
+    axis = field.axis if field is not None else _authored_axis(project, command.step, command.axis)
+    if not isinstance(axis, SetAxis):
+        raise ProjectFolderInvalid(f"{command.axis} reads no Set.")
+    return prepare_set_entry_task(project, axis.set, command)
+
+
+def prepare_set_entry_task(project: Project, name: str, command: SetEntryTask, chosen=None) -> StoredEdit:
+    content = _composed(project, name)
+    entries = content["entries"]
+    if command.entry not in entries:
+        raise ProjectFolderInvalid("That Set entry is no longer available.")
+    additions = command.model_dump(mode="json", include={"task_variables", "task_links"}, exclude_none=True)
+    entry = SetEntry.model_validate(entries[command.entry] | additions)
+    changed = content | {"entries": entries | {command.entry: entry.model_dump(mode="json", exclude_unset=True)}}
+    return set_document_write(
+        project, name, content_edits(content, changed), set_readers(project, name) if chosen is None else chosen,
+    )
+
+
 def _save_set(project: Project, command: SaveSet) -> StoredEdit:
     axis = _authored_axis(project, command.step, command.axis)
     if not isinstance(axis, NamedAxis):
@@ -436,7 +463,7 @@ def _move_set(project: Project, command: SetToField | SetToSweep) -> StoredEdit:
             for key, exception in sweep.exceptions.items()
         ):
             raise ProjectFolderInvalid("The Set axis has run exceptions that cannot move into trials.")
-        field = TrialSetField(axis=axis, sampling=WeightedSetTrials(kind="weighted"))
+        field = TrialSetField(axis=axis, sampling=WeightedSetTrials(kind="weighted"), condition=command.condition)
         field_sets[command.axis] = field.model_dump(mode="json", exclude_unset=True)
         if isinstance(step.base, StepBase | RunBase):
             axes[command.axis] = None

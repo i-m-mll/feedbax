@@ -36,7 +36,9 @@ from feedbax.contracts.task_document import (
     Epoch as Epoch,
     EpochEnd as EpochEnd,
     EpochSteps,
-    Length,
+    Rest,
+    SetVariableChoices,
+    Until,
     Link as Link,
     Signal as Signal,
     TaskDocument as TaskDocument,
@@ -50,8 +52,10 @@ from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices
 from feedbax.contracts.trial_bindings import selected_signal_id
+from feedbax.contracts.time_units import length_steps, literal_time
 from feedbax.runtime._graph_key_schedule import map_trial_samples, validation_trial_keys
 from feedbax.runtime.epoch_windows import CompiledWindow, EpochRecord, compile_window, in_epoch
+from feedbax.runtime.timing import runtime_time_steps
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,8 @@ class TaskInterface:
     signals: tuple[ScopedValue, ...]
     links: tuple[tuple[str, str], ...]
     model_outputs: tuple[ScopedValue, ...] = ()
+    epoch_conditions: tuple[tuple[str, str], ...] = ()
+    set_choices: tuple[tuple[str, SetVariableChoices], ...] = ()
 
 
 class Trial(NamedTuple):
@@ -75,6 +81,14 @@ class TaskParameters(NamedTuple):
     fields: Mapping[tuple[str, ...], tuple] | None = None
     variables: Mapping[str, jax.Array] | None = None
     epoch_steps: Mapping[str, jax.Array] | None = None
+
+
+class PendingTrial(NamedTuple):
+    """A trial whose Task must receive outputs from the model before it can emit signals."""
+
+    parameters: TaskParameters
+    prepared: _Prepared
+    state: _TaskState
 
 
 class TrialSource(Protocol):
@@ -97,10 +111,10 @@ class TrialSource(Protocol):
     def ahead(
         self, parameters: TaskParameters, run_key: jax.Array, trial_key: jax.Array
     ) -> Trial: ...
-    def validation(self, parameters: TaskParameters, key: jax.Array) -> Trial: ...
+    def validation(self, parameters: TaskParameters, key: jax.Array) -> Trial | PendingTrial: ...
     def evaluation(
         self, parameters: TaskParameters, key: jax.Array, trial_ids: tuple[str, ...], trial_keys: jax.Array,
-    ) -> Trial: ...
+    ) -> Trial | PendingTrial: ...
 
 
 class _Prepared(NamedTuple):
@@ -109,7 +123,20 @@ class _Prepared(NamedTuple):
     absent: Mapping[str, Any]
     run_key: jax.Array
     trial_key: jax.Array
+    lengths: jax.Array | None = None
     windows: Mapping[str, jax.Array] | None = None
+
+
+class _Timeline(NamedTuple):
+    index: jax.Array
+    record: EpochRecord
+    conditions: tuple[Any, ...]
+
+
+class _TaskState(NamedTuple):
+    variables: Mapping[str, Any]
+    cells: tuple
+    timeline: _Timeline | None
 
 
 @dataclass(frozen=True)
@@ -117,6 +144,7 @@ class _Field:
     address: tuple[str, ...]
     code: Compiled
     list_count: int | None = None
+    length_in_steps: bool = False
 
     def inputs(self, parameters, prepared, values, k=0, *, epoch_entry=False, repeat=None):
         args = (
@@ -186,6 +214,7 @@ class DocumentTask:
     input_bindings: tuple[tuple[str, str], ...]
     step_counts: tuple[EpochSteps, ...]
     epoch_repeats: tuple[int | None, ...]
+    conditions: tuple[_Field | None, ...]
     reads_model: bool = False
 
     def init(self, parameters, run_key, trial_key):
@@ -207,15 +236,19 @@ class DocumentTask:
             if given and epoch in given:
                 length = given[epoch]
             elif field is None:
-                length = 0
+                length = bound  # Until has a fixed limit; Rest contributes zero here.
             else:
-                length = jnp.rint(
-                    field.evaluate(parameters, prepared, values | {"i": repeat}, repeat=repeat) / self.period
-                ).astype(int)
+                value = field.evaluate(parameters, prepared, values | {"i": repeat}, repeat=repeat)
+                length = value if field.length_in_steps else runtime_time_steps(value, self.period)
             lengths.append(jnp.clip(length, 0, bound))
-        if None in self.length_fields:
-            lengths[self.length_fields.index(None)] = jnp.maximum(0, self.n_steps - sum(lengths))
-        raw = jnp.asarray(lengths)
+        rest = next(
+            (index for index, (field, condition) in enumerate(zip(self.length_fields, self.conditions, strict=True))
+             if field is None and condition is None),
+            None,
+        )
+        if rest is not None:
+            lengths[rest] = jnp.maximum(0, self.n_steps - sum(lengths))
+        raw = jnp.asarray(lengths, dtype=int)
         ends = jnp.cumsum(raw)
         starts = ends - raw
         reached = starts <= self.n_steps
@@ -233,7 +266,18 @@ class DocumentTask:
             signal.id: signal.window.mask(epochs, self.n_steps, inputs)
             for signal in self.signals if signal.window is not None
         }
-        prepared = prepared._replace(epochs=epochs, absent=absent, windows=windows)
+        prepared = prepared._replace(epochs=epochs, absent=absent, lengths=raw, windows=windows)
+        timeline = None
+        if any(self.conditions):
+            unreachable = jnp.full(raw.shape, -1, dtype=raw.dtype)
+            timeline = _Timeline(
+                jnp.asarray(0), EpochRecord(unreachable.at[0].set(0), unreachable, jnp.zeros_like(raw)),
+                tuple(
+                    condition.prepare(parameters, prepared, values | {"i": repeat}, repeat=repeat)
+                    if condition is not None else None
+                    for condition, repeat in zip(self.conditions, self.epoch_repeats, strict=True)
+                ),
+            )
         variable_state = {
             variable.id: field.prepare(parameters, prepared, values)
             for variable, field in self.variable_fields
@@ -246,14 +290,59 @@ class DocumentTask:
             )
             for signal in self.signals
         )
-        return prepared, (variable_state, cell_state)
+        return prepared, _TaskState(variable_state, cell_state, timeline)
+
+    def _advance(self, parameters, trial, timeline, values, defined, k):
+        """Take every transition due at this boundary, including level tests on entry."""
+        lengths = trial.lengths
+        for index, (condition, repeat, length_field) in enumerate(zip(
+            self.conditions, self.epoch_repeats, self.length_fields, strict=True,
+        )):
+            def test(current):
+                record = current.record
+                start = record.starts[index]
+                duration = lengths[index]
+                if condition is None and length_field is None:
+                    duration = self.n_steps - start - jnp.sum(lengths[index + 1:])
+                met = False
+                states = current.conditions
+                if condition is not None:
+                    t = (k - start) * self.period
+                    T = duration * self.period
+                    environment = values | {"t": t, "T": T, "u": t / jnp.where(T > 0, T, 1), "i": repeat}
+                    inputs = condition.inputs(
+                        parameters, trial, environment, k, epoch_entry=k == start, repeat=repeat,
+                    )._replace(defined=defined)
+                    result, state = condition.step(inputs, states[index])
+                    states = (*states[:index], state, *states[index + 1:])
+                    met = result.value & result.defined
+                done = met | (k - start >= duration)
+                outcome = jnp.where(
+                    met, int(EpochEnd.CONDITION),
+                    int(EpochEnd.LIMIT if condition is not None else EpochEnd.LENGTH),
+                )
+                starts = record.starts
+                if index + 1 < len(self.epochs):
+                    starts = starts.at[index + 1].set(jnp.where(done, k, starts[index + 1]))
+                return _Timeline(
+                    current.index + done.astype(int),
+                    EpochRecord(
+                        starts,
+                        record.ends.at[index].set(jnp.where(done, k, -1)),
+                        record.outcomes.at[index].set(jnp.where(done, outcome, int(EpochEnd.UNREACHED))),
+                    ),
+                    states,
+                )
+
+            timeline = jax.lax.cond(timeline.index == index, test, lambda current: current, timeline)
+        return timeline
 
     def step(self, parameters, variables, state, k, model_outputs):
         """Emit the sample for step k using the same transition as ahead()."""
-        previous_variables, previous_cells = state
         values = dict(variables.values)
+        values.update((name, sample.value) for name, sample in model_outputs.items())
         values["time"] = k * self.period
-        defined = {}
+        defined = {name: sample.defined for name, sample in model_outputs.items()}
         dynamic = {}
         dynamic_defined = {}
         next_variables = {}
@@ -261,17 +350,21 @@ class DocumentTask:
             if variable.level == Level.STEP:
                 inputs = field.inputs(parameters, variables, values, k)._replace(defined=defined)
                 result, next_variables[variable.id] = field.step(
-                    inputs, previous_variables[variable.id]
+                    inputs, state.variables[variable.id]
                 )
                 values[variable.id] = result.value
                 defined[variable.id] = result.defined
                 dynamic[variable.id] = result.value
                 dynamic_defined[variable.id] = result.defined
 
+        timeline = state.timeline
+        if timeline is not None:
+            timeline = self._advance(parameters, variables, timeline, values, defined, k)
+
         outputs = {}
         present = {}
         next_cells = []
-        for signal, cell_states in zip(self.signals, previous_cells, strict=True):
+        for signal, cell_states in zip(self.signals, state.cells, strict=True):
             output = variables.absent[signal.id]
             available = False
             next_signal = []
@@ -279,10 +372,16 @@ class DocumentTask:
             if signal.window is not None:
                 within = variables.windows[signal.id][k] if self.n_steps else False
             for cell, previous in zip(signal.cells, cell_states, strict=True):
-                start = variables.epochs.starts[cell.first]
-                end = variables.epochs.ends[cell.last]
-                active = in_epoch(k, start, end)
-                duration = (end - start) * self.period
+                if timeline is None:
+                    start = variables.epochs.starts[cell.first]
+                    end = variables.epochs.ends[cell.last]
+                    active = in_epoch(k, start, end)
+                    length = end - start
+                else:
+                    start = timeline.record.starts[cell.first]
+                    active = (cell.first <= timeline.index) & (timeline.index <= cell.last)
+                    length = jnp.sum(variables.lengths[cell.first:cell.last + 1])
+                duration = length * self.period
                 t = (k - start) * self.period
                 environment = values | {
                     "t": t,
@@ -301,45 +400,56 @@ class DocumentTask:
             outputs[signal.id] = output
             present[signal.id] = jnp.asarray(available)
             next_cells.append(tuple(next_signal))
-        return (next_variables, tuple(next_cells)), outputs, present, dynamic, dynamic_defined
+        return _TaskState(next_variables, tuple(next_cells), timeline), outputs, present, dynamic, dynamic_defined
+
+    def finish(self, parameters, variables, state, samples, model_outputs):
+        inputs, present, traces, defined = samples
+        epochs = variables.epochs
+        if state.timeline is not None:
+            state, *_ = self.step(parameters, variables, state, jnp.asarray(self.n_steps), model_outputs)
+            epochs = state.timeline.record
+        fixed = {
+            variable.id: variables.values[variable.id]
+            for variable in self.interface.variables
+            if variable.level < Level.STEP
+        }
+        return Trial(self.inits(variables), inputs, present, fixed | traces, epochs, defined)
+
+    def inits(self, variables):
+        return {address: variables.values[variable] for address, variable in self.interface.links}
+
+    def sample(self, parameters, run_key, trial_key) -> Trial | PendingTrial:
+        if self.reads_model:
+            return PendingTrial(parameters, *self.init(parameters, run_key, trial_key))
+        return self.ahead(parameters, run_key, trial_key)
 
     def ahead(self, parameters, run_key, trial_key) -> Trial:
+        if self.reads_model:
+            raise ValueError("This Task needs Model outputs to produce a trial.")
         variables, state = self.init(parameters, run_key, trial_key)
 
         def step(carry, k):
             carry, inputs, present, traces, defined = self.step(parameters, variables, carry, k, {})
             return carry, (inputs, present, traces, defined)
 
-        _, (inputs, present, traces, defined) = jax.lax.scan(step, state, jnp.arange(self.n_steps))
-        fixed = {
-            variable.id: variables.values[variable.id]
-            for variable in self.interface.variables
-            if variable.level < Level.STEP
-        }
-        return Trial(
-            {address: variables.values[variable] for address, variable in self.interface.links},
-            inputs,
-            present,
-            fixed | traces,
-            variables.epochs,
-            defined,
-        )
+        final, samples = jax.lax.scan(step, state, jnp.arange(self.n_steps))
+        return self.finish(parameters, variables, final, samples, {})
 
-    def validation(self, parameters, key) -> Trial:
+    def validation(self, parameters, key) -> Trial | PendingTrial:
         keys = validation_trial_keys(key, len(self.validation_rows))
         return self._sample_rows(self.validation_rows, parameters, key, keys)
 
-    def evaluation(self, parameters, key, trial_ids, trial_keys) -> Trial:
+    def evaluation(self, parameters, key, trial_ids, trial_keys) -> Trial | PendingTrial:
         indices = trial_indices(trial_ids, self.condition_ids)
         rows = tuple(self.validation_rows[i] for i in indices)
         return self._sample_rows(rows, parameters, key, trial_keys)
 
     def _sample_rows(self, rows, parameters, key, trial_keys) -> Trial:
         if not rows[0].variables and not rows[0].epoch_steps:
-            return map_trial_samples(lambda trial_key: self.ahead(parameters, key, trial_key), trial_keys, trial_keys)
+            return map_trial_samples(lambda trial_key: self.sample(parameters, key, trial_key), trial_keys, trial_keys)
         batch = jax.tree.map(lambda *samples: jnp.stack(samples), *rows)
         return map_trial_samples(
-            lambda item: self.ahead(item[0]._replace(fields=parameters.fields), key, item[1]),
+            lambda item: self.sample(item[0]._replace(fields=parameters.fields), key, item[1]),
             (batch, trial_keys), trial_keys,
         )
 
@@ -406,6 +516,24 @@ def bind_task_inputs(
         ))
 
     return tuple(bindings), tuple(problems)
+
+
+def delay_initial_problems(
+    model: ResolvedModelInterface, variables: Mapping[str, ScopedValue], broken: set[str] | frozenset[str] = frozenset(),
+) -> tuple[Problem, ...]:
+    failures = []
+    for link in model.links:
+        variable = variables.get(link.variable)
+        place = {"path": ("model", *link.address.stored_path()), "variable": link.variable, "model_address": link.address}
+        if variable is None or link.variable in broken:
+            failures.append(Problem(
+                code=ProblemCode.UNKNOWN_NAME, reason=f"Delay Initial Task variable {link.variable!r} is unavailable.", **place,
+            ))
+        elif variable.list_count is not None or variable.level > Level.TRIAL or not link.type.accepts(variable.type):
+            failures.append(Problem(
+                code=ProblemCode.TYPE_MISMATCH, reason=f"{variable.name} does not fit a trial-start Delay Initial.", **place,
+            ))
+    return tuple(failures)
 
 
 def compile_task(
@@ -511,7 +639,7 @@ def compile_task(
         ), time)
         for key, value in values.items():
             if isinstance(value, UnresolvedValue):
-                site = Site(expected=variables[key].type, finest=Level.STEP, names=names)
+                site = Site(expected=variables[key].type, finest=Level.STEP, names=(*model.outputs, *names))
                 values[key] = dependency_tree(value, site)
     count_expressions = {
         key: dependency_tree(item.count, count_site)
@@ -531,6 +659,7 @@ def compile_task(
     order, cycles = dependency_order(values, counts=count_expressions)
     problems.extend(cycles)
     scope = {}
+    model_scope = {output.id: output for output in model.outputs}
     for cycle in cycles:
         (_, key, _) = cycle.path
         broken.add(key)
@@ -570,8 +699,8 @@ def compile_task(
         field = lower(
             variable.value,
             variable.type,
-            Level.STEP,
-            (*scope.values(), time),
+            Level.TRIAL if variable.set_choices is not None else Level.STEP,
+            (*model.outputs, *scope.values(), time),
             ("variables", key, "value"),
             list_count=count,
         )
@@ -599,7 +728,7 @@ def compile_task(
         for key, variable in variables.items():
             sites[("variables", key, "value")] = Site(
                 expected=variable.type, finest=Level.STEP,
-                names=(*scope.values(), time), list_count=scope[key].list_count,
+                names=(*model.outputs, *scope.values(), time), list_count=scope[key].list_count,
             )
 
     indexes = {key: index for index, key in enumerate(epochs)}
@@ -619,7 +748,16 @@ def compile_task(
             continue
         repeat_spans.update({index: (first, last, count) for index in span})
 
+    axes = tuple(
+        ScopedValue(id=name, name=name, type=value_type, level=Level.STEP)
+        for name, value_type in (
+            ("t", time_type),
+            ("T", time_type),
+            ("u", ValueType(base=ValueBase.REAL)),
+        )
+    )
     lengths = []
+    conditions = []
     unread = set()
     """The epochs whose length has problems."""
     bounds = []
@@ -628,7 +766,52 @@ def compile_task(
     for epoch in document.epochs:
         path = ("epochs", epoch.id, "end", "length")
         end = epoch.end
-        if not isinstance(end, Length):
+        repeat = repeat_spans.get(indexes.get(epoch.id))
+        condition_path = ("epochs", epoch.id, "end", "condition")
+        condition_names = (
+            *model.outputs, *scope.values(), time, *axes, *((repeat_index,) if repeat else ()),
+        )
+        if sites is not None:
+            sites[condition_path] = Site(
+                expected=ValueType(base=ValueBase.BOOLEAN), finest=Level.STEP, names=condition_names,
+                repeat_count=repeat[2] if repeat else None,
+            )
+            if isinstance(end, Until):
+                sites[path] = Site(expected=time_type, finest=Level.TRIAL, names=tuple(scope.values()))
+        if isinstance(end, Until):
+            if rest:
+                problem(
+                    ProblemCode.STRUCTURE, "An Until epoch must precede the Rest epoch.",
+                    ("epochs", epoch.id, "end"),
+                )
+            condition = lower(
+                end.condition, ValueType(base=ValueBase.BOOLEAN), Level.STEP, condition_names, condition_path,
+                epoch=True, repeat_count=repeat[2] if repeat else None,
+            )
+            limit_path = ("epochs", epoch.id, "end", "limit")
+            if sites is not None:
+                sites[limit_path] = Site(expected=time_type, finest=Level.RUN, structural=True)
+            bound = 0
+            try:
+                bound = length_steps(end.limit, period)
+            except ValueError as error:
+                problem(ProblemCode.STRUCTURE, str(error), limit_path)
+            if condition is not None:
+                for at, node in walk(condition.code.checked.tree):
+                    if (isinstance(node, CallValue) and node.function == "held"
+                        and isinstance(duration := node.args[1], LiteralValue)):
+                        try:
+                            length_steps(literal_time(duration), period)
+                        except ValueError as error:
+                            problem(ProblemCode.STRUCTURE, str(error), (*condition_path, *at, "args", 1))
+            lengths.append(None)
+            conditions.append(condition)
+            bounds.append(bound)
+            counts.append(EpochSteps(least=0, nominal=bound, greatest=bound))
+            unread.add(epoch.id)
+            continue
+        conditions.append(None)
+        if isinstance(end, Rest):
             if sites is not None:
                 # A Rest End is still the site of the length it can be given instead.
                 sites[path] = Site(expected=time_type, finest=Level.TRIAL, names=tuple(scope.values()))
@@ -637,7 +820,6 @@ def compile_task(
             bounds.append(0)
             counts.append(None)
             continue
-        repeat = repeat_spans.get(indexes.get(epoch.id))
         length_scope = (*scope.values(), repeat_index) if repeat is not None else tuple(scope.values())
         length = dependency_tree(end.length, Site(expected=time_type, finest=Level.TRIAL, names=length_scope))
         discrete = isinstance(length, DrawValue) and length.family == "uniform"
@@ -654,24 +836,21 @@ def compile_task(
             continue
         count = None
         if isinstance(length, LiteralValue):
-            (seconds,) = field.code.parameters
-            steps = round(float(seconds) / period)
-            if seconds < 0 or (seconds > 0 and steps == 0):
-                problem(
-                    ProblemCode.STRUCTURE,
-                    "Length must be zero or round to at least one step.",
-                    path,
-                )
+            try:
+                steps = length_steps(literal_time(length), period)
+            except ValueError as error:
+                problem(ProblemCode.STRUCTURE, str(error), path)
+                steps = 0
+            field = replace(field, code=replace(field.code, parameters=(jnp.asarray(steps),)), length_in_steps=True)
             if bound is None:
                 bound = steps
             elif steps > bound:
                 problem(ProblemCode.LENGTH_BUDGET, "The length exceeds its step bound.", path)
             count = EpochSteps(least=max(steps, 0), nominal=max(steps, 0), greatest=max(steps, 0))
-        if (
-            discrete
-            and all(isinstance(arg, LiteralValue) for arg in length.args)
-        ):
-            low, high = (round(float(seconds) / period) for seconds in field.code.parameters)
+        if discrete:
+            field = replace(field, length_in_steps=True)
+        if discrete and all(isinstance(arg, LiteralValue) for arg in length.args):
+            low, high = map(int, field.code.parameters)
             if not 0 <= low <= high:
                 problem(
                     ProblemCode.STRUCTURE, "Length draw needs ordered nonnegative bounds.", path
@@ -680,8 +859,8 @@ def compile_task(
                 bound = high
             elif high > bound:
                 problem(ProblemCode.LENGTH_BUDGET, "The draw exceeds the epoch bound.", path)
-            else:
-                count = EpochSteps(least=low, nominal=round((low + high) / 2), greatest=high)
+            if 0 <= low <= high:
+                count = EpochSteps(least=low, nominal=(low + high + 1) // 2, greatest=high)
         if bound is None:
             problem(ProblemCode.UNBOUNDED_LENGTH, "A variable length needs a step bound.", path)
         lengths.append(field)
@@ -701,14 +880,6 @@ def compile_task(
             ("epochs",),
         )
 
-    axes = tuple(
-        ScopedValue(id=name, name=name, type=value_type, level=Level.STEP)
-        for name, value_type in (
-            ("t", time_type),
-            ("T", time_type),
-            ("u", ValueType(base=ValueBase.REAL)),
-        )
-    )
     signals = []
     declared_signals = []
     for signal in document.signals:
@@ -794,6 +965,7 @@ def compile_task(
             )
         else:
             links[link.model_field] = link.variable
+    problems.extend(delay_initial_problems(model, scope, broken))
     for address, field in writable.items():
         if field.required and all(link.model_field != address for link in document.links):
             problem(
@@ -839,6 +1011,12 @@ def compile_task(
                 )[0].value
         for key, value in row.epoch_steps.items():
             epoch_index = indexes.get(key)
+            if epoch_index is not None and isinstance(document.epochs[epoch_index].end, Until):
+                problem(
+                    ProblemCode.STRUCTURE, "Validation cannot replace a condition-ended epoch with a fixed length.",
+                    (*path, "epoch_steps", key),
+                )
+                continue
             if key in unread:
                 continue
             if (
@@ -894,6 +1072,10 @@ def compile_task(
         signals = [instantiate(signal) for signal in signals]
     epoch_ids = tuple(epochs)
     instance_ids = tuple(epoch_ids[index] for index in instances)
+    first_until = next(
+        (slot for slot, index in enumerate(instances) if conditions[index] is not None),
+        len(instances),
+    )
     windows = {signal.id: signal.window for signal in document.signals if signal.window is not None}
     for index, signal in enumerate(signals):
         if signal.id not in windows:
@@ -905,12 +1087,28 @@ def compile_task(
         )
         if isinstance(compiled, tuple):
             problems.extend(compiled)
+        elif compiled.reads_runtime_epoch(first_until):
+            problem(
+                ProblemCode.OUT_OF_SCOPE,
+                "This signal window needs an epoch boundary that is only known after Until.",
+                path,
+            )
         else:
             signals[index] = replace(signal, window=compiled)
     if problems:
         return tuple(problems)
+    used_outputs = frozenset().union(*(
+        references(field.code.checked.tree)
+        for field in (*(field for _, field in fields), *conditions)
+        if field is not None
+    )) & model_scope.keys()
+    outputs = tuple(output for output in model.outputs if output.id in used_outputs)
+    epoch_conditions = tuple((epoch.id, epoch.name) for epoch in document.epochs if isinstance(epoch.end, Until))
+    set_choices = tuple((item.id, item.set_choices) for item in document.variables if item.set_choices is not None)
     return DocumentTask(
-        TaskInterface(tuple(scope.values()), tuple(declared_signals), tuple(links.items())),
+        TaskInterface(
+            tuple(scope.values()), tuple(declared_signals), tuple(links.items()), outputs, epoch_conditions, set_choices,
+        ),
         n_steps,
         period,
         instance_ids,
@@ -923,4 +1121,6 @@ def compile_task(
         tuple(bindings),
         tuple(counts[index] for index in instances),
         repeat_indices,
+        tuple(conditions[index] for index in instances),
+        bool(outputs),
     )

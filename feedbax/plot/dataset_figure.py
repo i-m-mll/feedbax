@@ -24,7 +24,11 @@ from feedbax.contracts.figure_document import (
     FigureLayer,
     IndexSelection,
     LineLayer,
+    PointsLayer,
+    ReferenceValue,
+    RuleLayer,
     Selection,
+    SpanLayer,
     VariableBinding,
     coordinate_dimension,
     layer_encodings,
@@ -39,7 +43,7 @@ from feedbax.execution.trial_clock import (
     AlignedSeries, TrialClockRecord, align_trials, aligned_sample_times, common_span, summarize_series, trial_origin,
 )
 from feedbax.plot.colors import color_add_alpha
-from feedbax.plot.figure_grid import assemble_figure_grid
+from feedbax.plot.figure_grid import AxisReference, assemble_figure_grid
 from feedbax.plot.figure_trial_clock import FigureRecordedDataset, FigureTrialSource
 
 
@@ -205,8 +209,16 @@ def _check_samples(channels: Mapping[str, _Samples]) -> None:
             raise ValueError(f"Channel {name!r} does not share the x samples.")
 
 
+def _check_bounds(channels: Mapping[str, _Samples], names: tuple[str, ...]) -> None:
+    y = channels["y"].field
+    for name in names:
+        field = channels[name].field
+        if (field.units, field.frame) != (y.units, y.frame):
+            raise ValueError(f"Channel {name!r} must use the y channel's units and frame.")
+
+
 def _draw(
-    layer: FigureLayer,
+    layer: LineLayer | BandLayer | PointsLayer,
     channels: Mapping[str, _Samples],
     label: str,
     color: str,
@@ -215,6 +227,26 @@ def _draw(
 ) -> tuple[go.Scatter, ...]:
     x, y = channels["x"], channels["y"]
     meta = FigureTraceMeta(layer=layer.name, group=group).model_dump(mode="json")
+    if isinstance(layer, PointsLayer):
+        error_y = None
+        if layer.encode.error_y is not None:
+            _check_bounds(channels, ("error_y.lower", "error_y.upper"))
+            up = channels["error_y.upper"].values - y.values
+            down = y.values - channels["error_y.lower"].values
+            if not (np.isfinite(up) & np.isfinite(down) & (up >= 0) & (down >= 0)).all():
+                raise ValueError("Error bar bounds must be finite and enclose their point.")
+            error_y = {"type": "data", "symmetric": False, "color": color, "array": up, "arrayminus": down}
+        return (go.Scatter(
+            name=label,
+            legendgroup=label,
+            showlegend=layer.style.showlegend,
+            x=x.values,
+            y=y.values,
+            mode="markers",
+            marker={"color": color, "size": layer.style.marker_size},
+            error_y=error_y,
+            meta=meta,
+        ),)
     center = go.Scatter(
         name=label,
         legendgroup=label,
@@ -230,10 +262,7 @@ def _draw(
     if not isinstance(layer, BandLayer):
         assert_never(layer)
 
-    for name in ("lower", "upper"):
-        field = channels[name].field
-        if (field.units, field.frame) != (y.field.units, y.field.frame):
-            raise ValueError(f"Band channel {name!r} must use the centre's units and frame.")
+    _check_bounds(channels, ("lower", "upper"))
     upper, lower = (
         go.Scatter(
             name=f"{name.title()} bound",
@@ -251,6 +280,45 @@ def _draw(
     lower.update(fill="tonexty", fillcolor=color_add_alpha(color, layer.style.band_alpha))
     return center, upper, lower
 
+
+def _position(
+    source: _Source, value: ReferenceValue, positions: Positions, member: Mapping[str, int],
+) -> np.ndarray:
+    if isinstance(value, float):
+        return np.array([value])
+    return _encoded(source, value, positions, member).values
+
+
+def _references(
+    source: _Source,
+    layer: RuleLayer | SpanLayer,
+    positions: Positions,
+    member: Mapping[str, int],
+    label: str,
+    color: str,
+) -> tuple[AxisReference, ...]:
+    """Each rule position, or each span between its start and end, read for one group."""
+    line = {"color": color, "dash": layer.style.line_dash, "width": layer.style.line_width}
+    legend = layer.style.showlegend is not False
+    if isinstance(layer, RuleLayer):
+        at = _position(source, layer.encode.at, positions, member)
+        return tuple(
+            AxisReference(layer.encode.axis, float(value), float(value), label, legend, line, None)
+            for value in at
+        )
+    starts, ends = (
+        _position(source, value, positions, member) for value in (layer.encode.start, layer.encode.end)
+    )
+    if starts.shape != ends.shape and starts.size != 1 and ends.size != 1:
+        raise ValueError("Span start and end do not share their samples.")
+    if (ends < starts).any():
+        raise ValueError("Span end must not precede its start.")
+    fill = color_add_alpha(color, layer.style.fill_alpha)
+    edge = line if layer.style.line_width is not None else line | {"width": 0}
+    return tuple(
+        AxisReference(layer.encode.axis, float(start), float(end), label, legend, edge, fill)
+        for start, end in zip(*np.broadcast_arrays(starts, ends), strict=True)
+    )
 
 
 def _trial_samples(source: _Source, x: _Samples, positions: Positions) -> _Samples | None:
@@ -431,70 +499,79 @@ def render(
     canvas = go.Figure(layout={"template": figure.theme if theme is None else theme})
     colors = cycle(canvas.layout.template.layout.colorway or qualitative.Plotly)
     traces: dict[str, list[go.Scatter]] = {panel.name: [] for panel in figure.layout}
+    references: dict[str, list[AxisReference]] = {panel.name: [] for panel in figure.layout}
     inferred_labels: dict[str, dict[str, str]] = {}
     panel_times: dict[str, TrialFigureTime | None] = {}
     mean_panel_times: dict[str, TrialFigureTime] = {}
     mean_legends: list[_MeanLegend] = []
     for layer in figure.layers:
         source = sources[layer.role]
-        before = len(traces[layer.panel])
+        before = len(traces[layer.panel]) + len(references[layer.panel])
         try:
-            clock = None
-            trial_rows: list[_TrialTrace] = []
-            layer_legends: list[tuple[str, Label, tuple[go.Scatter, ...]]] = []
-            if "trial" in layer.group and mean is not None:
-                if recorded_trials is None or layer.role not in recorded_trials:
-                    raise ValueError(f"No retained trial clock for data role {layer.role!r}.")
-                clock = FigureTrialSource(source.dataset, recorded_trials[layer.role], source.read)
-            for group, positions, member in _layer_groups(source, layer):
-                channels = {}
-                for channel, encoding in layer_encodings(layer):
-                    try:
-                        channels[channel] = _encoded(source, encoding, positions, member)
-                    except ValueError as error:
-                        raise ValueError(f"channel {channel!r}: {error}") from error
-                _check_samples(channels)
-                printed = {name: source.printed(name, value) for name, value in group.items()}
-                if "trial" in group:
-                    dimension, _ = source.coordinate("trial", member)
-                    printed["trial"] = positions[dimension][0] + 1
-                color = layer.style.color or next(colors)
-                if clock is not None:
-                    record, options = clock.project(positions)
-                    trial_rows.append(_TrialTrace(
-                        printed, group, channels, color, _trial_samples(source, channels["x"], positions), record, options,
-                    ))
-                else:
+            if isinstance(layer, RuleLayer | SpanLayer):
+                for group, positions, member in _layer_groups(source, layer):
+                    printed = {name: source.printed(name, value) for name, value in group.items()}
                     label = (layer.style.label or layer.name).format_map(printed)
-                    drawn = _draw(layer, channels, label, color, group=group)
-                    layer_legends.append((label, group.get(MEMBER), drawn))
-                    traces[layer.panel].extend(drawn)
-                time = channels["x"].field.trial_time
-                if panel_times.setdefault(layer.panel, time) != time:
-                    panel_times[layer.panel] = None
-                inferred_labels.setdefault(
-                    layer.panel, {axis: channels[axis].label for axis in ("x", "y")}
-                )
-            member_labels = _member_labels((label, member) for label, member, _ in layer_legends)
-            for label, member, drawn in layer_legends:
-                display = member_labels.get((label, member), label)
-                if display != label:
-                    drawn[0].update(name=display)
-                    for trace in drawn:
-                        trace.update(legendgroup=display)
-            if mean is not None and trial_rows:
-                traces[layer.panel].extend(_trial_traces(layer, trial_rows, mean, mean_legends))
-                if trial_rows[0].channels["x"].field.trial_time is not None:
-                    mean_panel_times[layer.panel] = TrialFigureTime(zero_epoch=mean.align)
+                    references[layer.panel].extend(
+                        _references(source, layer, positions, member, label, layer.style.color or next(colors))
+                    )
+            else:
+                clock = None
+                trial_rows: list[_TrialTrace] = []
+                layer_legends: list[tuple[str, Label, tuple[go.Scatter, ...]]] = []
+                if "trial" in layer.group and mean is not None and not isinstance(layer, PointsLayer):
+                    if recorded_trials is None or layer.role not in recorded_trials:
+                        raise ValueError(f"No retained trial clock for data role {layer.role!r}.")
+                    clock = FigureTrialSource(source.dataset, recorded_trials[layer.role], source.read)
+                for group, positions, member in _layer_groups(source, layer):
+                    channels = {}
+                    for channel, encoding in layer_encodings(layer):
+                        try:
+                            channels[channel] = _encoded(source, encoding, positions, member)
+                        except ValueError as error:
+                            raise ValueError(f"channel {channel!r}: {error}") from error
+                    _check_samples(channels)
+                    printed = {name: source.printed(name, value) for name, value in group.items()}
+                    if "trial" in group:
+                        dimension, _ = source.coordinate("trial", member)
+                        printed["trial"] = positions[dimension][0] + 1
+                    color = layer.style.color or next(colors)
+                    if clock is not None:
+                        record, options = clock.project(positions)
+                        trial_rows.append(_TrialTrace(
+                            printed, group, channels, color, _trial_samples(source, channels["x"], positions), record, options,
+                        ))
+                    else:
+                        label = (layer.style.label or layer.name).format_map(printed)
+                        drawn = _draw(layer, channels, label, color, group=group)
+                        layer_legends.append((label, group.get(MEMBER), drawn))
+                        traces[layer.panel].extend(drawn)
+                    time = channels["x"].field.trial_time
+                    if panel_times.setdefault(layer.panel, time) != time:
+                        panel_times[layer.panel] = None
+                    inferred_labels.setdefault(
+                        layer.panel, {axis: channels[axis].label for axis in ("x", "y")}
+                    )
+                member_labels = _member_labels((label, member) for label, member, _ in layer_legends)
+                for label, member, drawn in layer_legends:
+                    display = member_labels.get((label, member), label)
+                    if display != label:
+                        drawn[0].update(name=display)
+                        for trace in drawn:
+                            trace.update(legendgroup=display)
+                if mean is not None and trial_rows:
+                    traces[layer.panel].extend(_trial_traces(layer, trial_rows, mean, mean_legends))
+                    if trial_rows[0].channels["x"].field.trial_time is not None:
+                        mean_panel_times[layer.panel] = TrialFigureTime(zero_epoch=mean.align)
         except CannotRun:
             raise
         except (KeyError, ValueError) as error:
             raise ValueError(f"Layer {layer.name!r}: {error}") from error
-        if len(traces[layer.panel]) == before:
+        if len(traces[layer.panel]) + len(references[layer.panel]) == before:
             raise ValueError(f"Layer {layer.name!r} has no plotted groups.")
 
     _label_means(mean_legends)
     return assemble_figure_grid(
         canvas, figure.layout, figure.view, traces, inferred_labels,
-        panel_times=panel_times | mean_panel_times, runs=runs,
+        references=references, panel_times=panel_times | mean_panel_times, runs=runs,
     )

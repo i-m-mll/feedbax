@@ -14,7 +14,7 @@ from packaging.utils import canonicalize_name
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.code_validity import CodeTrace, ReceiptEvidence
 from feedbax.contracts.computation_validity import NORMALIZATION_VERSION, ComputationTrace
-from feedbax.contracts.effective_success import EvaluationSubjectValue, Success, select_bound_product
+from feedbax.contracts.effective_success import ExcludedProduct, EvaluationSubjectValue, Success, select_bound_product
 from feedbax.contracts.receipt_validity import CheckConditions, InputDifference, ReceiptValidity
 from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef
 from feedbax.persistence.receipt_validity import read_validity_records
@@ -110,7 +110,7 @@ class ProjectValidity:
 
     def inspect(
         self, view: SuccessView, published: PublishedSuccess, *,
-        origins: Mapping[str, ContentObjectRef] | None = None,
+        origins: Mapping[str, ContentObjectRef | ExcludedProduct] | None = None,
         checkpoint_differences: Sequence[InputDifference] = (),
     ) -> ObservedReceiptValidity:
         receipt = published.receipt
@@ -198,21 +198,39 @@ def is_quick(receipt: Success, duration: timedelta, store: ImmutableArtifactBlob
 
 def current_input_differences(
     view: SuccessView, receipt: Success, *,
-    origins: Mapping[str, ContentObjectRef] | None = None,
+    origins: Mapping[str, ContentObjectRef | ExcludedProduct] | None = None,
     authenticate_origins: bool = False,
 ) -> tuple[InputDifference, ...]:
+    from feedbax.persistence.metric_exclusion import exclusion_objects
+
     decoded = view.read_request(receipt.request)
     differences = []
     for role, members in decoded.inputs.items():
-        for member, bound in zip(members, receipt.inputs[role], strict=True):
+        previous = {item.key: item for item in receipt.inputs[role]}
+        for member in members:
             reference = member.reference
+            bound = previous.get(member.key)
+            matched = origins.get(reference.request_id) if origins is not None and isinstance(reference, ProductRef) else None
+            if isinstance(matched, ExcludedProduct):
+                assert isinstance(reference, ProductRef)
+                exclusion_objects(view.store, matched, reference.request_id)
+                if bound is not None:
+                    differences.append(InputDifference(role=role, member=member.key, before=bound.content, after=None))
+                continue
+            if bound is None:
+                if isinstance(matched, ContentObjectRef):
+                    content = view.resolve(decoded, member, matched).content
+                    differences.append(InputDifference(role=role, member=member.key, before=None, after=content))
+                elif authenticate_origins:
+                    raise ValueError(f"Missing admitted producer for {role}/{member.key}.")
+                continue
             if isinstance(reference, ContentRef) and authenticate_origins:
                 view.resolve(decoded, member, None)
             if not isinstance(reference, ProductRef) or bound.checkpoint_model is not None:
                 continue
             if bound.evaluation_subject is not None and not isinstance(reference.select, LastMember):
                 continue
-            origin = origins.get(reference.request_id) if origins is not None else None
+            origin = matched
             if authenticate_origins and origin is None:
                 raise ValueError(f"Missing admitted producer for {role}/{bound.key}.")
             if origin is None:

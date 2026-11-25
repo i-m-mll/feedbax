@@ -2,7 +2,6 @@
 
 from collections.abc import Mapping
 from hashlib import sha256
-from math import isfinite
 from pathlib import Path
 
 from feedbax.contracts.jobs import JobReceipt
@@ -10,6 +9,7 @@ from feedbax.contracts.manifest import canonical_manifest_path, training_run_man
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.request_refs import BestRank, RequestId
 from feedbax.persistence.completion import CompletionFileError, completion_file
+from feedbax.persistence.train_metrics import finite_final_metric
 
 
 class BestMetricUnavailable(ValueError):
@@ -37,17 +37,18 @@ def rank_train_metric(raw: bytes, receipt: JobReceipt, attempt: str, metric: str
         if not isinstance(metrics, dict):
             raise CompletionFileError("Train receipt summary_metrics must be an object.")
         score = metrics.get(metric)
+        replicas = next((
+            item.get("metadata", {}).get("replicas", ())
+            for item in manifest.get("artifacts", ()) if item["role"] == "training_metrics"
+        ), ())
     except CompletionFileError:
         raise
     except (ValueError, KeyError, TypeError) as error:
         raise CompletionFileError(f"Cannot measure exact Train receipt: {error}") from error
-    if type(score) in (float, int):
-        try:
-            if isfinite(score):
-                return float(score)
-        except OverflowError:
-            pass
-    raise BestMetricUnavailable(f"Train attempt {attempt} has no finite {metric!r} metric.")
+    try:
+        return finite_final_metric(score, len(replicas) or 1, metric)
+    except ValueError as error:
+        raise BestMetricUnavailable(f"Train attempt {attempt}: {error}") from error
 
 
 def completion_score(completion: dict, metric: str) -> float:

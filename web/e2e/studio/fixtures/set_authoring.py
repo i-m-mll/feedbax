@@ -40,6 +40,37 @@ def seed_entries(home: str, project_id: str):
     return _seed(home, project_id, raw)
 
 
+def seed_window(home: str, project_id: str):
+    """A Model force pulse whose onset is declared by one Set entry."""
+    from tests.support.managed_train_fixture import managed_train_project
+
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["documents"]["pulses"] = {
+        "schema": "feedbax.set_document.v1",
+        "payload": {"entries": {
+            "nominal": {},
+            "force": {
+                "task_variables": [{
+                    "id": "onset", "name": "Onset",
+                    "type": {"base": "real", "dimensions": {"time": 1}},
+                    "value": {"kind": "literal", "value": 0.1, "unit": "s"},
+                }],
+                "differences": {"/interior/wires/drive/attachments": {"value": [{
+                    "kind": "intervention", "id": "pulse", "operation": "add", "fields": {"value": [0.5, 0.0]},
+                    "window": {"spans": [{
+                        "kind": "interval",
+                        "start": {"anchor": {"kind": "trial", "edge": "start"},
+                                  "offset": {"kind": "name", "reference": "onset"}},
+                        "end": {"offset": {"value": 5.0, "unit": "st"}},
+                    }]},
+                }]}},
+            },
+        }},
+    }
+    raw["steps"]["train"]["sweep"] = {"axes": {"pulse": {"set": "pulses"}}}
+    return _seed(home, project_id, raw)
+
+
 if __name__ == "__main__":
     action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed, "seed_entries": seed_entries}[action](*args)))
+    print(json.dumps({"seed": seed, "seed_entries": seed_entries, "seed_window": seed_window}[action](*args)))

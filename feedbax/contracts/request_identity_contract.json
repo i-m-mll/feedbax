@@ -615,12 +615,51 @@
     "feedbax.contracts.model_document.DelayAttachment": {
       "delay": {},
       "id": {},
-      "initial": {
-        "absent": 0
+      "initial_source": {
+        "absent": {
+          "$family": "feedbax.contracts.model_document.DelayInitialValue",
+          "kind": "value",
+          "value": 0.0
+        },
+        "families": [
+          "feedbax.contracts.model_document.DelayInitialTask",
+          "feedbax.contracts.model_document.DelayInitialValue",
+          "feedbax.contracts.model_document.DelayInitialWire"
+        ]
       },
       "kind": {
         "values": [
           "delay"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.DelayInitialTask": {
+      "kind": {
+        "values": [
+          "task"
+        ]
+      },
+      "variable": {}
+    },
+    "feedbax.contracts.model_document.DelayInitialValue": {
+      "kind": {
+        "values": [
+          "value"
+        ]
+      },
+      "value": {}
+    },
+    "feedbax.contracts.model_document.DelayInitialWire": {
+      "kind": {
+        "values": [
+          "wire"
+        ]
+      },
+      "source": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortEnd",
+          "feedbax.contracts.model_address.InputBoundaryEnd"
         ]
       }
     },
@@ -1328,6 +1367,9 @@
       },
       "cells": {},
       "id": {},
+      "intervention": {
+        "absent": null
+      },
       "name": {},
       "type": {},
       "window": {
@@ -3980,6 +4022,11 @@
         "field": "epochs",
         "migration": "shared-trial-windows",
         "model": "feedbax.contracts.objective_document.ObjectiveTerm"
+      },
+      {
+        "field": "initial",
+        "migration": "typed-delay-initial",
+        "model": "feedbax.contracts.model_document.DelayAttachment"
       }
     ],
     "values": [

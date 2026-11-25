@@ -11,8 +11,9 @@ from feedbax.contracts.expression_values import (
 )
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import compile_project
-from feedbax.contracts.request_refs import BestRank
-from feedbax.contracts.run_rule import choose
+from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_refs import BestRank, ConditionalProduct
+from feedbax.contracts.run_rule import choose, metric_condition_holds
 from feedbax.contracts.expression_text import RuleBest, RuleChoice, RuleCondition, RuleInterval, parse, parse_rule
 from tests.test_saved_update_series import definition
 
@@ -104,13 +105,35 @@ def test_best_per_axis_plans_one_ranked_row_per_group() -> None:
 
 @pytest.mark.parametrize(("rule", "named"), [
     ("sed=0", "sed is not swept in"),
-    ("train_loss<0.1", "train_loss<0.1"),
+    ("lost<0.1", "has no declared final metric lost"),
     ("seed=9", "seed has no value 9"),
     ("seed>9", "chooses no run"),
 ])
 def test_a_rule_is_refused_on_its_field_with_its_text(rule: str, named: str) -> None:
-    """A mistyped axis, a metric comparison, a value the axis lacks and an empty choice are refused at ``where.rule``."""
+    """A mistyped axis, an unknown final metric, an absent axis value and an empty choice are refused at ``where.rule``."""
     plan = compile_project(Project.model_validate(_swept(range(2), rule)))
     [problem] = [problem for problem in plan.diagnostics if problem.step == "baseline"]
     assert problem.path == "inputs.subject.where.rule"
     assert named in problem.detail
+
+
+
+def test_metric_conditions_plan_one_fixed_row_per_candidate():
+    raw = _swept(range(3), "lr=0.01 train_loss < seed")
+    # The reader need not author a sweep to get one row per candidate.
+    del raw["steps"]["baseline"]["sweep"]
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["replicates"] = 2
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    assert all("train_loss" in run.metric_names for run in plan.runs if run.kind == "train")
+    candidates = [run for run in plan.runs if run.kind == "evaluate"]
+    assert len(candidates) == 3
+    for candidate in candidates:
+        decoded = decode_request(plan.requests[candidate.request_id], plan.documents.__getitem__)
+        (member,) = decoded.inputs["subject"]
+        assert isinstance(member.reference, ConditionalProduct)
+        assert candidate.inputs["subject"].member == member
+        assert member.reference.request_id.startswith("train:")
+        assert metric_condition_holds(member.reference.conditions, lambda _: 0.25) is (
+            candidate.coordinates["seed"].value >= 1
+        )

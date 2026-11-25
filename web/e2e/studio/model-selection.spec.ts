@@ -128,3 +128,87 @@ test('an attachment dragged onto another wire is drawn there before it is droppe
   await expect.poll(uncovered, { message: 'No card covers the dropped attachment' }).toBe(true);
   expect(errors).toEqual([]);
 });
+
+/** Where the dashing of `wire` begins, on screen; undefined when the wire is solid. */
+function dashStart(model: ReturnType<Page['locator']>, wire: string) {
+  return model.locator(`.react-flow__edge[data-id="${wire}"] path.react-flow__edge-path`).evaluate((element: SVGPathElement) => {
+    const along = Number.parseFloat(element.style.strokeDasharray);
+    if (!Number.isFinite(along)) return undefined;
+    const point = element.getPointAtLength(along).matrixTransform(element.getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  });
+}
+
+/**
+ * A delay is a square on its wire, with the wire solid up to it and dashed after it, and it drags to another wire of
+ * its loop, which is then the one dashed (catches dashing that starts at the wire's middle while the square is drawn
+ * elsewhere, a round delay mark, and dashing left on the wire the delay left).
+ */
+test('a delay is a square where its wire turns dashed, and drags to another wire of its loop', async ({ page, request }) => {
+  const { model, errors, edit } = await openModel(page, request, (document) => {
+    const { components, wires } = document.interior;
+    for (const [id, field] of [['cell', 'hidden_size'], ['readout', 'input_size']] as const) {
+      const leaf = components![id];
+      if (leaf.kind === 'leaf') leaf.fields = { ...leaf.fields, [field]: 2 };
+    }
+    wires!.feedback = {
+      source: { owner: 'component', component: 'readout', port: 'output' },
+      target: { owner: 'component', component: 'cell', port: 'hidden' },
+      attachments: [{ id: 'lag', kind: 'delay', delay: { value: 5, unit: 'st' } }],
+    };
+  });
+  const delay = model.getByRole('button', { name: 'Attachment Delay', exact: true });
+  const centre = async () => {
+    const box = (await delay.boundingBox())!;
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2, width: box.width, height: box.height };
+  };
+  const onSquare = async (wire: string) => {
+    if (!await delay.isVisible()) return false;
+    const [square, start] = [await centre(), await dashStart(model, wire)];
+    return !!start && Math.hypot(square.x - start.x, square.y - start.y) < 6;
+  };
+  await expect(delay).toHaveText('5');
+  const drawn = await centre();
+  expect(Math.abs(drawn.width - drawn.height)).toBeLessThan(1);
+  expect(await delay.evaluate((element) => getComputedStyle(element).borderTopLeftRadius)).toBe('0px');
+  await expect.poll(() => onSquare('feedback'), { message: 'The feedback wire turns dashed at the square' }).toBe(true);
+  expect(await dashStart(model, 'decode')).toBeUndefined();
+
+  const path = model.locator('.react-flow__edge[data-id="decode"] path.react-flow__edge-path');
+  const on = await path.evaluate((element: SVGPathElement) => {
+    const length = element.getTotalLength();
+    for (let step = 1; step < 20; step += 1) {
+      const point = element.getPointAtLength(length * step / 20).matrixTransform(element.getScreenCTM()!);
+      if (document.elementFromPoint(point.x, point.y)?.closest('.react-flow__edge') === element.closest('.react-flow__edge')) {
+        return { x: point.x, y: point.y };
+      }
+    }
+    throw new Error('The wire is covered everywhere.');
+  });
+  await delay.hover();
+  await page.mouse.down();
+  await page.mouse.move(on.x, on.y, { steps: 6 });
+  const moved = edit();
+  await page.mouse.up();
+  const { result } = await (await moved).json() as ModelEditResponse;
+  expect(result.status, result.status === 'refused' ? result.problem.detail : '').toBe('applied');
+  await expect.poll(() => onSquare('decode'), { message: 'The decode wire turns dashed at the square' }).toBe(true);
+  expect(await dashStart(model, 'feedback')).toBeUndefined();
+  expect(errors).toEqual([]);
+});
+
+/** Add Hold on a wire stores a Hold there and draws it (catches a Hold that is not offered, or refused as sent). */
+test('Add Hold puts a Hold on the selected wire', async ({ page, request }) => {
+  const { model, errors, edit } = await openModel(page, request);
+  await model.locator('.react-flow__edge[data-id="decode"]').click();
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await inspector.getByRole('button', { name: 'Add Attachment', exact: true }).click();
+  const added = edit();
+  await page.getByRole('menuitem', { name: 'Add Hold', exact: true }).click();
+  const response = await added;
+  expect(response.request().postDataJSON().command.operation.difference.attachment).toMatchObject({ kind: 'hold' });
+  const { result } = await response.json() as ModelEditResponse;
+  expect(result.status, result.status === 'refused' ? result.problem.detail : '').toBe('applied');
+  await expect(model.getByRole('button', { name: 'Attachment Hold', exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});

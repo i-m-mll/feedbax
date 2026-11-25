@@ -27,7 +27,9 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ScopedValue, Site, ValueBase, ValueType
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.model_address import ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement
+from feedbax.contracts.model_address import (
+    ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, OutputBoundaryEnd, PortElement,
+)
 from feedbax.contracts.model_document import GraphInterior, ModelDocument
 from feedbax.contracts.model_values import component_model_facts
 from feedbax.contracts.project import json_pointer_parts
@@ -36,8 +38,8 @@ from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.objectives.document import ObjectiveDocument, ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.runtime.graph import GraphTraceRequest
-from feedbax.execution.trial_execution import TrialExecution
-from feedbax.tasks.document import TaskDocument, TrialSource, bind_task_inputs, compile_task
+from feedbax.execution.trial_execution import TrialExecution, TrialModelOutput
+from feedbax.tasks.document import TaskDocument, TrialSource, bind_task_inputs, compile_task, delay_initial_problems
 from feedbax.tasks.registry import (
     PythonTaskRegistry,
     PythonTaskTemplate,
@@ -135,6 +137,14 @@ def pair_trial_source(
         signal_ids = {name: name for name in signal_types}
     else:
         template = None
+        from feedbax.compiler.set_fields import lower_trial_interventions
+
+        try:
+            model, task = lower_trial_interventions(model, task, components)
+        except ModelCompilationProblem as error:
+            return model_compilation_problems(error)
+        except ValueError as error:
+            return (Problem(code=ProblemCode.STRUCTURE, path=("model",), reason=str(error)),)
         signal_types = {signal.id: signal.type for signal in task.signals}
         signal_ids = {signal.name: signal.id for signal in task.signals}
     supplied_types = {}
@@ -164,13 +174,17 @@ def pair_trial_source(
         reset_fields.extend(interface.reset.fields)
     links: list[Problem] = []
     if isinstance(task, TaskDocument):
+        scope = model_measure_scope(model, interface.signals)
+        outputs = tuple(name for name in scope.names if _task_model_output(scope.leaves[name.id]))
         compiled = compile_task(
-            task, functions, model=replace(interface, inputs=()), sites=task_sites, link_problems=links,
+            task, functions, model=replace(interface, inputs=(), outputs=outputs), sites=task_sites, link_problems=links,
             nominal=nominal,
         )
     else:
         assert template is not None
         compiled = template.prepare(interface, functions)
+        if not isinstance(compiled, tuple):
+            links.extend(delay_initial_problems(interface, {item.id: item for item in compiled.interface.variables}))
     if isinstance(compiled, tuple):
         return (*compiled, *links)
     if template is not None and template.condition_ids != compiled.condition_ids:
@@ -186,6 +200,11 @@ def pair_trial_source(
         model_address=issue.address,
     ) for issue in interface.signals.problems)
     return TrialPair(interface, compiled, lowered, prototypes, bindings, (*links, *problems, *graph_problems), task)
+
+
+def _task_model_output(leaf: ResolvedSignalLeaf) -> bool:
+    port = leaf.port.element
+    return not leaf.port.composites and isinstance(port, PortElement) and isinstance(port.end, OutputBoundaryEnd)
 
 
 def declared_model_outputs(model: ModelDocument) -> tuple[ScopedValue, ...]:
@@ -216,6 +235,7 @@ class PreviewTrialSource:
     task: TrialSource
     outputs: tuple[ScopedValue, ...]
     signal_scope: ModelMeasureScope | None = None
+    document: TaskDocument | None = None
 
 
 def preview_trial_source(
@@ -235,7 +255,8 @@ def preview_trial_source(
     )
     if isinstance(paired, TrialPair):
         scope = model_measure_scope(model, paired.model.signals)
-        return PreviewTrialSource(paired.task, scope.names, scope)
+        document = paired.task_source if isinstance(paired.task_source, TaskDocument) else None
+        return PreviewTrialSource(paired.task, scope.names, scope, document)
     if any(problem.path[:1] != ("model",) for problem in paired):
         return tuple(problem for problem in paired if problem.path[:1] != ("links",))
     return compile_unpaired_task(model, task, functions, python_tasks=python_tasks, nominal=nominal)
@@ -364,12 +385,13 @@ def resolve_trial_execution(
     objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
     input_bindings: Mapping[str, str | None] | None = None,
     graph_override: GraphSpec | None = None,
+    nominal: bool = False,
 ) -> ResolvedTrialExecution | tuple[Problem, ...]:
     """Validate the paired Model, Task and Objective before runtime construction."""
     try:
         pairing = pair_trial_source(
             model, task, components, functions, python_tasks=python_tasks,
-            input_bindings=input_bindings, graph_override=graph_override,
+            input_bindings=input_bindings, graph_override=graph_override, nominal=nominal,
         )
         if isinstance(pairing, tuple):
             return pairing
@@ -390,7 +412,7 @@ def resolve_trial_execution(
                 *compiled_task.interface.variables,
                 *compiled_task.interface.signals,
             )
-            scorer = compile_objective(objective, names, functions, task=compiled_task, use=objective_use)
+            scorer = compile_objective(objective, names, functions, task=compiled_task, use=objective_use, nominal=nominal)
             if not isinstance(scorer, ObjectiveExecutor):
                 return scorer
             for operand in scorer.names:
@@ -408,9 +430,17 @@ def resolve_trial_execution(
         return model_compilation_problems(error)
     except GraphCompilationError as error:
         return _graph_problems(error)
+    task_reads = tuple(
+        TrialModelOutput(name.id, leaf.name, leaf.path, name.type)
+        for name in compiled_task.interface.model_outputs
+        if (leaf := signal_scope.leaves.get(name.id)) is not None
+    )
     return ResolvedTrialExecution(
         graph,
-        TrialExecution(compiled_task, interface.reset, pairing.input_bindings, tuple(observations.values()), tuple(origins)),
+        TrialExecution(
+            compiled_task, interface.reset, pairing.input_bindings, tuple(observations.values()), tuple(origins),
+            task_reads,
+        ),
         scorer,
         pairing.lowered,
         pairing.task_source,

@@ -436,6 +436,8 @@ class Host:
         try:
             if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT:
                 origins = self.store.light_origins(row)
+                if self.store.exclude_empty_light(row, origins):
+                    return
             self.store.verify_completion_bindings(row, launch, bindings)
         except CompletionFileError as error:
             with self.store.db:

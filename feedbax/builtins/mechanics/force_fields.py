@@ -281,8 +281,16 @@ def _migrate_threshold_latched_force_v1(params: dict[str, Any]) -> dict[str, Any
     return migrated
 
 
+def curl_field_output_prototype(params: Mapping[str, Any], inputs: Mapping[str, Any]) -> dict[str, Any]:
+    if "force" in inputs:
+        return force_passthrough_output_prototype(params, inputs)
+    if "effector" not in inputs:
+        raise MissingPrototypeInput("CurlField requires an effector velocity.")
+    return {"force": inputs["effector"].vel}
+
+
 class CurlField(Component):
-    """Velocity-dependent curl field added to a force signal."""
+    """Velocity-dependent curl force, optionally added to an incoming force."""
 
     component_history = History(Change(2, migrate=_drop_label))
     model_facts = ModelFacts(
@@ -305,9 +313,10 @@ class CurlField(Component):
             "params_override": PortType(dtype="object"),
         },
         outputs={"force": PortType(dtype="vector")},
+        required_inputs=("effector",),
     )
     component_options: ClassVar = ComponentOptions(
-        output_prototype_fn=force_passthrough_output_prototype
+        output_prototype_fn=curl_field_output_prototype,
     )
 
     params_index: StateIndex
@@ -322,7 +331,7 @@ class CurlField(Component):
         if "params_override" in inputs:
             params = _merge_params_override(params, inputs["params_override"])
         effector = inputs["effector"]
-        force = inputs["force"]
+        force = inputs["force"] if "force" in inputs else jnp.zeros_like(effector.vel)
 
         def apply_field():
             vel = effector.vel

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import get_args
 
 from feedbax.compiler.model_document import lower_model_document
-from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON
+from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, WIRED_VECTOR_INPUT_TYPES, model_unstored_fields
 from feedbax.component_registry import ComponentRegistry
 from feedbax.component_registry.declarations import DeclaredComponent
 from feedbax.contracts.acausal import EquationsDomain
@@ -31,6 +31,11 @@ def with_model_placement_reason(
 ) -> ComponentDefinition:
     """Annotate a Library definition with any intrinsic reason it cannot be placed in a Model."""
     declaration = registry.declaration_record(definition.name).value
+    hidden = model_unstored_fields(declaration.name)
+    definition = definition.model_copy(update={
+        "default_params": {key: value for key, value in definition.default_params.items() if key not in hidden},
+        "param_schema": [field for field in definition.param_schema if field.name not in hidden],
+    })
     if declaration.name == "feedbax.AcausalSystem":
         return definition.model_copy(update={"equations_domains": get_args(EquationsDomain)})
     if is_acausal_type(declaration.name, "BoundaryPort"):
@@ -77,6 +82,7 @@ def _composite(name: str, graph: GraphSpec, registry: ComponentRegistry, period:
     if subgraphs.keys() - graph.nodes.keys():
         raise ValueError(f"The template {name} has an interior without a component")
 
+    driven_inputs = {(wire.target_node, wire.target_port) for wire in graph.wires} | set(graph.input_bindings.values())
     components = {}
     for node_id, node in graph.nodes.items():
         if node_id in subgraphs:
@@ -86,6 +92,8 @@ def _composite(name: str, graph: GraphSpec, registry: ComponentRegistry, period:
             components[node_id] = _composite(node_id, child, registry, period)
             continue
         fields = node.model_dump(mode="json")["params"]
+        if node.type in WIRED_VECTOR_INPUT_TYPES and (node_id, "input") in driven_inputs:
+            fields.pop("input_size", None)
         for key in ("dt", "control_dt"):
             if key in fields:
                 step_length = fields.pop(key)

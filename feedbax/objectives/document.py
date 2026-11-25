@@ -25,6 +25,7 @@ from feedbax.contracts.expression_values import (
     ValueType,
     walk,
 )
+from feedbax.contracts.task_document import EpochEnd
 from feedbax.contracts.model_address import FieldElement, ModelAddress, OutputBoundaryEnd, PortElement
 from feedbax.contracts.objective_document import (
     ObjectiveDocument as ObjectiveDocument,
@@ -32,6 +33,7 @@ from feedbax.contracts.objective_document import (
     Reduction as Reduction,
 )
 from feedbax.contracts.expression_check import references
+from feedbax.contracts.window import window_offset_sites
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import Evaluation, FunctionRegistry
 from feedbax.objectives.base import TermTree
@@ -66,6 +68,7 @@ class TermTrace(NamedTuple):
 class ObjectiveResult(NamedTuple):
     loss: jax.Array
     terms: Mapping[str, TermValue]
+    trial_losses: jax.Array
 
 
 class ObjectiveUse(Enum):
@@ -92,6 +95,33 @@ class _UncoveredTerm:
     id: str
 
 
+@dataclass(frozen=True)
+class _EpochRead:
+    name: ScopedValue
+    slots: tuple[int, ...]
+    outcome: EpochEnd
+
+    def read(self, trial: Trial):
+        matches = jnp.take(trial.epochs.outcomes, jnp.asarray(self.slots), axis=-1) == int(self.outcome)
+        return matches if self.name.list_count else matches[0]
+
+
+def _epoch_reads(task: TrialSource) -> tuple[_EpochRead, ...]:
+    reads = []
+    for epoch, name in task.interface.epoch_conditions:
+        slots = tuple(index for index, given in enumerate(task.epochs) if given == epoch)
+        for suffix, outcome in (("condition", EpochEnd.CONDITION), ("limit", EpochEnd.LIMIT)):
+            reads.append(_EpochRead(
+                ScopedValue(
+                    id=f"epoch:{epoch}:{suffix}", name=f"epoch.{name}.{suffix}",
+                    type=ValueType(base=ValueBase.BOOLEAN), level=Level.TRIAL,
+                    list_count=len(slots) if len(slots) > 1 else None,
+                ),
+                slots, outcome,
+            ))
+    return tuple(reads)
+
+
 class ObjectiveExecutor(eqx.Module):
     """One implementation for per-trial reduction and covered-trial means."""
 
@@ -100,22 +130,17 @@ class ObjectiveExecutor(eqx.Module):
     names: tuple[ScopedValue, ...] = ()
     period: float = 1.0
     n_steps: int = 0
+    epochs: tuple[_EpochRead, ...] = ()
 
     def __call__(self, states, trial_specs: Trial, model: ObjectiveInputs):
         """Expose the same batch values as a loss tree."""
-        return TermTree.branch(
-            self.label,
-            {
-                key: TermTree.leaf(key, term.value)
-                for key, term in self.evaluate(
-                    states,
-                    trial_specs,
-                    run_key=model.run_key,
-                    trial_keys=model.trial_keys,
-                    parameters=model.parameters,
-                ).terms.items()
-            },
+        result = self.evaluate(
+            states, trial_specs, run_key=model.run_key, trial_keys=model.trial_keys, parameters=model.parameters,
         )
+        return TermTree.branch(self.label, {
+            key: TermTree.leaf(key, term.value, weight=term.covered / max(result.trial_losses.size, 1))
+            for key, term in result.terms.items()
+        })
 
     def evaluate(self, retained, trials, *, run_key, trial_keys, parameters=None):
         values = jax.vmap(
@@ -127,7 +152,7 @@ class ObjectiveExecutor(eqx.Module):
                 parameters=parameters,
             )
         )(retained, trials, trial_keys)
-        return _reduce_trials(values)
+        return _reduce_trials(values, trial_keys.shape[0])
 
     def point_operands(self) -> dict[str, TermPoints]:
         return {term.id: measure_points(term.measure.checked) for term in self.terms if isinstance(term, _Term)}
@@ -138,7 +163,8 @@ class ObjectiveExecutor(eqx.Module):
                 kept, trial, run_key, key, parameters=parameters, observed_points=observed_points,
             )
         )(retained, trials, trial_keys)
-        return _reduce_trials({term: trace.reduced for term, trace in traces.items()}), traces
+        values = {term: trace.reduced for term, trace in traces.items()}
+        return _reduce_trials(values, trial_keys.shape[0]), traces
 
     def evaluate_trial(
         self,
@@ -173,7 +199,7 @@ class ObjectiveExecutor(eqx.Module):
             None, jnp.zeros(n_steps, dtype=bool),
             TermValue(jnp.asarray(0.0), jnp.asarray(False)), None,
         )
-        fixed = {}
+        fixed = {read.name.id: read.read(trial) for read in self.epochs}
         traces = {}
         available = {}
         for name in self.names:
@@ -273,16 +299,16 @@ def _weight_trace(weight: Evaluation, selected: jax.Array) -> Evaluation:
     return Evaluation(jnp.broadcast_to(weight.value, selected.shape), selected & weight.defined)
 
 
-def _reduce_trials(values):
+def _reduce_trials(values, batch_size: int) -> ObjectiveResult:
+    trial_losses = jnp.zeros((batch_size,))
     reduced = {}
     for name, (value, covered) in values.items():
+        contribution = jnp.where(covered, value, 0)
         count = jnp.count_nonzero(covered)
-        reduced[name] = TermValue(
-            jnp.sum(jnp.where(covered, value, 0)) / jnp.maximum(count, 1), count,
-        )
-    return ObjectiveResult(
-        sum((term.value for term in reduced.values()), jnp.asarray(0.0)), reduced,
-    )
+        trial_losses = trial_losses + contribution
+        reduced[name] = TermValue(contribution.sum() / jnp.maximum(count, 1), count)
+    loss = trial_losses.sum() / max(batch_size, 1)
+    return ObjectiveResult(loss, reduced, trial_losses)
 
 
 def _reduce(values, mask, reduction):
@@ -313,6 +339,8 @@ def compile_objective(
 ) -> ObjectiveExecutor | tuple[Problem, ...]:
     """Compile an authored objective or rebind the validated Train terms to Evaluate."""
     period = task.period
+    epoch_reads = _epoch_reads(task)
+    names = (*names, *(read.name for read in epoch_reads))
     problems = []
     terms = []
     seen = set()
@@ -344,6 +372,7 @@ def compile_objective(
         if sites is not None:
             sites[(*path, "measure")] = measure_site
             sites[(*path, "weight")] = Site(expected=scalar, names=weight_names, finest=Level.STEP)
+            sites.update({(*path, "window", *at): site for at, site in window_offset_sites(term.window, names).items()})
         if not term.enabled:
             continue
         if term.measure_type.shape or term.measure_type.base != ValueBase.REAL:
@@ -448,6 +477,7 @@ def compile_objective(
         tuple(name for name in names if name.id in referenced),
         period,
         task.n_steps,
+        tuple(read for read in epoch_reads if read.name.id in referenced),
     )
 
 

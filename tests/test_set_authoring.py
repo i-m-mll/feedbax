@@ -256,7 +256,56 @@ def test_removing_the_last_copy_removes_the_axis(studio):
     assert _runs(folders, "baseline") == before
 
 
-def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
+def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
+    folders, client = studio
+    entry = _duplicate(folders, client, "other", ["default"])["value"]
+    _set_edit(folders, client, {"kind": "save_set", "step": "other", "axis": "run"})
+    variable = {
+        "id": "onset", "name": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
+        "value": {"kind": "literal", "value": 0.03, "unit": "s"},
+    }
+    _set_edit(folders, client, {
+        "kind": "set_entry_task", "step": "other", "axis": "run", "entry": entry, "task_variables": [variable],
+    })
+
+    def selected(row, change=None):
+        revision = folders.read(PROJECT).revision
+        response = client.post(f"{BASE}/authoring/trials", json={
+            "revision": revision, "run": {"variant": "default", "step": "other", "row": row},
+        } | ({"change": change} if change is not None else {}))
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def set_expression(row, id, text):
+        revision = folders.read(PROJECT).revision
+        edited = selected(row, {
+            "kind": "expression", "path": f"/task/variables/{id}/value", "edit": {"kind": "text", "text": text},
+        })
+        assert not edited.get("store_choices") and edited["files"], edited
+        response = client.patch(BASE, json={"revision": revision, "files": edited["files"]})
+        assert response.status_code == 200, response.text
+
+    for row in _rows(folders, "other"):
+        read = selected(row)
+        for variables in (read["variables"], read["task"]["variables"]):
+            assert any(item["id"] == variable["id"] for item in variables) == (row == f"run={entry}")
+    set_expression(f"run={entry}", "onset", "0.04 s")
+    assert selected(f"run={entry}")["task"]["variables"][-1]["value"]["value"] == 0.04
+    _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
+    read = selected("default")
+    for variables in (read["variables"], read["task"]["variables"]):
+        assert len([item for item in variables if item["name"] == f"{entry} · Onset"]) == 1
+    scoped = next(item["id"] for item in read["variables"] if item["name"] == f"{entry} · Onset")
+    set_expression("default", scoped, "0.07 s")
+    field = folders.read(PROJECT).project.steps["other"].set_fields["run"]
+    project = folders.read(PROJECT).project
+    source = project.documents[field.axis.set].payload["entries"][entry]
+    assert source["task_variables"][0]["id"] == "onset"
+    assert source["task_variables"][0]["value"]["value"] == 0.07
+
+
+@pytest.mark.parametrize("condition", [None, {"kind": "literal", "value": True, "unit": None}])
+def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio, condition):
     folders, client = studio
     train_before = _runs(folders, "train")
     for _ in range(3):
@@ -266,7 +315,11 @@ def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
     sweep = _runs(folders, "other")
     assert len(sweep) == 4
 
-    _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
+    _set_edit(folders, client, {
+        "kind": "set_to_field", "step": "other", "axis": "run", "condition": condition,
+    })
+    saved = folders.read(PROJECT).project.steps["other"].set_fields["run"]
+    assert saved.model_dump(mode="json").get("condition") == condition
     assert list(_runs(folders, "other")) == ["default"]
     revision = folders.read(PROJECT).revision
     reply = client.post(f"{BASE}/authoring/trials", json={
@@ -275,6 +328,7 @@ def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
     assert reply.status_code == 200, reply.text
     (field,) = reply.json()["set_fields"]
     assert field["axis"] == "run" and field["set"] == before.set
+    assert field["condition"] == condition
     assert field["entries"][0]["entry"] is None
     assert all(item["weight"] == 1 for item in field["entries"])
     assert _runs(folders, "train") == train_before

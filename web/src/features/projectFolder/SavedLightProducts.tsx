@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ClickPoint, FullAxis, PlotElement } from 'plotly.js-dist-min';
 import { useQuery } from '@tanstack/react-query';
 import { requestJson, sentBody } from '@/api/request';
@@ -6,7 +6,7 @@ import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/compo
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { StatusMark } from '@/components/ui/StatusMark';
-import { parseContract, type FigureProduct, type StudioSavedLightHistory, type TrialMeanSelection } from '@/generated/studioContracts';
+import { parseContract, type FigureProduct, type StudioSavedLightHistory, type StudioSavedLightResult, type TrialMeanSelection } from '@/generated/studioContracts';
 import { axisAttribute, FigureClockContext, marksTrials, plottedTraces, timePanels, traceTrial, trialRestyle, type TimePanel } from './figureClock';
 import { Button } from '@/components/ui/Button';
 import { Section } from '@/components/ui/Section';
@@ -205,27 +205,22 @@ function SavedPlot({ source, name }: { source: FigureSource; name: string }) {
 }
 
 /**
- * A figure's current or previous result; under Mean (`mean`), the current result's job rendered as each condition's
- * mean at the project's `revision`.
+ * A light step's current or previous result, of those that `holds` accepts: the current one, unless only the
+ * previous one holds or it is chosen, when it is marked stale.
  */
-export function SavedFigureResult({ history, name, project, revision, mean }: {
-  history: StudioSavedLightHistory; name: string; project: string; revision: string; mean?: TrialMeanSelection;
+export function LightResultChoice({ history, holds, className, children }: {
+  history: StudioSavedLightHistory;
+  holds(result: StudioSavedLightResult): boolean;
+  className?: string;
+  children(result: StudioSavedLightResult): ReactNode;
 }) {
   const [previousSelected, setPreviousSelected] = useState(false);
-  const { declare } = useContext(FigureClockContext);
-  // The runs stay declared while the plot is read again for another Mean, which keeps the clock, and its open menus,
-  // on the same trials; they are withdrawn when the result is no longer shown.
-  useEffect(() => () => declare?.(undefined), [declare]);
-  const current = history.result?.products.figure;
-  const previous = history.previous?.products.figure;
+  const current = history.result && holds(history.result) ? history.result : undefined;
+  const previous = history.previous && holds(history.previous) ? history.previous : undefined;
   const showPrevious = Boolean(previous && (!current || previousSelected));
-  const url = showPrevious ? previous : current;
-  if (!url) return null;
-  const shown = showPrevious ? history.previous : history.result;
-  const source: FigureSource = mean && shown
-    ? { kind: 'mean', project, revision, jobId: shown.job_id, mean }
-    : { kind: 'saved', url };
-  return <section aria-label={studioName(showPrevious ? 'previousResult' : 'currentResult')} className="space-y-2 p-2">
+  const shown = showPrevious ? previous : current;
+  if (!shown) return null;
+  return <section aria-label={studioName(showPrevious ? 'previousResult' : 'currentResult')} className={className}>
     {(showPrevious || current && previous) && <div className="flex items-center gap-2">
       {showPrevious && <StatusMark status="stale" label={studioRunStatus('stale')} />}
       {current && previous && <>
@@ -233,8 +228,29 @@ export function SavedFigureResult({ history, name, project, revision, mean }: {
         <Button pressed={showPrevious} onClick={() => setPreviousSelected(true)}>{studioName('previousResult')}</Button>
       </>}
     </div>}
-    <SavedPlot key={JSON.stringify(source)} source={source} name={name} />
+    {children(shown)}
   </section>;
+}
+
+/**
+ * A figure's current or previous result; under Mean (`mean`), the current result's job rendered as each condition's
+ * mean at the project's `revision`.
+ */
+export function SavedFigureResult({ history, name, project, revision, mean }: {
+  history: StudioSavedLightHistory; name: string; project: string; revision: string; mean?: TrialMeanSelection;
+}) {
+  const { declare } = useContext(FigureClockContext);
+  // The runs stay declared while the plot is read again for another Mean, which keeps the clock, and its open menus,
+  // on the same trials; they are withdrawn when the result is no longer shown.
+  useEffect(() => () => declare?.(undefined), [declare]);
+  return <LightResultChoice history={history} holds={({ products }) => !!products.figure} className="space-y-2 p-2">
+    {(shown) => {
+      const source: FigureSource = mean
+        ? { kind: 'mean', project, revision, jobId: shown.job_id, mean }
+        : { kind: 'saved', url: shown.products.figure };
+      return <SavedPlot key={JSON.stringify(source)} source={source} name={name} />;
+    }}
+  </LightResultChoice>;
 }
 
 export function SavedReportResult({ url }: { url: string }) {

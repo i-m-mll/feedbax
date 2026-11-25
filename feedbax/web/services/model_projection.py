@@ -7,8 +7,11 @@ from feedbax.compiler.model_document import inspect_model_signals
 from feedbax.compiler.model_edit import conserving_port_type, model_ungroup_eligibility
 from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf
-from feedbax.contracts.model_address import ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement
-from feedbax.contracts.model_document import ModelDocument, PhysicalPortType, SignalType
+from feedbax.contracts.model_address import (
+    AttachmentElement, ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement, WireElement,
+)
+from feedbax.contracts.model_document import DelayAttachment, ModelDocument, ModelTime, PhysicalPortType, SignalType
+from feedbax.contracts.time_units import length_steps
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, ModelPhysicalPortProjection, ModelPortProjection, ModelProjection, ModelTaskInput, StepRuns,
@@ -37,6 +40,26 @@ def _boundary_port(composites, direction, port):
         "composites": composites,
         "element": {"kind": "port", "end": {"owner": "boundary" if direction == "physical" else direction + "s", "port": port}},
     })
+
+
+def _delay_steps(owner, period: float | None, scope: tuple[str, ...] = ()):
+    for wire_id, wire in owner.interior.wires.items():
+        for item in wire.attachments:
+            if not isinstance(item, DelayAttachment):
+                continue
+            address = ModelAddress(composites=scope, element=AttachmentElement(
+                kind="attachment", parent=WireElement(kind="wire", id=wire_id), id=item.id,
+            ))
+            steps = None
+            if period is not None and isinstance(item.delay, ModelTime):
+                try:
+                    steps = length_steps(item.delay, period)
+                except ValueError:
+                    pass
+            yield address.to_text(), steps
+    for component_id, component in owner.interior.components.items():
+        if component.kind == "composite":
+            yield from _delay_steps(component, period, (*scope, component_id))
 
 
 def _declared_ports(authority: ModelRegistryPorts, owner, scope=()):
@@ -152,7 +175,7 @@ def evaluate_projection(folders, project_id, body, bundle):
         return model, (), None, {}
     if definition.document_ids.get("inputs.subject") == body.document:
         model = documents.model
-    return model, model_task_signals(folders, documents.task_source), documents.objective, documents.input_bindings
+    return model, model_task_signals(documents.task_source, folders.python_tasks), documents.objective, documents.input_bindings
 
 
 def model_projection(folders, project_id, body, bundle):
@@ -197,6 +220,7 @@ def model_projection(folders, project_id, body, bundle):
             ))
     return ModelProjection(
         ports=tuple(ports), physical_ports=tuple(physical_ports), problems=table.problems, task_signals=task_signals,
+        delay_steps=dict(_delay_steps(model, model.step_seconds if isinstance(model.step_seconds, float) else None)),
         task_inputs=tuple(
             ModelTaskInput(composites=(), element=_boundary_port((), "input", port.id).element, signal_id=signal.id)
             for port, signal in bound

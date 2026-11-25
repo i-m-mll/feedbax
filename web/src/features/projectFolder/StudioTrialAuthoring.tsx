@@ -7,7 +7,6 @@ import {
   studioAccessibleName, studioCountOf, studioDefinitionStatus, studioEvaluateValueSource, studioName,
 } from '@/components/activity/studioVocabulary';
 import { ChangeMark as ChangedMark } from '@/components/ui/ChangeMark';
-import { Combobox } from '@/components/ui/Combobox';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { Inspector } from '@/components/ui/Inspector';
 import { editedElement } from '@/components/ui/ChoiceMenu';
@@ -43,6 +42,7 @@ import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import { sendWithStore, type AskStore } from './storeChoice';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
+import { WindowCell, WindowEditor, type WindowEpochChoice, type WindowHost } from './WindowEditor';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 type Relation = Extract<Change, { kind: 'relate' }>;
@@ -293,7 +293,7 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
   </Inspector>;
 }
 
-/** A term's fields that are values, by the column that shows them; its Window is a choice of epochs. */
+/** A term's fields that are values, by the column that shows them; its Window has its own editor. */
 type TermField = 'name' | 'enabled' | 'measure' | 'weight' | 'reduction';
 type TermColumn = 'name' | 'measure' | 'window' | 'weight' | 'value' | 'covered' | 'enabled';
 const authoredColumns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermColumn[];
@@ -380,27 +380,37 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
   };
 }
 
-/** A term's Window: the epochs it applies in, as tokens; none checked is the whole trial. */
-function TermWindow({ view, term, index, commit, labelId }: {
-  view: TrialView; term: ObjectiveTerm; index: number; commit?: Commit; labelId?: string;
-}) {
-  const spans = term.window?.spans ?? [];
-  const epochs = spans.flatMap((span) => span.kind === 'epoch' && span.occurrence == null ? [span.epoch] : []);
+/** The epochs a window can name, each with the occurrences the nominal trial has of it. */
+export function windowEpochs(view: StudioTrialAuthoring): WindowEpochChoice[] {
+  return view.epochs.map(({ id, name }) => ({
+    id, name, occurrences: (view.epoch_instances ?? []).filter((instance) => instance.id === id).length,
+  }));
+}
+
+/** A term's Window: its structure stored at the term's `window`, each offset the field the service projects for it. */
+function termWindow(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs?: TrialRuns): WindowHost {
   const path = termPath(index) + '/window';
-  const changed = changedAt(view, 'objective', path, commit);
-  return <Combobox className="w-full" aria-labelledby={labelId} aria-label={labelId ? undefined : studioName('window')}
-    items={view.epochs.map(({ id, name }) => ({ value: id, label: name }))}
-    checked={epochs} text="" tokens disabled={!commit}
-    trailing={changed && <ChangedMark tip={changeTip(changed.from)} reset={changed.reset && (() => { void changed.reset!(); })} />}
-    onToggle={(epoch) => {
-      const next = view.epochs.map(({ id }) => id)
-        .filter((id) => id === epoch ? !epochs.includes(id) : epochs.includes(id));
-      const nextSpans = [...spans.filter((span) => span.kind !== 'epoch' || span.occurrence != null),
-        ...next.map((id) => ({ kind: 'epoch', epoch: id }))];
-      const value = nextSpans.length ? { spans: nextSpans } as unknown as JsonValue : null;
-      void commit?.(studioAccessibleName('set', studioName('window')),
-        { kind: 'objective', edits: [write(path, value, has(term, 'window'))] });
-    }} />;
+  return {
+    epochs: windowEpochs(view),
+    offset: (site) => {
+      const pointer = authoredPointer(['objective', 'terms', term.id, 'window', ...site]);
+      const projection = view.fields.find((field) => field.path === pointer);
+      if (!projection) throw new Error(`The Objective's window offset ${pointer} has no field`);
+      const label = studioName(site[2]);
+      return trialField(projection, label, runs, {
+        id: term.id + site.join('-'), kind: expressionKind(valueAt(term.window, site)),
+        changed: changedAt(view, 'objective', path + '/' + site.join('/'), commit),
+        commit: commit && ((edit) => commit(studioAccessibleName('set', label), { kind: 'expression', path: projection.path, edit })),
+      });
+    },
+    change: commit && ((value) => commit(studioAccessibleName('set', studioName('window')),
+      { kind: 'objective', edits: [write(path, value as unknown as JsonValue, has(term, 'window'))] })),
+    changed: changedAt(view, 'objective', path, commit),
+  };
+}
+
+function valueAt(root: unknown, path: readonly (string | number)[]): JsonValue | undefined {
+  return path.reduce<unknown>((node, key) => isRecord(node) || Array.isArray(node) ? (node as Record<string | number, unknown>)[key] : undefined, root) as JsonValue | undefined;
 }
 
 /** A term, and the field of it whose cell is selected. */
@@ -507,7 +517,7 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs, scor
         </TableFieldCell>}
         {commit ? <TableFieldCell {...cell('measure')}><ValueField model={fields.measure} form="cell" /></TableFieldCell>
           : <TableCell {...cell('measure')}>{fields.measure.text}</TableCell>}
-        <TableFieldCell {...cell('window')}><TermWindow view={view} term={term} index={index} commit={commit} /></TableFieldCell>
+        <TableFieldCell {...cell('window')}><WindowCell window={term.window} host={termWindow(view, term, index, commit, runs)} /></TableFieldCell>
         {commit ? <TableFieldCell {...cell('weight')}><ValueField model={fields.weight} form="cell" /></TableFieldCell>
           : <TableCell {...cell('weight')}>{fields.weight.text}</TableCell>}
         {score && <>
@@ -571,6 +581,7 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
   const term = view.objective?.terms?.[index];
   if (!term) return null;
   const fields = termFields(view, term, index, commit, runs, shown);
+  const windowHost = termWindow(view, term, index, commit, runs);
   const order: (TermField | 'window')[] = ['name', 'measure', 'window', 'weight', 'enabled', 'reduction'];
   const name = term.name ?? studioAccessibleName('term', index + 1);
   const period = view.period_seconds;
@@ -579,8 +590,9 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
       <TermTrace label={name} term={term.id} shown={shown} stepSeconds={period} />
     </section>}
     {order.map((field) => field === 'window'
-      ? <FieldRow key="window" label={studioName('window')} labelId={windowLabel}>
-        <TermWindow view={view} term={term} index={index} commit={commit} labelId={windowLabel} />
+      ? <FieldRow key="window" label={studioName('window')} labelId={windowLabel} actions={windowHost.changed && <ChangedMark
+        tip={changeTip(windowHost.changed.from)} reset={windowHost.changed.reset && (() => { void windowHost.changed!.reset!(); })} />}>
+        <WindowEditor window={term.window} host={windowHost} labelId={windowLabel} />
       </FieldRow>
       : <ValueField key={term.id + field + JSON.stringify(fields[field].value ?? fields[field].text)} model={fields[field]} />)}
   </Inspector>;

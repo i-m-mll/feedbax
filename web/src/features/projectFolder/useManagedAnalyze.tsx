@@ -44,6 +44,8 @@ import { savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, placedField, type Reveal } from './projectWindowProblems';
 import { ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
+import { FigureLayers } from './FigureLayers';
+import { holdsProducts, OperationProducts } from './OperationProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName, keyOfLabel } from './generatedName';
 import type { GestureFailures } from './refusals';
@@ -65,6 +67,8 @@ type RefusalPlace = 'dialog' | readonly [string, string] | { readonly key: strin
 
 const operationCarry = carryKind<LibraryItem>('operation');
 const figureItem = 'velocity_summary';
+/** Where a refused edit of a figure's layers or data lands: beside its layers. */
+const layersPlace = '/figure/layers';
 const summaryTemplate = 'feedbax.VelocitySummary';
 
 export function useManagedAnalyze({
@@ -414,14 +418,33 @@ export function useManagedAnalyze({
   const shownFigure = figure ? selected : Object.keys(figures)[0];
   const shownPlan = shownFigure && planOf(shownFigure, shownFigure === selected ? chosenMember : undefined);
   const shownStatus = selectedPlan ?? selectedElement;
+  /** Each operation's request the Results read: the chosen one of the selected mapped operation, else its first with products. */
+  const operationResults = Object.keys(operations).flatMap((name) => {
+    const history = planOf(name, name === selected ? chosenMember : undefined) ?? planned.get(name)?.requests.find(holdsProducts);
+    return history && holdsProducts(history) ? [{ name, label: shown(name), history }] : [];
+  });
   function writeParameter(path: readonly string[], value: JsonValue) {
     if (!operation || !selected) return;
     const [name, ...rest] = path;
     const next = setIn(operation.params?.[name], rest, value);
     void perform((current) => save(current, humanizeLabel(name), set(['operations', selected, 'params', name], next)));
   }
+  /** The fields the data bound to the selected figure's `role` offers. */
+  function roleFields(role: string): readonly string[] {
+    const source = figure?.inputs[role];
+    const port = !source ? undefined : 'input' in source ? source.input === 'states' ? catalog?.states ?? undefined : undefined
+      : source.product ? definitions.get(operations[source.element]?.operation ?? '')?.outputs[source.product] : undefined;
+    return port ? Object.keys({ ...port.variables, ...port.selected_variables, ...port.coordinates }) : [];
+  }
+  const authoredFigure = figure && 'data' in figure.figure ? figure.figure : undefined;
+  const layers = selected && authoredFigure && <FigureLayers key={JSON.stringify([scope, selected])}
+    figure={authoredFigure} fields={roleFields} refusal={roleRefusal(selected, layersPlace)}
+    edit={canEdit ? (label, next) => void perform(
+      (current) => save(current, label, set(['views', selected, 'figure'], next as JsonValue)), canEdit, [selected, layersPlace],
+    ) : undefined} />;
   const inspector = selected && (operation || figure || selectedInput) && <Inspector name={shown(selected)}
-    type={operation ? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}>
+    type={operation ? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}
+    attachments={layers}>
     {(operation || figure) && <KeyField value={selected} name={shown(selected)}
       editing={namingNow?.field === 'key' && namingNow.element === selected}
       onEditingChange={(editing) => setNaming(editing ? { scope, element: selected, field: 'key' } : undefined)}
@@ -558,6 +581,8 @@ export function useManagedAnalyze({
       {shownFigure && shownPlan && <SavedFigureResult key={JSON.stringify([scope, shownFigure])}
         history={shownPlan} name={shownFigure} project={saved.project_id} revision={saved.revision} mean={mean} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
+    results: operationResults.length > 0 ? { body: <OperationProducts operations={operationResults} />, drawer,
+      inspector: libraryInspector || (operation ? inspector : undefined) } : undefined,
     commands: document && focusedView === 'analysis' ? [addCommand, removeCommand, ...selectedCommands, ...viewport]
       : document && focusedView === 'figures' ? [addCommand, removeCommand, ...selectedCommands] : [],
     overlay: opened && <Dialog ariaLabel={studioName('addOperation')}
