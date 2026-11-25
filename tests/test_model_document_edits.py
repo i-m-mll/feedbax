@@ -691,3 +691,170 @@ def test_insert_registered_template_routes_the_wire_through_its_composite_ports(
     (incoming,) = [wire for key, wire in interior["wires"].items() if key != "straight"]
     assert incoming["source"] == source
     assert incoming["target"] == {"owner": "component", "component": "controller", "port": "obs"}
+
+
+@pytest.mark.parametrize(
+    ("domain", "body_type", "ground_type", "spring_type", "damper_type", "effort", "coordinate"),
+    [
+        ("translational", "Mass", "Ground", "LinearSpring", "LinearDamper", "force", "position"),
+        ("rotational", "Inertia", "RotationalGround", "TorsionalSpring", "RotationalDamper", "torque", "angle"),
+    ],
+)
+def test_equations_edits_store_and_run_like_a_direct_document(
+    tmp_path, domain, body_type, ground_type, spring_type, damper_type, effort, coordinate,
+):
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from feedbax.compiler import GraphDocument, compile_graph
+    from feedbax.compiler.model_document import lower_model_document
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.contracts.model_document import ModelDocument
+
+    def leaf(type_, **fields):
+        return {"kind": "leaf", "name": type_, "type": f"feedbax.{type_}", "fields": fields}
+
+    def end(component, port="flange"):
+        return {"owner": "component", "component": component, "port": port}
+
+    def boundary(owner, port):
+        return {"owner": owner, "port": port}
+
+    def wire(source, target):
+        return {"source": source, "target": target}
+
+    def connection(a, b):
+        return {"a": a, "b": b}
+
+    root = {"composites": [], "element": {"kind": "graph"}}
+    inner = {"composites": ["equations"], "element": {"kind": "graph"}}
+    position = {"x": 20, "y": 30}
+    model = {
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [{"id": "drive", "name": "drive", "type": {"shape": []}}],
+            "outputs": [{"id": "read", "name": "read", "type": {"shape": []}}],
+        },
+        "interior": {},
+    }
+    shell = {
+        "kind": "composite", "name": "Equations",
+        "ports": {
+            "inputs": [{"id": "in", "name": "Input", "type": {"shape": []}}],
+            "outputs": [{"id": "out", "name": "Output", "type": {"shape": []}}],
+        },
+        "interior": {"physical_domain": domain},
+    }
+    free = {"id": "free", "name": "Free end", "type": domain}
+    flange = boundary("boundary", "free")
+    leaves = {
+        "wall": leaf(ground_type), "body": leaf(body_type),
+        "spring": leaf(spring_type, stiffness=10.0), "damper": leaf(damper_type, damping=2.0),
+        "act": leaf("ActuationInput", source_kind=effort), "sense": leaf("SensorOutput", quantity=coordinate),
+    }
+    root_wires = {
+        "drive": wire(boundary("inputs", "drive"), end("equations", "in")),
+        "read": wire(end("equations", "out"), boundary("outputs", "read")),
+    }
+    inner_wires = {
+        "drive": wire(boundary("inputs", "in"), end("act", "u")),
+        "read": wire(end("sense", "y"), boundary("outputs", "out")),
+    }
+    physical = {
+        "damper-wall": connection(end("wall"), end("damper", "flange_a")),
+        "damper-body": connection(end("damper", "flange_b"), end("body")),
+        "act-flange": connection(end("act"), end("body")),
+        "sense-flange": connection(end("sense"), end("body")),
+    }
+    data = _data()
+    data["steps"] = {}
+    data["documents"]["model"]["payload"] = model
+    project = _Project(tmp_path, data)
+    with project.client:
+        library = project.client.get("/api/components")
+        assert library.status_code == 200, library.text
+        entries = {row["name"]: row for row in library.json()["data"]["components"]}
+        assert set(entries["feedbax.AcausalSystem"]["equations_domains"]) == {"translational", "rotational"}
+        project.edit({"op": "add_component", "graph": root, "position": position, "id": "equations", "component": shell})
+        project.edit({"op": "add_port", "graph": inner, "direction": "physical", "port": free})
+        for key, component in leaves.items():
+            if key != "spring":
+                project.edit({"op": "add_component", "graph": inner, "position": position, "id": key, "component": component})
+        for graph, wires in ((root, root_wires), (inner, inner_wires)):
+            for item in wires.values():
+                project.edit({"op": "connect", "graph": graph, **item})
+        for item in physical.values():
+            project.edit({"op": "connect_physical", "graph": inner, "connection": item})
+        straight = project.edit({
+            "op": "connect_physical", "graph": inner, "connection": connection(flange, end("body")),
+        })["changed"][0]
+        insertion = {
+            "op": "insert_physical_component", "address": straight, "component": leaves["spring"],
+            "id": "spring", "a_port": "flange_a", "b_port": "flange_b", "position": position, "flipped": True,
+        }
+        before = project.snapshot()
+        duplicate = project.model_edit({
+            "op": "connect_physical", "graph": inner, "connection": connection(end("body"), flange),
+        })
+        assert duplicate.status_code == 200, duplicate.text
+        assert duplicate.json()["result"]["status"] == "refused"
+        bad = project.model_edit(insertion | {"b_port": "missing"})
+        assert bad.status_code == 200, bad.text
+        assert bad.json()["result"]["status"] == "refused"
+        assert project.snapshot()["revision"] == before["revision"]
+        assert project.snapshot()["presentation_revision"] == before["presentation_revision"]
+        added = project.edit(insertion)
+        spring_ground = connection(end("wall"), end("spring", "flange_a"))
+        project.edit({"op": "connect_physical", "graph": inner, "connection": spring_ground})
+        projection = project.client.post(f"{_URL}/model/projection", json={
+            "revision": project.snapshot()["revision"], "document": "model",
+        })
+        assert projection.status_code == 200, projection.text
+        physical_types = {
+            ModelAddress.model_validate(entry["address"]).to_text(): entry["type"]
+            for entry in projection.json()["physical_ports"]
+        }
+        for scope, port in (
+            ([], {**end("equations", "free"), "direction": "physical"}),
+            (["equations"], boundary("boundary", "free")),
+            (["equations"], {**end("act"), "direction": "physical"}),
+            (["equations"], {**end("spring", "flange_a"), "direction": "physical"}),
+        ):
+            address = ModelAddress.model_validate({"composites": scope, "element": {"kind": "port", "end": port}})
+            assert physical_types[address.to_text()] == domain
+
+    stored = project.composed("model")
+    edited = stored["interior"]["components"]["equations"]["interior"]
+    routed = connection(end("spring", "flange_b"), end("body"))
+    added_edge = connection(flange, end("spring", "flange_a"))
+    assert edited["connections"][straight["element"]["id"]] == routed
+    assert added_edge in edited["connections"].values()
+    direct = model | {"interior": {"wires": root_wires, "components": {"equations": shell | {
+        "ports": shell["ports"] | {"physical": [free]},
+        "interior": shell["interior"] | {
+            "components": leaves, "wires": inner_wires,
+            "connections": physical | {"spring-free": added_edge, "spring-body": routed, "spring-wall": spring_ground},
+        },
+    }}}}
+
+    def rollout(document):
+        registry = ComponentRegistry()
+        lowered = lower_model_document(ModelDocument.model_validate(document), registry)
+        graph = compile_graph(GraphDocument(graph=lowered.graph), registry, {
+            lowered.graph.input_bindings["drive"]: jax.ShapeDtypeStruct((), jnp.float32),
+        }).graph
+        key = jax.random.key(1)
+        return graph({"drive": jnp.ones(8)}, graph.init_state(key=key), key=key, n_steps=8)[0]["read"]
+
+    expected = rollout(direct)
+    assert expected[-1] > 0
+    np.testing.assert_allclose(rollout(stored), expected, rtol=1e-6)
+
+    with project.client:
+        project.edit({"op": "delete", "selection": [added["changed"][0]]})
+    remaining = project.composed("model")["interior"]["components"]["equations"]["interior"]
+    assert "spring" not in remaining["components"]
+    assert remaining["connections"] == {key: edge for key, edge in edited["connections"].items() if edge not in (
+        routed, added_edge, spring_ground,
+    )}
