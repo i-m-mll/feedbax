@@ -9,6 +9,7 @@ from hashlib import sha256
 from importlib import metadata
 from pathlib import Path
 import sys
+from threading import Lock
 import tomllib
 
 from packaging.markers import Marker
@@ -31,10 +32,6 @@ def _distribution_version(distribution: metadata.Distribution) -> tuple[str, str
     fields = distribution.metadata
     name, version = fields.get("Name"), fields.get("Version")
     return (canonicalize_name(name), version) if name and version else None
-
-
-def installed_versions() -> dict[str, str]:
-    return InstalledInventory().versions()
 
 
 class InstalledInventory:
@@ -77,6 +74,15 @@ class InstalledInventory:
         pair = _distribution_version(entry)
         self._parsed[path] = stamp, pair
         return pair
+
+
+_installed_inventory = InstalledInventory()
+_installed_inventory_lock = Lock()
+
+
+def installed_versions() -> dict[str, str]:
+    with _installed_inventory_lock:
+        return _installed_inventory.versions().copy()
 
 
 @lru_cache(maxsize=16)
