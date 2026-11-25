@@ -8,7 +8,6 @@ from pydantic import BaseModel
 
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.time_units import TimeUse
 from feedbax.contracts.expression_values import (
     CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, Site, SweepList, SweepRange,
     SweepSample, UnresolvedValue, ValueBase, ValueType,
@@ -20,6 +19,8 @@ from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_docu
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
+from feedbax.contracts.time_units import TimeUse, TimeValue, time_steps
+from feedbax.contracts.window import WindowPosition, store_window_offset, window_offset_expression
 from feedbax.studio.authoring_sweeps import FieldSweeps, SweepTarget
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field
 from feedbax.studio.selection import StoredEdit
@@ -60,7 +61,18 @@ def at(value: object, path: FieldPath) -> object:
 def site_expression(document: BaseModel, path: FieldPath) -> Expression | None:
     """The expression a document holds at ``path``, if it holds one."""
     value = at(document, path)
+    if isinstance(value, TimeValue):
+        return window_offset_expression(value)
     return value if isinstance(value, _EXPRESSIONS) else None
+
+
+def is_window_offset(role: str, path: FieldPath) -> bool:
+    """Whether a path names the whole offset of an Objective's Window span."""
+    return (
+        role == "objective" and len(path) == 7 and path[0] == "terms"
+        and path[2:4] == ("window", "spans") and path[4].isdigit()
+        and path[5] in {"start", "end", "at"} and path[6] == "offset"
+    )
 
 
 def held_expression_file(
@@ -189,31 +201,41 @@ def trial_field_sweep(
     if entry is None or isinstance(entry, ProjectDiagnostic) or not isinstance(entry.payload, dict):
         return None
     parsed = parse(entry.payload)
-    node = at(parsed, path)
+    node = site_expression(parsed, path)
+    if node is None and is_window_offset(role, path) and isinstance(at(parsed, path[:-1]), WindowPosition):
+        node = window_offset_expression(None)
     if not _numeric(node):
         return None
     time_use = trial_time_use(role, path) if node.unit in {"s", "st"} else None
     step = project.steps[step_id]
+    def validate(value):
+        if time_use == "offset" and node.unit == "st":
+            return time_steps(TimeValue(value=value, unit="st"), 1)
+        return value
+
     field = NumericField(
         key=(role, *path), label=label, value=node.value,
         site=Site(
             expected=ValueType(base=ValueBase.REAL, dimensions=site.expected.dimensions), finest=Level.RUN,
             structural=True,
         ),
-        stored=True, validate=lambda value: value, unit=node.unit, time_use=time_use,
+        stored=True, validate=validate, unit=node.unit, time_use=time_use,
     )
     patch = ".".join(("trial_documents", role, *path, "value"))
     target = SweepTarget(node.value, lambda _value: [], patch)
     named = _names(parsed, path) or (role,)
     return TrialFieldSweep(
-        role, path, field, FieldSweeps(step, target, label, named, integer=time_use == "length" and node.unit == "st"), at(entry.payload, path) is not None,
-        path,
+        role, path, field,
+        FieldSweeps(step, target, label, named, integer=node.unit == "st" and time_use in {"length", "offset"}),
+        at(entry.payload, path) is not None, path,
     )
 
 
 def trial_time_use(role: str, path: FieldPath) -> TimeUse:
     if role == "task" and path[:1] == ("epochs",) and path[2:4] == ("end", "length"):
         return "length"
+    if is_window_offset(role, path[:7]):
+        return "offset"
     return "constant"
 
 
@@ -268,9 +290,12 @@ def trial_field_sweep_edit(
         parent = index_pointer(raw, swept.write[:-1])
         if parent is None:
             raise ProjectFolderInvalid("The swept field's document has changed.")
+        literal = swept.field.literal(swept.field.value)
+        value = store_window_offset(literal) if is_window_offset(swept.role, swept.write) else literal
+        path = index_pointer(raw, swept.write)
         edits.append(SetProjectValue(
-            op="add", path=parent + pointer(swept.write[-1:]),
-            value=swept.field.literal(swept.field.value).model_dump(mode="json", exclude_none=True),
+            op="replace" if path else "add", path=path or parent + pointer(swept.write[-1:]),
+            value=value.model_dump(mode="json", exclude_none=True),
         ))
     if kept:
         written = index_pointer(raw, swept.write) or edits[0].path

@@ -802,6 +802,76 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
             assert view["objective"]["terms"][0] == term | values
 
 
+def test_objective_offsets_project_paired_editable_fields(tmp_path):
+    raw = document_project(authored_documents())
+    term = raw["documents"]["objective"]["payload"]["terms"][0]
+    term["window"] = {"spans": [{
+        "kind": "interval",
+        "start": {
+            "anchor": {"kind": "epoch", "epoch": "move", "edge": "start"},
+        },
+        "end": {"offset": {"value": 5, "unit": "st"}},
+    }]}
+    task = raw["documents"]["task"]["payload"]
+    task["variables"].append({
+        "id": "onset", "name": "onset", "type": {"base": "real", "dimensions": {"time": 1}},
+        "value": {"kind": "literal", "value": .1, "unit": "s"},
+    })
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "window", Project.model_validate(raw))
+    route = "/api/projects/window"
+    body = {
+        "revision": folders.read("window").revision,
+        "run": {"variant": "default", "step": "train", "row": "default"},
+    }
+    start = "/objective/terms/effort/window/spans/0/start/offset"
+    end = "/objective/terms/effort/window/spans/0/end/offset"
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        def author(change=None):
+            response = client.post(f"{route}/authoring/trials", json=body | ({"change": change} if change else {}))
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        def edit(path, text):
+            answer = author({"kind": "expression", "path": path, "edit": {"kind": "text", "text": text}})
+            assert not answer["problems"], answer["problems"]
+            response = client.patch(route, json={"revision": body["revision"], "files": answer["files"]})
+            assert response.status_code == 200, response.text
+            body["revision"] = response.json()["revision"]
+            return answer
+
+        def field(view, path):
+            return next(item for item in view["fields"] if item["path"] == path)
+
+        shown = author()
+        assert field(shown, start)["text"] == ""
+        assert field(shown, start)["conversion"] is None
+        assert field(shown, end)["conversion"] == {"value": .05, "unit": "s"}
+        assert field(shown, start)["can_sweep"]
+        assert {"value", "formula", "link", "draw", "sweep"} <= set(field(shown, start)["site"]["kinds"])
+
+        edit(start, "-25 ms")
+        reopened = author()
+        start_offset = reopened["objective"]["terms"][0]["window"]["spans"][0]["start"]["offset"]
+        assert start_offset == {"value": -.025, "unit": "s"}
+        assert field(reopened, start)["conversion"] == {"value": -3, "unit": "st"}
+
+        edit(start, "onset")
+        link = author()["objective"]["terms"][0]["window"]["spans"][0]["start"]["offset"]
+        assert link == {"kind": "name", "reference": "onset"}
+
+        edit(start, "")
+        cleared = author()
+        assert "offset" not in cleared["objective"]["terms"][0]["window"]["spans"][0]["start"]
+        assert field(cleared, start)["text"] == ""
+
+        edit(end, "linspace(3 st, 5 st, 3)")
+        runs = folders.read_plan("window", revision=body["revision"]).plan.runs
+        assert len(runs) == 3 and all(run.admission_problem is None for run in runs)
+        assert len({run.request_id for run in runs}) == 3
+
+
 def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader(tmp_path):
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()
