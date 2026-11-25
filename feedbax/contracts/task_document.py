@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue
 
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import (
     ANGLE, LENGTH, TIME, Expression, LiteralValue, Scalar, ValueBase, ValueRecord, ValueType,
@@ -106,6 +107,13 @@ class Signal(ValueRecord):
 class Link(ValueRecord):
     model_field: str
     variable: str
+
+
+class TaskAdditions(StrictModel):
+    """Task variables and links that are in effect with a Set entry."""
+
+    task_variables: tuple[Variable, ...] = Field(default=(), exclude_if=lambda value: not value)
+    task_links: tuple[Link, ...] = Field(default=(), exclude_if=lambda value: not value)
 
 
 type ValidationValue = Scalar | tuple[ValidationValue, ...]
