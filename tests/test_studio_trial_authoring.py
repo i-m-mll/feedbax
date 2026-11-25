@@ -740,6 +740,50 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
             assert weights == {selected: 3, other: 3}
 
 
+def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(tmp_path):
+    raw = document_project(authored_documents())
+    task = raw["documents"]["task"]["payload"]
+    del task["fixed_steps"]
+    objective = raw["documents"]["objective"]["payload"]
+    term = objective["terms"][0]
+    for field in ("enabled", "reduction", "epochs"):
+        del term[field]
+    folders = ProjectFolderService(tmp_path)
+    project = "term-defaults"
+    _save_project(folders, project, Project.model_validate(raw))
+    route = f"/api/projects/{project}"
+    body = {
+        "revision": folders.read(project).revision,
+        "run": {"variant": "default", "step": "train", "row": "default"},
+    }
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        def author(**change):
+            response = client.post(f"{route}/authoring/trials", json=body | change)
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        view = author()
+        assert "fixed_steps" not in view["task"]
+        assert view["objective"] == objective
+        for op, values in (
+            ("add", {"enabled": False, "reduction": "sum", "epochs": ["move"]}),
+            ("replace", {"enabled": True, "reduction": "mean", "epochs": []}),
+        ):
+            shown = view["objective"]["terms"][0]
+            edits = [
+                {"op": "replace" if field in shown else "add", "path": f"/terms/0/{field}", "value": value}
+                for field, value in values.items()
+            ]
+            assert {edit["op"] for edit in edits} == {op}
+            proposed = author(change={"kind": "objective", "edits": edits})
+            saved = client.patch(route, json={"revision": body["revision"], "files": proposed["files"]})
+            assert saved.status_code == 200, saved.text
+            body["revision"] = saved.json()["revision"]
+            view = author()
+            assert view["objective"]["terms"][0] == term | values
+
+
 def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader(tmp_path):
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()

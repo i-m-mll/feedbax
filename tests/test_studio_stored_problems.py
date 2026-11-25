@@ -174,7 +174,9 @@ def _incompatible_signal_space(studio):
             element = {"kind": "field", "parent": element, "path": path}
         return ports[ModelAddress.model_validate({"composites": [], "element": element}).to_text()]
 
-    hand = port_at({"owner": "outputs", "port": "effector"}, "pos")
+    root_effector = {"owner": "outputs", "port": "effector"}
+    assert port_at(root_effector)["type"] == {"base": "state"}
+    hand = port_at(root_effector, "pos")
     assert hand["type"] == {"base": "real", "shape": [2], "unit": "m", "space": "point"}
     assert hand["readers"] == ["effector_position"]
     effector = {"owner": "component", "component": "plant", "direction": "output", "port": "effector"}
