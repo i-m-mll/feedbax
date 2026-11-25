@@ -2184,7 +2184,7 @@ export interface TaskTimelineCue {
   label: string;
   start: number;
   end: number;
-  outcome: number;
+  outcome: 0 | 1 | 2 | 3;
 }
 
 export interface TrialBoundarySummary {
@@ -3074,7 +3074,7 @@ export type DuplicateRun = {
   "kind": "duplicate_run";
 };
 
-export type End = Length | Rest;
+export type End = Length | Rest | Until;
 
 export type EnsureDocumentCollection = {
   "op": "ensure";
@@ -5196,6 +5196,12 @@ export type TrialSetField = {
 export type UnresolvedValue = {
   "kind"?: "unresolved";
   "text": string;
+};
+
+export type Until = {
+  "kind"?: "until";
+  "condition": Expression;
+  "limit": TimeValue;
 };
 
 export type UpdateCadence = {
@@ -9727,7 +9733,7 @@ export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
       "label": z.string(),
       "start": z.number().int().safe(),
       "end": z.number().int().safe(),
-      "outcome": z.number().int().safe(),
+      "outcome": z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
     })
     .strict()
 ) as unknown as z.ZodType<TaskTimelineCue>;
@@ -11092,7 +11098,7 @@ export const DuplicateRunSchema: z.ZodType<DuplicateRun> = z.lazy(() =>
 ) as unknown as z.ZodType<DuplicateRun>;
 
 export const EndSchema: z.ZodType<End> = z.lazy(() =>
-  z.union([LengthSchema, RestSchema])
+  z.union([LengthSchema, RestSchema, UntilSchema])
 ) as unknown as z.ZodType<End>;
 
 export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
@@ -13886,6 +13892,14 @@ export const UnresolvedValueSchema: z.ZodType<UnresolvedValue> = z.lazy(() =>
     "text": z.string(),
   }).strict()
 ) as unknown as z.ZodType<UnresolvedValue>;
+
+export const UntilSchema: z.ZodType<Until> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("until").optional(),
+    "condition": ExpressionSchema,
+    "limit": TimeValueSchema,
+  }).strict()
+) as unknown as z.ZodType<Until>;
 
 export const UpdateCadenceSchema: z.ZodType<UpdateCadence> = z.lazy(() =>
   z.object({
