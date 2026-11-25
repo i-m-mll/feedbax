@@ -22,6 +22,7 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.loaded_model import ModelSlotFitProblem
+from feedbax.contracts.model_address import FieldElement, ModelAddress
 from feedbax.contracts.method_checkpoint import MethodCheckpointModel
 from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_GRAPH_PATH as _GRAPH,
@@ -56,6 +57,7 @@ from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.artifact_custody import ArtifactBlobProvider
+    from feedbax.compiler.model_document import LoweredModelDocument
 
 
 
@@ -373,6 +375,59 @@ def model_slot_fit_problems(
         {path: value for path, value in metadata.items() if not path.startswith(excluded)},
     ):
         yield ModelSlotFitProblem(kind=kind, replica=replica, address=address or "/", detail=detail)
+
+
+@dataclass(frozen=True)
+class ModelParameterLayout:
+    """A model's addressable parameters and the semantic model slots that hold them."""
+
+    graph: GraphSpec
+    template: Graph
+    addresses: Mapping[str, str]
+    arrays: Mapping[str, jax.Array | np.ndarray]
+    declarations: Mapping[str, object]
+
+    @classmethod
+    def from_model(cls, lowered: LoweredModelDocument, template: Graph) -> ModelParameterLayout:
+        graph = effective_model_graph(lowered.graph, template)
+        arrays, declarations = _describe(graph, template)
+        addresses = {}
+        for path, node in graph_leaf_specs(graph):
+            owner = template.get_node(path[:-1]) if path[:-1] else template
+            facts = owner.component_bindings[path[-1]].model_facts
+            if facts.is_fixed_configuration(node):
+                continue
+            origin = lowered.source_address(
+                "/graph/" + "/".join((*[token for name in path[:-1] for token in ("subgraphs", name)], "nodes", path[-1])),
+            )
+            for value in facts.values:
+                slot = semantic_key("model", "value", path, value.symbol)
+                if value.kind != "parameter" or slot not in arrays:
+                    continue
+                if origin is None or origin.element.kind != "component":
+                    raise ModelCheckpointError(slot, "Parameter has no authored Model address")
+                address = ModelAddress(composites=origin.composites, element=FieldElement(
+                    kind="field", parent=origin.element, path=("parameters", value.symbol),
+                )).to_text()
+                if address in addresses:
+                    raise ModelCheckpointError(slot, "Multiple parameters resolve to the same Model address")
+                addresses[address] = slot
+        return cls(graph, template, addresses, arrays, declarations)
+
+    def fitting(self, parameters: Mapping[str, jax.Array]) -> tuple[ModelSlotFitProblem, ...]:
+        expected = {address: self.arrays[slot] for address, slot in self.addresses.items()}
+        declarations = {address: self.declarations[slot] for address, slot in self.addresses.items()}
+        return tuple(
+            ModelSlotFitProblem(kind=kind, replica="0", address=address, detail=detail)
+            for kind, address, detail in _value_differences(
+                expected, declarations, parameters, {address: declarations.get(address) for address in parameters},
+            )
+        )
+
+    def apply(self, parameters: Mapping[str, jax.Array]) -> Graph:
+        arrays = dict(self.arrays)
+        arrays.update({self.addresses[address]: array for address, array in parameters.items()})
+        return _restore_model(self.graph, self.template, arrays, self.declarations)
 
 
 def _describe(
