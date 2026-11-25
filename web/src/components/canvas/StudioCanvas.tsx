@@ -28,9 +28,10 @@ type Props = ReactFlowProps & {
   /**
    * When the view is fitted to the content again, until the user moves it: `once`, when content first appears;
    * `overflow`, also whenever a change of content or region leaves content past the region's edge; `always`, whenever
-   * the content changes, zooming in as far as `maxZoom`.
+   * the content or the region changes, zooming in as far as `maxZoom`.
    */
   refit?: 'once' | 'overflow' | 'always';
+  /** Holds the view still while set, as for a gesture that places content where the pointer is; it refits after. */
   lockAutoFit?: boolean;
   viewportRef?: Ref<CanvasViewport>;
   navigateContent?: boolean;
@@ -94,16 +95,15 @@ export function StudioCanvas({
     void setViewport(getViewportForBounds(liveBounds, width, height, minZoom, refit === 'always' ? maxZoom : Math.min(1, maxZoom), 0.14));
   }, [bounds, contentBounds, fitReady, store, viewportInitialized, width, height, minZoom, refit, maxZoom, setViewport]);
   const viewport = {
-    fitView: () => { moved.current = true; fit(); },
+    fitView: () => { moved.current = false; fit(); },
     zoomIn: () => { moved.current = true; void zoomIn(); },
     zoomOut: () => { moved.current = true; void zoomOut(); },
   };
   useImperativeHandle(viewportRef, () => viewport);
   useEffect(() => {
-    if (lockAutoFit) moved.current = true;
-    if (!fitReady || !bounds || !boundsKey || !viewportInitialized || !width || !height || moved.current) return;
-    // A region that shrinks can cut off content that fitted, so `overflow` checks again at each size.
-    const key = refit === 'overflow' ? `${boundsKey}@${width}x${height}` : boundsKey;
+    if (lockAutoFit || !fitReady || !bounds || !boundsKey || !viewportInitialized || !width || !height || moved.current) return;
+    // A region that shrinks can cut off content that fitted, so a view that refits checks again at each size.
+    const key = refit === 'once' ? boundsKey : `${boundsKey}@${width}x${height}`;
     if (fitted.current === key || (fitted.current && refit === 'once')) return;
     const frame = requestAnimationFrame(() => {
       if (moved.current) return;

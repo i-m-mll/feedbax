@@ -34,6 +34,11 @@ const inside = (box: Box, { x, y }: Point) => x > box.x + 2 && x < box.x + box.w
 
 async function expectClearCanvas(analysis: Locator) {
   const cards = await cardBoxes(analysis);
+  const pane = (await analysis.locator('.react-flow__pane').boundingBox())!;
+  for (const { name, box } of cards) {
+    expect(box.x >= pane.x && box.y >= pane.y && box.x + box.width <= pane.x + pane.width
+      && box.y + box.height <= pane.y + pane.height, `${name} lies past the view's edge`).toBe(true);
+  }
   for (const [index, a] of cards.entries()) {
     for (const b of cards.slice(index + 1)) expect(overlap(a.box, b.box), `${a.name} and ${b.name} overlap`).toBe(false);
   }
@@ -47,7 +52,8 @@ async function expectClearCanvas(analysis: Locator) {
 }
 
 // Catches a dropped card drawn over the card it was dropped on, a laid-out card left behind a placed one once an input
-// is set, and a wire to a card behind its source drawn back across the cards rather than around them.
+// is set, a wire to a card behind its source drawn back across the cards rather than around them, and a view that keeps
+// its frame after a drop or after the Inspector narrows it, leaving a card past its edge.
 test('keeps every Analysis card clear of the others and every wire clear of the cards', async ({ page, request, studio }) => {
   const project: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'analysis-layout',
