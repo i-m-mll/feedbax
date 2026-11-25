@@ -992,6 +992,38 @@
       "every_k": {},
       "through": {}
     },
+    "feedbax.contracts.request_refs.ConditionalProduct": {
+      "conditions": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
+      "kind": {
+        "absent": "conditional",
+        "values": [
+          "conditional"
+        ]
+      },
+      "request_id": {},
+      "role": {},
+      "select": {
+        "absent": null,
+        "families": [
+          "barrier",
+          "batch",
+          "batch_set",
+          "best_by",
+          "last",
+          "member",
+          "slot",
+          "update_series"
+        ]
+      }
+    },
     "feedbax.contracts.request_refs.ContentRef": {
       "media_type": {
         "absent": null
@@ -1010,6 +1042,7 @@
       "reference": {
         "families": [
           "best_rank",
+          "conditional",
           "content",
           "product"
         ]

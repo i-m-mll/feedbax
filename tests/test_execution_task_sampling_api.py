@@ -10,6 +10,7 @@ from tests.test_document_task_parity import _model_payload, _pair_model, example
 from feedbax.contracts.expression_values import LENGTH, CallValue, NameValue, ValueBase, ValueType
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
+from feedbax.contracts.window import Window, WindowEpoch
 from feedbax.expression_builtins import register_builtins
 from feedbax.contracts.expression_registry import FunctionRegistry
 
@@ -117,8 +118,8 @@ def test_delayed_reaches_term_applies_where_move_and_target_overlap(client, expr
     measure = CallValue(function="sqnorm", args=(NameValue(reference="target_pos"),))
     measure_type = ValueType(base=ValueBase.REAL, dimensions=LENGTH.raised(2))
     payload["objective"] = ObjectiveDocument(id="reach", terms=(
-        ObjectiveTerm(id="target", measure=measure, measure_type=measure_type, epochs=("move",)),
-        ObjectiveTerm(id="absent", measure=measure, measure_type=measure_type, epochs=("hold",)),
+        ObjectiveTerm(id="target", measure=measure, measure_type=measure_type, window=Window(spans=(WindowEpoch(kind="epoch", epoch="move"),))),
+        ObjectiveTerm(id="absent", measure=measure, measure_type=measure_type, window=Window(spans=(WindowEpoch(kind="epoch", epoch="hold"),))),
     )).model_dump(mode="json")
     response = client.post("/api/execution/task-trials/sample", json=payload)
     assert response.status_code == 200, response.text
@@ -172,9 +173,9 @@ def test_term_preview_distinguishes_compile_problem_from_empty_window(client, ex
     payload = authored_preview("delayed", expression_functions) | {"count": 2}
     measure = CallValue(function="sqnorm", args=(NameValue(reference="target_pos"),))
     payload["objective"] = ObjectiveDocument(id="reach", terms=(
-        ObjectiveTerm(id="bad-measure", measure=measure, epochs=("move",)),
+        ObjectiveTerm(id="bad-measure", measure=measure, window=Window(spans=(WindowEpoch(kind="epoch", epoch="move"),))),
         ObjectiveTerm(
-            id="valid-without-coverage", measure=measure, epochs=("hold",),
+            id="valid-without-coverage", measure=measure, window=Window(spans=(WindowEpoch(kind="epoch", epoch="hold"),)),
             measure_type=ValueType(base=ValueBase.REAL, dimensions=LENGTH.raised(2)),
         ),
     )).model_dump(mode="json")

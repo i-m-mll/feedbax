@@ -14,6 +14,7 @@ from feedbax.checkpoint_coordinates import (
     MAX_CHECKPOINT_COORDINATE, MAX_CHECKPOINT_MEMBERS, cadence_coordinates, finite_coordinates,
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.expression_values import Expression
 
 RequestKind = Literal["train", "evaluate", "analyze", "render", "report"]
 RequestId = Annotated[
@@ -167,6 +168,21 @@ class ProductRef(ReferenceValue):
     select: ProductSelector | None = None
 
 
+class ConditionalProduct(ProductRef):
+    """A Train checkpoint read only if its final metrics satisfy these conditions."""
+
+    identity_family: ClassVar[str] = "conditional"
+
+    kind: Literal["conditional"] = "conditional"
+    conditions: tuple[Expression, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _train_product(self):
+        if not self.request_id.startswith("train:") or self.role != "checkpoint":
+            raise ValueError("A metric condition requires a Train checkpoint")
+        return self
+
+
 class ContentRef(ReferenceValue):
     """Resolved immutable content, or a digest-bound input."""
 
@@ -239,7 +255,7 @@ class MemberLabel(ReferenceValue):
 
 class InputMember(ReferenceValue):
     key: Name
-    reference: ProductRef | ContentRef | BestRank
+    reference: ProductRef | ContentRef | BestRank | ConditionalProduct
     labels: dict[Name, MemberLabel] = Field(default_factory=dict, exclude_if=lambda labels: not labels)
 
 
