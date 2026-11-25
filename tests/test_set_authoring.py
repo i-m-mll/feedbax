@@ -256,6 +256,36 @@ def test_removing_the_last_copy_removes_the_axis(studio):
     assert _runs(folders, "baseline") == before
 
 
+def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
+    folders, client = studio
+    entry = _duplicate(folders, client, "other", ["default"])["value"]
+    _set_edit(folders, client, {"kind": "save_set", "step": "other", "axis": "run"})
+    variable = {
+        "id": "onset", "name": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
+        "value": {"kind": "literal", "value": 0.03, "unit": "s"},
+    }
+    _set_edit(folders, client, {
+        "kind": "set_entry_task", "step": "other", "axis": "run", "entry": entry, "task_variables": [variable],
+    })
+
+    def selected(row):
+        revision = folders.read(PROJECT).revision
+        response = client.post(f"{BASE}/authoring/trials", json={
+            "revision": revision, "run": {"variant": "default", "step": "other", "row": row},
+        })
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    for row in _rows(folders, "other"):
+        read = selected(row)
+        for variables in (read["variables"], read["task"]["variables"]):
+            assert any(item["id"] == variable["id"] for item in variables) == (row == f"run={entry}")
+    _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
+    read = selected("default")
+    for variables in (read["variables"], read["task"]["variables"]):
+        assert len([item for item in variables if item["name"] == f"{entry} · Onset"]) == 1
+
+
 def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
     folders, client = studio
     train_before = _runs(folders, "train")

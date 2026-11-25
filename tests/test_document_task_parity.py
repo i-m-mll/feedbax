@@ -53,6 +53,7 @@ from feedbax.tasks.document import (
     Variable,
     compile_task,
 )
+from feedbax.runtime.epoch_windows import EpochRecord
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.compiler.model_reset import ModelResetError, ModelResetPlan
 from tests.test_model_document_plan import _nested_model
@@ -442,7 +443,6 @@ def test_zero_length_and_delayed_distribution(functions, references):
 
 
 def test_objective_windows_reduce_defined_samples_with_history(functions):
-    from feedbax.runtime.epoch_windows import EpochRecord
 
     keys = jr.split(jr.key(3), 3)
     key = keys[0]
@@ -505,11 +505,45 @@ def test_objective_windows_reduce_defined_samples_with_history(functions):
         assert int(value.covered) == 1
         assert float(value.value) == expected[term]
     assert actual.terms["left"].value + actual.terms["right"].value == actual.terms["sum"].value
-    assert float(actual.loss) == sum(expected.values())
-    assert int(score({}).terms["sum"].covered) == 0
+    np.testing.assert_array_equal(actual.trial_losses, [sum(expected.values()), 0, 0])
+    assert actual.loss == actual.trial_losses.mean()
+    tree = executor(retained, batch, ObjectiveInputs(key, keys))
+    np.testing.assert_allclose(tree.total, actual.loss)
+    missing = score({})
+    assert int(missing.terms["sum"].covered) == 0
+    np.testing.assert_array_equal(missing.trial_losses, [0, 0, 0])
     derivative = jax.grad(lambda trace: score({"x": trace}).terms["right"].value)(retained["x"])
     np.testing.assert_array_equal(derivative[0], [0, 0, -1, 0, 1])
     np.testing.assert_array_equal(derivative[1:], 0)
+
+
+def test_batch_loss_is_the_mean_of_total_cost_per_trial(functions):
+    task = compile_task(TaskDocument(
+        id="batch-cost", variables=(), signals=(),
+        epochs=(Epoch(id="move", name="Move", end=Length(length=expression("1 st"))),),
+    ), functions, model=PORTLESS)
+    assert isinstance(task, DocumentTask)
+    key = jr.key(13)
+    keys = jr.split(key, 2)
+    trials = jax.vmap(lambda trial_key: task.ahead(TaskParameters(), key, trial_key))(keys)
+    trials = trials._replace(epochs=EpochRecord(
+        starts=jnp.asarray([[0], [-1]]), ends=jnp.asarray([[1], [-1]]), outcomes=jnp.asarray([[1], [0]]),
+    ))
+    x = name("x", REAL)
+    document = ObjectiveDocument(id="cost", terms=(
+        ObjectiveTerm(id="base", measure=expression("2")),
+        ObjectiveTerm(
+            id="reach", measure=expression("x", (x,)), reduction=Reduction.SUM,
+            window=Window(spans=(WindowEpoch(kind="epoch", epoch="move"),)),
+        ),
+    ))
+    objective = compile_objective(document, (x,), functions, task=task)
+    assert isinstance(objective, ObjectiveExecutor)
+    result = objective.evaluate({"x": jnp.asarray([[8.0], [90.0]])}, trials, run_key=key, trial_keys=keys)
+    np.testing.assert_array_equal(result.trial_losses, [10, 2])
+    assert result.loss == result.trial_losses.mean() == 6
+    assert result.terms["base"] == (2, 2)
+    assert result.terms["reach"] == (8, 1)
 
 
 def test_objective_power_ramp_and_five_step_lag(functions):
@@ -541,9 +575,9 @@ def test_objective_power_ramp_and_five_step_lag(functions):
                 weight=expression("(age / horizon) ** power", names),
                 reduction=Reduction.SUM,
             ),
-            ObjectiveTerm(id="lagged-measure", measure=lagged, reduction=Reduction.SUM, epochs=("hold",)),
+            ObjectiveTerm(id="lagged-measure", measure=lagged, reduction=Reduction.SUM, window=Window(spans=(WindowEpoch(kind="epoch", epoch="hold"),))),
             ObjectiveTerm(
-                id="lagged-weight", measure=signal, weight=lagged, reduction=Reduction.SUM, epochs=("hold",),
+                id="lagged-weight", measure=signal, weight=lagged, reduction=Reduction.SUM, window=Window(spans=(WindowEpoch(kind="epoch", epoch="hold"),)),
             ),
         )),
         names, functions, task=task,

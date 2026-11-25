@@ -5,7 +5,7 @@ import type { NamedElementAddress } from '@/features/projectWindow/elementSelect
 import { viewGlyphs } from '@/features/projectWindow/ProjectWindow';
 import type { EpochBounds } from './taskModel';
 import { ModelAddressSchema, type Problem, type TrialAggregate, type TrialMean, type TrialRecord } from '@/generated/studioContracts';
-import { signalSteps } from './trialSample';
+import { endedBy, signalSteps } from './trialSample';
 import { addressKey, type ModelIntervention } from '../model/modelGraph';
 
 /**
@@ -135,16 +135,16 @@ export const trialTermRows = (task: ShelfTask, record: TrialRecord, stepSeconds:
 ];
 
 /**
- * One trial's rows: each epoch instance where it began and ended, each signal present where the trial has it, each term
- * where it applies.
+ * One trial's rows: each epoch instance where it began and ended, one that ends on a condition marked with how; each
+ * signal present where the trial has it; each term where it applies.
  */
 export function trialRows(task: ShelfTask, record: TrialRecord, stepSeconds: number): ShelfRow[] {
   return [
     {
       kind: 'segments', key: 'epochs', name: studioName('epochs'),
-      segments: record.timeline.flatMap(({ epoch, label, start, end }, index) => end > start ? [{
+      segments: record.timeline.flatMap(({ epoch, label, start, end, outcome }, index) => end > start ? [{
         key: `${epoch}:${index}`, name: label, start: start * stepSeconds, end: end * stepSeconds,
-        selects: named(task.document, `epoch:${epoch}`),
+        selects: named(task.document, `epoch:${epoch}`), ended: endedBy(outcome),
       }] : []),
     },
     ...task.signals.map((signal): ShelfRow => ({

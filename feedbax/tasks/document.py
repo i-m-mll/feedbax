@@ -518,6 +518,24 @@ def bind_task_inputs(
     return tuple(bindings), tuple(problems)
 
 
+def delay_initial_problems(
+    model: ResolvedModelInterface, variables: Mapping[str, ScopedValue], broken: set[str] | frozenset[str] = frozenset(),
+) -> tuple[Problem, ...]:
+    failures = []
+    for link in model.links:
+        variable = variables.get(link.variable)
+        place = {"path": ("model", *link.address.stored_path()), "variable": link.variable, "model_address": link.address}
+        if variable is None or link.variable in broken:
+            failures.append(Problem(
+                code=ProblemCode.UNKNOWN_NAME, reason=f"Delay Initial Task variable {link.variable!r} is unavailable.", **place,
+            ))
+        elif variable.list_count is not None or variable.level > Level.TRIAL or not link.type.accepts(variable.type):
+            failures.append(Problem(
+                code=ProblemCode.TYPE_MISMATCH, reason=f"{variable.name} does not fit a trial-start Delay Initial.", **place,
+            ))
+    return tuple(failures)
+
+
 def compile_task(
     document: TaskDocument,
     functions: FunctionRegistry,
@@ -947,6 +965,7 @@ def compile_task(
             )
         else:
             links[link.model_field] = link.variable
+    problems.extend(delay_initial_problems(model, scope, broken))
     for address, field in writable.items():
         if field.required and all(link.model_field != address for link in document.links):
             problem(

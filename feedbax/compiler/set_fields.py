@@ -14,8 +14,8 @@ from feedbax.contracts.expression_values import (
     CallValue, DrawValue, Expression, LiteralValue, NameValue, ValueBase, ValueType,
 )
 from feedbax.contracts.model_address import (
-    AttachmentElement, ComponentElement, ComponentPortAddress, ComponentPortEnd, FieldElement, InputBoundaryEnd,
-    ModelAddress, PortElement, SignalSource, WireElement,
+    AttachmentElement, AttachmentOwner, ComponentElement, ComponentPortAddress, ComponentPortEnd, FieldElement,
+    InputBoundaryEnd, ModelAddress, PortElement, SignalSource, WireElement,
 )
 from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.model_document import (
@@ -135,10 +135,13 @@ class _Union:
         self.variables.append(Variable(id=id, name=id, type=value_type, value=value, set_choices=choices))
         return NameValue(reference=id)
 
-    def gate(self, alt: _Alternative, gate_id: str, window: Window | None) -> InputBoundaryEnd:
+    def gate(
+        self, alt: _Alternative, gate_id: str, window: Window | None, address: ModelAddress | None,
+    ) -> InputBoundaryEnd:
         first, last = self.task.epochs[0].id, self.task.epochs[-1].id
         self.signals.append(Signal(
             id=gate_id, name=gate_id, type=_BOOL, absent=LiteralValue(value=False), window=window,
+            intervention=address.to_text() if window is not None and address is not None else None,
             cells=(Cell(id=gate_id, first_epoch=first, last_epoch=last, value=alt.predicate),),
         ))
         self.inputs.append(SignalInput(id=gate_id, name=gate_id, type=SignalType(base="bool", shape=())))
@@ -291,7 +294,7 @@ class _Union:
 
     def route(
         self, id: str, source: SignalSource, chain, active_source: SignalSource, active_chain,
-        alt: _Alternative, window: Window | None = None,
+        alt: _Alternative, window: Window | None = None, address: ModelAddress | None = None,
     ) -> ComponentPortEnd:
         switch_id = _id(id, alt.axis, alt.entry)
         gate_id = _id(switch_id, "gate")
@@ -303,11 +306,14 @@ class _Union:
             source=active_source, target=_component_port(switch_id, "true_input"), attachments=active_chain,
         )
         self.wires[_id(switch_id, "control")] = ModelWire(
-            source=self.gate(alt, gate_id, window), target=_component_port(switch_id, "condition"),
+            source=self.gate(alt, gate_id, window, address), target=_component_port(switch_id, "condition"),
         )
         return _component_port(switch_id, "output")
 
-    def attach(self, id: str, source, chain, attachment: InterventionAttachment, alt: _Alternative):
+    def attach(
+        self, id: str, source, chain, attachment: InterventionAttachment, alt: _Alternative,
+        owner: AttachmentOwner | None = None,
+    ):
         context = _id(*self.scope, id, alt.axis, alt.entry, attachment.id)
         if chain:
             stem = _id(context, "stem")
@@ -315,19 +321,26 @@ class _Union:
             self.wires[stem] = ModelWire(source=source, target=_component_port(stem, "input"), attachments=chain)
             source = _component_port(stem, "output")
         segment = self.operands(attachment, context).model_copy(update={"window": None})
-        return self.route(context, source, (), source, (segment,), alt, attachment.window)
+        address = ModelAddress(composites=self.scope, element=AttachmentElement(
+            kind="attachment", parent=owner or WireElement(kind="wire", id=id), id=attachment.id,
+        ))
+        return self.route(context, source, (), source, (segment,), alt, attachment.window, address)
 
     def source_chain(self, end: SignalSource, attachments):
         if not _needs_task(attachments):
             return attachments
         owner = _id(end.owner, getattr(end, "component", ""), end.port)
+        end_address = end if isinstance(end, InputBoundaryEnd) else ComponentPortAddress(
+            owner="component", component=end.component, port=end.port, direction="output",
+        )
+        port = PortElement(kind="port", end=end_address)
         affected = tuple(id for id, wire in self.wires.items() if wire.source == end)
         source, chain = end, ()
         for attachment in attachments:
             if isinstance(attachment, InterventionAttachment) and attachment.window is not None:
                 representative = ModelWire(source=end, target=_component_port(owner, "input"))
                 alt = _Alternative("", "", attachment.id, LiteralValue(value=True), False, representative)
-                source = self.attach(owner, source, chain, attachment, alt)
+                source = self.attach(owner, source, chain, attachment, alt, port)
                 chain = ()
             else:
                 if isinstance(attachment, InterventionAttachment):

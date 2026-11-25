@@ -53,12 +53,13 @@ def supervised_gradient(
 
     def loss(model: Graph):
         result = ctx.score(model, trials, trial_keys)
-        return result.loss, {name: term.value for name, term in result.terms.items()}
+        return result.loss, result.terms
 
     optimizer = ctx.optimizer(ctx.settings.optimizer, gradient_clip=ctx.settings.grad_clip)
     result = ctx.optimizer_step(optimizer, state.model, state.extra.value, loss)
     return TrainingState(result.model, _OptimizerState(state.extra.configuration, result.state)), {
         "train_loss": result.loss,
-        "loss_terms": result.aux,
+        "loss_terms": {name: term.value for name, term in result.aux.items()},
+        "loss_term_coverage": {name: term.covered for name, term in result.aux.items()},
         "grad_norm": result.grad_norm,
     }

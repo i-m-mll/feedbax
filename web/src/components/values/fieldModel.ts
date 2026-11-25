@@ -63,9 +63,14 @@ export function withReset(commit: FieldCommit | undefined, change: ChangeMark | 
 /** A field's kind: one its site offers, or an epoch End's Until or Rest, which only an End's site offers. */
 export type ValueKind = FieldKind | 'until' | 'rest';
 
+/** The text of an epoch End that is Until: its condition, then its limit. */
+export const untilText = (condition: string, limit: string) => `${condition} ≤ ${limit}`;
+
 export interface FieldKindOffer {
   readonly kind: ValueKind;
   readonly enabled: boolean;
+  /** The names a value of this kind reads, where they are not the field's: an Until's condition reads the Model's outputs. */
+  readonly names?: readonly ScopedValue[];
 }
 
 /** One value of a swept field. Its text is the value; a member is never drawn by its id. */
