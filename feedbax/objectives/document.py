@@ -32,6 +32,7 @@ from feedbax.contracts.objective_document import (
     Reduction as Reduction,
 )
 from feedbax.contracts.expression_check import references
+from feedbax.contracts.window import window_offset_sites
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import Evaluation, FunctionRegistry
 from feedbax.objectives.base import TermTree
@@ -344,6 +345,7 @@ def compile_objective(
         if sites is not None:
             sites[(*path, "measure")] = measure_site
             sites[(*path, "weight")] = Site(expected=scalar, names=weight_names, finest=Level.STEP)
+            sites.update({(*path, "window", *at): site for at, site in window_offset_sites(term.window, names).items()})
         if not term.enabled:
             continue
         if term.measure_type.shape or term.measure_type.base != ValueBase.REAL:
