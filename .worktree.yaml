@@ -1,7 +1,11 @@
-setup: git -c protocol.file.allow=always submodule update --init -- vendor/window-shell && uv sync --locked --dev --all-extras && cd web && bun install --frozen-lockfile
+setup: git -c protocol.file.allow=always submodule update --init -- vendor/window-shell && uv sync --locked --dev --all-extras && (cd web && bun install --frozen-lockfile) && (cd desktop && bun install --frozen-lockfile) && uv run --offline python desktop/package.py icons
 
 post-merge:
   - paths: [".gitmodules", "vendor/window-shell", ".bun-version", "web/package.json", "web/bun.lock"]
     run: git -c protocol.file.allow=always submodule update --init -- vendor/window-shell && cd web && bun install --frozen-lockfile
   - paths: ["pyproject.toml", "uv.lock"]
     run: uv sync --locked --dev --all-extras
+  - paths: ["desktop/package.json", "desktop/bun.lock"]
+    run: cd desktop && bun install --frozen-lockfile
+  - paths: ["web/public/icon.svg"]
+    run: uv run --offline python desktop/package.py icons
