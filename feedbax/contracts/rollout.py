@@ -161,6 +161,10 @@ def rollout_semantics(
     input_bindings: Mapping[str, str | None] | tuple[tuple[str, str], ...], source_overrides: Mapping[str, float],
 ) -> tuple[str, str]:
     """Identify the resolved model and task without using their numerical state."""
+    from feedbax.contracts.task_document import TaskDocument
+
+    if isinstance(task_source, TaskDocument):
+        task_source = task_source.without_markers()
     model = sha256_bytes(canonical_json_v2_bytes({
         "graph": graph.model_dump(mode="json"),
         "key_schedule": schedule.model_dump(mode="json"),

@@ -1154,16 +1154,17 @@ def test_force_field_output_prototypes_passthrough_force(
 
 
 @pytest.mark.parametrize(
-    ("component_type", "input_ports"),
+    ("component_type", "input_ports", "required"),
     [
-        ("feedbax.FixedField", ["force", "params_override"]),
-        ("feedbax.CurlField", ["effector", "force", "params_override"]),
-        ("feedbax.DynamicsMatrixPerturb", ["effector", "force", "params_override"]),
+        ("feedbax.FixedField", ["force", "params_override"], "input prototype 'force'"),
+        ("feedbax.CurlField", ["effector", "force", "params_override"], "effector velocity"),
+        ("feedbax.DynamicsMatrixPerturb", ["effector", "force", "params_override"], "input prototype 'force'"),
     ],
 )
-def test_force_field_output_prototypes_require_force_input(
+def test_force_field_output_prototypes_require_an_input(
     component_type: str,
     input_ports: list[str],
+    required: str,
 ) -> None:
     registry = ComponentRegistry()
     node_spec = ComponentSpec(
@@ -1173,7 +1174,7 @@ def test_force_field_output_prototypes_require_force_input(
         output_ports=["force"],
     )
 
-    with pytest.raises(ValueError, match="input prototype 'force'"):
+    with pytest.raises(ValueError, match=required):
         output_prototypes_for_node("field", node_spec, {}, {}, registry)
 
 

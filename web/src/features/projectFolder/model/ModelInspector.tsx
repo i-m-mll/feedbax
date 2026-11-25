@@ -1,13 +1,13 @@
 import {
-  ModelAddressSchema, type ComponentDefinition, type DelayAttachment, type DelayInitialTask, type DelayInitialValue, type DelayInitialWire,
-  type InterventionAttachment, type JsonValue, type ModelAddress, type ModelDocument, type ModelTime, type ModelWire,
+  type ComponentDefinition, type DelayAttachment, type DelayInitialWire, type InterventionAttachment, type JsonValue,
+  type ModelAddress, type ModelDocument, type ModelSignalSource, type ModelTime, type ModelWire,
 } from '@/generated/studioContracts';
 import { studioName, studioReason, studioUnit } from '@/components/activity/studioVocabulary';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { FieldCommit, FieldModel } from '@/components/values/fieldModel';
 import { fromParamSchema } from '@/components/values/adapters/paramSchema';
 import { arrayParts, rawField, type RawChange } from '@/components/values/adapters/raw';
-import { addressKey, type Component } from './modelGraph';
+import type { Component } from './modelGraph';
 
 export type Attachment = NonNullable<ModelWire['attachments']>[number];
 /** Writes a raw value at a path under the element; answers with a reason when the edit is refused. */
@@ -94,19 +94,21 @@ export function attachmentFields(item: Attachment, change?: AttachmentChange,
     type: { kind: 'choice', options: operations.map((operation) => ({ value: operation, label: studioName(operation) })) },
     change: change && ((operation) => write({
       ...item, operation: String(operation),
-      fields: operationValues(operation as Operation, width),
+      operands: Object.fromEntries(Object.entries(operationValues(operation as Operation, width))
+        .map(([name, value]) => [name, { kind: 'value', value }])),
     })),
   })];
 }
 
 const operations = ['add', 'scale', 'clamp'] as const;
 type Operation = typeof operations[number];
-const operationDefaults: Record<Operation, Record<string, JsonValue>> = {
+type Numbers = number | number[];
+const operationDefaults: Record<Operation, Record<string, Numbers>> = {
   add: { value: [0] }, scale: { factor: 1 }, clamp: { low: -1, high: 1 },
 };
 
-/** A new intervention's fields: Add's value is zero on each of the signal's `width` elements. */
-const operationValues = (operation: Operation, width: number) =>
+/** A new intervention's operand values: Add's value is zero on each of the signal's `width` elements. */
+const operationValues = (operation: Operation, width: number): Record<string, Numbers> =>
   operation === 'add' ? { value: Array.from({ length: width }, () => 0) } : operationDefaults[operation];
 
 /** An intervention's operation, by its stored name; none for a name no operation has, which the Service refuses. */
@@ -122,7 +124,7 @@ export type SourceValue =
   | { readonly kind: 'wire'; readonly port: ModelAddress | undefined };
 
 /**
- * A value an attachment reads from one of three sources: a delay's Initial, an intervention's operation fields.
+ * A value an attachment reads from one of three sources: a delay's Initial, or an operand of an intervention's operation.
  * `field` is the path under the attachment of the field the Service projects for its own value.
  */
 export interface AttachmentSource {
@@ -131,7 +133,7 @@ export interface AttachmentSource {
   readonly field: string;
   readonly read: SourceValue;
   /** The value it holds when it reads nothing: the number or numbers of a new attachment. */
-  readonly unlinked: JsonValue;
+  readonly unlinked: Numbers;
   readonly set?: (value: SourceValue) => ReturnType<RawChange>;
 }
 
@@ -141,7 +143,7 @@ function portAddress(graph: ModelAddress, end: DelayInitialWire['source']): Mode
   return { ...graph, element: { kind: 'port', end: end.owner === 'component' ? { ...end, direction: 'output' } : end } };
 }
 
-/** The end a delay's Initial reads: an output of a component, or one of the graph's Inputs. */
+/** The end a source reads: an output of a component, or one of the graph's Inputs. */
 function signalEnd(port: ModelAddress | undefined): DelayInitialWire['source'] {
   if (port?.element.kind !== 'port') return null;
   const { end } = port.element;
@@ -149,55 +151,40 @@ function signalEnd(port: ModelAddress | undefined): DelayInitialWire['source'] {
   return end.owner === 'inputs' ? { owner: 'inputs', port: end.port } : null;
 }
 
-function parsedAddress(reference: string) {
-  try {
-    const parsed = ModelAddressSchema.safeParse(JSON.parse(reference));
-    return parsed.success ? parsed.data : undefined;
-  } catch (error) {
-    if (error instanceof SyntaxError) return undefined;
-    throw error;
-  }
+const isNumbers = (value: JsonValue | undefined): value is Numbers =>
+  typeof value === 'number' || Array.isArray(value) && value.every((part) => typeof part === 'number');
+
+/** A stored source as it reads in `graph`; none stored reads `unlinked`. */
+function readSource(graph: ModelAddress, source: ModelSignalSource | undefined, unlinked: Numbers): SourceValue {
+  if (!source) return { kind: 'value', value: unlinked };
+  if (source.kind === 'wire') return { kind: 'wire', port: portAddress(graph, source.source) };
+  return source.kind === 'task' ? source : { kind: 'value', value: source.value as JsonValue };
 }
 
-/** An intervention field's stored value as a source: a number or numbers, or a name, a port's address or a Task variable's id. */
-function fieldSource(value: JsonValue | undefined): SourceValue {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || value.kind !== 'name' || typeof value.reference !== 'string') {
-    return { kind: 'value', value };
-  }
-  const port = parsedAddress(value.reference);
-  return port ? { kind: 'wire', port } : { kind: 'task', variable: value.reference };
-}
-
-function storedField(value: SourceValue, unlinked: JsonValue): JsonValue {
-  switch (value.kind) {
-    case 'value': return value.value ?? unlinked;
-    case 'task': return { kind: 'name', reference: value.variable };
-    case 'wire': return value.port ? { kind: 'name', reference: addressKey(value.port) } : unlinked;
-  }
+/** One source of `item`: its label, the field projected for its own value, and its store as `write` keeps it. */
+function signalSource(id: string, label: string, field: string, graph: ModelAddress, stored: ModelSignalSource | undefined,
+  unlinked: Numbers, write?: (source: ModelSignalSource) => ReturnType<RawChange>): AttachmentSource {
+  return {
+    id, label, field, read: readSource(graph, stored, unlinked), unlinked,
+    set: write && ((value) => {
+      if (value.kind === 'task') return write(value);
+      if (value.kind === 'wire') return write({ kind: 'wire', source: signalEnd(value.port) });
+      return isNumbers(value.value) ? write({ kind: 'value', value: value.value }) : studioReason('takesNumber', label);
+    }),
+  };
 }
 
 /** The sources of an attachment in `graph`, the graph that holds it, acting on a signal of `width` elements. */
 export function attachmentSources(item: Attachment, graph: ModelAddress, change?: AttachmentChange, width = 1): AttachmentSource[] {
   if (item.kind === 'delay') {
-    const initial = item.initial_source ?? { kind: 'value', value: 0 };
-    const read: SourceValue = initial.kind === 'wire' ? { kind: 'wire', port: portAddress(graph, initial.source) }
-      : initial.kind === 'task' ? initial : { kind: 'value', value: initial.value as JsonValue };
-    return [{
-      id: 'initial', label: studioName('initial'), field: 'initial_source.value', read, unlinked: 0,
-      set: change && ((value) => {
-        if (value.kind === 'value' && typeof value.value !== 'number') return studioReason('takesNumber', studioName('initial'));
-        const initial_source: DelayInitialValue | DelayInitialTask | DelayInitialWire = value.kind === 'value'
-          ? { kind: 'value', value: value.value as number } : value.kind === 'task' ? value : { kind: 'wire', source: signalEnd(value.port) };
-        return change({ ...item, initial_source });
-      }),
-    }];
+    return [signalSource('initial', studioName('initial'), 'initial_source.value', graph, item.initial_source, 0,
+      change && ((initial_source) => change({ ...item, initial_source })))];
   }
   if (item.kind !== 'intervention') return [];
   const operation = operationOf(item);
-  return Object.entries(operation ? operationValues(operation, width) : {}).map(([name, unlinked]) => ({
-    id: name, label: humanizeLabel(name), field: `fields.${name}`, read: fieldSource(item.fields?.[name]), unlinked,
-    set: change && ((value) => change({ ...item, fields: { ...item.fields, [name]: storedField(value, unlinked) } })),
-  }));
+  return Object.entries(operation ? operationValues(operation, width) : {}).map(([name, unlinked]) =>
+    signalSource(name, humanizeLabel(name), `operands.${name}.value`, graph, item.operands?.[name], unlinked,
+      change && ((source) => change({ ...item, operands: { ...item.operands, [name]: source } }))));
 }
 
 /** A source's own value as a raw field, a number or numbers side by side; `linked` names what it reads instead. */

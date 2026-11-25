@@ -87,7 +87,7 @@ test('Duplicate selects the cards it made', async ({ page, request }) => {
  */
 test('an attachment dragged onto another wire is drawn there before it is dropped', async ({ page, request }) => {
   const { model, errors, edit } = await openModel(page, request, (document) => {
-    document.interior.wires!.decode.attachments = [{ id: 'gain', kind: 'intervention', operation: 'scale', fields: { factor: 2 } }];
+    document.interior.wires!.decode.attachments = [{ id: 'gain', kind: 'intervention', operation: 'scale', operands: { factor: { kind: 'value', value: 2 } } }];
   });
   const attachment = model.getByRole('button', { name: 'Attachment Scale', exact: true });
   const path = model.locator('.react-flow__edge[data-id="target"] path.react-flow__edge-path');

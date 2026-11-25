@@ -65,8 +65,10 @@ export interface TaskVariable {
   readonly entry?: string;
 }
 
-/** The one Set entry the selected runs read: its own Task variables and links, and the store of new ones. */
+/** A Set entry the step's trials read: its own Task variables and links, and the store of new ones. */
 export interface EntryTask {
+  /** Which entry of which axis of which step, one key per entry. */
+  readonly key: string;
   readonly label: string;
   readonly variables: readonly Variable[];
   readonly links: readonly Link[];
