@@ -538,7 +538,7 @@ def _producer_trial_writes(change, project, definition, documents, projection):
         return writes
     if isinstance(change, StudioTrialBindingEdit):
         if not prefix:
-            raise ProjectFolderInvalid("Synthesize pairs its Model inputs to the Task by name.")
+            raise ProjectFolderInvalid("Synthesize pairs its Model inputs to the selected Task automatically.")
         row = next((row for row in _input_rows(documents, projection) if row.id == change.input_id), None)
         if row is None:
             raise ProjectFolderInvalid("The ID is not a declared Model input for this row.")
@@ -710,7 +710,7 @@ def _pairing(plan, key, bundle, *, definition=None):
             task=task if isinstance(task, TaskDocument) else None,
             python_task=task if isinstance(task, PythonTaskSelection) else None,
             objective=ObjectiveDocument.model_validate(definition.payload.get("objective")),
-        )
+        ).with_matching_input_ids()
         return documents, _project(documents, bundle), None
     if step.kind == "evaluate":
         return _evaluate_documents(plan, key, definition, bundle)

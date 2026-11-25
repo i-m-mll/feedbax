@@ -71,7 +71,25 @@ class TrialDocuments(StrictModel):
             return {}
         return self.resolved_signal_bindings({signal.name: signal.id for signal in original.signals})
 
+    def with_matching_input_ids(self) -> TrialDocuments:
+        """Pair equal Model port and Task signal IDs when an authored name has no match."""
+        bindings = self.input_bindings | matching_input_ids(self.model, self.task, self.input_bindings)
+        return self if bindings == self.input_bindings else self.model_copy(update={"input_bindings": bindings})
+
     @model_validator(mode="after")
     def _one_task(self) -> "TrialDocuments":
         validate_cross_field_refinements("TrialDocuments", self)
         return self
+
+
+def matching_input_ids(
+    model: ModelDocument, task: TaskDocument | PythonTaskSelection | None, bindings: Mapping[str, str | None],
+) -> dict[str, str]:
+    if not isinstance(task, TaskDocument):
+        return {}
+    names = {signal.name for signal in task.signals}
+    ids = {signal.id for signal in task.signals}
+    return {
+        port.id: port.id for port in model.ports.inputs
+        if port.id not in bindings and port.name not in names and port.id in ids
+    }
