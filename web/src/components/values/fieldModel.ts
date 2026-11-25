@@ -69,6 +69,8 @@ export const untilText = (condition: string, limit: string) => `${condition} ≤
 export interface FieldKindOffer {
   readonly kind: ValueKind;
   readonly enabled: boolean;
+  /** The names a value of this kind reads, where they are not the field's: an Until's condition reads the Model's outputs. */
+  readonly names?: readonly ScopedValue[];
 }
 
 /** One value of a swept field. Its text is the value; a member is never drawn by its id. */

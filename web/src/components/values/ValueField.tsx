@@ -435,7 +435,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     }
   }
   const offered = draft !== undefined && !dismissed && caret !== undefined
-    ? completions(model, text.slice(0, caret)) : { token: '', items: [] };
+    ? completions({ ...model, names: model.kinds.find(({ kind }) => kind === shownKind)?.names ?? model.names }, text.slice(0, caret))
+    : { token: '', items: [] };
   const open = offered.items.length > 0;
   const mark = hasMark(model);
   const offers = kindOffers(model);

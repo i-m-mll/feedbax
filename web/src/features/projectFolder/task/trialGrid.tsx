@@ -43,13 +43,16 @@ function endField(view: TrialView, task: TaskDocument, index: number, commit?: C
     projected(view, ['epochs', epoch.id, 'end', part], `/epochs/${index}/end/${part}`,
       { id: `end:${epoch.id}${part === 'length' ? '' : `.${part}`}`, label: partLabel, value, commit, name: `${epoch.name} ${partLabel}` });
   const length = at('length', label, 'length' in end ? end.length : undefined);
+  const condition = at('condition', studioName('condition'), 'condition' in end ? end.condition : undefined);
   const kinds = [
     ...length.kinds.filter(({ kind }) => 'length' in end || kind !== 'sweep'),
-    { kind: 'until' as const, enabled: !!length.commit }, { kind: 'rest' as const, enabled: !!length.commit },
+    { kind: 'until' as const, enabled: !!length.commit, names: [
+      ...condition.names, ...length.names.filter(({ id }) => !condition.names.some((name) => name.id === id)),
+    ] },
+    { kind: 'rest' as const, enabled: !!length.commit },
   ];
   if ('length' in end) return { ...length, kinds };
   if ('condition' in end) {
-    const condition = at('condition', studioName('condition'), end.condition);
     const limit = at('limit', studioName('limit'));
     return {
       ...length, kind: 'until', text: untilText(condition.text ?? '', limit.text ?? ''), structure: undefined, kinds,
