@@ -39,11 +39,12 @@ import { ListRow } from '@/components/ui/ListRow';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import { Menu, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { useElementSize } from '@/hooks/useElementSize';
-import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
+import type { PlanStepView, PlanView, RunAddress } from '@/features/pipeline/planView';
 import {
   extendsSelection,
   selectionButton,
   indexPlanLineage,
+  lineageRoots,
   selectedRuns,
   selectStep,
   type PipelineSelection,
@@ -729,7 +730,7 @@ export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newSte
 >) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const applySelection: ApplyMapSelection = (change) => onSelectionChange(change(state));
-  return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
+  return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(lineageRoots(state)) : null}
     focusedStepId={state.focus?.stepId} documentScope={documentScope} applySelection={applySelection}
     chooseStep={chooseMapStep(applySelection, onChooseStep)} rename={rename} enterStep={onEnterStep} stepMenu={stepMenu}
     newStep={newStepCommand?.() ?? unboundStudioCommand('newStep')} framed pending={pending} />;
@@ -866,16 +867,19 @@ export function StudioPipelineMap({
   const drawDrawer = drawerOpen && mode === 'map';
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const focus = state.focus;
-  const upstream = useMemo(() => focus ? lineage.upstream([focus]) : null, [lineage, focus]);
-  const downstream = useMemo(() => focus ? lineage.downstream([focus]) : null, [lineage, focus]);
+  const rootsKey = JSON.stringify(lineageRoots(state));
+  // Keyed by the runs themselves: the selection arrives as a new object on every change.
+  const roots = useMemo(() => JSON.parse(rootsKey) as RunAddress[], [rootsKey]);
+  const upstream = useMemo(() => focus ? lineage.upstream(roots) : null, [lineage, focus, roots]);
+  const downstream = useMemo(() => focus ? lineage.downstream(roots) : null, [lineage, focus, roots]);
   const related = useMemo(
-    () => drawDrawer && focus ? lineage.related(focus) : null,
-    [drawDrawer, lineage, focus],
+    () => drawDrawer && focus ? lineage.related(roots) : null,
+    [drawDrawer, lineage, focus, roots],
   );
   const ancestry = mapStepLineage(selectedSteps, layout.upstream, layout.downstream);
   const focusPairs = useMemo(
-    () => focus && upstream && downstream ? focusedMapEdgePairs(plan.edges, focus, upstream, downstream) : null,
-    [focus, upstream, downstream, plan.edges],
+    () => focus && upstream && downstream ? focusedMapEdgePairs(plan.edges, roots, upstream, downstream) : null,
+    [focus, roots, upstream, downstream, plan.edges],
   );
   const strongEdges = new Set(layout.edges.filter(({ from, to }) =>
     focusPairs ? focusPairs.has(mapEdgePair(from, to)) : !documentScope &&
