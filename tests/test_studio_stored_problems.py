@@ -153,6 +153,8 @@ def _incompatible_signal_space(studio):
     assert free["reason"] is None and "expected free space, received point space" in free["problem"]
     evaluate = studio.post("/model/projection", document=document, run=studio.run("check"), evaluate_scope={"kind": "step"})
     assert any(port["readers"] == ["effector_position"] for port in evaluate["ports"])
+    evaluate_trials = studio.post("/authoring/trials", run=studio.run("check"))
+    assert ["Point mass", "effector", "position"] in [reset["path"] for reset in evaluate_trials["resets"]]
 
     edit = studio.model_edit(document, {"operation": {
         "op": "connect", "graph": _GRAPH, "source": source, "target": target,
