@@ -104,11 +104,14 @@ function useShown(pick: TrialPick | undefined, clock: TrialClock, offer: TrialOf
   const query = pick?.trials === 'nominal' ? nominal : pick?.trials === 'samples' ? pick.showing.kind === 'all' ? batch : samples
     : pick?.showing.kind === 'all' ? replay.aggregate : undefined;
   const shown = read();
+  /** Whether what the Scene draws of the pick (its trial, and the samples beside the nominal one) is still being read. */
+  const reading = !!pick && (pick.trials === 'recorded' ? replay.read.kind === 'loading'
+    : pick.trials === 'nominal' && nominal.isLoading || (sampled || possibleShown) && samples.isLoading);
   const drawnSamples = possibleShown && Array.isArray(samples.data) ? samples.data : noRecords;
   const possible = pick?.trials === 'recorded' ? recorded && pick.showing.kind !== 'one' ? recorded.records : noRecords : drawnSamples;
   const picked = pick?.showing.kind === 'mean' ? undefined : pick?.trials === 'recorded' ? recorded?.picked
     : pick?.showing.kind === 'all' ? drawnSamples[pick.showing.index] : shown?.kind === 'one' ? shown.record : undefined;
-  return { shown, query, possible, picked };
+  return { shown, query, possible, picked, reading };
 }
 
 const noRecords: readonly TrialRecord[] = [];
@@ -202,7 +205,7 @@ export function useTrialClock({
   const averaging = pick?.showing.kind === 'mean';
   const mean = averaging ? replay.mean : undefined;
   const recordedTrial = replay.read.kind === 'read' ? replay.read : undefined;
-  const { shown, query, possible, picked } = useShown(pick, clock, offer, view, stored, replay, sceneVisible);
+  const { shown, query, possible, picked, reading } = useShown(pick, clock, offer, view, stored, replay, sceneVisible);
   const drawn = view && taskDocument ? shelfTask(view, taskDocument, objectiveDocument) : undefined;
   const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument]));
   const [heldTime, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
@@ -259,6 +262,7 @@ export function useTrialClock({
   const scene: SceneTrial = {
     picked,
     possible,
+    reading,
     trails: clock.trails,
     frame: frameAt(timeline.frameTimes, time),
     task: task && taskDocument ? { document: taskDocument, value: task } : undefined,
