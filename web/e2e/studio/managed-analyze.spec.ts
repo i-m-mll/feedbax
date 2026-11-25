@@ -111,8 +111,9 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await expect(analysis).toBeVisible();
   const created = await snapshot();
   expect(created.project.steps?.analyze).toMatchObject({
-    kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: upstream.key.step, row: upstream.key.row } },
+    kind: 'analyze', base: { document: 'analysis' },
   });
+  expect(created.project.steps?.analyze.inputs?.states).toEqual({ step: upstream.key.step });
   expect((await plan(created.revision)).edges).toContainEqual(expect.objectContaining({
     from_key: upstream.key, to_key: expect.objectContaining({ step: 'analyze' }),
   }));
