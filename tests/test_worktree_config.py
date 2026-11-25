@@ -18,7 +18,7 @@ def test_worktree_sync_preserves_the_full_development_environment() -> None:
     setup = [
         command
         for command in map(shlex.split, config["setup"].split("&&"))
-        if command[:1] == ["uv"]
+        if command[:2] == ["uv", "sync"]
     ]
     assert len(setup) == 1
     for command in [*setup, *hooks]:
