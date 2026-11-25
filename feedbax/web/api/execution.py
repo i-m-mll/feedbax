@@ -12,8 +12,11 @@ from pydantic import BaseModel, Field, model_validator
 from feedbax.contracts.base import StrictModel
 from feedbax.compiler.model_anchors import anchored_outputs
 from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ValueBase
+from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.request_refs import Sha256
 from feedbax.contracts.rollout import trial_indices
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
@@ -29,12 +32,7 @@ from feedbax.tasks.document import PendingTrial, TaskParameters
 router = APIRouter()
 
 
-class TaskTrialSampleRequest(StrictModel):
-    model: ModelDocument | None = None
-    task: TaskDocument | None = None
-    python_task: PythonTaskSelection | None = None
-    input_bindings: dict[str, str | None] = Field(default_factory=dict)
-    objective: ObjectiveDocument | None = None
+class _TrialSampleOptions(StrictModel):
     evaluation_trials: list[str] | None = Field(default=None, min_length=1)
     """Evaluate trial IDs to preview with the same seed schedule as the run."""
     nominal: bool = False
@@ -44,6 +42,23 @@ class TaskTrialSampleRequest(StrictModel):
     """How many trials to draw; Studio offers up to the step's batch size."""
     aggregate: bool = False
     """Whether to return the trials' aggregate instead of the trials."""
+
+class StudioRunTaskTrialSampleRequest(_TrialSampleOptions):
+    """Draw trials from the selected Train or Evaluate pairing at a saved revision."""
+
+    project_id: ProjectName
+    revision: Sha256
+    run: StudioSavedTrainKey
+
+
+class TaskTrialSampleRequest(_TrialSampleOptions):
+    """Draw trials from standalone documents."""
+
+    model: ModelDocument | None = None
+    task: TaskDocument | None = None
+    python_task: PythonTaskSelection | None = None
+    input_bindings: dict[str, str | None] = Field(default_factory=dict)
+    objective: ObjectiveDocument | None = None
 
     @model_validator(mode="before")
     @classmethod

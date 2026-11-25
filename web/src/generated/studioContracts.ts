@@ -2435,19 +2435,31 @@ export interface TrialAggregate {
   signals: Record<string, TaskSignalAggregate>;
   variables: Record<string, TaskVariableRange>;
   terms?: Record<string, TrialTermAggregate>;
+  intervention_windows?: Record<string, number[]>;
 }
 
-export interface TaskTrialSampleRequest {
-  model?: ModelDocument | null;
-  task?: TaskDocument | null;
-  python_task?: PythonTaskSelection | null;
-  input_bindings?: Record<string, string | null>;
-  objective?: ObjectiveDocument | null;
+export interface StudioRunTaskTrialSampleRequest {
   evaluation_trials?: string[] | null;
   nominal?: boolean;
   seed?: number;
   count?: number;
   aggregate?: boolean;
+  project_id: string;
+  revision: string;
+  run: StudioSavedTrainKey;
+}
+
+export interface TaskTrialSampleRequest {
+  evaluation_trials?: string[] | null;
+  nominal?: boolean;
+  seed?: number;
+  count?: number;
+  aggregate?: boolean;
+  model?: ModelDocument | null;
+  task?: TaskDocument | null;
+  python_task?: PythonTaskSelection | null;
+  input_bindings?: Record<string, string | null>;
+  objective?: ObjectiveDocument | null;
 }
 
 export interface TaskTrialSampleResponse {
@@ -10387,27 +10399,43 @@ export const TrialAggregateSchema: z.ZodType<TrialAggregate> = z.lazy(() =>
       "signals": z.record(z.string(), TaskSignalAggregateSchema),
       "variables": z.record(z.string(), TaskVariableRangeSchema),
       "terms": z.record(z.string(), TrialTermAggregateSchema).optional(),
+      "intervention_windows": z.record(z.string(), z.array(z.number().finite())).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialAggregate>;
 
-export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
+export const StudioRunTaskTrialSampleRequestSchema: z.ZodType<StudioRunTaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
-      "model": ModelDocumentSchema.nullable().optional(),
-      "task": TaskDocumentSchema.nullable().optional(),
-      "python_task": PythonTaskSelectionSchema.nullable().optional(),
-      "input_bindings": z.record(z.string(), z.string().nullable()).optional(),
-      "objective": ObjectiveDocumentSchema.nullable().optional(),
       "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
       "nominal": z.boolean().optional(),
       "seed": z.number().int().safe().optional(),
       "count": z.number().int().safe().gte(1).optional(),
       "aggregate": z.boolean().optional(),
+      "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "run": StudioSavedTrainKeySchema,
+    })
+    .strict()
+) as unknown as z.ZodType<StudioRunTaskTrialSampleRequest>;
+
+export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
+  z
+    .object({
+      "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
+      "nominal": z.boolean().optional(),
+      "seed": z.number().int().safe().optional(),
+      "count": z.number().int().safe().gte(1).optional(),
+      "aggregate": z.boolean().optional(),
+      "model": ModelDocumentSchema.nullable().optional(),
+      "task": TaskDocumentSchema.nullable().optional(),
+      "python_task": PythonTaskSelectionSchema.nullable().optional(),
+      "input_bindings": z.record(z.string(), z.string().nullable()).optional(),
+      "objective": ObjectiveDocumentSchema.nullable().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"input_bindings": {}, "nominal": false, "seed": 0, "count": 8, "aggregate": false}, ...input };
+      const value = { ...{"nominal": false, "seed": 0, "count": 8, "aggregate": false, "input_bindings": {}}, ...input };
       if ((value.task == null) === (value.python_task == null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -14768,6 +14796,7 @@ export const contractSchemas = {
   InlineTreescopeRequest: InlineTreescopeRequestSchema,
   TreescopeResponse: TreescopeResponseSchema,
   InspectionStatusResponse: InspectionStatusResponseSchema,
+  StudioRunTaskTrialSampleRequest: StudioRunTaskTrialSampleRequestSchema,
   TaskTrialSampleRequest: TaskTrialSampleRequestSchema,
   TaskTrialSampleResponse: TaskTrialSampleResponseSchema,
 } as const;
@@ -14956,6 +14985,7 @@ export interface ContractTypeMap {
   InlineTreescopeRequest: InlineTreescopeRequest;
   TreescopeResponse: TreescopeResponse;
   InspectionStatusResponse: InspectionStatusResponse;
+  StudioRunTaskTrialSampleRequest: StudioRunTaskTrialSampleRequest;
   TaskTrialSampleRequest: TaskTrialSampleRequest;
   TaskTrialSampleResponse: TaskTrialSampleResponse;
 }
