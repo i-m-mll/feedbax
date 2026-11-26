@@ -10,11 +10,13 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.contracts.jobs import JobReceipt
+from feedbax.contracts.rollout import CannotRun
 from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanOptions, TrialMeanSelection
 from feedbax.contracts.trial_record import TaskTimelineCue, TrialRecord, TrialTerm
 from feedbax.execution.trial_clock import mean_trial_paths
 from feedbax.execution.trial_record import aggregate_trials
 from feedbax.dataset import Dataset, Variable
+from feedbax.dataset_replicates import stack_replicates
 from feedbax.persistence.canonical_evaluate import EvaluationResult
 from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout
 
@@ -117,12 +119,17 @@ def test_mean_shelf_pools_epoch_rows_and_held_samples_on_the_alignment_clock():
     assert (move.start.mean, move.end.mean, move.end.lower, move.end.upper) == (0, 2, 1, 3)
 
 
-def test_saved_mean_groups_discrete_values_and_intersects_aligned_times(unequal_epochs, tmp_path, monkeypatch):
+@pytest.fixture
+def saved_evaluation(tmp_path):
     sha = "a" * 64
-    result = EvaluationResult(
+    return EvaluationResult(
         tmp_path, "job", "request", JobReceipt(manifest_id="manifest", manifest_sha256=sha),
         manifest_object=ContentObjectRef(object_id=f"content-object://sha256/{sha}", sha256=sha, size_bytes=0),
     )
+
+
+def test_saved_mean_groups_discrete_values_and_intersects_aligned_times(unequal_epochs, saved_evaluation, monkeypatch):
+    result = saved_evaluation
     monkeypatch.setattr(result, "open_states", lambda: nullcontext(unequal_epochs))
 
     one = result.replay("second")
@@ -157,6 +164,65 @@ def test_saved_mean_groups_discrete_values_and_intersects_aligned_times(unequal_
     (condition,) = pooled.mean.conditions
     assert condition.values == {}
     assert condition.time == _reference((0, 1, 2), (0, 0, 0))[0]
+
+
+def test_saved_replay_selects_one_replicate_before_checkpoint_and_trial_views(
+    unequal_epochs, saved_evaluation, monkeypatch,
+):
+    descriptor = unequal_epochs.descriptor
+    direction = "/v1/task/variable/direction"
+
+    def checkpoints(offset):
+        updates = (10, 20)
+        variables = {}
+        for name, field in descriptor.variables.items():
+            values = unequal_epochs.data(name)
+            slices = [values + (offset + update if name in {_POSITION, direction} else 0) for update in updates]
+            variables[name] = Variable.from_field(np.stack(slices), field, ("update", *field.dims))
+        return Dataset.from_arrays(
+            variables,
+            coords={
+                "update": Variable(np.array(updates), ("update",)),
+                **{
+                    name: Variable.from_field(unequal_epochs.data(name), field, field.dims)
+                    for name, field in descriptor.coords.items()
+                },
+            },
+            attrs=descriptor.attrs,
+        )
+
+    stacked = stack_replicates(("first-seed", "second-seed"), (checkpoints(0), checkpoints(100)), after="update")
+    monkeypatch.setattr(saved_evaluation, "open_states", lambda: nullcontext(stacked))
+    for position, offset in enumerate((20, 120)):
+        selected = saved_evaluation.replay("second", replicate=position, checkpoint=20)
+        assert selected.drawn.kind == "trials" and selected.position is not None
+        (trial,) = selected.drawn.trials
+        assert trial.id == "second"
+        np.testing.assert_array_equal(trial.states[selected.position].samples, unequal_epochs.data(_POSITION)[0, 1] + offset)
+
+        all_trials = saved_evaluation.replay(
+            replicate=position, checkpoint=20, mean=TrialMeanSelection(align="move", by=[]),
+        )
+        assert all_trials.drawn.kind == "trials"
+        assert [trial.id for trial in all_trials.drawn.trials] == list(_TRIALS)
+        assert all_trials.mean is not None
+        (cohort,) = all_trials.mean.conditions
+        time, mean, _, _ = _reference((0, 1, 2), _START)
+        assert cohort.time == time
+        np.testing.assert_allclose(cohort.states[selected.position].mean, np.array(mean) + offset)
+
+        aggregate = saved_evaluation.replay(replicate=position, checkpoint=20, aggregate=True).drawn
+        assert aggregate.kind == "aggregate"
+        assert (aggregate.variables["direction"].least, aggregate.variables["direction"].greatest) == (offset, offset + 1)
+
+    with pytest.raises(CannotRun, match="/replicate: choose a retained replicate for replay"):
+        saved_evaluation.replay()
+    for invalid in (-1, 2):
+        with pytest.raises(CannotRun, match="/replicate: the chosen replicate is absent"):
+            saved_evaluation.replay(replicate=invalid, checkpoint=20)
+    monkeypatch.setattr(saved_evaluation, "open_states", lambda: nullcontext(unequal_epochs))
+    with pytest.raises(CannotRun, match="/replicate: the retained result has no replicate dimension"):
+        saved_evaluation.replay(replicate=0)
 
 
 def test_saved_figure_mean_uses_the_same_aligned_sample_reference(unequal_epochs, tmp_path):

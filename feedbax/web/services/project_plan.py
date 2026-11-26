@@ -973,7 +973,9 @@ class ProjectPlanService:
     ) -> StudioTrialReplayResponse:
         _, result = self._evaluation_result(project_id, body)
         try:
-            return result.replay(body.trial, checkpoint=body.checkpoint, aggregate=body.aggregate, mean=body.mean)
+            return result.replay(
+                body.trial, checkpoint=body.checkpoint, replicate=body.replicate, aggregate=body.aggregate, mean=body.mean,
+            )
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, ValueError, KeyError) as error:
@@ -1477,6 +1479,7 @@ def _saved_evaluation_result(
         provenance=attempt.provenance,
         loaded_model=attempt.loaded_model,
         origin=attempt.model_origin,
+        replicates=attempt.replicates,
     )
 
 def _subject_checkpoint_path(settled: SettledProjectPlan, run: PlannedRun, planned: PlannedInput) -> str:

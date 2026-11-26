@@ -278,6 +278,7 @@ def test_archive_fits_changed_noise_without_changing_learned_weights(tmp_path):
 def test_a_loaded_models_replicas_are_planned_rendered_and_retained(native_archive, host, tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
+    from feedbax.contracts.jobs import StudioSavedEvaluationRead
     from feedbax.contracts.project import Project
     from feedbax.web.app import create_app
     from feedbax.web.services.project_folder import ProjectFolderService
@@ -360,6 +361,32 @@ def test_a_loaded_models_replicas_are_planned_rendered_and_retained(native_archi
             "revision": revision, "window_map": True,
         }))["window_map"]
         assert not window["problems"], window["problems"]
+        (evaluation,) = window["evaluations"]
+        result = evaluation["result"]
+        assert result["replicates"] == 2
+        replay = {"revision": revision, "job_id": result["job_id"], "key": key("baseline")}
+        _, retained = client.app.state.project_plan._evaluation_result(
+            "replicated", StudioSavedEvaluationRead.model_validate(replay),
+        )
+        with retained.open_states() as states:
+            position, *_ = states.descriptor.attrs["trial_record"]["positions"]
+            trial = states.data("trial")[0].item()
+            expected = states.data(position)[:, 0, 0]
+            assert not np.allclose(expected[0], expected[1])
+            for index in range(2):
+                recorded = expect(client.post(f"{path}/evaluate-replay", json={
+                    **replay, "replicate": index, "trial": trial,
+                }))
+                (drawn,) = recorded["drawn"]["trials"]
+                assert drawn["id"] == trial
+                np.testing.assert_array_equal(drawn["states"][recorded["position"]]["samples"], expected[index])
+        for selection, reason in (
+            ({}, "choose a retained replicate for replay"),
+            ({"replicate": 2}, "the chosen replicate is absent"),
+        ):
+            refusal = client.post(f"{path}/evaluate-replay", json={**replay, **selection})
+            assert refusal.status_code == 422 and f"/replicate: {reason}" in refusal.text
+
         products = {element["name"]: element["requests"][0]["result"]["products"] for element in window["analysis_elements"]}
         summary = expect(client.get(products["summarize"]["summary"]))
         assert summary["variables"]["mean"]["dims"] == outputs["summarize"]["summary"]["variables"]["mean"]["dims"]
