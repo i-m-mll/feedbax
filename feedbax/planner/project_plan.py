@@ -2117,9 +2117,24 @@ class _Compiler:
                             source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
                             origins = place_source(origins, parts, source_shape(patch.value, source))
                         continue
-                    if parts[0] == "steps" and parts[2:3] == ("deltas",) and len(parts) > 3 and parts[1] in data["steps"]:
-                        data["steps"][parts[1]].setdefault("deltas", [])
-                    apply_stored_patch_in_place(data, patch)
+                    if parts[0] == "steps" and parts[2:] == ("deltas", "-"):
+                        from feedbax.contracts.run_matrix import MatrixCompositionDelta
+
+                        step_name = parts[1]
+                        step = data["steps"].get(step_name)
+                        if patch.op != "add" or step is None:
+                            raise ValueError("A variant layer can only be appended to an existing step.")
+                        layer = MatrixCompositionDelta.model_validate(patch.value)
+                        if layer.layer_id != "variant":
+                            raise ValueError("An appended variant layer needs layer_id 'variant'.")
+                        deltas = step.get("deltas", [])
+                        if not isinstance(deltas, list):
+                            raise ValueError("A variant layer needs the step's ordered deltas.")
+                        if origins is not None and "deltas" not in step:
+                            origins = place_source(origins, parts[:-1], source_shape([], None))
+                        step["deltas"] = [*deltas, deepcopy(patch.value)]
+                    else:
+                        apply_stored_patch_in_place(data, patch)
                     if origins is not None:
                         source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
                         origins = patch_source(origins, patch, source_shape(patch.value, source))

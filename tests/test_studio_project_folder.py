@@ -1819,6 +1819,22 @@ def test_a_continuation_s_edit_in_a_variant_is_a_layer_its_row_appends(tmp_path)
         assert _select(train.plan().selected_definitions[RunKey("treated", "train-2", "default")].payload, _BATCHES) == 6
         assert _changed(after, _ids(train)) == {key for key in after if (key.variant, key.step) == ("treated", "train-2")}
 
+        later = client.patch(_URL, json={
+            "revision": train.revision,
+            "address": {"kind": "step", "id": "train-2"},
+            "patches": [{"op": "add", "path": "/deltas/-", "value": {
+                "layer_id": "later", "patches": [{"path": "seed", "op": "add", "value": 17}],
+            }}],
+        })
+        assert later.status_code == 200, later.text
+        plan = train.plan()
+        key = RunKey("treated", "train-2", "default")
+        assert plan.selected_definitions[key].payload["seed"] == 17
+        assert _select(plan.selected_definitions[key].payload, _BATCHES) == 6
+        assert [layer.layer_id for layer in plan.variant_projects["treated"].steps["train-2"].deltas] == [
+            "initialize", "later", "variant",
+        ]
+
 
 def test_a_variant_edit_back_to_the_default_value_drops_the_row_s_write(tmp_path):
     root, client = _shared_training(tmp_path, variants=("control", "treated"))
