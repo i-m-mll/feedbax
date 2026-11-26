@@ -14,8 +14,8 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.stored_members import scoped_set_member_id
 from feedbax.contracts.expression_registry import FunctionRegistry
-from feedbax.contracts.expression_storage import lower_expression
-from feedbax.contracts.expression_text import ParsedField, resolve_expression
+from feedbax.contracts.expression_storage import lower_expression, rename_expression_references
+from feedbax.contracts.expression_text import ParsedField, parse_stored_expression, print_stored_expression, resolve_expression
 from feedbax.contracts.expression_values import (
     CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, Site,
     ValueBase, ValueType, walk,
@@ -29,7 +29,7 @@ from feedbax.contracts.model_document import (
     CompositeComponent, DelayInitialTask, DelayInitialWire, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
     SignalInput, SignalType,
 )
-from feedbax.contracts.project import Document, SetDocumentValue, apply_differences
+from feedbax.contracts.project import Document, SetDocumentValue, apply_differences, json_pointer_parts
 from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField
 from feedbax.contracts.set_document import SetEntry, read_set
 from feedbax.contracts.stored_model import StoredModelDocument, authored_model_payload, model_keyed_collection
@@ -62,15 +62,22 @@ _INT = ValueType(base=ValueBase.INTEGER)
 
 
 
-def rename_entry_references(value, refs: Mapping[str, str]):
+def _entry_model_references(value, path: tuple[str, ...], refs: Mapping[str, str]):
+    """Bind references within the authored Model values contributed by a single Set entry."""
+    if (
+        len(path) >= 5 and path[-5:-3] == ("window", "spans")
+        and path[-3].isdigit() and path[-2] in {"start", "end", "at"} and path[-1] == "offset"
+        and type(value) in (bool, int, float, str)
+    ):
+        parsed = parse_stored_expression(value)
+        if isinstance(parsed, ParsedField):
+            return print_stored_expression(rename_expression_references(parsed.value, refs))
     if isinstance(value, dict):
-        if value.get("kind") == "name" and isinstance(reference := value.get("reference"), str) and reference in refs:
-            return value | {"reference": refs[reference]}
         if value.get("kind") == "task" and isinstance(variable := value.get("variable"), str) and variable in refs:
             return value | {"variable": refs[variable]}
-        return {key: rename_entry_references(item, refs) for key, item in value.items()}
+        return {key: _entry_model_references(item, (*path, key), refs) for key, item in value.items()}
     if isinstance(value, list):
-        return [rename_entry_references(item, refs) for item in value]
+        return [_entry_model_references(item, (*path, str(index)), refs) for index, item in enumerate(value)]
     return value
 
 
@@ -114,14 +121,20 @@ def _entry_scope(
 ) -> tuple[TaskAdditions, dict[str, str]]:
     additions = source.lower()
     refs = {variable.id: scoped_set_member_id(axis, entry, variable.id) for variable in additions.task_variables}
-    renamed = rename_entry_references(additions.model_dump(mode="json"), refs)
-    for variable in renamed.get("task_variables", ()):
-        variable["id"] = refs[variable["id"]]
-        label = _entry_label(entry, variable["name"])
-        variable["name"] = f"{axis} · {label}" if label in shared_labels else label
-    for link in renamed.get("task_links", ()):
-        link["variable"] = refs.get(link["variable"], link["variable"])
-    return TaskAdditions.model_validate(renamed), refs
+
+    def bind(variable: Variable) -> Variable:
+        label = _entry_label(entry, variable.name)
+        return variable.model_copy(update={
+            "id": refs[variable.id], "name": f"{axis} · {label}" if label in shared_labels else label,
+            "value": rename_expression_references(variable.value, refs),
+            "count": rename_expression_references(variable.count, refs) if variable.count is not None else None,
+        })
+
+    return TaskAdditions(
+        task_variables=tuple(map(bind, additions.task_variables)),
+        task_links=tuple(link.model_copy(update={"variable": refs.get(link.variable, link.variable)})
+                         for link in additions.task_links),
+    ), refs
 
 
 def _attachment_links(
@@ -254,7 +267,9 @@ class _Union:
             variant = self.model
             if authored.differences:
                 differences = {
-                    path: difference.model_copy(update={"value": rename_entry_references(difference.value, refs)})
+                    path: difference.model_copy(update={
+                        "value": _entry_model_references(difference.value, json_pointer_parts(path), refs),
+                    })
                     if isinstance(difference, SetDocumentValue) else difference
                     for path, difference in authored.differences.items()
                 }
