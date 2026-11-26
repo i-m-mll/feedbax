@@ -1,6 +1,6 @@
 """The fields of a step's Task and Objective documents, addressed by the ids of the members they lie in."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from functools import partial
 from typing import TypeGuard
@@ -15,7 +15,7 @@ from feedbax.contracts.expression_values import (
     SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.expression_site import read_field
-from feedbax.contracts.expression_text import ParsedField, parse_sequence_rule, print_stored_expression
+from feedbax.contracts.expression_text import ParsedField, print_stored_expression
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.member_family import ExpandedFamilyMember, FamilyProblem, NamedIndexValue, expand_family
 from feedbax.contracts.matrix_core import prepare_stored_patch
@@ -81,11 +81,14 @@ def with_family_indices(site: Site, indices: tuple[ScopedValue, ...]) -> Site:
         return site
     names = {index.id for index in indices}
     return site.model_copy(update={"names": (*(
-        value for value in site.names if value.id not in names and value.name not in names
+        value.model_copy(update={"name": value.id}) if value.name in names else value
+        for value in site.names if value.id not in names
     ), *indices)})
 
 
-def family_indices(member: ExpandedFamilyMember, functions: FunctionRegistry, path: FieldPath):
+def family_indices(
+    member: ExpandedFamilyMember, functions: FunctionRegistry, path: FieldPath,
+) -> tuple[tuple[ScopedValue, ...], tuple[Problem, ...]]:
     names, problems = [], []
     for key, value in member.indices.items():
         kind = infer_constant_type(value, functions, path=(*path, "over", key))
@@ -100,7 +103,7 @@ def family_problem(error: FamilyProblem, path: FieldPath) -> Problem:
     return Problem(code=ProblemCode.STRUCTURE, path=(*path, *error.path), reason=family_reason(str(error), error.coordinates))
 
 
-def family_reason(reason, coordinates):
+def family_reason(reason: str, coordinates: Mapping[str, str]) -> str:
     if not coordinates:
         return reason
     values = ", ".join(f"{name}={value}" for name, value in coordinates.items())
@@ -138,11 +141,9 @@ def objective_editor(stored: StoredObjectiveDocument, functions: FunctionRegistr
         types = {index.id: index.type for index in names.get(key, ())}
         for name, rule in (term.over or {}).items():
             rule_path = (*path, "over", name)
-            if isinstance(rule, str):
-                parsed = parse_sequence_rule(rule)
-                value = UnresolvedValue(text=rule) if isinstance(parsed, tuple) else parsed.value
+            if isinstance(rule, SequenceValue | UnresolvedValue):
                 expected = types.get(name, ValueType(base=ValueBase.REAL))
-                rules[rule_path] = Site(expected=expected, finest=Level.RUN, structural=True), value
+                rules[rule_path] = Site(expected=expected, finest=Level.RUN, structural=True), rule
                 continue
             for item, value in rule.items():
                 item_path = (*rule_path, item)

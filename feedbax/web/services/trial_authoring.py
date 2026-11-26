@@ -1038,9 +1038,12 @@ def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
 
     if origins:
         @cache
-        def indices(name, key):
-            item = next(item for item in origins.values() if (item.origin.set, item.origin.entry) == (name, key))
-            path = ("set_fields", item.origin.axis, "entries", key)
+        def indices(axis, name, key):
+            item = next(
+                item for item in origins.values()
+                if (item.origin.axis, item.origin.set, item.origin.entry) == (axis, name, key)
+            )
+            path = ("set_fields", axis, "entries", key)
             try:
                 preview = next(expand_family(key, item.source, first=True))
                 return family_indices(preview, bundle.expression_functions, path)
@@ -1053,9 +1056,8 @@ def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
             scoped = site.model_copy(update={"names": tuple(map(member, site.names))})
             if (path[:2] == ("task", "variables") and len(path) == 4 and path[3] in ("value", "count")
                     and (item := origins.get(path[2])) is not None and item.source.over is not None):
-                names, problems = indices(item.origin.set, item.origin.entry)
-                if not all(problem in family_problems for problem in problems):
-                    family_problems.extend(problems)
+                names, problems = indices(item.origin.axis, item.origin.set, item.origin.entry)
+                family_problems.extend(problem for problem in problems if problem not in family_problems)
                 scoped = with_family_indices(scoped, names)
             fields[path] = scoped
         projected = replace(
