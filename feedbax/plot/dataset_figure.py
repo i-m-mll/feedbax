@@ -16,7 +16,6 @@ from pydantic import JsonValue
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor, TrialFigureTime
-from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.figure_document import (
     BandLayer,
     BandStyle,
@@ -238,8 +237,8 @@ def _color_sample(source: _Source, encoding: Encoding, group: Group, title: str 
     if isinstance(value, float) and not np.isfinite(value):
         raise ValueError("A color channel requires finite numerical values.")
     shown = str(source.printed(sample.name, value))
-    axis = member_display_name(sample.name)
-    if (title or sample.label).partition(" (")[0].casefold() == axis.casefold():
+    axis = sample.field.label or sample.field.quantity
+    if axis and (title or sample.label).partition(" (")[0].casefold() == axis.casefold():
         shown = shown.removeprefix(axis + " ")
     return ColorSample(value, shown, sample.label, sample.field.units)
 

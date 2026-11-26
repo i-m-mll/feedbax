@@ -10,7 +10,7 @@ from web.e2e.studio.fixtures.canonical_train import ordinary_files, write_projec
 def seed(home: str, project_id: str):
     *documents, train = ordinary_files("2")
     train["step"]["sweep"] = {"axes": {"arm": {"set": "arms"}}}
-    arms = {"schema": "feedbax.set_document.v1", "payload": {"entries": {
+    arms = {"schema": "feedbax.set_document.v1", "label": "Arms", "payload": {"entries": {
         "keep": {},
         "drop": {"differences": {"/interior/components/plant": {"op": "remove"}, "/interior/wires/drive": {"op": "remove"}}},
     }}}

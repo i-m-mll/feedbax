@@ -4,13 +4,32 @@ from __future__ import annotations
 
 from typing import Annotated, Generic, Literal
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, TypeAdapter, ValidationError, model_validator
 from typing_extensions import TypeVar
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.figure_document import FigureSource
-from feedbax.contracts.project import DocumentReference
-from feedbax.contracts.project_inputs import NonemptyText, ProjectName
+from feedbax.contracts.project_inputs import DocumentReference, NonemptyText, ProjectName
+
+
+ANALYSIS_SCHEMA = "feedbax.analysis_document.v1"
+ELEMENT_FAMILIES = ("operations", "views")
+_LABEL = TypeAdapter(NonemptyText)
+
+
+def check_analysis_labels(payload: JsonValue) -> None:
+    """Check stored element names even when the rest of the Analyze document is still a draft."""
+    if not isinstance(payload, dict):
+        return
+    for family in ELEMENT_FAMILIES:
+        elements = payload.get(family)
+        if not isinstance(elements, dict):
+            continue
+        for key, element in elements.items():
+            try:
+                _LABEL.validate_python(element.get("label") if isinstance(element, dict) else None)
+            except ValidationError as error:
+                raise ValueError(f"Analysis {family} member {key!r} needs a nonempty label.") from error
 
 
 class StepInput(StrictModel):

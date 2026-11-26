@@ -13,7 +13,6 @@ from feedbax.contracts.expression_values import (
     SweepList, SweepRange, SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress, PortElement, WireElement
-from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, DelayInitialTask, DelayInitialValue, InterventionAttachment,
     LeafComponent, ModelDocument,
@@ -177,7 +176,7 @@ def _attachment_fields(
             return number
 
         yield _Field(address, NumericField(
-            address.stored_path(), member_display_name(name), value,
+            address.stored_path(), {"low": "Low", "high": "High", "initial": "Initial"}.get(name, "Operand"), value,
             Site(expected=value_type, finest=Level.TRIAL, names=names),
             True, validate,
         ), expression=expression)
@@ -252,7 +251,7 @@ def _fields(
 
         address = _address(owner, "fields", name)
         yield _Field(address, NumericField(
-            address.stored_path(), name.replace("_", " ").capitalize(), number,
+            address.stored_path(), definition.params.field_title(name), number,
             Site(expected=ValueType(base=base), finest=Level.RUN, structural=True),
             name in component.fields and "fields" in component.model_fields_set, validate,
         ))

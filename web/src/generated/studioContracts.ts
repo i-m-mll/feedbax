@@ -2958,6 +2958,7 @@ export type CheckpointCadence = {
 export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule | UnresolvedValue;
 
 export type CheckpointRuleAxis = {
+  "label"?: string | null;
   "path"?: CheckpointRulePath;
   "checkpoint_rule": UpdateRule;
 };
@@ -3368,6 +3369,7 @@ export type InlineSet = {
 };
 
 export type InputAxis = {
+  "label"?: string | null;
   "input": string;
 };
 
@@ -3444,6 +3446,7 @@ export type Link = {
 };
 
 export type ListedAxis = {
+  "label"?: string | null;
   "path": SweepTarget;
   "where"?: AxisCondition | null;
   "values": Array<JsonValue>;
@@ -3568,6 +3571,7 @@ export type NameValue = {
 };
 
 export type NamedAxis = {
+  "label"?: string | null;
   "values": Record<string, AxisValue | null>;
   "where"?: AxisCondition | null;
   "optional"?: boolean;
@@ -3759,6 +3763,7 @@ export type PythonTaskSelection = {
 };
 
 export type RangeAxis = {
+  "label"?: string | null;
   "path": SweepTarget;
   "where"?: AxisCondition | null;
   "range": RangeValues;
@@ -3921,6 +3926,7 @@ export type SampleValues = {
 };
 
 export type SampledAxis = {
+  "label"?: string | null;
   "path": SweepTarget;
   "where"?: AxisCondition | null;
   "sampler": SampleValues;
@@ -3963,6 +3969,7 @@ export type SemanticModelEncoding = {
 };
 
 export type SetAxis = {
+  "label"?: string | null;
   "set": string;
   "where"?: AxisCondition | null;
   "optional"?: boolean;
@@ -4547,6 +4554,7 @@ export type StudioLoadedModelExportRequest = {
 export type StudioLoadedModelImportQuery = {
   "revision": string;
   "name": string;
+  "label"?: string | null;
   "model": string;
 };
 
@@ -5038,7 +5046,7 @@ export type StudioSetsOfferedRequest = {
 };
 
 export type StudioStepNameReference = {
-  "kind"?: "step";
+  "kind": "step";
   "key": string;
 };
 
@@ -11285,6 +11293,7 @@ export const CheckpointRuleSchema: z.ZodType<CheckpointRule> = z.lazy(() =>
 
 export const CheckpointRuleAxisSchema: z.ZodType<CheckpointRuleAxis> = z.lazy(() =>
   z.object({
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "path": CheckpointRulePathSchema.optional(),
     "checkpoint_rule": UpdateRuleSchema,
   }).strict()
@@ -11833,6 +11842,7 @@ export const InlineSetSchema: z.ZodType<InlineSet> = z.lazy(() =>
 
 export const InputAxisSchema: z.ZodType<InputAxis> = z.lazy(() =>
   z.object({
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "input": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<InputAxis>;
@@ -11937,6 +11947,7 @@ export const LinkSchema: z.ZodType<Link> = z.lazy(() =>
 
 export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
   z.object({
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "path": SweepTargetSchema,
     "where": z.union([AxisConditionSchema, z.null()]).optional(),
     "values": z.array(jsonValueSchema).min(1),
@@ -12113,6 +12124,7 @@ export const NameValueSchema: z.ZodType<NameValue> = z.lazy(() =>
 
 export const NamedAxisSchema: z.ZodType<NamedAxis> = z.lazy(() =>
   z.object({
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisValueSchema, z.null()])),
     "where": z.union([AxisConditionSchema, z.null()]).optional(),
     "optional": z.boolean().optional(),
@@ -12372,6 +12384,7 @@ export const PythonTaskSelectionSchema: z.ZodType<PythonTaskSelection> = z.lazy(
 
 export const RangeAxisSchema: z.ZodType<RangeAxis> = z.lazy(() =>
   z.object({
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "path": SweepTargetSchema,
     "where": z.union([AxisConditionSchema, z.null()]).optional(),
     "range": RangeValuesSchema,
@@ -12590,6 +12603,7 @@ export const SampleValuesSchema: z.ZodType<SampleValues> = z.lazy(() =>
 
 export const SampledAxisSchema: z.ZodType<SampledAxis> = z.lazy(() =>
   z.object({
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "path": SweepTargetSchema,
     "where": z.union([AxisConditionSchema, z.null()]).optional(),
     "sampler": SampleValuesSchema,
@@ -12648,6 +12662,7 @@ export const SemanticModelEncodingSchema: z.ZodType<SemanticModelEncoding> = z.l
 
 export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
   z.object({
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "set": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "where": z.union([AxisConditionSchema, z.null()]).optional(),
     "optional": z.boolean().optional(),
@@ -13412,6 +13427,7 @@ export const StudioLoadedModelImportQuerySchema: z.ZodType<StudioLoadedModelImpo
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "model": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<StudioLoadedModelImportQuery>;
@@ -14045,7 +14061,7 @@ export const StudioSetsOfferedRequestSchema: z.ZodType<StudioSetsOfferedRequest>
 
 export const StudioStepNameReferenceSchema: z.ZodType<StudioStepNameReference> = z.lazy(() =>
   z.object({
-    "kind": z.literal("step").optional(),
+    "kind": z.literal("step"),
     "key": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<StudioStepNameReference>;

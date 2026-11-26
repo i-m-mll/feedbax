@@ -78,6 +78,7 @@ def _model_project():
         {"id": "two", "name": "Two", "type": {}, "default": {"value": 0}},
     ])
     raw["documents"][_VARIANT] = {
+        "label": "Document",
         "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
         "differences": {"/interior/components/d": {"op": "remove"}},
     }
@@ -259,8 +260,8 @@ def test_named_files_and_patch_batches_have_core_and_http_parity(tmp_path, model
             return result
 
         for file in (
-            {"kind": "document", "id": "settings", "document": {"schema": "custom", "payload": {"x": 1}}},
-            {"kind": "step", "id": "next", "step": {"kind": "train", "base": {"step": "train"}}},
+            {"kind": "document", "id": "settings", "document": {"label": "Document", "schema": "custom", "payload": {"x": 1}}},
+            {"kind": "step", "id": "next", "step": {"label": "Step", "kind": "train", "base": {"step": "train"}}},
         ):
             body = StudioProjectCreateFile.model_validate({"revision": snapshot.revision, "file": file})
             snapshot = compare("POST", "/files", body, core.create_file("project", body), envelope=True)

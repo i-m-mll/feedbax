@@ -276,7 +276,7 @@ def _ungroup_reason(state, address):
 def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp_path):
     path = tmp_path / "project"
     project = Project(documents={
-        "model": RootDocument(schema="feedbax.spec.model", payload={
+        "model": RootDocument(label="Model", schema="feedbax.spec.model", payload={
             "step_seconds": 0.01, "ports": {},
             "interior": {"components": {"outer": {
                 "kind": "composite", "name": "Outer", "ports": {}, "interior": {},
@@ -372,6 +372,7 @@ def test_batch_created_model_recovers_its_original_file_revision_after_undo(tmp_
                     "label": "Model",
                 }},
                 {"kind": "step", "id": "fit", "step": {
+                    "label": "Step",
                     "kind": "train", "base": {"inline": {"trial_documents": {"model": {"document": "model"}}}},
                 }},
             ],
@@ -430,7 +431,7 @@ def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambi
         },
         "interior": {"wires": wires},
     }
-    project = Project(documents={"model": RootDocument(schema="feedbax.spec.model", payload=payload)})
+    project = Project(documents={"model": RootDocument(label="Model", schema="feedbax.spec.model", payload=payload)})
     path = tmp_path / "project"
     for name, data in dump_text_project(project, ProjectConfiguration(project="project", store="store")).items():
         file = path / name
@@ -530,7 +531,7 @@ def test_served_connect_adds_and_undoes_one_delay_and_can_move_it(tmp_path):
         "kind": "leaf", "type": "feedbax.Gain", "name": "Carry", "fields": {"gain": 1},
     }
     interior["wires"]["carry-input"] = {"source": _end("cell", "hidden"), "target": _end("carry", "input")}
-    project = Project(documents={"model": RootDocument(schema="feedbax.spec.model", payload=payload)})
+    project = Project(documents={"model": RootDocument(label="Model", schema="feedbax.spec.model", payload=payload)})
     for name, data in dump_text_project(project, ProjectConfiguration(project="project", store="store")).items():
         path = tmp_path / "project" / name
         path.parent.mkdir(parents=True, exist_ok=True)

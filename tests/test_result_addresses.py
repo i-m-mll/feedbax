@@ -104,6 +104,7 @@ def test_a_key_held_by_two_unrelated_documents_is_a_diagnostic(studio):
     project = _report_project()
     analysis = project.documents["velocity-analysis"]
     project.documents["velocity-analysis-b"] = BasedDocument.model_validate({
+        "label": "Velocity analysis b",
         "schema": analysis.schema_id, "base": {"document": "velocity-analysis"},
     })
     assert not compile_project(project, operations=_operations()).diagnostics

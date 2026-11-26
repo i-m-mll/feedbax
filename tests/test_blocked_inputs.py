@@ -99,6 +99,7 @@ def _at(at: int, *, origin: int = 0):
     source = "train"
     if origin:
         raw["steps"]["successor"] = {
+            "label": "Successor",
             "kind": "train",
             "base": {"step": "train"},
             "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
@@ -231,11 +232,11 @@ def test_a_first_train_whose_task_does_not_pair_with_its_model_is_planned_and_ca
     folders = ProjectFolderService(tmp_path / "projects")
     _save_project(folders, "first", Project.model_validate({
         "documents": {
-            "model": {"schema": "feedbax.spec.model", "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}}},
+            "model": {"label": "Model", "schema": "feedbax.spec.model", "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}}},
             "task": task,
-            "objective": {"schema": "feedbax.spec.objective_document", "payload": {"id": "objective", "terms": []}},
+            "objective": {"label": "Objective", "schema": "feedbax.spec.objective_document", "payload": {"id": "objective", "terms": []}},
         },
-        "steps": {"train": {"kind": "train", "base": {"inline": {
+        "steps": {"train": {"label": "Train", "kind": "train", "base": {"inline": {
             "method": "feedbax.supervised_gradient",
             "settings": {"optimizer": {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.001}}},
             "training_config": {"n_batches": 1, "batch_size": 1},
@@ -262,7 +263,7 @@ def test_an_initial_evaluate_whose_python_task_is_not_installed_keeps_its_row_an
 
     raw = document_project(authored_documents(), evaluation=True)
     _use_initial_evaluation(raw)
-    raw["documents"]["missing-task"] = {"schema": "feedbax.spec.python_task", "payload": {"type": "absent.Task", "params": {}}}
+    raw["documents"]["missing-task"] = {"label": "Missing task", "schema": "feedbax.spec.python_task", "payload": {"type": "absent.Task", "params": {}}}
     raw["steps"]["baseline"]["inputs"]["task"]["source"] = {"document": "missing-task"}
     folders = ProjectFolderService(tmp_path / "projects")
     _save_project(folders, "uninstalled", Project.model_validate(raw))

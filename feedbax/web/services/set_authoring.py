@@ -7,7 +7,7 @@ from itertools import count
 from typing import Any
 
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
-from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase, member_display_name, member_name
+from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase, member_name
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
 from feedbax.planner.project_plan import RunKey, _sweep_problem
@@ -28,7 +28,7 @@ from feedbax.contracts.studio_sets import (
 )
 from feedbax.contracts.model_edit import ListedRuns
 from feedbax.contracts.studio_trials import StudioSetField, StudioSetFieldEntry
-from feedbax.project_members import generated_name
+from feedbax.project_members import generated_name, new_document_name
 from feedbax.web.services.authored_scope import choose_authored_store, choose_prepared_edit, selected_edit_runs
 from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.project_folder import ProjectFolderInvalid
@@ -202,7 +202,7 @@ def _copy_key(value: str, taken) -> str:
 
 
 def _next_run_name(values: dict[str, Any]) -> str:
-    used = {member_display_name(key, entry.get("label")) for key, entry in values.items() if entry is not None}
+    used = {entry.get("label") for entry in values.values() if entry is not None}
     return next(name for number in count(2) if (name := numbered_run_name(number)) not in used)
 
 
@@ -393,14 +393,14 @@ def _save_set(project: Project, command: SaveSet) -> StoredEdit:
         document = set_from_axis(axis, model[0])
     except ValueError as error:
         raise ProjectFolderInvalid(f"Only Model differences are saved as a set: {error}") from error
-    name = generated_name("set", project.documents.__contains__)
-    created = CreateNamedDocument(kind="document", id=name, document=RootDocument(
-        schema=SET_DOCUMENT_SCHEMA_ID, payload=document.model_dump(mode="json", exclude_unset=True),
+    name = new_document_name(project.documents, SET_DOCUMENT_SCHEMA_ID)
+    created = CreateNamedDocument(kind="document", id=name.id, document=RootDocument(
+        schema=SET_DOCUMENT_SCHEMA_ID, label=name.label, payload=document.model_dump(mode="json", exclude_unset=True),
     ))
     address, raw = _step_raw(project, command.step)
     reading = (
-        {"set": name} | ({"where": axis.where.model_dump(mode="json")} if axis.where is not None else {})
-        | ({"optional": True} if axis.optional else {})
+        {"set": name.id} | ({"where": axis.where.model_dump(mode="json")} if axis.where is not None else {})
+        | ({"optional": True} if axis.optional else {}) | ({"label": axis.label} if axis.label is not None else {})
     )
     file = file_value(address, raw, ("sweep", "axes", command.axis), reading)
     return StoredEdit([file], (created,))

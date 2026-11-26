@@ -32,7 +32,7 @@ from tests.support.managed_train_fixture import managed_evaluation_step, managed
 def _write_project(root: Path, spec: DocumentTrainingRequestSpec) -> None:
     assert spec.seed is not None
     project = Project.model_validate({
-        "steps": {"fit": {"kind": "train", "base": {"inline": spec.model_dump(mode="json")}}},
+        "steps": {"fit": {"label": "Fit", "kind": "train", "base": {"inline": spec.model_dump(mode="json")}}},
         "sweep": {"rows": {
             "original": {},
             "same": {},
@@ -113,6 +113,7 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
         "b": {"label": "12", "patches": {"seed": {"value": 12}}},
     }}}}
     data["steps"]["evaluate"] = {
+        "label": "Evaluate",
         "kind": "evaluate",
         "base": {"inline": {"evaluation_type": "test.unsupported"}},
         "inputs": {"subject": {"step": "fit", "where": {
@@ -120,10 +121,11 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
         }}},
     }
     data["steps"]["report"] = {
+        "label": "Report",
         "kind": "report", "base": {"inline": {}}, "inputs": {"source": {"step": "evaluate"}},
     }
-    data["steps"]["broken"] = {"kind": "train", "base": {"document": "missing"}}
-    data["steps"]["invalid"] = {"kind": "train", "base": {"inline": {}}}
+    data["steps"]["broken"] = {"label": "Broken", "kind": "train", "base": {"document": "missing"}}
+    data["steps"]["invalid"] = {"label": "Invalid", "kind": "train", "base": {"inline": {}}}
     trial = data["steps"]["fit"]["base"]["inline"]["trial_documents"]
     data["documents"]["unscored"] = copy.deepcopy(data["documents"][trial["objective"]["document"]])
     data["documents"]["unscored"]["payload"]["terms"] = []

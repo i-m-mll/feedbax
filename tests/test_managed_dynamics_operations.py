@@ -27,6 +27,7 @@ def _dynamics_project():
     project["steps"] = {
         "train": project["steps"]["simple-reaches"],
         "rollout": {
+            "label": "Rollout",
             "kind": "evaluate",
             "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
                 "seed": 7, "trial_policy": "paired", "variation": [], "trial_set": {"kind": "every_condition"},
@@ -34,16 +35,19 @@ def _dynamics_project():
             "inputs": {"subject": trained},
         },
         "analyze": {
+            "label": "Analyze",
             "kind": "analyze",
             "base": {"inline": {
                 "inputs": {"states": {"kind": "dataset"}, "model": {"kind": "model"}, "task": {"kind": "task"}},
                 "operations": {
                     "pca": {
+                        "label": "Pca",
                         "operation": "feedbax.hidden_state_pca",
                         "inputs": {"states": {"input": "states"}},
                         "params": {"state": semantic_key("model", "state", ("cell",), "hidden")},
                     },
                     "roots": {
+                        "label": "Roots",
                         "operation": "feedbax.fixed_points",
                         "inputs": {"model": {"input": "model"}, "task": {"input": "task"}},
                         "params": {"loss_tolerance": 1e-6, "max_updates": 1600},
@@ -51,6 +55,7 @@ def _dynamics_project():
                 },
                 "views": {
                     "pc-plane": {
+                        "label": "Pc plane",
                         "inputs": {"trajectory": {"element": "pca", "product": "pca"}},
                         "figure": {
                             "data": ["trajectory"],
@@ -74,7 +79,7 @@ def _dynamics_project():
     train_config = project["steps"]["train"]["base"]["inline"]["training_config"]
     train_config.update(batch_size=1, replicates=1)
     analysis = project["steps"]["analyze"]["base"]["inline"]
-    project["documents"]["dynamics-analysis"] = {"schema": "feedbax.analysis_document.v1", "payload": analysis}
+    project["documents"]["dynamics-analysis"] = {"label": "Dynamics analysis", "schema": "feedbax.analysis_document.v1", "payload": analysis}
     project["steps"]["analyze"]["base"] = {"document": "dynamics-analysis"}
     return project
 

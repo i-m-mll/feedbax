@@ -15,11 +15,12 @@ from typing import TYPE_CHECKING
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.project import Project, ProjectValueEdit, Sha256
+from feedbax.contracts.project import ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import PROJECT_DECLARATION_SUFFIX, TextProject, TextProjectExternalInputs
 from feedbax.contracts.project_resolution import BaseReaders, RunKey
 from feedbax.contracts.studio_project import StudioProjectDocument, StudioProjectSnapshot
+from feedbax.examples import ShippedExample
 from feedbax.project_folder import (
     ProjectFileExists as ProjectFileExists,
     ProjectFolder,
@@ -70,7 +71,7 @@ class ProjectFolderService(ProjectFolder):
         training_methods: TrainingMethodRegistry | None = None,
         synthesis_methods: SynthesisMethodRegistry | None = None,
         figure_templates: FigureTemplateRegistry | None = None,
-        load_examples: Callable[[], Mapping[str, Project]] = dict,
+        load_examples: Callable[[], Mapping[str, ShippedExample]] = dict,
     ) -> None:
         super().__init__(
             root, operations=operations, components=components, functions=functions,

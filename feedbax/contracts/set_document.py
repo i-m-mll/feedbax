@@ -11,7 +11,7 @@ from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
-    SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts, member_display_name,
+    SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts,
 )
 from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, ProjectName, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolvedStep, compose_document, compose_step
@@ -129,11 +129,9 @@ def read_set(read_document: Callable[[str], Document | None], name: str) -> SetD
     """The composed Set document ``name``; raises ValueError when it is missing or not a Set."""
     composed = compose_document(read_document, name)
     if isinstance(composed, ProjectDiagnostic) or composed.schema_id != SET_DOCUMENT_SCHEMA_ID:
-        document = read_document(name)
-        label = member_display_name(name, document.label if document is not None else None)
         if isinstance(composed, ProjectDiagnostic):
-            raise ValueError(f"Set {label}: {composed.detail}")
-        raise ValueError(f"{label} is not a Set document")
+            raise ValueError(f"Set {name!r}: {composed.detail}")
+        raise ValueError(f"{composed.label} is not a Set document")
     return SetDocument.model_validate(composed.payload)
 
 
@@ -165,7 +163,11 @@ def resolve_set_axes(
             if model is None:
                 raise ValueError("the step reads no Model document")
             check_fit(document, model[1])
-            resolved[name] = axis_from_set(document, *model, axis.where).model_copy(update={"optional": axis.optional})
+            authored = read_document(axis.set)
+            assert authored is not None
+            resolved[name] = axis_from_set(document, *model, axis.where).model_copy(
+                update={"optional": axis.optional, "label": axis.label or authored.label},
+            )
         except SetProblem:
             raise
         except SetMisfit as error:

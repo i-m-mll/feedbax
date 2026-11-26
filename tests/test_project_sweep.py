@@ -32,6 +32,7 @@ def test_inherited_rows_and_axis_alternatives_use_the_resolved_sweep():
         {
             "steps": {
                 "parent": {
+                    "label": "Parent",
                     "kind": "train",
                     "base": {"inline": {"gain": 1}},
                     "sweep": {
@@ -42,6 +43,7 @@ def test_inherited_rows_and_axis_alternatives_use_the_resolved_sweep():
                     },
                 },
                 "child": {
+                    "label": "Child",
                     "kind": "train",
                     "base": {"step": "parent"},
                     "sweep": {
@@ -588,8 +590,8 @@ def test_an_optional_axis_keeps_each_row_it_applies_to_and_adds_one_per_value(wh
     from feedbax.contracts.project_sweep import Sweep, expand_sweep
 
     sweep = Sweep.model_validate({"axes": {
-        "rate": {"values": {"a": {}, "b": {}}},
-        "run": {"values": {"run-2": {}}, "optional": True} | ({"where": where} if where else {}),
+        "rate": {"values": {"a": {"label": "A"}, "b": {"label": "B"}}},
+        "run": {"values": {"run-2": {"label": "Run 2"}}, "optional": True} | ({"where": where} if where else {}),
     }})
     rows = expand_sweep(sweep)
     assert [row.id for row in rows] == expected
@@ -599,5 +601,7 @@ def test_an_optional_axis_keeps_each_row_it_applies_to_and_adds_one_per_value(wh
 def test_an_optional_axis_on_a_single_run_keeps_the_default_row():
     from feedbax.contracts.project_sweep import DEFAULT_SWEEP_ROW, Sweep, expand_sweep
 
-    rows = expand_sweep(Sweep.model_validate({"axes": {"run": {"values": {"run-2": {}}, "optional": True}}}))
+    rows = expand_sweep(Sweep.model_validate({
+        "axes": {"run": {"values": {"run-2": {"label": "Run 2"}}, "optional": True}},
+    }))
     assert [(row.id, row.label) for row in rows] == [(DEFAULT_SWEEP_ROW, "Run 1"), ("run=run-2", "Run 2")]

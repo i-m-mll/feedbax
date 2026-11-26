@@ -76,7 +76,7 @@ class _Studio:
 
 
 def _graph_project():
-    return {"documents": {"model": {"schema": "feedbax.spec.model", "payload": {
+    return {"documents": {"model": {"label": "Model", "schema": "feedbax.spec.model", "payload": {
         "step_seconds": 0.01,
         "ports": {
             "inputs": [
@@ -294,7 +294,7 @@ def _missing_sweep_target(studio):
 
 def _set_project():
     raw = _data()
-    raw["documents"]["draft"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}}}}
+    raw["documents"]["draft"] = {"label": "Draft", "schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}}}}
     raw["steps"]["fee"]["sweep"] = {"axes": {"draft": {"set": "draft"}}}
     return raw
 

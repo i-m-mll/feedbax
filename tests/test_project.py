@@ -41,11 +41,12 @@ def test_both_project_readers_round_trip_and_resolve(tmp_path):
     project = Project.model_validate(
         {
             "documents": {
-                "model": {"schema": "model.v1", "payload": {"units": 48}},
-                "task": {"schema": "task.v1", "payload": {"limits": {"reach/a": 1.0}}},
+                "model": {"label": "Model", "schema": "model.v1", "payload": {"units": 48}},
+                "task": {"label": "Task", "schema": "task.v1", "payload": {"limits": {"reach/a": 1.0}}},
             },
             "steps": {
                 "train": {
+                    "label": "Train",
                     "kind": "train",
                     "base": {
                         "inline": {
@@ -66,8 +67,9 @@ def test_both_project_readers_round_trip_and_resolve(tmp_path):
                         },
                     },
                 },
-                "resume": {"kind": "train", "base": {"step": "train", "row": "high_repeat"}},
+                "resume": {"label": "Resume", "kind": "train", "base": {"step": "train", "row": "high_repeat"}},
                 "evaluate": {
+                    "label": "Evaluate",
                     "kind": "evaluate",
                     "base": {"inline": {"condition": 0}},
                     "inputs": {"subject": {"step": "train", "where": repeat}},
@@ -83,6 +85,7 @@ def test_both_project_readers_round_trip_and_resolve(tmp_path):
                     },
                 },
                 "evaluate_subset": {
+                    "label": "Evaluate subset",
                     "kind": "evaluate",
                     "base": {"step": "evaluate"},
                     "sweep": {
@@ -146,9 +149,10 @@ def test_both_project_readers_round_trip_and_resolve(tmp_path):
 def test_delta_diagnostics_and_document_reference_atomicity():
     project = Project.model_validate(
         {
-            "documents": {"condition": {"schema": "condition.v1", "payload": {"gain": 4}}},
+            "documents": {"condition": {"label": "Condition", "schema": "condition.v1", "payload": {"gain": 4}}},
             "steps": {
                 "base": {
+                    "label": "Base",
                     "kind": "evaluate",
                     "base": {"inline": {"condition": {"gain": 0}}},
                     "deltas": [
@@ -161,6 +165,7 @@ def test_delta_diagnostics_and_document_reference_atomicity():
                     ],
                 },
                 "override": {
+                    "label": "Override",
                     "kind": "evaluate",
                     "base": {"step": "base"},
                     "deltas": [
@@ -173,6 +178,7 @@ def test_delta_diagnostics_and_document_reference_atomicity():
                     ],
                 },
                 "condition": {
+                    "label": "Condition",
                     "kind": "evaluate",
                     "base": {"step": "base"},
                     "deltas": [
@@ -186,6 +192,7 @@ def test_delta_diagnostics_and_document_reference_atomicity():
                     ],
                 },
                 "bad_pointer_edit": {
+                    "label": "Bad pointer edit",
                     "kind": "evaluate",
                     "base": {"step": "condition"},
                     "deltas": [
@@ -225,27 +232,27 @@ def test_delta_diagnostics_and_document_reference_atomicity():
         (
             {},
             {
-                "a": {"kind": "train", "base": {"step": "b"}},
-                "b": {"kind": "train", "base": {"step": "a"}},
+                "a": {"label": "A", "kind": "train", "base": {"step": "b"}},
+                "b": {"label": "B", "kind": "train", "base": {"step": "a"}},
             },
             ResolutionCode.STEP_CYCLE,
             "base.step",
         ),
         (
             {},
-            {"a": {"kind": "train", "base": {"inline": {}}, "requires": ["task.rate"]}},
+            {"a": {"label": "A", "kind": "train", "base": {"inline": {}}, "requires": ["task.rate"]}},
             ResolutionCode.UNBOUND_REQUIRED,
             "task.rate",
         ),
         (
-            {"loop": {"schema": "task", "payload": {"item": {"document": "loop"}}}},
-            {"a": {"kind": "train", "base": {"inline": {"task": {"document": "loop"}}}}},
+            {"loop": {"label": "Loop", "schema": "task", "payload": {"item": {"document": "loop"}}}},
+            {"a": {"label": "A", "kind": "train", "base": {"inline": {"task": {"document": "loop"}}}}},
             ResolutionCode.DOCUMENT_CYCLE,
             "payload.task.item",
         ),
         (
-            {"task": {"schema": "task", "payload": {"items": []}}},
-            {"a": {"kind": "train", "base": {"document": "task", "pointer": "/items/0"}}},
+            {"task": {"label": "Task", "schema": "task", "payload": {"items": []}}},
+            {"a": {"label": "A", "kind": "train", "base": {"document": "task", "pointer": "/items/0"}}},
             ResolutionCode.BAD_POINTER,
             "base",
         ),
@@ -262,11 +269,13 @@ def test_row_sources_survive_authored_only_and_generated_rows_use_exact_reader()
         {
             "steps": {
                 "first": {
+                    "label": "First",
                     "kind": "train",
                     "base": {"inline": {"seed": 0, "batches": 2}},
                     "sweep": {"rows": {"original": {"patches": {"seed": {"value": 19}}}}},
                 },
                 "derived": {
+                    "label": "Derived",
                     "kind": "train",
                     "base": {"step": "first"},
                     "sweep": {
@@ -292,8 +301,9 @@ def test_row_sources_survive_authored_only_and_generated_rows_use_exact_reader()
                         },
                     },
                 },
-                "from_local": {"kind": "train", "base": {"step": "derived", "row": "long_repeat"}},
+                "from_local": {"label": "From local", "kind": "train", "base": {"step": "derived", "row": "long_repeat"}},
                 "from_generated": {
+                    "label": "From generated",
                     "kind": "train",
                     "base": {"step": "first", "row": "seed=sample"},
                 },
@@ -325,8 +335,9 @@ def test_external_and_historical_bases_use_exact_readers():
     project = Project.model_validate(
         {
             "steps": {
-                "historical": {"kind": "train", "base": {"run": "recorded-request"}},
+                "historical": {"label": "Historical", "kind": "train", "base": {"run": "recorded-request"}},
                 "external": {
+                    "label": "External",
                     "kind": "train",
                     "base": {
                         "path": "../record.json",
@@ -371,10 +382,10 @@ def test_document_schema_validation_distinguishes_unknown_schema_reference_and_v
 
     project = Project(
         documents={
-            "good": RootDocument(schema="task", payload={"rate": 1}),
-            "bad": RootDocument(schema="task", payload={"rate": "never"}),
-            "unknown": RootDocument(schema="unknown", payload={}),
-            "unresolved": RootDocument(schema="task", payload={"document": "missing"}),
+            "good": RootDocument(label="Good", schema="task", payload={"rate": 1}),
+            "bad": RootDocument(label="Bad", schema="task", payload={"rate": "never"}),
+            "unknown": RootDocument(label="Unknown", schema="unknown", payload={}),
+            "unresolved": RootDocument(label="Unresolved", schema="task", payload={"document": "missing"}),
         }
     )
     errors = validate_project_documents(project, {"task": Task.model_validate})
@@ -394,11 +405,12 @@ def test_document_base_follows_root_alias_before_deltas():
     project = Project.model_validate(
         {
             "documents": {
-                "condition": {"schema": "condition", "payload": {"gain": 3}},
-                "alias": {"schema": "condition", "payload": {"document": "condition"}},
+                "condition": {"label": "Condition", "schema": "condition", "payload": {"gain": 3}},
+                "alias": {"label": "Alias", "schema": "condition", "payload": {"document": "condition"}},
             },
             "steps": {
                 "evaluate": {
+                    "label": "Evaluate",
                     "kind": "evaluate",
                     "base": {"document": "alias"},
                     "deltas": [
@@ -418,10 +430,11 @@ def test_selected_row_sources_follow_list_edits_inherited_rows_and_document_path
     project = Project.model_validate(
         {
             "documents": {
-                "settings": {"schema": "settings", "payload": {"values": [2, 4], "limit": 10}},
+                "settings": {"label": "Settings", "schema": "settings", "payload": {"values": [2, 4], "limit": 10}},
             },
             "steps": {
                 "fit": {
+                    "label": "Fit",
                     "kind": "train",
                     "base": {"document": "settings"},
                     "deltas": [
@@ -443,7 +456,7 @@ def test_selected_row_sources_follow_list_edits_inherited_rows_and_document_path
                         },
                     },
                 },
-                "child": {"kind": "train", "base": {"step": "fit", "row": "derived"}},
+                "child": {"label": "Child", "kind": "train", "base": {"step": "fit", "row": "derived"}},
             },
         }
     )
@@ -461,8 +474,9 @@ def test_selected_row_sources_follow_list_edits_inherited_rows_and_document_path
 
 def test_selected_sibling_rows_keep_original_sources_after_list_writes():
     project = Project.model_validate({
-        "documents": {"shared": {"schema": "data", "payload": {"a/b": {"~key": 5}}}},
+        "documents": {"shared": {"label": "Shared", "schema": "data", "payload": {"a/b": {"~key": 5}}}},
         "steps": {"fit": {
+            "label": "Fit",
             "kind": "train",
             "base": {"inline": {"items": [
                 {"document": "shared", "pointer": "/a~1b"}, {"native": []},

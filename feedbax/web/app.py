@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from feedbax.contracts.studio_api import StudioErrorReport
-from feedbax.examples import load_shipped_projects
+from feedbax.examples import load_shipped_examples
 from feedbax.host import HostClient
 from feedbax.jobs import DEFAULT_AUTOMATIC_RUN, AutomaticRun, JobService, SessionSubmission
 from feedbax.orchestration.targets import TargetRegistry
@@ -75,7 +75,7 @@ def create_app(
             training_methods=app.state.bootstrap_state.bundle.training_methods,
             synthesis_methods=app.state.bootstrap_state.bundle.synthesis_methods,
             figure_templates=app.state.bootstrap_state.bundle.figure_templates,
-            load_examples=load_shipped_projects,
+            load_examples=load_shipped_examples,
         )
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle,
@@ -120,7 +120,7 @@ def create_app(
         description="API for Feedbax model construction and training",
         lifespan=_lifespan,
     )
-    app.state.project_folders = ProjectFolderService(project_root, load_examples=load_shipped_projects)
+    app.state.project_folders = ProjectFolderService(project_root, load_examples=load_shipped_examples)
 
     app.add_middleware(
         CORSMiddleware,

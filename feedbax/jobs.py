@@ -31,7 +31,6 @@ from feedbax.contracts.execution_target import (
     LOCAL_RUN_KINDS, LOCAL_TARGET, LOCAL_TARGET_ID, AttemptTarget, ExecutionTargets,
     SessionTarget, SessionTargetProfile, TargetRunKind, attempt_target,
 )
-from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     JobError,
@@ -2196,12 +2195,12 @@ def _planned_light_runs(
 
 def _plan_run_data(name: str, plan: ProjectPlan, run: PlannedRow) -> dict[str, Any]:
     """What a job records of its run at submission; ``label`` is the run's name as Studio showed it then."""
-    step = member_display_name(run.key.step, plan.steps[run.key.variant, run.key.step].label)
+    step = plan.steps[run.key.variant, run.key.step].label
     return {
         "run_key": name,
         "stage_id": run.key.step,
         "scenario_id": run.key.variant,
-        "label": f"{step} · {run.label}" if run.label else step,
+        "label": step if run.step_name else f"{step} · {run.name}",
         "coordinates": {
             axis: coordinate.value for axis, coordinate in run.coordinates.items()
             if coordinate.value is not None or coordinate.explicit_null

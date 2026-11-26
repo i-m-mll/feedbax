@@ -43,7 +43,7 @@ def synthesis_project():
     evaluate = managed_evaluation_step("synthesize")
     evaluate["inputs"]["subject"].pop("checkpoint")
     raw["steps"] = {
-        "synthesize": {"kind": "synthesize", "base": {"inline": {
+        "synthesize": {"label": "Synthesize", "kind": "synthesize", "base": {"inline": {
             "model": {"document": "point-mass"},
             "task": {"document": "simple-reaches-task"},
             "objective": {"document": "simple-reaches-objective"},
@@ -87,7 +87,7 @@ def test_synthesize_resolves_model_sweeps_and_trial_set_fields():
         name: {"value": value, "patches": {mass.to_text(): {"value": value}}}
         for name, value in (("light", 1.0), ("heavy", 1.5))
     }}}}
-    raw["documents"]["bank"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}, "two": {}}}}
+    raw["documents"]["bank"] = {"label": "Bank", "schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}, "two": {}}}}
     step["set_fields"] = {"bank": {"axis": {"set": "bank"}, "sampling": {"kind": "weighted", "none": 0}}}
     plan = compile_project(Project.model_validate(raw))
     assert not plan.diagnostics, plan.diagnostics
@@ -320,10 +320,11 @@ def test_analyze_reads_a_declared_synthesis_dataset(tmp_path, monkeypatch):
     raw = synthesis_project()
     raw["steps"]["synthesize"]["base"]["inline"]["method"] = key
     raw["steps"]["plot"] = {
+        "label": "Plot",
         "kind": "analyze", "inputs": {"diagnostic": {"step": "synthesize", "product": "diagnostic"}},
         "base": {"inline": {
             "inputs": {"diagnostic": {"kind": "dataset"}},
-            "views": {"result": {"inputs": {"data": {"input": "diagnostic"}}, "figure": {
+            "views": {"result": {"label": "Result", "inputs": {"data": {"input": "diagnostic"}}, "figure": {
                 "data": ["data"], "layout": [{"name": "values", "row": 1, "col": 1}],
                 "layers": [{"name": "values", "role": "data", "panel": "values", "mark": "line",
                             "encode": {"x": "sample", "y": "value"}}],

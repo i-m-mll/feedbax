@@ -29,6 +29,7 @@ def _variant(data, edit):
     content = deepcopy(data["documents"]["model"]["payload"])
     edit(content["interior"]["components"])
     data["documents"]["model-2"] = {
+        "label": "Model 2",
         "schema": data["documents"]["model"]["schema"], "base": {"document": "model"},
         "differences": {
             path: value.model_dump(mode="json")

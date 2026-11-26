@@ -220,7 +220,7 @@ def test_checkpoint_rule_sweep_keeps_subject_fanout_and_replans_horizons(tmp_pat
     inherited["steps"]["baseline"]["sweep"] = {"rows": {
         "chosen": {"patches": {CHECKPOINT_RULE_TARGET: {"value": [{"at": 3}]}}},
     }}
-    inherited["steps"]["child"] = {"kind": "evaluate", "base": {"step": "baseline", "row": "chosen"}}
+    inherited["steps"]["child"] = {"label": "Child", "kind": "evaluate", "base": {"step": "baseline", "row": "chosen"}}
     _save_project(folders, "series", Project.model_validate(inherited))
     inherited_rows = {row.key.step: row for row in plan().plan.runs}
     assert inherited_rows["child"].request_id == inherited_rows["baseline"].request_id

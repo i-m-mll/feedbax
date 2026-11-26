@@ -41,7 +41,7 @@ def _data():
     other = deepcopy(fit)
     other["base"]["inline"]["trial_documents"]["model"] = {"document": "model-2"}
     data["steps"] = {"fit": fit, "other": other}
-    data["documents"]["model-2"] = {"schema": data["documents"]["model"]["schema"], "base": {"document": "model"}}
+    data["documents"]["model-2"] = {"label": "Model 2", "schema": data["documents"]["model"]["schema"], "base": {"document": "model"}}
     return data
 
 
@@ -122,6 +122,7 @@ def _training_data(overridden: bool) -> dict:
     fit = data["steps"].pop("train")
     inline = fit["base"]["inline"]
     data["documents"]["training"] = {
+        "label": "Training",
         "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": {key: inline[key] for key in TRAINING_DOCUMENT_KEYS},
     }
     inline |= {key: {"document": "training", "pointer": f"/{key}"} for key in TRAINING_DOCUMENT_KEYS}
@@ -129,6 +130,7 @@ def _training_data(overridden: bool) -> dict:
     other["base"]["inline"] |= {key: {"document": "training-2", "pointer": f"/{key}"} for key in TRAINING_DOCUMENT_KEYS}
     data["steps"] = {"fit": fit, "other": other}
     data["documents"]["training-2"] = {
+        "label": "Training 2",
         "schema": TRAINING_DOCUMENT_SCHEMA_ID, "base": {"document": "training"},
         "differences": {BATCHES: {"value": 4}} if overridden else {},
     }

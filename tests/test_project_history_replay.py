@@ -38,6 +38,7 @@ def _write(root, relative, value, *, encoding="utf-8"):
 
 def _model(seconds):
     return {
+        "label": "Document",
         "schema": MODEL_DOCUMENT_SCHEMA_ID,
         "payload": {"step_seconds": seconds, "ports": {}, "interior": {}},
     }
@@ -48,7 +49,7 @@ def study(tmp_path):
     root = tmp_path / "study"
     _write(root, DECLARATION_FILE, MANIFEST)
     _write(root, "documents/model.json", _model(0.01))
-    _write(root, "documents/notes.json", {"schema": "notes", "payload": "café"})
+    _write(root, "documents/notes.json", {"label": "Document", "schema": "notes", "payload": "café"})
     _write(root, "presentation.json", {})
     return root, TestClient(create_app(projects_dir=tmp_path))
 
@@ -209,6 +210,7 @@ def test_replay_recovers_variant_creation_and_removal_and_retains_configuration(
     root, client = study
     before = _snapshot(client)
     step_data = _write(root, "steps/fit.json", {
+        "label": "Train",
         "kind": "train", "base": {"inline": {}},
         "sweep": {"axes": {"sample": {"values": {"10": {"value": 10}, "2": {"value": 2}}}}},
     })

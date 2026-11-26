@@ -28,7 +28,7 @@ def _project(tmp_path, differences):
     for name in ("spare", "other"):
         model["interior"]["components"][name] = {"kind": "leaf", "name": name, "type": "feedbax.PointMass", "fields": {"mass": 1.0}}
     model["interior"]["wires"]["spare-wire"] = _SPARE_WIRE
-    raw["documents"]["variant"] = {"schema": MODEL_DOCUMENT_SCHEMA_ID, "base": {"document": "reach-model"}, "differences": differences}
+    raw["documents"]["variant"] = {"label": "Variant", "schema": MODEL_DOCUMENT_SCHEMA_ID, "base": {"document": "reach-model"}, "differences": differences}
     raw["steps"]["train"]["base"]["inline"]["trial_documents"]["model"] = {"document": "variant"}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "ghost", Project.model_validate(raw))

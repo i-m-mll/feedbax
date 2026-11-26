@@ -795,7 +795,7 @@ def lower_analyze(
 
     lower.declarations = document.inputs
     lower.element_names = {
-        name: item.label or name
+        name: item.label
         for items in (document.operations, document.views) for name, item in items.items()
     }
     graph = TopologicalSorter()

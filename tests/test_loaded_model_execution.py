@@ -51,6 +51,7 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
     })
     interior["wires"]["plant-wire"]["source"] = port("actuate", "output")
     raw["documents"]["quiet-model"] = {
+        "label": "Quiet model",
         "schema": model["schema"], "base": {"document": model_name},
         "differences": {"/interior/components/motor-noise/fields/std": {"value": 0.0}},
     }
@@ -135,7 +136,7 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
         short_task = raw["documents"]["shorter"]["payload"]
         short_task["fixed_steps"] = 7
         short_task["epochs"][0]["end"]["length"]["value"] = 7
-        raw["documents"]["loads"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {
+        raw["documents"]["loads"] = {"label": "Loads", "schema": "feedbax.set_document.v1", "payload": {"entries": {
             "pulse": {"task_variables": [{
                 "id": "amplitude", "name": "Amplitude", "type": {"base": "real", "shape": [2]},
                 "value": {"kind": "call", "function": "vector", "args": [

@@ -844,6 +844,7 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
     raw["steps"]["baseline"]["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     raw["steps"]["picked"] = managed_evaluation_step("train")
     raw["steps"]["train-2"] = {
+        "label": "Train 2",
         "kind": "train", "base": {"step": "train"}, "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
         "deltas": [{"layer_id": "initialize", "patches": [
             {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},

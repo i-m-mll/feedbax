@@ -65,7 +65,7 @@ def gather_axes(
                 id=ids[axis, identity], name=label, value_label=value_label, rule=value_text(coordinate),
             ))
         axes.append(StudioProjectWindowMapAxis(
-            id=axis, name=sweep_axis_name(axis, (item for matches in values.values() for item in matches)),
+            id=axis, name=sweep_axis_name(item for matches in values.values() for item in matches),
             values=displayed,
         ))
     return axes, {at: ids[at[1], identity] for at, identity in identities.items()}

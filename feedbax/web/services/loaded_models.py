@@ -70,7 +70,7 @@ def import_loaded_model(
             archive=f"models/{query.name}.feedbax-model",
         )
         snapshot = folders.publish_loaded_model(
-            project, revision=query.revision, name=query.name, model=payload, staging=staging, raw_archive=raw,
+            project, revision=query.revision, name=query.name, label=query.label, model=payload, staging=staging, raw_archive=raw,
         )
         return StudioLoadedModelImportResult(StudioLoadedModelImported(
             status="imported", document=query.name, snapshot=snapshot,

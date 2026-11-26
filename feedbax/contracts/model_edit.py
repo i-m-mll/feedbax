@@ -457,7 +457,7 @@ class EvaluateModelRequest(StrictModel):
 
 
 class StudioStepNameReference(StrictModel):
-    kind: Literal["step"] = "step"
+    kind: Literal["step"]
     key: ProjectName
 
 

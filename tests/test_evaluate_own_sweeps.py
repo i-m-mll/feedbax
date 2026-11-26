@@ -28,6 +28,7 @@ def _project(seeds, axes):
     train = raw["steps"]["train"]
     train["base"]["inline"]["trial_documents"].update(task=None, python_task={"document": "task"}, input_bindings={})
     raw["documents"]["task"] = {
+        "label": "Task",
         "schema": "feedbax.spec.python_task",
         "payload": {"type": REACHING_TASK, "params": {"x": 0.1, "n_steps": 5}},
     }

@@ -68,7 +68,7 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
             "patches": {"settings.grad_clip": {"value": 0.5}},
         }},
     }
-    steps["child"] = {"kind": "train", "base": {"step": "train"}}
+    steps["child"] = {"label": "Child", "kind": "train", "base": {"step": "train"}}
     steps["evaluate"] = managed_evaluation_step("child")
     steps["evaluate"]["inputs"]["subject"]["where"] = {
         "clauses": [{"seed": [{"id": "a", "label": "a"}]}],
@@ -453,6 +453,7 @@ def test_review_attributes_opaque_parameter_edits(before, after):
             "steps": {
                 "train": authored.steps["train"],
                 "evaluate": {
+                    "label": "Evaluate",
                     "kind": "evaluate",
                     "base": {"inline": {"evaluation_type": "custom", "params": params}},
                     "inputs": {"subject": {"step": "train", "checkpoint": "last"}},

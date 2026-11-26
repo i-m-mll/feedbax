@@ -328,6 +328,7 @@ def test_shared_trial_resolution_tracks_document_aliases_and_row_edits(authored)
     raw = document_project(authored)
     _two_optimizer_rates(raw)
     raw["documents"]["task-alias"] = {
+        "label": "Task alias",
         "schema": "test.alias", "payload": {"nested": {"document": "task"}},
     }
     step = raw["steps"]["train"]
@@ -481,15 +482,16 @@ def document_project(authored, *, evaluation=False):
     _, model, task, objective = authored
     raw = {
         "documents": {
-            "reach-model": {"schema": MODEL_DOCUMENT_SCHEMA_ID, "payload": model.model_dump(mode="json")},
-            "task": {"schema": TASK_DOCUMENT_SCHEMA_ID, "payload": task.model_dump(mode="json")},
+            "reach-model": {"label": "Reach model", "schema": MODEL_DOCUMENT_SCHEMA_ID, "payload": model.model_dump(mode="json")},
+            "task": {"label": "Task", "schema": TASK_DOCUMENT_SCHEMA_ID, "payload": task.model_dump(mode="json")},
             "objective": {
+                "label": "Objective",
                 "schema": OBJECTIVE_DOCUMENT_SCHEMA_ID,
                 "payload": objective.model_dump(mode="json"),
             },
         },
         "steps": {
-            "train": {"kind": "train", "base": {"inline": {
+            "train": {"label": "Train", "kind": "train", "base": {"inline": {
                 "trial_documents": {
                     "model": {"document": "reach-model"},
                     "task": {"document": "task"},
@@ -568,6 +570,7 @@ def _training_document(raw, *steps):
 
     inline = raw["steps"][steps[0]]["base"]["inline"]
     raw["documents"]["training"] = {
+        "label": "Training",
         "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": {key: inline[key] for key in TRAINING_DOCUMENT_KEYS},
     }
     for step in steps:
