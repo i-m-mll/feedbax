@@ -21,7 +21,7 @@ def scoped_set_member_id(*parts: str) -> str:
 def _canonical_model_address(text: str) -> str:
     from feedbax.contracts.model_address import ModelAddress
 
-    ModelAddress.from_text(text)
+    ModelAddress.from_authored_text(text)
     return text
 
 

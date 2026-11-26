@@ -34,10 +34,7 @@ def managed_train_project(*, batches: int = 2, scenario: str = "simple-reaches")
     model["ports"]["outputs"] = {"command": model["ports"]["outputs"]["command"]}
     objective = example.documents[trial["objective"]["document"]].payload
     objective["terms"] = {"command": {
-        "measure": {
-            "kind": "call", "function": "sqnorm",
-            "args": [{"kind": "name", "reference": COMMAND_ADDRESS}],
-        },
+        "measure": "sqnorm(outputs.command)",
         "reduction": "last",
     }}
     return Project(

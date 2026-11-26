@@ -46,17 +46,19 @@ class TrialDocuments(StrictModel):
             port.id: selected_signal_id(port.id, signal_keys, bindings) for port in self.model.ports.inputs
         }
 
-    def without_signal_labels(self) -> TrialDocuments:
-        """Use stable signal IDs as names while retaining the resolved input choices."""
-        if self.task is None or not self.task.signals:
+    def without_task_labels(self) -> TrialDocuments:
+        """Use stable Task keys as names while retaining the resolved input choices."""
+        if self.task is None:
             return self
-        signal_keys = {signal.id for signal in self.task.signals}
-        bindings = self.resolved_signal_bindings(signal_keys)
-        for port in self.model.ports.inputs:
-            default = selected_signal_id(port.id, signal_keys, {})
-            if bindings[port.id] == default:
-                del bindings[port.id]
-        task = self.task.with_signal_ids_as_names()
+        bindings = self.input_bindings
+        if self.task.signals:
+            signal_keys = {signal.id for signal in self.task.signals}
+            bindings = self.resolved_signal_bindings(signal_keys)
+            for port in self.model.ports.inputs:
+                default = selected_signal_id(port.id, signal_keys, {})
+                if bindings[port.id] == default:
+                    del bindings[port.id]
+        task = self.task.with_member_keys_as_names()
         if bindings == self.input_bindings and task is self.task:
             return self
         return self.model_copy(update={"task": task, "input_bindings": bindings})
@@ -66,8 +68,8 @@ class TrialDocuments(StrictModel):
         if isinstance(task, PythonTaskSelection):
             return self.input_bindings if task == self.python_task else {}
         original = self.task
-        if original is None or original.without_markers().with_signal_ids_as_names() != (
-            task.without_markers().with_signal_ids_as_names()
+        if original is None or original.without_markers().with_member_keys_as_names() != (
+            task.without_markers().with_member_keys_as_names()
         ):
             return {}
         return self.resolved_signal_bindings({signal.id for signal in original.signals})
