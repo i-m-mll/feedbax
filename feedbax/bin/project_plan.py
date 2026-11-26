@@ -1,4 +1,4 @@
-"""Read-only planning and status for an authored text project."""
+"""Plan an authored text project and read its saved status."""
 
 from __future__ import annotations
 
@@ -165,6 +165,7 @@ def _output_path(path: Path, text: TextProject, external_paths: set[Path]) -> Pa
         root / name
         for name in (
             *text.file_revisions,
+            "models",
             STUDIO_PATCH_JOURNAL_FILENAME,
             STUDIO_PRESENTATION_FILENAME,
             STUDIO_WRITE_LOCK_FILENAME,
@@ -226,6 +227,7 @@ def _read_plan(
 ) -> tuple[ProjectFolderLocation, TextProject, ProjectPlan, set[Path], dict[str, bytes]]:
     from feedbax.application.composition import load_application
     from feedbax.project_folder import ProjectFolderInvalid, ProjectFolderLocation, ProjectFolderNotFound
+    from feedbax.project_model_assets import portable_model_reader
 
     root, declaration = locate_text_project(project_dir)
     try:
@@ -245,8 +247,10 @@ def _read_plan(
         return data
 
     read = read_pin if capture_sources else external.read
+    store = text.store_path
     readers = BaseReaders(
-        external=read, figure_external=read, terminal_train=terminal_train_reader(text.store_path),
+        external=read, figure_external=read, terminal_train=terminal_train_reader(store),
+        imported_model=portable_model_reader(text.root, store, registry.components),
     )
     return location, text, compile_project(
         text.project, operations=registry.operations, components=registry.components,
