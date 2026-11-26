@@ -6,8 +6,12 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Literal
 
 from pydantic import (
+    BeforeValidator,
     Field,
+    JsonValue,
+    PlainSerializer,
     StringConstraints,
+    TypeAdapter,
     field_validator,
     model_validator,
 )
@@ -268,16 +272,52 @@ class BarrierCheckpoint(StrictModel):
     barrier: NonemptyText
 
 
-type CheckpointRule = (
+type ValidCheckpointRule = (
     Literal["last"] | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint
-    | CheckpointBatches | CheckpointCadence | UpdateRule | UnresolvedValue
+    | CheckpointBatches | CheckpointCadence | UpdateRule
 )
+
+type CheckpointRule = ValidCheckpointRule | UnresolvedValue
+type AuthoredCheckpointRule = (
+    str | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint
+    | CheckpointBatches | CheckpointCadence | UpdateRule
+)
+
+
+def _read_checkpoint_rule(value: object) -> object:
+    if isinstance(value, str) and value != "last":
+        return UnresolvedValue(text=value)
+    if isinstance(value, dict) and value.get("kind") == "unresolved":
+        raise ValueError("Save an invalid checkpoint rule as its text.")
+    return value
+
+
+def _write_checkpoint_rule(value: CheckpointRule) -> AuthoredCheckpointRule:
+    return value.text if isinstance(value, UnresolvedValue) else value
+
+
+type StoredCheckpointRule = Annotated[
+    CheckpointRule,
+    BeforeValidator(_read_checkpoint_rule, json_schema_input_type=AuthoredCheckpointRule),
+    PlainSerializer(_write_checkpoint_rule, return_type=AuthoredCheckpointRule, when_used="json"),
+]
+
+_STORED_CHECKPOINT_RULE = TypeAdapter(StoredCheckpointRule)
+
+
+def read_stored_checkpoint_rule(value: object) -> CheckpointRule:
+    return _STORED_CHECKPOINT_RULE.validate_python(value)
+
+
+def stored_checkpoint_rule(value: CheckpointRule) -> JsonValue:
+    return _STORED_CHECKPOINT_RULE.dump_python(value, mode="json", exclude_none=True)
+
 
 class StepReference(StrictModel):
     step: ProjectName
     where: SubsetTerms | NamedSubset | None = None
     variants: Literal["all"] | list[RowKey] | None = None
-    checkpoint: CheckpointRule | None = None
+    checkpoint: StoredCheckpointRule | None = None
     element: ProjectName | None = Field(default=None, exclude_if=lambda value: value is None)
     product: ProjectName | None = Field(default=None, exclude_if=lambda value: value is None)
     unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
