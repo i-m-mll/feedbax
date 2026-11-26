@@ -108,7 +108,7 @@ test('a wire drawn to an occupied input of another type replaces its wire, keepi
     const snapshot = response.result.snapshot;
     const saved = rootPayload(snapshot.project.documents![modelFile.id]) as unknown as ModelDocument;
     const key = Object.keys(snapshot.presentation?.documents?.[modelFile.id]?.waypoints ?? {})
-      .find((address) => address.includes('"command"'));
+      .find((address) => address.includes('command'));
     return { wire: saved.interior.wires?.command, waypoints: key && snapshot.presentation?.documents?.[modelFile.id]?.waypoints?.[key] };
   };
 
