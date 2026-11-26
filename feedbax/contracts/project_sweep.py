@@ -7,7 +7,6 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from fractions import Fraction
 from graphlib import CycleError, TopologicalSorter
-from itertools import product
 import math
 from typing import Annotated, Literal, TypeVar
 
@@ -15,6 +14,9 @@ from pydantic import AfterValidator, Field, JsonValue, PrivateAttr, TypeAdapter,
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.combinations import (
+    DEFAULT_COMBINATION_LIMIT, Dimension, cross_dimension, select_combinations, zip_dimension,
+)
 from feedbax.contracts.expression_storage import StoredExpression
 from feedbax.contracts.expression_values import DrawValue, TextSpan, WeightPart
 from feedbax.contracts.manifest import OverridePatch
@@ -578,7 +580,7 @@ class ExpandedRow:
 
 
 DEFAULT_SWEEP_ROW = "default"
-DEFAULT_SWEEP_LIMIT = 10_000
+DEFAULT_SWEEP_LIMIT = DEFAULT_COMBINATION_LIMIT
 
 
 @dataclass(frozen=True)
@@ -599,7 +601,7 @@ class _SweepPlan:
     sizes: Mapping[str, int]
     exceptions: Mapping[str, SweepException]
     sets: SweepSets = field(default_factory=dict)
-    dimensions: tuple[_Dimension, ...] = ()
+    dimensions: tuple[Dimension, ...] = ()
     manual: tuple[Mapping[str, str], ...] | None = None
     conditional: tuple[str, ...] = ()
     """The axes with a condition, each after the axes it is conditioned on. The combination is of the others."""
@@ -634,12 +636,7 @@ class _SweepPlan:
                     resolved[name] = lookup[name][key]
                 yield resolved
             return
-        for steps in product(*(steps for _, steps in self.dimensions)):
-            yield {
-                name: choices[name][index]
-                for (names, _), indices in zip(self.dimensions, steps, strict=True)
-                for name, index in zip(names, indices, strict=True)
-            }
+        yield from select_combinations(self.dimensions, choices)
 
 
 def _patches(value: PatchSet) -> dict[str, PatchValue]:
@@ -684,10 +681,6 @@ def _axis_size(name: str, axis: Axis, inputs: SweepInputs, sets: SweepSets) -> i
             )
 
 
-type _Dimension = tuple[tuple[str, ...], tuple[tuple[int, ...], ...]]
-"""Axes that vary together, and the value index of each axis at each step."""
-
-
 def _label_pairs(path: str, names: Sequence[str], members: Sequence[Sequence[SweepInputMember]]) -> tuple[tuple[int, ...], ...]:
     """Pair the members of zipped inputs whose shared varying labels are equal, one to one."""
     every = [member for group in members for member in group]
@@ -720,7 +713,7 @@ def _label_pairs(path: str, names: Sequence[str], members: Sequence[Sequence[Swe
 
 def _zip_dimension(
     path: str, names: Sequence[str], sizes: Mapping[str, int], axes: Mapping[str, Axis], inputs: SweepInputs,
-) -> _Dimension:
+) -> Dimension:
     roles = [axes[name].input for name in names if isinstance(axes[name], InputAxis)]
     if roles:
         if len(roles) != len(names):
@@ -728,28 +721,20 @@ def _zip_dimension(
                 SweepExpansionCode.INVALID_COMBINATION, path, "zip pairs input axes by label, with input axes only",
             )
         return tuple(names), _label_pairs(path, names, [inputs[role] or () for role in roles])
-    lengths = {name: sizes[name] for name in names}
-    if len(set(lengths.values())) != 1:
-        raise SweepExpansionError(
-            SweepExpansionCode.INVALID_COMBINATION,
-            path,
-            f"zip requires equal axis lengths, got {lengths}",
-        )
-    return tuple(names), tuple((index,) * len(names) for index in range(next(iter(lengths.values()))))
-
-
-def _cross_dimension(name: str, size: int) -> _Dimension:
-    return (name,), tuple((index,) for index in range(size))
+    try:
+        return zip_dimension({name: sizes[name] for name in names})
+    except ValueError as error:
+        raise SweepExpansionError(SweepExpansionCode.INVALID_COMBINATION, path, str(error)) from error
 
 
 def _dimensions(
     sizes: Mapping[str, int], combination: Literal["cross", "zip"] | GroupCombination,
     axes: Mapping[str, Axis], inputs: SweepInputs,
-) -> tuple[_Dimension, ...]:
+) -> tuple[Dimension, ...]:
     if not sizes and isinstance(combination, str):
         return ()
     if combination == "cross":
-        return tuple(_cross_dimension(name, size) for name, size in sizes.items())
+        return tuple(cross_dimension(name, size) for name, size in sizes.items())
     if combination == "zip":
         return (_zip_dimension("sweep.combination", tuple(sizes), sizes, axes, inputs),)
 
@@ -772,7 +757,7 @@ def _dimensions(
         if group.mode == "zip":
             dimensions.append(_zip_dimension(path, group.axes, sizes, axes, inputs))
         else:
-            dimensions.extend(_cross_dimension(name, sizes[name]) for name in group.axes)
+            dimensions.extend(cross_dimension(name, sizes[name]) for name in group.axes)
     if missing := sizes.keys() - used:
         raise SweepExpansionError(
             SweepExpansionCode.INVALID_COMBINATION,
