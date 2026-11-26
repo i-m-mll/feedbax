@@ -2979,7 +2979,7 @@ export type CheckpointRuleAxis = {
   "checkpoint_rule": UpdateRule;
 };
 
-export type CheckpointRulePath = "{\"field\":\"checkpoint\",\"input\":\"subject\"}";
+export type CheckpointRulePath = "{@subject.checkpoint}";
 
 export type CodeDifference = SourceDifference | RegistryDifference;
 
@@ -11692,7 +11692,7 @@ export const CheckpointRuleAxisSchema: z.ZodType<CheckpointRuleAxis> = z.lazy(()
 ) as unknown as z.ZodType<CheckpointRuleAxis>;
 
 export const CheckpointRulePathSchema: z.ZodType<CheckpointRulePath> = z.lazy(() =>
-  z.literal("{\"field\":\"checkpoint\",\"input\":\"subject\"}")
+  z.literal("{@subject.checkpoint}")
 ) as unknown as z.ZodType<CheckpointRulePath>;
 
 export const CodeDifferenceSchema: z.ZodType<CodeDifference> = z.lazy(() =>

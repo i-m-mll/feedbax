@@ -28,7 +28,7 @@ from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_docu
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.project_sources import ValueSource, pointer
-from feedbax.contracts.project_sweep import NamedAxis, SetValue
+from feedbax.contracts.project_sweep import NamedAxis, SetValue, model_field_path, model_field_target
 from feedbax.contracts.studio_field import (
     FieldResetEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
 )
@@ -274,12 +274,17 @@ def _kept_writes(
 ) -> tuple[list[StudioProjectFilePatch], SetField | None] | Problem:
     """What gives ``step_id`` a removed sweep's kept value: its Model field as a document write, the rest in its
     definition."""
-    fields = [(ModelAddress.from_text(write.path), write) for write in writes if write.path.startswith("{")]
+    fields, rest = [], []
+    for write in writes:
+        target = model_field_target(write.path)
+        if target is None:
+            rest.append(write)
+        else:
+            fields.append((target.address, write))
     if any(write.op == "remove" for _, write in fields):
         raise ProjectFolderInvalid("A sweep value removes a Model field.")
     if len(fields) > 1:
         return Problem(code=ProblemCode.STRUCTURE, reason="This sweep value sets more than one Model field.")
-    rest = [write for write in writes if not write.path.startswith("{")]
     files = scoped_file(project, step_id, StepRuns(kind="step"), rest).files if rest else []
     return files, next((SetField(op="set_field", address=address, value=write.value) for address, write in fields), None)
 
@@ -481,7 +486,7 @@ def model_fields(
         if step is not None:
             target = SweepTarget(
                 numeric.value.model_dump(mode="json") if isinstance(numeric.value, UnresolvedValue) else numeric.value,
-                _addressed, field_key,
+                _addressed, model_field_path(field.address),
             )
             axis = FieldSweeps(
                 step, target, numeric.label, numeric.key[-1:], integer=numeric.site.expected.base == ValueBase.INTEGER,
@@ -620,7 +625,7 @@ def model_fields(
             return ModelFieldResponse(problems=[Problem(
                 code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",
             )])
-        path = axis.target.patch_path if write_address == field.address else write_address.to_text()
+        path = axis.target.patch_path if write_address == field.address else model_field_path(write_address)
         write = OverridePatch(op="replace", path=path, value=value)
         relative = pointer(write_address.stored_path())
         selected = selected_edit_runs(plan, body.run.step, body)
@@ -659,7 +664,7 @@ def model_fields(
     if variant is not None:
         assert body.run is not None
         field_key = difference.address.to_text()
-        path = f"documents.{owner_name}.{field_key}"
+        path = model_field_path(difference.address, ("documents", owner_name))
         if field_key not in authored_fields or isinstance(difference.address.element.parent, AttachmentElement):
             raise ProjectFolderInvalid("This Model field is not part of the named document.")
         write = OverridePatch(op="replace", path=path, value=value)

@@ -6,20 +6,18 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from fractions import Fraction
-from functools import lru_cache
 from graphlib import CycleError, TopologicalSorter
 from itertools import product
 import math
-import re
 from typing import Annotated, Literal, TypeVar
 
-from pydantic import Field, JsonValue, PrivateAttr, TypeAdapter, model_validator
+from pydantic import AfterValidator, Field, JsonValue, PrivateAttr, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import DrawValue, Expression, TextSpan, WeightPart
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.model_address import FieldElement, ModelAddress
+from feedbax.contracts.model_address import FieldElement, ModelAddress, ModelFieldTarget, authored_model_field_target
 from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.request_refs import UpdateCadence, UpdateRule, axis_values_id
 from feedbax.contracts.project_inputs import (
@@ -34,7 +32,6 @@ from feedbax.contracts.project_inputs import (
 from feedbax.contracts.run_rule import RuleRefusal, rule_names
 from feedbax.contracts.task_document import StoredTaskAdditions, TaskAdditions
 type PatchPath = Annotated[str, Field(pattern=r"^[^.]+(?:\.[^.]+)*$")]
-type SweepTarget = Annotated[str, Field(pattern=r"^(?:(?:(?:steps|documents)\.\??[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$")]
 type IntegerSite = Callable[[str], bool]
 
 
@@ -50,8 +47,8 @@ class RemoveValue(StrictModel):
 type PatchValue = SetValue | RemoveValue
 
 
-type CheckpointRulePath = Literal['{"field":"checkpoint","input":"subject"}']
-CHECKPOINT_RULE_TARGET: CheckpointRulePath = '{"field":"checkpoint","input":"subject"}'
+type CheckpointRulePath = Literal["{@subject.checkpoint}"]
+CHECKPOINT_RULE_TARGET: CheckpointRulePath = "{@subject.checkpoint}"
 _CHECKPOINT_RULE = TypeAdapter(CheckpointRule)
 
 
@@ -77,41 +74,32 @@ def checkpoint_sweep_refusal(subject: object, sweep: Sweep | None, *, project_sw
     return None
 
 
-@dataclass(frozen=True)
-class ModelFieldTarget:
-    address: ModelAddress
-    scope: tuple[Literal["steps", "documents"], str] | None = None
-
-    @property
-    def step(self) -> str | None:
-        return self.scope[1] if self.scope and self.scope[0] == "steps" else None
-
-    @property
-    def document(self) -> str | None:
-        return self.scope[1] if self.scope and self.scope[0] == "documents" else None
-
-
-@lru_cache(maxsize=4096)
 def model_field_target(path: str) -> ModelFieldTarget | None:
-    if path == CHECKPOINT_RULE_TARGET:
+    if path == CHECKPOINT_RULE_TARGET or path.startswith(("steps.?", "documents.?")):
         return None
-    if path.startswith(("steps.?", "documents.?")):
-        return None
-    scope = None
-    if path.startswith(("steps.", "documents.")) and ".{" in path:
-        prefix, _, path = path.partition(".{")
-        match = re.fullmatch(r"(steps|documents)\.([A-Za-z0-9_][A-Za-z0-9_-]*)", prefix)
-        if match is None:
-            raise ValueError("A scoped Model field target must name one step or document")
-        group, name = match.groups()
-        scope = ("steps" if group == "steps" else "documents", name)
-        path = "{" + path
-    elif not path.startswith("{"):
-        return None
-    address = ModelAddress.from_text(path)
+    return authored_model_field_target(path)
+
+
+def model_field_path(
+    address: ModelAddress, scope: tuple[Literal["steps", "documents"], str] | None = None,
+) -> str:
+    """The authored sweep target for a Model field, optionally scoped to a project member."""
     if not isinstance(address.element, FieldElement):
         raise ValueError("A Model sweep target must name a field")
-    return ModelFieldTarget(address, scope)
+    prefix = ".".join(scope) + "." if scope is not None else ""
+    return f"{prefix}{{{address.to_authored_text()}}}"
+
+
+def _validate_sweep_target(path: str) -> str:
+    candidate = path.replace(".?", ".", 1) if path.startswith(("steps.?", "documents.?")) else path
+    model_field_target(candidate)
+    return path
+
+
+type SweepTarget = Annotated[
+    str, Field(pattern=r"^(?:(?:(?:steps|documents)\.\??[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$"),
+    AfterValidator(_validate_sweep_target),
+]
 
 
 def _target_prefix(parent: str, child: str) -> bool:

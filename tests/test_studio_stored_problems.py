@@ -6,7 +6,7 @@ import pytest
 
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_sweep import CHECKPOINT_RULE_TARGET
+from feedbax.contracts.project_sweep import CHECKPOINT_RULE_TARGET, model_field_path
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.examples import load_shipped_projects
 from feedbax.web.app import create_app
@@ -21,7 +21,7 @@ _PROJECT = "stored-problems"
 _URL = f"/api/projects/{_PROJECT}"
 _GRAPH = {"composites": [], "element": {"kind": "graph"}}
 _PLANT = {"composites": [], "element": {"kind": "component", "id": "plant"}}
-_MASS_TARGET = ModelAddress.model_validate(MASS).to_text()
+_MASS_TARGET = model_field_path(ModelAddress.model_validate(MASS))
 
 
 def _json(response):

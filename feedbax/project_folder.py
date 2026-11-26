@@ -79,7 +79,7 @@ from feedbax.planner.project_plan import (
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, ResolutionCode, compose_document
 from feedbax.plugins.declarations import declaration_package
 from feedbax.project_environment import PackageAvailability
-from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
+from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_path, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, analysis_elements, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.project_model_assets import (
@@ -99,6 +99,7 @@ from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS,
     AuthoredFileAddress,
     CreateNamedDocument,
+    DocumentPresentation,
     MemberFamily,
     NamedFileCreation,
     PresentationDocument,
@@ -150,6 +151,36 @@ type _Resource = Literal["project", "presentation"]
 _MODEL_LAYOUT_FIELDS = ("positions", "flipped", "collapsed", "waypoints")
 
 
+def _runtime_model_layout(entry: DocumentPresentation | None) -> dict[str, JsonValue]:
+    if entry is None:
+        return {}
+    stored = entry.model_dump(mode="json", exclude_unset=True)
+    return {
+        name: {ModelAddress.from_authored_text(key).to_text(): value for key, value in stored[name].items()}
+        for name in _MODEL_LAYOUT_FIELDS if name in stored
+    }
+
+
+def _validate_model_presentation(presentation: PresentationDocument, project: Project) -> None:
+    models = {name for name, document in project.documents.items() if document.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID}
+
+    def check(keys: Iterable[str], path: tuple[str, ...]) -> None:
+        for key in keys:
+            try:
+                ModelAddress.from_authored_text(key)
+            except ValueError as error:
+                at = pointer((*path, key))
+                raise ProjectFolderInvalid(f"{STUDIO_PRESENTATION_FILENAME} at {at}: {error}") from error
+
+    for name in models & presentation.documents.keys():
+        entry = presentation.documents[name]
+        for section in _MODEL_LAYOUT_FIELDS:
+            check(getattr(entry, section), ("documents", name, section))
+    for name, entry in presentation.steps.items():
+        for model, positions in entry.model_positions.items():
+            check(positions, ("steps", name, "model_positions", model))
+
+
 def _model_sweep_changes(
     project: Project, document: str, before, after, moves: dict[str, ModelAddress],
     *, before_payload: dict[str, JsonValue], after_payload: dict[str, JsonValue], functions, read_plan,
@@ -189,8 +220,7 @@ def _model_sweep_changes(
                 return path
             if new == old:
                 return path
-            prefix = ".".join(model.scope) + "." if model.scope else ""
-            return prefix + new.to_text()
+            return model_field_path(new, model.scope)
         parts = path.split(".")
         if len(parts) < 4 or (parts[0], parts[2]) != ("documents", "payload"):
             return path
@@ -284,11 +314,8 @@ def model_edit_source(
         raise ProjectFolderNotFound(document)
     if snapshot.presentation is None:
         raise ProjectFolderInvalid("The project presentation document is unreadable")
-    entry = snapshot.presentation.documents.get(document)
-    present = entry.model_dump(mode="json", exclude_unset=True) if entry is not None else {}
-    layout = {key: present[key] for key in _MODEL_LAYOUT_FIELDS if key in present}
     assert isinstance(source.payload, dict)
-    return source.payload, layout
+    return source.payload, _runtime_model_layout(snapshot.presentation.documents.get(document))
 
 
 
@@ -402,7 +429,11 @@ def _layout_patches(
     for document, layout in layouts.items():
         entry = presentation.documents.get(document)
         current = entry.model_dump(mode="json", exclude_unset=True) if entry is not None else {}
-        next_entry = {key: value for key, value in current.items() if key not in _MODEL_LAYOUT_FIELDS} | layout
+        authored = {
+            name: {ModelAddress.from_text(key).to_authored_text(): value for key, value in entries.items()}
+            for name, entries in layout.items()
+        }
+        next_entry = {key: value for key, value in current.items() if key not in _MODEL_LAYOUT_FIELDS} | authored
         if next_entry == current:
             continue
         path = pointer(("documents", document))
@@ -960,6 +991,7 @@ def write_new_project_folder(
     """Publish the ordinary authored folder and presentation in one exclusive rename."""
     root = destination.parent.resolve(strict=True)
     files = dump_text_project(project, configuration, registries=registries)
+    _validate_model_presentation(presentation, project)
     files[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(presentation)
     with TemporaryDirectory(prefix=".studio-project-", dir=root) as staged:
         staging = Path(staged)
@@ -1099,6 +1131,7 @@ class ProjectFolder:
         presentation_error = None
         try:
             presentation = _decode_presentation(data)
+            _validate_model_presentation(presentation, text.project)
         except (ValueError, UnicodeError):
             presentation = None
             presentation_error = "unreadable_presentation"
@@ -1477,6 +1510,8 @@ class ProjectFolder:
                 if pending:
                     _check_file_spellings(root, proposed)
                     validated = parse_text_project_files(root, proposed)
+                    if body.presentation is not None:
+                        _validate_model_presentation(body.presentation.after, validated.project)
                     # Validate the encodings the acknowledged snapshot will need before committing.
                     project_semantic_root(validated.project)
                     authored_declaration_revision(validated.manifest)
@@ -1647,6 +1682,7 @@ class ProjectFolder:
             try:
                 validated = Project.model_validate(project)
                 presentation = PresentationDocument.model_validate(shown)
+                _validate_model_presentation(presentation, validated)
                 changes = text_project_changes(text, validated, registries=self._stored_regions)
             except ValueError as error:
                 raise ProjectFolderInvalid(str(error)) from error
@@ -1774,8 +1810,7 @@ class ProjectFolder:
                     narrowed = True
                     layouts[document.id] = next_layout
                 elif base is not None and (entry := snapshot.presentation.documents.get(base)) is not None:
-                    shown = entry.model_dump(mode="json", exclude_unset=True)
-                    layouts[document.id] = {key: shown[key] for key in _MODEL_LAYOUT_FIELDS if key in shown}
+                    layouts[document.id] = _runtime_model_layout(entry)
             if not narrowed:
                 layouts[body.document] = next_layout
             shown_file = AuthoredFileAddress(kind="document", id=body.document)
@@ -1895,7 +1930,9 @@ class ProjectFolder:
                         changes[text.declaration] = after
                 if presentation is not None:
                     before = _encode_presentation(_decode_presentation(presentation_data))
-                    after = _encode_presentation(PresentationDocument.model_validate(presentation))
+                    shown = PresentationDocument.model_validate(presentation)
+                    _validate_model_presentation(shown, project)
+                    after = _encode_presentation(shown)
                     if before != after:
                         changes[STUDIO_PRESENTATION_FILENAME] = after
             except (ValueError, TypeError, RecursionError) as error:
@@ -1929,6 +1966,7 @@ class ProjectFolder:
             text = self._load(root)
             data, revision = _read_presentation(root)
             check_revision("presentation", body.revision, revision)
+            _validate_model_presentation(body.presentation, text.project)
             replacement = _encode_presentation(body.presentation)
             if replacement != data:
                 path = root / STUDIO_PRESENTATION_FILENAME

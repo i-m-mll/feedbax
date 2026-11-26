@@ -1,9 +1,14 @@
 """The authored Model address identifies exactly one typed element or field."""
 
 from hypothesis import given, strategies as st
+from pydantic import ValidationError
 import pytest
 
+from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sweep import (
+    CHECKPOINT_RULE_TARGET, CheckpointRuleAxis, ListedAxis, SetValue, model_field_path, model_field_target, sweep_patch,
+)
 
 
 def _record(tag, value, **fields):
@@ -26,7 +31,7 @@ _PARENTS = st.one_of(
 )
 _PARTS = st.one_of(
     st.integers(min_value=0, max_value=2**53 - 1),
-    st.sampled_from(("0", "001", "quote\"", "path/part", "a.b#c", "_", "line\nbreak")),
+    st.sampled_from(("0", "001", "quote\"", "path/part", "a.b#c", "a..b", "_", "line\nbreak")),
     st.text(st.characters(exclude_categories=("Cs",)), max_size=12),
 )
 _ELEMENTS = st.one_of(
@@ -74,3 +79,29 @@ def test_compact_spelling_distinguishes_boundaries_positions_and_quoted_keys():
 def test_authored_model_address_refuses_malformed_and_noncanonical_spelling(text):
     with pytest.raises(ValueError):
         ModelAddress.from_authored_text(text)
+
+
+@given(composites=st.lists(_IDS, max_size=3), parent=_PARENTS, parts=st.lists(_PARTS, min_size=1, max_size=4))
+def test_sweep_targets_round_trip_compact_typed_fields(composites, parent, parts):
+    address = ModelAddress.model_validate({
+        "composites": composites, "element": {"kind": "field", "parent": parent, "path": parts},
+    })
+    for scope in (None, ("documents", "reach-model"), ("steps", "train")):
+        text = model_field_path(address, scope)
+        axis = ListedAxis(path=text, values=[1])
+        target = model_field_target(axis.path)
+        assert target.address == address
+        assert target.scope == scope
+        write = OverridePatch(path=text, value=1)
+        assert sweep_patch(write.path, SetValue(value=1)).address == address
+
+
+def test_checkpoint_rule_target_is_disjoint_and_legacy_sweep_addresses_are_refused():
+    axis = CheckpointRuleAxis(checkpoint_rule={"every": 2})
+    assert axis.path == CHECKPOINT_RULE_TARGET == "{@subject.checkpoint}"
+    assert model_field_target(axis.path) is None
+    assert model_field_target("trainer.settings.seed") is None
+    address = ModelAddress.from_authored_text("component.plant.fields.mass")
+    for target in (address.to_text(), f"documents.reach-model.{address.to_text()}"):
+        with pytest.raises(ValidationError):
+            ListedAxis(path=target, values=[2])

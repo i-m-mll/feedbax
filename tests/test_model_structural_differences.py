@@ -39,7 +39,7 @@ def _project(tmp_path, differences):
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "ghost", Project.model_validate(raw))
     (tmp_path / "ghost" / STUDIO_PRESENTATION_FILENAME).write_text(json.dumps({"documents": {
-        "reach-model": {"positions": {_SPARE.to_text(): {"x": 40.0, "y": 80.0}}},
+        "reach-model": {"positions": {_SPARE.to_authored_text(): {"x": 40.0, "y": 80.0}}},
     }}))
     return folders
 
@@ -82,7 +82,7 @@ def test_a_removed_component_carries_its_base_wiring_and_its_reset_restores_it(t
     _project(tmp_path / "never", {"/interior/wires/plant-wire/target": _REWIRED})
     assert reset == _composed(tmp_path / "never")
     presentation = json.loads((tmp_path / "ghost" / STUDIO_PRESENTATION_FILENAME).read_text())
-    assert presentation["documents"]["variant"]["positions"][_SPARE.to_text()] == {"x": 40.0, "y": 80.0}
+    assert presentation["documents"]["variant"]["positions"][_SPARE.to_authored_text()] == {"x": 40.0, "y": 80.0}
 
 
 def test_a_set_reset_restores_a_removed_component_in_base_order(tmp_path):

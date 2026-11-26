@@ -16,6 +16,7 @@ from feedbax.contracts.project_io import (
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.project_sweep import (
+    model_field_path,
     SweepInputMember,
     axis_to_list,
     expand_sweep,
@@ -152,9 +153,9 @@ def test_a_step_that_holds_a_model_difference_is_refused(held):
 
 def test_a_project_variant_changes_a_model_through_a_document_only():
     data = _project_data()
-    mass = ModelAddress.model_validate({
+    mass = model_field_path(ModelAddress.model_validate({
         "composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
-    }).to_text()
+    }))
     data["sweep"] = {"rows": {"base": {}, "heavy": {"patches": {f"steps.fit.{mass}": {"value": 2.0}}}}}
     plan = compile_project(Project.model_validate(data))
     (problem,) = plan.diagnostics

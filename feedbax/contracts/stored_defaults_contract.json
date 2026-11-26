@@ -1486,7 +1486,7 @@
   },
   "feedbax.contracts.project_sweep.CheckpointRuleAxis": {
     "label": null,
-    "path": "{\"field\":\"checkpoint\",\"input\":\"subject\"}"
+    "path": "{@subject.checkpoint}"
   },
   "feedbax.contracts.project_sweep.CooccurringSetTrials": {
     "weights": {}
