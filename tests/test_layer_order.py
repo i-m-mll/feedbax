@@ -64,7 +64,10 @@ LAYERS: tuple[tuple[str, ...], ...] = (
     ("feedbax.validity",),
     ("feedbax.host",),
     ("feedbax.studio",),
-    ("feedbax.project_folder", "feedbax.project_members", "feedbax.project_model_selection"),
+    (
+        "feedbax.project_folder", "feedbax.project_members", "feedbax.project_model_assets",
+        "feedbax.project_model_selection",
+    ),
     ("feedbax.jobs", "feedbax.project_retention"),
     ("feedbax.orchestration",),
     ("feedbax.web",),

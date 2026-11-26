@@ -17,7 +17,8 @@ from feedbax.contracts.project import json_pointer_parts
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.objectives.document import ObjectiveUse
 from feedbax.runtime._graph_key_schedule import model_initialization_key
-from feedbax.host.model_checkpoint import ModelCheckpointError, ModelRestoreTarget, SemanticModelSlot
+from feedbax.host.model_archive import read_fitted_imported_replicas
+from feedbax.host.model_checkpoint import ModelCheckpointError, ModelRestoreTarget, ModelSlotPrecision, SemanticModelSlot
 
 if TYPE_CHECKING:
     from feedbax.compiler.graph import ResolvedGraph
@@ -130,10 +131,16 @@ def reconstruct_model(
                 {target: prototypes[name] for name, target in graph.input_bindings.items() if name in prototypes},
             )
         overrides = source_overrides or {}
+        precision: ModelSlotPrecision = "exact"
+        decoded = None
         if isinstance(source, ImportedModelWeights):
+            decoded = read_fitted_imported_replicas(definition.document, slot)
+            precision = "imported"
             target = variant or template
             graph = target.resolved.graph if isinstance(target, ExecutableGraph) else target.graph
             overrides = _imported_source_overrides(slot.graph, graph, registry.components) | overrides
+        elif isinstance(source, SynthesizedModelSource):
+            precision = "synthesized"
         ids = slot.replica_ids
         if len(ids) != 1 and (isinstance(template, ExecutableGraph) or isinstance(variant, ExecutableGraph)):
             raise ModelCheckpointError("/model/replicas", "replica restore requires an unrealized template")
@@ -143,7 +150,7 @@ def reconstruct_model(
         )
         graphs = slot.restore_all(
             tuple(source.graph for source in sources),
-            synthesized=isinstance(source, SynthesizedModelSource),
+            precision=precision, decoded=decoded,
             targets=None if variant is None and not overrides else tuple(
                 ModelRestoreTarget(target.resolved.graph, target.graph, overrides) for target in targets
             ),

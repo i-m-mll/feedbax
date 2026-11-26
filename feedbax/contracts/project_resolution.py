@@ -17,6 +17,7 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.loaded_model import encode_imported_model_document
 from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
@@ -30,6 +31,7 @@ from feedbax.contracts.project import (
     DocumentReference,
     ExternalBase,
     InlineBase,
+    LoadedModelDocument,
     Payload,
     Project,
     RunBase,
@@ -221,6 +223,15 @@ class TerminalTrainSource:
 
 
 @dataclass(frozen=True)
+class LoadedModelRead:
+    """The compiled document address and payload, with its legacy Model candidate if available."""
+
+    document: str
+    authored: bytes
+    legacy_model: bytes | None = None
+
+
+@dataclass(frozen=True)
 class BaseReaders:
     """Read exact historical payloads and external bytes from caller-owned sources.
 
@@ -237,7 +248,7 @@ class BaseReaders:
     row: Callable[[ResolvedStep, str], SelectedRow | None] | None = None
     figure_external: Callable[[str], bytes | None] | None = None
     terminal_train: Callable[[str], TerminalTrainSource | None] | None = None
-    imported_model: Callable[[str], ModelDocument] | None = None
+    imported_model: Callable[[LoadedModelRead], ModelDocument] | None = None
 
 
 def _at_sweep_origin(problem: ProjectDiagnostic, source: ValueSource) -> ProjectDiagnostic:
@@ -453,6 +464,22 @@ def compose_document(read_document: Callable[[str], Document | None], name: str)
     except _Problem as error:
         return error.diagnostic
     return RootDocument.model_construct(schema_id=document.schema_id, payload=payload)
+
+
+def composed_loaded_model_projection(
+    loaded: LoadedModelDocument, read_document: Callable[[str], Document | None],
+) -> bytes | None:
+    """Encode the currently composed navigation Model as a candidate for exact verification."""
+    nav = loaded.model
+    if nav.unresolved or nav.pointer is not None:
+        return None
+    document = compose_document(read_document, nav.document)
+    if isinstance(document, ProjectDiagnostic) or document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+        return None
+    try:
+        return encode_imported_model_document(ModelDocument.model_validate(document.payload))
+    except ValueError:
+        return None  # The pin may still be readable from the Store or its projection file.
 
 
 class _Documents:

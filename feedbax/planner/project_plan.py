@@ -72,6 +72,7 @@ from feedbax.contracts.project_inputs import (
 )
 from feedbax.contracts.project_resolution import (
     BaseReaders,
+    LoadedModelRead,
     ProjectDiagnostic,
     ResolutionCode,
     ResolvedStep,
@@ -82,6 +83,7 @@ from feedbax.contracts.project_resolution import (
     _TrialResolution,
     compose_document,
     compose_step,
+    composed_loaded_model_projection,
     reference_write_target,
     _select,
 )
@@ -2994,7 +2996,7 @@ class _Compiler:
             if isinstance(subject_ref, LoadedModelReference):
                 source = authored_document_input(subject_ref, subject_document)
                 assert isinstance(source, ImportedModelSource)
-                model = self.read_imported_model(source)
+                model = self.read_imported_model(key.variant, subject_ref, subject_document)
                 navigation = LoadedModelDocument.model_validate(subject_document.payload).model
                 if (
                     EVALUATION_MODEL not in document_ids and not navigation.unresolved and navigation.pointer is None
@@ -3143,10 +3145,19 @@ class _Compiler:
                 key.step, row=key.row, variant=key.variant, document=resolved.document_ids.get(path),
             ),), document_ids=document_ids, document_uses=document_uses), {}
 
-    def read_imported_model(self, source: ImportedModelSource) -> ModelDocument:
+    def read_imported_model(
+        self, variant: str, reference: LoadedModelReference, document: RootDocument,
+    ) -> ModelDocument:
         if self.readers.imported_model is None:
             raise ValueError("A Loaded Model must resolve from the project Store.")
-        return self.readers.imported_model(source.model_dump_json())
+        loaded = LoadedModelDocument.model_validate(document.payload)
+        legacy_model = (
+            composed_loaded_model_projection(loaded, self.variants[variant].documents.get)
+            if loaded.archive is None else None
+        )
+        return self.readers.imported_model(LoadedModelRead(
+            reference.source.document, loaded.model_dump_json().encode(), legacy_model,
+        ))
 
     def lower_best_evaluate(
         self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
@@ -4009,8 +4020,8 @@ class _Compiler:
                     source = authored_document_input(
                         reference, resolved.input_documents[role], python_tasks=self.python_tasks,
                     )
-                    if isinstance(source, ImportedModelSource):
-                        self.read_imported_model(source)
+                    if isinstance(reference, LoadedModelReference):
+                        self.read_imported_model(variant, reference, resolved.input_documents[role])
                     binding = _plan_document_content(source, self.documents)
                 except (OSError, ValueError) as error:
                     problem(f"inputs.{role}", str(error), row.id)
@@ -4403,7 +4414,7 @@ class _Compiler:
             try:
                 source = authored_document_input(reference, document)
                 assert isinstance(source, ImportedModelSource)
-                self.read_imported_model(source)
+                self.read_imported_model(variant, reference, document)
             except (OSError, ValueError) as error:
                 return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
             return ((_plan_document_content(source, self.documents), None),), {}, None
