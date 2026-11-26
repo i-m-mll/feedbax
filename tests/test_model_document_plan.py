@@ -1613,8 +1613,8 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
 
 
 # Equivalent stored edits retain these managed requests with key-based external Model ports.
-_VARIANT_WIRE = "evaluate:a4f50fd94931ca0e47f7d90aafb84122c8bc225e23a243b81bffe27c1b51e122"
-_VARIANT_FIELD = "evaluate:380a46acf9f9e17d0d3c8fed47af55b35ed4d059df247f2f7c0680bc87d18511"
+_VARIANT_WIRE = "evaluate:ba2ddd696cc5f047e1689550c2159a01611129e43026f58bba1a1764b31b66ee"
+_VARIANT_FIELD = "evaluate:6c5003818aa7029cf466845c7e7e7a6063862914b6b8a5c775533cf1e8d1b0c4"
 
 
 @pytest.mark.parametrize(("operation", "expected"), [
