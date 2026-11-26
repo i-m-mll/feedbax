@@ -184,7 +184,8 @@ class StudioTrialEpochInstance(StudioTrialEpoch):
 
 class StudioTaskChoice(StrictModel):
     document: ProjectName
-    problems: list[Problem]
+    problem_indices: list[Annotated[int, Field(ge=0)]]
+    """The choice's problems, as positions in the response's Task problem list."""
 
 
 class StudioTrialObjectiveSource(StrictModel):
@@ -226,6 +227,8 @@ class StudioTrialAuthoring(StudioFieldSiteTables):
     set_fields: list[StudioSetField] = Field(default_factory=list)
     task_types: list[StudioTaskType]
     tasks: list[StudioTaskChoice]
+    task_problems: list[Problem]
+    """Distinct problems referenced by the Task choices."""
     variables: list[ScopedValue]
     signals: list[ScopedValue]
     epochs: list[StudioTrialEpoch]

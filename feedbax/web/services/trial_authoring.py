@@ -288,6 +288,22 @@ def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None 
     return documents.model_copy(update={"task": task, "python_task": None, "input_bindings": bindings})
 
 
+def _task_choices(project, documents, bundle, graph, objective_use) -> tuple[list[StudioTaskChoice], list[Problem]]:
+    choices = []
+    problems: dict[Problem, int] = {}
+    for name in sorted(project.documents):
+        task = _selected_task(project, name)
+        if task is None:
+            continue
+        found = _project(
+            _with_task(documents, task), bundle, show_objective=False, graph_override=graph, objective_use=objective_use,
+        ).problems
+        choices.append(StudioTaskChoice(
+            document=name, problem_indices=[problems.setdefault(problem, len(problems)) for problem in dict.fromkeys(found)],
+        ))
+    return choices, list(problems)
+
+
 def _field_document(documents, role):
     """The document of ``role`` whose fields the view edits as expressions, if the step reads one."""
     if role == "objective":
@@ -1774,6 +1790,11 @@ def trial_authoring(
         problem for field in fields for problem in field.problems
         if not _held_problems(problem.path, projected.problems)
     ]
+    tasks, task_problems = _task_choices(
+        project, documents, bundle, graph,
+        ObjectiveUse.INHERITED if objective_source is not None and objective_source.kind in {"train", "synthesize"}
+        else ObjectiveUse.TRAIN,
+    )
     return StudioTrialAuthoring(
         revision=snapshot.revision, run=body.run,
         expression_context=folders.trial_expression_menus.remember(
@@ -1797,15 +1818,7 @@ def trial_authoring(
         n_steps=compiled.n_steps if compiled else None,
         batch_size=_batch_size(step.kind, definition.payload),
         reads_model=compiled.reads_model if compiled else False,
-        tasks=[
-            StudioTaskChoice(document=name, problems=list(_project(
-                _with_task(documents, other), bundle, show_objective=False, graph_override=graph,
-                objective_use=ObjectiveUse.INHERITED if objective_source is not None and objective_source.kind in {"train", "synthesize"}
-                else ObjectiveUse.TRAIN,
-            ).problems))
-            for name in sorted(project.documents)
-            if (other := _selected_task(project, name)) is not None
-        ],
+        tasks=tasks, task_problems=task_problems,
         input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
