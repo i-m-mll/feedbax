@@ -358,6 +358,9 @@ class ModelProjection(StrictModel):
     """``base_differences`` are the shown document's structural differences from its base, when it has one;
     ``value_differences`` are the selected sweep value's or set entry's from the step's Model."""
 
+    address_texts: dict[str, str]
+    """Compact authored text by the projected element's canonical runtime address."""
+
     ports: tuple[ModelPortProjection, ...] = ()
     physical_ports: tuple[ModelPhysicalPortProjection, ...] = ()
     delay_steps: dict[str, int | None] = Field(default_factory=dict)

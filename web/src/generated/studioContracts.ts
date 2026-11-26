@@ -1137,6 +1137,7 @@ export interface ModelRewiredElement {
 }
 
 export interface ModelProjection {
+  address_texts: Record<string, string>;
   ports?: ModelPortProjection[];
   physical_ports?: ModelPhysicalPortProjection[];
   delay_steps?: Record<string, number | null>;
@@ -1283,6 +1284,7 @@ export interface ModelFieldView {
   members?: StudioSweepValue[];
   changed?: boolean;
   address: ModelAddress;
+  address_text: string;
   problems?: Problem[];
   sources?: StudioPlanReviewSource[];
 }
@@ -8618,6 +8620,7 @@ export const ModelRewiredElementSchema: z.ZodType<ModelRewiredElement> = z.lazy(
 export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
   z
     .object({
+      "address_texts": z.record(z.string(), z.string()),
       "ports": z.array(ModelPortProjectionSchema).optional(),
       "physical_ports": z.array(ModelPhysicalPortProjectionSchema).optional(),
       "delay_steps": z.record(z.string(), z.number().int().safe().nullable()).optional(),
@@ -8828,6 +8831,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "members": z.array(StudioSweepValueSchema).optional(),
       "changed": z.boolean().optional(),
       "address": ModelAddressSchema,
+      "address_text": z.string(),
       "problems": z.array(ProblemSchema).optional(),
       "sources": z.array(StudioPlanReviewSourceSchema).optional(),
     })

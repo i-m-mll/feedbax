@@ -510,7 +510,7 @@ def model_fields(
             sites=sites, held=held.get(field_key, ()),
             period=period, effective_unit=resolved.numeric.unit if resolved else None,
             scoped=bool(body.rows or body.axes),
-            address=field.address, problems=_held_problems(field, functions, period)
+            address=field.address, address_text=field.address.to_authored_text(), problems=_held_problems(field, functions, period)
             or (_held_problems(resolved, functions, period) if resolved is not None else []),
             sources=[StudioPlanReviewSource.from_source(source) for source in sources],
             changed=changed,
