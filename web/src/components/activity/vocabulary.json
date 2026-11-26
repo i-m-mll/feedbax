@@ -682,7 +682,7 @@
     "meanByText": "mean by {by}",
     "meanOfCount": "mean of {count} trials",
     "elementCount": "{count} {name}",
-    "memberCount": "{count} members",
+    "memberCount": "× {count}",
     "lastValueAtUpdate": "Last value at update {end}",
     "metricIntervalDescription": "Interval means with minimum and maximum bars",
     "metricElementBand": "Mean of {count} elements with minimum and maximum band",

@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   catalogEntries, isExpiredExpressionContext, readStudioTrialAuthoring, readTrialExpressionMenu, useAuthoringCatalog,
@@ -48,6 +48,7 @@ import { sendWithStore, type AskStore } from './storeChoice';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
 import { WindowCell, WindowEditor, type WindowEpochChoice, type WindowHost } from './WindowEditor';
+import { FamilyOver, type FamilyIndex } from './FamilyOver';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 type Relation = Extract<Change, { kind: 'relate' }>;
@@ -425,20 +426,38 @@ function termFields(view: TrialView, key: string, term: StoredObjectiveTerm, com
 }
 
 /**
- * The index rules of a term family, each as the field the service projects at the term's `over`, labelled by the index
- * name the term's expressions use. A term that is not a family has none.
+ * The Over group of a family member of the step's Task or Objective, stored at `member` in `document`: each text rule as
+ * the field the service projects at its `over`, labelled by the index name the member's expressions use, and how the
+ * indices combine. Removing the last index makes the member a plain one. A member that is not a family has none.
  */
-function termIndices(view: TrialView, key: string, term: StoredObjectiveTerm, commit?: Commit, runs?: TrialRuns): FieldModel[] {
-  return Object.keys(term.over ?? {}).map((index) => {
-    const path = authoredPointer(['objective', 'terms', key, 'over', index]);
+export function familyOver(view: TrialView, document: 'task' | 'objective', member: readonly string[],
+  family: { readonly over?: StoredObjectiveTerm['over']; readonly combination?: StoredObjectiveTerm['combination'] },
+  commit?: Commit, runs?: TrialRuns): { indices: FamilyIndex[]; combination: FieldModel } | undefined {
+  const over = family.over;
+  if (!over) return undefined;
+  const at = (...field: string[]) => authoredPointer([...member, ...field]);
+  const save = (name: string, edits: ProjectValueEdit[]) => commit?.(name, { kind: document, edits });
+  const names = Object.keys(over);
+  const indices = names.map((index): FamilyIndex => {
+    const remove = commit && (() => { void save(studioAccessibleName('remove', index), names.length > 1
+      ? [{ op: 'remove', path: at('over', index) }]
+      : [{ op: 'remove', path: at('over') }, ...has(family, 'combination') ? [{ op: 'remove', path: at('combination') } as const] : []]); });
+    if (typeof over[index] !== 'string') return { name: index, remove };
+    const path = authoredPointer([document, ...member, 'over', index]);
     const projection = view.fields.find((field) => field.path === path);
-    if (!projection) throw new Error(`The Objective's index ${index} of term ${key} has no field`);
-    return trialField(view, projection, index, runs, {
-      id: `${key}:over:${index}`,
-      changed: changedAt(view, 'objective', termPath(key, 'over', index), commit),
+    if (!projection) throw new Error(`The ${document} index ${index} at ${at()} has no field`);
+    return { name: index, remove, rule: trialField(view, projection, index, runs, {
+      id: `${at()}:over:${index}`,
+      changed: changedAt(view, document, at('over', index), commit),
       commit: commit && ((edit) => commit(studioAccessibleName('set', index), { kind: 'expression', path, edit })),
-    });
+    }) };
   });
+  const combination = rawField({ id: `${at()}:combination`, label: studioName('combination'),
+    value: family.combination ?? 'cross', changed: changedAt(view, document, at('combination'), commit),
+    change: commit && ((value: JsonValue) => save(studioAccessibleName('set', studioName('combination')),
+      [write(at('combination'), value, has(family, 'combination'))])),
+    type: { kind: 'choice', options: (['cross', 'zip'] as const).map((value) => ({ value, label: studioName(value) })) } });
+  return { indices, combination };
 }
 
 /** The epochs a window can name, each with the occurrences the nominal trial has of it. */
@@ -634,7 +653,7 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
   const term = key === undefined ? undefined : terms[key];
   if (!key || !term) return null;
   const fields = termFields(view, key, term, commit, runs, shown);
-  const indices = termIndices(view, key, term, commit, runs);
+  const over = familyOver(view, 'objective', ['terms', key], term, commit, runs);
   const windowHost = termWindow(view, key, term, commit, runs);
   const order: (TermField | 'window')[] = ['name', 'measure', 'window', 'weight', 'enabled', 'reduction'];
   const name = termName(term, Object.keys(terms).indexOf(key));
@@ -643,15 +662,15 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
     {shown && period != null && <section aria-label={studioName('plot')} className="grid gap-1 empty:hidden">
       <TermTrace label={name} term={key} shown={shown} stepSeconds={period} />
     </section>}
-    {indices.length > 0 && <section aria-label={studioName('over')} className="grid gap-1">
-      {indices.map((index) => <ValueField key={index.id + JSON.stringify(index.value ?? index.text)} model={index} />)}
-    </section>}
     {order.map((field) => field === 'window'
       ? <FieldRow key="window" label={studioName('window')} labelId={windowLabel} actions={windowHost.changed && <ChangedMark
         tip={changeTip(windowHost.changed.from)} reset={windowHost.changed.reset && (() => { void windowHost.changed!.reset!(); })} />}>
         <WindowEditor window={term.window} host={windowHost} labelId={windowLabel} />
       </FieldRow>
-      : <ValueField key={key + field + JSON.stringify(fields[field].value ?? fields[field].text)} model={fields[field]} />)}
+      : <Fragment key={field}>
+        <ValueField key={key + field + JSON.stringify(fields[field].value ?? fields[field].text)} model={fields[field]} />
+        {field === 'name' && over && <FamilyOver {...over} />}
+      </Fragment>)}
   </Inspector>;
 }
 
