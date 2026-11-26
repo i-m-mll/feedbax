@@ -81,10 +81,6 @@ TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
         "Parses the bytes encode_request produced in this function from an "
         "authenticated request."
     ),
-    ("feedbax/orchestration/runpod_bootstrap.py", "bootstrap"): (
-        "Standard-library source sent to the venue before feedbax is importable; "
-        "stdin carries json.dumps of the controller's in-memory settings."
-    ),
     ("feedbax/orchestration/runpod_venue_cutoff.py", "_own_pod_exists"): (
         "Standard-library source sent to the venue before feedbax is importable; "
         "the parse refuses a repeated member with its own object_pairs_hook."

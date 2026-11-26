@@ -151,7 +151,7 @@ def test_a_set_applies_to_an_evaluate_that_runs_its_subjects_model():
     swept = _plan(raw)
     assert swept.diagnostics == ()
     runs = {run.label: run.request_id for run in swept.runs if run.key.step == "baseline"}
-    assert runs.keys() == {f"alteration={label}" for label in ("Gain", "Scaled force", "Heavy")}
+    assert runs.keys() == {"Gain", "Scaled force", "Heavy"}
     del raw["steps"]["baseline"]["sweep"]
     (plain,) = (run.request_id for run in _plan(raw).runs if run.key.step == "baseline")
     assert len({plain, *runs.values()}) == 4

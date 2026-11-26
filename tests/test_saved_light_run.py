@@ -346,7 +346,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         figure_url = figure["products"]["figure"]
         figure_response = expect(client.get(figure_url))
         assert [trace["name"] for trace in figure_response.json()["data"] if trace.get("showlegend", True)] == [
-            "default",
+            "Baseline",
         ]
         report_url = report["light"]["result"]["products"]["report"]
         rendered = expect(client.get(report_url))

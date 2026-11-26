@@ -135,6 +135,48 @@
       },
       "inputs": {},
       "id": "report:3a83686d79b081d59239a668b3b55cbd53fc9311e9a53358f9a504f47d942abd"
+    },
+    {
+      "kind": "synthesize",
+      "source": "Constant parameters on authored trial documents",
+      "spec": {
+        "method": "feedbax.constant_parameters",
+        "settings": {
+          "value": 0.25
+        },
+        "trial_documents": {
+          "model": {
+            "step_seconds": 0.01,
+            "ports": {},
+            "interior": {}
+          },
+          "task": {
+            "id": "fixed",
+            "variables": [],
+            "signals": [],
+            "epochs": [
+              {
+                "id": "trial",
+                "name": "Trial",
+                "end": {
+                  "kind": "length",
+                  "length": {
+                    "kind": "literal",
+                    "value": 1,
+                    "unit": "st"
+                  }
+                }
+              }
+            ]
+          },
+          "objective": {
+            "id": "objective",
+            "terms": []
+          }
+        }
+      },
+      "inputs": {},
+      "id": "synthesize:1a72825aea96d35243d0d989cfc67ae7a9cc9cc93291c1507c6b2b1764e3ff10"
     }
   ]
 }

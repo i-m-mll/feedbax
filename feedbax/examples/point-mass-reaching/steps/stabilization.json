@@ -17,9 +17,6 @@
         "batch_size": 4
       },
       "trial_documents": {
-        "input_bindings": {
-          "target_pos": "target_pos"
-        },
         "model": {
           "document": "point-mass"
         },

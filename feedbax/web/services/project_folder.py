@@ -136,7 +136,8 @@ class ProjectFolderService(ProjectFolder):
         from feedbax.contracts.task_document import TaskDocument
         from feedbax.compiler.model_edit import review_model_connections
         from feedbax.compiler.model_ports import ModelRegistryPorts
-        from feedbax.project_model_selection import matched_task_inputs, selected_model_and_task, task_signal
+        from feedbax.application.task_signals import matched_task_inputs
+        from feedbax.project_model_selection import selected_model_and_task, task_signal
         from feedbax.web.services.model_projection import evaluate_projection
         from feedbax.web.services.trial_scope import selection_scope
 

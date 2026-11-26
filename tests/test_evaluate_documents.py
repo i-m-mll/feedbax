@@ -15,7 +15,8 @@ FEE = "train:7ee0aec47e9eb5d0408a91707503e31114c55bf912e95406f206bd654db1bbe4"
 DEFAULT = "evaluate:7c6fad3f13cb972b160877409c34fda69843e13141ffdaf788250959b0289647"
 FIELD_CHANGED = "evaluate:36403904c6fbf41fda182a0997b17ef9afb0bb92f6034ab11ab1217c60775884"
 ATTACHMENT_ADDED = "evaluate:fb014cda6d2da4cb22047330a52f6013a32f812d968fbae93e78d45b5ece424b"
-FEWER_CONDITIONS = "evaluate:dafa9f452faf205b517aa1e265724196ab922931992a294e88aaec141dda4745"
+# The replacement Task now pairs target_pos by stable ID without a generated override.
+FEWER_CONDITIONS = "evaluate:aef41d53a6e65f832f58a1281f33d810626c951e894423d6faf73053a3ecf563"
 SWEPT_PUSHED = (
     ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
      "evaluate:dcf3f064b759cc1bfc8cc90b3f6f76b6af6947a432b708e288456a53967fa04a"),
@@ -27,7 +28,7 @@ NEAREST_SHARED = {
     "other": FEE,
     "check": "evaluate:a2dc720dec386e1fd5951caece29c1570d6f7589a5ce512d34fe54676127552c",
 }
-UNPAIRED_TASK = "Model input 'target_pos' reads undeclared signal ID 'target_pos'."
+UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
 TASK = "simple-reaches-task"
 MASS = {"composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]}}

@@ -21,8 +21,9 @@ from feedbax.contracts.expression_check import references
 from feedbax.contracts.project import BasedDocument
 from feedbax.planner.project_plan import RunKey
 from feedbax.project_folder import ProjectFolderInvalid, model_edit_source
+from feedbax.application.task_signals import matched_task_inputs, model_task_signals
 from feedbax.project_model_selection import (
-    matched_task_inputs, model_task_signals, selected_model as selected_model, selected_model_and_task, task_signal,
+    selected_model as selected_model, selected_model_and_task, task_signal,
 )
 from feedbax.compiler.model_differences import structural_differences
 from feedbax.web.services.trial_scope import runs_scope, selected_value, value_model

@@ -14,6 +14,7 @@ from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
+from feedbax.contracts import strict_json
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.execution_target import OpeningStep
 from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
@@ -136,8 +137,10 @@ class RunPodSessionProvider:
         self._rsync = rsync_executable
         self._install_timeout = install_timeout
         self._bootstrap = "\n".join((
-            Path(repo_tree.__file__).read_text(), Path(runpod_bootstrap.__file__).read_text(),
-            "bootstrap(snapshot_tree_identity)",
+            Path(strict_json.__file__).read_text(),
+            Path(repo_tree.__file__).read_text(),
+            Path(runpod_bootstrap.__file__).read_text(),
+            "bootstrap(snapshot_tree_identity, strict_json_loads)",
         ))
         self._watchdog = Path(watchdog.__file__).read_text()
 
