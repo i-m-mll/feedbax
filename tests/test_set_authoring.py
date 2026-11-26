@@ -344,7 +344,7 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
     _set_edit(folders, client, {"kind": "save_set", "step": "other", "axis": "run"})
     variable = {
         "label": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
-        "value": {"kind": "literal", "value": 0.03, "unit": "s"},
+        "value": "0.03 s",
     }
     _set_edit(folders, client, {
         "kind": "set_entry_task", "step": "other", "axis": "run", "entry": entry, "task_variables": {"onset": variable},
@@ -378,7 +378,7 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
             [origin] if row == f"run={entry}" else []
         )
     set_expression(f"run={entry}", "onset", "0.04 s")
-    assert selected(f"run={entry}")["task"]["variables"]["onset"]["value"]["value"] == 0.04
+    assert selected(f"run={entry}")["task"]["variables"]["onset"]["value"] == "0.04 s"
     _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
     read = selected("default")
     assert len([item for item in read["variables"] if item["name"] == f"{entry} · Onset"]) == 1
@@ -391,7 +391,7 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
     project = folders.read(PROJECT).project
     source = project.documents[field.axis.set].payload["entries"][entry]
     assert set(source["task_variables"]) == {"onset"}
-    assert source["task_variables"]["onset"]["value"]["value"] == 0.07
+    assert source["task_variables"]["onset"]["value"] == "0.07 s"
 
 
 def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
@@ -407,11 +407,11 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
             "schema": SET_DOCUMENT_SCHEMA_ID,
             "payload": {"entries": {"shift": {"label": "Shift", "task_variables": {"amount": {
                 "label": "Amount", "type": {"base": "real"},
-                "value": {"kind": "literal", "value": value},
+                "value": value,
             }}}}},
         }
     raw["documents"]["reach-bank"]["payload"]["entries"]["shift"]["task_variables"]["other"] = {
-        "label": "Other", "type": {"base": "real"}, "value": {"kind": "literal", "value": 3.0},
+        "label": "Other", "type": {"base": "real"}, "value": "amount + 3",
     }
 
     with TestClient(create_app(projects_dir=tmp_path)) as client:
@@ -442,7 +442,35 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         stored = folders.read(PROJECT).project.documents
         for bank, value in (("reach-bank", 1.0), ("hold-bank", 4)):
             amount = stored[bank].payload["entries"]["shift"]["task_variables"]["amount"]
-            assert amount["label"] == "Amount" and amount["value"]["value"] == value
+            assert amount["label"] == "Amount" and amount["value"] == value
+        revision = written.json()["revision"]
+        weight = client.post(f"{BASE}/authoring/trials", json=body | {"revision": revision, "change": {
+            "kind": "expression", "path": "/objective/terms/effort/weight",
+            "edit": {"kind": "text", "text": "'hold · shift · Amount'"},
+        }})
+        assert weight.status_code == 200, weight.text
+        shown = weight.json()
+        assert not shown["problems"] and shown["files"], shown
+        field = next(field for field in shown["fields"] if field["path"] == "/objective/terms/effort/weight")
+        hints = shown["sites"][field["site"]]["names"]
+        assert next(name["set_entry"] for name in hints if name["id"] == hold["id"]) == hold["set_entry"]
+        saved = client.patch(BASE, json={"revision": revision, "files": shown["files"]})
+        assert saved.status_code == 200, saved.text
+        objective = folders.read(PROJECT).project.documents["objective"].payload
+        assert objective["terms"]["effort"]["weight"] == "set.hold.shift.amount"
+        other = variables["shift · Other"]
+        revision = saved.json()["revision"]
+        own = client.post(f"{BASE}/authoring/trials", json=body | {"revision": revision, "change": {
+            "kind": "expression", "path": f"/task/variables/{other['id']}/value",
+            "edit": {"kind": "text", "text": "'reach · shift · Amount' + 4"},
+        }})
+        assert own.status_code == 200, own.text
+        shown = own.json()
+        assert not shown["problems"] and shown["files"], shown
+        saved = client.patch(BASE, json={"revision": revision, "files": shown["files"]})
+        assert saved.status_code == 200, saved.text
+        entry = folders.read(PROJECT).project.documents["reach-bank"].payload["entries"]["shift"]
+        assert entry["task_variables"]["other"]["value"] == "amount + 4"
 
 
 def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
@@ -451,7 +479,7 @@ def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
     raw = document_project(authored_documents(), evaluation=True)
     variable = {
         "label": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
-        "value": {"kind": "literal", "value": 0.03, "unit": "s"},
+        "value": "0.03 s",
     }
     raw["documents"]["entry-set"] = {
         "label": "Entry set",
@@ -562,11 +590,11 @@ def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, sub
         "payload": {"entries": {"pulse": {"label": "Pulse", "differences": {
             "/interior/wires/effector-wire/attachments": {"value": {"pulse": {
                 "kind": "intervention", "operation": "Add",
-                "operands": {"value": {"kind": "value", "value": [2, 0]}},
+                "operands": {"value": {"kind": "value", "value": "[2, 0]"}},
                 "window": {"spans": [{
                     "kind": "interval",
                     "start": {"anchor": {"kind": "epoch", "edge": "start", "epoch": "move"}},
-                    "end": {"offset": {"value": 2, "unit": "st"}},
+                    "end": {"offset": "2 st"},
                 }]},
             }}},
         }}}},
@@ -614,7 +642,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
     raw = document_project(authored_documents())
     raw["documents"]["task"]["payload"]["variables"]["is_catch"] = {
         "label": "is_catch", "type": {"base": "boolean"},
-        "value": {"kind": "literal", "value": False},
+        "value": False,
     }
     raw["documents"]["loads"] = {
         "label": "Loads", "schema": "feedbax.set_document.v2", "payload": {"entries": {"heavy": {"label": "Heavy"}}},
@@ -623,7 +651,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
         "load": {"axis": {"set": "loads"}, "sampling": {"kind": "weighted"}},
         "listed": {
             "axis": {"set": "loads"}, "sampling": {"kind": "listed"},
-            "condition": {"kind": "literal", "value": True},
+            "condition": True,
         },
     }
     folders = ProjectFolderService(tmp_path)
@@ -678,6 +706,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
         assert menu.json()["names"] == ["catch", "is_catch"]
         saved = folders.read(PROJECT).project.steps["train"].set_fields["load"]
         assert saved.condition.args[0].reference == "is_catch"
+        assert saved.model_dump(mode="json")["condition"] == "not is_catch"
         assert _runs(folders, "train")
 
         _, cleared = author("load", {"kind": "text", "text": " "}, save=True)

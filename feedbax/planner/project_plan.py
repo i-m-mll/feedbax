@@ -11,7 +11,7 @@ from threading import Lock
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import Field, JsonValue, TypeAdapter, ValidationError
 from pydantic_core import to_json
 
 from feedbax.application.composition import application_python_tasks, load_application
@@ -779,7 +779,7 @@ def _lower_evaluation_task_edits(
     graph_edits = [edit.model_dump(mode="json", exclude_unset=True) for _, edit in edits
                    if edit.path.partition(".")[0] != "task"]
     if lowered != base:
-        graph_edits.insert(0, {"op": "replace", "path": "task", "value": stored_project_value(lowered)})
+        graph_edits.insert(0, {"op": "replace", "path": "task", "value": lowered.model_dump(mode="json")})
     return raw | {"variation": graph_edits}, origins
 
 
@@ -1519,6 +1519,9 @@ def _trial_problems(
     placed = []
     for problem in problems:
         role, parts = _trial_place(problem)
+        if role == "task" and len(parts) >= 2 and parts[0] == "links":
+            field = ModelAddress.from_text(parts[1]).to_authored_text()
+            parts = ("links", field, *parts[2:])
         if initial:
             slot = ("inputs", "subject" if role == "model" else "task" if role == "python_task" else role)
         elif synthesis:
@@ -3787,7 +3790,7 @@ class _Compiler:
         )
         variation = (*edits, *attached.edits)
         if attached.task is not None and attached.task != chosen_task:
-            value = stored_project_value(attached.task.for_execution())
+            value = attached.task.for_execution().model_dump(mode="json")
             variation = (*variation, OverridePatch(path="task", op="replace", value=value))
         if variation == edits:
             return payload, attached

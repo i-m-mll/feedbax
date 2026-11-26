@@ -1,5 +1,7 @@
 """Authored selections on the trial's post-step sample axis."""
 
+from collections.abc import Mapping
+from functools import partial
 from typing import Annotated, Literal
 
 from pydantic import Field
@@ -112,8 +114,9 @@ class StoredWindow(StrictModel):
         return Window(spans=tuple(_lower_span(span) for span in self.spans))
 
     @classmethod
-    def from_lowered(cls, window: Window) -> "StoredWindow":
-        return cls(spans=tuple(_stored_span(span) for span in window.spans))
+    def from_lowered(cls, window: Window, *, scopes: Mapping[str, str] | None = None) -> "StoredWindow":
+        offset = partial(stored_window_offset, scopes=scopes)
+        return cls(spans=tuple(_stored_span(span, offset) for span in window.spans))
 
 
 def lower_window_offset(value: StoredExpression | None) -> WindowOffset | None:
@@ -127,17 +130,15 @@ def lower_window_offset(value: StoredExpression | None) -> WindowOffset | None:
         return UnresolvedValue(text=print_field(expression, window_offset_site(())))
 
 
-def stored_window_offset(value: WindowOffset | None) -> StoredExpression | None:
+def stored_window_offset(
+    value: WindowOffset | None, *, scopes: Mapping[str, str] | None = None,
+) -> StoredExpression | None:
     """Project a runtime offset into its authored expression type."""
-    return store_expression(window_offset_expression(value)) if value is not None else None
+    return store_expression(window_offset_expression(value), scopes=scopes) if value is not None else None
 
 
 def _lower_position(position: StoredWindowPosition) -> WindowPosition:
     return project_member(position, WindowPosition, {"offset": lower_window_offset})
-
-
-def _stored_position(position: WindowPosition) -> StoredWindowPosition:
-    return project_member(position, StoredWindowPosition, {"offset": stored_window_offset})
 
 
 def _lower_span(span: StoredWindowSpan) -> WindowSpan:
@@ -151,14 +152,17 @@ def _lower_span(span: StoredWindowSpan) -> WindowSpan:
     return span
 
 
-def _stored_span(span: WindowSpan) -> StoredWindowSpan:
+def _stored_span(span: WindowSpan, offset) -> StoredWindowSpan:
+    def position(value: WindowPosition) -> StoredWindowPosition:
+        return project_member(value, StoredWindowPosition, {"offset": offset})
+
     if isinstance(span, WindowInterval):
-        end = _stored_position(span.end) if isinstance(span.end, WindowPosition) else project_member(
-            span.end, StoredWindowRelativePosition, {"offset": stored_window_offset},
+        end = position(span.end) if isinstance(span.end, WindowPosition) else project_member(
+            span.end, StoredWindowRelativePosition, {"offset": offset},
         )
-        return project_member(span, StoredWindowInterval, start=_stored_position(span.start), end=end)
+        return project_member(span, StoredWindowInterval, start=position(span.start), end=end)
     if isinstance(span, WindowMoment):
-        return project_member(span, StoredWindowMoment, at=_stored_position(span.at))
+        return project_member(span, StoredWindowMoment, at=position(span.at))
     return span
 
 
