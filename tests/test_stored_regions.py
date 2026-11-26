@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from feedbax.application.composition import load_application
@@ -15,6 +16,7 @@ from feedbax.contracts.stored_regions import StoredRegionRegistries
 from feedbax.contracts.project_storage import write_project_file
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID
 from feedbax.planner.project_plan import RunKey, compile_project
+from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.python_task import REACHING_TASK, reaching_python_task  # noqa: F401
 
@@ -102,6 +104,11 @@ def test_missing_declaration_keeps_parameters_and_is_a_plan_problem():
     assert any(problem.missing_key == inline["method"] for problem in compile_project(project).diagnostics)
 
 
+def test_missing_python_task_keeps_its_explicit_empty_parameters():
+    task = _document(PYTHON_TASK_SCHEMA_ID, {"type": "example.missing_task", "params": {}})
+    assert json.loads(write_project_file(task))["payload"]["params"] == {}
+
+
 def test_installed_registry_rejects_invalid_authored_fields():
     request = _inline("train", {
         "method": "feedbax.supervised_gradient",
@@ -109,3 +116,45 @@ def test_installed_registry_rejects_invalid_authored_fields():
     })
     with pytest.raises(ValidationError, match="grad_clip"):
         write_project_file(request)
+
+
+def test_studio_can_repair_an_invalid_file_without_rewriting_other_files(tmp_path):
+    root = tmp_path / "fixture"
+    project = managed_train_project()
+    configuration = ProjectConfiguration(project="fixture", store="results")
+    for relative, raw in dump_text_project(project, configuration).items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+
+    step_file = root / "steps/train.json"
+    raw_step = json.loads(step_file.read_bytes())
+    raw_step["base"]["inline"]["settings"]["grad_clip"] = "wrong"
+    invalid = json.dumps(raw_step).encode()
+    step_file.write_bytes(invalid)
+
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+
+        def edit(kind, member, patch):
+            return client.patch("/api/projects/fixture", json={
+                "revision": folders.read("fixture").revision,
+                "files": [{"address": {"kind": kind, "id": member}, "patches": [patch]}],
+            })
+
+        objective = next(name for name in project.documents if name.endswith("objective"))
+        updated = edit("document", objective, {"op": "replace", "path": "/label", "value": "Updated"})
+        assert updated.status_code == 200, updated.text
+        assert step_file.read_bytes() == invalid
+
+        rejected = edit("step", "train", {
+            "op": "replace", "path": "/base/inline/settings/grad_clip", "value": "still wrong",
+        })
+        assert rejected.status_code == 422, rejected.text
+        assert step_file.read_bytes() == invalid
+
+        repaired = edit("step", "train", {
+            "op": "replace", "path": "/base/inline/settings/grad_clip", "value": 2.0,
+        })
+        assert repaired.status_code == 200, repaired.text
+        assert json.loads(step_file.read_bytes())["base"]["inline"]["settings"]["grad_clip"] == 2

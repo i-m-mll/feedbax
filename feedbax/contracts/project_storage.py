@@ -290,8 +290,7 @@ def _projected_file(
                 if region is not None:
                     if region.model is None:
                         remember_reals(child, child_path)
-                        if child or required or observed:
-                            result[key] = child
+                        result[key] = child
                         continue
                     if not (isinstance(child.get("document"), str) and child.keys() <= {"document", "pointer", "unresolved"}):
                         child = project_region(region, child, child_path)

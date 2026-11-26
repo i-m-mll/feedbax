@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from os import fdopen, listdir, stat as stat_at
 from os.path import lexists
@@ -26,7 +26,7 @@ from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.project import DOCUMENT, Payload, Project, Step
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
-from feedbax.contracts.project_storage import write_project_file
+from feedbax.contracts.project_storage import StoredPath, write_project_file
 from feedbax.contracts.project_storage_dependencies import protected_project_fields
 from feedbax.contracts.project_sweep import Row, Sweep
 from feedbax.contracts.strict_json import strict_json_loads
@@ -402,10 +402,9 @@ def project_semantic_root(project: Project) -> str:
     return sha256_bytes(_revision_bytes(project))
 
 
-def dump_text_project(
-    project: Project, configuration: ProjectConfiguration, *, registries: StoredRegionRegistries | None = None,
-) -> dict[str, bytes]:
-    """Produce the complete set of relative paths and bytes for a text project."""
+def _text_project_models(
+    project: Project, configuration: ProjectConfiguration,
+) -> dict[str, tuple[StrictModel, Collection[StoredPath]]]:
     sweep = project.sweep
     rows = sweep.rows if sweep is not None else {}
     declaration_sweep = sweep.model_copy(update={"rows": {}}) if sweep is not None else None
@@ -419,21 +418,62 @@ def dump_text_project(
     )
     protected = protected_project_fields(project)
     return {
-        project_declaration_name(configuration.project): write_project_file(manifest),
+        project_declaration_name(configuration.project): (manifest, ()),
         **{
-            f"documents/{name}.json": write_project_file(
-                document, protected=protected.get(("documents", name), ()), registries=registries,
-            )
+            f"documents/{name}.json": (document, protected.get(("documents", name), ()))
             for name, document in project.documents.items()
         },
         **{
-            f"steps/{name}.json": write_project_file(
-                step, protected=protected.get(("steps", name), ()), registries=registries,
-            )
+            f"steps/{name}.json": (step, protected.get(("steps", name), ()))
             for name, step in project.steps.items()
         },
-        **{f"variants/{name}.json": write_project_file(row) for name, row in rows.items() if row is not None},
+        **{f"variants/{name}.json": (row, ()) for name, row in rows.items() if row is not None},
     }
+
+
+def dump_text_project(
+    project: Project, configuration: ProjectConfiguration, *, registries: StoredRegionRegistries | None = None,
+    only: Collection[str] | None = None,
+) -> dict[str, bytes]:
+    """Produce authored project file bytes, optionally for the paths being created."""
+    return {
+        name: write_project_file(model, protected=protected, registries=registries)
+        for name, (model, protected) in _text_project_models(project, configuration).items()
+        if only is None or name in only
+    }
+
+
+def text_project_changes(
+    before: TextProject, after: Project, *, registries: StoredRegionRegistries | None = None,
+    only: Collection[str] | None = None,
+) -> dict[str, bytes | None]:
+    """Write changed authored values and use the exact preimage of a repaired invalid file."""
+    old = _text_project_models(before.project, before.configuration)
+    new = _text_project_models(after, before.configuration)
+    changes = {}
+    for name in only if only is not None else sorted(old.keys() | new.keys()):
+        if name not in old and name not in new:
+            continue
+        if name not in new:
+            changes[name] = None
+            continue
+        model, protected = new[name]
+        previous = old.get(name)
+        if previous is not None:
+            old_model, old_protected = previous
+            if old_protected == protected and _revision_bytes(old_model) == _revision_bytes(model):
+                continue
+        content = write_project_file(model, protected=protected, registries=registries)
+        if previous is not None:
+            try:
+                prior_content = write_project_file(old_model, protected=old_protected, registries=registries)
+            except ValidationError:
+                prior_content = before.files[name]
+            if prior_content == content:
+                continue
+        changes[name] = content
+    return changes
+
 
 _SWEEP_DECLARATION_FIELDS = {"sweep", "variants"}
 _PROJECT_CONFIGURATION_FIELDS = set(TextProjectManifest.model_fields) - _SWEEP_DECLARATION_FIELDS

@@ -67,6 +67,7 @@ from feedbax.contracts.project_io import (
     replay_text_project_declaration,
     require_text_declaration,
     text_file_stamp,
+    text_project_changes,
     text_project_fingerprint,
     text_project_settings_edit,
 )
@@ -1347,8 +1348,11 @@ class ProjectFolder:
             else:
                 steps[file.id] = file.step
         project = Project(documents=documents, steps=steps, sweep=text.project.sweep)
-        encoded = dump_text_project(project, text.configuration, registries=self._stored_regions)
-        _check_file_spellings(root, encoded)
+        try:
+            encoded = dump_text_project(project, text.configuration, registries=self._stored_regions, only=additions)
+        except ValueError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        _check_file_spellings(root, text.files.keys() | encoded.keys())
 
         def guard() -> None:
             check_revision("project", text.revision, self._load(root).revision)
@@ -1631,16 +1635,12 @@ class ProjectFolder:
             try:
                 validated = Project.model_validate(project)
                 presentation = PresentationDocument.model_validate(shown)
+                changes = text_project_changes(text, validated, registries=self._stored_regions)
             except ValueError as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            original = dump_text_project(text.project, text.configuration, registries=self._stored_regions)
-            encoded = dump_text_project(validated, text.configuration, registries=self._stored_regions)
             pending = []
-            for relative in sorted(original.keys() | encoded.keys()):
-                if original.get(relative) == encoded.get(relative):
-                    continue
+            for relative, data in sorted(changes.items()):
                 path = Path(relative)
-                data = encoded.get(relative)
                 pending.append(_PendingFile(
                     address=AuthoredFileAddress(kind="declaration", id=text.configuration.project)
                     if relative == text.declaration
@@ -1655,7 +1655,8 @@ class ProjectFolder:
                     before=sha256_bytes(presentation_data) if presentation_data is not None else None,
                     data=_encode_presentation(presentation).decode(),
                 ))
-            _check_file_spellings(root, encoded)
+            removed = {name for name, data in changes.items() if data is None}
+            _check_file_spellings(root, (text.files.keys() | changes.keys()) - removed)
 
             def guard() -> None:
                 check_revision("project", text.revision, self._load(root).revision)
@@ -1816,7 +1817,6 @@ class ProjectFolder:
             text = self._load(root)
             check_revision("project", body.revision, text.revision)
             files, created = (body.files, body.created) if isinstance(body, StudioProjectPatchBatch) else ([body], [])
-            original = dump_text_project(text.project, text.configuration, registries=self._stored_regions)
             payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             configuration = text.configuration.model_dump(mode="json")
             addresses = {}
@@ -1825,7 +1825,7 @@ class ProjectFolder:
             for document in created:
                 address = AuthoredFileAddress(kind="document", id=document.id)
                 relative = _relative_file(address)
-                if document.id in payload.setdefault("documents", {}) or relative in original:
+                if document.id in payload.setdefault("documents", {}) or relative in text.files:
                     raise ProjectFileExists(relative)
                 payload["documents"][document.id] = document.document.model_dump(mode="json", by_alias=True, exclude_unset=True)
                 addresses[relative] = address
@@ -1859,29 +1859,32 @@ class ProjectFolder:
                             declaration_settings = True
                             entry = configuration
                     else:
-                        if relative not in original and relative not in made:
+                        if relative not in text.files and relative not in made:
                             raise ProjectFolderNotFound(file.address.id)
                         entry = _project_file_entry(payload, file.address)
                     _apply_file_edits(entry, file, model_operation=model_operation)
                 project = Project.model_validate(payload)
-                encoded = dump_text_project(project, text.configuration, registries=self._stored_regions)
+                changes = text_project_changes(text, project, registries=self._stored_regions, only=addresses)
                 if declaration_settings:
                     settings = ProjectConfiguration.model_validate(configuration).settings
-                    original[text.declaration] = text_project_settings_edit(text.manifest, text.configuration.settings)
-                    encoded[text.declaration] = text_project_settings_edit(text.manifest, settings)
+                    before = text_project_settings_edit(text.manifest, text.configuration.settings)
+                    after = text_project_settings_edit(text.manifest, settings)
+                    if before != after:
+                        changes[text.declaration] = after
                 if presentation is not None:
-                    original[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(_decode_presentation(presentation_data))
-                    encoded[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(PresentationDocument.model_validate(presentation))
+                    before = _encode_presentation(_decode_presentation(presentation_data))
+                    after = _encode_presentation(PresentationDocument.model_validate(presentation))
+                    if before != after:
+                        changes[STUDIO_PRESENTATION_FILENAME] = after
             except (ValueError, TypeError, RecursionError) as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            changed = [relative for relative in addresses if encoded[relative] != original.get(relative)]
 
             def guard() -> None:
                 check_revision("project", text.revision, self._load(root).revision)
                 if edits_presentation:
                     check_revision("presentation", body.presentation_revision, _read_presentation(root)[1])
 
-            if changed:
+            if changes:
                 _publish_patch(folder, [
                     _PendingFile(
                         address=AuthoredFileAddress(kind="declaration", id=text.configuration.project)
@@ -1889,9 +1892,9 @@ class ProjectFolder:
                         before=(
                             sha256_bytes(presentation_data) if presentation_data is not None else None
                         ) if relative == STUDIO_PRESENTATION_FILENAME else text.file_revisions.get(relative),
-                        data=encoded[relative].decode(),
+                        data=data.decode() if data is not None else None,
                     )
-                    for relative in changed
+                    for relative, data in changes.items()
                 ], guard)
                 text = self._load(root)
             return self._snapshot(folder.location, text)

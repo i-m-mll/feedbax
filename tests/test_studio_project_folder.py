@@ -179,6 +179,7 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
         )}
         for name in (trial[slot]["document"] for slot in ("model", "task", "objective"))
     ]
+    model["document"]["payload"]["interior"]["components"]["plant"]["fields"]["mass"] = 1.5
     for entry in (
         model, task, objective,
         {"kind": "step", "id": "train", "step": {"label": "Step", "kind": "train", "base": {"inline": {}}}},
@@ -220,8 +221,8 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     }
     assert set(before.selected_definitions) == {selected}
     definition = before.selected_definitions[selected]
-    assert definition.payload["trial_documents"]["model"] == model["document"]["payload"]
-    assert definition.payload["trial_documents"]["task"] == task["document"]["payload"]
+    assert definition.payload["trial_documents"]["model"] == snapshot["project"]["documents"][model["id"]]["payload"]
+    assert definition.payload["trial_documents"]["task"] == snapshot["project"]["documents"][task["id"]]["payload"]
     assert (
         definition.sources[mass].kind,
         definition.sources[mass].name,
@@ -241,7 +242,7 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
         plan.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
         == 2.0
     )
-    assert definition.payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"] == 1.0
+    assert definition.payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"] == 1.5
     files = _folder_state(root)
     with pytest.raises(project_folder.ProjectRevisionConflict) as conflict:
         app.state.project_folders.read_plan(snapshot["project_id"], revision=snapshot["revision"])
