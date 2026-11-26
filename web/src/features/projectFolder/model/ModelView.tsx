@@ -413,13 +413,16 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   /**
    * The fields read last for the same owners and runs stay shown while those of another revision or run are read.
    * They are kept here, not as each query's placeholder: `useQueries` gives a query of a new key no previous data.
+   * Their origins name steps, axes and values of their own revision's plan, so they are shown only while that plan is.
    */
   const fieldsSubject = JSON.stringify(fieldBodies.map(({ document, owner, evaluate_scope, rows }) =>
     [document, addressKey(owner), evaluate_scope, rows]));
   const readFields = fieldQueries.every((query) => query.data) ? fieldQueries.map((query) => query.data!) : undefined;
-  const lastFields = useRef<{ subject: string; fields: NonNullable<typeof readFields> }>();
-  if (readFields) lastFields.current = { subject: fieldsSubject, fields: readFields };
-  const fieldsData = readFields ?? (lastFields.current?.subject === fieldsSubject ? lastFields.current.fields : undefined);
+  const lastFields = useRef<{ subject: string; revision: string; fields: NonNullable<typeof readFields> }>();
+  if (readFields) lastFields.current = { subject: fieldsSubject, revision: saved.revision, fields: readFields };
+  const keptFields = lastFields.current?.subject === fieldsSubject ? lastFields.current : undefined;
+  const fieldsData = readFields ?? keptFields?.fields;
+  const originsNamed = planCurrent && (readFields !== undefined || keptFields?.revision === saved.revision);
   /**
    * Edits a projected field after the view's earlier commands, once the plan of the revision it edits is current: the
    * edit carries the steps that plan lights.
@@ -476,14 +479,14 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ?? attachments.data?.source ?? undefined;
     const model = fromFieldView(field, {
       id: addressKey(field.address),
-      planSources: field.sources && {
+      planSources: originsNamed && field.sources ? {
         ...sourceNaming, sources: field.sources.filter((source) => !(source.kind === 'document' && shownChain.includes(source.key))),
-      },
+      } : undefined,
       changed: field.changed && changedFrom ? {
         from: changedFrom,
         reset: canEditField ? () => editField(fieldBody, field.address, { kind: 'reset' }) : undefined,
       } : undefined,
-      source: evaluateSource && evaluateOrigin(evaluateSource, sourceNaming.names.step),
+      source: originsNamed && evaluateSource ? evaluateOrigin(evaluateSource, sourceNaming.names.step) : undefined,
       commit: canEditField ? (edit) => editField(fieldBody, field.address, edit) : undefined,
       rowSelection: !!fieldRows?.length,
       multipleRows: !evaluate && (fieldRows?.length ?? 0) > 1,
