@@ -24,7 +24,7 @@ from feedbax.compiler.set_fields import resolve_trial_set_condition, trial_set_c
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
-from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.compiler.model_attachment import lower_model_difference_values, resolve_effective_model
 from feedbax.contracts.project import (
     LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue, apply_differences, apply_document_edits, diff,
     OrderDocumentMembers, OrderProjectValue, base_chain, json_pointer_parts, member_name,
@@ -612,7 +612,7 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
         if model is None:
             raise ProjectFolderInvalid("The selected Loaded Model is unavailable.")
     else:
-        model = StoredModelDocument.model_validate(subject.payload).lower()
+        model = StoredModelDocument.model_validate(subject.payload).lower(bundle.components)
     task = definition.input_documents["task"]
     if task.schema_id == PYTHON_TASK_SCHEMA_ID:
         source = PythonTaskSelection.model_validate(task.payload)
@@ -621,8 +621,9 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
     objective = definition.input_documents.get("objective")
     differences = MODEL_DIFFERENCE_BATCHES.validate_python(definition.payload.get(MODEL_ATTACHMENTS, {}))
     if differences and subject.schema_id != LOADED_MODEL_SCHEMA_ID:
+        writes = tuple(item for batch in differences.values() for item in batch)
         model = resolve_effective_model(
-            model, bundle.components, tuple(item for batch in differences.values() for item in batch),
+            model, bundle.components, lower_model_difference_values(model, bundle.components, writes),
             functions=bundle.expression_functions,
         )
     params = authored_rollout_settings(definition.payload.get("params"))
@@ -793,7 +794,7 @@ def _pairing(plan, key, bundle, *, definition=None):
         definition = _definition(plan, key)
     step = plan.steps[key.variant, key.step]
     if step.kind == "train":
-        documents = lower_stored_trial_documents(definition.payload.get("trial_documents"))
+        documents = lower_stored_trial_documents(definition.payload.get("trial_documents"), components=bundle.components)
         run = next((item for item in plan.runs if item.key == key), None)
         if run is not None and run.train is not None and run.train.task != documents.task_source:
             encoded = plan.requests.get(run.request_id)
@@ -805,7 +806,7 @@ def _pairing(plan, key, bundle, *, definition=None):
     if step.kind == "synthesize":
         task = trial_task_slot(definition.payload.get("task"))
         documents = TrialDocuments(
-            model=StoredModelDocument.model_validate(definition.payload.get("model")).lower(),
+            model=StoredModelDocument.model_validate(definition.payload.get("model")).lower(bundle.components),
             task=task if isinstance(task, TaskDocument) else None,
             python_task=task if isinstance(task, PythonTaskSelection) else None,
             objective=StoredObjectiveDocument.model_validate(definition.payload.get("objective")).lower(),
@@ -1698,7 +1699,7 @@ def trial_authoring(
         if model_document is not None:
             authored_model = compose_document(project.documents.get, model_document)
             if not isinstance(authored_model, ProjectDiagnostic):
-                reset_model = StoredModelDocument.model_validate(authored_model.payload).lower()
+                reset_model = StoredModelDocument.model_validate(authored_model.payload).lower(bundle.components)
         objective_source = StudioTrialObjectiveSource(
             kind="synthesize" if producer is not None and producer.kind == "synthesize" else "train",
             step=upstream[0].step,

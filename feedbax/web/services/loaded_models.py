@@ -43,7 +43,8 @@ def import_loaded_model(
             raise ProjectFileExists(f"documents/{query.name}.json")
         try:
             model = read_pinned_project_model(
-                authored.root, authored.store_path, existing, composed_loaded_model_projection(existing, read),
+                authored.root, authored.store_path, existing,
+                composed_loaded_model_projection(existing, read, components=folders.components),
             )
         except (ModelAssetError, ArtifactBlobCustodyError) as error:
             raise ProjectFolderInvalid(str(error)) from error
@@ -54,7 +55,7 @@ def import_loaded_model(
             raise ProjectFolderInvalid(composed.detail)
         if composed.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
             raise ProjectFolderInvalid("Choose a Model document to fit the archive.")
-        model = StoredModelDocument.model_validate(composed.payload).lower()
+        model = StoredModelDocument.model_validate(composed.payload).lower(folders.components)
     assert folders.components is not None
     with stage_project_archive(raw, model, folders.components) as (staging, staged):
         if isinstance(staged, ModelFitReport):

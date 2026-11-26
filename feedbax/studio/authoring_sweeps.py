@@ -277,8 +277,8 @@ class FieldSweeps:
             if entry is None:
                 return None
             value = entry.value
-            if isinstance(value, dict) and value.get("kind") == "unresolved":
-                value = UnresolvedValue.model_validate(value)
+            if isinstance(value, str):
+                value = UnresolvedValue(text=value)
             if not isinstance(value, UnresolvedValue) and type(value) not in (int, float):
                 return None
             values.append(StudioSweepValue(id=value_id, label=entry.label, value=value))

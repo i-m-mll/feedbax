@@ -113,9 +113,13 @@ def _lower_initial(expression: Expression) -> float | tuple[float, ...] | Unreso
     if (scalar := _number(expression)) is not None:
         return float(scalar)
     if isinstance(expression, CallValue) and expression.function == "vector" and not expression.kwargs:
-        members = tuple(_number(item) for item in expression.args)
-        if None not in members:
-            return tuple(float(item) for item in members)
+        members = []
+        for item in expression.args:
+            scalar = _number(item)
+            if scalar is None:
+                return _held_expression(expression)
+            members.append(float(scalar))
+        return tuple(members)
     return _held_expression(expression)
 
 

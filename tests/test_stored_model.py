@@ -1,6 +1,7 @@
 """P2 Model member shape, ordering, and projection to the executable contract."""
 
 from copy import deepcopy
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -142,6 +143,49 @@ def test_addressed_model_fields_lower_authored_text_and_preserve_sweep_numbers()
     value = lower_model_field_value(runtime, address, "12 ms")
     assert value == {"value": 0.012, "unit": "s"}
     assert stored_model_field_value(address, value) == "0.012 s"
+
+
+def test_model_field_edit_writes_expression_text_and_reopens_it(tmp_path):
+    raw = _stored_model()
+    raw["interior"]["components"]["rnn"] = {
+        "kind": "leaf", "label": "RNN", "type": "feedbax.VanillaRNN", "fields": {"tau": 2},
+    }
+    project = Project(documents={
+        "model": RootDocument(schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, label="Model", payload=raw),
+    })
+    root = tmp_path / "model"
+    for name, data in dump_text_project(project, ProjectConfiguration(project="model", store="results")).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    url = "/api/projects/model"
+    owner = {"composites": [], "element": {"kind": "component", "id": "rnn"}}
+    selection = {"document": "model", "owner": owner}
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        for text, saved in (("30 ms", "0.03 s"), ("30 +", "30 +")):
+            snapshot = client.get(url).raise_for_status().json()
+            read = selection | {"revision": snapshot["revision"]}
+            fields = client.post(url + "/model/fields", json=read).raise_for_status().json()["fields"]
+            tau = next(field for field in fields if field["label"] == "Tau")
+            recipe = client.post(url + "/model/fields", json=read | {
+                "address": tau["address"], "edit": {"kind": "text", "text": text},
+            }).raise_for_status().json()
+            result = client.post(url + "/model/edit", json={
+                "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+                "document": "model", "command": recipe["command"],
+            }).raise_for_status().json()["result"]
+            assert result["status"] == "applied", result
+            payload = json.loads((root / "documents/model.json").read_bytes())["payload"]
+            assert payload["interior"]["components"]["rnn"]["fields"]["tau"] == saved
+
+    with TestClient(create_app(projects_dir=tmp_path)) as reopened:
+        snapshot = reopened.get(url).raise_for_status().json()
+        fields = reopened.post(url + "/model/fields", json=selection | {
+            "revision": snapshot["revision"],
+        }).raise_for_status().json()["fields"]
+        tau = next(field for field in fields if field["label"] == "Tau")
+        assert tau["text"] == "30 +"
+        assert tau["problems"]
 
 
 @pytest.mark.parametrize(("path", "value", "problem"), [

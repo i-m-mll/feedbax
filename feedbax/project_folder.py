@@ -1685,7 +1685,7 @@ class ProjectFolder:
         if source is not None:
             payload = source
         state = ModelEditState.model_validate({
-            "document": StoredModelDocument.model_validate(payload).lower(), **layout,
+            "document": StoredModelDocument.model_validate(payload).lower(components), **layout,
         })
         authority = ModelRegistryPorts(components)
 
@@ -1697,12 +1697,12 @@ class ProjectFolder:
             else:
                 return None
             return ModelEditState.model_validate({
-                "document": StoredModelDocument.model_validate(restored[0]).lower(), **restored[1],
+                "document": StoredModelDocument.model_validate(restored[0]).lower(components), **restored[1],
             })
 
         result = apply_model_edit(
             state, body.command, ports=authority.port, component_problem=authority.placement_problem,
-            next_input=authority.next_input, functions=self.functions, reference=reference,
+            next_input=authority.next_input, functions=self.functions, reference=reference, components=components,
             instantiate_template=lambda name: instantiate_model_template(name, components, state.document.step_seconds),
             task_signal=lambda command: selected_task_signal(self, project_id, ModelProjectionRequest(
                 revision=body.revision, run=command.run, document=body.document,
@@ -1722,7 +1722,8 @@ class ProjectFolder:
         sweep_problems = []
         created: tuple[str, ...] = ()
         if result.state != state or body.files:
-            next_payload = authored_model_payload(result.state.document) if result.state.document != state.document else payload
+            next_payload = (authored_model_payload(result.state.document, components)
+                            if result.state.document != state.document else payload)
             next_layout = layout.copy()
             updated_layout = result.state.model_dump(mode="json", include=set(_MODEL_LAYOUT_FIELDS))
             for key in _MODEL_LAYOUT_FIELDS:
