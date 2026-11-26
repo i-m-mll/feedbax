@@ -1,6 +1,7 @@
 """Use the canonical nested model and Evaluate fixture in the mounted window."""
 
 import json
+from functools import partial
 from pathlib import Path
 import sys
 
@@ -11,6 +12,7 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.stored_model import stored_model_component
 from feedbax.desktop.release import AppPaths
+from tests.support.browser_seed_actions import HomeSeed
 from tests.support.model_documents import changed_model
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_model_document_plan import _add_attachment, _attachment_owner, _end, _model_project, _planar_arm
@@ -49,8 +51,7 @@ def add_physical_interior(raw, scope):
     )
 
 
-if __name__ == "__main__":
-    home, folder_name, scope = sys.argv[1:]
+def seed(home: str, folder_name: str, scope: str):
     if scope == "managed-fields":
         raw = document_project(authored_documents())
         model = raw["documents"][raw["steps"]["train"]["base"]["inline"]["trial_documents"]["model"]["document"]]
@@ -75,4 +76,15 @@ if __name__ == "__main__":
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    print(json.dumps(folder_name))
+    return folder_name
+
+
+ACTIONS = {
+    scope: HomeSeed(partial(seed, scope=scope))
+    for scope in ("managed-fields", "equations", "mechanics-port", "within-step", "variant", "sweep")
+}
+
+
+if __name__ == "__main__":
+    home, folder_name, scope = sys.argv[1:]
+    print(json.dumps(ACTIONS[scope].command(home, folder_name)))

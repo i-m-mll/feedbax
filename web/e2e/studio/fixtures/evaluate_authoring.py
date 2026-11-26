@@ -10,6 +10,7 @@ from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.desktop.release import AppPaths
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_project
+from tests.support.browser_seed_actions import FileSeed, HomeSeed
 
 
 TARGET_Y = "task.variables.target.value.args.1.value"
@@ -113,9 +114,16 @@ def own_sweep_files():
     ]
 
 
+ACTIONS = {
+    "files": FileSeed(files),
+    "own-sweep-files": FileSeed(own_sweep_files),
+    "seed": HomeSeed(seed_train_variants),
+}
+
+
 if __name__ == "__main__":
     arguments = sys.argv[1:]
-    if arguments == ["own-sweep-files"]:
-        print(json.dumps(own_sweep_files()))
-    else:
-        print(json.dumps(seed_train_variants(*arguments) if arguments else files()))
+    action, args = (
+        (arguments[0], []) if arguments == ["own-sweep-files"] else ("seed", arguments) if arguments else ("files", [])
+    )
+    print(json.dumps(ACTIONS[action].command(*args)))

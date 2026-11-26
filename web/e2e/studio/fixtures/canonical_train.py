@@ -24,6 +24,7 @@ from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
+from tests.support.browser_seed_actions import FileSeed, HomeSeed, NonSeed, print_action
 from tests.support.managed_train_fixture import managed_train_project
 
 
@@ -310,28 +311,19 @@ def run_saved_cli(home: str, folder_name: str, label: str) -> None:
     os.execv(sys.executable, [sys.executable, "-m", "feedbax.cli", "run", str(project), "train", "--label", label])
 
 
+ACTIONS = {
+    "managed-files": FileSeed(lambda: [*ordinary_files("2"), successor_file()]),
+    "ordinary-files": FileSeed(ordinary_files, cases=(("2",), ("2", "0.001", "0.01"))),
+    "delayed-reaches-files": FileSeed(lambda: ordinary_files("2", scenario="delayed-reaches")),
+    "run-saved-cli": NonSeed(run_saved_cli, "executes the CLI to submit a saved Train"),
+    "seed-variants": HomeSeed(seed_variants),
+    "history-files": FileSeed(history_files),
+    "observe": NonSeed(lambda home, *args: observe(Path(home), *args), "reads saved Train attempts"),
+    "observe-history": NonSeed(lambda home, *args: observe_history(Path(home), *args), "reads Train attempt history"),
+    "observe-swept": NonSeed(lambda home, project, *args: observe_swept(Path(home), project, args),
+                             "reads swept Train attempts"),
+}
+
+
 if __name__ == "__main__":
-    action, *arguments = sys.argv[1:]
-    if action == "managed-files" and not arguments:
-        print(json.dumps([*ordinary_files("2"), successor_file()]))
-    elif action == "ordinary-files":
-        print(json.dumps(ordinary_files(*arguments)))
-    elif action == "delayed-reaches-files" and not arguments:
-        print(json.dumps(ordinary_files("2", scenario="delayed-reaches")))
-    elif action == "run-saved-cli":
-        run_saved_cli(*arguments)
-    elif action == "seed-variants":
-        print(json.dumps(seed_variants(*arguments)))
-    elif action == "history-files" and not arguments:
-        print(json.dumps(history_files()))
-    elif action == "observe":
-        home, project, revision, attempt, stopped_attempt, successor_attempt = arguments
-        print(json.dumps(observe(Path(home), project, revision, attempt, stopped_attempt, successor_attempt)))
-    elif action == "observe-history":
-        home, project, revision = arguments
-        print(json.dumps(observe_history(Path(home), project, revision)))
-    elif action == "observe-swept":
-        home, project, *successors = arguments
-        print(json.dumps(observe_swept(Path(home), project, successors)))
-    else:
-        raise ValueError(f"Unknown canonical Train fixture action {action!r}")
+    print_action(ACTIONS)
