@@ -203,6 +203,26 @@ def test_a_default_retains_its_presence_when_other_files_observe_it(tmp_path):
     assert json.loads(files["documents/base.json"])["payload"]["fixed_steps"] is None
 
 
+def test_opaque_patch_values_keep_types_the_legacy_expression_checker_reads(tmp_path):
+    schema = "feedbax.spec.objective_document"
+    base = _DOCUMENT_FIXTURES[schema]
+    path = "documents.base.payload.terms.effort.measure.value"
+    project = Project.model_validate({
+        "documents": {
+            "base": {"schema": schema, "label": "Base", "payload": base},
+            "derived": {
+                "schema": schema, "label": "Derived", "base": {"document": "base"},
+                "differences": {"/terms": {"value": base["terms"]}},
+            },
+        },
+        "sweep": {"rows": {"larger": {"patches": {path: {"op": "replace", "value": 3.0}}}}},
+    })
+    files = _verify_parsimony(tmp_path, project)
+    terms = json.loads(files["documents/derived.json"])["differences"]["/terms"]["value"]
+    assert type(terms[0]["measure"]["value"]) is float
+    assert type(json.loads(files["variants/larger.json"])["patches"][path]["value"]) is float
+
+
 def test_project_numbers_round_trip_without_rounding_or_accepting_unsafe_integers():
     fields = {"near": 0.00030000000000000003, "large": 1e20, "whole_real": 1.0, "zero": -0.0, "flag": False}
     manifest = TextProjectManifest(schema_version="feedbax.project.v1", store="results", settings=fields)
