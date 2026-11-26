@@ -22,9 +22,9 @@ from feedbax.contracts.result_address import (
 from feedbax.contracts.studio_project import KeyedFamily, MemberFamily, StudioMemberName
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 
 type _Json = Any
@@ -43,9 +43,9 @@ def generated_name(base: str, taken: Callable[[str], bool], separator: str = "-"
 _DOCUMENT_NAMES = {
     STORED_MODEL_DOCUMENT_SCHEMA_ID: ("model", "Model"),
     LOADED_MODEL_SCHEMA_ID: ("loaded-model", "Loaded Model"),
-    TASK_DOCUMENT_SCHEMA_ID: ("task", "Task"),
+    STORED_TASK_DOCUMENT_SCHEMA_ID: ("task", "Task"),
     PYTHON_TASK_SCHEMA_ID: ("task", "Task"),
-    OBJECTIVE_DOCUMENT_SCHEMA_ID: ("objective", "Objective"),
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID: ("objective", "Objective"),
     TRAINING_DOCUMENT_SCHEMA_ID: ("training", "Training"),
     ANALYSIS_SCHEMA: ("analysis", "Analysis"),
     "feedbax.report_document.v1": ("report", "Report"),
@@ -75,7 +75,7 @@ def new_document_name(
 ) -> StudioMemberName:
     """Allocate within the picker family, with a key available across all documents."""
     fallback, default = _DOCUMENT_NAMES.get(schema, ("document", "Document"))
-    task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
+    task_schemas = {STORED_TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
     family = task_schemas if schema in task_schemas else {schema}
     labels = {document.label for document in documents.values() if document.schema_id in family}
     return allocate_member_name(base or default, labels, documents.__contains__, fallback, copy=copy)
