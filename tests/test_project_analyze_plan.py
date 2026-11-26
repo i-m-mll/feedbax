@@ -215,10 +215,21 @@ def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp
         saved = response.json()
         window = saved["window_map"]
         assert "document_names" not in window
-        assert saved["rows"][0]["name"] == "Default"
-        assert next(row for row in window["rows"] if row["key"]["step"] == "train")["name"] == "Default"
+        assert saved["rows"][0]["name"] == "Train"
+        assert next(row for row in window["rows"] if row["key"]["step"] == "train")["name"] == "Train"
         elements = {item["name"]: item for item in window["analysis_elements"]}
         assert [request["request_id"] for request in elements["profile"]["requests"]] == [figure.id]
+
+
+def test_one_unlabelled_run_has_its_steps_display_name():
+    project = _project()
+    project.steps["train"].label = "Controller training"
+    project.steps["train"].sweep = Sweep.model_validate({"rows": {"solo": {}}})
+    plan = compile_project(project)
+    row = plan.row(RunKey("default", "train", "solo"))
+    assert row.label is None
+    assert row.name == "Controller training"
+    assert next(run for run in plan.runs if run.key == row.key) is row
 
 
 def test_snapshot_names_follow_authored_edits_and_variant_overrides(tmp_path):

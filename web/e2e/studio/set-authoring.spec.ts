@@ -183,13 +183,13 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
       .toHaveAccessibleDescription('Other');
   }, { chosen_steps: ['other'], axes: { set: ['run-4'] } }, 'Selected Readers');
   const narrowed = (await snapshot()).project;
-  expect(narrowed.documents!['set-2']).toMatchObject({ base: { document: 'set' } });
+  expect(narrowed.documents!['set-2']).toMatchObject({ base: { document: 'set' }, label: 'Set 2' });
   expect(narrowed.steps!.other.sweep!.axes!.set).toEqual({ set: 'set-2' });
   expect(narrowed.steps!.pair.sweep!.axes!.run).toEqual({ set: 'set', optional: true });
-  await sweepLabel(card('other'), 'set 2').click();
+  await sweepLabel(card('other'), 'Set 2').click();
   const listed = page.getByRole('menuitemradio');
-  await expect(listed).toHaveText(['Set', 'set 2']);
-  await expect(page.getByRole('menuitemradio', { name: 'set 2', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect(listed).toHaveText(['Set', 'Set 2']);
+  await expect(page.getByRole('menuitemradio', { name: 'Set 2', exact: true })).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Escape');
 
   // Inline Set returns the Evaluate card to an inline axis, and no run is out of date.
