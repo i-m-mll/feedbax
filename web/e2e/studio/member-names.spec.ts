@@ -1,6 +1,6 @@
 import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Page } from '@playwright/test';
-import { analysisDocumentSchemaId, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { analysisDocumentSchemaId, type StoredObjectiveTerm, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { activityJob, documentPicker, problemGroup } from './fixtures/members';
 
@@ -98,12 +98,10 @@ test('a member reads the same in the map, Inspector, picker, Problems and Activi
 // Inputs card that keeps the old name or lists the renamed signal again as an unused port.
 test('renaming a Task signal updates its readers and keeps the Train request', { tag: '@round' }, async ({ page, request }) => {
   const [model, task, objective, train] = await fixture('ordinary-files', '2');
-  objective.document.payload.terms.push({
-    id: 'target-size',
-    name: 'Target size',
-    measure: { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: 'target_pos' }] },
-    measure_type: { base: 'real', dimensions: { length: 2 } },
-  });
+  const targetSize: StoredObjectiveTerm = {
+    label: 'Target size', measure: 'sqnorm(target_pos)', measure_type: { base: 'real', dimensions: { length: 2 } },
+  };
+  objective.document.payload.terms['target-size'] = targetSize;
   const evaluate = { kind: 'step', id: 'evaluate', step: {
     kind: 'evaluate', label: 'Evaluation', base: { inline: {
       evaluation_type: 'feedbax.rollout',
