@@ -1,10 +1,10 @@
-"""Stored task document values."""
+"""Authored Task documents and their lowering for execution."""
 
-from enum import IntEnum
 from collections.abc import Iterable
+from enum import IntEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -12,10 +12,18 @@ from feedbax.contracts.expression_values import (
     ANGLE, LENGTH, TIME, Expression, LiteralValue, Scalar, ValueBase, ValueRecord, ValueType,
 )
 
+from feedbax.contracts.stored_members import (
+    StoredAddressedMembers,
+    StoredMemberKey,
+    StoredMembers,
+    keyed_members,
+    project_member,
+)
 from feedbax.contracts.time_units import TimeValue
 from feedbax.contracts.window import Window
 
 TASK_DOCUMENT_SCHEMA_ID = "feedbax.spec.task_document"
+STORED_TASK_DOCUMENT_SCHEMA_ID = "feedbax.spec.task_document.v2"
 
 
 class SetVariableChoices(ValueRecord):
@@ -32,14 +40,32 @@ class Marker(ValueRecord):
     filled: bool
 
 
-class Variable(ValueRecord):
+class _TaskMember(ValueRecord):
     id: str
+
+
+class _NamedTaskMember(_TaskMember):
     name: str
+
+
+class _LabelledTaskMember(ValueRecord):
+    label: str = Field(min_length=1)
+
+
+class _VariableFields(ValueRecord):
     type: ValueType
     value: Expression
     count: Expression | None = Field(default=None, exclude_if=lambda value: value is None)
     set_choices: SetVariableChoices | None = Field(default=None, exclude_if=lambda value: value is None)
     marker: Marker | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class Variable(_VariableFields, _NamedTaskMember):
+    pass
+
+
+class StoredVariable(_VariableFields, _LabelledTaskMember):
+    pass
 
 
 class Length(ValueRecord):
@@ -74,19 +100,32 @@ class EpochEnd(IntEnum):
     LIMIT = 3
 
 
-class Epoch(ValueRecord):
-    id: str
-    name: str
+class _EpochFields(ValueRecord):
     end: End
 
 
-class Repeat(ValueRecord):
+class Epoch(_EpochFields, _NamedTaskMember):
+    pass
+
+
+class StoredEpoch(_EpochFields, _LabelledTaskMember):
+    pass
+
+
+class _RepeatFields(ValueRecord):
     """Repeat the inclusive span of authored epochs a fixed total number of times."""
 
-    id: str
     first_epoch: str
     last_epoch: str
     count: Expression
+
+
+class Repeat(_RepeatFields, _TaskMember):
+    pass
+
+
+class StoredRepeat(_RepeatFields):
+    pass
 
 
 class EpochSteps(ValueRecord):
@@ -97,22 +136,35 @@ class EpochSteps(ValueRecord):
     greatest: int = Field(ge=0)
 
 
-class Cell(ValueRecord):
-    id: str
+class _CellFields(ValueRecord):
     first_epoch: str
     last_epoch: str
     value: Expression
 
 
-class Signal(ValueRecord):
-    id: str
-    name: str
+class Cell(_CellFields, _TaskMember):
+    pass
+
+
+class StoredCell(_CellFields):
+    pass
+
+
+class _SignalFields[CellsT](ValueRecord):
     type: ValueType
-    cells: tuple[Cell, ...]
+    cells: CellsT
     absent: Expression | None = None
     window: Window | None = Field(default=None, exclude_if=lambda value: value is None)
     intervention: str | None = Field(default=None, exclude_if=lambda value: value is None)
     """The canonical Model address of the intervention this generated signal gates."""
+
+
+class Signal(_SignalFields[tuple[Cell, ...]], _NamedTaskMember):
+    pass
+
+
+class StoredSignal(_SignalFields[StoredMembers[StoredCell]], _LabelledTaskMember):
+    pass
 
 
 class Link(ValueRecord):
@@ -125,6 +177,46 @@ class TaskAdditions(StrictModel):
 
     task_variables: tuple[Variable, ...] = Field(default=(), exclude_if=lambda value: not value)
     task_links: tuple[Link, ...] = Field(default=(), exclude_if=lambda value: not value)
+
+
+def _lower_variables(variables: dict[str, StoredVariable]) -> tuple[Variable, ...]:
+    return tuple(project_member(variable, Variable, id=key, name=variable.label)
+                 for key, variable in variables.items())
+
+
+def _stored_variables(variables: tuple[Variable, ...]) -> dict[str, StoredVariable]:
+    return keyed_members((variable.id, project_member(variable, StoredVariable, label=variable.name))
+                         for variable in variables)
+
+
+def _lower_links(links: dict[str, str]) -> tuple[Link, ...]:
+    return tuple(Link(model_field=address, variable=key) for address, key in links.items())
+
+
+def _stored_links(links: tuple[Link, ...]) -> dict[str, str]:
+    return keyed_members((link.model_field, link.variable) for link in links)
+
+
+class StoredTaskAdditions(StrictModel):
+    """Variables and Model-address links contributed by a stored Set entry or sweep value."""
+
+    task_variables: StoredMembers[StoredVariable] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    task_links: StoredAddressedMembers[StoredMemberKey] = Field(
+        default_factory=dict, exclude_if=lambda value: not value,
+    )
+
+    def lower(self) -> TaskAdditions:
+        return project_member(self, TaskAdditions, {
+            "task_variables": _lower_variables,
+            "task_links": _lower_links,
+        })
+
+    @classmethod
+    def from_lowered(cls, additions: TaskAdditions) -> "StoredTaskAdditions":
+        return project_member(additions, cls, {
+            "task_variables": _stored_variables,
+            "task_links": _stored_links,
+        })
 
 
 type ValidationValue = Scalar | tuple[ValidationValue, ...]
@@ -174,6 +266,75 @@ class TaskDocument(ValueRecord):
         return tuple(canonical_json_v2_bytes(row.model_dump(mode="json")["variables"]).decode() for row in rows)
 
 
+def _lower_signal(key: str, signal: StoredSignal) -> Signal:
+    cells = tuple(project_member(cell, Cell, id=cell_key) for cell_key, cell in signal.cells.items())
+    return project_member(signal, Signal, id=key, name=signal.label, cells=cells)
+
+
+def _stored_signal(signal: Signal) -> StoredSignal:
+    cells = keyed_members((cell.id, project_member(cell, StoredCell)) for cell in signal.cells)
+    return project_member(signal, StoredSignal, label=signal.name, cells=cells)
+
+
+class StoredTaskDocument(ValueRecord):
+    """Task payload in authored order, with keys separate from presentation labels."""
+
+    id: str
+    variables: StoredMembers[StoredVariable]
+    epochs: StoredMembers[StoredEpoch] = Field(min_length=1)
+    signals: StoredMembers[StoredSignal]
+    repeats: StoredMembers[StoredRepeat] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    links: StoredAddressedMembers[StoredMemberKey] = Field(default_factory=dict)
+    fixed_steps: int | None = Field(default=None, ge=0)
+    validation_trials: StoredMembers[ValidationTrial] = Field(
+        default_factory=lambda: {"trial-1": ValidationTrial()}, min_length=1,
+    )
+
+    @model_validator(mode="after")
+    def _unique_expression_keys(self) -> "StoredTaskDocument":
+        overlap = self.variables.keys() & self.signals.keys()
+        if overlap:
+            raise ValueError(f"Task variable and signal keys must be disjoint: {', '.join(sorted(overlap))}.")
+        return self
+
+    def lower(self) -> TaskDocument:
+        return project_member(self, TaskDocument, {
+            "variables": _lower_variables,
+            "epochs": lambda epochs: tuple(
+                project_member(epoch, Epoch, id=key, name=epoch.label) for key, epoch in epochs.items()
+            ),
+            "signals": lambda signals: tuple(_lower_signal(key, signal) for key, signal in signals.items()),
+            "repeats": lambda repeats: tuple(
+                project_member(repeat, Repeat, id=key) for key, repeat in repeats.items()
+            ),
+            "links": _lower_links,
+            "validation_trials": lambda trials: tuple(trials.values()),
+        })
+
+    @classmethod
+    def from_lowered(
+        cls, task: TaskDocument, *, trial_keys: Iterable[str] | None = None,
+    ) -> "StoredTaskDocument":
+        """Project a producer's Task, retaining supplied validation row keys when available."""
+        overrides = {}
+        if trial_keys is not None:
+            overrides["validation_trials"] = keyed_members(zip(trial_keys, task.validation_trials, strict=True))
+        return project_member(task, cls, {
+            "variables": _stored_variables,
+            "epochs": lambda epochs: keyed_members(
+                (epoch.id, project_member(epoch, StoredEpoch, label=epoch.name)) for epoch in epochs
+            ),
+            "signals": lambda signals: keyed_members((signal.id, _stored_signal(signal)) for signal in signals),
+            "repeats": lambda repeats: keyed_members(
+                (repeat.id, project_member(repeat, StoredRepeat)) for repeat in repeats
+            ),
+            "links": _stored_links,
+            "validation_trials": lambda trials: {
+                f"trial-{index}": trial for index, trial in enumerate(trials, start=1)
+            },
+        }, **overrides)
+
+
 def add_to_task(task: TaskDocument, additions: Iterable[TaskAdditions]) -> TaskDocument:
     """Add selected entry variables and links once, rejecting competing definitions."""
     variables = {variable.id: variable for variable in task.variables}
@@ -200,6 +361,8 @@ BLANK_TASK = TaskDocument(
     epochs=(Epoch(id="epoch", name="epoch", end=Length(length=LiteralValue(value=1, unit="s"))),),
 )
 """What New makes of a task: one epoch, and nothing else."""
+
+BLANK_STORED_TASK = StoredTaskDocument.from_lowered(BLANK_TASK)
 
 
 VALUE_TYPES: tuple[tuple[str, ValueType], ...] = (

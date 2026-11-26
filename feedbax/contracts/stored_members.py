@@ -1,6 +1,6 @@
 """Keyed member contracts shared by the authored document kinds."""
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, StringConstraints
@@ -23,19 +23,24 @@ type StoredModelAddressKey = Annotated[str, StringConstraints(strict=True), Afte
 type StoredAddressedMembers[T] = dict[StoredModelAddressKey, T]
 
 
-def project_member[ModelT: BaseModel](source: BaseModel, target: type[ModelT], **overrides: Any) -> ModelT:
-    """Copy supplied fields shared by the two model shapes and validate the new shape."""
+def project_member[ModelT: BaseModel](
+    source: BaseModel, target: type[ModelT], transforms: Mapping[str, Callable[[Any], Any]] | None = None,
+    /, **overrides: Any,
+) -> ModelT:
+    """Copy authored fields, transforming collections whose typed shapes differ."""
+    transforms = transforms or {}
     values = {}
     for name, field in type(source).model_fields.items():
         if name not in target.model_fields or name in overrides:
             continue
         value = getattr(source, name)
         if name in source.model_fields_set or field.is_required() or field.default_factory_takes_validated_data:
-            values[name] = value
-            continue
-        default = field.get_default(call_default_factory=True)
-        if type(value) is not type(default) or value != default:
-            values[name] = value
+            authored = True
+        else:
+            default = field.get_default(call_default_factory=True)
+            authored = type(value) is not type(default) or value != default
+        if authored:
+            values[name] = transforms[name](value) if name in transforms else value
     return target.model_validate(values | overrides)
 
 
