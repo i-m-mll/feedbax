@@ -27,6 +27,7 @@ from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef, StoreTransferProgress
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.code_validity import AttemptProvenance
+from feedbax.contracts.dataset import REPLICATE_DIM, DatasetProductRef
 from feedbax.contracts.execution_target import (
     LOCAL_RUN_KINDS, LOCAL_TARGET, LOCAL_TARGET_ID, AttemptTarget, ExecutionTargets,
     SessionTarget, SessionTargetProfile, TargetRunKind, attempt_target,
@@ -246,6 +247,7 @@ class PlanJobAttempt:
     trials: tuple[str, ...] = ()
     loaded_model: ImportedModelProvenance | None = None
     model_origin: ModelOrigin | None = None
+    replicates: int | None = None
 
 
 @dataclass(frozen=True)
@@ -266,7 +268,7 @@ class PlanJobAttempts:
 @dataclass(frozen=True)
 class _VerifiedEvaluation:
     receipt: JobReceipt
-    size: int
+    states: DatasetProductRef
     checkpoint_gaps: tuple[StudioEvaluationCheckpointGap, ...] | None
     placement: Literal["ordinary", "live"]
     manifest_object: ContentObjectRef
@@ -374,6 +376,7 @@ class PlanJobReader:
             collected_evaluate = evaluate and job["data"].get("collected_evaluate") is True
             succeeded = job["state"] == "succeeded"
             size = None
+            replicates = None
             result = None
             store_success = None
             checkpoint_source = None if collected_train else _train_checkpoint_source(job, by_id)
@@ -386,12 +389,19 @@ class PlanJobReader:
             if damage is not None:
                 receipt = None
             elif evaluate:
+                receipt = None
                 if succeeded:
                     assert success_view is not None
                     result = _verified_evaluation_result(job, success_view)
-                receipt, size = (result.receipt, result.size) if result is not None else (None, None)
-                if result is not None and result.checkpoint_source is not None:
-                    checkpoint_source = result.checkpoint_source
+                    if result is not None:
+                        try:
+                            replicates = _evaluation_replicates(success_view.store, result.states)
+                        except (OSError, ValueError) as error:
+                            damage = f"Cannot read the retained Evaluate state descriptor: {error}"
+                        else:
+                            receipt, size = result.receipt, result.states.content.size
+                            if result.checkpoint_source is not None:
+                                checkpoint_source = result.checkpoint_source
             elif succeeded and (light or collected_train):
                 assert success_view is not None
                 verified = _verified_store_result(success_view, job)
@@ -459,6 +469,7 @@ class PlanJobReader:
                 trials=result.trials if result is not None else (),
                 loaded_model=result.loaded_model if result is not None else None,
                 model_origin=result.model_origin if result is not None else None,
+                replicates=replicates,
             )
             attempts.setdefault(request_id, []).append(attempt)
             for address in known:
@@ -2470,7 +2481,7 @@ def _verified_evaluation_result(
             selection = binding["checkpoint_selection"]
             gaps = tuple(StudioEvaluationCheckpointGap.model_validate(gap) for gap in selection.get("gaps", ()))
         return _VerifiedEvaluation(
-            receipt=receipt, size=states_ref(manifest).content.size, checkpoint_gaps=gaps,
+            receipt=receipt, states=states_ref(manifest), checkpoint_gaps=gaps,
             placement="live" if "live_evaluation_points" in binding else "ordinary",
             manifest_object=manifest_object,
             checkpoint_sources=_selected_checkpoint_sources(job),
@@ -2496,7 +2507,7 @@ def _verify_stored_evaluation(
     )
     if isinstance(subject, ContentRef) or is_synthesized_model_product(subject):
         return _VerifiedEvaluation(
-            receipt, states_ref(manifest).content.size, None, "ordinary", manifest_object,
+            receipt, states_ref(manifest), None, "ordinary", manifest_object,
             trials=_evaluation_trials(manifest), loaded_model=manifest.loaded_model, model_origin=manifest.model_origin,
         )
     (bound,) = success.inputs["subject"]
@@ -2530,7 +2541,7 @@ def _verify_stored_evaluation(
             raise ValueError("Collected Best result differs from its selected Train subject.")
         best = _project_best_subject(subject, chosen, success.attempt, checkpoint, evidence)
     return _VerifiedEvaluation(
-        receipt=receipt, size=states_ref(manifest).content.size, checkpoint_gaps=gaps,
+        receipt=receipt, states=states_ref(manifest), checkpoint_gaps=gaps,
         placement="live" if manifest.metadata.get("placement") == "live" else "ordinary",
         manifest_object=manifest_object,
         checkpoint_source=checkpoint_source,
@@ -2538,6 +2549,16 @@ def _verify_stored_evaluation(
         bound_subject=best,
         trials=_evaluation_trials(manifest),
     )
+
+
+def _evaluation_replicates(store: ImmutableArtifactBlobProvider, states: DatasetProductRef) -> int | None:
+    from feedbax.persistence.dataset import open_stored_dataset
+
+    with open_stored_dataset(store, states) as dataset:
+        count = dataset.descriptor.dimensions.get(REPLICATE_DIM)
+        if count == 0:
+            raise ValueError("The retained Evaluate has no replicate members.")
+        return count
 
 
 def _evaluation_trials(manifest: EvaluationRunManifest) -> tuple[str, ...]:

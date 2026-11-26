@@ -69,6 +69,7 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainResult,
     StudioSavedTrainRow,
     StudioSavedTrainRuns,
+    StudioTrialName,
 )
 from feedbax.contracts.project_inputs import (
     BatchCheckpoint, BoundRank, InputBinding, SelectedAxisValue, StepReference, SubsetTerms,
@@ -90,6 +91,7 @@ from feedbax.planner.project_plan import (
     authored_request_change, common_train_metrics, planned_input_groups,
 )
 from feedbax.planner.project_plan_io import run_key
+from feedbax.planner.trial_names import TrialNameParts, numbered_trial_parts
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.result_address import parse_labels
@@ -317,11 +319,13 @@ class ProjectPlanRead:
             )
         statuses = {item.key: item for row in self.status_rows() for item in row.flattened()}
         elements = plan.elements.values()
-        conditions: dict[str, list[str] | None] = {}
+        conditions: dict[str, list[StudioTrialName] | None] = {}
 
-        def task_conditions(row: PlannedRow) -> list[str] | None:
+        def task_conditions(row: PlannedRow) -> list[StudioTrialName] | None:
             if evaluation_tasks is None:
                 return None
+            if row.trial_names is not None:
+                return _named_trials(tuple(row.trial_names), row.trial_names)
             task = row.train.task if row.train is not None else None
             if isinstance(row, PlannedRun) and row.kind == "synthesize":
                 spec = decode_request(plan.requests[row.request_id], plan.documents.__getitem__).spec
@@ -332,7 +336,8 @@ class ProjectPlanRead:
             identity = to_json(task.model_dump(mode="json")).decode()
             if identity not in conditions:
                 try:
-                    conditions[identity] = list(evaluation_conditions(task, evaluation_tasks))
+                    ids = evaluation_conditions(task, evaluation_tasks)
+                    conditions[identity] = _named_trials(ids, numbered_trial_parts(ids))
                 except ValueError:
                     # An unresolved Task has no authorable trial domain.
                     conditions[identity] = None
@@ -973,7 +978,9 @@ class ProjectPlanService:
     ) -> StudioTrialReplayResponse:
         _, result = self._evaluation_result(project_id, body)
         try:
-            return result.replay(body.trial, checkpoint=body.checkpoint, aggregate=body.aggregate, mean=body.mean)
+            return result.replay(
+                body.trial, checkpoint=body.checkpoint, replicate=body.replicate, aggregate=body.aggregate, mean=body.mean,
+            )
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, ValueError, KeyError) as error:
@@ -1349,6 +1356,21 @@ def _evaluation_params(settled: SettledProjectPlan, run: PlannedRun) -> Mapping[
     return spec.params if isinstance(spec, EvaluationRequestSpec) else None
 
 
+def _named_trials(ids: Sequence[str], names: TrialNameParts) -> list[StudioTrialName]:
+    known = [names[id] for id in ids if id in names]
+    varying = {
+        index for index, parts in enumerate(zip(*known)) if len(set(parts)) > 1
+    }
+    result = []
+    for id in ids:
+        parts = names.get(id)
+        label = None
+        if parts is not None:
+            label = " · ".join(part for index, part in enumerate(parts) if index in varying) or parts[0]
+        result.append(StudioTrialName(id=id, name=label))
+    return result
+
+
 def _evaluation_row(
     settled: SettledProjectPlan, run: PlannedRun, jobs: PlanJobAttempts, reader: PlanJobReader,
     history: Mapping[RunKey, TrainRowHistory],
@@ -1436,8 +1458,9 @@ def _evaluation_row(
         attempt.request_id != run.request_id and attempt.successful_receipt is not None
         and attempt.output_size_bytes is not None
     )), None)
-    result = _saved_evaluation_result(success, planned)
-    prior = _saved_evaluation_result(previous, None)
+    names = run.trial_names or numbered_trial_parts(trials)
+    result = _saved_evaluation_result(success, planned, names)
+    prior = _saved_evaluation_result(previous, None, names)
     retained = bool(attempts and attempts[-1].collected_evaluate) or (
         success is not None and success.collected_evaluate
     )
@@ -1452,7 +1475,8 @@ def _evaluation_row(
     return StudioSavedEvaluationRow(
         key=key, request_id=run.request_id,
         status=status, reason=reason,
-        can_run=can_run, trials=trials, result=result, previous=prior, checkpoint_series=series, checkpoint_rule=rule,
+        can_run=can_run, trials=_named_trials(trials, names), result=result, previous=prior,
+        checkpoint_series=series, checkpoint_rule=rule,
         checkpoint_attempt=displayed_attempt.checkpoint_attempt if series is not None and displayed_attempt else None,
         subject_rank_key=planned.member.key if isinstance(reference, BestRank) and reference.group else None,
         bound_subject=_planned_bound(attempts[-1].bound_subject, planned) if attempts else None,
@@ -1461,14 +1485,14 @@ def _evaluation_row(
 
 
 def _saved_evaluation_result(
-    attempt: PlanJobAttempt | None, planned: PlannedInput | None,
+    attempt: PlanJobAttempt | None, planned: PlannedInput | None, names: TrialNameParts,
 ) -> StudioSavedEvaluationResult | None:
     if attempt is None:
         return None
     assert attempt.successful_receipt is not None and attempt.output_size_bytes is not None
     return StudioSavedEvaluationResult(
         job_id=attempt.job_id, request_id=attempt.request_id, revision=attempt.revision,
-        receipt=attempt.successful_receipt, trials=list(attempt.trials),
+        receipt=attempt.successful_receipt, trials=_named_trials(attempt.trials, names),
         checkpoint_source=attempt.checkpoint_source, size_bytes=attempt.output_size_bytes,
         checkpoint_sources=list(attempt.checkpoint_sources) or None,
         checkpoint_gaps=list(attempt.checkpoint_gaps) if attempt.checkpoint_gaps is not None else None,
@@ -1477,6 +1501,7 @@ def _saved_evaluation_result(
         provenance=attempt.provenance,
         loaded_model=attempt.loaded_model,
         origin=attempt.model_origin,
+        replicates=attempt.replicates,
     )
 
 def _subject_checkpoint_path(settled: SettledProjectPlan, run: PlannedRun, planned: PlannedInput) -> str:

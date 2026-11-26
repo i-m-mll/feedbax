@@ -1,5 +1,6 @@
 """A copied project carries its pinned Model and retains exact executable archive weights."""
 
+from base64 import b64decode
 from copy import deepcopy
 from io import BytesIO
 import json
@@ -59,11 +60,11 @@ def _expect(response, status=200):
     return response.json()
 
 
-def _load(client, project, raw, *, name="portable", revision=None):
+def _load(client, project, raw, *, name="portable", model="point-mass", revision=None):
     url = f"/api/projects/{project}"
     revision = revision or _expect(client.get(url))["revision"]
     return client.post(f"{url}/loaded-models/import", params={
-        "revision": revision, "name": name, "model": "point-mass",
+        "revision": revision, "name": name, "model": model,
     }, content=raw, headers={"Content-Type": "application/octet-stream"})
 
 
@@ -100,6 +101,66 @@ def _different_archive(transaction, archive, graph, components):
     )
     assert isinstance(changed, bytes) and changed != archive
     return changed
+
+
+def test_loaded_evaluate_model_view_uses_current_authored_labels(tmp_path):
+    from web.e2e.studio.fixtures.canonical_train import (
+        HOLD_CAMPAIGN_LOADED, hold_campaign_archive, hold_campaign_files, loaded_check_file,
+    )
+
+    authored = {"documents": {}, "steps": {}}
+    for file in (*hold_campaign_files(), loaded_check_file()):
+        kind = file["kind"]
+        authored[kind + "s"][file["id"]] = file[kind]
+    model_key = authored["documents"]["heavy-point-mass"]["base"]["document"]
+    project = "hold-campaign"
+    path = f"/api/projects/{project}"
+    run = {"variant": "default", "step": "loaded-check", "row": "default"}
+
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+        _save_project(folders, project, Project.model_validate(authored))
+        imported = _expect(_load(
+            client, project, b64decode(hold_campaign_archive()), name=HOLD_CAMPAIGN_LOADED, model=model_key,
+        ), 201)
+        loaded = _loaded(imported, name=HOLD_CAMPAIGN_LOADED)
+        before = folders.read_plan(project, revision=imported["snapshot"]["revision"]).plan
+        (request_id,) = [row.request_id for row in before.runs if row.key.step == run["step"]]
+        pin = tmp_path / project / "models" / f"{loaded.model_revision.sha256}.model.json"
+        pinned = pin.read_bytes()
+
+        revised = folders.read(project).project.model_copy(deep=True)
+        model = revised.documents[model_key].payload
+        model["ports"]["inputs"]["target_pos"]["label"] = "Desired position"
+        model["interior"]["components"]["cell"]["label"] = "Feedback controller"
+        wires = model["interior"]["wires"]
+        wires["sensed-target"] = wires.pop("target")
+        _save_project(folders, project, revised)
+        revision = _expect(client.get(path))["revision"]
+        after = folders.read_plan(project, revision=revision).plan
+        assert [row.request_id for row in after.runs if row.key.step == run["step"]] == [request_id]
+        assert pin.read_bytes() == pinned
+
+        view = _expect(client.post(f"{path}/model/projection", json={
+            "revision": revision, "run": run, "document": model_key,
+        }))["resolved_model"]
+        assert {key: item["label"] for key, item in view["interior"]["components"].items()} == {
+            "plant": "Point mass", "cell": "Feedback controller", "readout": "Motor command",
+        }
+        wire = view["interior"]["wires"]["target"]
+        assert view["ports"]["inputs"][wire["source"]["port"]]["label"] == "Desired position"
+        assert view["interior"]["components"][wire["target"]["component"]]["label"] == "Feedback controller"
+
+        del wires["sensed-target"]
+        _save_project(folders, project, revised)
+        revision = _expect(client.get(path))["revision"]
+        view = _expect(client.post(f"{path}/model/evaluate-model", json={
+            "revision": revision, "run": run, "scope": {"kind": "step"},
+        }))
+        assert view["resolved_model"] is None
+        (problem,) = view["problems"]
+        assert problem["code"] == "invalid_document"
+        assert "no matching wire" in problem["detail"]
 
 
 def test_copied_project_runs_loaded_evaluate_and_train_from_exact_portable_assets(host, tmp_path, monkeypatch, archive_bundle):

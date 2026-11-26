@@ -30,13 +30,14 @@ from feedbax.contracts.model_document import (
     CompositeComponent, DelayInitialTask, DelayInitialWire, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
     SignalInput, SignalType,
 )
-from feedbax.contracts.project import Document, SetDocumentValue, apply_differences, json_pointer_parts
+from feedbax.contracts.project_storage import apply_document_differences
+from feedbax.contracts.project import Document, SetDocumentValue, json_pointer_parts
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_ROW, CooccurringSetTrials, ListedSetTrials, SetTrialSampling, TrialSetField,
 )
 from feedbax.contracts.request_refs import axis_values_id
 from feedbax.contracts.set_document import SetEntry, read_set
-from feedbax.contracts.stored_model import StoredModelDocument, authored_model_payload, model_keyed_collection
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, authored_model_payload
 from feedbax.contracts.task_document import (
     Cell, Link, SetVariableChoices, Signal, TaskAdditions, TaskDocument, ValidationTrial, Variable, add_to_task,
 )
@@ -282,7 +283,7 @@ class _Union:
                     for path, difference in authored.differences.items()
                 }
                 variant = StoredModelDocument.model_validate(
-                    apply_differences(self._authored_model, differences, keyed_collection=model_keyed_collection),
+                    apply_document_differences(STORED_MODEL_DOCUMENT_SCHEMA_ID, self._authored_model, differences),
                 ).lower(self.registry)
             variant, links = _attachment_links(variant, additions.task_links, self.registry)
             task = add_to_task(

@@ -422,7 +422,8 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
     raw["documents"]["task"]["payload"]["validation_trials"] = {
         ("renamed-trial" if key == first else key): trial for key, trial in trials.items()
     }
-    assert verify(read())["rows"][0]["evaluation_conditions"] == ["renamed-trial", *conditions[1:]]
+    renamed = conditions[0] | {"id": "renamed-trial"}
+    assert verify(read())["rows"][0]["evaluation_conditions"] == [renamed, *conditions[1:]]
     assert projected(original) == before
 
 

@@ -1,0 +1,16 @@
+{
+  "schema": "feedbax.spec.objective_document.v2",
+  "label": "Delayed reaches",
+  "payload": {
+    "id": "delayed-reaches",
+    "terms": {
+      "effort": {
+        "over": {"k": "0..2"},
+        "measure": "sqnorm(outputs.command)",
+        "weight": "(k + 1) / 6",
+        "reduction": "last",
+        "label": "Command effort"
+      }
+    }
+  }
+}

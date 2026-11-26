@@ -1,5 +1,7 @@
 """Require every managed command to honor the shared CLI output contract."""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -143,6 +145,45 @@ def test_check_locates_unrolled_family_in_a_fresh_based_project(tmp_path, capsys
     captured = capsys.readouterr()
     assert captured.out == "" and StudioProjectWindowMapProblem.model_validate_json(captured.err).code == "io_error"
     assert not tuple(store.iterdir())
+
+
+def test_check_reports_individual_restatements_in_saved_project_files(tmp_path, capsys):
+    schema = STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+    project = Project.model_validate({
+        "documents": {
+            "base": {"schema": schema, "label": "Base", "payload": {
+                "id": "cost", "terms": {"first": {"measure": 1}},
+            }},
+            "second": {"schema": schema, "label": "Second", "base": {"document": "base"}, "differences": {
+                "/terms/first/enabled": {"value": True},
+            }},
+        },
+        "steps": {"train": {"kind": "train", "label": "Train", "base": {"inline": {}}}},
+    })
+    files = dump_text_project(project, ProjectConfiguration(project="study", store="results"))
+    legacy = {name: json.loads(data) for name, data in files.items()}
+    legacy["study.feedbax"].update(sweep=None, variants=[])
+    legacy["steps/train.json"]["sweep"] = {"axes": {}}
+    legacy["documents/base.json"]["payload"]["terms"]["first"]["enabled"] = True
+    legacy_bytes = {name: json.dumps(value).encode() for name, value in legacy.items()}
+    for name, data in legacy_bytes.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    assert main(["check", str(tmp_path), "--json"]) == 0
+    result = StoreCheckResult.model_validate_json(capsys.readouterr().out)
+    assert {(item.code, item.address, item.path) for item in result.advice} == {
+        ("restated_default", "study.feedbax", "/sweep"),
+        ("restated_default", "study.feedbax", "/variants"),
+        ("restated_default", "steps/train.json", "/sweep"),
+        ("restated_default", "documents/base.json", "/payload/terms/first/enabled"),
+    }
+    assert {name: (tmp_path / name).read_bytes() for name in legacy_bytes} == legacy_bytes
+    for name, data in files.items():
+        (tmp_path / name).write_bytes(data)
+    assert main(["check", str(tmp_path), "--json"]) == 0
+    assert not StoreCheckResult.model_validate_json(capsys.readouterr().out).advice
 
 
 def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, monkeypatch, capsys):

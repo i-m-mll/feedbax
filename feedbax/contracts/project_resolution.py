@@ -26,7 +26,7 @@ from feedbax.contracts.matrix_core import (
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
 from feedbax.contracts.project_storage import (
-    apply_document_differences, stored_expression_site, stored_keyed_collection, stored_step_expression_site,
+    apply_document_differences, document_difference_basis, stored_expression_site, stored_keyed_collection, stored_step_expression_site,
     stored_step_keyed_collection,
 )
 from feedbax.contracts.project import (
@@ -543,7 +543,7 @@ class _Documents:
         self.used: set[str] = set()
         self.edited: dict[str, JsonValue] = {}
         self.edited_sources: dict[str, Any] = {}
-        self.edited_expressions: dict[str, list[ExpressionNodePatch | None]] = {}
+        self.edited_patches: dict[str, list[_PreparedDocumentPatch]] = {}
         self.external = external
         self.pinned: dict[str, tuple[ExternalBase, JsonValue]] = {}
         self.partial_figures = partial_figures
@@ -651,18 +651,21 @@ class _Documents:
                 draft = deepcopy(payload)
                 expression_site = partial(stored_expression_site, document.schema_id)
                 keyed_collection = partial(stored_keyed_collection, document.schema_id)
-                expressions = []
+                prepared = []
                 for item in patches:
                     try:
                         if not isinstance(draft, dict):
                             raise ValueError("A variant writes into an object payload only")
+                        basis = draft
                         if document.schema_id == TRAINING_DOCUMENT_SCHEMA_ID and item.patch.op == "replace":
-                            draft = train_sweep_basis(draft, item.patch.path, self.training_methods)
+                            basis = train_sweep_basis(basis, item.patch.path, self.training_methods)
+                        parents = tuple(item.patch.path.split(".")[:-1])
+                        basis = document_difference_basis(document.schema_id, basis, (parents,), registries=self.regions)
                         physical, expression = prepare_stored_patch(
-                            draft, item.patch, expression_site=expression_site, keyed_collection=keyed_collection,
+                            basis, item.patch, expression_site=expression_site, keyed_collection=keyed_collection,
                         )
-                        draft = replay_stored_patch_copy(draft, physical)
-                        expressions.append(expression)
+                        prepared.append(_PreparedDocumentPatch(physical, expression, basis if basis is not draft else None))
+                        draft = replay_stored_patch_copy(basis, physical)
                     except ValueError as error:
                         problem = _Problem(
                             ResolutionCode.INVALID_SWEEP, item.step_path, str(error),
@@ -673,7 +676,7 @@ class _Documents:
                             problem.diagnostic = _at_sweep_origin(problem.diagnostic, origin)
                         raise problem from error
                 self.edited[reference.document] = draft
-                self.edited_expressions[reference.document] = expressions
+                self.edited_patches[reference.document] = prepared
             payload = self.edited[reference.document]
         if (
             document.schema_id == STORED_FIGURE_DOCUMENT_SCHEMA_ID
@@ -757,16 +760,12 @@ class _Documents:
                 deepcopy(self.shape(name)) if based
                 else source_shape(cast(RootDocument, document).payload, ValueSource("document", name), variant)
             )
-            for item, expression in zip(patches, self.edited_expressions[name], strict=True):
+            for item, prepared in zip(patches, self.edited_patches[name], strict=True):
                 assert item.source is not None
-                patch_parts = tuple(item.patch.path.split("."))
+                if prepared.default_basis is not None:
+                    shape = source_shape(prepared.default_basis, None, shape)
                 source = source_shape(item.patch.value, item.source, item.override)
-                if document.schema_id == TRAINING_DOCUMENT_SCHEMA_ID and (
-                    item.patch.op == "replace" and patch_parts[0] == "settings" and source_at(shape, patch_parts) is None
-                ):
-                    shape = place_source(shape, patch_parts, source)
-                else:
-                    shape = patch_source(shape, item.patch, source, expression=expression)
+                shape = patch_source(shape, prepared.physical, source, expression=prepared.expression)
             self.edited_sources[name] = shape
         return source_at(self.edited_sources[name], parts)
 
@@ -920,6 +919,14 @@ class _DocumentRowPatch:
     step_path: str
     source: ValueSource | None
     override: Any = None
+
+
+@dataclass(frozen=True)
+class _PreparedDocumentPatch:
+    physical: OverridePatch
+    expression: ExpressionNodePatch | None
+    default_basis: dict[str, JsonValue] | None
+    """The verified read basis when the patch entered an omitted declared default."""
 
 
 @dataclass

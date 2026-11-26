@@ -189,12 +189,13 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
     assert response == old.json()
     assert set(response) == {"revision", "rows"}
     assert window["variants"] == ["default"]
-    trial_ids = list(data["documents"]["simple-reaches-task"]["payload"]["validation_trials"])
+    trials = data["documents"]["simple-reaches-task"]["payload"]["validation_trials"]
+    trial_names = [{"id": id, "name": trial["label"]} for id, trial in trials.items()]
     assert {
         (row["key"]["variant"], row["key"]["step"], row["key"]["row"]): row["evaluation_conditions"]
         for row in window["rows"]
         if "evaluation_conditions" in row and row["key"]["step"] == "fit"
-    } == {("default", "fit", row): trial_ids for row in ("seed=a", "seed=b")}
+    } == {("default", "fit", row): trial_names for row in ("seed=a", "seed=b")}
     steps = {step["step_id"]: step for step in window["steps"]}
     assert steps["fit"]["document_ids"] == {
         "payload.trial_documents.model": "point-mass",

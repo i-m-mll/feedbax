@@ -1,0 +1,14 @@
+{
+  "schema": "feedbax.spec.task_document.v2",
+  "label": "Level task",
+  "base": {"document": "campaign-task"},
+  "differences": {
+    "/signals/level": {
+      "value": {
+        "label": "Level",
+        "type": {"base": "real", "shape": [1]},
+        "cells": {"all": {"first_epoch": "hold", "last_epoch": "move", "value": "[1]"}}
+      }
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "schema": "feedbax.set_document.v2",
+  "label": "Command kicks",
+  "payload": {
+    "entries": {
+      "drift": {
+        "task_variables": {
+          "bias": {"label": "Bias", "type": {"base": "real", "shape": [2]}, "value": "[0.1, 0]"}
+        },
+        "label": "Drift",
+        "differences": {
+          "/interior/wires/drive/attachments/bias-pulse": {
+            "value": {
+              "kind": "intervention",
+              "operation": "add",
+              "operands": {"value": {"kind": "task", "variable": "bias"}},
+              "window": {
+                "spans": [
+                  {
+                    "kind": "interval",
+                    "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": "5 st"},
+                    "end": {"offset": "5 st"}
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "pulse": {
+        "over": {
+          "axis": {"x": "[1, 0]", "y": "[0, 1]"},
+          "sign": {"minus": {"value": -1, "label": "Minus"}, "plus": {"value": 1, "label": "Plus"}}
+        },
+        "task_variables": {
+          "kick": {
+            "label": "Kick",
+            "type": {"base": "real", "shape": [2]},
+            "value": "0.5 * sign * axis"
+          }
+        },
+        "label": "Command pulse {axis} {sign}",
+        "differences": {
+          "/interior/wires/drive/attachments/kick-pulse": {
+            "value": {
+              "kind": "intervention",
+              "operation": "add",
+              "operands": {"value": {"kind": "task", "variable": "kick"}},
+              "window": {
+                "spans": [
+                  {
+                    "kind": "interval",
+                    "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": "10 st"},
+                    "end": {"offset": "5 st"}
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

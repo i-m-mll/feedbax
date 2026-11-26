@@ -12,7 +12,7 @@ from feedbax.contracts.member_family import FamilyProblem, StoredFamilyMember, e
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
     DifferenceNotApplied, Document, EditDifferences, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
-    SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts,
+    SetDocumentValue, check_disjoint, json_pointer_parts,
 )
 from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, NonemptyText, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolvedStep, compose_document, compose_step
@@ -82,9 +82,11 @@ def _present(payload: Payload, path: str) -> bool:
 
 def check_fit(document: SetDocument, payload: Payload) -> None:
     """Raise SetMisfit for the first entry whose differences do not apply to ``payload``."""
+    from feedbax.contracts.project_storage import apply_document_differences
+
     for key, entry in document.entries.items():
         try:
-            apply_differences(payload, entry.differences)
+            apply_document_differences(STORED_MODEL_DOCUMENT_SCHEMA_ID, payload, entry.differences)
         except DifferenceNotApplied as error:
             raise SetMisfit(key, error.path, str(error)) from error
 

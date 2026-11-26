@@ -1,12 +1,15 @@
 """A Set document swept by Train and Evaluate steps plans one run per entry."""
 
 from copy import deepcopy
+import json
 
 import pytest
 from pydantic import ValidationError
 
+from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.project import Project
-from feedbax.planner.project_plan import compile_project
+from feedbax.contracts.project_io import ProjectConfiguration, parse_text_project_files
+from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.project_sweep import NamedAxis
 from feedbax.contracts.set_document import (
     SET_DOCUMENT_SCHEMA_ID, SetDocument, axis_from_set, set_from_axis, sets_offered, step_model,
@@ -52,9 +55,9 @@ def _project(entries=None):
     return raw
 
 
-def _plan(raw):
+def _plan(raw, *, source_runs=()):
     components = load_application().bundle.components
-    return compile_project(Project.model_validate(raw), components=components)
+    return compile_project(Project.model_validate(raw), components=components, source_runs=source_runs)
 
 
 def _requests(plan):
@@ -119,10 +122,83 @@ def test_a_set_that_does_not_fit_is_a_diagnostic_on_the_axis(pointer):
     entries = _entries()
     entries["heavy"]["differences"] = {pointer: {"value": 2.0}}
     raw = _project(entries)
-    plan = _plan(raw)
+    selected = RunKey("default", "train", "alteration=heavy")
+    plan = _plan(raw, source_runs=(selected,))
+    assert selected not in plan.selected_definitions
     problems = {(problem.step, problem.path) for problem in plan.diagnostics}
     assert problems == {(step, "sweep.axes.alteration.set") for step in ("train", "baseline")}
     assert all("'heavy'" in problem.detail and pointer in problem.detail for problem in plan.diagnostics)
     assert not any(run.key.step in ("train", "baseline") for run in plan.runs)
     raw["documents"]["fits"] = {"label": "Fits", "schema": SET_DOCUMENT_SCHEMA_ID, "payload": {"entries": {"heavy": _entries()["heavy"]}}}
     assert sets_offered(Project.model_validate(raw), "train") == ("alterations", "fits")
+
+
+def test_sets_and_based_models_do_not_change_the_bytes_of_their_base(tmp_path):
+    attachment = {"kind": "intervention", "operation": "Scale",
+                  "operands": {"factor": {"kind": "value", "value": 0.5}}}
+    attachment_path = "/interior/wires/plant-wire/attachments/scale"
+    differences = {
+        attachment_path: {"value": attachment},
+        "/interior/components/plant/fields/mass": {"value": 2},
+    }
+    raw = _project({"scaled": {"label": "Scaled", "differences": differences}})
+    model = raw["documents"]["reach-model"]
+    model["payload"]["interior"]["components"]["plant"]["fields"] = {}
+    model["payload"]["interior"]["wires"]["plant-wire"]["attachments"] = {}
+    configuration = ProjectConfiguration(project="study", store="results")
+    base_files = dump_text_project(Project.model_validate({"documents": {"reach-model": model}}), configuration)
+
+    raw["documents"]["derived"] = {
+        "schema": model["schema"], "label": "Derived", "base": {"document": "reach-model"},
+        "differences": differences,
+    }
+    train = raw["steps"]["plain"]
+    raw["steps"]["derived"] = deepcopy(train)
+    raw["steps"]["derived"]["base"]["inline"]["trial_documents"]["model"] = {"document": "derived"}
+    raw["documents"]["force-set"] = {
+        "label": "Force", "schema": SET_DOCUMENT_SCHEMA_ID,
+        "payload": {"entries": {"scaled": {"label": "Scaled", "differences": {
+            attachment_path: differences[attachment_path],
+        }}}},
+    }
+    raw["steps"]["trial-set"] = deepcopy(train) | {
+        "set_fields": {"alteration": {"axis": {"set": "force-set"}, "sampling": {"kind": "cooccurring"}}},
+    }
+    train["sweep"] = {"axes": {}}
+    raw["sweep"] = None
+
+    files = dump_text_project(Project.model_validate(raw), configuration)
+    saved_base = files["documents/reach-model.json"]
+    assert saved_base == base_files["documents/reach-model.json"]
+    graph = json.loads(saved_base)["payload"]["interior"]
+    assert "attachments" not in graph["wires"]["plant-wire"]
+    assert "fields" not in graph["components"]["plant"]
+    assert "sweep" not in json.loads(files["steps/plain.json"])
+    assert not {"sweep", "variants"} & json.loads(files["study.feedbax"]).keys()
+
+    saved = parse_text_project_files(tmp_path, files).project
+    after = _plan(saved.model_dump(mode="json", by_alias=True, exclude_unset=True))
+    before = _plan(raw)
+    for plan in (before, after):
+        assert not plan.diagnostics, plan.diagnostics
+        assert {run.key.step for run in plan.runs} == {"train", "baseline", "plain", "derived", "trial-set"}, {row.key.step: row.problems for row in plan.rows}
+        assert all(run.request_id and run.admission_problem is None for run in plan.runs)
+    assert _requests(after) == _requests(before)
+
+    key = RunKey("default", "train", "alteration=scaled")
+    selected = compile_project(saved, source_runs=(key,))
+    assert _requests(selected) == _requests(before)
+    definition = selected.selected_definitions[key]
+    model_path = "/payload/trial_documents/model"
+    source = definition.sources[model_path + attachment_path + "/operands/factor/value"]
+    assert (source.kind, source.name, source.step, source.axis, source.value) == (
+        "document", "alterations", "train", "alteration", "scaled",
+    )
+    assert source.path == (
+        "/entries/scaled/differences/~1interior~1wires~1plant-wire~1attachments~1scale"
+        "/value/operands/factor/value"
+    )
+    inherited = definition.sources[model_path + "/interior/wires/plant-wire/source/port"]
+    assert (inherited.kind, inherited.name, inherited.path) == (
+        "document", "reach-model", "/interior/wires/plant-wire/source/port",
+    )

@@ -12,7 +12,7 @@ from pydantic import Field, ValidationError, model_validator
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.base import ParentRef, Provenance, StrictModel
-from feedbax.contracts.dataset import DATASET_MEDIA_TYPE as STATES_MEDIA_TYPE, DatasetProductRef
+from feedbax.contracts.dataset import DATASET_MEDIA_TYPE as STATES_MEDIA_TYPE, REPLICATE_DIM, DatasetProductRef
 from feedbax.contracts.effective_success import TerminalTrainSubject
 from feedbax.contracts.jobs import (
     JobReceipt, StudioEvaluationCheckpoint, StudioEvaluationCheckpointGap,
@@ -51,6 +51,7 @@ from feedbax.contracts.rollout import (
 from feedbax.contracts.semantic_values import model_state_address, semantic_key
 from feedbax.contracts.trial_clock import TrialMeanSelection
 from feedbax.contracts.trial_record import StudioTrialReplayResponse, TrialAggregate, TrialRecords
+from feedbax.dataset_replicates import select_replicate
 from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_trial_record
 from feedbax.persistence.checkpoint_selection import selected_coordinates
 from feedbax.persistence.best_selection import completion_score
@@ -545,18 +546,26 @@ class EvaluationResult:
             yield dataset
 
     def replay(
-        self, trial: str | None = None, *, checkpoint: int | None = None, aggregate: bool = False,
+        self, trial: str | None = None, *, checkpoint: int | None = None, replicate: int | None = None,
+        aggregate: bool = False,
         mean: TrialMeanSelection | None = None,
     ) -> StudioTrialReplayResponse:
-        """Read trial records at one exact preserved Evaluate checkpoint."""
+        """Read trial records for one retained replicate and checkpoint."""
         if mean is not None and trial is not None:
             raise CannotRun("/mean", "Mean requires all recorded trials")
         with self.open_states() as dataset:
+            replicates = dataset.descriptor.dimensions.get(REPLICATE_DIM)
+            if replicates is not None:
+                if replicate is None:
+                    raise CannotRun("/replicate", "choose a retained replicate for replay")
+                if not 0 <= replicate < replicates:
+                    raise CannotRun("/replicate", "the chosen replicate is absent from the retained set")
+                dataset = select_replicate(dataset, replicate)
+            elif replicate is not None:
+                raise CannotRun("/replicate", "the retained result has no replicate dimension")
             descriptor = dataset.descriptor
             update_axis = next((axis for axis in ("update", "checkpoint") if axis in descriptor.dimensions), None)
             selected = ()
-            if "replicate" in descriptor.dimensions:
-                raise CannotRun("/replicate", "choose a retained replicate for replay")
             if update_axis is not None:
                 checkpoints = dataset.data(update_axis).tolist()
                 if checkpoint is None and len(checkpoints) != 1:
