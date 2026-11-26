@@ -421,7 +421,7 @@ def inherit_sweep(
                     values[key] = _merge_value(values.get(key), value, author)
             kept = {
                 field: getattr(axis if field in axis.model_fields_set or not isinstance(prior, NamedAxis) else prior, field)
-                for field in ("where", "optional")
+                for field in ("label", "where", "optional")
             }
             axes[name] = NamedAxis(values=values, **kept)
         elif isinstance(axis, (GeneratedAxis, CheckpointRuleAxis)) and author is not None:
@@ -1144,7 +1144,7 @@ def sweep_axis_name(coordinates: Iterable[SweepCoordinate]) -> str:
     return names.pop() if len(names) == 1 else "Sweep"
 
 
-def sweep_value_labels(axis: str, coordinate: SweepCoordinate) -> tuple[str, str]:
+def sweep_value_labels(coordinate: SweepCoordinate) -> tuple[str, str]:
     """Return the full label and the value label shown under an axis heading."""
     if coordinate.label is not None:
         return coordinate.label, coordinate.label
@@ -1162,12 +1162,12 @@ def sweep_value_labels(axis: str, coordinate: SweepCoordinate) -> tuple[str, str
     return " ".join(part for part in (axis_name, value_label) if part), value_label
 
 
-def sweep_value_name(axis: str, coordinate: SweepCoordinate) -> str:
-    return sweep_value_labels(axis, coordinate)[0]
+def sweep_value_name(coordinate: SweepCoordinate) -> str:
+    return sweep_value_labels(coordinate)[0]
 
 
-def sweep_row_name(values: Iterator[tuple[str, SweepCoordinate]]) -> str | None:
-    return " · ".join(sweep_value_name(axis, value) for axis, value in values) or None
+def sweep_row_name(values: Iterable[SweepCoordinate]) -> str | None:
+    return " · ".join(sweep_value_name(value) for value in values) or None
 
 
 def _expanded(
@@ -1228,7 +1228,7 @@ def _expanded(
             patches[path] = patch
         authors.update(choice.patch_authors)
     return ExpandedRow(
-        row_id, sweep_row_name(iter(selected_values.items())), coordinates, patches, bindings, origins, authors, axis_value_ids,
+        row_id, sweep_row_name(selected_values.values()), coordinates, patches, bindings, origins, authors, axis_value_ids,
         input_axes, tuple(choice.task_additions for choice in selection.values() if choice.task_additions is not None),
         kept_axes,
     )
@@ -1530,7 +1530,7 @@ def _expand_checkpoint_axis(
                 authors[axis.path] = axis._author
             result.append(replace(
                 row, id=axis_values_id(keys), axis_value_ids=keys,
-                label=" · ".join(part for part in (row.label, sweep_value_name(name, coordinate)) if part),
+                label=" · ".join(part for part in (row.label, sweep_value_name(coordinate)) if part),
                 coordinates={**row.coordinates, name: coordinate},
                 patches={**row.patches, axis.path: SetValue(value=[{"at": update}])},
                 patch_origins={**row.patch_origins, axis.path: ("sweep_value", name, key)},

@@ -60,7 +60,7 @@ def gather_axes(
             (key,) = stored if len(stored) == 1 else (None,)
             ids[axis, identity] = key if key is not None and keys[key] == 1 else _gathered_id(identity)
             coordinate = values[identity][0]
-            label, value_label = sweep_value_labels(axis, coordinate)
+            label, value_label = sweep_value_labels(coordinate)
             displayed.append(StudioProjectWindowMapAxisValue(
                 id=ids[axis, identity], name=label, value_label=value_label, rule=value_text(coordinate),
             ))

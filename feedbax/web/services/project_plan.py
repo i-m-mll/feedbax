@@ -428,10 +428,14 @@ class ProjectPlanRead:
                 sweep = project.steps[step_id].sweep
             if sweep is not None:
                 for number, (key, axis) in enumerate(sweep.axes.items(), 1):
-                    if axis is not None and key not in projected:
+                    if axis is None:
+                        continue
+                    if key not in projected:
                         projected[key] = StudioProjectWindowMapAxis(
                             id=key, name=authored_sweep_axis_name(axis, number), values=[],
                         )
+                    elif axis.label is not None:
+                        projected[key] = projected[key].model_copy(update={"name": axis.label})
             return list(projected.values())
 
         def figure_reference(key: RunKey, element: str) -> StepReference | None:
@@ -447,7 +451,7 @@ class ProjectPlanRead:
                     values for values in candidates if axis in values and values[axis].value_id == value.value_id
                 ]
                 if len(others) != len(candidates):
-                    axes[axis] = [SelectedAxisValue(id=value.value_id, label=sweep_value_name(axis, value))]
+                    axes[axis] = [SelectedAxisValue(id=value.value_id, label=sweep_value_name(value))]
                     candidates = others
             if len(candidates) != 1:
                 return None
@@ -501,7 +505,7 @@ class ProjectPlanRead:
                     if row.kind in {"train", "evaluate", "synthesize"} else None,
                     coordinates={
                         axis: StudioProjectWindowMapCoordinate(
-                            value_id=coordinate.value_id, label=sweep_value_name(axis, coordinate), value=coordinate.value,
+                            value_id=coordinate.value_id, label=sweep_value_name(coordinate), value=coordinate.value,
                             axis_value=axis_values[row.key, axis],
                         )
                         for axis, coordinate in axis_coordinates(row.coordinates, {}, row.kept_axes).items()

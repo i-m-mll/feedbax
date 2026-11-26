@@ -454,9 +454,10 @@ class _Lowerer:
         for bindings in inputs.values():
             for binding in bindings:
                 for axis, coord in binding.coordinates.items():
-                    names.setdefault(axis, {}).setdefault(
-                        coord.value_id, LabelName(coord.value_id, sweep_value_name(axis, coord), kind="row"),
-                    )
+                    if axis not in binding.named:
+                        names.setdefault(axis, {}).setdefault(
+                            coord.value_id, LabelName(coord.value_id, sweep_value_name(coord), kind="row"),
+                        )
                 if binding.producer is None or (evaluation := self.datasets.get(binding.producer)) is None:
                     continue
                 spec, name = evaluation.spec, evaluation.name
