@@ -19,6 +19,7 @@ def seed(home: str, project_id: str):
         "sweep": {"axes": {"rate": {"path": "settings.optimizer.learning_rate.value", "values": [0.001, 0.003]}}},
     }
     conditions = steps["conditions"]
+    conditions["label"] = "Conditions"
     conditions["inputs"]["subject"] = {"step": "train", "checkpoint": "last"}
     steps["conditions_b"] = deepcopy(conditions) | {"label": "Conditions b"}
     masses = steps["conditions_b"]["sweep"]["axes"]["mass"]["values"]
