@@ -46,15 +46,21 @@ def test_studio_can_author_the_generated_blank_documents():
         RootDocument(schema=schema, label="Blank", payload=payload)
 
 
-def test_shipped_trial_documents_have_unique_names():
+def test_shipped_trial_documents_have_unique_keys_and_catalog_labels():
     projects = load_shipped_projects()
     assert {"point-mass-reaching", "point-mass-set-campaign"} <= projects.keys()
     seen: dict[tuple[str, str], str] = {}
+    labels: dict[tuple[str, str], tuple[str, str]] = {}
     for folder, project in projects.items():
         for name, document in project.documents.items():
             entry = document.schema_id, name
             assert entry not in seen, (entry, seen[entry], folder)
             seen[entry] = folder
+            label = document.schema_id, document.label
+            assert label not in labels, (label, labels[label], (folder, name))
+            labels[label] = (folder, name)
+            if folder == "point-mass-set-campaign":
+                assert document.label != name
 
     assert seen[STORED_MODEL_DOCUMENT_SCHEMA_ID, "point-mass"] == "point-mass-reaching"
     for name in _VALIDATION_COUNTS:

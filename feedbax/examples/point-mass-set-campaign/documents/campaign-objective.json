@@ -1,6 +1,6 @@
 {
   "schema": "feedbax.spec.objective_document.v2",
-  "label": "Delayed reaches",
+  "label": "Campaign command effort",
   "payload": {
     "id": "delayed-reaches",
     "terms": {

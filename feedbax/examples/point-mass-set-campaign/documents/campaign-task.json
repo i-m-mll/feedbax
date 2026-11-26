@@ -1,6 +1,6 @@
 {
   "schema": "feedbax.spec.task_document.v2",
-  "label": "Delayed reaches",
+  "label": "Campaign reaches",
   "payload": {
     "id": "delayed-reaches",
     "variables": {
