@@ -25,6 +25,8 @@ from feedbax.contracts.project_sweep import (
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import BatchMember, InputMember, LastMember, ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.application.composition import load_application
+from feedbax.compiler.model_document import complete_model_fields
 from tests.support.managed_train_fixture import (
     managed_evaluation_step,
     managed_train_payload,
@@ -46,7 +48,10 @@ def _project_data():
 def _expected_train():
     payload = managed_train_payload() | {"seed": 0}
     payload["settings"] = StandardTrainingSettings.model_validate(payload["settings"]).model_dump(mode="json")
-    return encode_request(DocumentTrainingRequestSpec.model_validate(payload), {})
+    spec = DocumentTrainingRequestSpec.model_validate(payload)
+    documents = spec.trial_documents
+    model = complete_model_fields(documents.model, load_application().bundle.components)
+    return encode_request(spec.model_copy(update={"trial_documents": documents.model_copy(update={"model": model})}), {})
 
 
 def test_text_and_studio_compile_one_shared_plan_before_any_results(tmp_path):
