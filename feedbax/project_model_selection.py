@@ -77,23 +77,23 @@ def trial_document_slots(payload: Mapping) -> tuple[Mapping, str]:
 _TRIAL_TASK = TypeAdapter(TaskDocument | PythonTaskSelection)
 
 
-def trial_task_slot(value: object) -> TaskDocument | PythonTaskSelection:
+def trial_task_slot(value: object, *, path: str = "task") -> TaskDocument | PythonTaskSelection:
     from feedbax.project_folder import ProjectFolderInvalid
 
     try:
         return _TRIAL_TASK.validate_python(value)
     except ValidationError as error:
-        raise ProjectFolderInvalid("The task slot does not contain a Task or Python task selection.") from error
+        raise ProjectFolderInvalid(f"{path} does not contain a Task or Python task selection.") from error
 
 
-def _trial_document[Document: BaseModel](binding: str, value: object, schema: type[Document]) -> Document:
+def _trial_document[Document: BaseModel](path: str, value: object, schema: type[Document]) -> Document:
     from feedbax.project_folder import ProjectFolderInvalid
 
     try:
         return schema.model_validate(value)
     except ValidationError as error:
         raise ProjectFolderInvalid(
-            f"trial_documents.{binding} does not contain a valid {schema.__name__}."
+            f"{path} does not contain a valid {schema.__name__}."
         ) from error
 
 
@@ -108,17 +108,17 @@ def selected_model_and_task(
         definition = plan.selected_definitions.get(key)
     if definition is None or (model := selected_model(definition, body.document)) is None:
         return None
-    managed, _ = trial_document_slots(definition.payload)
+    managed, prefix = trial_document_slots(definition.payload)
     if managed.get("python_task") is not None:
-        source = _trial_document("python_task", managed["python_task"], PythonTaskSelection)
+        source = _trial_document(f"{prefix}python_task", managed["python_task"], PythonTaskSelection)
     elif managed.get("task") is not None:
-        source = trial_task_slot(managed["task"])
+        source = trial_task_slot(managed["task"], path=f"{prefix}task")
     else:
         source = None
     objective = managed.get("objective")
     return (
-        _trial_document("model", model, ModelDocument), model_task_signals(source, folders.python_tasks),
-        _trial_document("objective", objective, ObjectiveDocument) if objective is not None else None,
+        _trial_document(f"{prefix}model", model, ModelDocument), model_task_signals(source, folders.python_tasks),
+        _trial_document(f"{prefix}objective", objective, ObjectiveDocument) if objective is not None else None,
         managed.get("input_bindings", {}), source,
     )
 
