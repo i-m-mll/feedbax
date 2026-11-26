@@ -260,6 +260,7 @@ export interface StudioSavedEvaluationReplayRequest {
   trial?: string | null;
   aggregate?: boolean;
   checkpoint?: number | null;
+  replicate?: number | null;
   mean?: TrialMeanSelection | null;
 }
 
@@ -320,6 +321,7 @@ export interface StudioSavedEvaluationResult {
   request_id?: string | null;
   revision?: string | null;
   trials?: StudioTrialName[] | null;
+  replicates?: number | null;
   receipt: JobReceipt;
   checkpoint_source: StudioTrainCheckpointSource | null;
   loaded_model?: ImportedModelProvenance | null;
@@ -7075,6 +7077,7 @@ export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEval
       "trial": z.string().nullable().optional(),
       "aggregate": z.boolean().optional(),
       "checkpoint": z.number().int().safe().gte(0).nullable().optional(),
+      "replicate": z.number().int().safe().gte(0).nullable().optional(),
       "mean": TrialMeanSelectionSchema.nullable().optional(),
     })
     .strict()
@@ -7167,6 +7170,7 @@ export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationR
       "request_id": z.string().nullable().optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
       "trials": z.array(StudioTrialNameSchema).nullable().optional(),
+      "replicates": z.number().int().safe().gte(1).nullable().optional(),
       "receipt": JobReceiptSchema,
       "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
       "loaded_model": ImportedModelProvenanceSchema.nullable().optional(),

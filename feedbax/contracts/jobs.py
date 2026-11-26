@@ -148,6 +148,7 @@ class StudioSavedEvaluationResult(StrictModel):
     request_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
     trials: list[StudioTrialName] | None = Field(default=None, exclude_if=lambda value: value is None)
+    replicates: int | None = Field(default=None, ge=1, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
     loaded_model: ImportedModelProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -196,6 +197,7 @@ class StudioSavedEvaluationReplayRequest(StudioSavedEvaluationRead):
     """When absent, select every retained trial at the checkpoint."""
     aggregate: bool = False
     checkpoint: int | None = Field(default=None, ge=0)
+    replicate: int | None = Field(default=None, ge=0)
     mean: TrialMeanSelection | None = None
 
 
