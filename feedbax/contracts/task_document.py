@@ -276,6 +276,16 @@ def _stored_signal(signal: Signal) -> StoredSignal:
     return project_member(signal, StoredSignal, label=signal.name, cells=cells)
 
 
+def _stored_validation_trials(
+    trials: tuple[ValidationTrial, ...], keys: tuple[str, ...] | None = None,
+) -> dict[str, ValidationTrial]:
+    if not keys and trials == (ValidationTrial(),):
+        return {}
+    if keys is None:
+        keys = tuple(f"trial-{index}" for index in range(1, len(trials) + 1))
+    return keyed_members(zip(keys, trials, strict=True))
+
+
 class StoredTaskDocument(ValueRecord):
     """Task payload in authored order, with keys separate from presentation labels."""
 
@@ -286,9 +296,7 @@ class StoredTaskDocument(ValueRecord):
     repeats: StoredMembers[StoredRepeat] = Field(default_factory=dict, exclude_if=lambda value: not value)
     links: StoredAddressedMembers[StoredMemberKey] = Field(default_factory=dict)
     fixed_steps: int | None = Field(default=None, ge=0)
-    validation_trials: StoredMembers[ValidationTrial] = Field(
-        default_factory=lambda: {"trial-1": ValidationTrial()}, min_length=1,
-    )
+    validation_trials: StoredMembers[ValidationTrial] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _unique_expression_keys(self) -> "StoredTaskDocument":
@@ -308,7 +316,7 @@ class StoredTaskDocument(ValueRecord):
                 project_member(repeat, Repeat, id=key) for key, repeat in repeats.items()
             ),
             "links": _lower_links,
-            "validation_trials": lambda trials: tuple(trials.values()),
+            "validation_trials": lambda trials: tuple(trials.values()) or (ValidationTrial(),),
         })
 
     @classmethod
@@ -318,7 +326,7 @@ class StoredTaskDocument(ValueRecord):
         """Project a producer's Task, retaining supplied validation row keys when available."""
         overrides = {}
         if trial_keys is not None:
-            overrides["validation_trials"] = keyed_members(zip(trial_keys, task.validation_trials, strict=True))
+            overrides["validation_trials"] = _stored_validation_trials(task.validation_trials, tuple(trial_keys))
         return project_member(task, cls, {
             "variables": _stored_variables,
             "epochs": lambda epochs: keyed_members(
@@ -329,9 +337,7 @@ class StoredTaskDocument(ValueRecord):
                 (repeat.id, project_member(repeat, StoredRepeat)) for repeat in repeats
             ),
             "links": _stored_links,
-            "validation_trials": lambda trials: {
-                f"trial-{index}": trial for index, trial in enumerate(trials, start=1)
-            },
+            "validation_trials": _stored_validation_trials,
         }, **overrides)
 
 

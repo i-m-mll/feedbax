@@ -13,21 +13,22 @@ from feedbax.contracts.project import (
     DifferenceNotApplied, Document, EditDifferences, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
     SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts,
 )
-from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, NonemptyText, ProjectName, StepReference
+from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, NonemptyText, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolvedStep, compose_document, compose_step
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
     AxisCondition, AxisValue, NamedAxis, RemoveValue, SetAxis, SetValue, Sweep, SweepExpansionCode,
     SweepCoordinate, SweepExpansionError, sweep_value_labels,
 )
-from feedbax.contracts.task_document import TaskAdditions
+from feedbax.contracts.stored_members import StoredMembers
+from feedbax.contracts.task_document import StoredTaskAdditions
 
 SET_DOCUMENT_SCHEMA_ID = "feedbax.set_document.v2"
 MODEL_SLOT = "payload.trial_documents.model"
 """Where a Train or Evaluate step reads its Model document."""
 
 
-class SetEntry(TaskAdditions):
+class SetEntry(StoredTaskAdditions):
     label: NonemptyText
     differences: EditDifferences = Field(default_factory=dict)
 
@@ -38,7 +39,7 @@ class SetEntry(TaskAdditions):
 
 
 class SetDocument(StrictModel):
-    entries: dict[ProjectName, SetEntry]
+    entries: StoredMembers[SetEntry]
 
 
 class SetMisfit(ValueError):

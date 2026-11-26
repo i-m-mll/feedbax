@@ -32,7 +32,7 @@ from feedbax.contracts.project_inputs import (
     select_sweep_exception_rows,
 )
 from feedbax.contracts.run_rule import RuleRefusal, rule_names
-from feedbax.contracts.task_document import TaskAdditions
+from feedbax.contracts.task_document import StoredTaskAdditions, TaskAdditions
 type PatchPath = Annotated[str, Field(pattern=r"^[^.]+(?:\.[^.]+)*$")]
 type SweepTarget = Annotated[str, Field(pattern=r"^(?:(?:(?:steps|documents)\.\??[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$")]
 type IntegerSite = Callable[[str], bool]
@@ -171,7 +171,7 @@ class PatchSet(StrictModel):
     _patch_authors: dict[str, str] = PrivateAttr(default_factory=dict)
 
 
-class AxisValue(PatchSet, TaskAdditions):
+class AxisValue(PatchSet, StoredTaskAdditions):
     label: str | None = None
     value: JsonValue = None
 
@@ -1335,7 +1335,7 @@ def _planned_choices(
 
 def _task_additions(value: AxisValue) -> TaskAdditions | None:
     if value.task_variables or value.task_links:
-        return TaskAdditions(task_variables=value.task_variables, task_links=value.task_links)
+        return value.lower()
     return None
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 import re
 from typing import Any
@@ -52,6 +53,7 @@ def apply_composition_deltas(
     deltas: list[MatrixCompositionDelta],
     *,
     ancestor_written_paths: set[str] | None = None,
+    apply_patch: Callable[[dict[str, Any], OverridePatch], None] = apply_override_patch_in_place,
 ) -> tuple[dict[str, Any], dict[str, str], set[str]]:
     """Apply ordered layers and refuse unacknowledged ancestor overrides."""
     result = deepcopy(payload)
@@ -92,7 +94,7 @@ def apply_composition_deltas(
                     f"paths {unacknowledged!r} without explicit acknowledgement",
                 )
             try:
-                apply_override_patch_in_place(result, patch)
+                apply_patch(result, patch)
             except ValueError as error:
                 raise CompositionDeltaError(
                     delta.layer_id, patch.path, f"/deltas/{delta.layer_id}: {error}"

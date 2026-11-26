@@ -12,14 +12,14 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
     AxisValueRuns, ListedRuns, StudioEvaluateValueSource,
 )
-from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.objective_document import StoredObjectiveDocument
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scene import ScenePoint
 from feedbax.contracts.studio_scope import StudioStoreChoice
-from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, StoredTaskDocument
 from feedbax.contracts.task_structure import TaskStructureChange
 from feedbax.contracts.trial_record import TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace
 
@@ -207,14 +207,14 @@ class StudioTrialAuthoring(StrictModel):
     model: ProjectName | None
     task_document: ProjectName | None
     objective_document: ProjectName | None
-    task: TaskDocument | PythonTaskSelection
+    task: StoredTaskDocument | PythonTaskSelection
     task_source: StudioEvaluateValueSource | None = None
     task_field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
     task_changed: list[Pointer] = Field(default_factory=list)
     """Pointers, at every depth, whose value in the Task document the step reads differs from its base's."""
     objective_changed: list[Pointer] = Field(default_factory=list)
     """The same, in the Objective document."""
-    objective: ObjectiveDocument | None
+    objective: StoredObjectiveDocument | None
     objective_source: StudioTrialObjectiveSource | None = None
     set_fields: list[StudioSetField] = Field(default_factory=list)
     task_types: list[StudioTaskType]
@@ -249,6 +249,6 @@ class StudioTrialAuthoring(StrictModel):
     """An unanswered edit. No files or documents are proposed until the caller chooses a store."""
 
     @field_serializer("task", "objective")
-    def _authored_document(self, document: TaskDocument | PythonTaskSelection | ObjectiveDocument | None):
+    def _authored_document(self, document: StoredTaskDocument | PythonTaskSelection | StoredObjectiveDocument | None):
         # The editor uses field presence to choose between add and replace.
         return document.model_dump(mode="json", exclude_unset=True) if document is not None else None

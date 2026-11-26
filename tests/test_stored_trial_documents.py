@@ -9,7 +9,7 @@ from feedbax.contracts.expression_values import LiteralValue
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.objective_document import ObjectiveDocument, StoredObjectiveDocument
 from feedbax.contracts.stored_members import StoredAddressedMembers, StoredMembers
-from feedbax.contracts.task_document import StoredTaskAdditions, StoredTaskDocument, TaskDocument
+from feedbax.contracts.task_document import BLANK_STORED_TASK, StoredTaskAdditions, StoredTaskDocument, TaskDocument
 
 
 def _task():
@@ -63,6 +63,17 @@ def test_task_lowers_member_order_and_draw_root_without_using_trial_keys():
     generated = StoredTaskDocument.from_lowered(lowered)
     assert tuple(generated.validation_trials) == ("trial-1", "trial-2")
     assert generated.lower().condition_ids == lowered.condition_ids
+
+
+def test_sampled_task_uses_the_empty_storage_default():
+    assert BLANK_STORED_TASK.validation_trials == {}
+    payload = _task()
+    payload["validation_trials"] = {}
+    task = StoredTaskDocument.model_validate(payload).lower()
+    assert task.condition_ids == ()
+    assert len(task.validation_trials) == 1
+    assert StoredTaskDocument.from_lowered(task).validation_trials == {}
+    assert StoredTaskDocument.from_lowered(task, trial_keys=()).validation_trials == {}
 
 
 def test_objective_lowers_keyed_terms_and_keeps_optional_labels():
