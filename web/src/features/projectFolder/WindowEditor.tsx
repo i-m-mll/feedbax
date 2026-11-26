@@ -1,3 +1,4 @@
+import { plainText, referentName } from '@/components/ui/ShownText';
 import { Plus, X } from 'lucide-react';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
@@ -58,7 +59,7 @@ function epochItems(epochs: readonly WindowEpochChoice[]) {
 }
 
 function epochName(epochs: readonly WindowEpochChoice[], { epoch, occurrence }: { epoch: string; occurrence?: number | null }) {
-  const name = epochs.find(({ id }) => id === epoch)?.name ?? epoch;
+  const name = plainText(referentName(epochs.find(({ id }) => id === epoch), epoch));
   return occurrence == null ? name : `${name} ${occurrence + 1}`;
 }
 

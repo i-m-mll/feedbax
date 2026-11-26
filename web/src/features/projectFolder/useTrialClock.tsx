@@ -1,4 +1,6 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useMemo, type Dispatch, type SetStateAction } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { componentsQuery } from '@/api/components';
 import { useStore } from 'zustand';
 import { Shelf, type ShelfRow } from '@/components/timeline/Shelf';
 import { ClockGroup, type ClockTimeline } from '@/components/timeline/ClockGroup';
@@ -20,6 +22,7 @@ import { showProjectWindowView, type ProjectWindowState, type ProjectWindowView 
 import { clockRun, type FigureClock } from './figureClock';
 import { recordedTrials, useSavedEvaluationScene, type StoredModel } from './managedProjectDetails';
 import type { TrialView } from './StudioTrialAuthoring';
+import { modelRegistry } from './model/modelGraph';
 import { batchRows, meanRows, nominalRows, trialRows, trialTermRows, type ShelfTask } from './task/shelfRows';
 import { shelfTask, taskDocumentOf, useNominalTrial, useTaskBatch, useTaskSamples, type SampledRun } from './task/taskTrials';
 import type { TrialShown, TrialsUnavailable } from './task/trialSample';
@@ -172,7 +175,10 @@ export function useTrialClock({
   const mean = averaging ? replay.mean : undefined;
   const recordedTrial = replay.read.kind === 'read' ? replay.read : undefined;
   const { shown, query, possible, picked, reading } = useShown(pick, clock, offer, run && { projectId, revision, run }, replay, sceneVisible);
-  const drawn = view && taskDocument ? shelfTask(view, taskDocument, objectiveDocument, stored) : undefined;
+  const components = useQuery({ ...componentsQuery, enabled: !!stored }).data;
+  const registry = useMemo(() => components && modelRegistry(components), [components]);
+  const drawn = view && taskDocument
+    ? shelfTask(view, taskDocument, objectiveDocument, stored && registry && { ...stored, registry }) : undefined;
   const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument]));
   const [heldTime, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
   const stateTime = pick?.trials === 'recorded' ? recordedTrial?.stateTime : undefined;

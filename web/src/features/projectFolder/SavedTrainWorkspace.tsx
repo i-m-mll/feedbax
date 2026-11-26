@@ -38,7 +38,7 @@ import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
 import { type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
 import { labelOf, nameIn, shownDocuments, variantNames, type ShownDocuments, type VariantNames } from './memberLabels';
-import { Referent, type ReferentName } from './referent';
+import { Shown, type TextPart } from '@/components/ui/ShownText';
 import {
   emptyPipelineSelection, selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState,
 } from '@/features/pipeline/selection';
@@ -1473,9 +1473,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       const all = target.sweeps.find(({ id }) => id === axis)?.values;
       return !all || all.some(({ id }) => !values.has(id));
     }).map(([axis, values]) => {
-      const sweep = target.sweeps.find(({ id }) => id === axis);
-      const names = [...values].map((value) => sweep?.values.find(({ id }) => id === value)?.valueLabel ?? axisValueText(axis, value));
-      return `${sweep?.label ?? axis} ${names.join(', ')}`;
+      const sweep = plannedAxis(target.id, axis);
+      const names = [...values].map((value) => sweep.values.find(({ id }) => id === value)?.valueLabel ?? axisValueText(axis, value));
+      return `${sweep.label} ${names.join(', ')}`;
     })];
   }
 
@@ -2307,10 +2307,10 @@ function ProblemDestination({ reveal, action, children }: { reveal: Reveal; acti
  */
 function problemDocumentName(
   names: VariantNames, documents: ShownDocuments, problem: StudioProjectWindowMapProblem, variant: string | null, id: string,
-): ReferentName {
+): TextPart {
   const scope = problem.variant ?? variant;
   const label = scope === null ? documents[id]?.label : variantNames(names, scope).documents[id];
-  if (label !== undefined) return { name: label };
+  if (label !== undefined) return label;
   if (problem.missing_subject !== id) throw new Error(`The project holds no document ${id}.`);
   return { missing: id };
 }
@@ -2338,7 +2338,7 @@ function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVarian
   /** A step's label. */
   stepName(id: string): string;
   /** The name of document `id`, which `problem`'s place is in. */
-  documentName(problem: StudioProjectWindowMapProblem, id: string): ReferentName;
+  documentName(problem: StudioProjectWindowMapProblem, id: string): TextPart;
 }) {
   const groups = new Map<string | null, { holder: ReturnType<typeof problemHolder>; entries: ProblemEntry[] }>();
   for (const entry of listed) {
@@ -2349,8 +2349,8 @@ function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVarian
   }
   return <div className="space-y-2">{[...groups].map(([key, { holder, entries }]) => {
     const first = entries.find(({ problem }) => canReveal(problem))?.problem;
-    const named: ReferentName | null = holder && (holder.kind === 'step' ? { name: stepName(holder.id) } : documentName(entries[0].problem, holder.id));
-    const name = named && <Referent name={named} />;
+    const named = holder && (holder.kind === 'step' ? stepName(holder.id) : documentName(entries[0].problem, holder.id));
+    const name = named && <Shown text={[named]} />;
     return <section key={key ?? ''} data-holder={key ?? undefined}>
       {name && <h2 className="font-medium">{first
         ? <Button variant="ghost" size="content" className="rounded-control px-control-inline text-left font-medium"

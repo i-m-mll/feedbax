@@ -411,15 +411,6 @@ export function projectWindowPlan(
     : Object.entries(project.steps ?? {}).map(([id, step]) => ({
       id, kind: step.kind, group: step.group, projected: undefined,
     }));
-  /**
-   * The authored axes of a step that no planned run has a value on and that have a Problem, such as a required Set left
-   * with no entries: each is drawn with no values, where its Problem is marked and repaired.
-   */
-  function unplannedAxes(step: string): [string, NamedAxis][] {
-    const planned = sweepsByStep.get(step);
-    return Object.keys(project.steps?.[step]?.sweep?.axes ?? {}).flatMap((axis): [string, NamedAxis][] =>
-      planned?.has(axis) || !axisProblems(map, step, axis, scope).length ? [] : [[axis, { label: axis, values: new Map() }]]);
-  }
   const steps = source.map(({ id, kind, group, projected }): PlanStepView => {
     const inputs = projected?.inputs.map((input): PlanStepView['inputs'][number] => ({
       id: input.id, label: input.id, sourceStepId: input.source_step_id,
@@ -455,7 +446,6 @@ export function projectWindowPlan(
         ...modelAxis ? [[gatheredModelAxis, { label: studioName('model'), values: new Map([...modelAxis].map(([model, name]) =>
           [model, { id: model, label: name, valueLabel: name }])) }] as const] : [],
         ...sweepsByStep.get(id) ?? [],
-        ...unplannedAxes(id),
       ].map(([axis, { label, values }]): StepAxis => {
         const read = project.steps?.[id]?.sweep?.axes?.[axis];
         const view = { id: axis, label: read && 'set' in read ? documentName(read.set) : label, values: [...values.values()] };

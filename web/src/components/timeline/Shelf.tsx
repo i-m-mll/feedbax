@@ -1,3 +1,4 @@
+import { holdsMissing, plainText, Shown, type ShownText } from '@/components/ui/ShownText';
 import clsx from 'clsx';
 import { useRef, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
 import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
@@ -38,7 +39,7 @@ export interface ShelfBar {
  */
 export type ShelfRow = {
   readonly key: string;
-  readonly name: string;
+  readonly name: ShownText;
   readonly glyph?: ReactNode;
   readonly problem?: string;
 } & (
@@ -181,9 +182,9 @@ export function Shelf({ rows, start = 0, duration, stepSeconds, time, onTimeChan
       !span && 'gap-x-2')}>
     {rows.map((row, index) => {
       const rowChosen = row.kind === 'bars' && isChosen(row.selects);
-      const name = <>{row.glyph}<span className="truncate font-mono">{row.name}</span>
+      const name = <>{row.glyph}<span className="truncate font-mono"><Shown text={row.name} /></span>
         {row.problem && <StatusMark status="cannot_run" label={row.problem} className="ml-auto" />}</>;
-      return <div key={row.key} role="group" aria-label={row.name}
+      return <div key={row.key} role="group" aria-label={plainText(row.name)} aria-invalid={holdsMissing(row.name) || undefined}
         className={clsx('col-span-2 col-start-1 grid grid-cols-subgrid items-center', unavailable && 'opacity-40')}
         style={{ gridRow: index + 1 }}>
         {row.kind === 'bars' && row.selects && !unavailable

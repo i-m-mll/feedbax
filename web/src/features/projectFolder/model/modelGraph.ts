@@ -1,3 +1,4 @@
+import { joinText, referentName, type ShownText } from '@/components/ui/ShownText';
 import type {
   ComponentDefinition, CompositeComponent, GraphInterior, LeafComponent, ModelAddress, ModelDocument,
   ModelPhysicalConnection, ModelPorts, ModelRemovedElement, ModelWire, PhysicalInterior, PortElement, PortType, SignalType,
@@ -292,37 +293,46 @@ export function withRemoved(model: ModelDocument, removed: readonly ModelRemoved
 /** An intervention of a Model, by its address, with the name its shelf row reads: its operation and where it acts. */
 export interface ModelIntervention {
   readonly address: ModelAddress;
-  readonly name: string;
+  readonly name: ShownText;
 }
 
-/** Every intervention of `model`, on a wire or a source port of any of its graphs, nested ones included. */
-export function modelInterventions(model: ModelDocument): ModelIntervention[] {
+/**
+ * Every intervention of `model`, on a wire or a source port of any of its graphs, nested ones included, its ports named
+ * as `registry` names its components' ports.
+ */
+export function modelInterventions(model: ModelDocument, registry: Registry): ModelIntervention[] {
   const found: ModelIntervention[] = [];
   const walk = (owner: GraphOwner, composites: string[]) => {
     const components = owner.interior.components ?? {};
-    const endName = (end: { owner: string; component?: string; port: string }) =>
-      end.owner === 'component' ? `${components[end.component!]?.name ?? end.component}.${end.port}` : end.port;
-    const add = (parent: ModelAddress['element'], where: string, items: readonly { kind: string; id: string; operation?: string }[]) => {
+    const boundary = boundaryPorts(owner.ports);
+    const endName = (end: { owner: string; component?: string; port: string }): ShownText => {
+      if (end.owner !== 'component') return [referentName(boundary.find((item) => item.end.owner === end.owner && item.end.port === end.port), end.port)];
+      const component = components[end.component!];
+      const port = component && componentPorts(end.component!, component, registry).find((item) => item.end.port === end.port);
+      return joinText([[referentName(component, end.component!)], [referentName(port, end.port)]], '.');
+    };
+    const add = (parent: ModelAddress['element'], where: ShownText, items: readonly { kind: string; id: string; operation?: string }[]) => {
       for (const item of items) {
         if (item.kind !== 'intervention') continue;
         found.push({
           address: { composites, element: { kind: 'attachment', parent, id: item.id } as ModelAddress['element'] },
-          name: `${humanizeLabel(item.operation ?? '')} ${where}`,
+          name: joinText([humanizeLabel(item.operation ?? ''), where], ' '),
         });
       }
     };
     if (!('physical_domain' in owner.interior) || !owner.interior.physical_domain) {
       const interior = owner.interior as GraphInterior;
       for (const [id, wire] of Object.entries(interior.wires ?? {})) {
-        add({ kind: 'wire', id }, `${endName(wire.source)} → ${endName(wire.target)}`, wire.attachments ?? []);
+        add({ kind: 'wire', id }, joinText([endName(wire.source), endName(wire.target)], ' → '), wire.attachments ?? []);
       }
       for (const [port, items] of Object.entries(interior.attachments?.sources ?? {})) {
-        add({ kind: 'port', end: { owner: 'inputs', port } }, port, items);
+        add({ kind: 'port', end: { owner: 'inputs', port } }, endName({ owner: 'inputs', port }), items);
       }
     }
     for (const [id, component] of Object.entries(components)) {
       for (const [port, items] of Object.entries(component.attachments?.sources ?? {})) {
-        add({ kind: 'port', end: { owner: 'component', component: id, port, direction: 'output' } }, `${component.name}.${port}`, items);
+        add({ kind: 'port', end: { owner: 'component', component: id, port, direction: 'output' } },
+          endName({ owner: 'component', component: id, port }), items);
       }
       if (component.kind === 'composite') walk(component, [...composites, id]);
     }

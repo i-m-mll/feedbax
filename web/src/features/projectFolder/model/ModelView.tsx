@@ -1,8 +1,9 @@
+import { holdsMissing, joinText, plainText, referentName, Shown, type ShownText } from '@/components/ui/ShownText';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { MarkerType, type OnConnectStart } from '@xyflow/react';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
-import { fetchComponents } from '@/api/components';
+import { componentsQuery } from '@/api/components';
 import { projectModelFields, readEvaluateModel, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, isRefusal } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
@@ -217,7 +218,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const selected = useModelSelection(state, model?.id);
   const variables = trial?.variables ?? noVariables;
   const epochs = useMemo(() => trial ? windowEpochs(trial) : [], [trial]);
-  const variableName = (id: string) => variables.find((variable) => variable.id === id)?.name ?? id;
+  const variableName = (id: string) => plainText(referentName(variables.find((variable) => variable.id === id), id));
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
   const viewport = useRef<CanvasViewport>(null);
@@ -273,7 +274,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   /** Components whose add is pending, drawn where they were placed under the id the add gives them. */
   const [placing, setPlacing] = useState<readonly Placing[]>([]);
 
-  const registryQuery = useQuery({ queryKey: ['components'], queryFn: fetchComponents, enabled: active && !!model, staleTime: 300_000 });
+  const registryQuery = useQuery({ ...componentsQuery, enabled: active && !!model });
   const registry = useMemo(() => modelRegistry(registryQuery.data ?? []), [registryQuery.data]);
   const readBody = evaluate && { ...evaluate, revision: saved.revision };
   /** The runs of the selected sweep values: a Model edit is stored on them, and their differences are drawn. */
@@ -1061,7 +1062,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         const card = at(outerGraph, source.owner === 'component' ? { kind: 'component', id: source.component } : { kind: 'inputs' });
         return [{
           key: `${depth}:${endKey(source)}`, source, outerPath, position: positionsOf(saved, model.id)?.[addressKey(card)],
-          label: [...outerPath.map((id, index) => modelPath(model.value, outerPath.slice(0, index)).owner.interior.components?.[id]?.name ?? id),
+          label: [...modelPath(model.value, outerPath).entries.map(({ name }) => name),
             [owner, port.name].filter(Boolean).join('.')].join(' › '),
         }];
       });
@@ -1223,13 +1224,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const key = addressKey(address);
     const source = idFor(from);
     const target = idFor(to);
-    const endpoint = (end: typeof from) => {
-      const port = portMap.get(idFor(end))?.find((candidate) => candidate.end.port === end.port);
-      const owner = end.owner === 'component' ? drawnInterior?.components?.[end.component!]?.name
-        : studioName(end.owner === 'outputs' ? 'outputs' : 'inputs');
-      return [owner, port?.name ?? end.port].filter(Boolean).join('.');
-    };
-    const wireLabel = `${endpoint(from)} → ${endpoint(to)}`;
+    const shownWire = wireName(from, to);
+    const wireLabel = plainText(shownWire);
     const row = (end: typeof from, direction: Port['direction']) => portMap.get(idFor(end))
       ?.findIndex((candidate) => candidate.direction === direction && candidate.end.port === end.port) ?? 0;
     depths.set(id, row(from, 'output') + row(to, 'input'));
@@ -1249,8 +1245,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const drawnWire = drawnInterior?.wires?.[id];
     return {
       id, source, target, type, ariaLabel: studioAccessibleName('wire', wireLabel),
-      domAttributes: preview || displacedAttachments
-        ? { 'data-preview': preview ?? 'displaced' } as NonNullable<ModelEdge['domAttributes']> : undefined,
+      domAttributes: preview || displacedAttachments || holdsMissing(shownWire) ? {
+        ...preview || displacedAttachments ? { 'data-preview': preview ?? 'displaced' } : {},
+        ...holdsMissing(shownWire) ? { 'aria-invalid': true } : {},
+      } as NonNullable<ModelEdge['domAttributes']> : undefined,
       selectable: !ghost || marked.has(key),
       sourceHandle: `${isPhysical ? 'physical' : 'output'}:${from.port}`,
       targetHandle: `${isPhysical ? 'physical' : 'input'}:${to.port}`,
@@ -1467,11 +1465,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       return (await attempt(studioName('setValue'), difference, false))?.reason;
     };
   }
-  function endLabel(end: { owner: string; component?: string; port: string }) {
+  /** The name of a wire end: its owner's and its port's, each marked missing when the drawn graph lacks it. */
+  function endLabel(end: { owner: string; component?: string; port: string }): ShownText {
     const port = portMap.get(idFor(end))?.find((candidate) => candidate.end.port === end.port);
-    const name = end.owner === 'component' ? drawnInterior?.components?.[end.component!]?.name
+    const owner = end.owner === 'component' ? referentName(drawnInterior?.components?.[end.component!], end.component!)
       : studioName(end.owner === 'outputs' ? 'outputs' : 'inputs');
-    return [name, port?.name ?? end.port].filter(Boolean).join('.');
+    return joinText([owner, referentName(port, end.port)], '.');
+  }
+  function wireName(source: Parameters<typeof endLabel>[0], target: Parameters<typeof endLabel>[0]): ShownText {
+    return joinText([endLabel(source), endLabel(target)], ' → ');
   }
   const selectionKeys = selectedHere.map(addressKey);
   function attachmentRows(rows: readonly { owner: ModelAddress; item: Attachment; port?: string }[]) {
@@ -1590,7 +1592,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
     const wire = address.element.kind === 'wire' ? interior?.wires?.[address.element.id] : undefined;
     const reason = addressedProblems.get(addressKey(address));
-    return <Inspector name={wire ? `${endLabel(wire.source)} → ${endLabel(wire.target)}` : studioName('wire')}
+    return <Inspector name={wire ? <Shown text={wireName(wire.source, wire.target)} /> : studioName('wire')}
       type={wire ? studioName('wire') : undefined} attachments={attachmentsShown}>
       {reason && <MentionRow name={studioName('wire')} detail={reason} placeShown={false} />}
     </Inspector>;
@@ -1613,7 +1615,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       return item && <Inspector name={attachmentName(item)}>{rows(scope, attachmentFields(item, undefined, noNames))}</Inspector>;
     }
     const ends = element.kind === 'wire' ? drawnInterior?.wires?.[element.id] : undefined;
-    return <Inspector name={ends ? `${endLabel(ends.source)} → ${endLabel(ends.target)}` : studioName('wire')} type={studioName('wire')} />;
+    return <Inspector name={ends ? <Shown text={wireName(ends.source, ends.target)} /> : studioName('wire')} type={studioName('wire')} />;
   }
 
   const inspector = libraryItem ? <Inspector name={libraryItem.name} type={libraryItem.group}>
