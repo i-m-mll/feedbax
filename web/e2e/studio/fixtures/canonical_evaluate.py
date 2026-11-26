@@ -243,7 +243,7 @@ def task_pivot_files():
     evaluate["inputs"]["subject"]["where"] = {"rule": "learning-rate=Slow,Fast seed=one"}
     evaluate["sweep"] = {"axes": {
         "subject": {"input": "subject"},
-        "task": {"values": {
+        "task": {"label": "Task", "values": {
             name: {"label": label, "patches": {"params.variation.task.value": {"value": {"document": name}}}}
             for name, label in (("short-task", "Short Task"), ("long-task", "Long Task"))
         }},
