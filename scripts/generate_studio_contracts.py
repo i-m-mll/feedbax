@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from feedbax.contracts.task_document import BLANK_TASK
+from feedbax.contracts.task_document import BLANK_STORED_TASK, BLANK_TASK
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, ImportedModelProvenance, ModelFitReport
 from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_inputs import LoadedModelReference
@@ -447,13 +447,14 @@ from feedbax.contracts.studio_project import (
 from feedbax.contracts.studio_loaded_model import (
     StudioLoadedModelExportRequest, StudioLoadedModelImportQuery, StudioLoadedModelImportResult,
 )
-from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.objective_document import ObjectiveDocument, StoredObjectiveDocument
 from feedbax.contracts.set_document import SetDocument, SetEntry
+from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.window import Window
 from feedbax.contracts.training_document import TrainingDocument
 from feedbax.contracts.request_specs import DocumentTrainingConfig, SynthesisRequestSpec, TrainContinuation, TrialDocuments
 from feedbax.contracts.synthesis import SynthesisStepPayload
-from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_document import PythonTaskSelection, StoredTaskDocument, TaskDocument
 from feedbax.contracts.studio_trials import (
     StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest,
     StudioTrialExpressionMenuRequest, StudioTrialRelate,
@@ -531,6 +532,9 @@ AUTHORED_CONTRACT_MODELS = (
     ValidityAcceptance,
     AnalysisDocument,
     TaskDocument,
+    StoredTaskDocument,
+    StoredObjectiveDocument,
+    StoredModelDocument,
     SetDocument,
     SetEntry,
     PythonTaskSelection,
@@ -1505,7 +1509,8 @@ def generate() -> str:
         f"{interfaces}\n\n"
         f"{authored_types}\n\n"
         f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
-        f"export const blankTask = {json.dumps(BLANK_TASK.model_dump(mode='json'), indent=2)};\n\n"
+        f"export const blankTask = {json.dumps(BLANK_TASK.model_dump(mode='json'), indent=2)};\n"
+        f"export const blankStoredTask = {json.dumps(BLANK_STORED_TASK.model_dump(mode='json', exclude_unset=True), indent=2)};\n\n"
         f"export const loadedModelDocumentSchemaId = {json.dumps(LOADED_MODEL_SCHEMA_ID)};\n\n"
         f"export const firstTrainTask: Document = {json.dumps(first_train_task().model_dump(mode='json', by_alias=True), indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"

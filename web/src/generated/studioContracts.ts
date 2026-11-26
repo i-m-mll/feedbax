@@ -876,7 +876,7 @@ export interface EvaluateModelState {
   revision: string;
   editable: boolean;
   effective: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
-  resolved_model?: ModelDocument | null;
+  resolved_model?: StoredModelDocument | null;
   source?: StudioEvaluateValueSource | null;
   field_sources?: Record<string, StudioEvaluateValueSource>;
   changed_from?: string | null;
@@ -1143,7 +1143,7 @@ export interface ModelProjection {
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelTaskInput[];
   problems?: ModelGraphProblem[];
-  resolved_model?: ModelDocument | null;
+  resolved_model?: StoredModelDocument | null;
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   ungroup?: ModelUngroupEligibility[];
@@ -2871,8 +2871,8 @@ export type AxisLabels = {
 export type AxisSelectionClause = Record<string, Array<SelectedAxisValue>>;
 
 export type AxisValue = {
-  "task_variables"?: Array<Variable>;
-  "task_links"?: Array<Link>;
+  "task_variables"?: StoredMembers_StoredVariable_;
+  "task_links"?: StoredAddressedMembers_StoredMemberKey_;
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
   "value"?: JsonValue;
@@ -3906,8 +3906,8 @@ export type RootDocument = {
 };
 
 export type Row = {
-  "task_variables"?: Array<Variable>;
-  "task_links"?: Array<Link>;
+  "task_variables"?: StoredMembers_StoredVariable_;
+  "task_links"?: StoredAddressedMembers_StoredMemberKey_;
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
   "value"?: JsonValue;
@@ -3995,7 +3995,7 @@ export type SetAxis = {
 };
 
 export type SetDocument = {
-  "entries": Record<string, SetEntry>;
+  "entries": StoredMembers_SetEntry_;
 };
 
 export type SetDocumentValue = {
@@ -4003,9 +4003,9 @@ export type SetDocumentValue = {
 };
 
 export type SetEntry = {
-  "task_variables"?: Array<Variable>;
-  "task_links"?: Array<Link>;
-  "label"?: string | null;
+  "task_variables"?: StoredMembers_StoredVariable_;
+  "task_links"?: StoredAddressedMembers_StoredMemberKey_;
+  "label": string;
   "differences"?: EditDifferences;
 };
 
@@ -4019,8 +4019,8 @@ export type SetEntryTask = {
   "step": string;
   "axis": string;
   "entry": string;
-  "task_variables"?: Array<Variable> | null;
-  "task_links"?: Array<Link> | null;
+  "task_variables"?: StoredMembers_StoredVariable_ | null;
+  "task_links"?: StoredAddressedMembers_StoredMemberKey_ | null;
 };
 
 export type SetFieldWeight = {
@@ -4253,6 +4253,203 @@ export type StoreSubset = {
   "bound_ranks"?: Array<BoundRank> | null;
   "clauses"?: Array<AxisSelectionClause>;
   "query": ManifestPredicate;
+};
+
+export type StoredAddressedMembers_StoredMemberKey_ = Record<string, StoredMemberKey>;
+
+export type StoredCell = {
+  "first_epoch": string;
+  "last_epoch": string;
+  "value": Expression;
+};
+
+export type StoredCompositeComponent = {
+  "kind": "composite";
+  "label": string;
+  "ports": StoredModelPorts;
+  "interior": StoredGraphInterior | StoredPhysicalInterior;
+  "substeps"?: number | UnresolvedValue;
+  "attachments"?: StoredModelPortAttachments;
+};
+
+export type StoredDelayAttachment = {
+  "kind": "delay";
+  "delay": ModelTime | UnresolvedValue;
+  "initial_source"?: ModelSignalSource;
+};
+
+export type StoredEpoch = {
+  "label": string;
+  "end": End;
+};
+
+export type StoredGraphInterior = {
+  "components"?: StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____;
+  "wires"?: StoredMembers_StoredModelWire_;
+  "attachments"?: StoredModelPortAttachments;
+  "physical_domain"?: null;
+};
+
+export type StoredHoldAttachment = {
+  "kind": "hold";
+};
+
+export type StoredInterventionAttachment = {
+  "kind": "intervention";
+  "operation": string;
+  "operands"?: Record<string, ModelSignalSource>;
+  "window"?: Window | null;
+};
+
+export type StoredLeafComponent = {
+  "kind": "leaf";
+  "label": string;
+  "type": string;
+  "revision"?: number | null;
+  "fields"?: Record<string, JsonValue>;
+  "port_counts"?: Record<string, number>;
+  "attachments"?: StoredModelPortAttachments;
+};
+
+export type StoredMemberKey = string;
+
+export type StoredMembers_Annotated_Union_StoredDelayAttachment__StoredHoldAttachment__StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____ = Record<string, StoredDelayAttachment | StoredHoldAttachment | StoredInterventionAttachment | StoredProbeAttachment>;
+
+export type StoredMembers_Annotated_Union_StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____ = Record<string, StoredInterventionAttachment | StoredProbeAttachment>;
+
+export type StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____ = Record<string, StoredLeafComponent | StoredCompositeComponent>;
+
+export type StoredMembers_ModelPhysicalConnection_ = Record<string, ModelPhysicalConnection>;
+
+export type StoredMembers_SetEntry_ = Record<string, SetEntry>;
+
+export type StoredMembers_StoredCell_ = Record<string, StoredCell>;
+
+export type StoredMembers_StoredEpoch__MinLen_min_length_1_ = Record<string, StoredEpoch>;
+
+export type StoredMembers_StoredModelWire_ = Record<string, StoredModelWire>;
+
+export type StoredMembers_StoredObjectiveTerm_ = Record<string, StoredObjectiveTerm>;
+
+export type StoredMembers_StoredPhysicalPort_ = Record<string, StoredPhysicalPort>;
+
+export type StoredMembers_StoredProbeAttachment_ = Record<string, StoredProbeAttachment>;
+
+export type StoredMembers_StoredRepeat_ = Record<string, StoredRepeat>;
+
+export type StoredMembers_StoredSignalInput_ = Record<string, StoredSignalInput>;
+
+export type StoredMembers_StoredSignalOutput_ = Record<string, StoredSignalOutput>;
+
+export type StoredMembers_StoredSignal_ = Record<string, StoredSignal>;
+
+export type StoredMembers_StoredVariable_ = Record<string, StoredVariable>;
+
+export type StoredMembers_ValidationTrial_ = Record<string, ValidationTrial>;
+
+export type StoredModelAddressKey = string;
+
+export type StoredModelDocument = {
+  "step_seconds": number | UnresolvedValue;
+  "ports": StoredModelPorts;
+  "interior": StoredGraphInterior;
+  "world"?: ModelWorld | null;
+};
+
+export type StoredModelPortAttachments = {
+  "sources"?: Record<string, StoredMembers_Annotated_Union_StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____>;
+  "sinks"?: Record<string, StoredMembers_StoredProbeAttachment_>;
+};
+
+export type StoredModelPorts = {
+  "inputs"?: StoredMembers_StoredSignalInput_;
+  "outputs"?: StoredMembers_StoredSignalOutput_;
+  "physical"?: StoredMembers_StoredPhysicalPort_;
+};
+
+export type StoredModelWire = {
+  "source": ComponentPortEnd | InputBoundaryEnd;
+  "target": ComponentPortEnd | OutputBoundaryEnd;
+  "attachments"?: StoredMembers_Annotated_Union_StoredDelayAttachment__StoredHoldAttachment__StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____;
+};
+
+export type StoredObjectiveDocument = {
+  "id": string;
+  "terms"?: StoredMembers_StoredObjectiveTerm_;
+};
+
+export type StoredObjectiveTerm = {
+  "measure": Expression;
+  "measure_type"?: ValueType;
+  "weight"?: Expression;
+  "reduction"?: Reduction;
+  "window"?: Window | null;
+  "enabled"?: boolean;
+  "label"?: string | null;
+};
+
+export type StoredPhysicalInterior = {
+  "components"?: StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____;
+  "wires"?: StoredMembers_StoredModelWire_;
+  "attachments"?: StoredModelPortAttachments;
+  "physical_domain": "translational" | "rotational" | "planar_multibody" | "spatial_multibody";
+  "connections"?: StoredMembers_ModelPhysicalConnection_;
+};
+
+export type StoredPhysicalPort = {
+  "label": string;
+  "type": "translational" | "rotational" | "frame";
+};
+
+export type StoredProbeAttachment = {
+  "kind": "probe";
+  "label": string;
+};
+
+export type StoredRepeat = {
+  "first_epoch": string;
+  "last_epoch": string;
+  "count": Expression;
+};
+
+export type StoredSignal = {
+  "label": string;
+  "type": ValueType;
+  "cells": StoredMembers_StoredCell_;
+  "absent"?: Expression | null;
+  "window"?: Window | null;
+  "intervention"?: string | null;
+};
+
+export type StoredSignalInput = {
+  "label": string;
+  "type": SignalType;
+  "default"?: InputDefault | null;
+};
+
+export type StoredSignalOutput = {
+  "label": string;
+  "type": SignalType;
+};
+
+export type StoredTaskDocument = {
+  "id": string;
+  "variables": StoredMembers_StoredVariable_;
+  "epochs": StoredMembers_StoredEpoch__MinLen_min_length_1_;
+  "signals": StoredMembers_StoredSignal_;
+  "repeats"?: StoredMembers_StoredRepeat_;
+  "links"?: StoredAddressedMembers_StoredMemberKey_;
+  "fixed_steps"?: number | null;
+  "validation_trials"?: StoredMembers_ValidationTrial_;
+};
+
+export type StoredVariable = {
+  "label": string;
+  "type": ValueType;
+  "value": Expression;
+  "count"?: Expression | null;
+  "set_choices"?: SetVariableChoices | null;
+  "marker"?: Marker | null;
 };
 
 export type StudioAddClassMember = {
@@ -5205,12 +5402,12 @@ export type StudioTrialAuthoring = {
   "model": string | null;
   "task_document": string | null;
   "objective_document": string | null;
-  "task": TaskDocument | PythonTaskSelection;
+  "task": StoredTaskDocument | PythonTaskSelection;
   "task_source"?: StudioEvaluateValueSource | null;
   "task_field_sources"?: Record<string, StudioEvaluateValueSource>;
   "task_changed"?: Array<Pointer>;
   "objective_changed"?: Array<Pointer>;
-  "objective": ObjectiveDocument | null;
+  "objective": StoredObjectiveDocument | null;
   "objective_source"?: StudioTrialObjectiveSource | null;
   "set_fields"?: Array<StudioSetField>;
   "task_types": Array<StudioTaskType>;
@@ -5746,6 +5943,22 @@ export const blankTask = {
       "epoch_steps": {}
     }
   ]
+};
+export const blankStoredTask = {
+  "id": "task",
+  "variables": {},
+  "epochs": {
+    "epoch": {
+      "label": "epoch",
+      "end": {
+        "length": {
+          "value": 1,
+          "unit": "s"
+        }
+      }
+    }
+  },
+  "signals": {}
 };
 
 export const loadedModelDocumentSchemaId = "feedbax.spec.loaded_model";
@@ -7435,9 +7648,10 @@ export const ModelPortsSchema: z.ZodType<ModelPorts> = z.lazy(() =>
     .superRefine((input, ctx) => {
       const value = { ...{"inputs": [], "outputs": [], "physical": []}, ...input };
       if ((() => {
-              const ports = [...(value.inputs ?? []), ...(value.outputs ?? []), ...(value.physical ?? [])];
-              return new Set(ports.map((port) => port.id)).size !== ports.length;
-            })()) {
+      const ids = [value.inputs, value.outputs, value.physical]
+        .flatMap((ports) => Array.isArray(ports) ? ports.map((port) => port.id) : Object.keys(ports ?? {}));
+      return new Set(ids).size !== ids.length;
+    })()) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "port IDs must be unique within a port list",
@@ -7501,7 +7715,7 @@ export const CompositeComponentSchema: z.ZodType<CompositeComponent> = z.lazy(()
     .strict()
     .superRefine((input, ctx) => {
       const value = { ...{"substeps": 1, "attachments": {"sources": {}, "sinks": {}}}, ...input };
-      if (value.interior.physical_domain == null && (value.ports.physical?.length ?? 0) > 0) {
+      if (value.interior.physical_domain == null && Object.keys(value.ports.physical ?? {}).length > 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "physical ports require an Equations or Mechanics interior",
@@ -7579,7 +7793,7 @@ export const ModelDocumentSchema: z.ZodType<ModelDocument> = z.lazy(() =>
     .strict()
     .superRefine((input, ctx) => {
       const value = { ...{"schema_version": "feedbax.spec.model.v1"}, ...input };
-      if ((value.ports.physical?.length ?? 0) > 0) {
+      if (Object.keys(value.ports.physical ?? {}).length > 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "the model root has signal ports only",
@@ -7802,7 +8016,7 @@ export const EvaluateModelStateSchema: z.ZodType<EvaluateModelState> = z.lazy(()
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "editable": z.boolean(),
       "effective": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
-      "resolved_model": ModelDocumentSchema.nullable().optional(),
+      "resolved_model": StoredModelDocumentSchema.nullable().optional(),
       "source": StudioEvaluateValueSourceSchema.nullable().optional(),
       "field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
       "changed_from": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -8278,7 +8492,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
       "task_inputs": z.array(ModelTaskInputSchema).optional(),
       "problems": z.array(ModelGraphProblemSchema).optional(),
-      "resolved_model": ModelDocumentSchema.nullable().optional(),
+      "resolved_model": StoredModelDocumentSchema.nullable().optional(),
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "ungroup": z.array(ModelUngroupEligibilitySchema).optional(),
@@ -11200,8 +11414,8 @@ export const AxisSelectionClauseSchema: z.ZodType<AxisSelectionClause> = z.lazy(
 
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
   z.object({
-    "task_variables": z.array(VariableSchema).optional(),
-    "task_links": z.array(LinkSchema).optional(),
+    "task_variables": StoredMembers_StoredVariable_Schema.optional(),
+    "task_links": StoredAddressedMembers_StoredMemberKey_Schema.optional(),
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
     "value": jsonValueSchema.optional(),
@@ -12605,8 +12819,8 @@ export const RootDocumentSchema: z.ZodType<RootDocument> = z.lazy(() =>
 
 export const RowSchema: z.ZodType<Row> = z.lazy(() =>
   z.object({
-    "task_variables": z.array(VariableSchema).optional(),
-    "task_links": z.array(LinkSchema).optional(),
+    "task_variables": StoredMembers_StoredVariable_Schema.optional(),
+    "task_links": StoredAddressedMembers_StoredMemberKey_Schema.optional(),
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
     "value": jsonValueSchema.optional(),
@@ -12724,7 +12938,7 @@ export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
 
 export const SetDocumentSchema: z.ZodType<SetDocument> = z.lazy(() =>
   z.object({
-    "entries": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), SetEntrySchema),
+    "entries": StoredMembers_SetEntry_Schema,
   }).strict()
 ) as unknown as z.ZodType<SetDocument>;
 
@@ -12736,9 +12950,9 @@ export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
 
 export const SetEntrySchema: z.ZodType<SetEntry> = z.lazy(() =>
   z.object({
-    "task_variables": z.array(VariableSchema).optional(),
-    "task_links": z.array(LinkSchema).optional(),
-    "label": z.union([z.string(), z.null()]).optional(),
+    "task_variables": StoredMembers_StoredVariable_Schema.optional(),
+    "task_links": StoredAddressedMembers_StoredMemberKey_Schema.optional(),
+    "label": z.string().min(1),
     "differences": EditDifferencesSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<SetEntry>;
@@ -12756,8 +12970,8 @@ export const SetEntryTaskSchema: z.ZodType<SetEntryTask> = z.lazy(() =>
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "entry": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "task_variables": z.union([z.array(VariableSchema), z.null()]).optional(),
-    "task_links": z.union([z.array(LinkSchema), z.null()]).optional(),
+    "task_variables": z.union([StoredMembers_StoredVariable_Schema, z.null()]).optional(),
+    "task_links": z.union([StoredAddressedMembers_StoredMemberKey_Schema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<SetEntryTask>;
 
@@ -13066,6 +13280,301 @@ export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
     "query": ManifestPredicateSchema,
   }).strict()
 ) as unknown as z.ZodType<StoreSubset>;
+
+export const StoredAddressedMembers_StoredMemberKey_Schema: z.ZodType<StoredAddressedMembers_StoredMemberKey_> = z.lazy(() =>
+  z.record(StoredModelAddressKeySchema, StoredMemberKeySchema)
+) as unknown as z.ZodType<StoredAddressedMembers_StoredMemberKey_>;
+
+export const StoredCellSchema: z.ZodType<StoredCell> = z.lazy(() =>
+  z.object({
+    "first_epoch": z.string(),
+    "last_epoch": z.string(),
+    "value": ExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<StoredCell>;
+
+export const StoredCompositeComponentSchema: z.ZodType<StoredCompositeComponent> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("composite"),
+    "label": z.string().min(1),
+    "ports": StoredModelPortsSchema,
+    "interior": z.union([StoredGraphInteriorSchema, StoredPhysicalInteriorSchema]),
+    "substeps": z.union([z.number().int().safe().min(1), UnresolvedValueSchema]).optional(),
+    "attachments": StoredModelPortAttachmentsSchema.optional(),
+  }).strict().superRefine((value, ctx) => { if (value.interior.physical_domain == null && Object.keys(value.ports.physical ?? {}).length > 0) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "physical ports require an Equations or Mechanics interior" }); })
+) as unknown as z.ZodType<StoredCompositeComponent>;
+
+export const StoredDelayAttachmentSchema: z.ZodType<StoredDelayAttachment> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("delay"),
+    "delay": z.union([ModelTimeSchema, UnresolvedValueSchema]),
+    "initial_source": ModelSignalSourceSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredDelayAttachment>;
+
+export const StoredEpochSchema: z.ZodType<StoredEpoch> = z.lazy(() =>
+  z.object({
+    "label": z.string().min(1),
+    "end": EndSchema,
+  }).strict()
+) as unknown as z.ZodType<StoredEpoch>;
+
+export const StoredGraphInteriorSchema: z.ZodType<StoredGraphInterior> = z.lazy(() =>
+  z.object({
+    "components": StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____Schema.optional(),
+    "wires": StoredMembers_StoredModelWire_Schema.optional(),
+    "attachments": StoredModelPortAttachmentsSchema.optional(),
+    "physical_domain": z.null().optional(),
+  }).strict().superRefine((value, ctx) => { if ((() => {
+        const ids = [value.components, value.wires, "connections" in value ? value.connections : undefined]
+          .flatMap((elements) => Object.keys(elements ?? {}));
+        return new Set(ids).size !== ids.length;
+      })()) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "element IDs must be unique within an interior" }); })
+) as unknown as z.ZodType<StoredGraphInterior>;
+
+export const StoredHoldAttachmentSchema: z.ZodType<StoredHoldAttachment> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("hold"),
+  }).strict()
+) as unknown as z.ZodType<StoredHoldAttachment>;
+
+export const StoredInterventionAttachmentSchema: z.ZodType<StoredInterventionAttachment> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("intervention"),
+    "operation": z.string(),
+    "operands": z.record(z.string(), ModelSignalSourceSchema).optional(),
+    "window": z.union([WindowSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredInterventionAttachment>;
+
+export const StoredLeafComponentSchema: z.ZodType<StoredLeafComponent> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("leaf"),
+    "label": z.string().min(1),
+    "type": z.string().min(1),
+    "revision": z.union([z.number().int().safe().min(1), z.null()]).optional(),
+    "fields": z.record(z.string(), jsonValueSchema).optional(),
+    "port_counts": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.number().int().safe().min(0)).optional(),
+    "attachments": StoredModelPortAttachmentsSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredLeafComponent>;
+
+export const StoredMemberKeySchema: z.ZodType<StoredMemberKey> = z.lazy(() =>
+  z.string().regex(new RegExp("^[A-Za-z_][A-Za-z0-9_-]*$"))
+) as unknown as z.ZodType<StoredMemberKey>;
+
+export const StoredMembers_Annotated_Union_StoredDelayAttachment__StoredHoldAttachment__StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____Schema: z.ZodType<StoredMembers_Annotated_Union_StoredDelayAttachment__StoredHoldAttachment__StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, z.union([StoredDelayAttachmentSchema, StoredHoldAttachmentSchema, StoredInterventionAttachmentSchema, StoredProbeAttachmentSchema]))
+) as unknown as z.ZodType<StoredMembers_Annotated_Union_StoredDelayAttachment__StoredHoldAttachment__StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____>;
+
+export const StoredMembers_Annotated_Union_StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____Schema: z.ZodType<StoredMembers_Annotated_Union_StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, z.union([StoredInterventionAttachmentSchema, StoredProbeAttachmentSchema]))
+) as unknown as z.ZodType<StoredMembers_Annotated_Union_StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____>;
+
+export const StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____Schema: z.ZodType<StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, z.union([StoredLeafComponentSchema, StoredCompositeComponentSchema]))
+) as unknown as z.ZodType<StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____>;
+
+export const StoredMembers_ModelPhysicalConnection_Schema: z.ZodType<StoredMembers_ModelPhysicalConnection_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, ModelPhysicalConnectionSchema)
+) as unknown as z.ZodType<StoredMembers_ModelPhysicalConnection_>;
+
+export const StoredMembers_SetEntry_Schema: z.ZodType<StoredMembers_SetEntry_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, SetEntrySchema)
+) as unknown as z.ZodType<StoredMembers_SetEntry_>;
+
+export const StoredMembers_StoredCell_Schema: z.ZodType<StoredMembers_StoredCell_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredCellSchema)
+) as unknown as z.ZodType<StoredMembers_StoredCell_>;
+
+export const StoredMembers_StoredEpoch__MinLen_min_length_1_Schema: z.ZodType<StoredMembers_StoredEpoch__MinLen_min_length_1_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredEpochSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' })
+) as unknown as z.ZodType<StoredMembers_StoredEpoch__MinLen_min_length_1_>;
+
+export const StoredMembers_StoredModelWire_Schema: z.ZodType<StoredMembers_StoredModelWire_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredModelWireSchema)
+) as unknown as z.ZodType<StoredMembers_StoredModelWire_>;
+
+export const StoredMembers_StoredObjectiveTerm_Schema: z.ZodType<StoredMembers_StoredObjectiveTerm_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredObjectiveTermSchema)
+) as unknown as z.ZodType<StoredMembers_StoredObjectiveTerm_>;
+
+export const StoredMembers_StoredPhysicalPort_Schema: z.ZodType<StoredMembers_StoredPhysicalPort_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredPhysicalPortSchema)
+) as unknown as z.ZodType<StoredMembers_StoredPhysicalPort_>;
+
+export const StoredMembers_StoredProbeAttachment_Schema: z.ZodType<StoredMembers_StoredProbeAttachment_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredProbeAttachmentSchema)
+) as unknown as z.ZodType<StoredMembers_StoredProbeAttachment_>;
+
+export const StoredMembers_StoredRepeat_Schema: z.ZodType<StoredMembers_StoredRepeat_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredRepeatSchema)
+) as unknown as z.ZodType<StoredMembers_StoredRepeat_>;
+
+export const StoredMembers_StoredSignalInput_Schema: z.ZodType<StoredMembers_StoredSignalInput_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredSignalInputSchema)
+) as unknown as z.ZodType<StoredMembers_StoredSignalInput_>;
+
+export const StoredMembers_StoredSignalOutput_Schema: z.ZodType<StoredMembers_StoredSignalOutput_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredSignalOutputSchema)
+) as unknown as z.ZodType<StoredMembers_StoredSignalOutput_>;
+
+export const StoredMembers_StoredSignal_Schema: z.ZodType<StoredMembers_StoredSignal_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredSignalSchema)
+) as unknown as z.ZodType<StoredMembers_StoredSignal_>;
+
+export const StoredMembers_StoredVariable_Schema: z.ZodType<StoredMembers_StoredVariable_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredVariableSchema)
+) as unknown as z.ZodType<StoredMembers_StoredVariable_>;
+
+export const StoredMembers_ValidationTrial_Schema: z.ZodType<StoredMembers_ValidationTrial_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, ValidationTrialSchema)
+) as unknown as z.ZodType<StoredMembers_ValidationTrial_>;
+
+export const StoredModelAddressKeySchema: z.ZodType<StoredModelAddressKey> = z.lazy(() =>
+  z.string()
+) as unknown as z.ZodType<StoredModelAddressKey>;
+
+export const StoredModelDocumentSchema: z.ZodType<StoredModelDocument> = z.lazy(() =>
+  z.object({
+    "step_seconds": z.union([z.number().finite().gt(0), UnresolvedValueSchema]),
+    "ports": StoredModelPortsSchema,
+    "interior": StoredGraphInteriorSchema,
+    "world": z.union([ModelWorldSchema, z.null()]).optional(),
+  }).strict().superRefine((value, ctx) => { if (Object.keys(value.ports.physical ?? {}).length > 0) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "the model root has signal ports only" }); })
+) as unknown as z.ZodType<StoredModelDocument>;
+
+export const StoredModelPortAttachmentsSchema: z.ZodType<StoredModelPortAttachments> = z.lazy(() =>
+  z.object({
+    "sources": z.record(StoredMemberKeySchema, StoredMembers_Annotated_Union_StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____Schema).optional(),
+    "sinks": z.record(StoredMemberKeySchema, StoredMembers_StoredProbeAttachment_Schema).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredModelPortAttachments>;
+
+export const StoredModelPortsSchema: z.ZodType<StoredModelPorts> = z.lazy(() =>
+  z.object({
+    "inputs": StoredMembers_StoredSignalInput_Schema.optional(),
+    "outputs": StoredMembers_StoredSignalOutput_Schema.optional(),
+    "physical": StoredMembers_StoredPhysicalPort_Schema.optional(),
+  }).strict().superRefine((value, ctx) => { if ((() => {
+        const ids = [value.inputs, value.outputs, value.physical]
+          .flatMap((ports) => Array.isArray(ports) ? ports.map((port) => port.id) : Object.keys(ports ?? {}));
+        return new Set(ids).size !== ids.length;
+      })()) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "port IDs must be unique within a port list" }); })
+) as unknown as z.ZodType<StoredModelPorts>;
+
+export const StoredModelWireSchema: z.ZodType<StoredModelWire> = z.lazy(() =>
+  z.object({
+    "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+    "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+    "attachments": StoredMembers_Annotated_Union_StoredDelayAttachment__StoredHoldAttachment__StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____Schema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredModelWire>;
+
+export const StoredObjectiveDocumentSchema: z.ZodType<StoredObjectiveDocument> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "terms": StoredMembers_StoredObjectiveTerm_Schema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredObjectiveDocument>;
+
+export const StoredObjectiveTermSchema: z.ZodType<StoredObjectiveTerm> = z.lazy(() =>
+  z.object({
+    "measure": ExpressionSchema,
+    "measure_type": ValueTypeSchema.optional(),
+    "weight": ExpressionSchema.optional(),
+    "reduction": ReductionSchema.optional(),
+    "window": z.union([WindowSchema, z.null()]).optional(),
+    "enabled": z.boolean().optional(),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredObjectiveTerm>;
+
+export const StoredPhysicalInteriorSchema: z.ZodType<StoredPhysicalInterior> = z.lazy(() =>
+  z.object({
+    "components": StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____Schema.optional(),
+    "wires": StoredMembers_StoredModelWire_Schema.optional(),
+    "attachments": StoredModelPortAttachmentsSchema.optional(),
+    "physical_domain": z.union([z.literal("translational"), z.literal("rotational"), z.literal("planar_multibody"), z.literal("spatial_multibody")]),
+    "connections": StoredMembers_ModelPhysicalConnection_Schema.optional(),
+  }).strict().superRefine((value, ctx) => { if ((() => {
+        const ids = [value.components, value.wires, "connections" in value ? value.connections : undefined]
+          .flatMap((elements) => Object.keys(elements ?? {}));
+        return new Set(ids).size !== ids.length;
+      })()) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "element IDs must be unique within an interior" }); })
+) as unknown as z.ZodType<StoredPhysicalInterior>;
+
+export const StoredPhysicalPortSchema: z.ZodType<StoredPhysicalPort> = z.lazy(() =>
+  z.object({
+    "label": z.string().min(1),
+    "type": z.union([z.literal("translational"), z.literal("rotational"), z.literal("frame")]),
+  }).strict()
+) as unknown as z.ZodType<StoredPhysicalPort>;
+
+export const StoredProbeAttachmentSchema: z.ZodType<StoredProbeAttachment> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("probe"),
+    "label": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<StoredProbeAttachment>;
+
+export const StoredRepeatSchema: z.ZodType<StoredRepeat> = z.lazy(() =>
+  z.object({
+    "first_epoch": z.string(),
+    "last_epoch": z.string(),
+    "count": ExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<StoredRepeat>;
+
+export const StoredSignalSchema: z.ZodType<StoredSignal> = z.lazy(() =>
+  z.object({
+    "label": z.string().min(1),
+    "type": ValueTypeSchema,
+    "cells": StoredMembers_StoredCell_Schema,
+    "absent": z.union([ExpressionSchema, z.null()]).optional(),
+    "window": z.union([WindowSchema, z.null()]).optional(),
+    "intervention": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredSignal>;
+
+export const StoredSignalInputSchema: z.ZodType<StoredSignalInput> = z.lazy(() =>
+  z.object({
+    "label": z.string().min(1),
+    "type": SignalTypeSchema,
+    "default": z.union([InputDefaultSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredSignalInput>;
+
+export const StoredSignalOutputSchema: z.ZodType<StoredSignalOutput> = z.lazy(() =>
+  z.object({
+    "label": z.string().min(1),
+    "type": SignalTypeSchema,
+  }).strict()
+) as unknown as z.ZodType<StoredSignalOutput>;
+
+export const StoredTaskDocumentSchema: z.ZodType<StoredTaskDocument> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "variables": StoredMembers_StoredVariable_Schema,
+    "epochs": StoredMembers_StoredEpoch__MinLen_min_length_1_Schema,
+    "signals": StoredMembers_StoredSignal_Schema,
+    "repeats": StoredMembers_StoredRepeat_Schema.optional(),
+    "links": StoredAddressedMembers_StoredMemberKey_Schema.optional(),
+    "fixed_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+    "validation_trials": StoredMembers_ValidationTrial_Schema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredTaskDocument>;
+
+export const StoredVariableSchema: z.ZodType<StoredVariable> = z.lazy(() =>
+  z.object({
+    "label": z.string().min(1),
+    "type": ValueTypeSchema,
+    "value": ExpressionSchema,
+    "count": z.union([ExpressionSchema, z.null()]).optional(),
+    "set_choices": z.union([SetVariableChoicesSchema, z.null()]).optional(),
+    "marker": z.union([MarkerSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredVariable>;
 
 export const StudioAddClassMemberSchema: z.ZodType<StudioAddClassMember> = z.lazy(() =>
   z.object({
@@ -14288,12 +14797,12 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "model": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "task_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "objective_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
-    "task": z.union([TaskDocumentSchema, PythonTaskSelectionSchema]),
+    "task": z.union([StoredTaskDocumentSchema, PythonTaskSelectionSchema]),
     "task_source": z.union([StudioEvaluateValueSourceSchema, z.null()]).optional(),
     "task_field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
     "task_changed": z.array(PointerSchema).optional(),
     "objective_changed": z.array(PointerSchema).optional(),
-    "objective": z.union([ObjectiveDocumentSchema, z.null()]),
+    "objective": z.union([StoredObjectiveDocumentSchema, z.null()]),
     "objective_source": z.union([StudioTrialObjectiveSourceSchema, z.null()]).optional(),
     "set_fields": z.array(StudioSetFieldSchema).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
@@ -14962,6 +15471,9 @@ export const contractSchemas = {
   ValidityAcceptance: ValidityAcceptanceSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   TaskDocument: TaskDocumentSchema,
+  StoredTaskDocument: StoredTaskDocumentSchema,
+  StoredObjectiveDocument: StoredObjectiveDocumentSchema,
+  StoredModelDocument: StoredModelDocumentSchema,
   SetDocument: SetDocumentSchema,
   SetEntry: SetEntrySchema,
   PythonTaskSelection: PythonTaskSelectionSchema,
@@ -15157,6 +15669,9 @@ export interface ContractTypeMap {
   ValidityAcceptance: ValidityAcceptance;
   AnalysisDocument: AnalysisDocument;
   TaskDocument: TaskDocument;
+  StoredTaskDocument: StoredTaskDocument;
+  StoredObjectiveDocument: StoredObjectiveDocument;
+  StoredModelDocument: StoredModelDocument;
   SetDocument: SetDocument;
   SetEntry: SetEntry;
   PythonTaskSelection: PythonTaskSelection;

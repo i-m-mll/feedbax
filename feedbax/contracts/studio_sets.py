@@ -12,7 +12,8 @@ from feedbax.contracts.request_refs import Sha256
 from feedbax.contracts.studio_authoring import StudioRunSelection
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scope import StudioStoreChoice
-from feedbax.contracts.task_document import Link, Variable
+from feedbax.contracts.stored_members import StoredAddressedMembers, StoredMemberKey, StoredMembers
+from feedbax.contracts.task_document import StoredVariable
 
 
 class DuplicateRun(StudioRunSelection):
@@ -97,8 +98,8 @@ class SetEntryTask(StrictModel):
     step: ProjectName
     axis: ProjectName
     entry: ProjectName
-    task_variables: tuple[Variable, ...] | None = None
-    task_links: tuple[Link, ...] | None = None
+    task_variables: StoredMembers[StoredVariable] | None = None
+    task_links: StoredAddressedMembers[StoredMemberKey] | None = None
 
 
 class StudioSetEditRequest(StrictModel):
