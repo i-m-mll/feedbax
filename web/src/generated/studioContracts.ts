@@ -3373,7 +3373,7 @@ export type ImportedModelProvenance = {
 
 export type IndexName = string;
 
-export type IndexRule = AuthoredExpressionText | Record<string, StoredExpression | NamedIndexValue>;
+export type IndexRule = StoredIndexSequence | Record<string, StoredExpression | NamedIndexValue>;
 
 export type IndexSelection = {
   "index": number;
@@ -4374,6 +4374,8 @@ export type StoredGraphInterior = {
 export type StoredHoldAttachment = {
   "kind": "hold";
 };
+
+export type StoredIndexSequence = AuthoredExpressionText;
 
 export type StoredInterventionAttachment = {
   "kind": "intervention";
@@ -12068,7 +12070,7 @@ export const IndexNameSchema: z.ZodType<IndexName> = z.lazy(() =>
 ) as unknown as z.ZodType<IndexName>;
 
 export const IndexRuleSchema: z.ZodType<IndexRule> = z.lazy(() =>
-  z.union([AuthoredExpressionTextSchema, z.record(IndexNameSchema, z.union([StoredExpressionSchema, NamedIndexValueSchema])).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' })])
+  z.union([StoredIndexSequenceSchema, z.record(IndexNameSchema, z.union([StoredExpressionSchema, NamedIndexValueSchema])).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' })])
 ) as unknown as z.ZodType<IndexRule>;
 
 export const IndexSelectionSchema: z.ZodType<IndexSelection> = z.lazy(() =>
@@ -13426,6 +13428,10 @@ export const StoredHoldAttachmentSchema: z.ZodType<StoredHoldAttachment> = z.laz
     "kind": z.literal("hold"),
   }).strict()
 ) as unknown as z.ZodType<StoredHoldAttachment>;
+
+export const StoredIndexSequenceSchema: z.ZodType<StoredIndexSequence> = z.lazy(() =>
+  AuthoredExpressionTextSchema
+) as unknown as z.ZodType<StoredIndexSequence>;
 
 export const StoredInterventionAttachmentSchema: z.ZodType<StoredInterventionAttachment> = z.lazy(() =>
   z.object({
