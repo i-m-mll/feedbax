@@ -18,7 +18,8 @@ from feedbax.contracts.model_edit import (
     VariantRuns, StudioEvaluateValueSource, StudioStepNameReference,
 )
 from feedbax.contracts.project import (
-    DifferenceNotApplied, Differences, LoadedModelDocument, Project, apply_differences, diff, nearest_shared_base,
+    DifferenceNotApplied, Differences, LoadedModelDocument, Project, apply_differences, diff, member_name,
+    nearest_shared_base,
 )
 from feedbax.planner.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, SelectedRunDefinition
 from feedbax.contracts.project_io import project_declaration_name
@@ -36,10 +37,15 @@ def evaluate_subject(definition: SelectedRunDefinition | None) -> tuple[RunKey, 
     return RunKey(source.variant, source.step, source.row), source
 
 
-def evaluate_value_source(source: ValueSource, *, evaluate_step: str | None = None) -> StudioEvaluateValueSource:
+def evaluate_value_source(
+    plan: ProjectPlan, source: ValueSource, *, variant: str, evaluate_step: str | None = None,
+) -> StudioEvaluateValueSource:
+    step = source.step or evaluate_step or source.name
+    project = plan.variant_projects[source.variant or variant]
     return StudioEvaluateValueSource(
         kind="evaluate" if evaluate_step is not None else "trained",
-        reference=StudioStepNameReference(kind="step", key=source.step or evaluate_step or source.name),
+        reference=StudioStepNameReference(kind="step", key=step),
+        name=member_name(project.steps, step),
     )
 
 
@@ -113,7 +119,7 @@ def read_evaluate_model(
         editable &= not loaded.model.unresolved and loaded.model.pointer is None and read in snapshot.project.documents
     elif upstream := evaluate_subject(definition):
         producer, provenance = upstream
-        source = evaluate_value_source(provenance)
+        source = evaluate_value_source(selected, provenance, variant=key.variant)
         train_plan = folders.read_plan(project_id, revision=body.revision, source_runs=(producer,)).plan
         train = train_plan.selected_definitions.get(producer)
         row = next((row for row in selected.rows if row.key == key), None)
@@ -149,7 +155,9 @@ def read_evaluate_model(
                     pointer((*site, "op")),
                 )
                 if origin is not None:
-                    field_sources[record.address.to_text()] = evaluate_value_source(origin, evaluate_step=key.step)
+                    field_sources[record.address.to_text()] = evaluate_value_source(
+                        selected, origin, variant=key.variant, evaluate_step=key.step,
+                    )
     return EvaluateReading(EvaluateModelState(
         revision=body.revision,
         editable=editable,

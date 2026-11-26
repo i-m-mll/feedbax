@@ -349,21 +349,26 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
         write_bytes_atomic(destination, dump_plan_requests(current, variants))
 
     if output.json:
-        from feedbax.contracts.jobs import StudioPlanReviewEntry, StudioPlanReviewSource
+        from feedbax.contracts.jobs import StudioPlanReviewEntry
         from feedbax.project_folder import SettledProjectPlan
         from feedbax.web.services.project_plan import ProjectPlanRead, plan_request_address
+        from feedbax.web.services.value_sources import PlanSourceNames
 
         view = ProjectPlanRead.without_history(SettledProjectPlan.from_text(location, text, plan))
         result = view.response(include_window_map=True, variants=variants)
         if before is not None:
+            before_names = PlanSourceNames(before.source_index) if before.source_index is not None else None
+            after_names = PlanSourceNames(plan)
             result.review = [
                 StudioPlanReviewEntry(
                     **plan_request_address(key),
                     request_id=(scoped.entries.get(key) or before.entries[key]).request_id,
                     state=change.state, path=change.path,
                     upstream=plan_request_address(change.upstream) if change.upstream else None,
-                    before_source=StudioPlanReviewSource.from_source(change.before_source) if change.before_source else None,
-                    after_source=StudioPlanReviewSource.from_source(change.after_source) if change.after_source else None,
+                    before_source=before_names.project(change.before_source, run_key(key))
+                    if before_names is not None and change.before_source is not None else None,
+                    after_source=after_names.project(change.after_source, run_key(key))
+                    if change.after_source is not None else None,
                 )
                 for key, change in changes.items()
             ]
