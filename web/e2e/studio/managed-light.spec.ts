@@ -422,7 +422,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     expect(nominal.x).toHaveLength(first.task.fixed_steps! + 1);
     expect(nominal.x).toEqual(heavy.x);
     // Softmax pushes (1/2, 1/2) at unit mass, so the speed along the one reach grows by its share of that per second.
-    const [[startX, startY], [targetX, targetY]] = [first.reach.variables!.start, first.reach.variables!.target] as number[][];
+    const [[startX, startY], [targetX, targetY]] = [first.reach.variables!.start, first.reach.variables!.target] as unknown as number[][];
     const along = (targetX - startX + targetY - startY) / (2 * Math.hypot(targetX - startX, targetY - startY));
     for (const [index, time] of nominal.x.entries()) {
       expect(nominal.y[index]).toBeCloseTo(time * along, 6);

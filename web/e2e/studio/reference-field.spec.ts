@@ -42,7 +42,6 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   const analysis = {
     schema: analysisDocumentSchemaId, label: 'Analysis',
     payload: {
-      schema_version: analysisDocumentSchemaId,
       inputs: { states: { kind: 'dataset' }, policy: { kind: 'model' }, protocol: { kind: 'task' } },
       operations: {}, views: {},
     },

@@ -41,7 +41,7 @@ export const blankDocuments = {
   analysis: {
     schema: analysisDocumentSchemaId,
     payload: {
-      schema_version: analysisDocumentSchemaId, inputs: { states: { kind: 'dataset' } },
+      inputs: { states: { kind: 'dataset' } },
     },
   },
   report: {
