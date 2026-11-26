@@ -163,7 +163,7 @@ test('entering a Model composite while an edit saves happens at once', async ({ 
   // The duplicate's save is held, so the workspace stays unsettled.
   const release = await holdRequests(page, (url) => url.pathname === `${projectPath}/members/command`);
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step Baseline\b/ }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step Evaluate\b/ }).click();
   await model.locator('[data-id="wrapper"] header').dblclick();
   await expect(model.locator('[data-id="controller"] header')).toBeVisible();
   release();

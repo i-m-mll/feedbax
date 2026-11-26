@@ -28,7 +28,7 @@ test('Load reports every problem of a model file at the Model picker, and shows 
     }
     const name = url.searchParams.get('name')!;
     const created = await request.post(`${projectPath}/files`, { data: { revision: url.searchParams.get('revision'), file: {
-      kind: 'document', id: name, document: { schema: 'feedbax.spec.loaded_model', payload: {
+      kind: 'document', id: name, document: { schema: 'feedbax.spec.loaded_model', label: 'Reach baseline', payload: {
         schema_version: 'feedbax.spec.loaded_model.v1', model: { document: url.searchParams.get('model') },
         source: {
           kind: 'imported', model: object(digest('a'), 1200),

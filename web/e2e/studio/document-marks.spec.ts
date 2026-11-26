@@ -120,7 +120,7 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
   await menu.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   const rename = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header').getByRole('textbox');
   await expect(rename).toBeFocused();
-  const duplicate = 'Point mass 2 2';
+  const duplicate = 'Point mass 3';
   await expect(rename).toHaveValue(duplicate);
   await page.keyboard.press('Escape');
   await expect(picker).toHaveText(duplicate);
@@ -134,7 +134,7 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
 
 test('Detach of an evaluation\'s based Model is stored, marks the Evaluate\'s Model and leaves its Task readable', async ({ page, request }) => {
   const narrowed = { kind: 'document', id: 'point-mass-2', document: {
-    schema: 'feedbax.spec.model', base: { document: 'point-mass' }, differences: {},
+    schema: 'feedbax.spec.model', label: 'Point mass 2', base: { document: 'point-mass' }, differences: {},
   } };
   const check = evaluation('check', 'train');
   (check.step.base.inline as Record<string, unknown>).trial_documents = { model: { document: 'point-mass-2' } };
@@ -263,11 +263,11 @@ test('an attachment a based Model document adds is marked as authored there, and
   const { snapshot: seeded } = await project(request);
   const { snapshot } = await appendManagedFiles(request, seeded, [
     { kind: 'document', id: 'point-mass-2', document: {
-      schema: 'feedbax.spec.model', base: { document: 'point-mass' }, differences: {
+      schema: 'feedbax.spec.model', label: 'Point mass 2', base: { document: 'point-mass' }, differences: {
         '/interior/wires/decode/attachments': { value: [{ id: 'lag', kind: 'delay', delay: { value: 1, unit: 'st' }, initial_source: { kind: 'value', value: 0 } }] },
       },
     } },
-    { kind: 'document', id: 'point-mass-3', document: { schema: 'feedbax.spec.model', base: { document: 'point-mass-2' } } },
+    { kind: 'document', id: 'point-mass-3', document: { schema: 'feedbax.spec.model', label: 'Point mass 3', base: { document: 'point-mass-2' } } },
   ]);
   const pointed = await request.patch(`/api/projects/${snapshot.project_id}`, { data: { revision: snapshot.revision, files: [{
     address: { kind: 'step', id: 'train' },
@@ -348,10 +348,10 @@ test('a based Training document marks the class it changes, and Reset gives it t
   const inline = (seeded.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
   const { snapshot } = await appendManagedFiles(request, seeded, [
     { kind: 'document', id: 'training', document: {
-      schema: 'feedbax.spec.training_document', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
+      schema: 'feedbax.spec.training_document', label: 'Training', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
     } },
     { kind: 'document', id: 'training-2', document: {
-      schema: 'feedbax.spec.training_document', base: { document: 'training' },
+      schema: 'feedbax.spec.training_document', label: 'Training 2', base: { document: 'training' },
       differences: { '/settings/optimizer/type': { value: 'adabelief' } },
     } },
   ]);
@@ -370,7 +370,7 @@ test('a based Training document marks the class it changes, and Reset gives it t
   await expect(primary.getByRole('textbox', { name: 'Batches', exact: true })).not.toHaveAccessibleDescription(/Changed/);
   await optimizer.getByRole('button', { name: 'Changed', exact: true }).first().click();
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
-  await expect.poll(async () => (await documents())['training-2']).toMatchObject({ differences: {} });
+  await expect.poll(async () => (await documents())['training-2']).not.toHaveProperty('differences');
   await expect(optimizer.getByRole('combobox', { name: 'Optimizer', exact: true })).toHaveValue('Adam');
   await expect(optimizer.getByRole('button', { name: 'Changed', exact: true })).toHaveCount(0);
 });
