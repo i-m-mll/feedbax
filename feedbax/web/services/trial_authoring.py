@@ -37,7 +37,8 @@ from feedbax.project_members import generated_name
 from feedbax.project_model_selection import stored_trial_task_slot, trial_document_slots, trial_task_slot
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, EvaluationRequestSpec, SynthesisRequestSpec
-from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings, authored_variation
+from feedbax.contracts.request_refs import BestRank
+from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_rollout_settings, authored_variation
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.project_storage import stored_keyed_collection, stored_project_value
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
@@ -673,9 +674,14 @@ def _evaluate_documents(plan, key, definition, bundle):
         ) else source_graph
         run = next((row for row in plan.runs if row.key == key), None)
         if run is not None:
-            effective = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-            if isinstance(effective, EvaluationRequestSpec):
-                settings = authored_rollout_settings(effective.params)
+            effective = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
+            if isinstance(effective.spec, EvaluationRequestSpec):
+                settings = RolloutParameters.model_validate(effective.spec.params)
+                subject_ref = effective.inputs["subject"][0].reference
+                if upstream and isinstance(subject_ref, BestRank):
+                    candidate = next(candidate for candidate in subject_ref.candidates
+                                     if (candidate.variant, candidate.row) == (upstream[0].variant, upstream[0].row))
+                    settings = settings.for_best_candidate(candidate.key)
                 if settings.variation and settings.variation != params.variation:
                     lowered = resolve_evaluation_variant(
                         source_graph, documents.task_source, settings.variation, components=bundle.components,
