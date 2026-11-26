@@ -11,6 +11,7 @@ from pydantic import ConfigDict, Field, FiniteFloat, JsonValue
 from feedbax.contracts.artifact_custody import StoreTransferProgress
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.code_validity import AttemptProvenance
+from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, OpeningObservation, OpeningStep, TargetId
 from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.loaded_model import ImportedModelProvenance
@@ -251,6 +252,7 @@ class StudioSavedTrainChange(StudioDefinitionChange):
 
 class StudioSavedTrainRow(StrictModel):
     key: StudioSavedTrainKey
+    name: str
     label: str | None
     request_id: str
     attempts: list[StudioSavedTrainAttempt]
@@ -302,6 +304,7 @@ class StudioSavedLightHistory(StrictModel):
 
 class StudioProjectWindowMapRow(StrictModel):
     key: StudioSavedTrainKey
+    name: str
     label: str | None
     coordinates: dict[str, StudioProjectWindowMapCoordinate]
     input_axes: dict[str, StudioProjectWindowMapInputAxis] = Field(
@@ -406,6 +409,8 @@ class StudioProjectWindowMapProblem(StrictModel):
     step: str | None
     row: str | None
     place: StudioPlace | None
+    subject_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The display name of a reference target that does not exist."""
     document_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     address: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -427,6 +432,7 @@ class StudioProjectWindowMapProblem(StrictModel):
                 element=diagnostic.element, element_name=diagnostic.element_name, member=diagnostic.model_address,
                 variation=lambda _name: diagnostic.variation_target,
             ) if diagnostic.step else None,
+            subject_name=member_display_name(diagnostic.missing_subject) if diagnostic.missing_subject is not None else None,
             document_path=diagnostic.document_path, address=diagnostic.authored_file or source,
             layer=diagnostic.layer, authored_path=diagnostic.authored_path,
             span=diagnostic.span, selection_value=diagnostic.selection_value,
@@ -498,8 +504,6 @@ class StudioProjectWindowMapElement(StrictModel):
 
 class StudioProjectWindowMap(StrictModel):
     variants: list[str]
-    document_names: dict[str, dict[str, str]]
-    """Display names by variant and document ID."""
     steps: list[StudioProjectWindowMapStep]
     rows: list[StudioProjectWindowMapRow]
     edges: list[StudioProjectWindowMapEdge]

@@ -245,6 +245,7 @@ class ProjectPlanRead:
             rows=[
                 StudioSavedTrainRow(
                     key=StudioSavedTrainKey.model_validate(run.key, from_attributes=True),
+                    name=run.name,
                     label=run.label,
                     request_id=run.request_id,
                     attempts=[
@@ -448,19 +449,8 @@ class ProjectPlanRead:
             *row_problems(plan, variants),
             *(problem for problem in self.evaluation_problems if includes(problem.variant)),
         ]
-        document_names = {
-            variant: {name: member_display_name(name, document.label) for name, document in project.documents.items()}
-            for variant, project in plan.variant_projects.items() if includes(variant)
-        }
-        for problem in problems:
-            if document := getattr(problem.place, "document", None):
-                scopes = (problem.variant,) if problem.variant is not None else tuple(document_names)
-                for variant in scopes:
-                    document_names.setdefault(variant, {}).setdefault(document, member_display_name(document))
-
         return StudioProjectWindowMap(
             variants=[variant for variant in plan.variants if includes(variant)],
-            document_names=document_names,
             steps=[
                 StudioProjectWindowMapStep(
                     variant=variant, step_id=step_id, label=member_display_name(step_id, step.label),
@@ -478,6 +468,7 @@ class ProjectPlanRead:
             rows=[
                 StudioProjectWindowMapRow(
                     key=StudioSavedTrainKey.model_validate(row.key, from_attributes=True),
+                    name=row.name,
                     label=row.label,
                     status=statuses[row.key].status,
                     reason=statuses[row.key].reason,

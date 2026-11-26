@@ -65,7 +65,9 @@ from feedbax.contracts.project_io import (
     text_project_fingerprint,
     text_project_settings_edit,
 )
-from feedbax.planner.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, _builtin_model_registry, compile_project, compiler_authority
+from feedbax.planner.project_plan import (
+    ProjectPlan, ProjectPlanMemo, RunKey, _builtin_model_registry, compile_project, compiler_authority, project_variants,
+)
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
@@ -107,6 +109,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectPatchBatch,
     StudioProjectRename,
     StudioProjectReplay,
+    StudioProjectMemberNames,
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
@@ -1041,8 +1044,18 @@ class ProjectFolder:
                     ))
                 else:
                     composed[name] = entry.payload
+        names = StudioProjectMemberNames.from_project(text.project)
+        variants = project_variants(
+            text.project, components=self.components, functions=self.functions, python_tasks=self.python_tasks,
+            training_methods=self.training_methods,
+        )
         return StudioProjectSnapshot(
             project_id=location.project_id,
+            names=names,
+            variant_names={
+                key: names if project is text.project else StudioProjectMemberNames.from_project(project)
+                for key, project in variants.items()
+            },
             composed=composed,
             problems=problems,
             revision=text.revision,

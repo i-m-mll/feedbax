@@ -422,6 +422,10 @@ class PlannedRow:
     """Optional axes for which this row is the unvalued member."""
 
     @property
+    def name(self) -> str:
+        return member_display_name(self.key.row, self.label)
+
+    @property
     def selection_coordinates(self) -> dict[str, SweepCoordinate]:
         return axis_coordinates(self.coordinates, self.input_axes, self.kept_axes)
 
@@ -4427,7 +4431,10 @@ class _Compiler:
             return ((PlannedInput(None, member, terminal=terminal.subject), None),), {}, None
         if isinstance(reference, LoadedModelReference) and role.name == "checkpoint" and role.producer_kind == "train":
             if reference.source.unresolved or reference.source.pointer:
-                return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "Choose a Loaded Model document.", name)
+                return ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, path, "Choose a Loaded Model document.", name,
+                    missing_subject=reference.source.document if reference.source.unresolved else None,
+                )
             document = compose_document(self.variants[variant].documents.get, reference.source.document)
             if isinstance(document, ProjectDiagnostic):
                 return replace(document, path=path, step=name)
@@ -4447,7 +4454,10 @@ class _Compiler:
             )
         if reference.unresolved:
             target = reference.element or reference.step
-            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, f"Unresolved target {member_display_name(target)}.", name)
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, path, f"Unresolved target {member_display_name(target)}.",
+                name, missing_subject=target,
+            )
         synthesis_dataset = role.operation_outputs and reference.element is None and reference.product is not None
         if role.operation_outputs and reference.product is not None:
             role = replace(role, producer_kind="synthesize" if synthesis_dataset else "analyze", product_role=reference.product)
@@ -4466,7 +4476,10 @@ class _Compiler:
         if element_input:
             card = self.holders(variant).card_of(reference.step, reference.element)
             if isinstance(card, AddressProblem):
-                return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.element", card.detail, name)
+                return ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, f"{path}.element", card.detail, name,
+                    missing_subject=card.missing_subject,
+                )
             reference = reference.model_copy(update={"step": card})
         if reference.checkpoint is not None and role.product_role != "checkpoint":
             return ProjectDiagnostic(
@@ -4480,7 +4493,7 @@ class _Compiler:
             if terms.unresolved:
                 return ProjectDiagnostic(
                     ResolutionCode.MISSING_DOCUMENT, f"{path}.where", member_display_name(subset_document),
-                    name, document=subset_document,
+                    name, document=subset_document, missing_subject=subset_document,
                 )
             document = compose_document(self.variants[variant].documents.get, subset_document)
             if isinstance(document, ProjectDiagnostic):
@@ -4534,7 +4547,7 @@ class _Compiler:
                     ResolutionCode.BAD_REFERENCE,
                     path,
                     f"{source_variant}/{label} must be a {' or '.join(accepted)} step",
-                    name,
+                    name, missing_subject=reference.step if producer is None else None,
                 )
             product_roles.add(accepted[producer.kind])
             self.step(*target, active)
@@ -4712,6 +4725,29 @@ class _Compiler:
         if subset is not None and best is not None:
             return self.rank_input(name, template, role, tuple(members), subset, reference, path)
         return tuple(members), {}, subset
+
+
+def project_variants(
+    project: Project,
+    *,
+    components: ComponentRegistry | None = None,
+    functions: FunctionRegistry | None = None,
+    python_tasks: PythonTaskRegistry | None = None,
+    training_methods: TrainingMethodRegistry | None = None,
+) -> dict[str, Project]:
+    """Resolve authored variants without planning their runs or reading Store artifacts."""
+    if project.sweep is None:
+        return {DEFAULT_SWEEP_ROW: project}
+    if python_tasks is None:
+        python_tasks = application_python_tasks()
+    if training_methods is None and any(step.kind == "train" for step in project.steps.values()):
+        training_methods = load_application().bundle.training_methods
+    compiler = _Compiler(
+        project, BaseReaders(), (), components=components, functions=functions,
+        python_tasks=python_tasks, training_methods=training_methods,
+    )
+    compiler.expand_variants()
+    return compiler.variants
 
 
 def compile_project(
