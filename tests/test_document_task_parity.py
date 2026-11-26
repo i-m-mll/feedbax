@@ -550,6 +550,97 @@ def test_batch_loss_is_the_mean_of_total_cost_per_trial(functions):
     assert result.terms["reach"] == (8, 1)
 
 
+def test_objective_family_reports_one_masked_sum_without_changing_the_loss(functions):
+    from feedbax.contracts.jobs import JobReceipt, StudioEvaluationCheckpoint
+    from feedbax.contracts.objective_document import StoredObjectiveDocument
+    from feedbax.dataset import Dataset, Variable as DatasetVariable
+    from feedbax.execution.trial_execution import TrialEvaluation
+    from feedbax.execution.trial_places import bind_trial_places
+    from feedbax.persistence.canonical_evaluate import _objective_points
+    from feedbax.persistence.evaluation_trial_records import read_trial_record, trial_dataset_fields
+    from feedbax.runtime.raw_state import RawStateLayout
+
+    task = compile_task(TaskDocument(
+        id="task", variables=(), signals=(),
+        epochs=(Epoch(id="move", name="Move", end=Length(length=expression("2 st"))),),
+    ), functions, model=PORTLESS)
+    assert isinstance(task, DocumentTask), task
+    key = jr.key(13)
+    keys = jr.split(key, 3)
+    trials = jax.vmap(lambda trial_key: task.ahead(TaskParameters(), key, trial_key))(keys)
+    trials = trials._replace(epochs=EpochRecord(
+        starts=jnp.asarray([[0], [1], [-1]]), ends=jnp.asarray([[2], [2], [-1]]),
+        outcomes=jnp.asarray([[1], [1], [0]]),
+    ))
+    retained = {"x": jnp.asarray([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])}
+
+    def term(index):
+        return {
+            "label": "Movement energy",
+            "measure": f"sqnorm(point(x * 1 m, {index} * 1 m))",
+            "measure_type": ValueType(base=ValueBase.REAL, dimensions=LENGTH.raised(2)).model_dump(mode="json"),
+            "weight": f"{index} + 1", "reduction": "sum",
+            "window": {"spans": [{
+                "kind": "moment", "at": {
+                    "anchor": {"kind": "epoch", "epoch": "move", "edge": "start"}, "offset": f"{index} * 1 st",
+                },
+            }]},
+        }
+
+    base = {"measure": "sqnorm([0..1])"}
+    family_document = StoredObjectiveDocument.model_validate({
+        "id": "cost", "terms": {"base": base, "energy": {**term("k"), "over": {"k": "0..1"}}},
+    }).lower()
+    explicit_document = StoredObjectiveDocument.model_validate({
+        "id": "cost", "terms": {"base": base, "energy-0": term(0), "energy-1": term(1)},
+    }).lower()
+    assert tuple(t.model_copy(update={"family": None}) for t in family_document.terms) == explicit_document.terms
+    family = compile_objective(family_document, (name("x", REAL),), functions, task=task)
+    explicit = compile_objective(explicit_document, (name("x", REAL),), functions, task=task)
+    assert isinstance(family, ObjectiveExecutor) and isinstance(explicit, ObjectiveExecutor), (family, explicit)
+    places = bind_trial_places(family, task, {})
+    opts = {"run_key": key, "trial_keys": keys}
+    result, traces = family.evaluate_with_traces(retained, trials, observed_points=places.observations, **opts)
+    expected = explicit.evaluate(retained, trials, **opts)
+    np.testing.assert_array_equal(result.trial_losses, expected.trial_losses)
+    np.testing.assert_array_equal(result.trial_losses, [12, 17, 1])
+    assert result.loss == expected.loss == 10
+    assert result.terms == family.evaluate(retained, trials, **opts).terms == {"base": (1, 3), "energy": (13.5, 2)}
+    assert family(retained, trials, ObjectiveInputs(key, keys)).total == result.loss
+    single = jax.tree.map(lambda value: value[0], trials)
+    signal = {"x": retained["x"][0]}
+    assert family.trial_loss(signal, single, key, keys[0]) == explicit.trial_loss(signal, single, key, keys[0]) == 12
+
+    fields, coords, layout = trial_dataset_fields(
+        task, TrialEvaluation(result, trials, retained, None, traces), RawStateLayout(()),
+        leading=("update", "condition"), labels={}, places=places,
+    )
+    for name_, summary in result.terms.items():
+        fields[f"objective/terms/{name_}"] = DatasetVariable(np.asarray([[summary.value]]), ("update", "condition"))
+        fields[f"objective/coverage/{name_}"] = DatasetVariable(np.asarray([[summary.covered]]), ("update", "condition"))
+    fields["objective/total"] = DatasetVariable(np.asarray([[result.loss]]), ("update", "condition"))
+    dataset = Dataset.from_arrays(fields, coords=coords)
+    first = read_trial_record(dataset, "first", (0, 0, 0), layout)
+    assert set(first.terms) == {"base", "energy"}
+    energy = first.terms["energy"]
+    assert energy.steps == [True, True] and energy.covered and energy.value == 11
+    assert energy.values == [1, 10] and energy.weights is None
+    assert [place.samples for place in energy.places] == [[(1, 0), (2, 0)], [(1, 1), (2, 1)]]
+    second = read_trial_record(dataset, "second", (0, 0, 1), layout).terms["energy"]
+    assert second.steps == [False, True] and second.values == [0, 16] and second.value == 16
+    third = read_trial_record(dataset, "third", (0, 0, 2), layout).terms["energy"]
+    assert third.steps == [False, False] and not third.covered and third.value is None
+    checkpoint = StudioEvaluationCheckpoint(
+        job_id="train", request_id="training", completed_updates=3, publication_cursor=1,
+        transaction=JobReceipt(manifest_id="train-3", manifest_sha256="a" * 64),
+        transaction_root_sha256="b" * 64, binding_sha256="c" * 64,
+    )
+    (point,) = _objective_points(dataset, [checkpoint], family_document, 3)
+    assert [(t.path, t.name, t.value, t.coverage) for t in point.terms] == [
+        ("/base", "base", 1, 3), ("/energy", "Movement energy", 13.5, 2),
+    ]
+
+
 def test_objective_power_ramp_and_five_step_lag(functions):
     x = name("x", REAL)
     age = name("age", TIME_TYPE)

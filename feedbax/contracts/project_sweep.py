@@ -567,6 +567,8 @@ class ExpandedRow:
     task_additions: tuple[TaskAdditions, ...] = ()
     kept_axes: tuple[str, ...] = ()
     """Optional sweep axes that kept this run without selecting an authored value."""
+    set_entries: Mapping[str, str] = field(default_factory=dict)
+    """The authored Set entry on each selected axis, including generated family members."""
 
     def inherited_id(self, axes: tuple[str, ...]) -> str | None:
         """Project generated choices onto the inherited axes, or keep an authored row ID.
@@ -1195,6 +1197,8 @@ def _expanded(
         row_id, sweep_row_name(selected_values.values()), coordinates, patches, bindings, origins, authors, axis_value_ids,
         input_axes, tuple(choice.task_additions for choice in selection.values() if choice.task_additions is not None),
         kept_axes,
+        {name: choice.origin[2] for name, choice in selection.items()
+         if choice.origin is not None and choice.origin[0] == "set_entry"},
     )
 
 

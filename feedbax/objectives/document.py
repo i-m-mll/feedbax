@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Set
+from collections.abc import Iterable, Iterator, Mapping, Set
 from dataclasses import dataclass
 from enum import Enum
 from typing import NamedTuple
@@ -82,6 +82,7 @@ class ObjectiveUse(Enum):
 @dataclass(frozen=True)
 class _Term:
     id: str
+    report_key: str
     measure: Compiled
     weight: Compiled
     reduction: Reduction
@@ -93,6 +94,7 @@ class _Term:
 @dataclass(frozen=True)
 class _UncoveredTerm:
     id: str
+    report_key: str
 
 
 @dataclass(frozen=True)
@@ -149,7 +151,7 @@ class ObjectiveExecutor(eqx.Module):
 
     def evaluate(self, retained, trials, *, run_key, trial_keys, parameters=None):
         values = jax.vmap(
-            lambda kept, trial, key: self.evaluate_trial(
+            lambda kept, trial, key: self._member_values(
                 kept,
                 trial,
                 run_key,
@@ -157,19 +159,28 @@ class ObjectiveExecutor(eqx.Module):
                 parameters=parameters,
             )
         )(retained, trials, trial_keys)
-        return _reduce_trials(values, trial_keys.shape[0])
+        return _reduce_trials(values, self._report_values(values), trial_keys.shape[0])
+
+    @property
+    def report_keys(self) -> dict[str, str]:
+        return {term.id: term.report_key for term in self.terms}
 
     def point_operands(self) -> dict[str, TermPoints]:
         return {term.id: measure_points(term.measure.checked) for term in self.terms if isinstance(term, _Term)}
 
     def evaluate_with_traces(self, retained, trials, *, run_key, trial_keys, parameters=None, observed_points=None):
-        traces = jax.vmap(
-            lambda kept, trial, key: self.trial_terms(
+        members = jax.vmap(
+            lambda kept, trial, key: self._member_traces(
                 kept, trial, run_key, key, parameters=parameters, observed_points=observed_points,
             )
         )(retained, trials, trial_keys)
-        values = {term: trace.reduced for term, trace in traces.items()}
-        return _reduce_trials(values, trial_keys.shape[0]), traces
+        traces = self._report_traces(members)
+        result = _reduce_trials(
+            {term: trace.reduced for term, trace in members.items()},
+            {term: trace.reduced for term, trace in traces.items()},
+            trial_keys.shape[0],
+        )
+        return result, traces
 
     def evaluate_trial(
         self,
@@ -180,9 +191,17 @@ class ObjectiveExecutor(eqx.Module):
         *,
         parameters=None,
     ) -> Mapping[str, TermValue]:
+        return self._report_values(self._member_values(retained, trial, run_key, trial_key, parameters=parameters))
+
+    def trial_loss(self, retained, trial: Trial, run_key, trial_key) -> jax.Array:
+        """Return the scalar objective with the original member summation order."""
+        values = self._member_values(retained, trial, run_key, trial_key)
+        return sum((_contribution(term) for term in values.values()), jnp.asarray(0.0))
+
+    def _member_values(self, retained, trial, run_key, trial_key, *, parameters=None) -> dict[str, TermValue]:
         return {
             term: trace.reduced for term, trace in
-            self.trial_terms(retained, trial, run_key, trial_key, parameters=parameters).items()
+            self._member_traces(retained, trial, run_key, trial_key, parameters=parameters).items()
         }
 
     def trial_terms(
@@ -197,6 +216,41 @@ class ObjectiveExecutor(eqx.Module):
         observed_points: Mapping[str, tuple[NodePath, ...]] | None = None,
     ) -> Mapping[str, TermTrace]:
         """The weight, weighted measure, covered steps and reduction of each term."""
+        members = self._member_traces(
+            retained, trial, run_key, trial_key, parameters=parameters,
+            unobserved=unobserved, observed_points=observed_points,
+        )
+        return self._report_traces(members)
+
+    def _report_values(self, values: Mapping[str, TermValue]) -> dict[str, TermValue]:
+        return {
+            key: values[key] if ids == [key] else _sum_covered(values[id] for id in ids)
+            for key, ids in self._report_groups().items()
+        }
+
+    def _report_traces(self, traces: Mapping[str, TermTrace]) -> dict[str, TermTrace]:
+        return {
+            key: traces[key] if ids == [key] else _family_trace(traces[id] for id in ids)
+            for key, ids in self._report_groups().items()
+        }
+
+    def _report_groups(self) -> dict[str, list[str]]:
+        groups: dict[str, list[str]] = {}
+        for term in self.terms:
+            groups.setdefault(term.report_key, []).append(term.id)
+        return groups
+
+    def _member_traces(
+        self,
+        retained,
+        trial: Trial,
+        run_key,
+        trial_key,
+        *,
+        parameters=None,
+        unobserved: Set[str] = frozenset(),
+        observed_points: Mapping[str, tuple[NodePath, ...]] | None = None,
+    ) -> dict[str, TermTrace]:
         n_steps = self.n_steps
         k = jnp.arange(n_steps)
         results = {}
@@ -223,8 +277,9 @@ class ObjectiveExecutor(eqx.Module):
 
         supplied = fixed.keys() | traces.keys()
         for term in self.terms:
+            paths = observed_points.get(term.id, ()) if observed_points is not None else ()
             if isinstance(term, _UncoveredTerm) or term.references - supplied:
-                results[term.id] = uncovered
+                results[term.id] = _uncovered_points(uncovered, paths, n_steps)
                 continue
             selected = (
                 jnp.ones(n_steps, dtype=bool) if term.window is None
@@ -244,7 +299,6 @@ class ObjectiveExecutor(eqx.Module):
             weight_state = term.weight.with_trial(
                 weight_inputs, term.weight.evaluate_run(weight_inputs)
             )
-            paths = observed_points.get(term.id, ()) if observed_points is not None else ()
             if not measure_is_step:
                 measure, _ = term.measure.evaluate_step(measure_inputs, measure_state)
                 weight, _ = term.weight.evaluate_step(weight_inputs, weight_state)
@@ -258,7 +312,7 @@ class ObjectiveExecutor(eqx.Module):
                 )
                 continue
             if n_steps == 0:
-                results[term.id] = uncovered
+                results[term.id] = _uncovered_points(uncovered, paths, n_steps)
                 continue
             start = jnp.min(jnp.where(selected, k, n_steps))
             last = jnp.max(jnp.where(selected, k, -1))
@@ -304,14 +358,49 @@ def _weight_trace(weight: Evaluation, selected: jax.Array) -> Evaluation:
     return Evaluation(jnp.broadcast_to(weight.value, selected.shape), selected & weight.defined)
 
 
-def _reduce_trials(values, batch_size: int) -> ObjectiveResult:
+def _uncovered_points(trace: TermTrace, paths: tuple[NodePath, ...], n_steps: int) -> TermTrace:
+    if not paths:
+        return trace
+    return trace._replace(points=(Evaluation(jnp.zeros((n_steps, 2)), trace.steps),) * len(paths))
+
+
+def _contribution(term: TermValue) -> jax.Array:
+    return jnp.where(term.covered, term.value, 0)
+
+
+def _sum_covered(terms: Iterable[TermValue]) -> TermValue:
+    subtotal, covered = 0.0, False
+    for term in terms:
+        subtotal = subtotal + _contribution(term)
+        covered = covered | term.covered
+    return TermValue(subtotal, covered)
+
+
+def _family_trace(members: Iterable[TermTrace]) -> TermTrace:
+    members = tuple(members)
+    steps = members[0].steps
+    for member in members[1:]:
+        steps = steps | member.steps
+    samples = [jnp.where(member.steps, member.values, 0) for member in members if member.values is not None]
+    return TermTrace(
+        sum(samples) if samples else None,
+        steps,
+        _sum_covered(member.reduced for member in members),
+        None,
+        tuple(point for member in members for point in member.points),
+    )
+
+
+def _reduce_trials(
+    values: Mapping[str, TermValue], reported: Mapping[str, TermValue], batch_size: int,
+) -> ObjectiveResult:
     trial_losses = jnp.zeros((batch_size,))
+    for term in values.values():
+        trial_losses = trial_losses + _contribution(term)
     reduced = {}
-    for name, (value, covered) in values.items():
-        contribution = jnp.where(covered, value, 0)
-        count = jnp.count_nonzero(covered)
-        trial_losses = trial_losses + contribution
-        reduced[name] = TermValue(contribution.sum() / jnp.maximum(count, 1), count)
+    for name, term in reported.items():
+        count = jnp.count_nonzero(term.covered)
+        reduced[name] = TermValue(_contribution(term).sum() / jnp.maximum(count, 1), count)
     loss = trial_losses.sum() / max(batch_size, 1)
     return ObjectiveResult(loss, reduced, trial_losses)
 
@@ -402,7 +491,7 @@ def compile_objective(
         if use in (ObjectiveUse.INHERITED, ObjectiveUse.PREVIEW) and (
             measure_refs - measure_ids or weight_refs - weight_ids
         ):
-            terms.append(_UncoveredTerm(term.id))
+            terms.append(_UncoveredTerm(term.id, term.report_key))
             continue
         measure = compile_expression(
             term.measure,
@@ -433,7 +522,7 @@ def compile_objective(
                 if use in (ObjectiveUse.INHERITED, ObjectiveUse.PREVIEW) and all(
                     problem.code == ProblemCode.UNKNOWN_NAME for problem in window
                 ):
-                    terms.append(_UncoveredTerm(term.id))
+                    terms.append(_UncoveredTerm(term.id, term.report_key))
                 else:
                     problems.extend(window)
                 continue
@@ -459,6 +548,7 @@ def compile_objective(
         terms.append(
             _Term(
                 term.id,
+                term.report_key,
                 measure,
                 weight,
                 term.reduction,
@@ -474,8 +564,8 @@ def compile_objective(
         if preview_problems is not None:
             preview_problems.extend(problems)
         compiled_ids = {term.id for term in terms}
-        missing = dict.fromkeys(term.id for term in document.terms if term.enabled and term.id not in compiled_ids)
-        terms.extend(map(_UncoveredTerm, missing))
+        missing = {term.id: term.report_key for term in document.terms if term.enabled and term.id not in compiled_ids}
+        terms.extend(_UncoveredTerm(id, key) for id, key in missing.items())
     return ObjectiveExecutor(
         document.id,
         tuple(terms),
