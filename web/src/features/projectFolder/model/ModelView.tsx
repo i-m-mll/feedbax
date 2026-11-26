@@ -4,7 +4,9 @@ import { MarkerType, type OnConnectStart } from '@xyflow/react';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { componentsQuery } from '@/api/components';
-import { projectModelFields, readEvaluateModel, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
+import {
+  projectModelFields, readAttachmentDefaults, readEvaluateModel, readModelProjection, reviewModelConnections,
+} from '@/api/projectFolders';
 import { ApiRequestError, isRefusal } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
@@ -43,7 +45,7 @@ import { sendWithStore, type AskStore } from '../storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
 import {
-  attachmentFields, attachmentSources, operationOf, componentFields, modelFields, sharedFields, sourceValueField,
+  attachmentFields, attachmentSources, operationOf, componentFields, modelFields, readSource, sharedFields, sourceValueField,
   type AttachmentSource, type FieldChange,
 } from './ModelInspector';
 import { AttachmentSourceRow } from './AttachmentSourceRow';
@@ -1256,7 +1258,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const displacedAttachments = displaced.get(key);
     const attached = (list: readonly Attachment[], removedHere: boolean) => list.map((item) => ({
       id: item.id, label: attachmentName(item), mark: attachmentMark(item, projection.data?.delay_steps?.[addressKey(attachmentAddress(address, item.id))]),
-      description: item.kind === 'delay' ? `${item.delay} · ${wireLabel}`
+      description: item.kind === 'delay' && item.delay !== undefined ? `${item.delay} · ${wireLabel}`
         : item.kind === 'intervention' ? `${windowDescription(item, epochs)} · ${wireLabel}` : wireLabel,
       delay: item.kind === 'delay', select: () => select(attachmentAddress(address, item.id)),
       initial: item.kind === 'delay' && item.initial_source?.kind === 'wire' && item.initial_source.source
@@ -1336,9 +1338,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function addAttachment(address: ModelAddress, kind: Attachment['kind']) {
     const list = effective.get(addressKey(address)) ?? [];
     const id = modelMemberKey();
-    const item: Attachment = kind === 'delay' ? { id, kind, delay: '1 st' }
+    // A new delay's time and a new intervention's operands are the Service's defaults.
+    const item: Attachment = kind === 'delay' ? { id, kind }
       : kind === 'hold' ? { id, kind }
-      : kind === 'intervention' ? { id, kind, operation: 'scale', operands: { factor: { kind: 'value', value: 1 } } }
+      : kind === 'intervention' ? { id, kind, operation: 'scale' }
       : { id, kind, label: port?.name ?? 'Probe' };
     const difference = { op: 'add', address: attachmentAddress(address, id), after: list.at(-1)?.id ?? null, attachment: storedAttachment(item) } as const;
     if (evaluate) void applyEvaluate(studioAccessibleName('add', attachmentName(item)), difference);
@@ -1359,19 +1362,14 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       choose: (target) => { if (target.kind === 'port') void set({ kind: 'wire', port: target.address }); },
     } });
   }
-  /** The size of the signal an attachment acts on, as its port or its wire's ends type it; 1 when no type says. */
-  function signalWidth(attachment: ModelAddress) {
-    if (attachment.element.kind !== 'attachment') return 1;
-    const parent = attachment.element.parent;
-    const wire = parent.kind === 'wire' ? interior?.wires?.[parent.id] : undefined;
-    const ends = wire ? [[wire.source, 'output'], [wire.target, 'input']] as const
-      : parent.kind === 'port' ? [[parent.end, 'output']] as const : [];
-    for (const [end, direction] of ends) {
-      const type = portMap.get(idFor(end))?.find((candidate) => candidate.end.port === end.port && candidate.direction === direction)?.type;
-      const shape = typeof type === 'object' ? type.shape : undefined;
-      if (shape?.length === 1 && typeof shape[0] === 'number') return shape[0];
-    }
-    return 1;
+  /** Operand `name`'s default for the operation of intervention `item` at `address`, as the Service gives it. */
+  async function operandDefault(address: ModelAddress, item: Attachment, name: string) {
+    const operation = item.kind === 'intervention' && operationOf(item);
+    if (!projectionBody || !operation || address.element.kind !== 'attachment') return undefined;
+    const { operands } = await readAttachmentDefaults(saved.project_id, {
+      ...projectionBody, owner: at(address, address.element.parent), operation,
+    });
+    return operands[name] && readSource(graph, operands[name]);
   }
   function attachmentCommands(address: ModelAddress) {
     const wire = address.element.kind === 'wire';
@@ -1548,7 +1546,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function attachmentInspector(address: ModelAddress, item: Attachment) {
     const change = fieldEditing ? (next: Attachment) => updateAttachment(address, next) : undefined;
     const byId = new Map(projectedFields.map((field) => [field.id, field]));
-    const sources = attachmentSources(item, graph, change, signalWidth(address));
+    const sources = attachmentSources(item, graph, change);
     const sourceRows = sources.map((source) => {
       const { read } = source;
       const linked: ShownText | undefined = read.kind === 'task' ? variableRef(read.variable)
@@ -1558,7 +1556,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       return <AttachmentSourceRow key={JSON.stringify([addressKey(address), source.id, read.kind])} label={source.label} field={field}
         linked={linked} variables={variables} choose={set && ((variable) => void set({ kind: 'task', variable }))}
         pick={set && editTopology ? () => armSource(address, source) : undefined}
-        clear={set && (() => void set({ kind: 'value', value: source.unlinked }))} />;
+        clear={set && (async () => {
+          const value = source.unlinked !== undefined ? { kind: 'value' as const, value: source.unlinked }
+            : await operandDefault(address, item, source.id);
+          if (value) await set(value);
+        })} />;
     });
     const consumed = new Set(sources.map(({ field }) => field));
     const ownFields = projectedFields.filter(({ id }) => !consumed.has(id) && !id.startsWith('window.'));
@@ -1579,7 +1581,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     })] : [];
     return <Inspector name={attachmentName(item)}>
       {fieldRegion}
-      {rows(fieldScope, [...ownFields, ...attachmentFields(item, change, projectedNames, signalWidth(address))])}
+      {rows(fieldScope, [...ownFields, ...attachmentFields(item, change, projectedNames)])}
       {sourceRows}
       {window}
       {rows(addressKey(address), order)}
