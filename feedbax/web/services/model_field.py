@@ -48,6 +48,7 @@ from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, p
 from feedbax.studio.selection import StoredEdit, merged_files
 from feedbax.studio.value_structure import value_structure
 from feedbax.web.services.authored_scope import choose_prepared_edit, selected_edit_runs
+from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.value_sources import PlanSourceNames
 from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
@@ -413,6 +414,7 @@ def model_fields(
     shown = project.documents.get(body.document)
     changes, restored = (shown.differences, shown.base.document) if isinstance(shown, BasedDocument) else ({}, None)
     definitions = ()
+    visible_axis_values = {}
     runs = None
     held: dict[str, list[int | float]] = {}
     evaluate = None
@@ -437,6 +439,10 @@ def model_fields(
         plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key, *scoped)).plan
         definitions = tuple((item, plan.selected_definitions[item]) for item in (scoped or (key,))
                             if item in plan.selected_definitions)
+        if definitions:
+            visible_axis_values = axis_values(
+                row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)
+            )
         definition = plan.selected_definitions.get(key)
         if definition is not None and (model_payload := selected_model(definition, body.document)) is not None:
             effective_model = StoredModelDocument.model_validate(model_payload).lower(components)
@@ -504,7 +510,11 @@ def model_fields(
                 inherited.numeric.value, inherited.numeric.unit, inherited.expression
             ) != (numeric.value, numeric.unit, field.expression)
         sources = {
-            source: run for run, definition in definitions
+            replace(source, value=value_id) if (
+                source.kind == "sweep_value" and source.step == run.step and source.axis is not None
+                and (value_id := visible_axis_values.get((run, source.axis))) is not None
+            ) else source: run
+            for run, definition in definitions
             if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None
         }
         view = project_numeric_field(

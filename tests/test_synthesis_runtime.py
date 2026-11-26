@@ -17,12 +17,14 @@ from feedbax.contracts.model_origin import ModelProductKey, SynthesizedModelOrig
 from feedbax.contracts.operation import DatasetPort, JaxOperation
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_sweep import model_field_path
+from feedbax.contracts.receipt_validity import CheckConditions, ValidityCheckDelivery
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import SynthesisRequestSpec
 from feedbax.contracts.training import lower_stored_trial_documents
 from feedbax.examples import load_shipped_projects
 from feedbax.host.synthesis import PreparedSynthesis, synthesize_model
 from feedbax.host import light_jobs, light_worker
+from feedbax.host.train_validity import recheck_train
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import decode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -235,8 +237,15 @@ def test_saved_synthesize_model_runs_evaluation_train_start_and_export(host, tmp
     assert trained.disposition == "admitted", trained
     job = wait_until(lambda: (job if (job := job_row(host, trained.job_id)) and job["outcome"] is not None else None))
     assert job["state"] == "succeeded", job["outcome"]
-    (start,) = SuccessView(store).read_attempt(trained.job_id).receipt.inputs["checkpoint"]
+    training = SuccessView(store).read_attempt(trained.job_id)
+    assert training is not None
+    (start,) = training.receipt.inputs["checkpoint"]
     assert start.content == product.content and start.selection.receipt == view.attempt_ref(admitted.job_id)
+    evidence = recheck_train(ValidityCheckDelivery(
+        project_root=plan.project_root, store_root=store.root, request_id=training.receipt.request.id,
+        receipt=training.ref, checks=("code",), conditions=CheckConditions(code=(), environment=()),
+    ), registry)
+    assert evidence.code.outcome == "equal", evidence
 
     with TestClient(create_app(projects_dir=folders.root, automatic_run="off")) as client:
         export_url = f"{route}/loaded-models/export"

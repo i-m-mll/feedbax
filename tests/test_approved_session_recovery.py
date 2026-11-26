@@ -442,7 +442,7 @@ def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_
         changed = "steps/train.json"
         changed_path = folders.root / PROJECT / changed
         document = json.loads(files[changed])
-        document["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = 0.002
+        document["base"]["inline"]["seed"] = 17
         changed_path.write_text(json.dumps(document))
         edited = folders.read_plan(PROJECT, revision=None)
         assert edited.revision != reviewed.revision

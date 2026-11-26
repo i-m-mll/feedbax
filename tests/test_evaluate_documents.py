@@ -52,7 +52,7 @@ def _model(data, name="model"):
 
 
 def _with_mass(payload, mass):
-    payload["interior"]["components"]["plant"]["fields"]["mass"] = mass
+    payload["interior"]["components"]["plant"].setdefault("fields", {})["mass"] = mass
     return payload
 
 

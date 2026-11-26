@@ -1153,7 +1153,7 @@ def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
         if first and (stored := _stored_objective_view(plan, key, definition)) is not None else None
     )
     step = plan.steps[key.variant, key.step]
-    upstream = evaluate_subject(definition)
+    upstream = evaluate_subject(definition) if step.kind == "evaluate" else None
     uses_trial_sets = first and (
         _has_trial_sets(plan, key) or upstream is not None and _has_trial_sets(plan, upstream[0])
     )

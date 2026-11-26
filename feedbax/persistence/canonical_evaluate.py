@@ -54,7 +54,6 @@ from feedbax.contracts.rollout import (
 from feedbax.contracts.semantic_values import model_state_address, semantic_key
 from feedbax.contracts.trial_clock import TrialMeanSelection
 from feedbax.contracts.trial_record import StudioTrialReplayResponse, TrialAggregate, TrialRecords
-from feedbax.dataset_replicates import select_replicate
 from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_linear_state_track, read_trial_record
 from feedbax.persistence.checkpoint_selection import selected_coordinates
 from feedbax.persistence.best_selection import completion_score
@@ -582,6 +581,8 @@ class EvaluationResult:
         components: ComponentRegistry | None = None,
     ) -> StudioTrialReplayResponse:
         """Read trial records for one retained replicate and checkpoint."""
+        from feedbax.dataset_replicates import select_replicate
+
         if mean is not None and trial is not None:
             raise CannotRun("/mean", "Mean requires all recorded trials")
         with self.open_states() as dataset:

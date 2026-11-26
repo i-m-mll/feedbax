@@ -72,7 +72,7 @@ def _write_project(folders, project, store, *, evaluate_request=None):
     )
     authored["training_config"].update(n_batches=_TOTAL, batch_size=2, snapshot_interval=2, replicates=_REPLICATES)
     task = raw["documents"][authored["trial_documents"]["task"]["document"]]["payload"]
-    task["epochs"][0]["end"]["length"]["value"] = 6
+    task["epochs"]["move"]["end"]["length"] = "6 st"
     receiver = deepcopy(authored)
     receiver.update(
         method="managed_method_probe.receiver", settings={"initial_count": 41},

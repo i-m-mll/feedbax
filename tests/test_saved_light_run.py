@@ -527,6 +527,10 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
 
         assert all(job["state"] == "succeeded" for job in wait_until(finished))
         before = plan(revision)
+        baseline = next(row for row in before["window_map"]["evaluations"] if row["key"]["step"] == "baseline")
+        saved_trials = baseline["result"]["trials"]
+        assert [trial["id"] for trial in saved_trials] == _TRIALS
+        assert [trial["name"] for trial in saved_trials] == ["Trial 1", "Trial 2"]
         replayed = replay(revision, evaluate["job_id"], "baseline")
         figure = next(
             request["result"] for element in before["window_map"]["analysis_elements"]
@@ -578,7 +582,7 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
             assert row["result"] is None and row["request_id"] != row["previous"]["request_id"]
             assert row["previous"]["job_id"] == evaluate["job_id"]
             assert row["previous"]["revision"] == before["revision"]
-            assert row["previous"]["trials"] == _TRIALS
+            assert row["previous"]["trials"] == saved_trials
             assert row["previous"]["checkpoint_source"]["job_id"] == train["job_id"]
             assert replay(changed, evaluate["job_id"], step) == replayed
         replay(changed, evaluate["job_id"], "analyze", code=404)
