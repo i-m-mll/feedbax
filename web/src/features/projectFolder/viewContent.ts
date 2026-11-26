@@ -1,7 +1,7 @@
 import { studioName, studioReason, studioRunReason } from '@/components/activity/studioVocabulary';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ProjectWindowView, ViewOffer } from '@/features/projectWindow/projectWindowState';
-import type { ModelDocument, StudioProjectWindowMapProblem } from '@/generated/studioContracts';
+import type { StoredModelDocument, StudioProjectWindowMapProblem } from '@/generated/studioContracts';
 
 export const viewsByKind = {
   train: ['runs', 'model', 'task', 'objective', 'training', 'scene', 'results'],
@@ -24,7 +24,7 @@ export interface ViewSubject {
   /** Whether the step is scored by an Objective: its own, or that of the Train whose checkpoint it evaluates. */
   readonly objective: boolean;
   /** The stored Model the step's Model and Scene show. */
-  readonly model: ModelDocument | undefined;
+  readonly model: StoredModelDocument | undefined;
   /** Whether the Model has a mechanism the Scene draws; unknown while its geometry is read. */
   readonly scenePlaces: boolean | undefined;
   /** Why the focused run cannot run. */

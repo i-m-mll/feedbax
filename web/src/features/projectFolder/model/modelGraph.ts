@@ -1,15 +1,25 @@
 import { joinText, referentName, type ShownText } from '@/components/ui/ShownText';
 import type {
-  ComponentDefinition, CompositeComponent, GraphInterior, LeafComponent, ModelAddress, ModelDocument,
-  ModelPhysicalConnection, ModelPorts, ModelRemovedElement, ModelWire, PhysicalInterior, PortElement, PortType, SignalType,
+  AddComponent, AddModelAttachment, ComponentDefinition, ModelAddress, ModelPhysicalConnection, RegisteredComponent, ModelRemovedElement, PortElement, PortType, SignalType,
+  StoredCompositeComponent, StoredDelayAttachment, StoredGraphInterior, StoredHoldAttachment, StoredInterventionAttachment,
+  StoredLeafComponent, StoredModelDocument, StoredModelPorts, StoredModelWire, StoredPhysicalInterior, StoredProbeAttachment,
 } from '@/generated/studioContracts';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 
-export const modelSchema = 'feedbax.spec.model';
-export type Component = LeafComponent | CompositeComponent;
-export type GraphOwner = ModelDocument | CompositeComponent;
+export const modelSchema = 'feedbax.spec.model.v2';
+export type Component = StoredLeafComponent | StoredCompositeComponent;
+export type GraphOwner = StoredModelDocument | StoredCompositeComponent;
+export type GraphInterior = StoredGraphInterior;
+export type PhysicalInterior = StoredPhysicalInterior;
+export type ModelWire = StoredModelWire;
+/** An attachment as a chain stores it, under its key. */
+export type StoredAttachment = StoredDelayAttachment | StoredHoldAttachment | StoredInterventionAttachment | StoredProbeAttachment;
+/** An attachment of a chain, with its key as `id`, in the chain's order. */
+export type Attachment = StoredAttachment & { readonly id: string };
+/** A chain of attachments, keyed and in order. */
+export type AttachmentChain = Readonly<Record<string, StoredAttachment>>;
 export type Direction = 'input' | 'output' | 'physical';
 export type Port = {
   readonly end: PortElement['end'];
@@ -21,7 +31,16 @@ export type Port = {
   readonly growing?: boolean;
 };
 export type Registry = ReadonlyMap<string, ComponentDefinition>;
-type ModelAttachment = NonNullable<ModelWire['attachments']>[number];
+
+/** The attachment `item` as its chain stores it, under its key. */
+export function storedAttachment({ id: _key, ...item }: Attachment): StoredAttachment {
+  return item;
+}
+
+/** The attachments of `chain` in its order, each with its key. */
+export function chainItems(chain: AttachmentChain | undefined): Attachment[] {
+  return Object.entries(chain ?? {}).map(([id, item]) => ({ ...item, id }));
+}
 
 /** The kind, size and unit of a port's type, as its card shows it beside the port's name; a unit says a value is real. */
 export function portTypeName({ type }: Port) {
@@ -47,14 +66,14 @@ export function at(graph: ModelAddress, element: ModelAddress['element']): Model
   return { ...graph, element };
 }
 
-export function modelPath(model: ModelDocument, path: readonly string[]) {
+export function modelPath(model: StoredModelDocument, path: readonly string[]) {
   let owner: GraphOwner = model;
   const entries: { id: string; name: string }[] = [];
   for (const id of path) {
     const component: Component | undefined = owner.interior.components?.[id];
     if (component?.kind !== 'composite') break;
     owner = component;
-    entries.push({ id, name: component.name });
+    entries.push({ id, name: component.label });
   }
   return { owner, entries };
 }
@@ -126,9 +145,9 @@ export function libraryEntries(definitions: readonly ComponentDefinition[], doma
 }
 
 /** The component an entry places while its add is pending, and, for a new Equations composite, the one it sends. */
-export function newEquations(entry: LibraryEntry & { equations: EquationsDomain }): CompositeComponent {
+export function newEquations(entry: LibraryEntry & { equations: EquationsDomain }): StoredCompositeComponent {
   return {
-    kind: 'composite', name: entry.name, ports: { inputs: [], outputs: [], physical: [] },
+    kind: 'composite', label: entry.name, ports: {},
     interior: { physical_domain: entry.equations, components: {}, wires: {}, connections: {} },
   };
 }
@@ -137,7 +156,7 @@ function signalType(type: PortType | undefined): SignalType {
   return { base: type?.dtype, shape: type?.shape };
 }
 
-function leafPorts(id: string, component: LeafComponent, definition: ComponentDefinition | undefined): Port[] {
+function leafPorts(id: string, component: StoredLeafComponent, definition: ComponentDefinition | undefined): Port[] {
   if (!definition) return [];
   const policy = definition.dynamic_port_policy;
   const fields = { ...definition.default_params, ...component.fields };
@@ -181,21 +200,21 @@ export function componentPorts(id: string, component: Component, registry: Regis
   if (component.kind === 'leaf') return leafPorts(id, component, registry.get(component.type));
   return ([
     ['input', component.ports.inputs], ['output', component.ports.outputs], ['physical', component.ports.physical],
-  ] as const).flatMap(([direction, ports]) => (ports ?? []).map((port): Port => ({
-    end: { owner: 'component', component: id, port: port.id, direction }, direction, name: port.name, type: port.type,
+  ] as const).flatMap(([direction, ports]) => Object.entries(ports ?? {}).map(([key, port]): Port => ({
+    end: { owner: 'component', component: id, port: key, direction }, direction, name: port.label, type: port.type,
   })));
 }
 
-export function boundaryPorts(ports: ModelPorts): Port[] {
+export function boundaryPorts(ports: StoredModelPorts): Port[] {
   return [
-    ...(ports.inputs ?? []).map(({ id, name, type }) => ({
-      end: { owner: 'inputs', port: id }, direction: 'output', name, type,
+    ...Object.entries(ports.inputs ?? {}).map(([id, { label, type }]) => ({
+      end: { owner: 'inputs', port: id }, direction: 'output', name: label, type,
     }) satisfies Port),
-    ...(ports.outputs ?? []).map(({ id, name, type }) => ({
-      end: { owner: 'outputs', port: id }, direction: 'input', name, type,
+    ...Object.entries(ports.outputs ?? {}).map(([id, { label, type }]) => ({
+      end: { owner: 'outputs', port: id }, direction: 'input', name: label, type,
     }) satisfies Port),
-    ...(ports.physical ?? []).map(({ id, name, type }) => ({
-      end: { owner: 'boundary', port: id }, direction: 'physical', name, type,
+    ...Object.entries(ports.physical ?? {}).map(([id, { label, type }]) => ({
+      end: { owner: 'boundary', port: id }, direction: 'physical', name: label, type,
     }) satisfies Port),
   ];
 }
@@ -228,7 +247,7 @@ export function fieldAddress(address: ModelAddress, ...path: (string | number)[]
   return at(address, { kind: 'field', parent, path });
 }
 
-export function graphKind(component: CompositeComponent) {
+export function graphKind(component: StoredCompositeComponent) {
   const domain = component.interior.physical_domain;
   return domain === 'planar_multibody' || domain === 'spatial_multibody' ? 'Mechanics' : domain ? studioName('equations') : 'Graph';
 }
@@ -253,11 +272,36 @@ export function holds(holder: ModelAddress, address: ModelAddress) {
   return owners(address.element).some((element) => canonicalJsonV2(element) === key);
 }
 
+/**
+ * `component` as an edit sends it. It stands in until the Service takes stored components, keyed by the edit's address.
+ */
+export const sentComponent = <Sent extends Component | RegisteredComponent>(component: Sent) =>
+  component as unknown as Sent extends RegisteredComponent ? RegisteredComponent : Exclude<AddComponent['component'], RegisteredComponent>;
+
+/**
+ * `item` as an edit sends it, its key in the edit's address. It stands in until the Service takes stored attachments.
+ */
+export const sentAttachment = (item: Attachment) => storedAttachment(item) as unknown as AddModelAttachment['attachment'];
+
+/** A removed element as its document stored it. */
+export interface StoredRemoved {
+  readonly address: ModelAddress;
+  readonly definition: Component | ModelWire | ModelPhysicalConnection | StoredAttachment;
+  readonly wires?: Readonly<Record<string, ModelWire>>;
+  readonly connections?: Readonly<Record<string, ModelPhysicalConnection>>;
+}
+
+/**
+ * `removed` in its stored form. It stands in until the Service sends removed definitions stored, the member key in the
+ * address.
+ */
+export const storedRemoved = (removed: ModelRemovedElement): StoredRemoved => removed as unknown as StoredRemoved;
+
 /** `model` with each of `removed` put back where it was, so that what a document or value removes can be drawn in place. */
-export function withRemoved(model: ModelDocument, removed: readonly ModelRemovedElement[]): ModelDocument {
+export function withRemoved(model: StoredModelDocument, removed: readonly ModelRemovedElement[]): StoredModelDocument {
   if (!removed.length) return model;
   const drawn = structuredClone(model);
-  for (const { address, definition, wires, connections } of removed) {
+  for (const { address, definition, wires, connections } of removed.map(storedRemoved)) {
     const reached = modelPath(drawn, address.composites);
     if (reached.entries.length !== address.composites.length) continue;
     const interior: Omit<GraphInterior, 'physical_domain'> & Partial<Pick<PhysicalInterior, 'connections'>> = reached.owner.interior;
@@ -272,10 +316,10 @@ export function withRemoved(model: ModelDocument, removed: readonly ModelRemoved
       interior.connections = { ...interior.connections, [element.id]: definition as ModelPhysicalConnection };
     } else if (element.kind === 'attachment') {
       const parent = element.parent;
-      const item = definition as ModelAttachment;
+      const item = definition as StoredAttachment;
       if (parent.kind === 'wire') {
         const wire = interior.wires?.[parent.id];
-        if (wire) wire.attachments = [...wire.attachments ?? [], item];
+        if (wire) wire.attachments = { ...wire.attachments, [element.id]: item };
         continue;
       }
       const end = parent.end;
@@ -283,8 +327,8 @@ export function withRemoved(model: ModelDocument, removed: readonly ModelRemoved
       if (!holder || end.owner === 'boundary' || end.owner === 'component' && end.direction === 'physical') continue;
       const store = holder.attachments ??= {};
       const side = end.owner === 'inputs' || end.owner === 'component' && end.direction === 'output' ? 'sources' : 'sinks';
-      const chains = (store[side] ??= {}) as Record<string, ModelAttachment[]>;
-      chains[end.port] = [...chains[end.port] ?? [], item];
+      const chains = (store[side] ??= {}) as Record<string, AttachmentChain>;
+      chains[end.port] = { ...chains[end.port], [element.id]: item };
     }
   }
   return drawn;
@@ -300,7 +344,7 @@ export interface ModelIntervention {
  * Every intervention of `model`, on a wire or a source port of any of its graphs, nested ones included, its ports named
  * as `registry` names its components' ports.
  */
-export function modelInterventions(model: ModelDocument, registry: Registry): ModelIntervention[] {
+export function modelInterventions(model: StoredModelDocument, registry: Registry): ModelIntervention[] {
   const found: ModelIntervention[] = [];
   const walk = (owner: GraphOwner, composites: string[]) => {
     const components = owner.interior.components ?? {};
@@ -309,10 +353,10 @@ export function modelInterventions(model: ModelDocument, registry: Registry): Mo
       if (end.owner !== 'component') return [referentName(boundary.find((item) => item.end.owner === end.owner && item.end.port === end.port), end.port)];
       const component = components[end.component!];
       const port = component && componentPorts(end.component!, component, registry).find((item) => item.end.port === end.port);
-      return joinText([[referentName(component, end.component!)], [referentName(port, end.port)]], '.');
+      return joinText([[component ? component.label : { missing: end.component! }], [referentName(port, end.port)]], '.');
     };
-    const add = (parent: ModelAddress['element'], where: ShownText, items: readonly { kind: string; id: string; operation?: string }[]) => {
-      for (const item of items) {
+    const add = (parent: ModelAddress['element'], where: ShownText, chain: AttachmentChain | undefined) => {
+      for (const item of chainItems(chain)) {
         if (item.kind !== 'intervention') continue;
         found.push({
           address: { composites, element: { kind: 'attachment', parent, id: item.id } as ModelAddress['element'] },
@@ -321,9 +365,9 @@ export function modelInterventions(model: ModelDocument, registry: Registry): Mo
       }
     };
     if (!('physical_domain' in owner.interior) || !owner.interior.physical_domain) {
-      const interior = owner.interior as GraphInterior;
+      const interior = owner.interior;
       for (const [id, wire] of Object.entries(interior.wires ?? {})) {
-        add({ kind: 'wire', id }, joinText([endName(wire.source), endName(wire.target)], ' → '), wire.attachments ?? []);
+        add({ kind: 'wire', id }, joinText([endName(wire.source), endName(wire.target)], ' → '), wire.attachments);
       }
       for (const [port, items] of Object.entries(interior.attachments?.sources ?? {})) {
         add({ kind: 'port', end: { owner: 'inputs', port } }, endName({ owner: 'inputs', port }), items);

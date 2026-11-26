@@ -2,7 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import { sampleTaskTrials } from '@/api/studioAuthoring';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import type {
-  ModelDocument, StudioRunTaskTrialSampleRequest, StudioSavedTrainKey, StudioTrialAuthoring, TaskDocument, TaskTrialSampleResponse,
+  StoredModelDocument, StoredTaskDocument, StudioRunTaskTrialSampleRequest, StudioSavedTrainKey, StudioTrialAuthoring,
+  TaskTrialSampleResponse,
 } from '@/generated/studioContracts';
 import type { EpochBounds } from './taskModel';
 import type { ShelfTask } from './shelfRows';
@@ -10,11 +11,11 @@ import { modelInterventions, type Registry } from '../model/modelGraph';
 import type { TrialsUnavailable } from './trialSample';
 
 /** The task document a step's Trial authoring reads, when it is one. */
-export const taskDocumentOf = (view: StudioTrialAuthoring): TaskDocument | undefined =>
+export const taskDocumentOf = (view: StudioTrialAuthoring): StoredTaskDocument | undefined =>
   'epochs' in view.task ? view.task : undefined;
 
 /** How an End ends its epoch: at a length, drawn or fixed; at a condition, by its limit at the latest; or at Rest. */
-export const endsBy = (end: TaskDocument['epochs'][number]['end'] | undefined, steps: { least: number; greatest: number } | null | undefined):
+export const endsBy = (end: StoredTaskDocument['epochs'][string]['end'] | undefined, steps: { least: number; greatest: number } | null | undefined):
   EpochBounds['ends'] => !end || 'length' in end ? steps && steps.least < steps.greatest ? 'drawn' : 'length'
   : 'condition' in end ? 'condition' : 'rest';
 
@@ -24,31 +25,30 @@ export const endsBy = (end: TaskDocument['epochs'][number]['end'] | undefined, s
  * its `registry` names.
  */
 export function shelfTask(view: StudioTrialAuthoring, document: string, objectiveDocument: string | undefined,
-  model?: { id: string; value: ModelDocument; registry: Registry }): ShelfTask | undefined {
+  model?: { id: string; value: StoredModelDocument; registry: Registry }): ShelfTask | undefined {
   const task = taskDocumentOf(view);
   const period = view.period_seconds;
   if (!task || view.n_steps === null || period === null) return undefined;
-  const ends = new Map(task.epochs.map((epoch) => [epoch.id, epoch.end]));
   const instances = view.epoch_instances ?? [];
   if (!instances.length) return undefined;
   const epochs = instances.map(({ id, name, steps }): EpochBounds => {
-    const end = ends.get(id);
+    const end = task.epochs[id]?.end;
     return {
       id, name,
       ends: endsBy(end, steps),
       least: steps.least * period, nominal: steps.nominal * period, greatest: steps.greatest * period,
     };
   });
-  const order = task.epochs.map(({ id }) => id);
-  const terms = (view.objective?.terms ?? []).flatMap(({ id, name, enabled }, index) =>
-    enabled === false ? [] : [{ id, name: name ?? studioAccessibleName('term', index + 1) }]);
+  const order = Object.keys(task.epochs);
+  const terms = Object.entries(view.objective?.terms ?? {}).flatMap(([id, { label, enabled }], index) =>
+    enabled === false ? [] : [{ id, name: label ?? studioAccessibleName('term', index + 1) }]);
   return {
     document, duration: view.n_steps * period,
     epochs,
     ...objectiveDocument && { objective: { document: objectiveDocument, terms } },
     ...model && { interventions: { document: model.id, items: modelInterventions(model.value, model.registry) } },
-    signals: task.signals.map(({ id, name, cells }) => ({
-      id, name, covers: cells.flatMap(({ first_epoch, last_epoch }) => order.slice(order.indexOf(first_epoch), order.indexOf(last_epoch) + 1)),
+    signals: Object.entries(task.signals).map(([id, { label, cells }]) => ({
+      id, name: label, covers: Object.values(cells).flatMap(({ first_epoch, last_epoch }) => order.slice(order.indexOf(first_epoch), order.indexOf(last_epoch) + 1)),
     })),
   };
 }

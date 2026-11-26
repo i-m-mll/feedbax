@@ -33,10 +33,11 @@ import { labelOf } from './memberLabels';
 import { partMenuKey } from '@/components/values/partMenu';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
-  FieldKind, JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+  FieldKind, JsonValue, ProjectValueEdit, StoredObjectiveDocument, StoredObjectiveTerm, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
   StudioEvaluateValueSource, StudioTrialField, TrialTermAggregate,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
+import { freshKey, hasMember } from './memberKeys';
 import { addressKey } from './model/modelGraph';
 import { BatchTrace, TermTrace, TrialTrace } from './task/SignalTrace';
 import { epochBoundaries, signalAggregate, signalSteps, type TrialShown } from './task/trialSample';
@@ -240,11 +241,11 @@ export function TrialTaskForm({ view, commit }: { view: TrialView; commit?: Comm
 
 /** The first problem of each element of the task, by its group and id; a link's is its variable's. */
 function outlineReasons(view: StudioTrialAuthoring) {
-  const links = 'variables' in view.task ? view.task.links ?? [] : [];
+  const links = 'variables' in view.task ? view.task.links ?? {} : {};
   const reasons = new Map<string, string>();
   for (const { path = [], reason } of view.problems) {
     const [section, id] = path.map(String);
-    const linked = section === 'links' ? links.find(({ model_field }) => model_field === id)?.variable : undefined;
+    const linked = section === 'links' ? links[id] : undefined;
     const key = linked ? `variables:${linked}`
       : section === 'variables' || section === 'epochs' || section === 'signals' ? `${section}:${id}` : undefined;
     if (key && !reasons.has(key)) reasons.set(key, reason);
@@ -262,8 +263,8 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
   sections: DrawerSections; view: StudioTrialAuthoring; selected?: string; select(id: string | null): void;
 }) {
   const reasons = outlineReasons(view);
-  const entries = (group: OutlineGroup, items: readonly { id: string; name: string }[]) =>
-    items.map(({ id, name }) => ({ id, name, reason: reasons.get(`${group}:${id}`) }));
+  const entries = (group: OutlineGroup, items: Readonly<Record<string, { label: string }>>) =>
+    Object.entries(items).map(([id, { label }]) => ({ id, name: label, reason: reasons.get(`${group}:${id}`) }));
   const task = 'variables' in view.task ? view.task : undefined;
   const groups = {
     variables: task && entries('variables', task.variables),
@@ -374,38 +375,53 @@ export interface TrialRuns {
   choose?(sweep: string, value: string, extend: boolean): void;
 }
 
-const termPath = (index: number) => '/terms/' + index;
+type Terms = NonNullable<StoredObjectiveDocument['terms']>;
 
-function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs?: TrialRuns,
+/** The pointer to the term `key` of the Objective, or to its `field`. */
+const termPath = (key: string, ...field: string[]) => authoredPointer(['terms', key, ...field]);
+
+/** A term's shown name: its label, or its place among the terms. */
+const termName = (term: StoredObjectiveTerm, index: number) => term.label ?? studioAccessibleName('term', index + 1);
+
+/**
+ * The edit that puts the term `key` at `index`: the whole term map in its new order. It stands in for an order edit,
+ * which the Service is to add.
+ */
+function reorderTerms(terms: Terms, key: string, index: number): ProjectValueEdit {
+  const keys = Object.keys(terms).filter((each) => each !== key);
+  keys.splice(index, 0, key);
+  return write('/terms', Object.fromEntries(keys.map((each) => [each, terms[each]])) as unknown as JsonValue, true);
+}
+
+function termFields(view: TrialView, key: string, term: StoredObjectiveTerm, commit?: Commit, runs?: TrialRuns,
   shown?: TrialShown): Record<TermField, FieldModel> {
-  const path = termPath(index);
-  const changed = (field: keyof ObjectiveTerm) => changedAt(view, 'objective', path + '/' + field, commit);
-  const set = (field: keyof ObjectiveTerm, name: string) => commit && ((value: JsonValue) => commit(
-    studioAccessibleName('set', name), { kind: 'objective', edits: [write(path + '/' + field, value, has(term, field))] }));
+  const changed = (field: keyof StoredObjectiveTerm) => changedAt(view, 'objective', termPath(key, field), commit);
+  const set = (field: keyof StoredObjectiveTerm, name: string) => commit && ((value: JsonValue) => commit(
+    studioAccessibleName('set', name), { kind: 'objective', edits: [write(termPath(key, field), value, has(term, field))] }));
   const expression = (field: 'measure' | 'weight'): FieldModel => {
     const label = humanizeLabel(field);
-    const projection = view.fields.find((site) => site.path === authoredPointer(['objective', 'terms', term.id, field]));
-    if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
+    const projection = view.fields.find((site) => site.path === authoredPointer(['objective', 'terms', key, field]));
+    if (!projection) throw new Error(`The Objective's ${field} of term ${key} has no field`);
     const kind = expressionKind(term[field] as JsonValue | undefined);
     const sweep = projection.sweep?.id;
     const model = trialField(view, projection, label, runs, {
-      id: term.id + field, kind, changed: changed(field),
+      id: key + field, kind, changed: changed(field),
       commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', path: projection.path, edit })),
       selectedMembers: sweep ? runs?.values(sweep) : undefined,
       chooseMember: sweep && runs?.choose ? (value, extend) => runs.choose!(sweep, value, extend) : undefined,
     });
-    if (field === 'measure') return { ...model, anchor: measureAnchor(term.id) };
-    const weights = shown?.kind === 'one' ? shown.record.terms?.[term.id]?.weights ?? undefined : undefined;
-    return { ...model, anchor: weightAnchor(term.id), curve: weights };
+    if (field === 'measure') return { ...model, anchor: measureAnchor(key) };
+    const weights = shown?.kind === 'one' ? shown.record.terms?.[key]?.weights ?? undefined : undefined;
+    return { ...model, anchor: weightAnchor(key), curve: weights };
   };
   return {
-    name: rawField({ id: term.id + 'name', label: studioName('name'), type: { kind: 'string' },
-      value: term.name ?? '', change: set('name', studioName('name')), changed: changed('name') }),
-    enabled: rawField({ id: term.id + 'enabled', label: studioName('enabled'), type: { kind: 'boolean' },
+    name: rawField({ id: key + 'name', label: studioName('name'), type: { kind: 'string' },
+      value: term.label ?? '', change: set('label', studioName('name')), changed: changed('label') }),
+    enabled: rawField({ id: key + 'enabled', label: studioName('enabled'), type: { kind: 'boolean' },
       value: term.enabled ?? true, change: set('enabled', studioName('enabled')), changed: changed('enabled') }),
     measure: expression('measure'),
     weight: expression('weight'),
-    reduction: rawField({ id: term.id + 'reduction', label: studioName('reduction'),
+    reduction: rawField({ id: key + 'reduction', label: studioName('reduction'),
       value: term.reduction ?? 'mean', change: set('reduction', humanizeLabel('reduction')), changed: changed('reduction'), type: { kind: 'choice', options:
         ([['mean', 'mean'], ['sum', 'sum'], ['last', 'last'], ['max', 'maximum']] as const)
           .map(([value, name]) => ({ value, label: studioName(name) })) } }),
@@ -420,18 +436,18 @@ export function windowEpochs(view: StudioTrialAuthoring): WindowEpochChoice[] {
 }
 
 /** A term's Window: its structure stored at the term's `window`, each offset the field the service projects for it. */
-function termWindow(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs?: TrialRuns): WindowHost {
-  const path = termPath(index) + '/window';
+function termWindow(view: TrialView, key: string, term: StoredObjectiveTerm, commit?: Commit, runs?: TrialRuns): WindowHost {
+  const path = termPath(key, 'window');
   return {
     epochs: windowEpochs(view),
     offset: (site) => {
-      const pointer = authoredPointer(['objective', 'terms', term.id, 'window', ...site]);
+      const pointer = authoredPointer(['objective', 'terms', key, 'window', ...site]);
       const projection = view.fields.find((field) => field.path === pointer);
       if (!projection) throw new Error(`The Objective's window offset ${pointer} has no field`);
       const label = studioName(site[2]);
       return trialField(view, projection, label, runs, {
-        id: term.id + site.join('-'), kind: expressionKind(valueAt(term.window, site)),
-        changed: changedAt(view, 'objective', path + '/' + site.join('/'), commit),
+        id: key + site.join('-'), kind: expressionKind(valueAt(term.window, site)),
+        changed: changedAt(view, 'objective', authoredPointer(['terms', key, 'window', ...site]), commit),
         commit: commit && ((edit) => commit(studioAccessibleName('set', label), { kind: 'expression', path: projection.path, edit })),
       });
     },
@@ -460,7 +476,7 @@ function measured(view: StudioTrialAuthoring) {
 /** The term that penalises `chosen`'s squared size. */
 function newTerm(chosen: ReturnType<typeof measured>[number]) {
   return {
-    id: crypto.randomUUID(), name: humanizeLabel(chosen.name),
+    label: humanizeLabel(chosen.name),
     measure: { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: chosen.id }] },
     measure_type: { base: 'real', dimensions: Object.fromEntries(
       Object.entries(chosen.type.dimensions ?? {}).map(([name, exponent]) => [name, exponent * 2]),
@@ -479,30 +495,28 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs, scor
   scores?: TermScores;
 }) {
   const columns = scores ? scoredColumns : authoredColumns;
-  const terms = view.objective?.terms ?? [];
+  const terms = view.objective?.terms ?? {};
+  const keys = Object.keys(terms);
   const box = useRef<HTMLDivElement>(null);
   const [renaming, setRenaming] = useState<string>();
   const [added, setAdded] = useState<string>();
   useEffect(() => {
-    if (!added || !terms.some(({ id }) => id === added)) return;
+    if (!added || !hasMember(terms, added)) return;
     const measure = box.current?.querySelector<HTMLInputElement>(`[data-field="${CSS.escape(measureAnchor(added))}"] input`);
     if (measure) focusField(measure);
     setAdded(undefined);
   }, [added, terms]);
   const save = (name: string, edits: ProjectValueEdit[], removes?: boolean) => commit?.(name, { kind: 'objective', edits }, removes);
-  const move = commit && ((id: string, index: number) => {
-    const from = terms.findIndex((term) => term.id === id);
-    const reordered = [...terms];
-    reordered.splice(index, 0, ...reordered.splice(from, 1));
-    return save(studioAccessibleName('move', studioName('term')), [write('/terms', reordered as unknown as JsonValue, true)]);
-  });
+  const move = commit && ((id: string, index: number) =>
+    save(studioAccessibleName('move', studioName('term')), [reorderTerms(terms, id, index)]));
   const sources = measured(view);
   const add = async (chosen: (typeof sources)[number]) => {
     const value = newTerm(chosen);
-    const edits = terms.length ? [write('/terms/-', value, false)] : [write('/terms', [value], has(view.objective ?? {}, 'terms'))];
+    const key = freshKey(chosen.name, keys);
+    const edits = has(view.objective ?? {}, 'terms') ? [write(termPath(key), value, false)] : [write('/terms', { [key]: value }, false)];
     if (await save(studioName('addTerm'), edits)) return;
-    select(value.id, 'measure');
-    setAdded(value.id);
+    select(key, 'measure');
+    setAdded(key);
   };
   return <Table aria-label={studioName('objectiveTerms')} held={1} heldEnd columns={columns.map((id) => columnWidths[id])}
     box={{ ref: box, axis: 'both', className: 'h-full min-h-0 [--fade-inset-top:var(--row-height)]' }}
@@ -514,42 +528,42 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs, scor
         {studioName(columnNames[id])}
       </TableHeaderCell>)}
     </TableHeaderRow></thead>
-    <tbody>{terms.map((term, index) => {
-      const fields = termFields(view, term, index, commit, runs);
-      const name = term.name ?? studioAccessibleName('term', index + 1);
-      const score = scores && scoreOf(scores, term.id);
+    <tbody>{Object.entries(terms).map(([key, term], index) => {
+      const fields = termFields(view, key, term, commit, runs);
+      const name = termName(term, index);
+      const score = scores && scoreOf(scores, key);
       const cell = (field: TermColumn) => {
-        const chosen = selected?.term === term.id && selected.field === field;
-        return { selected: chosen, onFocusCapture: () => { if (!chosen) select(term.id, field); },
-          onPointerDown: () => { if (!chosen) select(term.id, field); } };
+        const chosen = selected?.term === key && selected.field === field;
+        return { selected: chosen, onFocusCapture: () => { if (!chosen) select(key, field); },
+          onPointerDown: () => { if (!chosen) select(key, field); } };
       };
-      return <TableRow key={term.id} selected={selected?.term === term.id && !selected.field} sortable={move && { id: term.id, label: studioAccessibleName('move', name) }}
+      return <TableRow key={key} selected={selected?.term === key && !selected.field} sortable={move && { id: key, label: studioAccessibleName('move', name) }}
         menu={commit && { label: studioAccessibleName('term', name), items: <>
-          <MenuItem onClick={() => setRenaming(term.id)}>{studioName('rename')}</MenuItem>
-          <MenuItem disabled={index === 0} onClick={() => { void move?.(term.id, index - 1); }}>{studioName('moveEarlier')}</MenuItem>
-          <MenuItem disabled={index === terms.length - 1} onClick={() => { void move?.(term.id, index + 1); }}>
+          <MenuItem onClick={() => setRenaming(key)}>{studioName('rename')}</MenuItem>
+          <MenuItem disabled={index === 0} onClick={() => { void move?.(key, index - 1); }}>{studioName('moveEarlier')}</MenuItem>
+          <MenuItem disabled={index === keys.length - 1} onClick={() => { void move?.(key, index + 1); }}>
             {studioName('moveLater')}
           </MenuItem>
-          <MenuItem onClick={() => { void save(studioAccessibleName('remove', studioName('term')), [{ op: 'remove', path: termPath(index) }], true); }}>
+          <MenuItem onClick={() => { void save(studioAccessibleName('remove', studioName('term')), [{ op: 'remove', path: termPath(key) }], true); }}>
             {studioName('remove')}
           </MenuItem>
         </> }}>
         {!commit ? <TableRowHeader {...cell('name')}>{name}</TableRowHeader> : <TableFieldCell header {...cell('name')}>
           <span className="flex h-full min-w-0 items-center">
-            <InlineEdit form="cell" value={term.name ?? ''} empty={name} editing={renaming === term.id} className="min-w-0 flex-1"
+            <InlineEdit form="cell" value={term.label ?? ''} empty={name} editing={renaming === key} className="min-w-0 flex-1"
               aria-label={studioAccessibleName('rename', name)}
-              onEditingChange={(editing) => setRenaming(editing ? term.id : undefined)}
+              onEditingChange={(editing) => setRenaming(editing ? key : undefined)}
               onCommit={(next) => {
                 if (!commit || !next.trim()) return false;
-                if (next.trim() !== term.name) void save(studioAccessibleName('set', studioName('name')),
-                  [write(termPath(index) + '/name', next.trim(), has(term, 'name'))]);
+                if (next.trim() !== term.label) void save(studioAccessibleName('set', studioName('name')),
+                  [write(termPath(key, 'label'), next.trim(), has(term, 'label'))]);
               }} />
-            <FieldChange change={fields.name.change} id={`${term.id}-name-change`} />
+            <FieldChange change={fields.name.change} id={`${key}-name-change`} />
           </span>
         </TableFieldCell>}
         {commit ? <TableFieldCell {...cell('measure')}><ValueField model={fields.measure} form="cell" /></TableFieldCell>
           : <TableCell {...cell('measure')}>{fields.measure.text}</TableCell>}
-        <TableFieldCell {...cell('window')}><WindowCell window={term.window} host={termWindow(view, term, index, commit, runs)} /></TableFieldCell>
+        <TableFieldCell {...cell('window')}><WindowCell window={term.window} host={termWindow(view, key, term, commit, runs)} /></TableFieldCell>
         {commit ? <TableFieldCell {...cell('weight')}><ValueField model={fields.weight} form="cell" /></TableFieldCell>
           : <TableCell {...cell('weight')}>{fields.weight.text}</TableCell>}
         {score && <>
@@ -567,31 +581,30 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
 }) {
   const [error, setError] = useState<string>();
   const tree = useRef<TreeHandle>(null);
-  const terms = view.objective?.terms ?? [];
+  const terms = view.objective?.terms ?? {};
+  const keys = Object.keys(terms);
   const save = async (name: string, edit: ProjectValueEdit, removes?: boolean) =>
     setError(reasonOf(await commit?.(name, { kind: 'objective', edits: [edit] }, removes)));
-  const nodes: TreeNode[] = terms.map((term, index) => ({
-    id: term.id, name: term.name ?? studioAccessibleName('term', index + 1), muted: term.enabled === false,
+  const nodes: TreeNode[] = Object.entries(terms).map(([key, term], index) => ({
+    id: key, name: termName(term, index), muted: term.enabled === false,
   }));
   return <Drawer>
     <DrawerSection sections={sections} id="objective.outline" name={studioName('outline')}>
       <Tree ref={tree} aria-label={studioName('objectiveTerms')} nodes={nodes} selected={selected ? [selected] : []}
         onSelectedChange={(ids) => select(ids.at(-1) ?? null)}
         onRename={commit && ((id, name) => {
-          const index = terms.findIndex((term) => term.id === id);
-          if (index < 0 || !name.trim()) return false;
-          void save(studioAccessibleName('set', studioName('name')), write('/terms/' + index + '/name', name.trim(), has(terms[index], 'name')));
+          const term = terms[id];
+          if (!term || !name.trim()) return false;
+          void save(studioAccessibleName('set', studioName('name')), write(termPath(id, 'label'), name.trim(), has(term, 'label')));
         })}
         menu={commit && ((node) => {
-          const index = terms.findIndex((term) => term.id === node.id);
+          const index = keys.indexOf(node.id);
           return <>
             <MenuItem onClick={() => tree.current?.rename(node.id)}>{studioName('rename')}</MenuItem>
             <MenuItem disabled={index <= 0} onClick={() => {
-              const reordered = [...terms];
-              [reordered[index - 1], reordered[index]] = [reordered[index], reordered[index - 1]];
-              void save(studioName('moveEarlier'), write('/terms', reordered as unknown as JsonValue, true));
+              void save(studioName('moveEarlier'), reorderTerms(terms, node.id, index - 1));
             }}>{studioName('moveEarlier')}</MenuItem>
-            <MenuItem onClick={() => { void save(studioAccessibleName('remove', studioName('term')), { op: 'remove', path: '/terms/' + index }, true); }}>
+            <MenuItem onClick={() => { void save(studioAccessibleName('remove', studioName('term')), { op: 'remove', path: termPath(node.id) }, true); }}>
               {studioName('remove')}
             </MenuItem>
           </>;
@@ -609,24 +622,25 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
   view: TrialView; commit?: Commit; selected?: TermSelection; runs?: TrialRuns; shown?: TrialShown;
 }) {
   const windowLabel = useId();
-  const index = view.objective?.terms?.findIndex(({ id }) => id === selected?.term) ?? -1;
-  const term = view.objective?.terms?.[index];
-  if (!term) return null;
-  const fields = termFields(view, term, index, commit, runs, shown);
-  const windowHost = termWindow(view, term, index, commit, runs);
+  const terms = view.objective?.terms ?? {};
+  const key = selected?.term;
+  const term = key === undefined ? undefined : terms[key];
+  if (!key || !term) return null;
+  const fields = termFields(view, key, term, commit, runs, shown);
+  const windowHost = termWindow(view, key, term, commit, runs);
   const order: (TermField | 'window')[] = ['name', 'measure', 'window', 'weight', 'enabled', 'reduction'];
-  const name = term.name ?? studioAccessibleName('term', index + 1);
+  const name = termName(term, Object.keys(terms).indexOf(key));
   const period = view.period_seconds;
-  return <Inspector name={name} type={term.name ? studioName('term') : undefined}>
+  return <Inspector name={name} type={term.label ? studioName('term') : undefined}>
     {shown && period != null && <section aria-label={studioName('plot')} className="grid gap-1 empty:hidden">
-      <TermTrace label={name} term={term.id} shown={shown} stepSeconds={period} />
+      <TermTrace label={name} term={key} shown={shown} stepSeconds={period} />
     </section>}
     {order.map((field) => field === 'window'
       ? <FieldRow key="window" label={studioName('window')} labelId={windowLabel} actions={windowHost.changed && <ChangedMark
         tip={changeTip(windowHost.changed.from)} reset={windowHost.changed.reset && (() => { void windowHost.changed!.reset!(); })} />}>
         <WindowEditor window={term.window} host={windowHost} labelId={windowLabel} />
       </FieldRow>
-      : <ValueField key={term.id + field + JSON.stringify(fields[field].value ?? fields[field].text)} model={fields[field]} />)}
+      : <ValueField key={key + field + JSON.stringify(fields[field].value ?? fields[field].text)} model={fields[field]} />)}
   </Inspector>;
 }
 
@@ -649,16 +663,16 @@ export function TrialSweepItems({ project, revision, run, onChoose }: {
   const { data } = useQuery({ ...trialAuthoringQuery(project, revision, run), enabled: !!run });
   if (!data) return null;
   const sweepable = (path: string) => data.fields.some((field) => field.path === path && field.can_sweep && !field.sweep);
-  const variables = 'variables' in data.task ? data.task.variables.filter(({ id }) =>
-    sweepable(authoredPointer(['task', 'variables', id, 'value']))) : [];
-  const terms = (data.objective?.terms ?? []).flatMap((term, index) =>
-    sweepable(authoredPointer(['objective', 'terms', term.id, 'weight'])) ? [{ term, index }] : []);
-  const task: SweepTarget = { kind: 'group', label: studioName('task'), members: variables.map(({ id, name }) => ({
-    kind: 'field', label: name, anchor: variableAnchor(id),
+  const variables = 'variables' in data.task ? Object.entries(data.task.variables).filter(([key]) =>
+    sweepable(authoredPointer(['task', 'variables', key, 'value']))) : [];
+  const terms = Object.entries(data.objective?.terms ?? {}).flatMap(([key, term], index) =>
+    sweepable(authoredPointer(['objective', 'terms', key, 'weight'])) ? [{ key, term, index }] : []);
+  const task: SweepTarget = { kind: 'group', label: studioName('task'), members: variables.map(([key, { label }]) => ({
+    kind: 'field', label, anchor: variableAnchor(key),
   })) };
-  const objective: SweepTarget = { kind: 'group', label: studioName('objective'), members: terms.map(({ term, index }) => ({
-    kind: 'group', label: term.name ?? studioAccessibleName('term', index + 1),
-    members: [{ kind: 'field', label: humanizeLabel('weight'), anchor: weightAnchor(term.id) }],
+  const objective: SweepTarget = { kind: 'group', label: studioName('objective'), members: terms.map(({ key, term, index }) => ({
+    kind: 'group', label: termName(term, index),
+    members: [{ kind: 'field', label: humanizeLabel('weight'), anchor: weightAnchor(key) }],
   })) };
   return <>
     {variables.length > 0 && <SweepTargetItem target={task} onChoose={(anchor) => onChoose(anchor, 'task')} />}

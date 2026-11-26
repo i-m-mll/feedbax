@@ -7,7 +7,8 @@ import {
   studioAccessibleName, studioName, type StudioNameId,
 } from '@/components/activity/studioVocabulary';
 import type { DocumentPickerModel, PickerTemplate } from '@/features/projectWindow/DocumentPicker';
-import { LoadedModelDocumentSchema, blankTask, loadedModelDocumentSchemaId } from '@/generated/studioContracts';
+import { LoadedModelDocumentSchema, blankStoredTask, loadedModelDocumentSchemaId } from '@/generated/studioContracts';
+import { modelSchema } from './model/modelGraph';
 import type {
   Document, RootDocument, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
@@ -24,9 +25,9 @@ const supervisedTrainMethod = 'feedbax.supervised_gradient';
 const pythonTask = 'feedbax.spec.python_task';
 
 export const blankDocuments = {
-  model: { schema: 'feedbax.spec.model', payload: { step_seconds: 0.01, ports: {}, interior: {} } },
-  task: { schema: 'feedbax.spec.task_document', payload: blankTask },
-  objective: { schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] } },
+  model: { schema: modelSchema, payload: { step_seconds: 0.01, ports: {}, interior: {} } },
+  task: { schema: 'feedbax.spec.task_document.v2', payload: blankStoredTask },
+  objective: { schema: 'feedbax.spec.objective_document.v2', payload: { id: 'objective' } },
   training: {
     schema: 'feedbax.spec.training_document',
     payload: {

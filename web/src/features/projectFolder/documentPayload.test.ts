@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { Document } from '@/generated/studioContracts';
 import { baseChain } from './documentPayload';
 import { documentTree } from './useProjectDocuments';
+import { modelSchema as schema } from './model/modelGraph';
 
-const schema = 'feedbax.spec.model';
 const documents = {
   arm: { schema, label: 'Arm', payload: {} },
   narrowed: { schema, label: 'Narrowed', base: { document: 'arm' }, differences: {} },

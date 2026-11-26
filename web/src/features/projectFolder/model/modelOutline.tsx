@@ -3,9 +3,11 @@ import type { ReactNode } from 'react';
 import type { TreeNode } from '@/components/ui/Tree';
 import { joinText, referentName, type ShownText } from '@/components/ui/ShownText';
 import { studioName } from '@/components/activity/studioVocabulary';
-import type { ModelAddress, ModelDocument, ModelPortAttachments, ModelWire } from '@/generated/studioContracts';
-import type { Attachment } from './ModelInspector';
-import { addressKey, at, attachmentAddress, boundaryPorts, componentPorts, modelPath, type Component, type GraphOwner, type Port, type Registry } from './modelGraph';
+import type { ModelAddress, StoredModelDocument, StoredModelPortAttachments } from '@/generated/studioContracts';
+import {
+  addressKey, at, attachmentAddress, boundaryPorts, chainItems, componentPorts, modelPath,
+  type Attachment, type AttachmentChain, type Component, type GraphOwner, type ModelWire, type Port, type Registry,
+} from './modelGraph';
 
 export interface ModelOutline {
   nodes: TreeNode[];
@@ -16,9 +18,9 @@ export interface ModelOutline {
 }
 
 export interface OutlineInput {
-  model: ModelDocument;
+  model: StoredModelDocument;
   /** The model with its attachments as they apply here, when that differs from `model`. */
-  effective?: ModelDocument;
+  effective?: StoredModelDocument;
   registry: Registry;
   attachmentName: (item: Attachment, address: ModelAddress) => string;
   trailing: (address: ModelAddress) => ReactNode;
@@ -34,7 +36,7 @@ function endName(owner: GraphOwner, end: ModelWire['source'] | ModelWire['target
   }
   const component = owner.interior.components?.[end.component];
   const port = component && componentPorts(end.component, component, registry).find((item) => item.end.port === end.port);
-  return joinText([[referentName(component, end.component)], [referentName(port, end.port)]], '.');
+  return joinText([[component ? component.label : { missing: end.component }], [referentName(port, end.port)]], '.');
 }
 
 export function modelOutline({ model, effective, registry, attachmentName, trailing, removed }: OutlineInput): ModelOutline {
@@ -47,15 +49,15 @@ export function modelOutline({ model, effective, registry, attachmentName, trail
     const struck = removed(address);
     return { id, name, glyph, children: children.length ? children : undefined, renamable: renamable && !struck, struck, trailing: trailing(address) };
   };
-  const attached = (owner: ModelAddress, list: readonly Attachment[] | undefined) => (list ?? []).map((item) => {
+  const attached = (owner: ModelAddress, chain: AttachmentChain | undefined) => chainItems(chain).map((item) => {
     const address = attachmentAddress(owner, item.id);
     return row(address, attachmentName(item, address), <Paperclip />);
   });
-  const portRows = (graph: ModelAddress, ports: readonly Port[], store: ModelPortAttachments | undefined) =>
+  const portRows = (graph: ModelAddress, ports: readonly Port[], store: StoredModelPortAttachments | undefined) =>
     ports.flatMap((port) => {
       if (port.direction === 'physical') return [];
       const list = (port.direction === 'output' ? store?.sources : store?.sinks)?.[port.end.port];
-      if (!list?.length) return [];
+      if (!list || !Object.keys(list).length) return [];
       const address = at(graph, { kind: 'port', end: port.end });
       return [row(address, port.name, <CircleDot />, attached(address, list))];
     });
@@ -68,7 +70,7 @@ export function modelOutline({ model, effective, registry, attachmentName, trail
       const address = at(graph, { kind: 'component', id });
       const ports = portRows(graph, componentPorts(id, component, registry), applied.components?.[id]?.attachments);
       const inside = component.kind === 'composite' ? graphRows([...path, id]) : [];
-      return row(address, component.name, component.kind === 'composite' ? <Boxes /> : <Box />, [...ports, ...inside], true);
+      return row(address, component.label, component.kind === 'composite' ? <Boxes /> : <Box />, [...ports, ...inside], true);
     });
     const wires = Object.entries(owner.interior.wires ?? {}).map(([id, wire]) => {
       const address = at(graph, { kind: 'wire', id });

@@ -22,7 +22,7 @@ import type { EntryTask, TaskSetVariable, WeightEdit } from './task/taskModel';
 import { labelOf } from './memberLabels';
 import { documentTreeOf } from './useProjectDocuments';
 
-export const setSchema = 'feedbax.set_document.v1';
+export const setSchema = 'feedbax.set_document.v2';
 
 type SetCommand = StudioSetEditRequest['command'];
 type Perform = (work: () => Promise<void>, refuse?: (reason: string) => Refusal | undefined) => Promise<void> | void;
@@ -156,8 +156,8 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     return {
       key: JSON.stringify([step, axis, entry]),
       label: valueName(step, axis, entry),
-      variables: stored.task_variables ?? [],
-      links: stored.task_links ?? [],
+      variables: stored.task_variables ?? {},
+      links: stored.task_links ?? {},
       write: applies ? (name, change) => editor.command(async () => {
         await store(name, { kind: 'set_entry_task', step, axis, entry, ...change });
         return undefined;
