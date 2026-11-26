@@ -257,29 +257,48 @@ def test_studio_reads_effective_train_settings_and_saves_only_authored_values(tm
         assert step_file.read_bytes() == original
 
 
-def test_studio_sweeps_a_train_setting_omitted_at_its_default(tmp_path):
+@pytest.mark.parametrize("settings", [{}, {"optimizer": {"type": "sgd"}}], ids=["adam-default", "sgd"])
+def test_studio_sweeps_a_train_setting_omitted_at_its_default(tmp_path, settings):
     root = tmp_path / "fixture"
     project = managed_train_project()
-    project.steps["train"].base.inline["settings"] = {}
+    project.steps["train"].base.inline["settings"] = settings
     _save_fixture(root, project)
+    field_id = "/settings/optimizer/learning_rate/value"
+    fields_route = "/api/projects/fixture/authoring/train/train/fields"
     with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
         folders = client.app.state.project_folders
         revision = folders.read("fixture").revision
-        reply = client.post("/api/projects/fixture/authoring/train/train/fields", json={
+        reply = client.post(fields_route, json={
             "revision": revision,
-            "field": "/settings/optimizer/learning_rate/value",
-            "edit": {"kind": "text", "text": "0.001, 0.003"},
+            "field": field_id,
+            "edit": {"kind": "text", "text": "0.001, 0.0025, 0.003"},
         })
         assert reply.status_code == 200, reply.text
         response = reply.json()
         assert not response["problems"] and response["files"], response
         saved = client.patch("/api/projects/fixture", json={"revision": revision, "files": response["files"]})
         assert saved.status_code == 200, saved.text
-        assert folders.read("fixture").project.steps["train"].base.inline["settings"] == {}
+        snapshot = folders.read("fixture")
+        assert snapshot.project.steps["train"].base.inline["settings"] == settings
         plan = folders.read_plan("fixture", revision=None).plan
         assert not plan.diagnostics, plan.diagnostics
-        assert len({row.request_id for row in plan.rows}) == 2
+        assert len({row.request_id for row in plan.rows}) == 3
         assert all(row.request_id is not None for row in plan.rows)
+        axis = "learning-rate"
+        (row,) = (row for row in plan.rows if row.coordinates[axis].value == 0.0025)
+        value_id = row.coordinates[axis].value_id
+        shown = client.post(fields_route, json={
+            "revision": snapshot.revision,
+            "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row},
+            "rows": [row.key.row],
+            "axes": {axis: [value_id]},
+        })
+        assert shown.status_code == 200, shown.text
+        (rate_field,) = (field for field in shown.json()["fields"] if field["id"] == field_id)
+        assert (rate_field["text"], rate_field.get("effective")) == ("0.001", "0.0025")
+        assert rate_field["selected_value"] == value_id
+        assert folders.read("fixture").revision == snapshot.revision
+
         selected = folders.read_plan("fixture", revision=None, source_runs=tuple(row.key for row in plan.rows)).plan
         rate = "/payload/settings/optimizer/learning_rate/value"
         assert all(definition.sources[rate].kind == "sweep_value" for definition in selected.selected_definitions.values())

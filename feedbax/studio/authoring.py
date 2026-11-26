@@ -444,9 +444,10 @@ class _StepFields:
         # The definition as the step's runs read it: each named document it refers to read in place.
         self.payload = resolved.payload if isinstance(resolved, ResolvedStep) else self.authored
         self.current = self.payload if current is None else current
+        self.defaulted = self.effective(self.payload)
         self.selected = tuple(self.effective(payload) for payload in selected)
         self.shown = (
-            self.effective(shown) if shown is not None else self.selected[0] if self.selected else self.effective(self.payload)
+            self.effective(shown) if shown is not None else self.selected[0] if self.selected else self.defaulted
         )
         if not self.selected:
             self.selected = (self.shown,)
@@ -700,6 +701,8 @@ class _StepFields:
                         (name, _title(declared, name), single) if tag is not None else None, shared,
                     )
                 elif type(leaf) in (int, float) and props.get("type") in ("number", "integer"):
+                    baseline = _get(self.defaulted, site)
+
                     def write(value: _Scalar, site=site, inner=inner) -> list[OverridePatch]:
                         if inner is None:
                             return [self.set(site, value)]
@@ -707,7 +710,8 @@ class _StepFields:
                         return [self.set(root, _set_in(default, site[len(root):], value))]
 
                     self.field(
-                        site, owner[1] if owner is not None and owner[2] else _title(props, name), leaf,
+                        site, owner[1] if owner is not None and owner[2] else _title(props, name),
+                        baseline if type(baseline) in (int, float) else leaf,
                         StudioAuthoringNumber(
                             kind="number", min=props.get("minimum"), max=props.get("maximum"),
                             step=1 if props.get("type") == "integer" else None,
@@ -1010,7 +1014,6 @@ def project_numeric_fields(
     )
     definition.own(read_plan)
     effective = definition.selected if selection.payloads else ()
-    defaulted = definition.effective(definition.payload)
     selected = (
         SelectedValues(selection.values, selection.current, selection.authored_additions)
         if selection.values is not None and selection.current is not None else None
@@ -1027,7 +1030,7 @@ def project_numeric_fields(
             return _step_writes(field.number_write(value))
         default_path = (
             ".".join(path) if path[0] == "settings" and _get(definition.payload, path) is None
-            and type(_get(defaulted, path)) in (int, float) else None
+            and type(_get(definition.defaulted, path)) in (int, float) else None
         )
         target = None
         if not definition.inherits:
