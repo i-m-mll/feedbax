@@ -21,6 +21,7 @@ from feedbax.contracts.project import json_pointer_parts
 from feedbax._atomic import write_bytes_atomic
 from feedbax import project_folder
 from feedbax.contracts import request_identity
+from feedbax.contracts.base import sha256_bytes
 from feedbax.planner import project_plan
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
@@ -31,6 +32,7 @@ from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.studio_place import definition_place, path_parts
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.studio_authoring import StudioAuthoringChange
+from feedbax.contracts.studio_project import PresentationDocument
 from feedbax.contracts.task_document import BLANK_STORED_TASK, STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.host import HostError
@@ -42,7 +44,7 @@ from feedbax.studio.selection import StoredEdit, TrainSelection
 from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
-from feedbax.web.services.project_folder import ProjectFolderInvalid
+from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from tests.support import external_method_witness
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.hang import HANG_SECONDS
@@ -782,6 +784,67 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
         == 4
     )
     assert _read_plan(client, root, changed, selected) == current
+
+
+@pytest.mark.parametrize("source_first", [False, True])
+def test_in_place_plan_reuses_both_read_modes_and_checks_external_pins(tmp_path, monkeypatch, source_first):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    train = raw["steps"]["train"]
+    payload = train["base"]["inline"]
+    pinned = json.dumps(payload).encode()
+    name = "inputs/train.json"
+    train["base"] = {"path": name, "sha256": sha256_bytes(pinned)}
+    root = tmp_path / "outside"
+    project_folder.write_new_project_folder(
+        root, Project.model_validate(raw), ProjectConfiguration(project="reach", store="results"),
+        PresentationDocument(),
+    )
+    external = root / name
+    external.parent.mkdir()
+    external.write_bytes(pinned)
+    folders = ProjectFolderService(tmp_path / "studio")
+    snapshot = folders.open_native_folder(root)[0].snapshot
+
+    calls = []
+    original = project_folder.compile_project
+
+    @wraps(original)
+    def counted(*args, **kwargs):
+        calls.append(kwargs["source_runs"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(project_folder, "compile_project", counted)
+    run = RunKey("default", "train", "default")
+    modes = [frozenset({run}), frozenset()]
+    if not source_first:
+        modes.reverse()
+
+    def read(selected):
+        return folders.read_plan(snapshot.project_id, revision=snapshot.revision, source_runs=selected).plan
+
+    for mode in modes:
+        plan = read(mode)
+        assert not plan.diagnostics
+        assert set(plan.selected_definitions) == mode
+        assert read(mode) == plan
+        assert calls.count(mode) == 1
+    (external.parent / "unread.json").write_text("{}")
+    for mode in modes * 2:
+        assert not read(mode).diagnostics
+    assert calls == modes
+
+    payload["training_config"]["n_batches"] += 1
+    external.write_bytes(json.dumps(payload).encode())
+    for mode in modes:
+        plan = read(mode)
+        assert any(problem.code == ResolutionCode.BAD_EXTERNAL_CONTENT for problem in plan.diagnostics)
+        assert read(mode) == plan
+    assert calls == modes * 2
+
+    external.write_bytes(pinned)
+    for mode in modes:
+        assert not read(mode).diagnostics
+    assert calls == modes * 3
 
 
 def _plan_dependencies(root: Path) -> None:

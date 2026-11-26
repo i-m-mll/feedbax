@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
@@ -449,18 +450,20 @@ class SavedProjectPlans(Protocol):
 
 @dataclass(frozen=True)
 class _SavedCompilation:
-    stamp: tuple[object, ...]
     plan: SettledProjectPlan
     observations: dict[str, dict[object, object]]
 
 
+_SAVED_PLAN_CACHE_SIZE = 4
+
+
 class SavedPlanMemo(ProjectPlanMemo):
-    """Retain a reviewed compilation and the data its external reads observed."""
+    """Retain recent reviewed compilations and their observed inputs."""
 
     def __init__(self) -> None:
         super().__init__()
         self.lock = Lock()
-        self.saved: _SavedCompilation | None = None
+        self.saved: OrderedDict[tuple[object, ...], _SavedCompilation] = OrderedDict()
 
 
 def _observe_plan_input[Key, T](reader: Callable[[Key], T], observations: dict[Key, object], name: Key) -> T:
@@ -531,38 +534,40 @@ def compile_saved_project(
     stamp = (
         project_id, text.revision, semantic_root, text.root, store, source_runs,
         compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods),
-        readers.figure_external is not None,
+        readers.external is not None, readers.figure_external is not None,
     )
     observations: dict[str, dict[object, object]] = {}
     observed_readers = {}
-    for kind in ("terminal_train", "imported_model", "figure_external"):
+    for kind in ("external", "terminal_train", "imported_model", "figure_external"):
         if (reader := getattr(readers, kind)) is not None:
             observations[kind] = {}
             observed_readers[kind] = partial(_observe_plan_input, reader, observations[kind])
     memo = memo if memo is not None else SavedPlanMemo()
-    reusable = readers.run is None and readers.row is None and readers.external is None
+    reusable = readers.run is None and readers.row is None
     with memo.lock:
-        previous = memo.saved
-        if (
-            reusable and previous is not None and previous.stamp == stamp
-            and _same_plan_inputs(readers, previous.observations)
-        ):
-            return replace(previous.plan, plan=previous.plan.plan.detached(), readers=readers)
-        plan = compile_project(
-            text.project, source_runs=source_runs, memo=memo,
-            operations=operations, components=components, functions=functions, python_tasks=python_tasks,
-            figure_templates=figure_templates, training_methods=training_methods, synthesis_methods=synthesis_methods,
-            readers=replace(readers, **observed_readers),
-        )
-        if packages is not None:
-            plan = package_problems(plan, packages, text.root)
-        settled = SettledProjectPlan(
-            project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
-            regroup_refused(text.project),
-        )
-        if reusable:
-            memo.saved = _SavedCompilation(stamp, settled, observations)
-        return settled
+        previous = memo.saved.get(stamp) if reusable else None
+        if previous is not None and _same_plan_inputs(readers, previous.observations):
+            memo.saved.move_to_end(stamp)
+            settled = replace(previous.plan, plan=previous.plan.plan.detached(), readers=readers)
+        else:
+            plan = compile_project(
+                text.project, source_runs=source_runs, memo=memo,
+                operations=operations, components=components, functions=functions, python_tasks=python_tasks,
+                figure_templates=figure_templates, training_methods=training_methods, synthesis_methods=synthesis_methods,
+                readers=replace(readers, **observed_readers),
+            )
+            settled = SettledProjectPlan(
+                project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
+                regroup_refused(text.project),
+            )
+            if reusable:
+                memo.saved[stamp] = _SavedCompilation(settled, observations)
+                memo.saved.move_to_end(stamp)
+                if len(memo.saved) > _SAVED_PLAN_CACHE_SIZE:
+                    memo.saved.popitem(last=False)
+    if packages is not None:
+        settled = replace(settled, plan=package_problems(settled.plan, packages, text.root))
+    return settled
 
 
 def _may_read_figure_pin(project: Project) -> bool:

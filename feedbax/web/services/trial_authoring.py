@@ -4,8 +4,11 @@
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from functools import partial
+from functools import cache, partial
 
+from pydantic_core import to_json
+
+from feedbax.contracts.base import sha256_bytes
 from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_values import (
     Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, TextSpan, UnresolvedValue,
@@ -25,7 +28,8 @@ from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.project import (
-    LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue, apply_differences, apply_document_edits, diff,
+    LoadedModelDocument, Payload, Project, RemoveProjectValue, RootDocument, SetProjectValue,
+    apply_differences, apply_document_edits, diff,
     OrderDocumentMembers, OrderProjectValue, base_chain, json_pointer_parts, member_name,
 )
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
@@ -268,15 +272,14 @@ def _input_rows(documents, projection) -> list[StudioTrialInput]:
     ]
 
 
-def _selected_task(project, document) -> TaskDocument | PythonTaskSelection | None:
-    entry = compose_document(project.documents.get, document)
-    if isinstance(entry, ProjectDiagnostic):
-        return None
+_TASK_DOCUMENT_SCHEMAS = frozenset({STORED_TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID})
+
+
+def _task_payload(entry: RootDocument) -> TaskDocument | PythonTaskSelection:
     if entry.schema_id == STORED_TASK_DOCUMENT_SCHEMA_ID:
         return StoredTaskDocument.model_validate(entry.payload).lower()
-    if entry.schema_id == PYTHON_TASK_SCHEMA_ID:
-        return PythonTaskSelection.model_validate(entry.payload)
-    return None
+    assert entry.schema_id == PYTHON_TASK_SCHEMA_ID
+    return PythonTaskSelection.model_validate(entry.payload)
 
 
 def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None = None):
@@ -288,20 +291,43 @@ def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None 
     return documents.model_copy(update={"task": task, "python_task": None, "input_bindings": bindings})
 
 
-def _task_choices(project, documents, bundle, graph, objective_use) -> tuple[list[StudioTaskChoice], list[Problem]]:
+def _task_choices(
+    folders: ProjectFolderService, project: Project, documents: TrialDocuments | _InitialTrialDocuments,
+    bundle: ApplicationRegistryBundle, graph: GraphSpec | None, objective_use: ObjectiveUse,
+) -> tuple[list[StudioTaskChoice], list[Problem]]:
+    """Project the available Tasks and share equal problems across their pairings."""
     choices = []
-    problems: dict[Problem, int] = {}
-    for name in sorted(project.documents):
-        task = _selected_task(project, name)
-        if task is None:
-            continue
-        found = _project(
-            _with_task(documents, task), bundle, show_objective=False, graph_override=graph, objective_use=objective_use,
+    problems: list[Problem] = []
+    indices: dict[str, int] = {}
+    pairing_context = sha256_bytes(to_json((
+        documents.model, documents.objective, graph, sorted(documents.input_bindings.items()), objective_use.value,
+    )))
+
+    def pair(entry: RootDocument) -> tuple[Problem, ...]:
+        return _project(
+            _with_task(documents, _task_payload(entry)), bundle,
+            show_objective=False, graph_override=graph, objective_use=objective_use,
         ).problems
-        choices.append(StudioTaskChoice(
-            document=name, problem_indices=[problems.setdefault(problem, len(problems)) for problem in dict.fromkeys(found)],
-        ))
-    return choices, list(problems)
+
+    for name, document in sorted(project.documents.items()):
+        if document.schema_id not in _TASK_DOCUMENT_SCHEMAS:
+            continue
+        entry = compose_document(project.documents.get, name)
+        if isinstance(entry, ProjectDiagnostic):
+            continue
+        key = (
+            bundle.components, bundle.expression_functions, bundle.python_tasks, pairing_context,
+            entry.schema_id, sha256_bytes(to_json(entry.payload)),
+        )
+        found = folders.task_choice_problems(key, partial(pair, entry))
+        references = []
+        for problem in found:
+            index = indices.setdefault(problem.model_dump_json(), len(problems))
+            if index == len(problems):
+                problems.append(problem)
+            references.append(index)
+        choices.append(StudioTaskChoice(document=name, problem_indices=list(dict.fromkeys(references))))
+    return choices, problems
 
 
 def _field_document(documents, role):
@@ -452,16 +478,30 @@ def _swept_document(plan, key, definition, role) -> str | None:
     return producer.document_ids.get(slot)
 
 
-def _field_sweep(project, plan, key, definition, path, site, label) -> TrialFieldSweep | None:
+@dataclass(frozen=True)
+class _SweepSource:
+    document: str
+    payload: Payload
+    parsed: StoredTaskDocument | StoredObjectiveDocument
+
+
+def _sweep_source(project, plan, key, definition, role) -> _SweepSource | None:
+    """Resolve and validate the authored document once for the view's numeric fields."""
+    validate = {"objective": StoredObjectiveDocument.model_validate, "task": StoredTaskDocument.model_validate}.get(role)
+    if validate is None or (document := _swept_document(plan, key, definition, role)) is None:
+        return None
+    entry = compose_document(project.documents.get, document)
+    if isinstance(entry, ProjectDiagnostic) or not isinstance(entry.payload, dict):
+        return None
+    return _SweepSource(document, entry.payload, validate(entry.payload))
+
+
+def _field_sweep(project, key, path, site, label, sweep_source) -> TrialFieldSweep | None:
     """The number at ``path`` of a document the step reads whole, when the step can sweep it."""
     role, *rest = path
-    if is_window_offset(role, tuple(rest[:7])):
+    if is_window_offset(role, tuple(rest[:7])) or (source := sweep_source(role)) is None:
         return None
-    parse = {"objective": StoredObjectiveDocument.model_validate, "task": StoredTaskDocument.model_validate}.get(role)
-    if parse is None:
-        return None
-    document = _swept_document(plan, key, definition, role)
-    return trial_field_sweep(project, key.step, document, role, tuple(map(str, rest)), site, label, parse)
+    return trial_field_sweep(project.steps[key.step], source.payload, source.parsed, role, tuple(map(str, rest)), site, label)
 
 
 def _task_field(task):
@@ -607,10 +647,10 @@ def _chosen_document(project, document, role):
 
 
 def _chosen_task(project, document):
-    task = _selected_task(project, document)
-    if task is None:
+    entry = compose_document(project.documents.get, document)
+    if isinstance(entry, ProjectDiagnostic) or entry.schema_id not in _TASK_DOCUMENT_SCHEMAS:
         raise ProjectFolderInvalid(f"{member_name(project.documents, document)} is not a Task document.")
-    return task
+    return _task_payload(entry)
 
 
 def _evaluation_task_path(definition):
@@ -940,7 +980,7 @@ def _set_condition_edit(expression, path, body, folders, project, settled, key, 
 
 def _prepare_edits(
     body, folders, project_id, project, settled, key, bundle, definition, documents, projected,
-    stored_task, stored_objective, *, change,
+    stored_task, stored_objective, *, change, sweep_source,
 ):
     scope = body.scope
     plan = settled.plan
@@ -952,20 +992,19 @@ def _prepare_edits(
             return _set_condition_edit(expression, path, body, folders, project, settled, key, bundle, definition, projected)
         holder = next((path[:end] for end in range(len(path), 0, -1) if path[:end] in projected.fields), path)
         site = projected.fields.get(holder)
-        swept = _field_sweep(project, plan, key, definition, path, site, _field_label(holder)) if (
+        swept = _field_sweep(project, key, path, site, _field_label(holder), sweep_source) if (
             site is not None and projected.pair is not None
         ) else None
         if holder != path and swept is None:
             raise ProjectFolderInvalid("The selected field is unavailable.")
         if swept is not None and (holder != path or routes_to_sweep(expression.edit, swept, site, bundle.expression_functions)):
             readers = lambda name: plan.document_users(key.variant, name)  # noqa: E731
-            shown = _swept_document(plan, key, definition, swept.role)
-            entry = compose_document(project.documents.get, shown)
-            if isinstance(entry, ProjectDiagnostic):
-                raise ProjectFolderInvalid(entry.detail)
+            source = sweep_source(swept.role)
+            assert source is not None
+            shown = source.document
             variant = None if key.variant == plan.variants[0] else key.variant
             made = trial_field_sweep_edit(
-                expression.edit, swept, key.step, entry.payload, bundle.expression_functions,
+                expression.edit, swept, key.step, source.payload, bundle.expression_functions,
                 (lambda edits: document_write(project, shown, edits, {key.step}, readers)) if step.kind in {"train", "synthesize"}
                 else lambda edits: evaluation_document_write(project, plan, shown, edits, {key.step}, "task", variant),
             )
@@ -1636,6 +1675,7 @@ def trial_authoring(
                 definition = base
         if definition is None:
             definition = _definition(plan, key)
+        sweep_source = cache(partial(_sweep_source, project, plan, key, definition))
         documents, projected, graph = _pairing(plan, key, bundle, definition=definition)
         stored_task = projected.stored_task or _stored_task_view(plan, definition, documents.task_source)
         stored_objective = StoredObjectiveDocument.from_lowered(documents.objective) if documents.objective else None
@@ -1656,7 +1696,7 @@ def trial_authoring(
         if change is not None:
             stored, refused, preview = _prepare_edits(
                 body, folders, project_id, snapshot.project, settled, key, bundle, definition, documents, projected,
-                stored_task, stored_objective, change=change,
+                stored_task, stored_objective, change=change, sweep_source=sweep_source,
             )
             if isinstance(refused, list):
                 store_choices, refused = refused, ()
@@ -1675,6 +1715,7 @@ def trial_authoring(
                         and item.variant in (None, key.variant)
                     )
                     projected = replace(projected, problems=problems)
+                sweep_source = cache(partial(_sweep_source, project, plan, key, definition))
     except (ValueError, TypeError, KeyError) as error:
         raise ProjectFolderInvalid(str(error)) from error
     paired = projected.pair
@@ -1749,7 +1790,7 @@ def trial_authoring(
     def sweep(path, site, label):
         if paired is None or _epoch_end_field(path, "limit"):
             return None
-        return _field_sweep(project, plan, key, definition, path, site, label)
+        return _field_sweep(project, key, path, site, label, sweep_source)
 
     clock = documents.model.step_seconds
     period = clock if isinstance(clock, float) else None
@@ -1791,7 +1832,7 @@ def trial_authoring(
         if not _held_problems(problem.path, projected.problems)
     ]
     tasks, task_problems = _task_choices(
-        project, documents, bundle, graph,
+        folders, project, documents, bundle, graph,
         ObjectiveUse.INHERITED if objective_source is not None and objective_source.kind in {"train", "synthesize"}
         else ObjectiveUse.TRAIN,
     )
