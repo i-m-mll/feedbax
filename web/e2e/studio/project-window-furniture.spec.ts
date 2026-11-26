@@ -56,7 +56,7 @@ async function expectMenuBeside(page: Page, opener: { x: number; y: number; widt
   const box = (await menu(page).boundingBox())!;
   expect(Math.abs(box.y - (opener.y + opener.height))).toBeLessThan(12);
   expect(Math.abs(box.x - opener.x)).toBeLessThan(12);
-  await expect(menu(page).getByRole('menuitem')).toHaveText(['Train', 'Evaluate', 'Analyze', 'Report']);
+  await expect(menu(page).getByRole('menuitem')).toHaveText(['Train', 'Synthesize', 'Evaluate', 'Analyze', 'Report']);
 }
 
 test('an empty project draws only the bar, the map with its drawer, the rail and the bottom bar', async ({ page, request }) => {
@@ -158,10 +158,10 @@ test('the rail separator follows the divider and every view keeps its place', as
   const pitch = trainOffsets.get('Model')! - trainOffsets.get('Runs')!;
   expect(pitch).toBeGreaterThan(0);
   expectFixedPlaces(trainOffsets, pitch);
-  for (const [kind, absent] of [['evaluate', ['Training', 'Results', 'Analysis', 'Figures', 'Document']],
-    ['analyze', ['Model', 'Task', 'Objective', 'Training', 'Scene', 'Results', 'Document']]] as const) {
+  for (const [kind, step, absent] of [['evaluate', 'Baseline', ['Training', 'Results', 'Analysis', 'Figures', 'Document']],
+    ['analyze', 'Analyze', ['Model', 'Task', 'Objective', 'Training', 'Scene', 'Results', 'Document']]] as const) {
     // The zoomed canvas can carry a card under the window bar, so the step is chosen from the drawer.
-    await page.getByRole('tree', { name: 'Steps', exact: true }).getByRole('treeitem', { name: new RegExp(`^${stepOf(kind)}\\b`) }).click();
+    await page.getByRole('tree', { name: 'Steps', exact: true }).getByRole('treeitem', { name: new RegExp(`^${step}\\b`) }).click();
     for (const name of views) {
       const tab = rail(page).getByRole('tab', { name, exact: true });
       if ((absent as readonly string[]).includes(name)) {

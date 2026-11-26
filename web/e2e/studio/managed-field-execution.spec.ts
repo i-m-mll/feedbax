@@ -44,9 +44,9 @@ test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }
   const factor = inspector.getByRole('textbox', { name: 'Factor', exact: true });
   await expect(factor).toHaveValue('1.0');
   await enter(factor, 'linspace(0.5, 1, 2)');
-  const factorAxis = (saved: StudioProjectSnapshot) => saved.project.steps?.train.sweep?.axes?.factor;
+  const factorAxis = (saved: StudioProjectSnapshot) => Object.values(saved.project.steps?.train.sweep?.axes ?? {})
+    .find((axis) => axis !== null && 'path' in axis && typeof axis.path === 'string' && axis.path.includes('"id":"training-scale"'));
   await expect.poll(async () => factorAxis(await save())).toMatchObject({
-    path: expect.stringContaining('"id":"training-scale"'),
     range: { start: 0.5, stop: 1, count: 2 },
   });
 

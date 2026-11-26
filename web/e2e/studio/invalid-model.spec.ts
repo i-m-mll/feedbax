@@ -39,7 +39,7 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
   await expect(runs.getByText("Can't run", { exact: true })).toHaveCount(2);
   const subjectRow = inspector.getByRole('list', { name: 'Subject', exact: true }).getByRole('listitem');
   await expect(subjectRow.getByRole('img', { name: "Can't run", exact: true })).toBeVisible();
-  await expect(subjectRow.getByRole('button', { name: 'train', exact: true })).toBeVisible();
+  await expect(subjectRow.getByRole('button', { name: 'Train', exact: true })).toBeVisible();
   await expect(inspector.getByRole('alert')).toHaveCount(0);
 
   await page.getByRole('button', { name: /^Problems/ }).click();
@@ -50,7 +50,7 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
   }
   await page.keyboard.press('Escape');
 
-  await runs.getByRole('button', { name: /^train · / }).first().click();
+  await runs.getByRole('button', { name: /^Train · / }).first().click();
   await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
 
   await mapStep(page, 'conditions').click();
@@ -65,7 +65,7 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
   await expect(empty).toHaveText('—');
   await expect.poll(async () => (await (await request.get(path)).json() as StudioProjectSnapshot).revision).toBe(before);
   expect(writes).toEqual([]);
-  const listed = await edit(() => pick(empty, 'train_b'));
+  const listed = await edit(() => pick(empty, 'Train b'));
   expect(listed.steps!.conditions.inputs!.subject).toEqual([
     { step: 'train', checkpoint: 'last' }, { step: 'train_b', checkpoint: 'last' },
   ]);
@@ -78,7 +78,7 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
     { step: 'train', checkpoint: { at: 5000 } }, { step: 'train_b', checkpoint: { at: 5000 } },
   ]);
   // A checkpoint outside the range every subject run has saves, with its reason on the field.
-  for (const [value, reason] of [[9000, 'train_b · 1 to 8000'], [0, 'train · 1 to 8000']] as const) {
+  for (const [value, reason] of [[9000, 'Train b · 1 to 8000'], [0, 'Train · 1 to 8000']] as const) {
     const outside = await edit(async () => {
       await update.fill(String(value));
       await update.press('Enter');
@@ -95,7 +95,7 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
   await page.getByRole('tabpanel', { name: 'Analysis', exact: true }).getByRole('group', { name: 'Select states', exact: true }).click();
   const states = inspector.getByRole('list', { name: 'States', exact: true }).getByRole('listitem');
   await expect(states.getByRole('img', { name: "Can't run", exact: true })).toBeVisible();
-  await states.getByRole('button', { name: /^conditions/ }).click();
+  await states.getByRole('button', { name: /^Conditions/ }).click();
   await expect(mapStep(page, 'conditions')).toHaveAttribute('aria-pressed', 'true');
 
   await mapStep(page, 'train').click();
