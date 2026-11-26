@@ -33,8 +33,7 @@ def matched_task_inputs(
     model: ModelDocument, signals: tuple[ScopedValue, ...], overrides: Mapping[str, str | None],
 ) -> tuple[tuple[SignalInput, ScopedValue], ...]:
     values = {item.id: item for item in signals}
-    names = {item.name: item.id for item in signals}
     return tuple(
         (port, values[signal]) for port in model.ports.inputs
-        if (signal := selected_signal_id(port.id, port.name, names, overrides)) is not None and signal in values
+        if (signal := selected_signal_id(port.id, values, overrides)) is not None and signal in values
     )

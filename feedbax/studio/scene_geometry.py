@@ -18,8 +18,9 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.model_address import ComponentElement, ModelAddress
 from feedbax.contracts.model_document import (
-    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, GraphInterior, LeafComponent, ModelDocument,
+    CompositeComponent, GraphInterior, LeafComponent, ModelDocument,
 )
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.studio_scene import (
@@ -44,9 +45,9 @@ type MechanismPose = Callable[[PoseValues], tuple[SceneMechanismGeometry, list[S
 
 def _read_model(project: Project, document_id: str) -> ModelDocument:
     document = compose_document(project.documents.get, document_id)
-    if isinstance(document, ProjectDiagnostic) or document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+    if isinstance(document, ProjectDiagnostic) or document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
         raise ValueError(f"{document_id!r} must name an authored Model document.")
-    return ModelDocument.model_validate(document.payload)
+    return StoredModelDocument.model_validate(document.payload).lower()
 
 
 def _compile_planar(

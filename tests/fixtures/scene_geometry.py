@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 
@@ -15,7 +15,7 @@ _JOINTS = ("shoulder", "elbow", "wrist")
 
 def _model(count: int) -> dict:
     def node(kind: str, **fields) -> dict:
-        return {"kind": "leaf", "name": kind, "type": f"feedbax.{kind}", "fields": fields}
+        return {"kind": "leaf", "label": kind, "type": f"feedbax.{kind}", "fields": fields}
 
     nodes = {
         "base": node("WorldFrame"),
@@ -52,22 +52,22 @@ def _model(count: int) -> dict:
         )
 
     for name, value in nodes.items():
-        value["name"] = name
+        value["label"] = name
 
     def end(component, port):
         return {"owner": "component", "component": component, "port": port}
 
     def port(name, size):
-        return {"id": name, "name": name, "type": {"base": "real", "shape": [size]}}
+        return {"label": name, "type": {"base": "real", "shape": [size]}}
 
     return {
         "step_seconds": 0.002,
         "ports": {},
         "interior": {"components": {"mechanics": {
-            "kind": "composite", "name": "Mechanics",
+            "kind": "composite", "label": "Mechanics",
             "ports": {
-                "inputs": [{**port("force", count), "default": {"value": [0.0] * count}}],
-                "outputs": [port("effector", 2)],
+                "inputs": {"force": {**port("force", count), "default": {"value": [0.0] * count}}},
+                "outputs": {"effector": port("effector", 2)},
             },
             "interior": {
                 "physical_domain": "planar_multibody", "components": nodes,
@@ -84,7 +84,7 @@ def scene_files():
     return [
         {"kind": "document", "id": name, "document": {
             "label": "Document",
-            "schema": MODEL_DOCUMENT_SCHEMA_ID, "payload": _model(count),
+            "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": _model(count),
         }}
         for name, count in (("single", 1), ("chain", 3))
     ]

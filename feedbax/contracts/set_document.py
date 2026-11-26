@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
     DifferenceNotApplied, Document, EditDifferences, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
     SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts,
@@ -189,7 +189,7 @@ def document_subject_model(
     if authored is None or not isinstance(subject, InitialModelReference | LoadedModelReference):
         return None
     if isinstance(subject, InitialModelReference):
-        if subject.source.pointer is None and authored.schema_id == MODEL_DOCUMENT_SCHEMA_ID and isinstance(authored.payload, dict):
+        if subject.source.pointer is None and authored.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID and isinstance(authored.payload, dict):
             return subject.source.document, authored.payload
         return None
     if authored.schema_id != LOADED_MODEL_SCHEMA_ID:
@@ -198,7 +198,7 @@ def document_subject_model(
     if model.pointer is not None or model.unresolved:
         return None
     root = compose_document(read_document, model.document)
-    if not isinstance(root, ProjectDiagnostic) and root.schema_id == MODEL_DOCUMENT_SCHEMA_ID and isinstance(root.payload, dict):
+    if not isinstance(root, ProjectDiagnostic) and root.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID and isinstance(root.payload, dict):
         return model.document, root.payload
     return None
 

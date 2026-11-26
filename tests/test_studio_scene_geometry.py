@@ -10,7 +10,7 @@ from feedbax.builtins.mechanics.direct_force_components import TwoLinkArm
 from feedbax.compiler.model_document import lower_planar_scene_interior
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.project_io import load_text_project
 from feedbax.mechanics.authored_model import compile_planar_model
 from feedbax.runtime.graph import init_state_from_component
@@ -70,7 +70,7 @@ def test_scene_batches_native_poses_at_one_revision(project, monkeypatch):
 
     root, client = project
     saved = load_text_project(root)
-    model = ModelDocument.model_validate(saved.project.documents["chain"].payload)
+    model = StoredModelDocument.model_validate(saved.project.documents["chain"].payload).lower()
     topology = lower_planar_scene_interior(model, ("mechanics",), ComponentRegistry())
     compiled = compile_planar_model(topology)
     data = mujoco.MjData(compiled.model)
@@ -138,16 +138,16 @@ def test_project_geometry_matches_the_recorded_arm_tip_and_poses_every_mechanism
     pytest.importorskip("mujoco")
     files = scene_files()
     components = files[0]["document"]["payload"]["interior"]["components"]
-    components["mechanics"]["interior"]["components"]["upper"]["name"] = "Upper arm"
+    components["mechanics"]["interior"]["components"]["upper"]["label"] = "Upper arm"
     components["plants"] = {
-        "kind": "composite", "name": "Plants", "ports": {},
+        "kind": "composite", "label": "Plants", "ports": {},
         "interior": {
             "components": {
                 "arm": {
-                    "kind": "leaf", "name": "Arm", "type": "feedbax.TwoLinkArm",
+                    "kind": "leaf", "label": "Arm", "type": "feedbax.TwoLinkArm",
                     "fields": {"link_lengths": [0.4, 0.5]},
                 },
-                "mass": {"kind": "leaf", "name": "Mass", "type": "feedbax.PointMass"},
+                "mass": {"kind": "leaf", "label": "Mass", "type": "feedbax.PointMass"},
             },
         },
     }

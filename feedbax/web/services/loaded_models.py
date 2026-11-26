@@ -3,7 +3,7 @@
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentTreeRef
 from feedbax.contracts.effective_success import success_content_ref
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, LOADED_MODEL_SCHEMA_VERSION, ModelFitReport
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_inputs import DocumentReference
@@ -52,9 +52,9 @@ def import_loaded_model(
         composed = compose_document(read, query.model)
         if isinstance(composed, ProjectDiagnostic):
             raise ProjectFolderInvalid(composed.detail)
-        if composed.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+        if composed.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
             raise ProjectFolderInvalid("Choose a Model document to fit the archive.")
-        model = ModelDocument.model_validate(composed.payload)
+        model = StoredModelDocument.model_validate(composed.payload).lower()
     assert folders.components is not None
     with stage_project_archive(raw, model, folders.components) as (staging, staged):
         if isinstance(staged, ModelFitReport):

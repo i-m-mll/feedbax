@@ -1,15 +1,12 @@
 """Resolve a root input's authored signal selection."""
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 
 def selected_signal_id(
-    input_id: str, input_name: str, signals_by_name: Mapping[str, str],
-    bindings: Mapping[str, str | None],
+    input_id: str, signal_keys: Collection[str], bindings: Mapping[str, str | None],
 ) -> str | None:
-    """Respect explicit selections, then match by ID or by a shared display name."""
+    """Use an explicit selection or the Task signal with the Model input's key."""
     if input_id in bindings:
         return bindings[input_id]
-    if input_id in signals_by_name.values():
-        return input_id
-    return signals_by_name.get(input_name)
+    return input_id if input_id in signal_keys else None

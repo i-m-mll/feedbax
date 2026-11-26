@@ -19,12 +19,17 @@ from feedbax.contracts.model_attachment import AddModelAttachment, ChangeModelAt
 from feedbax.contracts.model_document import (
     CompositeComponent,
     GraphInterior,
+    ModelComponent,
     ModelDocument,
     ModelPorts,
     PhysicalPort,
     SignalInput,
     SignalOutput,
     SignalType,
+)
+from feedbax.contracts.stored_model import (
+    StoredModelWire, StoredCompositeComponent, StoredLeafComponent, authored_model_payload,
+    lower_model_attachment, lower_model_component, lower_model_wire,
 )
 from feedbax.compiler.model_differences import structural_differences
 
@@ -81,10 +86,14 @@ def _address(scope: tuple[str, ...], kind: str, **element: Any) -> ModelAddress:
     })
 
 
+def _new_model_id() -> str:
+    return f"m-{uuid4().hex}"
+
+
 def _id(graph: Record, reserved: set[str] | None = None) -> str:
     used = graph["components"].keys() | graph["wires"].keys() | graph.get("connections", {}).keys()
     used |= reserved or set()
-    while (key := uuid4().hex) in used:
+    while (key := _new_model_id()) in used:
         pass
     return key
 
@@ -106,8 +115,10 @@ def _target_key(end: Record) -> tuple[str, str | None, str]:
 
 
 def _task_input_reason(owner: Record, item: edits.ModelTaskSignal) -> str | None:
-    if any(port["name"] == item.label for port in owner["ports"]["inputs"]):
+    if any(port["id"] == item.id for port in owner["ports"]["inputs"]):
         return "The task signal already has a Model input"
+    if any(port["id"] == item.id for direction in ("outputs", "physical") for port in owner["ports"][direction]):
+        return "The signal key already names another Model port"
     return None
 
 
@@ -131,7 +142,7 @@ def _signal_end_name(owner: Record, graph: Record, end: Record, direction: Direc
     return _port_name(component, direction, end["port"]) if "ports" in component else end["port"]
 
 
-def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Record:
+def _new_port(owner: Record, direction: Direction, name: str, port: Port, *, key: str | None = None) -> Record:
     names = {item["name"] for item in _port_list(owner, direction)}
     base = name
     suffix = 1
@@ -139,7 +150,10 @@ def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Rec
         suffix += 1
         name = f"{base} {suffix}"
     type_ = SignalType() if direction == "output" else port.type
-    value = {"id": uuid4().hex, "name": name, "type": type_.model_dump(mode="json") if isinstance(type_, SignalType) else type_}
+    value = {
+        "id": key if key is not None else _new_model_id(),
+        "name": name, "type": type_.model_dump(mode="json") if isinstance(type_, SignalType) else type_,
+    }
     _port_list(owner, direction).append(value)
     return value
 
@@ -284,7 +298,7 @@ class ModelEditDraft:
             owner, graph, source, target, output, replacing=key,
         ):
             attachments.append({
-                "kind": "delay", "id": uuid4().hex, "delay": {"value": 1, "unit": "st"},
+                "kind": "delay", "id": _new_model_id(), "delay": {"value": 1, "unit": "st"},
                 "initial_source": {"kind": "value", "value": 0},
             })
         graph["wires"][key] = _signal(source, target, attachments)
@@ -422,7 +436,10 @@ class ModelEditDraft:
     def reset_difference(self, address: ModelAddress, reference: edits.ModelEditState) -> None:
         """Undo the structural difference at ``address`` from the Model ``reference``, with its layout."""
         difference = next((
-            item for item in structural_differences(reference.document.model_dump(mode="json"), self.document, {})
+            item for item in structural_differences(
+                authored_model_payload(reference.document),
+                authored_model_payload(ModelDocument.model_validate(self.document)), {},
+            )
             if item.address == address
         ), None)
         if difference is None:
@@ -441,14 +458,21 @@ class ModelEditDraft:
             earlier = ModelEditDraft(reference, self.leaf_ports, self.component_problem).attachment_chain(address, parent)
             index = next(index for index, item in enumerate(earlier) if item["id"] == element.id)
             chain = self.attachment_chain(address, parent, create=True)
-            chain.insert(min(index, len(chain)), difference.definition.model_dump(mode="json"))
+            chain.insert(
+                min(index, len(chain)), lower_model_attachment(element.id, difference.definition).model_dump(mode="json"),
+            )
         else:
             collection = {"component": "components", "wire": "wires", "physical_connection": "connections"}[element.kind]
-            graph.setdefault(collection, {})[element.id] = difference.definition.model_dump(mode="json")
+            definition = difference.definition
+            if isinstance(definition, StoredLeafComponent | StoredCompositeComponent):
+                definition = lower_model_component(definition)
+            elif isinstance(definition, StoredModelWire):
+                definition = lower_model_wire(definition)
+            graph.setdefault(collection, {})[element.id] = definition.model_dump(mode="json")
             restored = {address.to_text()}
             for edges, kind in ((difference.wires, "wires"), (difference.connections, "connections")):
                 for key, edge in edges.items():
-                    record = edge.model_dump(mode="json")
+                    record = (lower_model_wire(edge) if isinstance(edge, StoredModelWire) else edge).model_dump(mode="json")
                     if all(end["component"] in graph["components"] for end in record.values()
                            if isinstance(end, dict) and end.get("owner") == "component"):
                         graph.setdefault(kind, {})[key] = record
@@ -592,7 +616,7 @@ class ModelEditDraft:
             "element": element.model_copy(update={"parent": destination.element}),
         })
 
-    def insert_component(self, command: edits.InsertComponentOnWire) -> None:
+    def insert_component(self, command: edits.InsertComponentOnWire, component: ModelComponent) -> None:
         address = command.address
         owner, graph = self.context(address)
         element = address.element
@@ -602,7 +626,7 @@ class ModelEditDraft:
         graph_address = _address(address.composites, "graph")
         self.add_component(edits.AddComponent(
             op="add_component", graph=graph_address, component=command.component, position=command.position, id=command.id,
-        ))
+        ), component)
         created = self.changed[-1]
         assert created.element.kind == "component"
         if command.flipped:
@@ -630,7 +654,7 @@ class ModelEditDraft:
         graph_address = _address(address.composites, "graph")
         self.add_component(edits.AddComponent(
             op="add_component", graph=graph_address, component=command.component, position=command.position, id=command.id,
-        ))
+        ), lower_model_component(command.component))
         created = self.changed[-1]
         assert created.element.kind == "component"
         if command.flipped:
@@ -725,9 +749,9 @@ class ModelEditDraft:
             if reason := self.component_problem(component, graph["physical_domain"]):
                 raise _Refusal(address, reason)
 
-    def add_component(self, command: edits.AddComponent) -> None:
+    def add_component(self, command: edits.AddComponent, definition: ModelComponent) -> None:
         _, graph = self.graph(command.graph)
-        component = command.component.model_dump(mode="json")
+        component = definition.model_dump(mode="json")
         self.require_physical_placement(command.graph, graph, component)
         key = command.id or _id(graph)
         for kind, members in (("component", "components"), ("wire", "wires"), ("physical_connection", "connections")):
@@ -1348,11 +1372,13 @@ def apply_model_edit(
                 if isinstance(component := operation.component, edits.RegisteredComponent):
                     if instantiate_template is None:
                         raise _Refusal(primary, "Component templates need a registered definition")
-                    operation = operation.model_copy(update={"component": instantiate_template(component.definition)})
-                if isinstance(operation, edits.AddComponent):
-                    edit.add_component(operation)
+                    definition = instantiate_template(component.definition)
                 else:
-                    edit.insert_component(operation)
+                    definition = lower_model_component(component)
+                if isinstance(operation, edits.AddComponent):
+                    edit.add_component(operation, definition)
+                else:
+                    edit.insert_component(operation, definition)
             case edits.MoveCards(placements=placements):
                 primary = placements[0].address
                 for placement in placements:
@@ -1430,8 +1456,7 @@ def apply_model_edit(
                 owner, _ = edit.graph(primary)
                 if reason := _task_input_reason(owner, item):
                     raise _Refusal(primary, reason)
-                port = {"id": uuid4().hex, "name": item.label, "type": item.type.model_dump(mode="json")}
-                owner["ports"]["inputs"].append(port)
+                port = _new_port(owner, "input", item.label, Port(item.type), key=item.id)
                 left, right = _card("inputs", port["id"]), target.model_dump(mode="json")
                 if operation.grow_target:
                     if right != _card("outputs", _EMPTY_BOUNDARY_PORT):

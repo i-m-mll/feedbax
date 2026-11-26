@@ -12,7 +12,7 @@ from feedbax.contracts.expression_registry import FunctionInfo
 from feedbax.contracts.operation import DatasetPort, OperationDefinition
 from feedbax.contracts.expression_values import ValueType
 from feedbax.contracts.project import RootDocument, Sha256, StepKind
-from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.task_document import StoredTaskDocument
 from feedbax.contracts.project_inputs import LoadedModelReference, NonemptyText, ProjectName, StepReference
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
@@ -92,7 +92,7 @@ class StudioTaskCatalog(StrictModel):
     """What New offers for a task (Blank, every library's task documents; the installed Python task types are the
     ``python_tasks`` registry's), and the types a variable or a signal can have."""
 
-    blank: TaskDocument
+    blank: StoredTaskDocument
     documents: list[StudioLibraryDocument]
     value_types: list[StudioNamedValueType]
 

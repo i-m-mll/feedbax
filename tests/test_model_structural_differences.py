@@ -5,7 +5,7 @@ import json
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import STUDIO_PRESENTATION_FILENAME, load_text_project
 from feedbax.contracts.project_resolution import compose_document
@@ -18,7 +18,7 @@ _URL = "/api/projects/ghost"
 _FORCE = {"owner": "component", "component": "wrapper", "port": "force"}
 _SPARE = ModelAddress.model_validate({"composites": [], "element": {"kind": "component", "id": "spare"}})
 _PLANT_WIRE = ModelAddress.model_validate({"composites": [], "element": {"kind": "wire", "id": "plant-wire"}})
-_SPARE_WIRE = {"source": _FORCE, "target": {"owner": "component", "component": "spare", "port": "force"}, "attachments": []}
+_SPARE_WIRE = {"source": _FORCE, "target": {"owner": "component", "component": "spare", "port": "force"}, "attachments": {}}
 _REWIRED = {"value": {"owner": "component", "component": "other", "port": "force"}}
 
 
@@ -26,9 +26,9 @@ def _project(tmp_path, differences):
     raw = document_project(authored_documents())
     model = raw["documents"]["reach-model"]["payload"]
     for name in ("spare", "other"):
-        model["interior"]["components"][name] = {"kind": "leaf", "name": name, "type": "feedbax.PointMass", "fields": {"mass": 1.0}}
-    model["interior"]["wires"]["spare-wire"] = _SPARE_WIRE
-    raw["documents"]["variant"] = {"label": "Variant", "schema": MODEL_DOCUMENT_SCHEMA_ID, "base": {"document": "reach-model"}, "differences": differences}
+        model["interior"]["components"][name] = {"kind": "leaf", "label": name, "type": "feedbax.PointMass", "fields": {"mass": 1.0}}
+    model["interior"]["wires"]["spare-wire"] = {key: end for key, end in _SPARE_WIRE.items() if key != "attachments"}
+    raw["documents"]["variant"] = {"label": "Variant", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "base": {"document": "reach-model"}, "differences": differences}
     raw["steps"]["train"]["base"]["inline"]["trial_documents"]["model"] = {"document": "variant"}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "ghost", Project.model_validate(raw))
@@ -39,9 +39,9 @@ def _project(tmp_path, differences):
 
 
 def _composed(tmp_path):
-    return ModelDocument.model_validate(
+    return StoredModelDocument.model_validate(
         compose_document(load_text_project(tmp_path / "ghost").project.documents.get, "variant").payload,
-    )
+    ).lower()
 
 
 def test_a_removed_component_carries_its_base_wiring_and_its_reset_restores_it(tmp_path):

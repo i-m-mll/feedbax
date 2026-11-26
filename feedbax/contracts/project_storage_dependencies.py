@@ -9,7 +9,7 @@ from functools import cache
 from pydantic import JsonValue, ValidationError
 
 from feedbax.contracts.matrix_core import resolve_segment
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import BasedDocument, InlineBase, OrderDocumentMembers, Project, RootDocument, StepBase
 from feedbax.contracts.project import base_chain, json_pointer_parts
 from feedbax.contracts.project_inputs import DocumentReference
@@ -149,7 +149,7 @@ def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPa
                 continue
             for item in entries.values():
                 for pointer in item.differences:
-                    compatible(frozenset({MODEL_DOCUMENT_SCHEMA_ID}), json_pointer_parts(pointer)[:-1])
+                    compatible(frozenset({STORED_MODEL_DOCUMENT_SCHEMA_ID}), json_pointer_parts(pointer)[:-1])
 
     for path in _sweep_paths(project.sweep):
         if path.startswith(("steps.", "documents.")):

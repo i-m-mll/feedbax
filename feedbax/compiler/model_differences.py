@@ -28,16 +28,14 @@ def _touches(edge: Record, ends: tuple[str, ...], components: set[str]) -> bool:
 
 
 def _chain_differences(
-    scope: tuple[str, ...], parent: Record, reference: list[Record], shown: list[Record],
+    scope: tuple[str, ...], parent: Record, reference: Record, shown: Record,
 ) -> Iterator[ModelStructuralDifference]:
-    kept = {item["id"] for item in shown}
-    held = {item["id"] for item in reference}
-    for item in reference:
-        if item["id"] not in kept:
-            yield ModelRemovedElement(change="removed", address=_attachment(scope, parent, item["id"]), definition=item)
-    for item in shown:
-        if item["id"] not in held:
-            yield ModelAddedElement(change="added", address=_attachment(scope, parent, item["id"]))
+    for key, definition in reference.items():
+        if key not in shown:
+            yield ModelRemovedElement(change="removed", address=_attachment(scope, parent, key), definition=definition)
+    for key in shown:
+        if key not in reference:
+            yield ModelAddedElement(change="added", address=_attachment(scope, parent, key))
 
 
 def _port_chains(
@@ -47,7 +45,7 @@ def _port_chains(
         earlier, later = reference[placement], shown[placement]
         for port in dict.fromkeys([*earlier, *later]):
             yield from _chain_differences(
-                scope, {"kind": "port", "end": port_end(placement, port)}, earlier.get(port, []), later.get(port, []),
+                scope, {"kind": "port", "end": port_end(placement, port)}, earlier.get(port, {}), later.get(port, {}),
             )
 
 

@@ -137,7 +137,6 @@ def pair_trial_source(
         template = resolved.template()
         task = resolved.selection()
         signal_types = template.signals
-        signal_ids = {name: name for name in signal_types}
     else:
         template = None
         from feedbax.compiler.set_fields import lower_trial_interventions
@@ -159,10 +158,9 @@ def pair_trial_source(
                 signal for id, signal in signals.items() if not is_trial_binding(id) or id in graph_override.input_bindings
             )})
         signal_types = {signal.id: signal.type for signal in task.signals}
-        signal_ids = {signal.name: signal.id for signal in task.signals}
     supplied_types = {}
     for port in model.ports.inputs:
-        signal_id = selected_signal_id(port.id, port.name, signal_ids, authored)
+        signal_id = selected_signal_id(port.id, signal_types, authored)
         if signal_id is not None and signal_id in signal_types:
             supplied_types[port.name] = signal_types[signal_id]
     supplied = frozenset(supplied_types)

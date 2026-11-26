@@ -16,7 +16,8 @@ from pydantic_core import to_json, to_jsonable_python
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.loaded_model import encode_imported_model_document
 from feedbax.contracts.matrix_core import (
     apply_stored_patch_copy, apply_stored_patch_in_place, replay_stored_patch_copy, resolve_segment,
@@ -450,7 +451,7 @@ def subject_model_read(project: Project, payload: Any, document: str) -> Any | N
     the step names no Model of its own; the step then runs the subject's Model with the row's writes as its
     differences. ``None`` when the step already reads a Model, or ``document`` is not one."""
     entry = project.documents.get(document)
-    if entry is None or entry.schema_id != MODEL_DOCUMENT_SCHEMA_ID or not isinstance(payload, dict):
+    if entry is None or entry.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID or not isinstance(payload, dict):
         return None
     slots = payload.get("trial_documents")
     if isinstance(slots, dict) and "model" in slots:
@@ -499,10 +500,10 @@ def composed_loaded_model_projection(
     if nav.unresolved or nav.pointer is not None:
         return None
     document = compose_document(read_document, nav.document)
-    if isinstance(document, ProjectDiagnostic) or document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+    if isinstance(document, ProjectDiagnostic) or document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
         return None
     try:
-        return encode_imported_model_document(ModelDocument.model_validate(document.payload))
+        return encode_imported_model_document(StoredModelDocument.model_validate(document.payload).lower())
     except ValueError:
         return None  # The pin may still be readable from the Store or its projection file.
 
