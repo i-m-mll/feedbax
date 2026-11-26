@@ -3,14 +3,19 @@
 from copy import deepcopy
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from feedbax.compiler.model_document import lower_model_document
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_VERSION
-from feedbax.contracts.stored_model import StoredModelDocument
+from feedbax.contracts.project import BasedDocument, DocumentBase, Project, RootDocument
+from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.examples import load_shipped_projects
+from feedbax.web.app import create_app
 
 
 def _stored_model() -> dict:
@@ -113,3 +118,68 @@ def test_shipped_model_projection_preserves_the_executable_graph():
     )
     registry = ComponentRegistry()
     assert lower_model_document(restored, registry).graph == lower_model_document(original, registry).graph
+
+
+def test_attachment_address_names_its_keyed_member():
+    path = ("interior", "components", "first", "interior", "wires", "drive", "attachments", "gain", "operands")
+    address = ModelAddress.at_stored_path(path)
+    assert address.composites == ("first",)
+    assert address.element.parent.id == "gain"
+    assert address.stored_path() == path
+
+
+def test_based_model_port_order_survives_reopen_and_undo(tmp_path):
+    outputs = {"right": {"label": "Right", "type": {}}, "left": {"label": "Left", "type": {}}}
+    project = Project(documents={
+        "base": RootDocument(
+            schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, label="Base",
+            payload={"step_seconds": 0.01, "ports": {"outputs": outputs}, "interior": {}},
+        ),
+        "tuned": BasedDocument(
+            schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, label="Tuned", base=DocumentBase(document="base"),
+        ),
+    })
+    for name, data in dump_text_project(project, ProjectConfiguration(project="model", store="results")).items():
+        path = tmp_path / "model" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        url = "/api/projects/model"
+
+        def opened():
+            return client.get(url + "/open").json()["snapshot"]
+
+        def field(snapshot, key):
+            return snapshot["project"]["documents"]["tuned"].get(key, {})
+
+        def port_order(snapshot):
+            response = client.post(url + "/model/projection", json={
+                "revision": snapshot["revision"], "document": "tuned",
+            })
+            assert response.is_success, response.text
+            return list(response.json()["resolved_model"]["ports"]["outputs"])
+
+        snapshot = opened()
+        assert port_order(snapshot) == ["right", "left"]
+        response = client.post(url + "/model/edit", json={
+            "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+            "document": "tuned", "command": {"operation": {
+                "op": "move_port", "index": 0, "address": {
+                    "composites": [], "element": {"kind": "port", "end": {"owner": "outputs", "port": "left"}},
+                },
+            }},
+        })
+        assert response.is_success, response.text
+        token = response.json()["result"]["undo_token"]
+        saved = opened()
+        assert field(saved, "differences") == {"/ports/outputs": {"order": ["left", "right"]}}
+        assert port_order(saved) == ["left", "right"]
+
+        response = client.post(url + "/model/undo", json={
+            "revision": saved["revision"], "presentation_revision": saved["presentation_revision"], "token": token,
+        })
+        assert response.is_success, response.text
+        restored = opened()
+        assert not field(restored, "differences")
+        assert port_order(restored) == ["right", "left"]

@@ -19,12 +19,17 @@ from feedbax.contracts.model_attachment import AddModelAttachment, ChangeModelAt
 from feedbax.contracts.model_document import (
     CompositeComponent,
     GraphInterior,
+    ModelComponent,
     ModelDocument,
     ModelPorts,
     PhysicalPort,
     SignalInput,
     SignalOutput,
     SignalType,
+)
+from feedbax.contracts.stored_model import (
+    StoredModelWire, StoredCompositeComponent, StoredLeafComponent, authored_model_payload,
+    lower_model_attachment, lower_model_component, lower_model_wire,
 )
 from feedbax.compiler.model_differences import structural_differences
 
@@ -429,7 +434,10 @@ class ModelEditDraft:
     def reset_difference(self, address: ModelAddress, reference: edits.ModelEditState) -> None:
         """Undo the structural difference at ``address`` from the Model ``reference``, with its layout."""
         difference = next((
-            item for item in structural_differences(reference.document.model_dump(mode="json"), self.document, {})
+            item for item in structural_differences(
+                authored_model_payload(reference.document),
+                authored_model_payload(ModelDocument.model_validate(self.document)), {},
+            )
             if item.address == address
         ), None)
         if difference is None:
@@ -448,14 +456,21 @@ class ModelEditDraft:
             earlier = ModelEditDraft(reference, self.leaf_ports, self.component_problem).attachment_chain(address, parent)
             index = next(index for index, item in enumerate(earlier) if item["id"] == element.id)
             chain = self.attachment_chain(address, parent, create=True)
-            chain.insert(min(index, len(chain)), difference.definition.model_dump(mode="json"))
+            chain.insert(
+                min(index, len(chain)), lower_model_attachment(element.id, difference.definition).model_dump(mode="json"),
+            )
         else:
             collection = {"component": "components", "wire": "wires", "physical_connection": "connections"}[element.kind]
-            graph.setdefault(collection, {})[element.id] = difference.definition.model_dump(mode="json")
+            definition = difference.definition
+            if isinstance(definition, StoredLeafComponent | StoredCompositeComponent):
+                definition = lower_model_component(definition)
+            elif isinstance(definition, StoredModelWire):
+                definition = lower_model_wire(definition)
+            graph.setdefault(collection, {})[element.id] = definition.model_dump(mode="json")
             restored = {address.to_text()}
             for edges, kind in ((difference.wires, "wires"), (difference.connections, "connections")):
                 for key, edge in edges.items():
-                    record = edge.model_dump(mode="json")
+                    record = (lower_model_wire(edge) if isinstance(edge, StoredModelWire) else edge).model_dump(mode="json")
                     if all(end["component"] in graph["components"] for end in record.values()
                            if isinstance(end, dict) and end.get("owner") == "component"):
                         graph.setdefault(kind, {})[key] = record
@@ -599,7 +614,7 @@ class ModelEditDraft:
             "element": element.model_copy(update={"parent": destination.element}),
         })
 
-    def insert_component(self, command: edits.InsertComponentOnWire) -> None:
+    def insert_component(self, command: edits.InsertComponentOnWire, component: ModelComponent) -> None:
         address = command.address
         owner, graph = self.context(address)
         element = address.element
@@ -609,7 +624,7 @@ class ModelEditDraft:
         graph_address = _address(address.composites, "graph")
         self.add_component(edits.AddComponent(
             op="add_component", graph=graph_address, component=command.component, position=command.position, id=command.id,
-        ))
+        ), component)
         created = self.changed[-1]
         assert created.element.kind == "component"
         if command.flipped:
@@ -637,7 +652,7 @@ class ModelEditDraft:
         graph_address = _address(address.composites, "graph")
         self.add_component(edits.AddComponent(
             op="add_component", graph=graph_address, component=command.component, position=command.position, id=command.id,
-        ))
+        ), lower_model_component(command.component))
         created = self.changed[-1]
         assert created.element.kind == "component"
         if command.flipped:
@@ -732,9 +747,9 @@ class ModelEditDraft:
             if reason := self.component_problem(component, graph["physical_domain"]):
                 raise _Refusal(address, reason)
 
-    def add_component(self, command: edits.AddComponent) -> None:
+    def add_component(self, command: edits.AddComponent, definition: ModelComponent) -> None:
         _, graph = self.graph(command.graph)
-        component = command.component.model_dump(mode="json")
+        component = definition.model_dump(mode="json")
         self.require_physical_placement(command.graph, graph, component)
         key = command.id or _id(graph)
         for kind, members in (("component", "components"), ("wire", "wires"), ("physical_connection", "connections")):
@@ -1355,11 +1370,13 @@ def apply_model_edit(
                 if isinstance(component := operation.component, edits.RegisteredComponent):
                     if instantiate_template is None:
                         raise _Refusal(primary, "Component templates need a registered definition")
-                    operation = operation.model_copy(update={"component": instantiate_template(component.definition)})
-                if isinstance(operation, edits.AddComponent):
-                    edit.add_component(operation)
+                    definition = instantiate_template(component.definition)
                 else:
-                    edit.insert_component(operation)
+                    definition = lower_model_component(component)
+                if isinstance(operation, edits.AddComponent):
+                    edit.add_component(operation, definition)
+                else:
+                    edit.insert_component(operation, definition)
             case edits.MoveCards(placements=placements):
                 primary = placements[0].address
                 for placement in placements:

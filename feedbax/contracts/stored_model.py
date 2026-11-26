@@ -210,7 +210,7 @@ def _store_ports(ports: ModelPorts) -> StoredModelPorts:
     )
 
 
-def _lower_attachment(key: str, item: StoredWireAttachment) -> WireAttachment:
+def lower_model_attachment(key: str, item: StoredWireAttachment) -> WireAttachment:
     match item:
         case StoredDelayAttachment():
             return project_member(item, DelayAttachment, id=key)
@@ -237,8 +237,8 @@ def _store_attachment(item: WireAttachment) -> StoredWireAttachment:
 def _lower_port_attachments(ports: StoredModelPortAttachments) -> ModelPortAttachments:
     return project_member(
         ports, ModelPortAttachments,
-        sources={port: tuple(_lower_attachment(key, item) for key, item in chain.items()) for port, chain in ports.sources.items()},
-        sinks={port: tuple(_lower_attachment(key, item) for key, item in chain.items()) for port, chain in ports.sinks.items()},
+        sources={port: tuple(lower_model_attachment(key, item) for key, item in chain.items()) for port, chain in ports.sources.items()},
+        sinks={port: tuple(lower_model_attachment(key, item) for key, item in chain.items()) for port, chain in ports.sinks.items()},
     )
 
 
@@ -250,7 +250,7 @@ def _store_port_attachments(ports: ModelPortAttachments) -> StoredModelPortAttac
     )
 
 
-def _lower_component(component: StoredModelComponent) -> ModelComponent:
+def lower_model_component(component: StoredModelComponent) -> ModelComponent:
     attachments = _lower_port_attachments(component.attachments)
     if isinstance(component, StoredLeafComponent):
         return project_member(component, LeafComponent, name=component.label, attachments=attachments)
@@ -260,7 +260,7 @@ def _lower_component(component: StoredModelComponent) -> ModelComponent:
     )
 
 
-def _store_component(component: ModelComponent) -> StoredModelComponent:
+def stored_model_component(component: ModelComponent) -> StoredModelComponent:
     attachments = _store_port_attachments(component.attachments)
     if isinstance(component, LeafComponent):
         return project_member(component, StoredLeafComponent, label=component.name, attachments=attachments)
@@ -270,17 +270,19 @@ def _store_component(component: ModelComponent) -> StoredModelComponent:
     )
 
 
+def lower_model_wire(wire: StoredModelWire) -> ModelWire:
+    return project_member(
+        wire, ModelWire,
+        attachments=tuple(lower_model_attachment(key, item) for key, item in wire.attachments.items()),
+    )
+
+
 def _lower_interior(interior: StoredGraphInterior | StoredPhysicalInterior) -> GraphInterior | PhysicalInterior:
     target = GraphInterior if isinstance(interior, StoredGraphInterior) else PhysicalInterior
     return project_member(
         interior, target,
-        components={key: _lower_component(component) for key, component in interior.components.items()},
-        wires={
-            key: project_member(wire, ModelWire, attachments=tuple(
-                _lower_attachment(identifier, item) for identifier, item in wire.attachments.items()
-            ))
-            for key, wire in interior.wires.items()
-        },
+        components={key: lower_model_component(component) for key, component in interior.components.items()},
+        wires={key: lower_model_wire(wire) for key, wire in interior.wires.items()},
         attachments=_lower_port_attachments(interior.attachments),
     )
 
@@ -289,7 +291,7 @@ def _store_interior(interior: GraphInterior | PhysicalInterior) -> StoredGraphIn
     target = StoredGraphInterior if isinstance(interior, GraphInterior) else StoredPhysicalInterior
     return project_member(
         interior, target,
-        components={key: _store_component(component) for key, component in interior.components.items()},
+        components={key: stored_model_component(component) for key, component in interior.components.items()},
         wires={
             key: project_member(wire, StoredModelWire, attachments=keyed_members(
                 (item.id, _store_attachment(item)) for item in wire.attachments

@@ -96,7 +96,7 @@ def _declared_ports(authority: ModelRegistryPorts, owner, scope=()):
 
 
 def _dumped(payload) -> dict:
-    return StoredModelDocument.model_validate(payload).lower().model_dump(mode="json")
+    return StoredModelDocument.model_validate(payload).model_dump(mode="json")
 
 
 def model_differences(folders, project_id, body, snapshot, shown, layout):
@@ -185,8 +185,9 @@ def evaluate_projection(folders, project_id, body, bundle):
 def model_projection(folders, project_id, body, bundle):
     snapshot = folders.read(project_id, revision=body.revision)
     payload, layout = model_edit_source(snapshot, body.document)
-    authored = StoredModelDocument.model_validate(payload).lower()
-    differences = model_differences(folders, project_id, body, snapshot, authored.model_dump(mode="json"), layout)
+    stored = StoredModelDocument.model_validate(payload)
+    authored = stored.lower()
+    differences = model_differences(folders, project_id, body, snapshot, stored.model_dump(mode="json"), layout)
     selected = None
     step = snapshot.project.steps.get(body.run.step) if body.run is not None else None
     if step is not None and step.kind == "evaluate":

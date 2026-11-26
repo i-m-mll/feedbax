@@ -7,14 +7,16 @@ from uuid import UUID
 from hypothesis import settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, rule
 from fastapi.testclient import TestClient
+from pydantic import TypeAdapter
 import pytest
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_document import SignalType
+from feedbax.contracts.model_document import ModelComponent, ModelDocument, SignalType
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditProblem, ModelEditState
 from feedbax.contracts.project import RootDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, stored_model_component
 from feedbax.compiler import model_edit
 from feedbax.compiler.model_edit import Port, apply_model_edit
 from feedbax.examples import load_shipped_projects
@@ -49,6 +51,8 @@ def _component_problem(component, domain):
 
 
 def _execute(state, op, **fields):
+    if op in {"add_component", "insert_component", "insert_physical_component"}:
+        fields["component"] = stored_model_component(TypeAdapter(ModelComponent).validate_python(fields["component"]))
     command = ModelEditCommand.model_validate({"operation": {"op": op, **fields}})
     return apply_model_edit(state, command, ports=_ports, component_problem=_component_problem)
 
@@ -276,10 +280,10 @@ def _ungroup_reason(state, address):
 def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp_path):
     path = tmp_path / "project"
     project = Project(documents={
-        "model": RootDocument(label="Model", schema="feedbax.spec.model", payload={
+        "model": RootDocument(label="Model", schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, payload={
             "step_seconds": 0.01, "ports": {},
             "interior": {"components": {"outer": {
-                "kind": "composite", "name": "Outer", "ports": {}, "interior": {},
+                "kind": "composite", "label": "Outer", "ports": {}, "interior": {},
             }}},
         }),
     })
@@ -301,7 +305,7 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
             "document": "model",
             "command": {"operation": {
                 "op": "add_component", "graph": _address(("outer",)),
-                "component": {"kind": "leaf", "name": "Scale", "type": "feedbax.Scale"},
+                "component": {"kind": "leaf", "label": "Scale", "type": "feedbax.Scale"},
                 "position": {"x": 2, "y": 3},
             }},
         }
@@ -367,7 +371,7 @@ def test_batch_created_model_recovers_its_original_file_revision_after_undo(tmp_
             "revision": empty["revision"],
             "files": [
                 {"kind": "document", "id": "model", "document": {
-                    "schema": "feedbax.spec.model",
+                    "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID,
                     "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}},
                     "label": "Model",
                 }},
@@ -384,7 +388,7 @@ def test_batch_created_model_recovers_its_original_file_revision_after_undo(tmp_
             "document": "model",
             "command": {"operation": {
                 "op": "add_component", "graph": _address(()),
-                "component": {"kind": "leaf", "name": "Scale", "type": "feedbax.Scale"},
+                "component": {"kind": "leaf", "label": "Scale", "type": "feedbax.Scale"},
                 "position": {"x": 2, "y": 3},
             }},
         })
@@ -431,7 +435,10 @@ def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambi
         },
         "interior": {"wires": wires},
     }
-    project = Project(documents={"model": RootDocument(label="Model", schema="feedbax.spec.model", payload=payload)})
+    typed = StoredModelDocument.from_lowered(ModelDocument.model_validate(payload))
+    project = Project(documents={"model": RootDocument(
+        label="Model", schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, payload=typed.model_dump(mode="json", exclude_defaults=True),
+    )})
     path = tmp_path / "project"
     for name, data in dump_text_project(project, ProjectConfiguration(project="project", store="store")).items():
         file = path / name
@@ -512,11 +519,13 @@ def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambi
         assert renamed["status"] == "applied", renamed
         snapshot = client.get(url).json()
         stored = snapshot["project"]["documents"]["model"]["payload"]
-        assert [(port["id"], port["name"]) for port in stored["ports"]["inputs"]] == [("old", "Old"), ("new", "Old")]
+        assert [(key, port["label"]) for key, port in stored["ports"]["inputs"].items()] == [("old", "Old"), ("new", "Old")]
         response = client.post(url + "/model/projection", json={"revision": snapshot["revision"], "document": "model"})
         assert response.status_code == 200, response.text
         projection = response.json()
-        assert projection["resolved_model"]["interior"]["wires"] == stored["interior"]["wires"]
+        assert StoredModelDocument.model_validate(projection["resolved_model"]).interior.wires == (
+            StoredModelDocument.model_validate(stored).interior.wires
+        )
         ports = {p["address"]["element"]["end"]["port"] for p in renamed["problems"]
                  if p["address"]["element"]["kind"] == "port"}
         assert ports == {"old", "new"}
@@ -528,10 +537,10 @@ def test_served_connect_adds_and_undoes_one_delay_and_can_move_it(tmp_path):
     interior = payload["interior"]
     drive = interior["wires"].pop("drive")
     interior["components"]["carry"] = {
-        "kind": "leaf", "type": "feedbax.Gain", "name": "Carry", "fields": {"gain": 1},
+        "kind": "leaf", "type": "feedbax.Gain", "label": "Carry", "fields": {"gain": 1},
     }
     interior["wires"]["carry-input"] = {"source": _end("cell", "hidden"), "target": _end("carry", "input")}
-    project = Project(documents={"model": RootDocument(label="Model", schema="feedbax.spec.model", payload=payload)})
+    project = Project(documents={"model": RootDocument(label="Model", schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, payload=payload)})
     for name, data in dump_text_project(project, ProjectConfiguration(project="project", store="store")).items():
         path = tmp_path / "project" / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -561,7 +570,7 @@ def test_served_connect_adds_and_undoes_one_delay_and_can_move_it(tmp_path):
         result = edit(drive, close_loop)
         closed = result["snapshot"]
         (closing, wire), = [(key, wire) for key, wire in wires(closed).items() if wire["target"] == _end("cell", "hidden")]
-        (delay,) = wire["attachments"]
+        (delay,) = wire["attachments"].values()
         assert delay["kind"] == "delay" and delay["delay"] == {"value": 1, "unit": "st"}
 
         undo = client.post(url + "/model/undo", json={
@@ -575,16 +584,16 @@ def test_served_connect_adds_and_undoes_one_delay_and_can_move_it(tmp_path):
         result = edit(undone, close_loop)
         closed = result["snapshot"]
         (closing, wire), = [(key, wire) for key, wire in wires(closed).items() if wire["target"] == _end("cell", "hidden")]
-        (delay,) = wire["attachments"]
-        src = _address(kind="attachment", parent={"kind": "wire", "id": closing}, id=delay["id"])
+        (delay_id, delay), = wire["attachments"].items()
+        src = _address(kind="attachment", parent={"kind": "wire", "id": closing}, id=delay_id)
         dst = _address(kind="wire", id="carry-input")
         moved = edit(closed, {"op": "move_wire_attachment", "address": src, "destination": dst})
         assert not moved["problems"], moved["problems"]
         after = moved["snapshot"]
         assert not wires(after)[closing].get("attachments")
-        assert wires(after)["carry-input"]["attachments"] == [delay]
+        assert wires(after)["carry-input"]["attachments"] == {delay_id: delay}
 
-        dst_delay = _address(kind="attachment", parent=dst["element"], id=delay["id"])
+        dst_delay = _address(kind="attachment", parent=dst["element"], id=delay_id)
         deleted = edit(after, {"op": "delete", "selection": [dst_delay]})
         loop = {issue["address"]["element"]["id"] for issue in deleted["problems"] if "same-step loop" in issue["reason"]}
         assert loop == {closing, "carry-input"}
