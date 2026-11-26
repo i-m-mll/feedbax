@@ -13,7 +13,7 @@ from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, Stor
 
 
 def _leaf(name: str = "Gain") -> dict:
-    return {"kind": "leaf", "name": name, "type": "feedbax.Scale", "fields": {"name": "scientific"}}
+    return {"kind": "leaf", "name": name, "type": "feedbax.Scale", "fields": {"scale": 2.0}}
 
 
 def _three_levels() -> dict:
@@ -77,7 +77,7 @@ def test_scientific_projection_preserves_declared_meaning_on_rename() -> None:
     outer["ports"]["outputs"][0]["name"] = "renamed"
     outer["interior"]["components"]["inner"]["interior"]["components"]["same"]["name"] = "Same"
     assert ModelDocument.model_validate(payload).scientific_projection() == original
-    outer["interior"]["components"]["inner"]["interior"]["components"]["same"]["fields"]["name"] = "new"
+    outer["interior"]["components"]["inner"]["interior"]["components"]["same"]["fields"]["scale"] = 3.0
     assert ModelDocument.model_validate(payload).scientific_projection() != original
 
     payload = _three_levels()
