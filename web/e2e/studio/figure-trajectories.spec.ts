@@ -1,7 +1,7 @@
 import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type {
-  AnalysisDocument, FigureDocument, StudioProjectDocument, StudioProjectSnapshot,
+  AnalysisDocument, StoredFigureDocument, StudioProjectDocument, StudioProjectSnapshot,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
@@ -35,7 +35,7 @@ test('authors coloured hand paths and 3D hidden-state trajectories in the figure
     return await response.json() as StudioProjectSnapshot;
   }
   const figureOf = (saved: StudioProjectSnapshot, document: string, view: string) =>
-    (rootPayload(saved.project.documents?.[document]) as unknown as AnalysisDocument).views![view]!.figure as FigureDocument;
+    (rootPayload(saved.project.documents?.[document]) as unknown as AnalysisDocument).views![view]!.figure as StoredFigureDocument;
   async function run(step: string) {
     await mapStep(page, step).click();
     await tab(page, 'Runs').click();
@@ -79,14 +79,16 @@ test('authors coloured hand paths and 3D hidden-state trajectories in the figure
   const hands = await edit(() => enter(box('Title'), 'Mass (kg)'));
   expect(figureOf(hands, 'hands', 'hand-paths')).toMatchObject({
     color_scales: { scale: { kind: 'continuous', palette: 'cividis', title: 'Mass (kg)' } },
-    layers: [{
-      mark: 'trajectory', group: ['member', 'condition', 'trial'],
-      encode: {
-        x: { variable: position, select: { xy: 'x' } },
-        y: { variable: position, select: { xy: 'y' } },
-        color: { field: 'mass.value', scale: 'scale' },
+    layers: {
+      trajectory: {
+        mark: 'trajectory', group: ['member', 'condition', 'trial'],
+        encode: {
+          x: { variable: position, select: { xy: 'x' } },
+          y: { variable: position, select: { xy: 'y' } },
+          color: { field: 'mass.value', scale: 'scale' },
+        },
       },
-    }],
+    },
   });
 
   await openFigure('dynamics', 'Hidden');
@@ -104,18 +106,20 @@ test('authors coloured hand paths and 3D hidden-state trajectories in the figure
   const figure = figureOf(dynamics, 'dynamics', 'hidden');
   expect(figure).toMatchObject({
     color_scales: { scale: { kind: 'ordinal' } },
-    layers: [{
-      mark: 'trajectory',
-      encode: {
-        x: { variable: 'scores', select: { component: 1 } },
-        y: { variable: 'scores', select: { component: 2 } },
-        z: { variable: 'scores', select: { component: 3 } },
-        color: { field: 'condition', scale: 'scale' },
+    layers: {
+      trajectory: {
+        mark: 'trajectory',
+        encode: {
+          x: { variable: 'scores', select: { component: 1 } },
+          y: { variable: 'scores', select: { component: 2 } },
+          z: { variable: 'scores', select: { component: 3 } },
+          color: { field: 'condition', scale: 'scale' },
+        },
       },
-    }],
+    },
   });
   // Setting Z replaces the panel's 2D labels by the bound fields' labels.
-  expect(figureOf(hidden, 'dynamics', 'hidden').layout[0].axes_labels).toEqual({
+  expect(Object.values(figureOf(hidden, 'dynamics', 'hidden').layout)[0].axes_labels).toEqual({
     x: 'scores · component 1', y: 'scores · component 2', z: 'scores · component 3',
   });
 

@@ -9,7 +9,7 @@ import {
 import type { DocumentPickerModel, PickerTemplate } from '@/features/projectWindow/DocumentPicker';
 import {
   LoadedModelDocumentSchema, blankStoredModel, blankStoredObjective, blankStoredTask, loadedModelDocumentSchemaId,
-  modelDocumentSchemaId, objectiveDocumentSchemaId, taskDocumentSchemaId,
+  analysisDocumentSchemaId, modelDocumentSchemaId, objectiveDocumentSchemaId, taskDocumentSchemaId,
 } from '@/generated/studioContracts';
 import type {
   Document, RootDocument, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
@@ -39,9 +39,9 @@ export const blankDocuments = {
     },
   },
   analysis: {
-    schema: 'feedbax.analysis_document.v1',
+    schema: analysisDocumentSchemaId,
     payload: {
-      schema_version: 'feedbax.analysis_document.v1', inputs: { states: { kind: 'dataset' } }, operations: {}, views: {},
+      schema_version: analysisDocumentSchemaId, inputs: { states: { kind: 'dataset' } }, operations: {}, views: {},
     },
   },
   report: {
