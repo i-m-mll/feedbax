@@ -401,7 +401,8 @@ def test_analyze_projects_effective_styles_without_adding_them_to_the_figure(hos
         assert response.status_code == 200, response.text
         values = response.json()["figure_values"]["profile"]
         assert values == {
-            "layers": {"hold": {"fill_alpha": 0.15}, "hidden": {"fill_alpha": 0}},
+            "layers": {"bounds": {"name": "Band"}, "hold": {"name": "Span", "fill_alpha": 0.15},
+                       "hidden": {"name": "Span 2", "fill_alpha": 0}},
             "color_scales": {"speed": {"legend": True, "palette": "viridis"},
                              "group": {"legend": False, "palette": "category10"}},
         }

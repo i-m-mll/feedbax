@@ -4683,7 +4683,7 @@ export type StudioAnalyzeEdit = {
 };
 
 export type StudioAnalyzeFigureValues = {
-  "layers": Record<string, StudioFigureSpanValues>;
+  "layers": Record<string, StudioFigureLayerValues>;
   "color_scales": Record<string, StudioFigureColorScaleValues>;
 };
 
@@ -5001,8 +5001,9 @@ export type StudioFigureColorScaleValues = {
   "palette": "viridis" | "cividis" | "plasma" | "turbo" | "category10" | "plotly" | "dark24";
 };
 
-export type StudioFigureSpanValues = {
-  "fill_alpha": number;
+export type StudioFigureLayerValues = {
+  "name": string;
+  "fill_alpha"?: number | null;
 };
 
 export type StudioInputPlace = {
@@ -13931,7 +13932,7 @@ export const StudioAnalyzeEditSchema: z.ZodType<StudioAnalyzeEdit> = z.lazy(() =
 
 export const StudioAnalyzeFigureValuesSchema: z.ZodType<StudioAnalyzeFigureValues> = z.lazy(() =>
   z.object({
-    "layers": z.record(StoredMemberKeySchema, StudioFigureSpanValuesSchema),
+    "layers": z.record(StoredMemberKeySchema, StudioFigureLayerValuesSchema),
     "color_scales": z.record(NameSchema, StudioFigureColorScaleValuesSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeFigureValues>;
@@ -14342,11 +14343,12 @@ export const StudioFigureColorScaleValuesSchema: z.ZodType<StudioFigureColorScal
   }).strict()
 ) as unknown as z.ZodType<StudioFigureColorScaleValues>;
 
-export const StudioFigureSpanValuesSchema: z.ZodType<StudioFigureSpanValues> = z.lazy(() =>
+export const StudioFigureLayerValuesSchema: z.ZodType<StudioFigureLayerValues> = z.lazy(() =>
   z.object({
-    "fill_alpha": z.number().finite(),
+    "name": z.string().min(1),
+    "fill_alpha": z.union([z.number().finite(), z.null()]).optional(),
   }).strict()
-) as unknown as z.ZodType<StudioFigureSpanValues>;
+) as unknown as z.ZodType<StudioFigureLayerValues>;
 
 export const StudioInputPlaceSchema: z.ZodType<StudioInputPlace> = z.lazy(() =>
   z.object({

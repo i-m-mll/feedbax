@@ -40,7 +40,7 @@ from feedbax.contracts.studio_analyze import (
     StudioAnalyzeReset,
     StudioAnalyzeWire,
     StudioFigureColorScaleValues,
-    StudioFigureSpanValues,
+    StudioFigureLayerValues,
 )
 from feedbax.contracts.studio_place import path_parts, task_start
 from feedbax.jobs import JobConflict, JobNotFound
@@ -88,15 +88,24 @@ def _catalog_analysis(project: Project, document: str) -> AnalysisDocument | Non
         return None
 
 
+def _figure_layer_values(figure: StoredFigureDocument) -> dict[str, StudioFigureLayerValues]:
+    names = set()
+    values = {}
+    for key, layer in figure.layers.items():
+        name = generated_name(layer.mark.capitalize(), names.__contains__, separator=" ")
+        names.add(name)
+        values[key] = StudioFigureLayerValues(
+            name=name, fill_alpha=layer.style.fill_alpha if isinstance(layer, StoredSpanLayer) else None,
+        )
+    return values
+
+
 def _figure_values(analysis: AnalysisDocument | None) -> dict[str, StudioAnalyzeFigureValues]:
     if analysis is None:
         return {}
     return {
         key: StudioAnalyzeFigureValues(
-            layers={
-                name: StudioFigureSpanValues(fill_alpha=layer.style.fill_alpha)
-                for name, layer in figure.layers.items() if isinstance(layer, StoredSpanLayer)
-            },
+            layers=_figure_layer_values(figure),
             color_scales={
                 name: StudioFigureColorScaleValues(legend=scale.legend, palette=scale.palette)
                 for name, scale in figure.color_scales.items()
