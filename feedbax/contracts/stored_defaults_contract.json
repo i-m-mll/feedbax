@@ -777,11 +777,7 @@
         "angle": 0
       }
     },
-    "weight": {
-      "kind": "literal",
-      "value": 1,
-      "unit": null
-    },
+    "weight": 1,
     "reduction": "mean",
     "window": null,
     "enabled": true,
@@ -1762,9 +1758,6 @@
       }
     }
   },
-  "feedbax.contracts.task_document.Length": {
-    "max_steps": null
-  },
   "feedbax.contracts.task_document.Marker": {},
   "feedbax.contracts.task_document.PythonTaskSelection": {
     "params": {}
@@ -1773,6 +1766,9 @@
   "feedbax.contracts.task_document.SetVariableChoices": {},
   "feedbax.contracts.task_document.StoredCell": {},
   "feedbax.contracts.task_document.StoredEpoch": {},
+  "feedbax.contracts.task_document.StoredLength": {
+    "max_steps": null
+  },
   "feedbax.contracts.task_document.StoredRepeat": {},
   "feedbax.contracts.task_document.StoredSignal": {
     "absent": null,
@@ -1785,18 +1781,25 @@
     "fixed_steps": null,
     "validation_trials": {}
   },
+  "feedbax.contracts.task_document.StoredUntil": {},
   "feedbax.contracts.task_document.StoredVariable": {
     "count": null,
     "set_choices": null,
     "marker": null
   },
-  "feedbax.contracts.task_document.Until": {},
   "feedbax.contracts.task_document.ValidationTrial": {
     "variables": {},
     "epoch_steps": {}
   },
   "feedbax.contracts.time_units.TimeValue": {},
   "feedbax.contracts.training_document.TrainingDocument": {},
+  "feedbax.contracts.window.StoredWindow": {},
+  "feedbax.contracts.window.StoredWindowInterval": {},
+  "feedbax.contracts.window.StoredWindowMoment": {},
+  "feedbax.contracts.window.StoredWindowPosition": {
+    "offset": null
+  },
+  "feedbax.contracts.window.StoredWindowRelativePosition": {},
   "feedbax.contracts.window.Window": {},
   "feedbax.contracts.window.WindowEpoch": {
     "occurrence": null

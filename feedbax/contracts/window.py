@@ -5,12 +5,15 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.expression_storage import StoredExpression, lower_expression, store_expression
+from feedbax.contracts.expression_text import print_field
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
     TIME, CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, ScopedValue, Site,
     UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.time_units import TimeValue, literal_time
+from feedbax.contracts.stored_members import project_member
 
 WindowEdge = Literal["start", "end"]
 WindowOffset = TimeValue | Annotated[
@@ -38,33 +41,125 @@ class WindowEpochAnchor(WindowEpoch):
 WindowAnchor = Annotated[WindowTrialAnchor | WindowEpochAnchor, Field(discriminator="kind")]
 
 
-class WindowPosition(StrictModel):
+class _WindowPosition[OffsetT](StrictModel):
     anchor: WindowAnchor
-    offset: WindowOffset | None = None
+    offset: OffsetT | None = None
 
 
-class WindowRelativePosition(StrictModel):
-    offset: WindowOffset
+class WindowPosition(_WindowPosition[WindowOffset]):
+    pass
 
 
-class WindowInterval(StrictModel):
+class StoredWindowPosition(_WindowPosition[StoredExpression]):
+    pass
+
+
+class _WindowRelativePosition[OffsetT](StrictModel):
+    offset: OffsetT
+
+
+class WindowRelativePosition(_WindowRelativePosition[WindowOffset]):
+    pass
+
+
+class StoredWindowRelativePosition(_WindowRelativePosition[StoredExpression]):
+    pass
+
+
+class _WindowInterval[PositionT, RelativeT](StrictModel):
     kind: Literal["interval"]
-    start: WindowPosition
-    end: WindowPosition | WindowRelativePosition
+    start: PositionT
+    end: PositionT | RelativeT
 
 
-class WindowMoment(StrictModel):
+class WindowInterval(_WindowInterval[WindowPosition, WindowRelativePosition]):
+    pass
+
+
+class StoredWindowInterval(_WindowInterval[StoredWindowPosition, StoredWindowRelativePosition]):
+    pass
+
+
+class _WindowMoment[PositionT](StrictModel):
     kind: Literal["moment"]
-    at: WindowPosition
+    at: PositionT
+
+
+class WindowMoment(_WindowMoment[WindowPosition]):
+    pass
+
+
+class StoredWindowMoment(_WindowMoment[StoredWindowPosition]):
+    pass
 
 
 WindowSpan = Annotated[WindowEpoch | WindowInterval | WindowMoment, Field(discriminator="kind")]
+StoredWindowSpan = Annotated[WindowEpoch | StoredWindowInterval | StoredWindowMoment, Field(discriminator="kind")]
 
 
 class Window(StrictModel):
     """The union of half-open intervals, whole epochs and individual samples."""
 
     spans: tuple[WindowSpan, ...]
+
+
+class StoredWindow(StrictModel):
+    """Window spans keep their order and store offsets in the expression field grammar."""
+
+    spans: tuple[StoredWindowSpan, ...]
+
+    def lower(self) -> Window:
+        return Window(spans=tuple(_lower_span(span) for span in self.spans))
+
+    @classmethod
+    def from_lowered(cls, window: Window) -> "StoredWindow":
+        return cls(spans=tuple(_stored_span(span) for span in window.spans))
+
+
+def lower_window_offset(value: StoredExpression | None) -> WindowOffset | None:
+    """Lower a persisted offset with its runtime name and literal time types."""
+    if value is None:
+        return None
+    expression = lower_expression(value)
+    try:
+        return store_window_offset(expression)
+    except ValueError:
+        return UnresolvedValue(text=print_field(expression, window_offset_site(())))
+
+
+def stored_window_offset(value: WindowOffset | None) -> StoredExpression | None:
+    """Project a runtime offset into its authored expression type."""
+    return store_expression(window_offset_expression(value)) if value is not None else None
+
+
+def _lower_position(position: StoredWindowPosition) -> WindowPosition:
+    return project_member(position, WindowPosition, {"offset": lower_window_offset})
+
+
+def _stored_position(position: WindowPosition) -> StoredWindowPosition:
+    return project_member(position, StoredWindowPosition, {"offset": stored_window_offset})
+
+
+def _lower_span(span: StoredWindowSpan) -> WindowSpan:
+    if isinstance(span, StoredWindowInterval):
+        end = _lower_position(span.end) if isinstance(span.end, StoredWindowPosition) else project_member(
+            span.end, WindowRelativePosition, {"offset": lower_window_offset},
+        )
+        return project_member(span, WindowInterval, start=_lower_position(span.start), end=end)
+    if isinstance(span, StoredWindowMoment):
+        return project_member(span, WindowMoment, at=_lower_position(span.at))
+    return span
+
+
+def _stored_span(span: WindowSpan) -> StoredWindowSpan:
+    if isinstance(span, WindowInterval):
+        end = _stored_position(span.end) if isinstance(span.end, WindowPosition) else project_member(
+            span.end, StoredWindowRelativePosition, {"offset": stored_window_offset},
+        )
+        return project_member(span, StoredWindowInterval, start=_stored_position(span.start), end=end)
+    if isinstance(span, WindowMoment):
+        return project_member(span, StoredWindowMoment, at=_stored_position(span.at))
+    return span
 
 
 def window_offset_site(names: tuple[ScopedValue, ...]) -> Site:

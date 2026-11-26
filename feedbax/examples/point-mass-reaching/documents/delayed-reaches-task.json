@@ -7,96 +7,23 @@
       "start": {
         "label": "start",
         "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
-        "value": {
-          "kind": "call",
-          "function": "vector",
-          "args": [
-            {
-              "kind": "draw",
-              "family": "uniform",
-              "args": [{"kind": "literal", "value": -0.4}, {"kind": "literal", "value": 0.5}]
-            },
-            {
-              "kind": "draw",
-              "family": "uniform",
-              "args": [{"kind": "literal", "value": -0.3}, {"kind": "literal", "value": 0.45}]
-            }
-          ]
-        }
+        "value": "[U(-0.4, 0.5), U(-0.3, 0.45)]"
       },
       "target": {
         "label": "target",
         "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
-        "value": {
-          "kind": "call",
-          "function": "add",
-          "args": [
-            {"kind": "name", "reference": "start"},
-            {
-              "kind": "call",
-              "function": "polar",
-              "args": [
-                {
-                  "kind": "draw",
-                  "family": "uniform",
-                  "args": [
-                    {"kind": "literal", "value": 0.1, "unit": "m"},
-                    {"kind": "literal", "value": 0.5, "unit": "m"}
-                  ]
-                },
-                {
-                  "kind": "draw",
-                  "family": "uniform",
-                  "args": [
-                    {"kind": "literal", "value": -3.141592653589793, "unit": "rad"},
-                    {"kind": "literal", "value": 3.141592653589793, "unit": "rad"}
-                  ]
-                }
-              ]
-            }
-          ]
-        }
+        "value": "start + polar(U(0.1 m, 0.5 m), U(-3.141592653589793 rad, 3.141592653589793 rad))"
       },
-      "catch": {
-        "label": "catch",
-        "type": {"base": "boolean"},
-        "value": {
-          "kind": "draw",
-          "family": "bernoulli",
-          "args": [{"kind": "literal", "value": 0.5}]
-        }
-      }
+      "catch": {"label": "catch", "type": {"base": "boolean"}, "value": "B(0.5)"}
     },
     "epochs": {
       "hold": {
         "label": "hold",
-        "end": {
-          "kind": "length",
-          "length": {
-            "kind": "draw",
-            "family": "uniform",
-            "args": [
-              {"kind": "literal", "value": 5, "unit": "st"},
-              {"kind": "literal", "value": 14, "unit": "st"}
-            ]
-          },
-          "max_steps": 14
-        }
+        "end": {"kind": "length", "length": "U(5 st, 14 st)", "max_steps": 14}
       },
       "cue": {
         "label": "cue",
-        "end": {
-          "kind": "length",
-          "length": {
-            "kind": "draw",
-            "family": "uniform",
-            "args": [
-              {"kind": "literal", "value": 10, "unit": "st"},
-              {"kind": "literal", "value": 19, "unit": "st"}
-            ]
-          },
-          "max_steps": 19
-        }
+        "end": {"kind": "length", "length": "U(10 st, 19 st)", "max_steps": 19}
       },
       "move": {"label": "move", "end": {"kind": "rest"}}
     },
@@ -104,13 +31,7 @@
       "target_pos": {
         "label": "target position",
         "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
-        "cells": {
-          "cue-move": {
-            "first_epoch": "cue",
-            "last_epoch": "move",
-            "value": {"kind": "name", "reference": "target"}
-          }
-        }
+        "cells": {"cue-move": {"first_epoch": "cue", "last_epoch": "move", "value": "target"}}
       },
       "target_vel": {
         "label": "target velocity",
@@ -120,39 +41,17 @@
           "dimensions": {"length": 1, "time": -1},
           "space": "free"
         },
-        "cells": {
-          "cue-move": {
-            "first_epoch": "cue",
-            "last_epoch": "move",
-            "value": {
-              "kind": "call",
-              "function": "vector",
-              "args": [{"kind": "literal", "value": 0}, {"kind": "literal", "value": 0}]
-            }
-          }
-        }
+        "cells": {"cue-move": {"first_epoch": "cue", "last_epoch": "move", "value": "[0, 0]"}}
       },
       "goal": {
         "label": "goal",
         "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
         "cells": {
-          "hold-cue": {
-            "first_epoch": "hold",
-            "last_epoch": "cue",
-            "value": {"kind": "name", "reference": "start"}
-          },
+          "hold-cue": {"first_epoch": "hold", "last_epoch": "cue", "value": "start"},
           "move": {
             "first_epoch": "move",
             "last_epoch": "move",
-            "value": {
-              "kind": "call",
-              "function": "where",
-              "args": [
-                {"kind": "name", "reference": "catch"},
-                {"kind": "name", "reference": "start"},
-                {"kind": "name", "reference": "target"}
-              ]
-            }
+            "value": "where(catch, start, target)"
           }
         }
       },
@@ -160,41 +59,17 @@
         "label": "fixation",
         "type": {"base": "real"},
         "cells": {
-          "hold-cue": {
-            "first_epoch": "hold",
-            "last_epoch": "cue",
-            "value": {"kind": "literal", "value": 1}
-          },
-          "move": {
-            "first_epoch": "move",
-            "last_epoch": "move",
-            "value": {
-              "kind": "call",
-              "function": "where",
-              "args": [
-                {"kind": "name", "reference": "catch"},
-                {"kind": "literal", "value": 1},
-                {"kind": "literal", "value": 0}
-              ]
-            }
-          }
+          "hold-cue": {"first_epoch": "hold", "last_epoch": "cue", "value": 1},
+          "move": {"first_epoch": "move", "last_epoch": "move", "value": "where(catch, 1, 0)"}
         }
       },
       "target_on": {
         "label": "target on",
         "type": {"base": "real"},
-        "cells": {
-          "cue-move": {
-            "first_epoch": "cue",
-            "last_epoch": "move",
-            "value": {"kind": "literal", "value": 1}
-          }
-        }
+        "cells": {"cue-move": {"first_epoch": "cue", "last_epoch": "move", "value": 1}}
       }
     },
-    "links": {
-      "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"state\",\"effector/position\"]}}": "start"
-    },
+    "links": {"component.plant.state.\"effector/position\"": "start"},
     "fixed_steps": 80,
     "validation_trials": {
       "trial-1": {
