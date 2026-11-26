@@ -5967,7 +5967,9 @@ export const blankStoredTask = {
     "epoch": {
       "label": "epoch",
       "end": {
+        "kind": "length",
         "length": {
+          "kind": "literal",
           "value": 1,
           "unit": "s"
         }

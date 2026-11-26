@@ -26,6 +26,7 @@ from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, authored_model_payload
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID, StoredTaskDocument
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.window import Window, WindowEpoch
 from feedbax.contracts.jobs import JobStatus
 from feedbax.expression_builtins import register_builtins
@@ -173,7 +174,7 @@ def test_plan_refuses_each_row_with_an_unwired_linear_input(authored, prepared_t
     del controller["interior"]["wires"]["decode"]
     name = (
         "documents.reach-model.payload.interior.components.wrapper.interior"
-        ".components.controller.interior.components.readout.name"
+        ".components.controller.interior.components.readout.label"
     )
     raw["sweep"] = {"rows": {
         "base": {},
@@ -183,7 +184,7 @@ def test_plan_refuses_each_row_with_an_unwired_linear_input(authored, prepared_t
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
     assert plan.runs and all(run.admission_problem is not None for run in plan.runs)
     assert len(prepared_trials) == 2
-    original = controller["interior"]["components"]["readout"]["name"]
+    original = controller["interior"]["components"]["readout"]["label"]
     assert {
         (run.key.variant, run.key.step, run.key.row, issue.detail)
         for run in plan.runs for issue in run.problems
@@ -200,7 +201,7 @@ def test_plan_reports_every_component_with_invalid_parameters(authored):
     interior = raw["documents"]["reach-model"]["payload"]["interior"]
     for name in ("left", "right"):
         interior["components"][name] = {
-            "kind": "leaf", "name": name.title(), "type": "feedbax.equinox.Linear", "fields": {},
+            "kind": "leaf", "label": name.title(), "type": "feedbax.equinox.Linear", "fields": {},
         }
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
     assert sorted(
@@ -332,10 +333,14 @@ def test_shared_trial_resolution_tracks_document_aliases_and_row_edits(authored)
     _two_optimizer_rates(raw)
     raw["documents"]["task-alias"] = {
         "label": "Task alias",
-        "schema": "test.alias", "payload": {"nested": {"document": "task"}},
+        "schema": TRAINING_DOCUMENT_SCHEMA_ID,
+        "payload": {
+            "method": "feedbax.supervised_gradient", "settings": {"nested": {"document": "task"}},
+            "training_config": {"n_batches": 2, "batch_size": 4},
+        },
     }
     step = raw["steps"]["train"]
-    step["base"]["inline"]["trial_documents"]["task"] = {"document": "task-alias", "pointer": "/nested"}
+    step["base"]["inline"]["trial_documents"]["task"] = {"document": "task-alias", "pointer": "/settings/nested"}
     low, high = (RunKey("default", "train", f"rate={name}") for name in ("low", "high"))
     memo = ProjectPlanMemo()
 
@@ -401,7 +406,8 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
     assert projected(window_service.ProjectPlanRead.without_history(
         folders.read_plan("cohort", revision=original.settled.revision),
     )) == before
-    variables = raw["documents"]["task"]["payload"]["validation_trials"][0]["variables"]
+    trials = raw["documents"]["task"]["payload"]["validation_trials"]
+    variables = next(iter(trials.values()))["variables"]
     target = variables["target"]
     assert isinstance(target, list)
     target[:] = [1.0, -0.0]
@@ -656,9 +662,10 @@ def test_training_document_problem_is_placed_in_the_document(authored, key, valu
 
 def _two_term_project(authored, order):
     raw = document_project(authored)
-    (effort,) = raw["documents"]["objective"]["payload"]["terms"]
-    terms = {"effort": effort, "speed": {**effort, "id": "speed"}}
-    raw["documents"]["objective"]["payload"]["terms"] = [terms[name] for name in order]
+    objective = raw["documents"]["objective"]["payload"]
+    effort = objective["terms"]["effort"]
+    terms = {"effort": effort, "speed": deepcopy(effort)}
+    objective["terms"] = {name: terms[name] for name in order}
     return raw
 
 
@@ -678,12 +685,13 @@ def test_a_sweep_on_a_term_follows_the_term_when_the_terms_are_reordered(authore
         assert weights == {(("effort", 1), ("speed", 2)), (("effort", 1), ("speed", 3))}
 
 
-@pytest.mark.parametrize(("segment", "reason"), [("0", "addressed by its id"), ("pace", "not an id")])
-def test_a_term_is_addressed_only_by_an_id_it_has(authored, segment, reason):
+@pytest.mark.parametrize("segment", ["0", "pace"])
+def test_a_term_is_addressed_only_by_an_id_it_has(authored, segment):
     raw = _two_term_project(authored, ("effort", "speed"))
     raw["steps"]["train"]["sweep"] = {"axes": {"enabled": {
         "path": f"trial_documents.objective.terms.{segment}.enabled", "values": [True, False],
     }}}
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
     assert plan.diagnostics
-    assert all(reason in issue.detail and "effort, speed" in issue.detail and issue.step == "train" for issue in plan.diagnostics)
+    assert all("missing segment" in issue.detail and segment in issue.detail and issue.step == "train"
+               for issue in plan.diagnostics)

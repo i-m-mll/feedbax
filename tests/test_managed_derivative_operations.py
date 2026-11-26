@@ -9,11 +9,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ElementKey, RunKey
 from feedbax.contracts.rollout import ROLLOUT_TYPE
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.jobs import JobStatus
 from feedbax.jobs import JobService, plan_attempt_key
 from feedbax.host.light_jobs import dataset_member
@@ -34,12 +34,12 @@ _CAPTURE = Path(__file__).parent / "fixtures" / "derivative_fixed_points.json"
 _CALIBRATION_PLUGIN = "feedbax_witness_calibration"
 
 
-def _port(name, width):
-    return {"id": name, "name": name, "type": {"base": "real", "shape": [width]}}
+def _ports(**widths):
+    return {name: {"label": name, "type": {"base": "real", "shape": [width]}} for name, width in widths.items()}
 
 
 def _leaf(name, owner, **fields):
-    return {"kind": "leaf", "name": name, "type": owner, "fields": fields}
+    return {"kind": "leaf", "label": name, "type": owner, "fields": fields}
 
 
 def _input(name):
@@ -68,8 +68,8 @@ def _model(inputs, outputs, components, wires):
 
 def _fixed_point_model():
     return _model(
-        [_port("feedback", 3), _port("memory", 4)],
-        [_port("hidden", 4), _port("command", 2), _port("start", 4)],
+        _ports(feedback=3, memory=4),
+        _ports(hidden=4, command=2, start=4),
         {
             "cell": _leaf("Cell", f"{witness.PACKAGE}.PinnedGRU", input_size=3, hidden_size=4),
             "readout": _leaf("Readout", f"{witness.PACKAGE}.PinnedReadout", input_size=4, output_size=2),
@@ -89,7 +89,7 @@ def _fixed_point_model():
 
 def _feedback_model():
     return _model(
-        [_port("drive", 1)], [_port("value", 1)],
+        _ports(drive=1), _ports(value=1),
         {"feedback": _leaf("Feedback", f"{witness.PACKAGE}.QuadraticFeedback")},
         {
             "input": _wire(_input("drive"), _component("feedback", "input")),
@@ -102,30 +102,31 @@ def _literal(value):
     return {"kind": "literal", "value": value}
 
 
-def _variable(name, value):
-    return {"id": name, "name": name, "type": {"base": "real"}, "value": _literal(value)}
-
-
 def _vector_signal(name, terms):
     return {
-        "id": name, "name": name, "type": {"base": "real", "shape": [len(terms)]},
-        "cells": [{
-            "id": "rollout", "first_epoch": "rollout", "last_epoch": "rollout",
+        "label": name, "type": {"base": "real", "shape": [len(terms)]},
+        "cells": {"rollout": {
+            "first_epoch": "rollout", "last_epoch": "rollout",
             "value": {"kind": "call", "function": "vector", "args": terms},
-        }],
+        }},
     }
 
 
 def _conditioning_task():
     zero = _literal(0.0)
     return {
-        "id": "conditioning", "variables": [_variable("conditioning", 0.0)],
-        "epochs": [{"id": "rollout", "name": "Rollout", "end": {"kind": "rest"}}], "fixed_steps": 2,
-        "signals": [
-            _vector_signal("feedback", [zero, zero, {"kind": "name", "reference": "conditioning"}]),
-            _vector_signal("memory", [zero] * 4),
-        ],
-        "validation_trials": [{"variables": {"conditioning": level}} for level in (0.0, 0.5, 1.0)],
+        "id": "conditioning",
+        "variables": {"conditioning": {"label": "conditioning", "type": {"base": "real"}, "value": zero}},
+        "epochs": {"rollout": {"label": "Rollout", "end": {"kind": "rest"}}},
+        "fixed_steps": 2,
+        "signals": {
+            "feedback": _vector_signal("feedback", [zero, zero, {"kind": "name", "reference": "conditioning"}]),
+            "memory": _vector_signal("memory", [zero] * 4),
+        },
+        "validation_trials": {
+            f"trial-{index}": {"variables": {"conditioning": level}}
+            for index, level in enumerate((0.0, 0.5, 1.0), start=1)
+        },
     }
 
 
@@ -170,9 +171,9 @@ def _project():
         "documents": {
             name: {"label": "Document", "schema": schema, "payload": payload}
             for name, schema, payload in (
-                ("fixed-model", MODEL_DOCUMENT_SCHEMA_ID, _fixed_point_model()),
-                ("feedback-model", MODEL_DOCUMENT_SCHEMA_ID, _feedback_model()),
-                ("fixed-task", TASK_DOCUMENT_SCHEMA_ID, _conditioning_task()),
+                ("fixed-model", STORED_MODEL_DOCUMENT_SCHEMA_ID, _fixed_point_model()),
+                ("feedback-model", STORED_MODEL_DOCUMENT_SCHEMA_ID, _feedback_model()),
+                ("fixed-task", STORED_TASK_DOCUMENT_SCHEMA_ID, _conditioning_task()),
                 ("feedback-task", PYTHON_TASK_SCHEMA_ID, feedback_task),
                 ("fixed-analysis", "feedbax.analysis_document.v1", fixed_analysis),
                 ("gain-analysis", "feedbax.analysis_document.v1", gain_analysis),
