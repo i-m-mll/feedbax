@@ -22,6 +22,7 @@ from feedbax.contracts.task_document import (
 )
 
 if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.project import RootDocument
     from feedbax.tasks.registry import PythonTaskRegistry
 
@@ -85,13 +86,14 @@ DOCUMENT_INPUT_MEDIA_TYPES = frozenset((
 
 
 def authored_document_input(
-    reference: DocumentInputReference, document: RootDocument, *, python_tasks: PythonTaskRegistry | None = None,
+    reference: DocumentInputReference, document: RootDocument, *,
+    python_tasks: PythonTaskRegistry | None = None, components: ComponentRegistry | None = None,
 ) -> DocumentInput:
     if isinstance(reference, InitialModelReference):
         if document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
             raise ValueError("Initial model input requires a Model document")
         return InitialModelSource(
-            document=StoredModelDocument.model_validate(document.payload).lower(), seed=reference.seed,
+            document=StoredModelDocument.model_validate(document.payload).lower(components), seed=reference.seed,
         )
     if isinstance(reference, LoadedModelReference):
         from feedbax.contracts.project import LoadedModelDocument

@@ -4279,14 +4279,19 @@ export type StoredCompositeComponent = {
   "label": string;
   "ports": StoredModelPorts;
   "interior": StoredGraphInterior | StoredPhysicalInterior;
-  "substeps"?: number | UnresolvedValue;
+  "substeps"?: StoredExpression;
   "attachments"?: StoredModelPortAttachments;
 };
 
 export type StoredDelayAttachment = {
   "kind": "delay";
-  "delay": ModelTime | UnresolvedValue;
-  "initial_source"?: ModelSignalSource;
+  "delay": StoredTime;
+  "initial_source"?: StoredModelSignalSource;
+};
+
+export type StoredDelayInitialValue = {
+  "kind": "value";
+  "value": StoredExpression;
 };
 
 export type StoredEnd = StoredLength | Rest | StoredUntil;
@@ -4332,8 +4337,8 @@ export type StoredHoldAttachment = {
 export type StoredInterventionAttachment = {
   "kind": "intervention";
   "operation": string;
-  "operands"?: Record<string, ModelSignalSource>;
-  "window"?: Window | null;
+  "operands"?: Record<string, StoredModelSignalSource>;
+  "window"?: StoredWindow | null;
 };
 
 export type StoredLeafComponent = {
@@ -4405,7 +4410,7 @@ export type StoredMembers_ValidationTrial_ = Record<string, ValidationTrial>;
 export type StoredModelAddressKey = string;
 
 export type StoredModelDocument = {
-  "step_seconds": number | UnresolvedValue;
+  "step_seconds": StoredTime;
   "ports": StoredModelPorts;
   "interior": StoredGraphInterior;
   "world"?: ModelWorld | null;
@@ -4421,6 +4426,8 @@ export type StoredModelPorts = {
   "outputs"?: StoredMembers_StoredSignalOutput_;
   "physical"?: StoredMembers_StoredPhysicalPort_;
 };
+
+export type StoredModelSignalSource = StoredDelayInitialValue | DelayInitialTask | DelayInitialWire;
 
 export type StoredModelWire = {
   "source": ComponentPortEnd | InputBoundaryEnd;
@@ -6135,7 +6142,7 @@ export const blankTask = {
   ]
 };
 export const blankStoredModel = {
-  "step_seconds": 0.01,
+  "step_seconds": "0.01 s",
   "ports": {},
   "interior": {}
 };
@@ -13395,7 +13402,7 @@ export const StoredCompositeComponentSchema: z.ZodType<StoredCompositeComponent>
     "label": z.string().min(1),
     "ports": StoredModelPortsSchema,
     "interior": z.union([StoredGraphInteriorSchema, StoredPhysicalInteriorSchema]),
-    "substeps": z.union([z.number().int().safe().min(1), UnresolvedValueSchema]).optional(),
+    "substeps": StoredExpressionSchema.optional(),
     "attachments": StoredModelPortAttachmentsSchema.optional(),
   }).strict().superRefine((value, ctx) => { if (value.interior.physical_domain == null && Object.keys(value.ports.physical ?? {}).length > 0) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "physical ports require an Equations or Mechanics interior" }); })
 ) as unknown as z.ZodType<StoredCompositeComponent>;
@@ -13403,10 +13410,17 @@ export const StoredCompositeComponentSchema: z.ZodType<StoredCompositeComponent>
 export const StoredDelayAttachmentSchema: z.ZodType<StoredDelayAttachment> = z.lazy(() =>
   z.object({
     "kind": z.literal("delay"),
-    "delay": z.union([ModelTimeSchema, UnresolvedValueSchema]),
-    "initial_source": ModelSignalSourceSchema.optional(),
+    "delay": StoredTimeSchema,
+    "initial_source": StoredModelSignalSourceSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredDelayAttachment>;
+
+export const StoredDelayInitialValueSchema: z.ZodType<StoredDelayInitialValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("value"),
+    "value": StoredExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<StoredDelayInitialValue>;
 
 export const StoredEndSchema: z.ZodType<StoredEnd> = z.lazy(() =>
   z.union([StoredLengthSchema, RestSchema, StoredUntilSchema])
@@ -13470,8 +13484,8 @@ export const StoredInterventionAttachmentSchema: z.ZodType<StoredInterventionAtt
   z.object({
     "kind": z.literal("intervention"),
     "operation": z.string(),
-    "operands": z.record(z.string(), ModelSignalSourceSchema).optional(),
-    "window": z.union([WindowSchema, z.null()]).optional(),
+    "operands": z.record(z.string(), StoredModelSignalSourceSchema).optional(),
+    "window": z.union([StoredWindowSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredInterventionAttachment>;
 
@@ -13593,7 +13607,7 @@ export const StoredModelAddressKeySchema: z.ZodType<StoredModelAddressKey> = z.l
 
 export const StoredModelDocumentSchema: z.ZodType<StoredModelDocument> = z.lazy(() =>
   z.object({
-    "step_seconds": z.union([z.number().finite().gt(0), UnresolvedValueSchema]),
+    "step_seconds": StoredTimeSchema,
     "ports": StoredModelPortsSchema,
     "interior": StoredGraphInteriorSchema,
     "world": z.union([ModelWorldSchema, z.null()]).optional(),
@@ -13618,6 +13632,10 @@ export const StoredModelPortsSchema: z.ZodType<StoredModelPorts> = z.lazy(() =>
         return new Set(ids).size !== ids.length;
       })()) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "port IDs must be unique within a port list" }); })
 ) as unknown as z.ZodType<StoredModelPorts>;
+
+export const StoredModelSignalSourceSchema: z.ZodType<StoredModelSignalSource> = z.lazy(() =>
+  z.union([StoredDelayInitialValueSchema, DelayInitialTaskSchema, DelayInitialWireSchema])
+) as unknown as z.ZodType<StoredModelSignalSource>;
 
 export const StoredModelWireSchema: z.ZodType<StoredModelWire> = z.lazy(() =>
   z.object({

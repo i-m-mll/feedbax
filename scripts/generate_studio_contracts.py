@@ -1480,7 +1480,7 @@ def generate() -> str:
     schemas = "\n\n".join(emit_schema(model) for model in MODEL_TYPES)
     authored_types, authored_schemas = emit_authored_contracts(AUTHORED_CONTRACT_MODELS, MODEL_TYPES)
     blank_stored_model = StoredModelDocument(
-        step_seconds=0.01, ports=StoredModelPorts(), interior=StoredGraphInterior(),
+        step_seconds=TimeValue(value=0.01, unit="s"), ports=StoredModelPorts(), interior=StoredGraphInterior(),
     )
     blank_stored_objective = StoredObjectiveDocument(id="objective")
     acausal_report_defaults = {
