@@ -74,7 +74,7 @@ def _delay_archive(root, *, x64):
     project = load_shipped_projects()["point-mass-reaching"]
     raw = project.documents["point-mass"].payload
     raw["interior"]["wires"]["command"]["attachments"] = {
-        "lag": {"kind": "delay", "delay": {"value": 2, "unit": "st"}},
+        "lag": {"kind": "delay", "delay": "2 st"},
     }
     model = StoredModelDocument.model_validate(raw).lower()
     task = StoredTaskDocument.model_validate(project.documents["simple-reaches-task"].payload).lower()
@@ -279,10 +279,10 @@ def test_a_loaded_models_replicas_are_planned_rendered_and_retained(native_archi
     example = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task = example["documents"]["simple-reaches-task"]
     task["payload"]["fixed_steps"] = 8
-    task["payload"]["epochs"]["move"]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"] = "8 st"
     del task["payload"]["validation_trials"]
     figure = raw["documents"]["velocity-figure"]
-    (layer,) = figure["payload"]["layers"]
+    (layer,) = figure["payload"]["layers"].values()
     del layer["select"]
     layer.update(group=["replicate"], style={"label": "{replicate}"})
     raw["documents"] = {
