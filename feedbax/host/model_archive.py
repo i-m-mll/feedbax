@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -16,7 +16,7 @@ from zipfile import BadZipFile, ZIP_STORED, ZipFile, ZipInfo
 
 import jax
 
-from feedbax.compiler.graph import GraphCompilationError, GraphDocument, realize_graph, resolve_graph
+from feedbax.compiler.graph import GraphCompilationError, GraphDocument, describe_graph_layout, realize_graph, resolve_graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.artifact_custody import (
@@ -31,14 +31,15 @@ from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_GRAPH_PATH, MODEL_TREE_MANIFEST_PATH, SemanticModelEncoding, model_replica_array_path,
 )
 from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_occurrence import graph_leaf_occurrences
 from feedbax.contracts.model_values import ModelOwnerProblem, model_owner_problems, scalar_source_parameters
 from feedbax.contracts.project import diff
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.execution.trial_resolution import declared_model_input_prototypes
 from feedbax.host.model_checkpoint import (
-    ModelCheckpointError, ModelSlotPrecision, SemanticModelSlot, effective_model_graph,
-    imported_array_dtype_fits, model_slot_fit_problems,
+    ModelCheckpointError, ModelSlotFitLayout, ModelSlotPrecision, SemanticModelSlot, effective_model_graph,
+    imported_array_dtype_fits,
 )
 from feedbax.persistence.array_container import ArrayContainerError, DecodedArrayContainer, decode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -231,7 +232,8 @@ def _comparable_graph(graph: GraphSpec, components: ComponentRegistry) -> GraphS
 @dataclass(frozen=True)
 class _CompiledArchiveFit:
     graph: GraphSpec
-    template: Graph
+    input_arrays: Mapping[str, tuple[tuple[int, ...], str]]
+    slots: ModelSlotFitLayout | ModelGraphFitProblem
     owners: tuple[ModelOwnerProblem, ...]
 
 
@@ -295,8 +297,20 @@ def _compile_fit_model(
             },
         )
         owners = tuple(model_owner_problems(resolved.graph, "checkpoint", components))
-        template = realize_graph(resolved, artifact_provider=staging).graph
-        return _CompiledArchiveFit(effective_model_graph(resolved.graph, template), template, owners)
+
+        def describe(template: Graph) -> _CompiledArchiveFit:
+            graph = effective_model_graph(resolved.graph, template)
+            slots: ModelSlotFitLayout | ModelGraphFitProblem
+            try:
+                slots = ModelSlotFitLayout.describe(graph, template, unsupported=(owner.occurrence for owner in owners))
+            except ModelCheckpointError as error:
+                slots = ModelGraphFitProblem(kind="unsupported_owner", address=error.path, detail=str(error))
+            return _CompiledArchiveFit(graph, template.input_arrays, slots, owners)
+
+        if any(physical is not None for _, _, physical in graph_leaf_occurrences(resolved.graph)):
+            # Native physical owners may build their engines from concrete artifact data.
+            return describe(realize_graph(resolved, artifact_provider=staging).graph)
+        return describe_graph_layout(resolved, describe, artifact_provider=staging)
     except ModelCompilationProblem as error:
         return [
             ModelGraphFitProblem(kind="unresolved_model", address=item.address.to_text(), detail=item.reason)
@@ -321,22 +335,21 @@ def _fit_problems(
 ) -> list[ModelFitProblem]:
     if isinstance(fitted, list):
         return fitted
-    graph, template = fitted.graph, fitted.template
     problems: list[ModelFitProblem] = [
         ModelGraphFitProblem(kind="unsupported_owner", address=pointer(problem.path), detail=problem.reason)
         for problem in sorted(fitted.owners, key=lambda item: item.path)
     ]
     if precision == "exact":
-        expected = canonical_json_v2_bytes(_comparable_graph(graph, components).model_dump(mode="json"))
+        expected = canonical_json_v2_bytes(_comparable_graph(fitted.graph, components).model_dump(mode="json"))
         if expected != supplied:
             path = next(iter(diff(strict_json_loads(expected), strict_json_loads(supplied))))
             problems.append(ModelGraphFitProblem(
                 kind="graph_mismatch", address="/graph" + path,
                 detail="Archive graph differs from the graph resolved from the selected Model",
             ))
-    ports = template.input_arrays.keys() | weights.input_arrays.keys()
+    ports = fitted.input_arrays.keys() | weights.input_arrays.keys()
     for name in sorted(ports):
-        expected = template.input_arrays.get(name)
+        expected = fitted.input_arrays.get(name)
         saved = weights.input_arrays.get(name)
         if expected is not None and saved is not None:
             shape, dtype = expected
@@ -348,15 +361,12 @@ def _fit_problems(
             kind="graph_mismatch", address=pointer(("model", "input_arrays", name)),
             detail="Archive input array differs from the input resolved from the selected Model",
         ))
-    unsupported = tuple(problem.occurrence for problem in fitted.owners)
+    if isinstance(fitted.slots, ModelGraphFitProblem):
+        problems.append(fitted.slots)
+        return problems
     for replica, arrays in zip(weights.replicas, decoded, strict=True):
         assert isinstance(arrays.descriptor.metadata, dict)
-        try:
-            problems.extend(model_slot_fit_problems(
-                graph, template, replica.descriptor.id, arrays.tensors, arrays.descriptor.metadata,
-                unsupported=unsupported, precision=precision,
-            ))
-        except ModelCheckpointError as error:
-            problems.append(ModelGraphFitProblem(kind="unsupported_owner", address=error.path, detail=str(error)))
-            break
+        problems.extend(fitted.slots.problems(
+            replica.descriptor.id, arrays.tensors, arrays.descriptor.metadata, precision=precision,
+        ))
     return problems

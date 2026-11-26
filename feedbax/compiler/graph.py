@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable, Literal, Mapping, TypeVar
 
+import equinox as eqx
 import jax.random as jr
 from jaxtyping import PRNGKeyArray
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -687,6 +688,54 @@ def resolve_graph_schedule(graph: GraphSpec) -> tuple[SignalSchedule | None, Gra
     )
 
 
+def _schedule_graph(
+    resolved: GraphResolution,
+    *,
+    initialization_key: PRNGKeyArray | None = None,
+    initialization_keys: Mapping[str | tuple[str, ...], PRNGKeyArray] | None = None,
+    artifact_provider: ArtifactBlobProvider | None = None,
+    capture_authored_arrays: bool = True,
+) -> Graph:
+    def build_schedule() -> Graph:
+        leaf_keys = {}
+        for name, key in (initialization_keys or {}).items():
+            path = (name,) if isinstance(name, str) else name
+            if not path or path in leaf_keys:
+                raise ValueError(f"Invalid or duplicate initialization key path {path!r}")
+            leaf_keys[path] = key
+        instantiated = _instantiate_graph(
+            resolved.graph,
+            resolved.component_registry,
+            resolved.parameters,
+            construction_key=jr.PRNGKey(0) if initialization_key is None else initialization_key,
+            initialization_keys=leaf_keys,
+            artifact_provider=artifact_provider,
+            scoped_schedule=resolved.signal_schedule,
+            capture_authored_arrays=capture_authored_arrays,
+        )
+        return apply_parameter_constraints(instantiated).prepare()
+
+    return _compile_phase(
+        phase=CompilerPhase.SCHEDULING,
+        code="compiler.scheduling.invalid_executable_schedule",
+        anchor=resolved.anchor,
+        document_sha256=resolved.anchor.semantic_document_sha256,
+        expected="every resolved component realizes",
+        action="correct the component runtime facet or its resolved parameters",
+        operation=build_schedule,
+    )
+
+
+def describe_graph_layout[T](
+    resolved: GraphResolution, describe: Callable[[Graph], T], *, artifact_provider: ArtifactBlobProvider | None = None,
+) -> T:
+    """Read structure and array metadata during graph construction, without computing array values."""
+    def inspect() -> T:
+        return describe(_schedule_graph(resolved, artifact_provider=artifact_provider, capture_authored_arrays=False))
+
+    return eqx.filter_eval_shape(inspect)
+
+
 def realize_graph(
     resolved: GraphResolution,
     *,
@@ -697,35 +746,10 @@ def realize_graph(
     """Construct and schedule a model from the exact resolved graph."""
     graph = resolved.graph
     document_sha256 = resolved.anchor.semantic_document_sha256
-
-    def build_schedule() -> tuple[Graph, GraphKeySchedule]:
-        leaf_keys = {}
-        for name, key in (initialization_keys or {}).items():
-            path = (name,) if isinstance(name, str) else name
-            if not path or path in leaf_keys:
-                raise ValueError(f"Invalid or duplicate initialization key path {path!r}")
-            leaf_keys[path] = key
-        scoped_schedule, key_schedule = resolved.signal_schedule, resolved.key_schedule
-        instantiated = _instantiate_graph(
-            graph,
-            resolved.component_registry,
-            resolved.parameters,
-            construction_key=jr.PRNGKey(0) if initialization_key is None else initialization_key,
-            initialization_keys=leaf_keys,
-            artifact_provider=artifact_provider,
-            scoped_schedule=scoped_schedule,
-        )
-        executable = apply_parameter_constraints(instantiated).prepare()
-        return executable, key_schedule
-
-    executable, key_schedule = _compile_phase(
-        phase=CompilerPhase.SCHEDULING,
-        code="compiler.scheduling.invalid_executable_schedule",
-        anchor=resolved.anchor,
-        document_sha256=document_sha256,
-        expected="every resolved component realizes",
-        action="correct the component runtime facet or its resolved parameters",
-        operation=build_schedule,
+    key_schedule = resolved.key_schedule
+    executable = _schedule_graph(
+        resolved, initialization_key=initialization_key, initialization_keys=initialization_keys,
+        artifact_provider=artifact_provider,
     )
 
     def emit_resolved_ir() -> tuple[ResolvedGraph, CompilationRecord]:
