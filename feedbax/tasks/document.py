@@ -12,6 +12,7 @@ from feedbax.compiler.model_document import ResolvedModelInterface
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from feedbax.contracts.expression_values import (
     RESERVED_NAMES,
@@ -1003,9 +1004,14 @@ def compile_task(
             if code is not None:
                 literal_inputs = Inputs(code.code.parameters, {}, None, None)
                 run = code.code.evaluate_run(literal_inputs)
-                row_values[key] = code.code.evaluate_step(
-                    literal_inputs, code.code.with_trial(literal_inputs, run)
-                )[0].value
+                evaluated, _ = code.code.evaluate_step(literal_inputs, code.code.with_trial(literal_inputs, run))
+                if not np.all(evaluated.defined) or not np.all(np.isfinite(evaluated.value)):
+                    problem(
+                        ProblemCode.STRUCTURE, "A validation trial needs a defined, finite constant.",
+                        (*path, "variables", key),
+                    )
+                else:
+                    row_values[key] = evaluated.value
         row_steps = {}
         for key, value in row.epoch_steps.items():
             epoch_index = indexes.get(key)
