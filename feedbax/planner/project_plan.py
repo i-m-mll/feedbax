@@ -39,7 +39,7 @@ from feedbax.contracts.objective_document import ObjectiveDocument, objective_we
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_authoring import InputProducer, InputRole
-from feedbax.contracts.studio_place import StudioTaskStart, path_parts, task_start, variation_targets
+from feedbax.contracts.studio_place import StudioTaskStart, authored_task_link_path, path_parts, task_start, variation_targets
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, DocumentReference, InlineBase, LoadedModelDocument, Payload, Project, RootDocument, Step,
     StepBase, StepKind,
@@ -605,6 +605,7 @@ class PlannedStep:
     label: str = field(kw_only=True)
     can_sweep_checkpoint: bool = False
     unexpanded_axis_titles: Mapping[str, str] = field(default_factory=dict)
+    exception_field_labels: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1521,9 +1522,8 @@ def _trial_problems(
     placed = []
     for problem in problems:
         role, parts = _trial_place(problem)
-        if role == "task" and len(parts) >= 2 and parts[0] == "links":
-            field = ModelAddress.from_text(parts[1]).to_authored_text()
-            parts = ("links", field, *parts[2:])
+        if role == "task":
+            parts = authored_task_link_path(parts)
         if initial:
             slot = ("inputs", "subject" if role == "model" else "task" if role == "python_task" else role)
         elif synthesis:
@@ -1954,16 +1954,20 @@ def _task_draft_problem(
     )
 
 
+@dataclass(frozen=True)
+class _ExpandedSweep:
+    rows: tuple[ExpandedRow, ...] | ProjectDiagnostic
+    exceptions: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    axis_titles: dict[str, str] = field(default_factory=dict)
+    exception_field_labels: dict[str, str] = field(default_factory=dict)
+
+
 @dataclass
 class _PlanWork:
     compositions: dict[
         tuple[str, str, bool], _WorkEntry[StepComposition | ProjectDiagnostic]
     ] = field(default_factory=dict)
-    sweeps: dict[
-        tuple[str, str], _WorkEntry[
-            tuple[tuple[ExpandedRow, ...] | ProjectDiagnostic, dict[str, tuple[str, ...]], dict[str, str]]
-        ]
-    ] = field(default_factory=dict)
+    sweeps: dict[tuple[str, str], _WorkEntry[_ExpandedSweep]] = field(default_factory=dict)
     rows: dict[RunKey, _WorkEntry[_LoweredRow]] = field(default_factory=dict)
     definitions: dict[RunKey, _WorkEntry[SelectedRunDefinition | None]] = field(default_factory=dict)
     inline_origins: OrderedDict[ValueSource, tuple[str, Any]] = field(default_factory=OrderedDict)
@@ -2634,6 +2638,14 @@ class _Compiler:
                 )
                 return replace(row, coordinates=coordinates, label=label)
 
+            def exception_field_labels() -> dict[str, str]:
+                return {
+                    path: title
+                    for rule in sweep.exceptions.values() if rule is not None
+                    for path, patch in rule.patches.items() if patch is not None
+                    if model_field_target(path) is not None and (title := field_title(path)) is not None
+                } if sweep is not None else {}
+
             try:
                 sets = {}
                 if composition.sweep is not None and any(
@@ -2641,7 +2653,7 @@ class _Compiler:
                 ):
                     resolved = resolved_definition()
                     if isinstance(resolved, ProjectDiagnostic):
-                        return resolved, {}
+                        return _ExpandedSweep(resolved)
                     read = read_document or self.variants[variant].documents.get
                     model = model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
                     if model is None and kind == "evaluate":
@@ -2691,15 +2703,18 @@ class _Compiler:
                     }, sites, sets)
                     if source.inputs or source.integer_sites or source.sets:
                         self.source_sweeps[variant, name] = source
-                return rows, exception_matches, unexpanded_titles(rows)
+                return _ExpandedSweep(rows, exception_matches, unexpanded_titles(rows), exception_field_labels())
             except SweepExpansionError as error:
                 document = site_documents.get(error.target) if error.target is not None else None
-                return _sweep_problem(error, step=name, variant=variant, document=document), {}, unexpanded_titles(())
+                return _ExpandedSweep(
+                    _sweep_problem(error, step=name, variant=variant, document=document),
+                    axis_titles=unexpanded_titles(()),
+                )
 
         if self.previous is None:
-            rows, matches, titles = expand()
+            expanded = expand()
         else:
-            rows, matches, titles = _work(
+            expanded = _work(
                 self.previous.sweeps,
                 self.work.sweeps,
                 (variant, name),
@@ -2718,12 +2733,15 @@ class _Compiler:
                 self.authored_inputs[variant],
                 expand,
             )
-        if matches:
-            self.exception_matches[variant, name] = MappingProxyType(matches)
-        if titles:
-            at = variant, name
-            self.steps[at] = replace(self.steps[at], unexpanded_axis_titles=MappingProxyType(titles))
-        return rows
+        at = variant, name
+        if expanded.exceptions:
+            self.exception_matches[at] = MappingProxyType(expanded.exceptions)
+        if expanded.axis_titles or expanded.exception_field_labels:
+            self.steps[at] = replace(
+                self.steps[at], unexpanded_axis_titles=MappingProxyType(expanded.axis_titles),
+                exception_field_labels=MappingProxyType(expanded.exception_field_labels),
+            )
+        return expanded.rows
 
     def resolve_row(
         self,
