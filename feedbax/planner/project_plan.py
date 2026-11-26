@@ -94,7 +94,10 @@ from feedbax.contracts.project_resolution import (
 from feedbax.contracts.result_address import (
     AddressProblem, ElementHolders, analyze_cards, payload_elements, shared_element_keys,
 )
-from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, RolloutSettings, authored_rollout_settings, resolve_trial_ids
+from feedbax.contracts.rollout import (
+    ROLLOUT_TYPE, CannotRun, RolloutParameters, RolloutSettings, VariationEdits,
+    authored_rollout_settings, authored_variation, resolve_trial_ids,
+)
 from feedbax.contracts.retained_state import RetainedStateField
 from feedbax.contracts.rollout_dataset import common_rollout_port, rollout_dataset_port, rollout_update_axis
 from feedbax.contracts.project_sweep import (
@@ -700,6 +703,31 @@ def own_task_variation(subject_task: TaskDocument | PythonTaskSelection, task: A
     if not isinstance(variation, list):
         raise ValueError("Declare the variation as a list.")
     return [{"op": "replace", "path": "task", "value": task}, *variation]
+
+
+_AUTHORED_EVALUATION_TASK = TypeAdapter(StoredTaskDocument | PythonTaskSelection)
+
+
+def resolve_authored_evaluation_task(
+    task: StoredTaskDocument | PythonTaskSelection, variation: VariationEdits,
+) -> StoredTaskDocument | PythonTaskSelection:
+    """Apply Evaluate Task edits in authored member order and address space."""
+    for origin, edit in authored_variation(variation):
+        root, _, relative = edit.path.partition(".")
+        if root != "task":
+            continue
+        try:
+            if not relative and edit.op == "replace":
+                task = _AUTHORED_EVALUATION_TASK.validate_python(edit.value)
+            elif relative and (isinstance(task, StoredTaskDocument) or relative.startswith("params.")):
+                content = task.model_dump(mode="json", exclude_unset=True)
+                apply_stored_patch_in_place({"task": content}, edit)
+                task = type(task).model_validate(content)
+            else:
+                raise ValueError("expected an addressed Task edit")
+        except (ValueError, KeyError, OverflowError) as error:
+            raise CannotRun(origin, str(error)) from error
+    return task
 
 
 @dataclass(frozen=True)
