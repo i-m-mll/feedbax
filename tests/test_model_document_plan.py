@@ -51,6 +51,7 @@ from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+from feedbax.web.services.axis_values import gather_axes
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.contracts.model_edit import ModelEditRequest
 from feedbax.web.services.project_plan import ProjectPlanRead, ProjectPlanService
@@ -566,6 +567,29 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
         assert len(sampled["draws"]) == 4
         assert all(type(value) is int and value in (8, 12) for value in sampled["draws"].values())
         assert sampled["sampler"]["distribution"]["family"] == "choice"
+        assert sampled["sampler"]["distribution"]["per"] == "run"
+
+    folders = ProjectFolderService(tmp_path)
+    saved = folders.read("duration")
+    sampled = saved.project.steps["train"].sweep.axes["hidden-size"]
+    assert sampled.sampler.distribution.per == "run"
+    plan = folders.read_plan("duration", revision=saved.revision).plan
+    rows = [row for row in plan.rows if row.key.step == "train"]
+    _, value_ids = gather_axes(rows)
+    row = next(row for row in rows if value_ids[row.key, "hidden-size"] != row.coordinates["hidden-size"].value_id)
+    draw_id = row.coordinates["hidden-size"].value_id
+    with TestClient(create_app(projects_dir=tmp_path)) as reopened:
+        fields = reopened.post(url + "/model/fields", json={
+            "revision": saved.revision, "document": "reach-model", "owner": owner,
+            "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row},
+        })
+        assert fields.status_code == 200, fields.text
+        hidden = next(item for item in fields.json()["fields"] if item["label"] == "Hidden size")
+        assert hidden["text"] == "sample(choice(8, 12, per=run), 4)"
+        source = next(item for item in hidden["sources"] if item["axis"] == "hidden-size")
+        assert source["key"] == draw_id
+        assert source["path"] == f"/sweep/axes/hidden-size/draws/{draw_id}/value"
+        assert source["value"] == value_ids[row.key, "hidden-size"]
 
 
 def test_class_parameter_axes_are_named_by_the_field_holding_the_class(tmp_path):
