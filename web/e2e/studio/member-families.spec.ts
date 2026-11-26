@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { setDocumentSchemaId, type StudioProjectSnapshot } from '../../src/generated/studioContracts';
+import { trialField } from './fixtures/trialFields';
 import { enter, fixture, mapStep, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -7,7 +8,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 type File = { kind: string; id: string; step?: Record<string, unknown>; document?: { payload?: Record<string, unknown> } };
 
 /** Keys the families' seed authors, each of which has a label that the page shows instead. */
-const keys = ['effort-term', 'trial-family', 'side_neg', 'side_pos'];
+const keys = ['effort-k', 'reach-grid', 'side_neg', 'side_pos'];
 
 /**
  * The ordinary project with its Objective's one term a family named Reach effort over `k` from 0 to 5, and its Task's
@@ -18,8 +19,8 @@ async function families() {
   const payload = (id: string) => files.find((file) => file.id === id)!.document!.payload!;
   const objective = payload('simple-reaches-objective');
   const [term] = Object.values(objective.terms as Record<string, object>);
-  objective.terms = { 'effort-term': { ...term, label: 'Reach effort', over: { k: '0..5' }, weight: 'k + 1' } };
-  payload('simple-reaches-task').validation_trials = { 'trial-family': {
+  objective.terms = { 'effort-k': { ...term, label: 'Reach effort', over: { k: '0..5' }, weight: 'k + 1' } };
+  payload('simple-reaches-task').validation_trials = { 'reach-grid': {
     label: 'Reach {direction} {side}',
     over: { direction: '0..3', side: { 'side_neg': { value: -1, label: 'Left' }, 'side_pos': { value: 1, label: 'Right' } } },
     variables: { start: '[0.1 * side, -0.05]', target: '[0.1 * side + 0.1 * direction, 0.2]' },
@@ -54,7 +55,7 @@ test('an Objective term family and a validation trial family each read as one me
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await openTerm();
-  await expect(terms.getByRole('row')).toHaveCount(2);
+  await expect(terms.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Weight', exact: true }) })).toHaveCount(1);
   await expect(term).toContainText('× 6');
   await expect(over.getByRole('textbox', { name: 'k', exact: true })).toHaveValue('0..5');
   await enter(over.getByRole('textbox', { name: 'k', exact: true }), '0..7');
@@ -72,6 +73,9 @@ test('an Objective term family and a validation trial family each read as one me
   const target = inspector.getByRole('region', { name: 'Variables', exact: true }).getByRole('textbox', { name: 'target', exact: true });
   await enter(target, '[0.1 * side + 0.2 * direction, 0.2]');
   await expect(target).toHaveValue('[0.1 * side + 0.2 * direction, 0.2]');
+  // The field shows what was typed at once; the Service's field shows it once the edit, the last of the three, is stored.
+  await expect.poll(async () => (await trialField(request, snapshot.project_id,
+    ['task', 'validation_trials', 'reach-grid', 'variables', 'target']))?.text).toBe('[0.1 * side + 0.2 * direction, 0.2]');
   expect(await shownKeys()).toEqual([]);
 
   await page.reload();
