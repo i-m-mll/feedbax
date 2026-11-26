@@ -16,6 +16,7 @@ from feedbax.contracts.model_edit import ModelEditCommand, ModelEditRequest
 from feedbax.contracts.expression_values import LiteralValue, ValueBase, ValueType
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.studio_project import (
     PresentationDocument, StudioPresentationWrite, StudioProjectCreateFile, StudioProjectPatch,
     StudioProjectPatchBatch, StudioProjectRename,
@@ -128,7 +129,7 @@ def _edit_cases():
                              "output_port": "output", "position": point},
         "insert_physical_component": {
             "address": _address("physical_connection", scope=("physics",), id="mass-ground"),
-            "component": {"kind": "leaf", "name": "Spring", "type": "feedbax.LinearSpring"},
+            "component": {"kind": "leaf", "label": "Spring", "type": "feedbax.LinearSpring"},
             "a_port": "flange_a", "b_port": "flange_b", "position": point,
         },
         "bring_signal_in": {"source_graph": graph, "source": _end("a", "output"),
@@ -136,7 +137,9 @@ def _edit_cases():
         "copy": {"selection": [a]},
         "cut": {"selection": [a]},
         "duplicate": {"selection": [a]},
-        "paste": {"graph": graph, "clipboard": {"components": {"a": _gain()}, "wires": {}, "connections": {}}},
+        "paste": {"graph": graph, "clipboard": {"components": {
+            "a": {"kind": "leaf", "name": "Gain", "type": "feedbax.Gain", "fields": {"gain": 1.0}},
+        }, "wires": {}, "connections": {}}},
         "group": {"selection": [a], "name": "Group"},
         "ungroup": {"address": outer},
         "reset_difference": {"address": _address("component", id="d")},
@@ -261,16 +264,19 @@ def test_named_files_and_patch_batches_have_core_and_http_parity(tmp_path, model
             return result
 
         for file in (
-            {"kind": "document", "id": "settings", "document": {"label": "Document", "schema": "custom", "payload": {"x": 1}}},
+            {"kind": "document", "id": "settings", "document": {
+                "label": "Document", "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID,
+                "payload": {"id": "one"},
+            }},
             {"kind": "step", "id": "next", "step": {"label": "Step", "kind": "train", "base": {"step": "train"}}},
         ):
             body = StudioProjectCreateFile.model_validate({"revision": snapshot.revision, "file": file})
             snapshot = compare("POST", "/files", body, core.create_file("project", body), envelope=True)
         patch = {"address": {"kind": "document", "id": "settings"},
-                 "patches": [{"op": "replace", "path": "/payload/x", "value": 2}]}
+                 "patches": [{"op": "replace", "path": "/payload/id", "value": "two"}]}
         body = StudioProjectPatch.model_validate({"revision": snapshot.revision, **patch})
         snapshot = compare("PATCH", "", body, core.patch("project", body))
-        patch["patches"][0]["value"] = 3
+        patch["patches"][0]["value"] = "three"
         body = StudioProjectPatchBatch.model_validate({"revision": snapshot.revision, "files": [
             patch, {"address": {"kind": "step", "id": "next"}, "patches": [
                 {"op": "add", "path": "/group", "value": "experiment"},
