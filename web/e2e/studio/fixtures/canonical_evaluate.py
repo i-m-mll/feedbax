@@ -119,6 +119,13 @@ def seed_sixty_four_trials(home: str, project_id: str):
     return _seed(home, project_id, raw)
 
 
+def seed_two_replicates(home: str, project_id: str):
+    """The evaluation project with its Train fitting two replicates, which the baseline records together."""
+    raw = _evaluation_project()
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["replicates"] = 2
+    return _seed(home, project_id, raw)
+
+
 def _mean_conditions_project():
     """The eight-trial evaluation project with its last four trials catch trials, so that By has two conditions."""
     raw = _evaluation_project()
@@ -386,6 +393,7 @@ ACTIONS = {
     "seed": HomeSeed(seed),
     "seed-eight-trials": HomeSeed(seed_eight_trials),
     "seed-sixty-four-trials": HomeSeed(seed_sixty_four_trials),
+    "seed-two-replicates": HomeSeed(seed_two_replicates),
     "seed-mean-conditions": HomeSeed(seed_mean_conditions),
     "seed-mean-figure": HomeSeed(seed_mean_figure),
     "seed-step-rename": HomeSeed(seed_step_rename),

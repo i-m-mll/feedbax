@@ -2,7 +2,7 @@ import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioTrialReplayResponse, TrialMean } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
-import { alignMean, showTrials, trialPicker, trialPopup } from './fixtures/controls';
+import { alignMean, pick, showTrials, trialPicker, trialPopup } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -116,6 +116,31 @@ test('with a Done evaluation the mechanism at the last step is at its path\'s en
   await trialPicker(page).click();
   await expect(trialPopup(page).getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'All', exact: true })).toBeEnabled();
   await page.keyboard.press('Escape');
+});
+
+// Catches the Scene of a multi-replicate subject never playing (a replay sent without a replicate is refused), and a
+// Scene that plays another replicate than the one picked.
+test('an Evaluate of a two-replicate Train plays in the Scene, and picking replicate 2 draws that replicate', { tag: '@round' }, async ({ page, studio }) => {
+  const replays: { replicate?: number | null; ok: boolean }[] = [];
+  page.on('response', (response) => {
+    if (response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/evaluate-replay')) {
+      replays.push({ replicate: response.request().postDataJSON().replicate, ok: response.ok() });
+    }
+  });
+  await doneEvaluationScene(page, studio.home, 'seed-two-replicates', 'scene-replicates');
+  const replicate = footer(page).getByRole('combobox', { name: 'Replicate', exact: true });
+  await expect(replicate).toHaveText('replicate 1 of 2');
+  const track = scene(page).locator('[data-scene-track]');
+  await expect(track).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+  const points = () => track.getAttribute('points');
+  const first = await points();
+  await pick(replicate, 'replicate 2 of 2');
+  await expect.poll(points).not.toBe(first);
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+  expect(replays.length).toBeGreaterThan(1);
+  expect(replays.every(({ ok }) => ok)).toBe(true);
+  expect(new Set(replays.map(({ replicate }) => replicate))).toEqual(new Set([0, 1]));
 });
 
 // Catches All that does not reach recorded trials, a Scene that draws only the picked trial's path under All or draws

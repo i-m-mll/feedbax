@@ -171,7 +171,7 @@ export function useTrialClock({
   };
   const pick = shownPick(clock, offer);
   const replay = useSavedEvaluationScene(projectId, revision, evaluation,
-    pick?.trials === 'recorded' ? pick.showing : undefined, { by: clock.mean.by && [...clock.mean.by], align: clock.mean.align }, playhead);
+    pick?.trials === 'recorded' ? pick.showing : undefined, { by: clock.mean.by && [...clock.mean.by], align: clock.mean.align }, playhead, clock.replicate);
   const meanOptions = replay.meanOptions && view && {
     by: replay.meanOptions.by.map(({ id }) => ({ id, label: referentName(view.variables.find((variable) => variable.id === id), id) })),
     align: replay.meanOptions.align.map(({ id }) => ({ id, label: referentName(view.epochs.find((epoch) => epoch.id === id), id) })),
@@ -254,6 +254,8 @@ export function useTrialClock({
     /** The Mean every figure draws, while Mean is picked. */
     mean: meanSelection(clock),
     clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedNames={recorded.names} recordedOutOfDate={recorded.outOfDate} meanOptions={meanOptions} onChange={change}
+      replicates={pick.trials === 'recorded' && replay.replicates
+        ? { ...replay.replicates, onSelect: (replicate) => change({ ...clock, replicate }) } : undefined}
       timeline={timeline} time={time} onTimeChange={setTime} axis={axis} shelfOpen={open}
       onShelfChange={(next) => shelfView && change({ ...clock, shelf: { ...clock.shelf, [shelfView]: next } })} />,
     shelf: pick && open && timeline.duration > 0 && (rows

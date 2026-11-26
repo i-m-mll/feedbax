@@ -31,7 +31,7 @@ import type { AskStore } from './storeChoice';
 import { modelDocumentSchemaId } from '@/generated/studioContracts';
 import { elementKey, isModelAddress, selectedElement, type ElementAddress, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { useStore } from 'zustand';
-import { usePlayhead, type PlayheadStore, type TrialShowing } from '@/components/timeline/trialClock';
+import { shownReplicate, usePlayhead, type PlayheadStore, type TrialShowing } from '@/components/timeline/trialClock';
 
 type DetailName = 'model' | 'scene';
 /** A step kind whose product is a model it determines from its authored Model. */
@@ -152,10 +152,11 @@ function replayRequest(showing: TrialShowing, trials: readonly StudioTrialName[]
  * under Mean the time from Align's epoch.
  */
 export function useSavedEvaluationScene(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined,
-  showing: TrialShowing | undefined, mean: TrialMeanSelection, playhead: PlayheadStore) {
+  showing: TrialShowing | undefined, mean: TrialMeanSelection, playhead: PlayheadStore, pickedReplicate: number | undefined) {
   const drawn = drawnEvaluation(evaluation);
   const result = drawn?.result;
   const jobId = result?.job_id;
+  const replicate = shownReplicate(pickedReplicate, result?.replicates);
   const coordinates = result?.checkpoint_sources?.map(({ completed_updates }) => completed_updates);
   const [chosenCheckpoint, setCheckpoint] = useState<{ jobId: string; coordinate: number }>();
   const chosen = chosenCheckpoint?.jobId === jobId ? chosenCheckpoint?.coordinate : undefined;
@@ -165,9 +166,10 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   const readable = request?.trial !== undefined && (!evaluation?.checkpoint_series || checkpoint !== undefined);
   const read = (aggregate: boolean) => ({ signal }: { signal: AbortSignal }) => {
     if (!evaluation || !jobId || !request) throw new Error('Select a saved Evaluate trial.');
-    return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, ...request, checkpoint, aggregate }, signal);
+    return fetchSavedEvaluationReplay(projectId,
+      { revision, key: evaluation.key, job_id: jobId, ...request, checkpoint, aggregate, ...replicate !== undefined && { replicate } }, signal);
   };
-  const key = ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, request?.trial, checkpoint];
+  const key = ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, request?.trial, checkpoint, replicate];
   // A changed By or Align keeps the Mean drawn, and its fields open, until the new Mean is read.
   const replay = useQuery({
     queryKey: request?.mean ? [...key, 'mean', request.mean] : key, queryFn: read(false), enabled: readable,
@@ -185,6 +187,8 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   const averaged: TrialMean | undefined = request?.mean ? replay.data?.mean ?? undefined : undefined;
   const meanOptions: TrialMeanOptions | undefined = replay.data?.mean_options ?? undefined;
   const timeScope = JSON.stringify(['recorded', jobId, request?.mean?.align ?? null]);
+  const replicates = result?.replicates != null && result.replicates > 1 && replicate !== undefined
+    ? { count: result.replicates, selected: replicate } : undefined;
   const [time, setTime] = usePlayhead(playhead, timeScope);
   const chooseCheckpoint = (coordinate: number) => {
     if (jobId && coordinates?.includes(coordinate)) setCheckpoint({ jobId, coordinate });
@@ -196,7 +200,7 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   } : undefined;
   return {
     read: state, aggregate: { data: batch, error: aggregate.error, refetch: aggregate.refetch }, mean: averaged, meanOptions,
-    time, setTime, checkpoints, chooseCheckpoint, checkpoint,
+    time, setTime, checkpoints, chooseCheckpoint, checkpoint, replicates,
   };
 }
 
@@ -205,12 +209,15 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
  * trials it covers and the share it covers, when `enabled` and the evaluation has a result.
  */
 export function useRecordedTerms(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined,
-  checkpoint: number | undefined, enabled: boolean) {
-  const jobId = drawnEvaluation(evaluation)?.result.job_id;
+  checkpoint: number | undefined, pickedReplicate: number | undefined, enabled: boolean) {
+  const result = drawnEvaluation(evaluation)?.result;
+  const jobId = result?.job_id;
+  const replicate = shownReplicate(pickedReplicate, result?.replicates);
   const query = useQuery({
-    queryKey: ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, null, checkpoint, 'aggregate'],
-    queryFn: ({ signal }) => fetchSavedEvaluationReplay(projectId,
-      { revision, key: evaluation!.key, job_id: jobId!, trial: null, aggregate: true, checkpoint }, signal),
+    queryKey: ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, null, checkpoint, replicate, 'aggregate'],
+    queryFn: ({ signal }) => fetchSavedEvaluationReplay(projectId, {
+      revision, key: evaluation!.key, job_id: jobId!, trial: null, aggregate: true, checkpoint, ...replicate !== undefined && { replicate },
+    }, signal),
     enabled: enabled && !!jobId && (!evaluation?.checkpoint_series || checkpoint !== undefined),
   });
   return query.data?.drawn.kind === 'aggregate' ? query.data.drawn.terms ?? {} : undefined;

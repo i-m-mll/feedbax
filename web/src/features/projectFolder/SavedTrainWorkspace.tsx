@@ -773,7 +773,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   });
   const evaluationReplay = trialClock.replay;
   const scoredEvaluation = step?.kind === 'evaluate' && selectedEvaluation?.status === 'succeeded' ? selectedEvaluation : undefined;
-  const recordedTerms = useRecordedTerms(saved.project_id, saved.revision, scoredEvaluation, evaluationReplay.checkpoint,
+  const recordedTerms = useRecordedTerms(saved.project_id, saved.revision, scoredEvaluation, evaluationReplay.checkpoint, windowState.clock?.replicate,
     windowState.mode !== 'map' && [primaryView, secondaryView].includes('objective'));
   const documentBase = authored && stepDocument(authored.base);
   const pickDocument = useProjectDocuments({

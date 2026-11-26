@@ -32,11 +32,13 @@ export interface MeanChoice {
 }
 
 /**
- * The clock's window state: what was picked, the seed and count samples are drawn with, by view whether the shelf is
- * open there, whether drawn paths end at the playhead, and Mean's By and Align.
+ * The clock's window state: what was picked, the replicate picked by its position from 0, the seed and count samples
+ * are drawn with, by view whether the shelf is open there, whether drawn paths end at the playhead, and Mean's By and
+ * Align.
  */
 export interface TrialClock {
   readonly picked?: TrialPick;
+  readonly replicate?: number;
   readonly seed: number;
   readonly count: number;
   readonly shelf: Readonly<Record<string, boolean>>;
@@ -105,6 +107,7 @@ export function trialClockOf(value: unknown): TrialClock | undefined {
     : {};
   return {
     ...picked && { picked },
+    ...whole(stored.replicate, 0) && { replicate: stored.replicate as number },
     seed: whole(stored.seed, Number.MIN_SAFE_INTEGER) ? stored.seed as number : defaultTrialClock.seed,
     count: whole(stored.count, 1) ? stored.count as number : defaultTrialClock.count,
     shelf,
@@ -112,6 +115,13 @@ export function trialClockOf(value: unknown): TrialClock | undefined {
     mean: meanOf(stored.mean),
   };
 }
+
+/**
+ * The replicate a result that holds `replicates` of them is read at: the picked one while the result has it, else the
+ * first; none for a result without a replicate dimension.
+ */
+export const shownReplicate = (picked: number | undefined, replicates: number | null | undefined) =>
+  replicates == null ? undefined : picked !== undefined && picked < replicates ? picked : 0;
 
 /** The single trials the picker lists for `offer`, in order. */
 export function offeredPicks(offer: TrialOffer, count: number): TrialPick[] {
