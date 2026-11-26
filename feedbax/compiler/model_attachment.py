@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from feedbax.component_registry import ComponentRegistry
@@ -15,6 +16,8 @@ from feedbax.contracts.model_attachment import (
 )
 from feedbax.contracts.model_document import ModelDocument, ModelWire
 from feedbax.contracts.model_edit import ModelEditState
+from feedbax.contracts.project import Document
+from feedbax.contracts.project_sweep import TrialSetField
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.compiler.model_edit import ModelEditDraft
 from feedbax.compiler.model_ports import ModelRegistryPorts
@@ -257,18 +260,20 @@ class LoweredEvaluateAttachments:
     edits: tuple[OverridePatch, ...]
     model: ModelDocument
     task: TaskDocument | None
+    condition_origins: dict[str, str]
 
 
 def lower_evaluate_attachments(
     trained: ModelDocument, evaluated: ModelDocument, binding: StudioTaskBindingSpec | None,
     components: ComponentRegistry, differences: tuple[ModelDifference, ...], *, functions=None,
     trained_task: TaskDocument | None = None, evaluated_task: TaskDocument | None = None,
+    sets: tuple[Mapping[str, TrialSetField], Callable[[str], Document | None]] | None = None,
 ) -> LoweredEvaluateAttachments:
     """Derive the scoped wire/port variation that turns ``trained`` into ``evaluated`` with ``differences``.
 
     Raises ValueError when the change alters the trained graph's interface and no difference names it.
     """
-    from feedbax.compiler.set_fields import lower_trial_interventions
+    from feedbax.compiler.set_fields import lower_trial_interventions, lower_trial_sets
 
     resolved = resolve_effective_model(evaluated, components, differences, functions=functions)
     trained_names = {port.id: port.name for port in trained.ports.inputs}
@@ -280,7 +285,14 @@ def lower_evaluate_attachments(
     resolved = resolved.model_copy(update={"ports": resolved.ports.model_copy(update={"inputs": inputs})})
     if trained_task is not None:
         trained, _ = lower_trial_interventions(trained, trained_task, components)
-    if evaluated_task is not None:
+    condition_origins = {}
+    if sets is not None:
+        fields, read_document = sets
+        assert evaluated_task is not None and functions is not None
+        resolved, evaluated_task, condition_origins = lower_trial_sets(
+            resolved, evaluated_task, fields, read_document, components, functions=functions,
+        )
+    elif evaluated_task is not None:
         resolved, evaluated_task = lower_trial_interventions(resolved, evaluated_task, components)
     before = lower_model_document(trained, components, binding)
     after = lower_model_document(resolved, components, binding)
@@ -290,4 +302,4 @@ def lower_evaluate_attachments(
         if not differences:
             raise
         raise ModelCompilationProblem(differences[-1].address, str(error)) from error
-    return LoweredEvaluateAttachments(before, after, derived, resolved, evaluated_task)
+    return LoweredEvaluateAttachments(before, after, derived, resolved, evaluated_task, condition_origins)

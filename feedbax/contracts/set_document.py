@@ -7,12 +7,14 @@ from collections.abc import Callable, Mapping
 from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
-    DifferenceNotApplied, Differences, Document, Payload, Project, RemoveDocumentValue,
+    DifferenceNotApplied, Differences, Document, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
     SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts, member_display_name,
 )
-from feedbax.contracts.project_inputs import ProjectName, StepReference
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document, compose_step
+from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, ProjectName, StepReference
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolvedStep, compose_document, compose_step
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
     AxisCondition, AxisValue, NamedAxis, RemoveValue, SetAxis, SetValue, Sweep, SweepExpansionCode,
@@ -173,20 +175,49 @@ def resolve_set_axes(
     return resolved
 
 
+def document_subject_model(
+    resolved: ResolvedStep, read_document: Callable[[str], Document | None],
+) -> tuple[str, Payload] | None:
+    """The Model document address of an Evaluate with a document subject."""
+    subject = resolved.inputs.get("subject")
+    authored = resolved.input_documents.get("subject")
+    if authored is None or not isinstance(subject, InitialModelReference | LoadedModelReference):
+        return None
+    if isinstance(subject, InitialModelReference):
+        if subject.source.pointer is None and authored.schema_id == MODEL_DOCUMENT_SCHEMA_ID and isinstance(authored.payload, dict):
+            return subject.source.document, authored.payload
+        return None
+    if authored.schema_id != LOADED_MODEL_SCHEMA_ID:
+        return None
+    model = LoadedModelDocument.model_validate(authored.payload).model
+    if model.pointer is not None or model.unresolved:
+        return None
+    root = compose_document(read_document, model.document)
+    if not isinstance(root, ProjectDiagnostic) and root.schema_id == MODEL_DOCUMENT_SCHEMA_ID and isinstance(root.payload, dict):
+        return model.document, root.payload
+    return None
+
+
 def step_model(project: Project, step: str) -> tuple[str, Payload] | None:
-    """The Model document a Train or Evaluate step's default row reads, with its composed payload: an Evaluate that
-    names no Model of its own reads its subject step's."""
-    if (authored := project.steps.get(step)) is None or authored.kind not in ("train", "evaluate"):
-        return None
-    template = compose_step(project, step)
-    resolved = template if isinstance(template, ProjectDiagnostic) else template.resolve()
-    if isinstance(resolved, ProjectDiagnostic):
-        return None
-    model = model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
-    subject = authored.inputs.get("subject")
-    if model is None and authored.kind == "evaluate" and isinstance(subject, StepReference) and subject.step != step:
-        return step_model(project, subject.step)
-    return model
+    """The authored Model document a Train or Evaluate step's default row reads."""
+    active = set()
+    while step not in active:
+        active.add(step)
+        authored = project.steps.get(step)
+        if authored is None or authored.kind not in ("train", "evaluate"):
+            return None
+        template = compose_step(project, step)
+        resolved = template if isinstance(template, ProjectDiagnostic) else template.resolve()
+        if isinstance(resolved, ProjectDiagnostic):
+            return None
+        model = model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
+        if model is not None or authored.kind != "evaluate":
+            return model
+        subject = resolved.inputs.get("subject")
+        if not isinstance(subject, StepReference):
+            return document_subject_model(resolved, project.documents.get)
+        step = subject.step
+    return None
 
 
 def model_slot(

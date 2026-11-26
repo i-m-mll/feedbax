@@ -31,7 +31,7 @@ from feedbax.contracts.model_address import AttachmentElement, ComponentElement,
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
 from feedbax.contracts.matrix_core import apply_override_patch_in_place, apply_value_patch_in_place
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.model_input import DocumentInput, InitialModelSource, authored_document_input, encode_document_input
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
@@ -39,7 +39,7 @@ from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_authoring import InputProducer, InputRole
 from feedbax.contracts.studio_place import StudioTaskStart, path_parts, task_start, variation_targets
 from feedbax.contracts.project import (
-    DifferenceNotApplied, Differences, Document, DocumentReference, InlineBase, Payload, Project, RootDocument, Step,
+    DifferenceNotApplied, Differences, Document, DocumentReference, InlineBase, LoadedModelDocument, Payload, Project, RootDocument, Step,
     StepBase, StepKind,
     apply_differences, base_chain, diff, json_pointer_parts, member_display_name, member_name, nearest_shared_base,
 )
@@ -116,7 +116,7 @@ from feedbax.contracts.project_sweep import (
 )
 from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, place_source, pointer, source_shape
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.set_document import SetProblem, model_slot, resolve_set_axes, trial_model_path
+from feedbax.contracts.set_document import SetProblem, document_subject_model, model_slot, resolve_set_axes, trial_model_path
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
     BarrierMember,
@@ -153,6 +153,8 @@ from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, PythonTaskSel
 from feedbax.contracts.train_settings import normalize_train_method
 
 if TYPE_CHECKING:
+    from feedbax.compiler.model_attachment import LoweredEvaluateAttachments
+    from feedbax.compiler.set_fields import SetFieldProblem
     from feedbax.analysis.operations import OperationRegistry
     from feedbax.contracts.effective_success import TerminalTrainSubject
     from feedbax.contracts.request_specs import RequestSpec, TrialDocuments
@@ -1286,6 +1288,7 @@ class _LoweredRow:
     encoded_spec: RequestSpec | None = None
     resolved: bool = True
     pinned_model: ModelDocument | None = None
+    followed_documents: frozenset[str] = frozenset()
     dataset_port: DatasetPort | None = None
     metric_names: frozenset[str] = frozenset()
 
@@ -1380,6 +1383,24 @@ def _trial_problems(
             pointer((*slot, *parts)), problem.reason, problem.model_address, problem.variable, start=start,
         ))
     return tuple(placed)
+
+
+def _set_condition_placement(problem: Problem, origins: Mapping[str, str] | None) -> str | None:
+    role, path = _trial_place(problem)
+    if role == "task" and origins and len(path) > 1 and path[0] == "variables" and (axis := origins.get(path[1])):
+        return pointer(("set_fields", axis, "condition"))
+    return None
+
+
+def _evaluate_set_problem(key: RunKey, error: SetFieldProblem) -> ProjectDiagnostic:
+    path = ("set_fields", error.axis)
+    if error.condition:
+        path = (*path, "condition")
+    elif error.entry is not None:
+        path = (*path, "entries", error.entry)
+    return ProjectDiagnostic(
+        ResolutionCode.INVALID_PAYLOAD, pointer(path), str(error), key.step, row=key.row, variant=key.variant,
+    )
 
 
 def _set_condition_problems(problems: Iterable[RunProblem], origins: Mapping[str, str]) -> tuple[RunProblem, ...]:
@@ -2269,6 +2290,8 @@ class _Compiler:
                         return resolved, {}
                     model = model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
                     if model is None and kind == "evaluate":
+                        model = document_subject_model(resolved, read_document or self.variants[variant].documents.get)
+                    if model is None and kind == "evaluate":
                         read = {(source.document, to_json(source.model.model_dump(mode="json"))) for source in subjects
                                 if source is not None and source.document is not None}
                         if len(read) > 1:
@@ -2809,7 +2832,7 @@ class _Compiler:
         if isinstance(slots, ProjectDiagnostic):
             return slots
         lowered, model, task = slots
-        result = self._lower_evaluate_payload(key, lowered, model_source, reference, has_differences, model)
+        result = self._lower_evaluate_payload(key, lowered, model_source, reference, has_differences, model, read)
 
         def move(problem: ProjectDiagnostic) -> ProjectDiagnostic:
             parts = path_parts(problem.path)
@@ -2909,19 +2932,22 @@ class _Compiler:
     def _lower_evaluate_payload(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool, model: _EvaluationModel | None,
+        read: Callable[[str], Document | None],
     ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
-        if not has_differences and model is None:
+        fields = self.variants[key.variant].steps[key.step].set_fields
+        if not has_differences and model is None and not fields:
             return self.lower_evaluate_trials(key, payload, reference, model_source)
         original = payload.get("params")
-        lowered = self.lower_evaluate_model(key, payload, model_source, reference, model)
+        lowered = self.lower_evaluate_model(key, payload, model_source, reference, model, read)
         if isinstance(lowered, (ProjectDiagnostic, _EvaluatePayload)):
             return lowered
-        result = self.lower_evaluate_trials(key, lowered, reference, model_source)
+        varied, condition_origins = lowered
+        result = self.lower_evaluate_trials(key, varied, reference, model_source, condition_origins=condition_origins)
         # Derived Model patches append to an ordered copy. Report a Task
         # refusal at the original named edit without changing request encoding.
         if isinstance(original, dict):
             named = original.get("variation")
-            params = lowered.get("params")
+            params = varied.get("params")
             if isinstance(named, dict) and isinstance(params, dict) and isinstance(params.get("variation"), list):
                 return _map_problem(result, lambda problem: _authored_variation_problem(problem, tuple(sorted(named))))
         return result
@@ -2944,6 +2970,7 @@ class _Compiler:
         self, template: StepComposition, key: RunKey, row: ExpandedRow,
     ) -> tuple[_LoweredRow, dict[str, PlannedInput]]:
         from feedbax.compiler.model_document import ModelCompilationProblem
+        from feedbax.compiler.set_fields import SetFieldProblem
         from feedbax.execution.trial_resolution import evaluation_conditions, model_compilation_problems, pair_trial_source
         from feedbax.contracts.rollout import CannotRun
         from feedbax.tasks.registry import resolve_python_task_instance
@@ -2953,6 +2980,11 @@ class _Compiler:
         if isinstance(resolved, ProjectDiagnostic):
             return _LoweredRow(None, (replace(resolved, variant=key.variant),), resolved=False), {}
         path = "inputs.subject"
+        project = self.variants[key.variant]
+        fields = project.steps[key.step].set_fields
+        document_ids = resolved.document_ids
+        document_uses = resolved.document_uses | frozenset(field.axis.set for field in fields.values())
+        followed = frozenset()
         try:
             if resolved.payload.get("evaluation_type") != ROLLOUT_TYPE:
                 raise ValueError("An initial Model subject requires a rollout Evaluate")
@@ -2962,13 +2994,43 @@ class _Compiler:
             if isinstance(subject_ref, LoadedModelReference):
                 source = authored_document_input(subject_ref, subject_document)
                 assert isinstance(source, ImportedModelSource)
-                if differences:
-                    raise ValueError("A Loaded Model uses its pinned Model revision.")
                 model = self.read_imported_model(source)
+                navigation = LoadedModelDocument.model_validate(subject_document.payload).model
+                if (
+                    EVALUATION_MODEL not in document_ids and not navigation.unresolved and navigation.pointer is None
+                    and (nav := project.documents.get(navigation.document)) is not None and nav.schema_id == MODEL_DOCUMENT_SCHEMA_ID
+                ):
+                    followed = frozenset({navigation.document})
+                    document_ids = {**document_ids, EVALUATION_MODEL: navigation.document}
+                    document_uses |= followed
             else:
                 assert isinstance(subject_ref, InitialModelReference)
                 source = self.initial_model_source(subject_ref, subject_document, differences)
                 model = source.document
+                differences = ()
+                # Set sweep resolution can also expose the same row's patched initial Model in the Model slot.
+                if payload.get("trial_documents") == {"model": subject_document.payload}:
+                    payload = {name: value for name, value in payload.items() if name != "trial_documents"}
+            effective_model = model
+            if isinstance(subject_ref, LoadedModelReference) and "trial_documents" in payload:
+                path = EVALUATION_MODEL
+                slots = payload["trial_documents"]
+                payload = {name: value for name, value in payload.items() if name != "trial_documents"}
+                if not isinstance(slots, dict) or slots.keys() != {"model"}:
+                    raise ValueError("A Loaded Model rollout takes its Task from its Task input.")
+                name = resolved.document_ids.get(EVALUATION_MODEL)
+                shared = (
+                    nearest_shared_base(project.documents, navigation.document, name)
+                    if name is not None and not navigation.unresolved and navigation.pointer is None else None
+                )
+                if shared is None or not isinstance(slots["model"], dict):
+                    raise ValueError("The Evaluate Model must share a document with the Loaded Model.")
+                base = compose_document(project.documents.get, shared)
+                if isinstance(base, ProjectDiagnostic):
+                    raise ValueError(base.detail)
+                assert isinstance(base.payload, dict)
+                changes = diff(base.payload, slots["model"])
+                effective_model = ModelDocument.model_validate(apply_differences(model.model_dump(mode="json"), changes))
             components = self.components or _builtin_model_registry()
             functions = self.functions or _builtin_expression_registry()
             tasks = self.python_tasks
@@ -2983,7 +3045,7 @@ class _Compiler:
                     # The Task's conditions are unknown, so its trial rule does not lower to a request.
                     return _LoweredRow(
                         None, (), problems=_trial_problems(unresolved, None, initial=True),
-                        document_ids=resolved.document_ids, document_uses=resolved.document_uses,
+                        document_ids=document_ids, document_uses=document_uses,
                     ), {}
             task = authored_document_input(task_ref, resolved.input_documents["task"], python_tasks=tasks)
             assert isinstance(task, (TaskDocument, PythonTaskSelection))
@@ -2999,9 +3061,16 @@ class _Compiler:
             raw = payload["params"]
             if not isinstance(raw, dict) or "trial_set" not in raw or "trials" in raw:
                 raise ValueError("Declare a trial-set rule for managed Evaluate")
-            settings = authored_rollout_settings(raw)
             if problem := _authored_graph_variation_problem(key, payload):
                 return _LoweredRow(None, (problem,)), {}
+            condition_origins = {}
+            if fields or differences or effective_model != model:
+                payload, attached = self.evaluate_model_variation(
+                    key, payload, model, effective_model, differences, task, project.documents.get,
+                )
+                condition_origins = attached.condition_origins
+                raw = payload["params"]
+            settings = authored_rollout_settings(raw)
             paired = pair_trial_source(
                 model, task, components, functions,
                 python_tasks=tasks, input_bindings=settings.input_bindings,
@@ -3023,7 +3092,10 @@ class _Compiler:
                     if isinstance(paired, tuple) or paired.problems:
                         problems = paired if isinstance(paired, tuple) else paired.problems
                         refusals = tuple(
-                            RunProblem(refusal.path, refusal.reason, problem.model_address)
+                            RunProblem(
+                                _set_condition_placement(problem, condition_origins) or refusal.path,
+                                refusal.reason, problem.model_address,
+                            )
                             for problem, refusal in ((item, variant.task_refusal(item)) for item in problems)
                         )
             trials = resolve_trial_ids(raw["trial_set"], conditions)
@@ -3034,13 +3106,14 @@ class _Compiler:
             inputs = {role: _plan_document_content(value, self.documents) for role, value in sources.items()}
             narrowed = _encode_row(
                 key, "evaluate", payload, inputs, None, self.work.request_documents,
-                self.prepare_train_trial, resolved.document_ids, self.python_tasks,
+                self.prepare_train_trial, document_ids, self.python_tasks,
             )
             problems = (*refusals, *narrowed.problems) if narrowed.request is not None else narrowed.problems
             return replace(
-                narrowed, document_ids=resolved.document_ids, document_uses=resolved.document_uses,
+                narrowed, document_ids=document_ids, document_uses=document_uses,
                 problems=self.locate_sweep_run_problems(problems, template, key, row),
                 pinned_model=model if isinstance(subject_ref, LoadedModelReference) else None,
+                followed_documents=followed,
                 dataset_port=(
                     rollout_dataset_port(
                         paired.task.interface.signals, settings.states_schema, None,
@@ -3048,11 +3121,19 @@ class _Compiler:
                     ) if not isinstance(paired, tuple) and not paired.problems else None
                 ),
             ), inputs
+        except SetFieldProblem as error:
+            problem = _evaluate_set_problem(key, error)
+            return _LoweredRow(
+                None, (), problems=(RunProblem(problem.path, problem.detail),),
+                document_ids=document_ids, document_uses=document_uses,
+                pinned_model=model if isinstance(subject_ref, LoadedModelReference) else None,
+                followed_documents=followed,
+            ), {}
         except ModelCompilationProblem as error:
             problems = _trial_problems(model_compilation_problems(error), None, initial=True)
             return _LoweredRow(
                 None, (), problems=self.locate_sweep_run_problems(problems, template, key, row),
-                document_ids=resolved.document_ids, document_uses=resolved.document_uses,
+                document_ids=document_ids, document_uses=document_uses,
             ), {}
         except (KeyError, OSError, ValueError) as error:
             return _LoweredRow(None, (ProjectDiagnostic(
@@ -3060,7 +3141,7 @@ class _Compiler:
                 error.path if isinstance(error, CannotRun) else path,
                 error.reason if isinstance(error, CannotRun) else str(error),
                 key.step, row=key.row, variant=key.variant, document=resolved.document_ids.get(path),
-            ),), document_ids=resolved.document_ids, document_uses=resolved.document_uses), {}
+            ),), document_ids=document_ids, document_uses=document_uses), {}
 
     def read_imported_model(self, source: ImportedModelSource) -> ModelDocument:
         if self.readers.imported_model is None:
@@ -3126,6 +3207,7 @@ class _Compiler:
 
     def lower_evaluate_trials(
         self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,
+        *, condition_origins: Mapping[str, str] | None = None,
     ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         from feedbax.execution.trial_resolution import pair_trial_source, resolve_python_task
         from feedbax.contracts.rollout import CannotRun
@@ -3169,7 +3251,8 @@ class _Compiler:
                 if problems:
                     refusals = tuple(
                         ProjectDiagnostic(
-                            ResolutionCode.INVALID_PAYLOAD, cannot.path, cannot.reason, key.step,
+                            ResolutionCode.INVALID_PAYLOAD,
+                            _set_condition_placement(problem, condition_origins) or cannot.path, cannot.reason, key.step,
                             row=key.row, variant=key.variant, model_address=problem.model_address,
                         )
                         for problem, cannot in ((item, variant.task_refusal(item)) for item in problems)
@@ -3231,25 +3314,59 @@ class _Compiler:
         producer = request_identity.decode_request(source, self.documents.__getitem__).spec
         return producer.trial_documents if isinstance(producer, (DocumentTrainingRequestSpec, SynthesisRequestSpec)) else None
 
+    def evaluate_model_variation(
+        self, key: RunKey, payload: Payload, source: ModelDocument, evaluated: ModelDocument,
+        differences: tuple[ModelDifference, ...], task: TaskDocument | PythonTaskSelection,
+        read: Callable[[str], Document | None],
+    ) -> tuple[Payload, LoweredEvaluateAttachments]:
+        """Lower an Evaluate's authored Model and Set fields to qualified rollout edits."""
+        from feedbax.compiler.model_attachment import lower_evaluate_attachments
+        from feedbax.compiler.set_fields import SetFieldProblem
+        from feedbax.training.evaluation_variant import resolve_evaluation_task
+
+        params = payload.get("params")
+        settings = authored_rollout_settings(params)
+        assert isinstance(params, dict)
+        prior = settings.variation
+        edits = tuple(prior[name] for name in sorted(prior)) if isinstance(prior, dict) else prior
+        chosen_task = resolve_evaluation_task(task, edits)
+        fields = self.variants[key.variant].steps[key.step].set_fields
+        if fields and not isinstance(chosen_task, TaskDocument):
+            axis, field = next(iter(fields.items()))
+            raise SetFieldProblem(axis, field.axis.set, None, "A Set field needs a Task document.")
+        attached = lower_evaluate_attachments(
+            source, evaluated, None, self.components or _builtin_model_registry(), differences,
+            functions=self.functions or _builtin_expression_registry(),
+            trained_task=task if isinstance(task, TaskDocument) else None,
+            evaluated_task=chosen_task if isinstance(chosen_task, TaskDocument) else None,
+            sets=(fields, read) if fields else None,
+        )
+        variation = (*edits, *attached.edits)
+        if attached.task is not None and attached.task != chosen_task:
+            variation = (*variation, OverridePatch(path="task", op="replace", value=attached.task.model_dump(mode="json")))
+        if variation == edits:
+            return payload, attached
+        return payload | {"params": params | {
+            "variation": [edit.model_dump(mode="json", exclude_unset=True) for edit in variation],
+        }}, attached
+
     def lower_evaluate_model(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
-        model: _EvaluationModel | None = None,
-    ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
-        from feedbax.compiler.model_attachment import lower_evaluate_attachments
+        model: _EvaluationModel | None, read: Callable[[str], Document | None],
+    ) -> tuple[Payload, dict[str, str]] | ProjectDiagnostic | _EvaluatePayload:
+        from feedbax.compiler.set_fields import SetFieldProblem
         from feedbax.compiler.model_document import ModelCompilationProblem, model_input_prototypes
         from feedbax.compiler.resolution import resolve_graph_parameters
         from feedbax.application.task_signals import matched_task_inputs, model_task_signals
         from feedbax.compiler.graph_schema import validate_graph_connection_schema
         from feedbax.contracts.rollout import CannotRun
-        from feedbax.training.evaluation_variant import resolve_evaluation_task, resolve_evaluation_variant
+        from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         address = None
         document = model_source.document if model_source is not None else None
         differences: tuple[ModelDifference, ...] = ()
         try:
             stripped, differences = _model_differences(payload)
-            if not differences and model is None:
-                return stripped
             if differences:
                 address = differences[0].address
             else:
@@ -3276,30 +3393,19 @@ class _Compiler:
                     )
                 except ValueError as error:
                     return _model_difference_problem(key, model.document, None, str(error), path=EVALUATION_MODEL)
-            raw_params = payload["params"]
-            params = authored_rollout_settings(raw_params)
-            prior = params.variation
-            if isinstance(prior, dict):
-                prior = tuple(prior[name] for name in sorted(prior))
+            params = authored_rollout_settings(payload.get("params"))
             source_task = documents.task_source
-            chosen_task = resolve_evaluation_task(source_task, prior)
             try:
-                attached = lower_evaluate_attachments(
-                    model_source.model, evaluated, None, components, differences, functions=self.functions,
-                    trained_task=source_task if isinstance(source_task, TaskDocument) else None,
-                    evaluated_task=chosen_task if isinstance(chosen_task, TaskDocument) else None,
+                stripped, attached = self.evaluate_model_variation(
+                    key, stripped, model_source.model, evaluated, differences, source_task, read,
                 )
             except ValueError as error:
-                if model is not None and not isinstance(error, ModelCompilationProblem):
+                if model is not None and not isinstance(error, (ModelCompilationProblem, SetFieldProblem)):
                     address = _refused_difference(model, model_source.model, components, self.functions)
                 raise
-            if not attached.edits and (attached.task is None or attached.task == chosen_task):
-                return stripped
-            variation = (*prior, *attached.edits)
-            if attached.task is not None and attached.task != chosen_task:
-                variation = (*variation, OverridePatch(
-                    path="task", op="replace", value=attached.task.model_dump(mode="json"),
-                ))
+            variation = authored_rollout_settings(stripped.get("params")).variation
+            if not attached.edits and variation == params.variation:
+                return stripped, attached.condition_origins
             effective = resolve_evaluation_variant(
                 attached.before.graph, source_task, variation, components=components,
             )
@@ -3316,9 +3422,9 @@ class _Compiler:
                 issue_path = (issue.location or {}).get("path", "/graph")
                 address = attached.after.source_address(issue_path) or address
                 raise ValueError(issue.message)
-            return stripped | {"params": raw_params | {
-                "variation": [edit.model_dump(mode="json", exclude_unset=True) for edit in variation],
-            }}
+            return stripped, attached.condition_origins
+        except SetFieldProblem as error:
+            return _EvaluatePayload(None, (_evaluate_set_problem(key, error),))
         except ModelCompilationProblem as error:
             return _EvaluatePayload(None, tuple(
                 _model_difference_problem(key, document, problem.address, problem.reason,
@@ -3692,7 +3798,7 @@ class _Compiler:
         omissions: Mapping[str, str], requires: tuple[str, ...],
     ) -> PlannedRun | None:
         row = self.rows[key]
-        followed: frozenset[str] = frozenset()
+        followed = lowered.followed_documents
         evaluated = None
         if row.kind == "evaluate" and (subject := inputs.get("subject")) is not None and subject.producer is not None:
             own = lowered.document_ids
