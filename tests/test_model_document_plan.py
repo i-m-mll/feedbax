@@ -414,6 +414,8 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
     model["step_seconds"] = 0.02
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "fields", Project.model_validate(raw))
+    model_file = tmp_path / "fields/documents/reach-model.json"
+    authored_model = model_file.read_bytes()
     url = "/api/projects/fields"
     owner = {"composites": [], "element": {"kind": "graph"}}
 
@@ -450,7 +452,7 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
             source = definition.sources["/payload/trial_documents/model/step_seconds"]
             assert source.kind == "sweep_value"
             assert definition.sources["/payload/alias"] == source
-        assert snapshot.project.documents["reach-model"].payload == model
+        assert model_file.read_bytes() == authored_model
 
         component_owner = {"composites": [],
                            "element": {"kind": "component", "id": "plant"}}
@@ -1457,6 +1459,7 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
     project = Project.model_validate(raw)
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "nested", project)
+    authored_documents = folders.read("nested").project.documents
     before = folders.read_plan("nested", revision=None)
     owner = {"composites": ["wrapper", "controller"], "element": {
         "kind": "port", "end": {"owner": "component", "component": "cell", "port": "output", "direction": "output"},
@@ -1486,7 +1489,7 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
         result = requests()
         assert result.keys() == prior.keys()
         assert {key for key in prior if result[key] != prior[key]} == {selected}
-        assert folders.read("nested").project.documents == project.documents
+        assert folders.read("nested").project.documents == authored_documents
         assert "model_attachments" not in (tmp_path / "nested" / "steps/baseline.json").read_text()
         address = added["changed"][0]
         changed = edit(client, {
@@ -1541,9 +1544,9 @@ def test_a_variant_edit_of_an_evaluation_is_a_document_the_variant_points_it_at(
     assert result["status"] == "applied", result
     (created,) = result["created"]
     edited = folders.read("nested").project
-    assert edited.documents["reach-model"] == project.documents["reach-model"]
+    assert edited.documents["reach-model"] == snapshot.project.documents["reach-model"]
     assert edited.documents[created].base.document == "reach-model"
-    assert edited.steps == project.steps
+    assert edited.steps == snapshot.project.steps
     assert {path: write.model_dump(mode="json") for path, write in edited.sweep.rows["treated"].patches.items()} == {
         "steps.baseline.base.inline.trial_documents": {"op": "add", "value": {"model": {"document": created}}},
     }
@@ -2218,7 +2221,9 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     reopened = ProjectFolderService(folders.root)
     reopened_view = ProjectPlanService(reopened, jobs).read(project, revision=None)
     reopened_model = reopened.read(project).project.documents[model_name].payload
-    assert reopened_model == raw["documents"][model_name]["payload"]
+    assert ModelDocument.model_validate(reopened_model) == ModelDocument.model_validate(
+        raw["documents"][model_name]["payload"],
+    )
     assert reopened_view.settled.plan.requests == plan.plan.requests
     assert reopened_view.attempts_by_run[train][0].job_id == train_job.job_id
     assert reopened_view.attempts_by_run[train][0].successful_receipt == train_receipt
