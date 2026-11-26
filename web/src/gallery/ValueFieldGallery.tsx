@@ -160,7 +160,7 @@ function useHistory(initial: JsonValue) {
 }
 
 /** A value a based document changes, whose Reset the gallery takes and drops. */
-const changed: ChangeMark = { from: { kind: 'base', document: 'training' }, reset: async () => undefined };
+const changed: ChangeMark = { from: { kind: 'base', name: 'Training' }, reset: async () => undefined };
 const changedPaths = new Set(['n_reaches', 'workspace', 'optimizer']);
 
 function useRaw(initial: Record<string, JsonValue>) {

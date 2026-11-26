@@ -6,8 +6,10 @@ import { studioCheckpointStatus, studioEvaluationPlacement, studioFormat, studio
 
 const percent = new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 });
 
-export function StudioEvaluationAttemptDetails({ evaluation, onShowStep }: {
+export function StudioEvaluationAttemptDetails({ evaluation, stepName, onShowStep }: {
   evaluation: StudioSavedEvaluationRow;
+  /** The name of the step with key `step`. */
+  stepName: (step: string) => string;
   /** Select the Train step the evaluation waits for. */
   onShowStep?: (step: string) => void;
 }) {
@@ -18,8 +20,8 @@ export function StudioEvaluationAttemptDetails({ evaluation, onShowStep }: {
   let detail: ReactNode = evaluation.reason;
   if (pending && subject) {
     const step = onShowStep
-      ? <Button variant="bare" size="content" className="hover:underline" onClick={() => onShowStep(subject.step)}>{subject.step}</Button>
-      : subject.step;
+      ? <Button variant="bare" size="content" className="hover:underline" onClick={() => onShowStep(subject.step)}>{stepName(subject.step)}</Button>
+      : stepName(subject.step);
     const { next_update: update, recovery_update: recovery } = pending;
     const parts = pending.state === 'resumable'
       ? recovery == null ? studioFormatParts('waitingForTrainResume', { step })
@@ -49,8 +51,9 @@ export function StudioEvaluationAttemptDetails({ evaluation, onShowStep }: {
   </>;
 }
 
-export function StudioEvaluationResults({ evaluation, onReplay }: {
+export function StudioEvaluationResults({ evaluation, stepName, onReplay }: {
   evaluation: StudioSavedEvaluationRow;
+  stepName: (step: string) => string;
   onReplay(update: number): void;
 }) {
   const series = evaluation.checkpoint_series;
@@ -61,7 +64,7 @@ export function StudioEvaluationResults({ evaluation, onReplay }: {
   const gaps = new Map(result?.checkpoint_gaps?.map(({ update, reason }) => [update, reason]));
   const points = new Map(attempt?.points?.map(({ completed_updates, status }) => [completed_updates, status]));
   return <div className="space-y-2 text-sm">
-    <StudioEvaluationAttemptDetails evaluation={evaluation} />
+    <StudioEvaluationAttemptDetails evaluation={evaluation} stepName={stepName} />
     <Table aria-label={studioName('checkpointResults')} held={1}
       columns={[{ least: '6rem', greatest: '16rem' }, { least: '8rem' }]}>
       <thead>

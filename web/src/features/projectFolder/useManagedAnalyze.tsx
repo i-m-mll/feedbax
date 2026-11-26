@@ -266,7 +266,7 @@ export function useManagedAnalyze({
     const pointer = authoredPointer(path);
     const base = baseOf(saved.project.documents, document);
     if (!changedPaths.has(pointer) || base === undefined) return undefined;
-    return { from: { kind: 'base', document: base }, reset: canEdit ? async () => {
+    return { from: { kind: 'base', name: nameOf(saved.names.documents, base) }, reset: canEdit ? async () => {
       try { await editor.command((current) => save(current, studioName('reset'), { kind: 'reset', paths: [pointer] })); return undefined; }
       catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
     } : undefined };
@@ -559,7 +559,7 @@ export function useManagedAnalyze({
     const caption = figureDefinition(name, view.figure)?.caption;
     const result = planned.get(name);
     return <li key={name} className="flex items-center gap-2">
-      <Button pressed={shownFigure === name} onClick={() => selectElement(name)}>{shown(name)}</Button>
+      <Button pressed={shownFigure === name} data-element={name} onClick={() => selectElement(name)}>{shown(name)}</Button>
       {caption && <span>{caption}</span>}
       {result && <span>{studioRunStatus(result.status)}</span>}
     </li>;
@@ -580,7 +580,7 @@ export function useManagedAnalyze({
     },
     figures: { body: <>{figureList}
       {shownFigure && shownPlan && <SavedFigureResult key={JSON.stringify([scope, shownFigure])}
-        history={shownPlan} name={shownFigure} project={saved.project_id} revision={saved.revision} mean={mean} />}
+        history={shownPlan} name={shown(shownFigure)} project={saved.project_id} revision={saved.revision} mean={mean} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
     results: operationResults.length > 0 ? { body: <OperationProducts operations={operationResults} />, drawer,
       inspector: libraryInspector || (operation ? inspector : undefined) } : undefined,

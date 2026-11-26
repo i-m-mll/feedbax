@@ -136,9 +136,9 @@ test('a projected field keeps the Changed mark of its path and resets through it
     projected: () => fromParamSchema({ name: 'velocity', type: 'str' }, 'b', () => undefined,
       { options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] }),
     changed: (path) => path.join('/') === 'velocity'
-      ? { from: { kind: 'base', document: 'base' }, reset: async () => { reset.push('velocity'); return undefined; } } : undefined,
+      ? { from: { kind: 'base', name: 'base' }, reset: async () => { reset.push('velocity'); return undefined; } } : undefined,
   });
-  expect(field.change?.from).toEqual({ kind: 'base', document: 'base' });
+  expect(field.change?.from).toEqual({ kind: 'base', name: 'base' });
   await field.commit!({ kind: 'reset' });
   expect(reset).toEqual(['velocity']);
 });
@@ -150,7 +150,7 @@ test('a projected field that marks its own change keeps that mark', () => {
   const field = fromJsonSchema('rate', { type: 'number' }, 0.0025, {
     root: null,
     projected: () => ({ ...projection, change: { from: { kind: 'selected', text: '0.0025' } } }),
-    changed: () => ({ from: { kind: 'base', document: 'base' } }),
+    changed: () => ({ from: { kind: 'base', name: 'base' } }),
   });
   expect(field.change?.from).toEqual({ kind: 'selected', text: '0.0025' });
 });

@@ -557,7 +557,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await scene.focus();
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
   await mapStep(page, 'single').click();
-  await expect(scene.locator('header')).toContainText('single');
+  await expect(scene.locator('header')).toContainText('Single');
   await expect(scene.getByRole('button', { name: 'Select forearm', exact: true })).toBeHidden();
   await expect(page.getByRole('complementary', { name: 'Inspector' }).getByText('upper.proximal')).toHaveCount(0);
   await page.getByRole('button', { name: 'Back', exact: true }).click();
@@ -607,11 +607,11 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
 
   await problemButton.click();
   // The group heading names the document; the row names the field the problem is about.
-  await list.locator('section').filter({ has: page.getByRole('heading', { name: 'empty-model', exact: true }) })
+  await list.locator('section').filter({ has: page.getByRole('heading', { name: 'Empty model', exact: true }) })
     .getByRole('button', { name: /^Components · Model has no components\./ }).click();
   const emptyReason = page.getByText('Components · Model has no components.', { exact: true });
   const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
-  await expect(empty.locator(':scope > header')).toContainText('empty-model');
+  await expect(empty.locator(':scope > header')).toContainText('Empty model');
   await expect(emptyReason).toBeFocused();
   await expect(mapCard(page, 'empty').locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
 

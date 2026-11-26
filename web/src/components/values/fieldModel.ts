@@ -37,10 +37,10 @@ export const reasonOf = (refusal: FieldRefusal | undefined) => typeof refusal ==
  * document's value marks the selected runs' other one (`selected`).
  */
 export type ChangeSource =
-  | { readonly kind: 'base'; readonly document: string }
+  | { readonly kind: 'base'; readonly name: string }
   | { readonly kind: 'value'; readonly text: string }
   | { readonly kind: 'selected'; readonly text: string }
-  | { readonly kind: 'evaluate'; readonly step: string };
+  | { readonly kind: 'evaluate'; readonly name: string };
 
 /** The changed mark of a value: what it differs from, and the Reset that gives the value the inherited one. */
 export interface ChangeMark {
@@ -50,7 +50,7 @@ export interface ChangeMark {
 
 /** The mark of a value an Evaluate step changes; a value it trains is not a change, and is its origin. */
 export function evaluateChange(source: StudioEvaluateValueSource | undefined): ChangeMark | undefined {
-  return source?.kind === 'evaluate' ? { from: { kind: 'evaluate', step: source.step } } : undefined;
+  return source?.kind === 'evaluate' ? { from: { kind: 'evaluate', name: source.step } } : undefined;
 }
 
 /** `commit`, with Reset going to `change`'s reset. A field that takes no edit takes no Reset. */

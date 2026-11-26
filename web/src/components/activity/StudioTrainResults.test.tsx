@@ -59,7 +59,7 @@ it('updates mounted Train Results in place from live points to their retained at
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   function plot(value: StudioSavedEvaluationRow) {
     return <QueryClientProvider client={client}>
-      <StudioTrainResults project="project" revision={digest} evaluations={[value]} mapRows={[]}
+      <StudioTrainResults stepName={(step) => step} project="project" revision={digest} evaluations={[value]} mapRows={[]}
         rows={[row]} row={row} selection={{ kind: 'attempt', attempt }} />
     </QueryClientProvider>;
   }

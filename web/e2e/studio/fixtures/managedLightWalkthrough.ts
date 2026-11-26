@@ -6,6 +6,7 @@ import type {
 import { authorLearningRateSweep, chooseSweepValue, mapStep, runName, shownRunLabel, mapCard } from './canonicalTrain';
 import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, openView, palette, submitOption, tabTo } from './studioKeyboard';
 import { applyTo, outlineRow, pick } from './controls';
+import { mapName } from './members';
 
 type Walkthrough = {
   page: Page;
@@ -281,7 +282,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
     const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
     await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('polyline')).toHaveCount(1);
     await expect(results.getByRole('list', { name: 'Train steps' }).getByRole('listitem')).toHaveText([
-      `train 1–${sourceUpdates}`, `${child} ${sourceUpdates + 1}–${childUpdates}`,
+      `${await mapName(page, 'train')} 1–${sourceUpdates}`, `${await mapName(page, child)} ${sourceUpdates + 1}–${childUpdates}`,
     ]);
   }
 

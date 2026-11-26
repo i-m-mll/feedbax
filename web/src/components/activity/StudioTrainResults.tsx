@@ -64,7 +64,7 @@ interface ObjectiveRead {
   points: NonNullable<NonNullable<StudioSavedEvaluationRow['checkpoint_attempt']>['points']> | null;
 }
 
-function projectMetrics(lineage: Stage[], events: readonly StudioJobEvent[]): ProjectMetricStage[] | null {
+function projectMetrics(lineage: Stage[], events: readonly StudioJobEvent[], stepName: (step: string) => string): ProjectMetricStage[] | null {
   const stages: ProjectMetricStage[] = [];
   let offset = 0;
   for (const stage of lineage) {
@@ -83,7 +83,7 @@ function projectMetrics(lineage: Stage[], events: readonly StudioJobEvent[]): Pr
       })),
     }));
     stages.push({
-      label: stage.row.key.step, offset, completed, metrics: shown,
+      label: stepName(stage.row.key.step), offset, completed, metrics: shown,
       key: stage.row.key, origin, through: stage.through, request: stage.row.request_id,
       starts: attemptStarts, cutoffs: attemptCutoffs,
     });
@@ -96,7 +96,7 @@ export type TrainMetricResult = { name: MetricResultName; result: StudioSavedTra
 
 function resultMetrics(
   { name, result }: TrainMetricResult, row: StudioSavedTrainRow, rows: readonly StudioSavedTrainRow[],
-  events: readonly StudioJobEvent[],
+  events: readonly StudioJobEvent[], stepName: (step: string) => string,
 ): MetricSeries {
   const exactRow = result.request_id === row.request_id ? row : historicalRequest(row);
   const attempt = exactRow?.attempts.find(({ job_id, successful_receipt }) => job_id === result.job_id &&
@@ -104,10 +104,10 @@ function resultMetrics(
     successful_receipt.manifest_sha256 === result.receipt.manifest_sha256);
   const lineage = exactRow && attempt && result.progress &&
     checkpointLineage(rows, exactRow, attempt, result.progress.completed_updates);
-  return { result: { name, jobId: result.job_id }, stages: (lineage && projectMetrics(lineage, events)) || [] };
+  return { result: { name, jobId: result.job_id }, stages: (lineage && projectMetrics(lineage, events, stepName)) || [] };
 }
 
-function TrainMetrics({ project, revision, evaluations, mapRows, rows, row, selection }: {
+function TrainMetrics({ project, revision, evaluations, mapRows, rows, row, selection, stepName }: {
   project: string;
   revision: string;
   evaluations: readonly StudioSavedEvaluationRow[];
@@ -115,6 +115,8 @@ function TrainMetrics({ project, revision, evaluations, mapRows, rows, row, sele
   rows: readonly StudioSavedTrainRow[];
   row: StudioSavedTrainRow;
   selection: { kind: 'attempt'; attempt: StudioSavedTrainAttempt } | { kind: 'results'; results: TrainMetricResult[] };
+  /** The name of the step with key `step`. */
+  stepName: (step: string) => string;
 }) {
   const history = useStudioJobHistory(project);
   const events = history.data ?? emptyEvents;
@@ -123,9 +125,9 @@ function TrainMetrics({ project, revision, evaluations, mapRows, rows, row, sele
   const stages = useMemo(() => {
     if (selection.kind !== 'attempt') return undefined;
     const lineage = checkpointLineage(rows, row, selection.attempt);
-    return lineage && projectMetrics(lineage, events);
-  }, [rows, row, selection, events]);
-  const series = selection.kind === 'results' ? selection.results.map((result) => resultMetrics(result, row, rows, events))
+    return lineage && projectMetrics(lineage, events, stepName);
+  }, [rows, row, selection, events, stepName]);
+  const series = selection.kind === 'results' ? selection.results.map((result) => resultMetrics(result, row, rows, events, stepName))
     : stages ? [{ stages }] : [];
   const reads = evaluations.flatMap(({ key, checkpoint_series, checkpoint_attempt, result }): ObjectiveRead[] => {
     const stage = checkpoint_series && stages?.find((candidate) => sameRow(candidate.key, checkpoint_series.subject));
@@ -176,7 +178,7 @@ function TrainMetrics({ project, revision, evaluations, mapRows, rows, row, sele
     if (receipt && result.receipt && result.receipt.manifest_sha256 !== receipt.manifest_sha256) return [];
     const planRow = mapRows.find((candidate) => sameRow(candidate.key, key));
     const several = mapRows.filter((candidate) => candidate.key.variant === key.variant && candidate.key.step === key.step).length > 1;
-    const label = planRow && several ? `${key.step} · ${planRow.label}` : key.step;
+    const label = planRow && several ? `${stepName(key.step)} · ${planRow.name}` : stepName(key.step);
     return heldOutTracks(label, current, stage).map((track) => ({
       ...track, id: JSON.stringify([key, track.id]),
     }));

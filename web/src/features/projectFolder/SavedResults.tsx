@@ -111,7 +111,7 @@ export function SavedResults({ shown, current, failure, result, project, stopped
   const header = origin && <ModelOriginHeader origin={origin} stepLabel={stepLabel} onShowStep={onShowStep} />;
   if (evaluation?.checkpoint_series) return <div {...region}>
     {header}
-    <StudioEvaluationResults evaluation={evaluation} onReplay={onReplay} />
+    <StudioEvaluationResults evaluation={evaluation} stepName={stepLabel} onReplay={onReplay} />
   </div>;
   if (header) return <div {...region}>{header}</div>;
   if (!row) return null;
@@ -119,6 +119,6 @@ export function SavedResults({ shown, current, failure, result, project, stopped
     {stopped}
     <TrainResults key={savedRunId(row.key)} project={project} revision={shown.revision}
       evaluations={shown.window_map?.evaluations ?? []} mapRows={shown.window_map?.rows ?? []}
-      rows={shown.rows} row={row} attempt={attempt} />
+      rows={shown.rows} row={row} attempt={attempt} stepName={stepLabel} />
   </div>;
 }

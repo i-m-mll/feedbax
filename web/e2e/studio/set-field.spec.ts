@@ -31,7 +31,7 @@ test('To Field moves a Set into the run as a variable of the Task, its weights a
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await expect(marks).toHaveCount(3);
-  await sweepLabel(card, 'loads').click();
+  await sweepLabel(card, 'Loads').click();
   await page.getByRole('menuitem', { name: 'To Field', exact: true }).click();
   await expect(marks).toHaveCount(1);
   await expect.poll(async () => Object.keys((await step()).set_fields ?? {})).toEqual(['load']);
@@ -85,7 +85,7 @@ test('a Set in the trials takes a condition on Task variables, refuses an unknow
   };
 
   await page.goto(`/?project=${snapshot.project_id}`);
-  await sweepLabel(card, 'loads').click();
+  await sweepLabel(card, 'Loads').click();
   await page.getByRole('menuitem', { name: 'To Field', exact: true }).click();
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();

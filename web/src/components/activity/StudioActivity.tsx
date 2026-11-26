@@ -94,6 +94,8 @@ function ActivityRun({
 
   return (
     <li
+      data-job={job.job_id}
+      data-run-key={job.run_key}
       className={clsx('space-y-2 rounded-md border border-l-4 bg-shell-surface p-3 shadow-sm',
         !statusCounted(resultState ?? job.status) && uncountedRun)}
       style={{ borderLeftColor: tint }}

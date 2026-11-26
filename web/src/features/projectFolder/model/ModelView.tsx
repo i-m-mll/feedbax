@@ -465,8 +465,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
   const fieldName = (address: ModelAddress) => address.element.kind === 'field' ? address.element.path.map(String).join('.') : addressKey(address);
   const shownChain = model ? baseChain(saved.project.documents, model.id) : [];
-  const changedFrom: ChangeSource | undefined = evaluate ? { kind: 'evaluate', step: evaluate.run.step }
-    : shownChain[1] === undefined ? undefined : { kind: 'base', document: shownChain[1] };
+  const changedFrom: ChangeSource | undefined = evaluate ? { kind: 'evaluate', name: nameOf(saved.names.steps, evaluate.run.step) }
+    : shownChain[1] === undefined ? undefined : { kind: 'base', name: nameOf(saved.names.documents, shownChain[1]) };
   const projectedLists = fieldBodies.map((fieldBody, index) => (fieldsData?.[index]?.fields ?? []).map((field) => {
     const model = fromFieldView(field, {
       id: addressKey(field.address),
@@ -1006,7 +1006,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const from = shown?.value ? model?.id : shownChain[1];
     if (!shown || !from) return undefined;
     return {
-      letter: changeLetters[shown.difference.change], tip: changeTip({ kind: 'base', document: from }),
+      letter: changeLetters[shown.difference.change], tip: changeTip({ kind: 'base', name: nameOf(saved.names.documents, from) }),
       reset: editTopology ? () => {
         void apply(studioName('reset'), { op: 'reset_difference', address }, false, shown.value ? valueRuns : undefined);
       } : undefined,
