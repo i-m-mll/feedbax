@@ -9,6 +9,7 @@ from feedbax.planner.project_plan import PlanRequests, compile_project
 from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import BestRank, ProductRef
+from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.studio_project import StudioProjectPatchBatch
 from feedbax.contracts.studio_subset import StudioSubsetToRowsRequest
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
@@ -62,6 +63,35 @@ def test_best_plan_identity_changes_with_candidates_and_refuses_unsupported_rule
     subject["where"] = {"rule": "highest 1 missing_metric"}
     [refused] = compile_project(Project.model_validate(raw)).diagnostics
     assert refused.path == "inputs.subject.where.rule" and "missing_metric" in refused.detail
+
+
+def test_best_preserves_each_producers_task_when_applying_the_same_keyed_edit():
+    raw = authored_best()
+    values = raw["steps"]["train"]["sweep"]["axes"]["rate"]["values"]
+    for chance, item in zip((0.2, 0.4, 0.6), values.values(), strict=True):
+        item["patches"]["trial_documents.task.variables.catch.value.args.0.value"] = {"value": chance}
+    raw["steps"]["baseline"]["base"]["inline"]["params"]["variation"] = {
+        "rename-catch": {"op": "replace", "path": "task.variables.catch.label", "value": "Catch trial"},
+    }
+
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    evaluated = [run for run in plan.runs if run.kind == "evaluate"]
+    assert len(evaluated) == 2
+    for run in evaluated:
+        decoded = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
+        parameters = RolloutParameters.model_validate(decoded.spec.params)
+        rank = decoded.inputs["subject"][0].reference
+        assert isinstance(rank, BestRank)
+        assert set(parameters.best_variant_tasks) == {candidate.key for candidate in rank.candidates}
+        chances = []
+        for candidate in rank.candidates:
+            replacement, = parameters.for_best_candidate(candidate.key).variation
+            assert replacement.path == "task"
+            catch = next(variable for variable in replacement.value["variables"] if variable["id"] == "catch")
+            assert catch["name"] == "Catch trial"
+            chances.append(catch["value"]["args"][0]["value"])
+        assert sorted(chances) == [0.2, 0.4, 0.6]
 
 
 def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch):

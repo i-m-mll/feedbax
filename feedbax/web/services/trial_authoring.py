@@ -55,7 +55,7 @@ from feedbax.contracts.studio_trials import (
 )
 from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID, Length, PythonTaskSelection,
-    StoredTaskDocument, TaskDocument, Variable,
+    StoredTaskDocument, StoredVariable, TaskDocument, Variable,
 )
 from feedbax.contracts.task_structure import RenameMember as RenameTaskMember
 from feedbax.contracts.model_document import ModelDocument
@@ -500,27 +500,44 @@ def _authored_task_entry(raw):
     return names[-1] if names else None
 
 
+def _restore_variation_refs(definition, index, edit):
+    """Retain the authored references of a non-Task edit copied into a new array value."""
+    prefix = f"payload.params.variation.{index}."
+    references = {
+        name.removeprefix(prefix): {"document": document}
+        | ({"pointer": path} if (path := definition.document_pointers.get(name)) else {})
+        for name, document in definition.document_ids.items() if name.startswith(prefix)
+    }
+    if not references:
+        return edit
+    preserved = deepcopy(edit)
+    for path, ref in references.items():
+        parts = path.split(".")
+        if any(".".join(parts[:end]) in references for end in range(1, len(parts))):
+            continue
+        apply_document_edits(preserved, [SetProjectValue(op="replace", path=pointer(parts), value=ref)])
+    return preserved
+
+
 def _task_selection_writes(definition, value):
     raw = definition.payload["params"]["variation"]
+    replacement = {"op": "replace", "path": "task", "value": value}
+    if isinstance(raw, list):
+        retained = [
+            _restore_variation_refs(definition, index, edit) for index, edit in enumerate(raw)
+            if edit["path"].partition(".")[0] != "task"
+        ]
+        return [_override("params.variation", "replace", [*retained, replacement])]
     entry = _authored_task_entry(raw)
-    writes = []
-    if isinstance(raw, dict):
-        writes.extend(
-            _override(f"params.variation.{name}", "remove")
-            for name, edit in raw.items() if edit["path"].startswith("task.")
-        )
-        target = entry or "task"
-        if entry is None:
-            while target in raw:
-                target += "-selection"
-    elif entry is None or any(edit["path"].startswith("task.") for edit in raw[entry + 1:]):
-        target = len(raw)
-    else:
-        target = entry
-    writes.append(_override(
-        f"params.variation.{target}", "replace" if entry == target else "add",
-        {"op": "replace", "path": "task", "value": value},
-    ))
+    writes = [
+        _override(f"params.variation.{name}", "remove")
+        for name, edit in raw.items() if edit["path"].startswith("task.")
+    ]
+    target = entry or "task"
+    if entry is None:
+        while target in raw:
+            target += "-selection"
+    writes.append(_override(f"params.variation.{target}", "replace" if entry == target else "add", replacement))
     return writes
 
 
@@ -837,9 +854,9 @@ def _set_variables(project: Project, key: RunKey, row: PlannedRow | None) -> Ite
             if source is None:
                 continue
             for variable in source.task_variables:
-                id = entry_variable_id(axis, entry, variable.id) if scoped else variable.id
+                id = entry_variable_id(axis, entry, variable) if scoped else variable
                 yield id, SetVariableOrigin(
-                    step=key.step, axis=axis, set=name, entry=entry, variable=variable.id,
+                    step=key.step, axis=axis, set=name, entry=entry, variable=variable,
                 ), scoped, source
 
 
@@ -855,12 +872,10 @@ def _set_variable_edit(project, plan, key, path, change):
     [(origin, scoped, source)] = choices
     (edit,) = change.edits
     assert isinstance(edit, SetProjectValue)
-    refs = {entry_variable_id(origin.axis, origin.entry, variable.id): variable.id for variable in source.task_variables}
+    refs = {entry_variable_id(origin.axis, origin.entry, variable): variable for variable in source.task_variables}
     value = rename_entry_references(edit.value, refs) if scoped else edit.value
-    variables = tuple(
-        Variable.model_validate(variable.model_dump(mode="json") | {"value": value})
-        if variable.id == origin.variable else variable for variable in source.task_variables
-    )
+    previous = stored_project_value(source.task_variables[origin.variable], keep_explicit=True)
+    variables = source.task_variables | {origin.variable: StoredVariable.model_validate(previous | {"value": value})}
     return origin.set, scoped, SetEntryTask(
         kind="set_entry_task", step=key.step, axis=origin.axis, entry=origin.entry, task_variables=variables,
     )

@@ -17,6 +17,7 @@ from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEM
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID, StoredTaskDocument
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_storage import stored_project_value
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.request_identity import decode_request
@@ -276,9 +277,9 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
             "schema": "feedbax.spec.python_task",
             "payload": {"type": REACHING_TASK, "params": {"n_steps": 12, "x": 0.31}},
         }
-        task = StoredTaskDocument.from_lowered(reaching_document(
+        task = stored_project_value(StoredTaskDocument.from_lowered(reaching_document(
             ReachingParameters(n_steps=12, x=0.22),
-        )).model_dump(mode="json", exclude_unset=True)
+        )), keep_explicit=True)
         task["epochs"]["probe"] = task["epochs"].pop("move")
         task["variables"]["probe_target"] = task["variables"].pop("target") | {"label": "probe_target"}
         task["signals"]["reach_target"]["cells"]["move"].update(
@@ -422,7 +423,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         plan = folders.read_plan(project, revision=revision)
         assert not plan.plan.diagnostics, plan.plan.diagnostics
         sample = client.post("/api/execution/task-trials/sample", json={
-            "model": model,
+            "model": StoredModelDocument.model_validate(model).lower().model_dump(mode="json"),
             "python_task": view.task.model_dump(mode="json"),
             "input_bindings": {"task-input": "reach_target"}, "count": 1,
         })
@@ -980,7 +981,7 @@ def test_objective_offsets_project_paired_editable_fields(tmp_path):
         assert "offset" not in cleared["objective"]["terms"]["effort"]["window"]["spans"][0]["start"]
         assert field(cleared, start)["text"] == ""
 
-        for text in ("3 st, 5 st", "linspace(3 st, 5 st, 3)"):
+        for text in ("3 st, 5 st", "linspace(3 st, 5 st, 3)", "sample(U(3 st, 5 st), 3)"):
             refused = author({"kind": "expression", "path": end, "edit": {"kind": "text", "text": text}})
             assert not refused["files"]
             assert any(problem["reason"] == "This field takes one expression." for problem in refused["problems"])

@@ -9,11 +9,11 @@ import numpy as np
 
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.train_settings import normalize_train_method
 from feedbax.examples import load_shipped_projects
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -43,8 +43,8 @@ def test_shipped_trial_documents_have_unique_names():
 
     assert seen[STORED_MODEL_DOCUMENT_SCHEMA_ID, "point-mass"] == "point-mass-reaching"
     for name in _VALIDATION_COUNTS:
-        assert seen[TASK_DOCUMENT_SCHEMA_ID, f"{name}-task"] == "point-mass-reaching"
-        assert seen[OBJECTIVE_DOCUMENT_SCHEMA_ID, f"{name}-objective"] == "point-mass-reaching"
+        assert seen[STORED_TASK_DOCUMENT_SCHEMA_ID, f"{name}-task"] == "point-mass-reaching"
+        assert seen[STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, f"{name}-objective"] == "point-mass-reaching"
 
 
 def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):

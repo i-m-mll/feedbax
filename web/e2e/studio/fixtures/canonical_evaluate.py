@@ -1,6 +1,7 @@
 """Author the signed Evaluate fixture and observe one selected Analysis variable."""
 
 from copy import deepcopy
+from itertools import islice
 import json
 from pathlib import Path
 import sys
@@ -234,7 +235,8 @@ def task_pivot_files():
         document = deepcopy(task)
         document["label"] = label
         document["payload"]["id"] = name
-        document["payload"]["validation_trials"] = document["payload"]["validation_trials"][:count]
+        trials = document["payload"]["validation_trials"]
+        document["payload"]["validation_trials"] = dict(islice(trials.items(), count))
         documents.append({"kind": "document", "id": name, "document": document})
     evaluate = _evaluation_step("Evaluate")
     evaluate["base"]["inline"]["params"]["variation"] = {"task": {

@@ -36,7 +36,7 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
     model_name = sources["model"]["document"]
     model = raw["documents"][model_name]["payload"]
     task = raw["documents"][sources["task"]["document"]]["payload"]
-    task["validation_trials"] = task["validation_trials"][:1]
+    task["validation_trials"] = dict(list(task["validation_trials"].items())[:1])
     components = model["interior"]["components"]
     component = components["readout"]
     owner_type = "entry_point_provider.ObservedReadout"
@@ -50,7 +50,7 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
             "op": "add_component",
             "address": address | {"element": {"kind": "component", "id": "probe"}},
             "component": {
-                "kind": "leaf", "name": "Probe", "type": owner_type, "revision": 1,
+                "kind": "leaf", "label": "Probe", "type": owner_type, "revision": 1,
                 "fields": {
                     "input_size": 2, "output_size": 2, "initialization": "zeros", "bias_init": 0.125,
                 },

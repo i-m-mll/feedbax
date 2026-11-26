@@ -222,7 +222,7 @@ def lower_model_attachment(key: str, item: StoredWireAttachment) -> WireAttachme
             return ProbeAttachment(kind="probe", id=key, name=item.label)
 
 
-def _store_attachment(item: WireAttachment) -> StoredWireAttachment:
+def stored_model_attachment(item: WireAttachment) -> StoredWireAttachment:
     match item:
         case DelayAttachment():
             return project_member(item, StoredDelayAttachment)
@@ -245,8 +245,8 @@ def _lower_port_attachments(ports: StoredModelPortAttachments) -> ModelPortAttac
 def _store_port_attachments(ports: ModelPortAttachments) -> StoredModelPortAttachments:
     return project_member(
         ports, StoredModelPortAttachments,
-        sources={port: keyed_members((item.id, _store_attachment(item)) for item in chain) for port, chain in ports.sources.items()},
-        sinks={port: keyed_members((item.id, _store_attachment(item)) for item in chain) for port, chain in ports.sinks.items()},
+        sources={port: keyed_members((item.id, stored_model_attachment(item)) for item in chain) for port, chain in ports.sources.items()},
+        sinks={port: keyed_members((item.id, stored_model_attachment(item)) for item in chain) for port, chain in ports.sinks.items()},
     )
 
 
@@ -294,7 +294,7 @@ def _store_interior(interior: GraphInterior | PhysicalInterior) -> StoredGraphIn
         components={key: stored_model_component(component) for key, component in interior.components.items()},
         wires={
             key: project_member(wire, StoredModelWire, attachments=keyed_members(
-                (item.id, _store_attachment(item)) for item in wire.attachments
+                (item.id, stored_model_attachment(item)) for item in wire.attachments
             ))
             for key, wire in interior.wires.items()
         },

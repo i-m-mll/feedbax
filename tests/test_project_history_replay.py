@@ -9,7 +9,7 @@ import pytest
 
 from feedbax import project_folder
 from feedbax.contracts.jobs import StudioJobEventHistory
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_io import STUDIO_PATCH_JOURNAL_FILENAME, load_text_project
 from feedbax.contracts.studio_project import StudioProjectReplay
 from feedbax.host import HostError
@@ -39,7 +39,7 @@ def _write(root, relative, value, *, encoding="utf-8"):
 def _model(seconds):
     return {
         "label": "Document",
-        "schema": MODEL_DOCUMENT_SCHEMA_ID,
+        "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID,
         "payload": {"step_seconds": seconds, "ports": {}, "interior": {}},
     }
 
@@ -49,7 +49,7 @@ def study(tmp_path):
     root = tmp_path / "study"
     _write(root, DECLARATION_FILE, MANIFEST)
     _write(root, "documents/model.json", _model(0.01))
-    _write(root, "documents/notes.json", {"label": "Document", "schema": "notes", "payload": "café"})
+    _write(root, "documents/notes.json", _model(0.02) | {"label": "Café"})
     _write(root, "presentation.json", {})
     return root, TestClient(create_app(projects_dir=tmp_path))
 

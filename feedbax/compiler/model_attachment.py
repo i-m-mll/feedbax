@@ -19,6 +19,7 @@ from feedbax.contracts.model_edit import ModelEditState
 from feedbax.contracts.project import Document
 from feedbax.contracts.project_sweep import TrialSetField
 from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.stored_model import lower_model_attachment, lower_model_component
 from feedbax.compiler.model_edit import ModelEditDraft
 from feedbax.compiler.model_ports import ModelRegistryPorts
 
@@ -93,7 +94,7 @@ class _Chain:
             return
         elif self.items[identity]["kind"] != difference.attachment.kind:
             raise ValueError("Changing an attachment must preserve its kind")
-        self.items[identity] = difference.attachment.model_dump(mode="json")
+        self.items[identity] = lower_model_attachment(identity, difference.attachment).model_dump(mode="json")
         if "after" in difference.model_fields_set:
             self.positions.pop(identity, None)
             self.positions[identity] = (difference.after, address)
@@ -143,7 +144,7 @@ def resolve_effective_model(
                 _, graph = edit.context(address)
                 if element.id in graph["components"]:
                     raise ValueError("The addressed component already exists")
-                graph["components"][element.id] = difference.component.model_dump(mode="json")
+                graph["components"][element.id] = lower_model_component(difference.component).model_dump(mode="json")
                 continue
             if isinstance(difference, ModelWireDifference):
                 _, graph = edit.context(address)
