@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument, StoredObjectiveDocument
-from feedbax.contracts.stored_model import StoredModelDocument
+from feedbax.contracts.stored_model import ModelParameterModels, StoredModelDocument
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, StoredTaskDocument, TaskDocument
 from feedbax.contracts.trial_bindings import selected_signal_id
-
-if TYPE_CHECKING:
-    from feedbax.component_registry import ComponentRegistry
 
 
 class TrialDocuments(StrictModel):
@@ -82,7 +79,7 @@ class TrialDocuments(StrictModel):
 
 
 def lower_stored_trial_documents(
-    value: object, *, components: ComponentRegistry | None = None, first: bool = False,
+    value: object, *, components: ModelParameterModels | None = None, first: bool = False,
     objective: ObjectiveDocument | None = None,
 ) -> TrialDocuments:
     """Lower resolved authored Train slots once, before pairing and request encoding."""

@@ -72,7 +72,8 @@ def resume(host, project, attempt, successor):
 
 
 def declare_variants(paths, project, revision):
-    from feedbax.contracts.project_io import dump_text_project, load_text_project
+    from feedbax.application.project_writer import dump_text_project
+    from feedbax.contracts.project_io import load_text_project
     from feedbax.contracts.project_sweep import Sweep
     from feedbax.web.services.project_folder import ProjectFolderService
 

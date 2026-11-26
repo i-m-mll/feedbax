@@ -17,8 +17,8 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, is_figure_document_pin
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
-from feedbax.contracts.loaded_model import ImportedModelSource, encode_imported_model_document
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.loaded_model import ImportedModelSource
 from feedbax.contracts.matrix_core import (
     ExpressionNodePatch, ExpressionSite, apply_stored_patch_in_place, prepare_stored_patch, replay_stored_patch_copy, resolve_segment,
     validate_stored_patch_path,
@@ -36,7 +36,6 @@ from feedbax.contracts.project import (
     DocumentReference,
     ExternalBase,
     InlineBase,
-    LoadedModelDocument,
     OrderDocumentMembers,
     Payload,
     Project,
@@ -83,15 +82,13 @@ from feedbax.contracts.project_sweep import (
 from feedbax.contracts.run_matrix import CompositionDeltaError, apply_composition_deltas
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.contracts.train_settings import train_sweep_basis
+from feedbax.contracts.train_settings import TrainMethodSettings, TrainSettingsResolver, train_sweep_basis
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 
 if TYPE_CHECKING:
-    from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.effective_success import TerminalTrainSubject
     from feedbax.contracts.request_refs import RequestId
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-    from feedbax.training.methods import TrainingMethodRegistry
 
 
 class ResolutionCode(StrEnum):
@@ -517,25 +514,6 @@ def compose_document(read_document: Callable[[str], Document | None], name: str)
     return RootDocument.model_construct(schema_id=document.schema_id, label=document.label, payload=payload)
 
 
-def composed_loaded_model_projection(
-    loaded: LoadedModelDocument, read_document: Callable[[str], Document | None], components: ComponentRegistry,
-) -> bytes | None:
-    """Encode the currently composed navigation Model as a candidate for exact verification."""
-    nav = loaded.model
-    if nav.unresolved or nav.pointer is not None:
-        return None
-    document = compose_document(read_document, nav.document)
-    if isinstance(document, ProjectDiagnostic) or document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
-        return None
-    from feedbax.compiler.model_document import complete_model_fields
-
-    try:
-        model = StoredModelDocument.model_validate(document.payload).lower(components).with_keyed_root_ports()
-        return encode_imported_model_document(complete_model_fields(model, components))
-    except ValueError:
-        return None  # The pin may still be readable from the Store or its projection file.
-
-
 class _Documents:
     def __init__(
         self,
@@ -547,7 +525,7 @@ class _Documents:
         external: Callable[[str], bytes | None] | None = None,
         partial_figures: bool = False,
         row_patches: Mapping[str, tuple[_DocumentRowPatch, ...]] | None = None,
-        training_methods: TrainingMethodRegistry | None = None,
+        training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
     ):
         self.step = step
         self.variant_sources = variant_sources
@@ -956,7 +934,7 @@ class _Resolver:
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
         inline_origin: Callable[[Payload, ValueSource], Any] = source_shape,
-        *, training_methods: TrainingMethodRegistry | None = None,
+        *, training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
     ):
         self.project = project
         self.readers = readers
@@ -1505,7 +1483,7 @@ class StepComposition:
         readers: BaseReaders = BaseReaders(),
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
-        training_methods: TrainingMethodRegistry | None = None,
+        training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
     ) -> StepTemplate:
         return StepTemplate(
             self, _Resolver(
@@ -1589,9 +1567,12 @@ def compose_step(
     variant_sources: Any = None,
     read_document: Callable[[str], Document | None] | None = None,
     inline_origin: Callable[[Payload, ValueSource], Any] = source_shape,
+    training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
 ) -> StepTemplate | ProjectDiagnostic:
     """Compose inherited layers and prepare a step for sweep expansion."""
-    resolver = _Resolver(project, readers, track_sources, variant_sources, read_document, inline_origin)
+    resolver = _Resolver(
+        project, readers, track_sources, variant_sources, read_document, inline_origin, training_methods=training_methods,
+    )
     try:
         state = resolver.state(step)
         return StepTemplate(StepComposition(step, state), resolver)

@@ -32,6 +32,7 @@ from feedbax.contracts.expression_values import Expression
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.model_address import FieldElement
 from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     StudioActivityJob,
@@ -104,7 +105,9 @@ from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, ConditionalProduct, LastMember, ProductRef, RequestId, UpdateSeriesMember,
     is_synthesized_model_product,
 )
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec, SynthesisRequestSpec
+from feedbax.contracts.request_specs import (
+    DocumentTrainingRequestSpec, EvaluationRequestSpec, RenderRequestSpec, SynthesisRequestSpec,
+)
 from feedbax.contracts.trial_clock import StudioSavedFigureMeanRequest
 from feedbax.contracts.trial_record import StudioTrialReplayResponse
 from feedbax.dataset import Dataset
@@ -674,6 +677,23 @@ def _analysis_status(
     return PlanStatusRow(key, label, JobStatus.SUCCEEDED, None)
 
 
+def _figure_task_labels(
+    view: ProjectPlanRead, store: ImmutableArtifactBlobProvider, receipt: Success, spec: RenderRequestSpec, content: bytes,
+) -> bytes:
+    from feedbax.web.services.figure_labels import project_figure_task_labels
+
+    evaluations: dict[tuple[str, str], list[DatasetPort]] = defaultdict(list)
+    for run in view.settled.plan.runs:
+        row = view.evaluations.get(run.key)
+        result = row.result if row is not None else None
+        if (
+            result is not None and result.request_id is not None
+            and isinstance(run, PlannedRun) and run.dataset_port is not None
+        ):
+            evaluations[result.job_id, result.request_id].append(run.dataset_port)
+    return project_figure_task_labels(content, spec.document, receipt.inputs, store, evaluations)
+
+
 class ProjectPlanService:
     def __init__(
         self, folders: ProjectFolderService, jobs: JobService,
@@ -709,7 +729,7 @@ class ProjectPlanService:
 
     def _saved_light_receipt(
         self, project: str, revision: str, job_id: str, role: str,
-    ) -> tuple[ImmutableArtifactBlobProvider, Success]:
+    ) -> tuple[ProjectPlanRead, ImmutableArtifactBlobProvider, Success]:
         view = self.read(project, revision=revision)
         visible = next((result for history in view.light.values() for result in (history.result, history.previous)
                         if result is not None and result.job_id == job_id and role in result.products), None)
@@ -721,7 +741,7 @@ class ProjectPlanService:
         if ref is None or ref.sha256 != visible.receipt.manifest_sha256:
             raise JobConflict("The saved result receipt could not be authenticated.")
         try:
-            return store, success.read_receipt(ref)
+            return view, store, success.read_receipt(ref)
         except (OSError, TypeError, ValueError, KeyError) as error:
             raise JobConflict("The saved result receipt could not be authenticated.") from error
 
@@ -729,7 +749,7 @@ class ProjectPlanService:
         self, project: str, revision: str, job_id: str, role: str, member: str,
     ) -> SavedLightProduct:
         """Read a product of a current or previous result visible on the saved Plan."""
-        store, receipt = self._saved_light_receipt(project, revision, job_id, role)
+        view, store, receipt = self._saved_light_receipt(project, revision, job_id, role)
         try:
             product, = receipt.products[role]
             content = success_content_ref(product.content)
@@ -748,14 +768,18 @@ class ProjectPlanService:
                 return SavedLightProduct(store.get_object(selected), media_type, policy)
             if role != PLOTLY_FIGURE_ROLE or member != "figure.json":
                 raise JobNotFound(job_id)
-            return SavedLightProduct(store.get_object(content), "application/json")
+            request = read_effective_request(receipt, store.get_object)
+            if not isinstance(request.spec, RenderRequestSpec):
+                raise ValueError("Expected a saved figure request.")
+            labelled = _figure_task_labels(view, store, receipt, request.spec, store.get_object(content))
+            return SavedLightProduct(labelled, "application/json")
         except (OSError, TypeError, ValueError, KeyError) as error:
             raise JobConflict("The saved product could not be authenticated.") from error
 
 
     @contextmanager
     def _operation_dataset(self, project: str, revision: str, job_id: str, role: str) -> Iterator[Dataset]:
-        store, receipt = self._saved_light_receipt(project, revision, job_id, role)
+        _, store, receipt = self._saved_light_receipt(project, revision, job_id, role)
         if not receipt.request.id.startswith(("analyze:", "synthesize:")):
             raise JobNotFound(job_id)
         try:
@@ -792,10 +816,12 @@ class ProjectPlanService:
     def figure_mean(self, project: str, body: StudioSavedFigureMeanRequest) -> SavedLightProduct:
         from feedbax.host.light_worker import render_saved_figure
 
-        store, receipt = self._saved_light_receipt(project, body.revision, body.job_id, PLOTLY_FIGURE_ROLE)
+        view, store, receipt = self._saved_light_receipt(project, body.revision, body.job_id, PLOTLY_FIGURE_ROLE)
         try:
             request = read_effective_request(receipt, store.get_object)
-            return SavedLightProduct(render_saved_figure(store, request, receipt.inputs, mean=body.mean), "application/json")
+            content = render_saved_figure(store, request, receipt.inputs, mean=body.mean)
+            assert isinstance(request.spec, RenderRequestSpec)
+            return SavedLightProduct(_figure_task_labels(view, store, receipt, request.spec, content), "application/json")
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, TypeError, ValueError, KeyError) as error:

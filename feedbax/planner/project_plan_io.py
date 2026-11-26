@@ -2,6 +2,7 @@
 
 from base64 import b64decode, b64encode
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 import json
 from typing import Literal
 
@@ -79,7 +80,7 @@ def select_plan_requests(plan: PlanRequests, variants: Iterable[str] | None) -> 
     if source_index is not None:
         snapshot = source_index.snapshot
         source_index = PlanSourceIndex(
-            SourceSnapshot(snapshot.project, snapshot.variant_sites, {
+            replace(snapshot, sweeps={
                 key: expansion for key, expansion in snapshot.sweeps.items() if key[0] in names
             }),
             {key: sources for key, sources in source_index.producers.items() if run_key(key).variant in names},

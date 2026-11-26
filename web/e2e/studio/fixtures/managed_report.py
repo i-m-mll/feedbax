@@ -7,7 +7,8 @@ from pathlib import Path
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.project import RootDocument, Step
 from feedbax.contracts.project_sweep import Sweep
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.desktop.release import AppPaths
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.browser_seed_actions import HomeSeed, NonSeed, print_action

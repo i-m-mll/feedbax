@@ -10,7 +10,8 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import ModelTime
 from feedbax.contracts.project import BasedDocument, Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, load_text_project
 from feedbax.contracts.project_resolution import compose_document
 from feedbax.contracts.project_sweep import model_field_path, model_field_target
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
@@ -24,6 +25,7 @@ from tests.test_evaluate_documents import MASS, TASK, _based, _data, _model, _wi
 _URL = "/api/projects/reach"
 _PLANT = {"composites": [], "element": {"kind": "component", "id": "plant"}}
 _MASS_TEXT = model_field_path(ModelAddress.model_validate(MASS))
+_START_EDIT = {"op": "replace", "path": "/variables/start/value", "value": "[U(-0.5, 0.5), U(-0.3, 0.45)]"}
 
 
 class _Project:
@@ -100,6 +102,32 @@ def _two_readers(data):
     data["steps"]["other"] = deepcopy(data["steps"]["fee"])
     data["steps"]["other"]["base"]["inline"]["seed"] = 1
     return data
+
+
+def test_wiring_new_outputs_assigns_names_used_by_objective_authoring(tmp_path):
+    project = _Project(tmp_path, _data())
+    graph = {"composites": [], "element": {"kind": "graph"}}
+    operation = {
+        "op": "connect", "graph": graph,
+        "source": {"owner": "component", "component": "readout", "port": "output"},
+        "target": {"owner": "outputs", "port": "__new_port__"},
+        "grow_target": True,
+    }
+    with project.client:
+        project.edit(operation)
+        project.edit(operation)
+        ports = project.composed("model")["ports"]["outputs"]
+        added = list(ports)[-2:]
+        assert [ports[key]["label"] for key in added] == ["Output", "Output 2"]
+        assert all(key != ports[key]["label"] for key in added)
+
+        response = project.client.post(f"{_URL}/authoring/trials", json={
+            "revision": project.snapshot()["revision"], "run": project.run("fee"),
+        })
+        assert response.status_code == 200, response.text
+        names = {item["value"]["name"] for item in response.json()["outputs"]}
+        assert {"Output", "Output 2"} <= names
+        assert not names.intersection(added)
 
 
 def test_studio_authorizes_attachment_defaults_from_the_source_shape(tmp_path):
@@ -380,12 +408,9 @@ def test_an_evaluation_task_edit_makes_a_document_based_on_its_subjects(tmp_path
     project = _Project(tmp_path, _data())
     with project.client:
         original = project.ids()["fee"]
-        task = project.composed(TASK)
-        bound = task["variables"]["start"]["value"]["args"][0]["args"][0]
-        path = "/variables/start/value/args/0/args/0/value"
         response = project.client.post(f"{_URL}/authoring/trials", json={
             "revision": project.snapshot()["revision"], "run": project.run("check"),
-            "change": {"kind": "task", "edits": [{"op": "replace", "path": path, "value": bound["value"] - 0.1}]},
+            "change": {"kind": "task", "edits": [_START_EDIT]},
             "scope": {"kind": "step"},
         })
         assert response.status_code == 200, response.text
@@ -408,11 +433,9 @@ def test_a_variant_s_evaluation_task_edit_is_a_document_only_its_row_points_at(t
     with project.client:
         before = {run.key: run.request_id for run in project.plan().runs}
         steps = project.project().steps
-        path = "/variables/start/value/args/0/args/0/value"
-        bound = project.composed(TASK)["variables"]["start"]["value"]["args"][0]["args"][0]
         response = project.client.post(f"{_URL}/authoring/trials", json={
             "revision": project.snapshot()["revision"], "run": project.run("check") | {"variant": "treated"},
-            "change": {"kind": "task", "edits": [{"op": "replace", "path": path, "value": bound["value"] - 0.1}]},
+            "change": {"kind": "task", "edits": [_START_EDIT]},
             "scope": {"kind": "step"},
         })
         assert response.status_code == 200, response.text
@@ -527,9 +550,7 @@ def test_invalid_model_field_survives_reopen_and_can_be_repaired(tmp_path):
         before = project.snapshot()["revision"]
         saved = project.edit(recipe["command"]["operation"], files=recipe["files"])
         assert saved["snapshot"]["revision"] != before
-        assert project.composed("model")["interior"]["components"]["plant"]["fields"]["mass"] == {
-            "kind": "unresolved", "text": text,
-        }
+        assert project.composed("model")["interior"]["components"]["plant"]["fields"]["mass"] == text
         (fee,) = [run for run in project.plan().runs if run.key.step == "fee"]
         assert fee.admission_problem is not None
         assert any(problem.model_address == ModelAddress.model_validate(MASS) for problem in fee.problems)
@@ -582,7 +603,7 @@ def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path
 
         reopened = project.project()
         values = reopened.steps["fee"].sweep.axes["hidden-size"].values
-        unresolved = {"kind": "unresolved", "text": "U(0, 1)"}
+        unresolved = "U(0, 1)"
         assert values["value-1"].value == values["value-1"].patches[path].value == unresolved
         assert values["value-1"].patches[_MASS_TEXT].value == 2.0
         assert [values[member].value for member in ("value-2", "value-3")] == [100, 128]
@@ -642,7 +663,7 @@ def test_place_registered_template_as_an_editable_composite(tmp_path, name, hidd
 
     data = _data()
     data["steps"] = {}
-    data["documents"]["model"]["payload"] = {"step_seconds": 0.01, "ports": {}, "interior": {}}
+    data["documents"]["model"]["payload"] = {"step_seconds": "0.01 s", "ports": {}, "interior": {}}
     project = _Project(tmp_path, data)
     position = {"x": 20, "y": 30}
     address = ModelAddress.model_validate({"composites": [], "element": {"kind": "component", "id": "controller"}})
@@ -739,7 +760,7 @@ def test_insert_registered_template_routes_the_wire_through_its_composite_ports(
     source = {"owner": "inputs", "port": "in"}
     target = {"owner": "outputs", "port": "out"}
     data["documents"]["model"]["payload"] = {
-        "step_seconds": 0.01,
+        "step_seconds": "0.01 s",
         "ports": {
             "inputs": {"in": {"label": "Input", "type": {}}},
             "outputs": {"out": {"label": "Output", "type": {}}},
@@ -801,7 +822,7 @@ def test_equations_edits_store_and_run_like_a_direct_document(
     inner = {"composites": ["equations"], "element": {"kind": "graph"}}
     position = {"x": 20, "y": 30}
     model = {
-        "step_seconds": 0.01,
+        "step_seconds": "0.01 s",
         "ports": {
             "inputs": {"drive": {"label": "drive", "type": {"shape": []}}},
             "outputs": {"read": {"label": "read", "type": {"shape": []}}},

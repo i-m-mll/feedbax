@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from feedbax.contracts.project_storage import stored_defaults_manifest
+from feedbax.application.project_writer import stored_defaults_manifest
 
 
 def main() -> None:

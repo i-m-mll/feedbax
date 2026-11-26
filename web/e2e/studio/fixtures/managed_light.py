@@ -13,7 +13,8 @@ from tests.support.browser_seed_actions import HomeSeed, NonSeed
 
 def seed(project: str, root: Path, *, variants: bool = False) -> None:
     from feedbax.contracts.project import Project
-    from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+    from feedbax.application.project_writer import dump_text_project
+    from feedbax.contracts.project_io import ProjectConfiguration
     from web.e2e.studio.fixtures.canonical_evaluate import _evaluation_project
 
     raw = _evaluation_project()

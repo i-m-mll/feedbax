@@ -71,7 +71,7 @@ def test_best_preserves_each_producers_task_when_applying_the_same_keyed_edit():
     for chance, item in zip((0.2, 0.4, 0.6), values.values(), strict=True):
         item["patches"]["trial_documents.task.variables.catch.value.args.0.value"] = {"value": chance}
     raw["steps"]["baseline"]["base"]["inline"]["params"]["variation"] = {
-        "rename-catch": {"op": "replace", "path": "task.variables.catch.label", "value": "Catch trial"},
+        "extend-cue": {"op": "replace", "path": "task.epochs.cue.end.max_steps", "value": 22},
     }
 
     plan = compile_project(Project.model_validate(raw))
@@ -88,8 +88,9 @@ def test_best_preserves_each_producers_task_when_applying_the_same_keyed_edit():
         for candidate in rank.candidates:
             replacement, = parameters.for_best_candidate(candidate.key).variation
             assert replacement.path == "task"
+            cue = next(epoch for epoch in replacement.value["epochs"] if epoch["id"] == "cue")
+            assert cue["end"]["max_steps"] == 22
             catch = next(variable for variable in replacement.value["variables"] if variable["id"] == "catch")
-            assert catch["name"] == "Catch trial"
             chances.append(catch["value"]["args"][0]["value"])
         assert sorted(chances) == [0.2, 0.4, 0.6]
 

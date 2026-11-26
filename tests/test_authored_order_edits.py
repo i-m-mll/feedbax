@@ -13,13 +13,13 @@ from feedbax.web.app import create_app
 
 URL = "/api/projects/study"
 MODEL_LINKS = [
-    ModelAddress.at_state((), "body", "position").to_text(),
-    ModelAddress.at_state((), "body", "velocity").to_text(),
+    ModelAddress.at_state((), "body", "position").to_authored_text(),
+    ModelAddress.at_state((), "body", "velocity").to_authored_text(),
 ]
 OBJECTIVE_PAYLOAD = {
     "id": "objective",
     "terms": {
-        key: {"measure": {"kind": "literal", "value": value}}
+        key: {"measure": value}
         for key, value in [("first", 1.0), ("second", 2.0), ("last", 3.0)]
     },
 }
@@ -43,7 +43,7 @@ def study(tmp_path):
     })
     write("documents/based.json", {
         "label": "Based", "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "base": {"document": "loss"},
-        "differences": {"/terms/first/weight": {"value": {"kind": "literal", "value": 4.0}}},
+        "differences": {"/terms/first/weight": {"value": 4.0}},
     })
     write("documents/training.json", {
         "label": "Training", "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": {
@@ -54,7 +54,7 @@ def study(tmp_path):
     })
     write("documents/model.json", {
         "label": "Model", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": {
-            "step_seconds": 0.01,
+            "step_seconds": "10 ms",
             "ports": {"inputs": {"first": {"label": "First", "type": {}}, "last": {"label": "Last", "type": {}}}},
             "interior": {},
         },
@@ -63,7 +63,7 @@ def study(tmp_path):
         "label": "Task", "schema": STORED_TASK_DOCUMENT_SCHEMA_ID, "payload": {
             "id": "trials",
             "variables": {
-                key: {"label": key, "type": {"base": "real"}, "value": {"kind": "literal", "value": 1.0}}
+                key: {"label": key, "type": {"base": "real"}, "value": 1.0}
                 for key in ("first", "last")
             },
             "epochs": {"move": {"label": "Move", "end": {"kind": "rest"}}},

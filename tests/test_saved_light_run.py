@@ -52,7 +52,7 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
             "label": "Rollout",
             "kind": "evaluate",
             "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
-                "seed": 17, "trial_policy": "paired", "variation": [],
+                "seed": 17, "trial_policy": "paired",
                 "trial_set": {"kind": "every_condition"},
                 "input_bindings": {"target_pos": "target_pos"},
             }}},
@@ -106,19 +106,16 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
             (request,) = next(item for item in window["analysis_elements"] if item["name"] == "target")["requests"]
             return request
 
-        def draw(name):
-            assert element()["status"] in ("not_run", "waiting", "stale")
-            submitted = json_object(client.post(f"{url}/train-runs", json={
-                "revision": revision, "token": token(name), "run_keys": [rollout, plot],
-            }), 202)
-            for item in submitted["items"]:
-                job = wait_until(lambda: (
-                    job if (job := job_row(host, item["job_id"])) and job["outcome"] is not None else None
-                ))
-                assert job["state"] == "succeeded", job["outcome"]
-            return json_object(client.get(element()["result"]["products"]["figure"]))
-
-        before = draw("before")
+        submitted = json_object(client.post(f"{url}/train-runs", json={
+            "revision": revision, "token": token("signal-figure"), "run_keys": [rollout, plot],
+        }), 202)
+        for item in submitted["items"]:
+            job = wait_until(lambda: (
+                job if (job := job_row(host, item["job_id"])) and job["outcome"] is not None else None
+            ))
+            assert job["state"] == "succeeded", job["outcome"]
+        original = element()
+        before = json_object(client.get(original["result"]["products"]["figure"]))
         assert before["layout"]["yaxis"]["title"]["text"] == "Requested target (m)"
         changed = json_object(client.post(f"{url}/authoring/trials", json={
             "revision": revision, "run": rollout,
@@ -128,8 +125,14 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
         }))
         saved = json_object(client.patch(url, json={"revision": revision, "files": changed["files"]}))
         revision = saved["revision"]
-        after = draw("after")
+        current = element()
+        assert current["status"] == "succeeded"
+        assert current["request_id"] == original["request_id"]
+        assert current["result"]["job_id"] == original["result"]["job_id"]
+        assert current["result"]["receipt"] == original["result"]["receipt"]
+        after = json_object(client.get(current["result"]["products"]["figure"]))
         assert after["layout"]["yaxis"]["title"]["text"] == "Renamed target (m)"
+        assert after["layout"]["meta"] == before["layout"]["meta"]
         assert [(trace["x"], trace["y"]) for trace in after["data"]] == [
             (trace["x"], trace["y"]) for trace in before["data"]
         ]

@@ -5,11 +5,10 @@ from feedbax.builtins.training import StandardTrainingSettings
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_inputs import BoundRank, SubsetTerms, subset_to_rows
+from feedbax.application.project_writer import dump_studio_project, dump_text_project
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
-    dump_studio_project,
-    dump_text_project,
     load_text_project,
     parse_studio_project,
 )

@@ -18,6 +18,7 @@ from feedbax.component_registry.declarations import (
     DeclaredComponent,
     InputPrototypeParameter,
     MissingPrototypeInput,
+    split_lowering_metadata,
 )
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.acausal_interface import (
@@ -80,11 +81,21 @@ class GraphParameterResolution:
         }
 
 
-def resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
-    from feedbax.compiler.serialization import _split_lowering_metadata
+def _declaration(
+    type_id: str, registry: Any, declarations: dict[str, DeclaredComponent | None],
+) -> DeclaredComponent | None:
+    if type_id not in declarations:
+        declarations[type_id] = registry.get(type_id)
+    return declarations[type_id]
 
+
+def resolve_component_node(
+    node: ComponentSpec, registry: Any, *, declarations: dict[str, DeclaredComponent | None] | None = None,
+) -> ComponentSpec:
     resolver = getattr(registry, "resolve_component_spec", None)
     should_resolve = getattr(registry, "should_resolve_component_spec", None)
+    declarations = {} if declarations is None else declarations
+    declaration = _declaration(node.type, registry, declarations)
     if (
         callable(resolver)
         and callable(should_resolve)
@@ -93,7 +104,7 @@ def resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
             revision=node.revision,
         )
     ):
-        params, lowering_metadata = _split_lowering_metadata(node, registry)
+        params, lowering_metadata = split_lowering_metadata(node.type, node.params, declaration)
         resolution = resolver(
             node.type,
             params,
@@ -107,9 +118,7 @@ def resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
                 "revision": resolution.revision,
             }
         )
-    if required_interior_domain(node.type, registry) is not None:
-        return node
-    if registry.get(node.type) is None:
+    if declaration is None:
         raise ValueError(
             f"Unregistered component type {node.type!r}. "
             f"Known component types: {registry.names()!r}"
@@ -202,16 +211,14 @@ class _Completion:
         for name, node in self.graph.nodes.items():
             try:
                 self.nodes[name] = (
-                    node if identities_resolved else resolve_component_node(node, registry)
+                    node if identities_resolved else resolve_component_node(node, registry, declarations=self.metadata)
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 self.fail(name, exc)
                 self.nodes[name] = node
                 continue
             type_id = self.nodes[name].type
-            if type_id not in self.metadata:
-                self.metadata[type_id] = registry.get(type_id)
-            meta = self.metadata[type_id]
+            meta = _declaration(type_id, registry, self.metadata)
             if meta is not None and meta.compiler.input_prototype_parameter is not None:
                 self.prototype_parameters[name] = meta.compiler.input_prototype_parameter
         for index, rule in enumerate(self.graph.derived_dimensions):

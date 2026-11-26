@@ -10,10 +10,10 @@ import pytest
 from feedbax.cli import main
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.project import Project
+from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.project_io import (
     STUDIO_WRITE_LOCK_FILENAME,
     ProjectConfiguration,
-    dump_text_project,
 )
 from feedbax.planner.project_plan import PlanRequest, PlanRequests, RunKey, compile_project, diff_plan_requests
 from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
@@ -55,6 +55,8 @@ def _edit(root, files, document, mutate):
 def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
     root = tmp_path / "mixed"
     base = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    model = base["documents"]["point-mass"]["payload"]
+    model["interior"]["components"]["plant"]["fields"]["mass"] = 1.25
     steps = base["steps"]
     train = steps["train"]
     train["base"]["inline"]["seed"] = 0
