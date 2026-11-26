@@ -22,8 +22,6 @@ from feedbax.contracts.project import (
     document_edit_value, json_pointer_parts, member_name, same_json,
 )
 from feedbax.contracts.project_inputs import ObjectiveDocumentReference, SweepExceptionTerms, TaskDocumentReference
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import (
@@ -35,7 +33,7 @@ from feedbax.contracts.project_sweep import (
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
-from feedbax.project_members import generated_name
+from feedbax.project_members import generated_name, numbered_document_label
 from feedbax.project_folder import _free_member_name, document_file
 from feedbax.studio.selection import StoredEdit, TrainSelection, merged_files
 from feedbax.studio.step_differences import normalized_patches
@@ -408,8 +406,10 @@ def _document_stores(
         elif direct := frozenset(readers(name)) & chosen:
             variant = _document_name(project, name, taken)
             taken.add(variant)
+            named = {**documents, **{item.id: item.document for item in stores.created}}
+            label = numbered_document_label(named, document.schema_id, member_name(documents, name))
             stores.created.append(CreateNamedDocument(kind="document", id=variant, document=BasedDocument(
-                schema=document.schema_id, label=_copy_label(documents, stores.created, name),
+                schema=document.schema_id, label=label,
                 base=DocumentBase(document=name), differences=diff(old(name), content),
             )))
             for step in direct:
@@ -419,20 +419,6 @@ def _document_stores(
 
     visit(shown, ())
     return stores
-
-
-def _copy_label(documents: Mapping[str, Document], created: Sequence[CreateNamedDocument], name: str) -> str:
-    document = documents[name]
-    task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
-    schemas = task_schemas if document.schema_id in task_schemas else {document.schema_id}
-    default = {
-        TASK_DOCUMENT_SCHEMA_ID: "Task",
-        PYTHON_TASK_SCHEMA_ID: "Task",
-        OBJECTIVE_DOCUMENT_SCHEMA_ID: "Objective",
-    }.get(document.schema_id, name)
-    labels = {item.label or key for key, item in documents.items() if item.schema_id in schemas}
-    labels.update(label for item in created if item.document.schema_id in schemas and (label := item.document.label))
-    return generated_name(document.label or default, labels.__contains__, separator=" ")
 
 
 def _document_name(project: Project, name: str, taken: Collection[str]) -> str:

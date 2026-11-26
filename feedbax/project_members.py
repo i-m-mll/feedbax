@@ -36,19 +36,22 @@ def generated_name(base: str, taken: Callable[[str], bool], separator: str = "-"
     return name
 
 
-def duplicate_document_name(documents: Mapping[str, Document], member: str, key: str | None) -> tuple[str, str]:
-    """Number the source's display name and derive the new key as Studio does for a named document."""
-    source = documents[member]
-
-    stem = re.sub(r"-[0-9]+$", "", member)
-    base = member_display_name(stem, source.label)
+def numbered_document_label(documents: Mapping[str, Document], schema: str, base: str) -> str:
+    """Number a document display name within its picker family."""
     task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
-    family = task_schemas if source.schema_id in task_schemas else {source.schema_id}
+    family = task_schemas if schema in task_schemas else {schema}
     shown = {
         member_display_name(name, document.label)
         for name, document in documents.items() if document.schema_id in family
     }
-    label = generated_name(base, lambda name: name == base or name in shown, " ")
+    return generated_name(base, lambda name: name == base or name in shown, " ")
+
+
+def duplicate_document_name(documents: Mapping[str, Document], member: str, key: str | None) -> tuple[str, str]:
+    """Number the source's display name and derive the new key as Studio does for a named document."""
+    source = documents[member]
+    stem = re.sub(r"-[0-9]+$", "", member)
+    label = numbered_document_label(documents, source.schema_id, member_display_name(stem, source.label))
     normalized = "".join(
         symbol for symbol in unicodedata.normalize("NFKD", label)
         if not unicodedata.category(symbol).startswith("M")

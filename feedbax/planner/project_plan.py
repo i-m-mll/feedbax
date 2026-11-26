@@ -421,9 +421,12 @@ class PlannedRow:
     kept_axes: tuple[str, ...] = field(default=(), kw_only=True)
     """Optional axes for which this row is the unvalued member."""
 
+    step_name: str | None = field(default=None, kw_only=True)
+    """The display name of the step when this is its only row."""
+
     @property
     def name(self) -> str:
-        return member_display_name(self.key.row, self.label)
+        return member_display_name(self.key.row, self.label or self.step_name)
 
     @property
     def selection_coordinates(self) -> dict[str, SweepCoordinate]:
@@ -2019,11 +2022,19 @@ class _Compiler:
             for name in sorted(project.steps):
                 self.step(variant, name, ())
         self.diagnostics.extend(self.shared_key_diagnostics())
+        counts = Counter((key.variant, key.step) for key in self.rows)
+        for key, row in self.rows.items():
+            at = key.variant, key.step
+            if not row.label and counts[at] == 1:
+                self.rows[key] = replace(row, step_name=member_display_name(key.step, self.steps[at].label))
         return ProjectPlan(
             self.variant_order,
             MappingProxyType(self.steps),
             tuple(self.rows.values()),
-            tuple(run for runs in self.runs.values() for run in runs if isinstance(run, PlannedRun)),
+            tuple(
+                cast(PlannedRun, self.rows[run.key])
+                for runs in self.runs.values() for run in runs if isinstance(run, PlannedRun)
+            ),
             MappingProxyType(self.requests),
             MappingProxyType(self.documents),
             tuple(self.diagnostics),

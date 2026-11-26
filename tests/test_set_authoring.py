@@ -207,6 +207,8 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     )
     project = folders.read(PROJECT).project
     assert project.documents["set-2"].base.document == "set"
+    assert project.documents["set-2"].label == "Set 2"
+    assert result["snapshot"]["names"]["documents"]["set-2"] == "Set 2"
     assert project.steps["other"].sweep.axes["set"].set == "set-2"
     assert project.steps["baseline"].sweep.axes["run"].set == "set"
     assert _runs(folders, "baseline") == edited
@@ -291,7 +293,8 @@ def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selec
 
     _, before = read()
     assert next(row for row in before["rows"] if row["key"]["step"] == "train")["label"] is None
-    assert next(row for row in before["window_map"]["rows"] if row["key"]["step"] == "train")["label"] is None
+    only = next(row for row in before["window_map"]["rows"] if row["key"]["step"] == "train")
+    assert only["label"] is None and only["name"] == "Train"
     assert _duplicate(folders, client, "train") == {"axis": "run", "value": "run-2"}
     plan, result = read()
     train = next(step for step in result["window_map"]["steps"] if step["step_id"] == "train")
@@ -301,6 +304,7 @@ def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selec
         ("", "Run 1", "Run 1"), ("run-2", "Run 2", "Run 2"),
     ]
     rows = [row for row in result["window_map"]["rows"] if row["key"]["step"] == "train"]
+    assert [row["name"] for row in rows] == ["Run 1", "Run 2"]
     assert [(row["key"]["row"], row["label"], row["coordinates"]["run"]["axis_value"]) for row in rows] == [
         ("default", "Run 1", ""), ("run=run-2", "Run 2", "run-2"),
     ]
