@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 from dataclasses import replace
 from functools import wraps
+from hashlib import sha256
 
 import equinox as eqx
 import jax.random as jr
@@ -21,6 +22,7 @@ from feedbax.contracts.objective_document import (
     STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm, StoredObjectiveDocument,
 )
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.planner.project_plan import PlanRequests, ProjectPlanMemo, RunKey, compile_project
 from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
@@ -521,6 +523,71 @@ def document_project(authored, *, evaluation=False):
     if evaluation:
         raw["steps"]["baseline"] = managed_evaluation_step("train")
     return raw
+
+
+def test_cold_plan_reuses_requests_when_authored_expressions_are_respelled(tmp_path, authored):
+    project = document_project(authored, evaluation=True)
+    project["documents"]["objective"]["payload"]["terms"]["effort"]["weight"] = "1 + 1"
+    baseline = project["steps"]["baseline"]
+    baseline["base"]["inline"]["params"]["variation"] = [{
+        "op": "replace", "path": "task.epochs.hold.end.length", "value": "6 st",
+    }]
+    initial = deepcopy(baseline)
+    initial["label"] = "Initial Evaluate"
+    initial["inputs"] = {
+        "subject": {"kind": "initial_model", "source": {"document": "reach-model"}},
+        "task": {"kind": "task", "source": {"document": "task"}},
+        "objective": {"kind": "objective", "source": {"document": "objective"}},
+    }
+    initial["base"]["inline"]["params"].update(input_bindings={"task-input": "target_pos"}, variation=[])
+    project["steps"]["initial"] = initial
+
+    configuration = ProjectConfiguration(project="fixture", store="results")
+    for relative, data in dump_text_project(Project.model_validate(project), configuration).items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def read_plan():
+        plan = compile_project(load_text_project(tmp_path).project)
+        assert not plan.diagnostics, plan.diagnostics
+        assert {run.key.step for run in plan.runs} == {"train", "baseline", "initial"}
+        assert all(not row.problems for row in plan.rows)
+        return plan
+
+    before = read_plan()
+    watched = ["reach-model", "task", "objective"]
+    authored_digests = set()
+    for name in watched:
+        path = tmp_path / "documents" / f"{name}.json"
+        data = path.read_bytes()
+        file = json.loads(data)
+        authored_digests.add(sha256(data).hexdigest())
+        if name == "task":
+            file["payload"]["epochs"]["hold"]["end"]["length"] = " (U(5 st,14 st)) "
+            file["payload"]["epochs"]["hold"]["label"] = "Wait before cue"
+        elif name == "objective":
+            file["payload"]["terms"]["effort"].update(weight="(1+1)", label="Movement cost")
+        path.write_text(json.dumps(file, indent=4) + "\n")
+        authored_digests.add(sha256(path.read_bytes()).hexdigest())
+    step_path = tmp_path / "steps" / "baseline.json"
+    baseline_file = json.loads(step_path.read_bytes())
+    baseline_file["base"]["inline"]["params"]["variation"][0]["value"] = "(6 st)"
+    step_path.write_text(json.dumps(baseline_file))
+
+    after = read_plan()
+    assert (after.requests, after.documents) == (before.requests, before.documents)
+    assert after.documents.keys().isdisjoint(authored_digests)
+    assert all(
+        digest.encode() not in payload for payload in after.requests.values() for digest in authored_digests
+    )
+
+    path = tmp_path / "documents" / "objective.json"
+    file = json.loads(path.read_bytes())
+    file["payload"]["terms"]["effort"]["weight"] = "1 + 2"
+    path.write_text(json.dumps(file))
+    changed = read_plan()
+    assert set(changed.requests).isdisjoint(before.requests)
 
 
 def test_managed_host_train_and_evaluate_share_document_runtime(host, tmp_path, authored, monkeypatch):

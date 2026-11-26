@@ -779,7 +779,7 @@ def _lower_evaluation_task_edits(
     graph_edits = [edit.model_dump(mode="json", exclude_unset=True) for _, edit in edits
                    if edit.path.partition(".")[0] != "task"]
     if lowered != base:
-        graph_edits.insert(0, {"op": "replace", "path": "task", "value": stored_project_value(lowered)})
+        graph_edits.insert(0, {"op": "replace", "path": "task", "value": lowered.model_dump(mode="json")})
     return raw | {"variation": graph_edits}, origins
 
 
@@ -3787,7 +3787,7 @@ class _Compiler:
         )
         variation = (*edits, *attached.edits)
         if attached.task is not None and attached.task != chosen_task:
-            value = stored_project_value(attached.task.for_execution())
+            value = attached.task.for_execution().model_dump(mode="json")
             variation = (*variation, OverridePatch(path="task", op="replace", value=value))
         if variation == edits:
             return payload, attached
