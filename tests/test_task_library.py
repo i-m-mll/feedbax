@@ -15,12 +15,13 @@ def test_new_lists_an_installed_package_s_task_documents_whole_beside_feedbax_s(
     documents.mkdir(parents=True)
     (plugins / "reach_library" / "__init__.py").write_text("")
     task = BLANK_TASK.model_copy(update={"id": "curved"}).model_dump(mode="json")
-    (documents / "curved-task.json").write_text(json.dumps({"schema": TASK_DOCUMENT_SCHEMA_ID, "payload": task}))
+    (documents / "curved-task.json").write_text(json.dumps({"label": "Document", "schema": TASK_DOCUMENT_SCHEMA_ID, "payload": task}))
     (documents / "longer-task.json").write_text(json.dumps({
+        "label": "Document",
         "schema": TASK_DOCUMENT_SCHEMA_ID, "base": {"document": "curved-task"},
         "differences": {"/fixed_steps": {"value": 40}},
     }))
-    (documents / "model.json").write_text(json.dumps({"schema": "feedbax.spec.model", "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}}}))
+    (documents / "model.json").write_text(json.dumps({"label": "Document", "schema": "feedbax.spec.model", "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}}}))
     metadata = plugins / "reach_library-1.0.dist-info"
     metadata.mkdir()
     (metadata / "METADATA").write_text("Name: reach-library\nVersion: 1.0\n")

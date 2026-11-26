@@ -17,7 +17,6 @@ from pydantic import Field, JsonValue, PrivateAttr, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.expression_values import DrawValue, Expression, TextSpan, WeightPart
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import FieldElement, ModelAddress
@@ -204,7 +203,11 @@ class AxisCondition(StrictModel):
         return self
 
 
-class NamedAxis(StrictModel):
+class _NamedSweepAxis(StrictModel):
+    label: NonemptyText | None = Field(default=None, exclude_if=lambda label: label is None)
+
+
+class NamedAxis(_NamedSweepAxis):
     values: dict[ProjectName, AxisValue | None]
     where: AxisCondition | None = None
     optional: bool = Field(default=False, exclude_if=lambda optional: not optional)
@@ -212,11 +215,11 @@ class NamedAxis(StrictModel):
     beside it."""
 
 
-class InputAxis(StrictModel):
+class InputAxis(_NamedSweepAxis):
     input: ProjectName
 
 
-class GeneratedAxis(StrictModel):
+class GeneratedAxis(_NamedSweepAxis):
     path: SweepTarget
     where: AxisCondition | None = None
     _author: str | None = PrivateAttr(default=None)
@@ -254,13 +257,13 @@ class SampledAxis(GeneratedAxis):
     draws: dict[ProjectName, JsonValue] | None = None
 
 
-class CheckpointRuleAxis(StrictModel):
+class CheckpointRuleAxis(_NamedSweepAxis):
     path: CheckpointRulePath = CHECKPOINT_RULE_TARGET
     checkpoint_rule: UpdateRule
     _author: str | None = PrivateAttr(default=None)
 
 
-class SetAxis(StrictModel):
+class SetAxis(_NamedSweepAxis):
     """One value per entry of the named Set document, applied to the Model document the step reads."""
 
     set: ProjectName
@@ -418,7 +421,7 @@ def inherit_sweep(
                     values[key] = _merge_value(values.get(key), value, author)
             kept = {
                 field: getattr(axis if field in axis.model_fields_set or not isinstance(prior, NamedAxis) else prior, field)
-                for field in ("where", "optional")
+                for field in ("label", "where", "optional")
             }
             axes[name] = NamedAxis(values=values, **kept)
         elif isinstance(axis, (GeneratedAxis, CheckpointRuleAxis)) and author is not None:
@@ -526,6 +529,7 @@ class SweepCoordinate:
     axis_label: str | None = field(default=None, kw_only=True)
     unit: str | None = field(default=None, kw_only=True)
     explicit_null: bool = field(default=False, kw_only=True)
+    number: int = field(default=1, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -995,12 +999,12 @@ def _generated_choices(
     axis: GeneratedAxis, values: Iterator[tuple[str | None, JsonValue]]
 ) -> Iterator[_AxisChoice]:
     authors = {axis.path: axis._author} if axis._author is not None else {}
-    for key, value in values:
+    for number, (key, value) in enumerate(values, 1):
         if key is None:
             key = "value-" + sha256_bytes(sweep_value_identity_bytes(value))
         yield _AxisChoice(
             key,
-            SweepCoordinate(key, value=value),
+            SweepCoordinate(key, value=value, axis_label=axis.label, number=number),
             {axis.path: SetValue(value=value)},
             patch_authors=authors,
         )
@@ -1032,15 +1036,16 @@ def _choices(
                     _AxisChoice(
                         key,
                         SweepCoordinate(
-                            key, value.label, value.value,
+                            key, value.label, value.value, number=number, axis_label=axis.label,
                             explicit_null=value.value is None and "value" in value.model_fields_set,
                         ),
                         _patches(value),
                         patch_authors=value._patch_authors,
                         task_additions=_task_additions(value),
                     )
-                    for key, value in values.items()
-                    if value is not None
+                    for number, (key, value) in enumerate(
+                        ((key, value) for key, value in values.items() if value is not None), 1
+                    )
                 )
             case InputAxis(input=role):
                 members = inputs[role]
@@ -1048,7 +1053,7 @@ def _choices(
                 choices = tuple(
                     _AxisChoice(
                         member.key,
-                        SweepInputCoordinate(member.key, member.label, carries=tuple(member.coordinates)),
+                        SweepInputCoordinate(member.key, member.label, carries=tuple(member.coordinates), axis_label=axis.label),
                         member=member,
                     )
                     for member in members
@@ -1117,13 +1122,29 @@ def coordinate_text(coordinate: SweepCoordinate) -> str:
     return str(value) if isinstance(value, (int, float, str)) else coordinate.value_id
 
 
-def sweep_axis_name(axis: str, coordinates: Iterable[SweepCoordinate]) -> str:
-    """Use the addressed field's name when the coordinates agree on it."""
+def authored_sweep_axis_name(axis: Axis, number: int) -> str:
+    if axis.label is not None:
+        return axis.label
+    match axis:
+        case CheckpointRuleAxis():
+            return "Checkpoint"
+        case InputAxis(input="subject"):
+            return "Subject"
+        case InputAxis(input="states"):
+            return "States"
+        case InputAxis():
+            return f"Input {number}"
+        case _:
+            return f"Sweep {number}"
+
+
+def sweep_axis_name(coordinates: Iterable[SweepCoordinate]) -> str:
+    """Use the axis's declared or addressed field name where the coordinates agree."""
     names = {coordinate.axis_label for coordinate in coordinates if coordinate.axis_label is not None}
-    return member_display_name(axis, names.pop() if len(names) == 1 else None)
+    return names.pop() if len(names) == 1 else "Sweep"
 
 
-def sweep_value_labels(axis: str, coordinate: SweepCoordinate) -> tuple[str, str]:
+def sweep_value_labels(coordinate: SweepCoordinate) -> tuple[str, str]:
     """Return the full label and the value label shown under an axis heading."""
     if coordinate.label is not None:
         return coordinate.label, coordinate.label
@@ -1133,20 +1154,20 @@ def sweep_value_labels(axis: str, coordinate: SweepCoordinate) -> tuple[str, str
         unit = value["unit"]
         value = value["value"]
     if value is None and not coordinate.explicit_null:
-        name = member_display_name(coordinate.value_id)
+        name = f"Value {coordinate.number}"
         return name, name
     text = value if isinstance(value, str) else canonical_json_v2_bytes(_generated_key_value(value)).decode()
     value_label = " ".join(part for part in (text, unit) if part)
-    axis_name = sweep_axis_name(axis, (coordinate,))
+    axis_name = sweep_axis_name((coordinate,))
     return " ".join(part for part in (axis_name, value_label) if part), value_label
 
 
-def sweep_value_name(axis: str, coordinate: SweepCoordinate) -> str:
-    return sweep_value_labels(axis, coordinate)[0]
+def sweep_value_name(coordinate: SweepCoordinate) -> str:
+    return sweep_value_labels(coordinate)[0]
 
 
-def sweep_row_name(values: Iterator[tuple[str, SweepCoordinate]]) -> str | None:
-    return " · ".join(sweep_value_name(axis, value) for axis, value in values) or None
+def sweep_row_name(values: Iterable[SweepCoordinate]) -> str | None:
+    return " · ".join(sweep_value_name(value) for value in values) or None
 
 
 def _expanded(
@@ -1162,21 +1183,24 @@ def _expanded(
     bindings: dict[str, str] = {}
     input_axes: dict[str, SweepInputCoordinate] = {}
     selected_values = {}
-    for name, axis in axes.items():
+    for number, (name, axis) in enumerate(axes.items(), 1):
         if (choice := selection.get(name)) is None:
             if name in kept_axes:
                 selected_values[name] = _KEPT_VALUE
             continue
-        selected_values[name] = choice.coordinate
+        coordinate = choice.coordinate
+        if coordinate.axis_label is None:
+            coordinate = replace(coordinate, axis_label=authored_sweep_axis_name(axis, number))
+        selected_values[name] = coordinate
         member = choice.member
         if isinstance(axis, InputAxis):
             assert member is not None
             bindings[axis.input] = member.key
-            assert isinstance(choice.coordinate, SweepInputCoordinate)
-            input_axes[name] = choice.coordinate
+            assert isinstance(coordinate, SweepInputCoordinate)
+            input_axes[name] = coordinate
             carried = member.coordinates
         else:
-            carried = {name: choice.coordinate}
+            carried = {name: coordinate}
         for axis_id, coordinate in carried.items():
             existing = coordinates.get(axis_id)
             if existing is not None and (
@@ -1204,7 +1228,7 @@ def _expanded(
             patches[path] = patch
         authors.update(choice.patch_authors)
     return ExpandedRow(
-        row_id, sweep_row_name(iter(selected_values.items())), coordinates, patches, bindings, origins, authors, axis_value_ids,
+        row_id, sweep_row_name(selected_values.values()), coordinates, patches, bindings, origins, authors, axis_value_ids,
         input_axes, tuple(choice.task_additions for choice in selection.values() if choice.task_additions is not None),
         kept_axes,
     )
@@ -1499,14 +1523,14 @@ def _expand_checkpoint_axis(
     for row, updates in rows_and_updates:
         for update in updates:
             key = str(update)
-            coordinate = SweepCoordinate(key, value=update)
+            coordinate = SweepCoordinate(key, value=update, axis_label=authored_sweep_axis_name(axis, 1))
             keys = {**row.axis_value_ids, name: key}
             authors = dict(row.patch_authors)
             if axis._author is not None:
                 authors[axis.path] = axis._author
             result.append(replace(
                 row, id=axis_values_id(keys), axis_value_ids=keys,
-                label=" · ".join(part for part in (row.label, sweep_value_name(name, coordinate)) if part),
+                label=" · ".join(part for part in (row.label, sweep_value_name(coordinate)) if part),
                 coordinates={**row.coordinates, name: coordinate},
                 patches={**row.patches, axis.path: SetValue(value=[{"at": update}])},
                 patch_origins={**row.patch_origins, axis.path: ("sweep_value", name, key)},
@@ -1551,7 +1575,7 @@ def axis_to_list(
         )
         value._patch_authors = dict(choice.patch_authors)
         values[choice.key] = value
-    return NamedAxis(values=values)
+    return NamedAxis(values=values, label=axis.label, where=axis.where)
 
 
 def sweep_to_rows(

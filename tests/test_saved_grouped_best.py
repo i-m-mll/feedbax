@@ -83,7 +83,7 @@ def test_grouped_rank_plan_preserves_group_keys_and_diagnoses_invalid_groups():
             assert {item.row.split("seed=")[1] for item in rank.candidates} == {group.coordinates["seed"]}
     named = deepcopy(raw)
     subject = named["steps"]["baseline"]["inputs"]["subject"]
-    named["documents"]["ranked"] = {"schema": "subset", "payload": subject["where"]}
+    named["documents"]["ranked"] = {"label": "Ranked", "schema": "subset", "payload": subject["where"]}
     subject["where"] = {"subset": "ranked"}
     named_plan = compile_project(Project.model_validate(named), source_runs=(next(iter(ranks.values())).key,))
     assert named_plan.requests == plan.requests

@@ -398,6 +398,7 @@ def test_a_model_document_that_changes_the_trained_clock_is_refused_at_its_field
     raw = document_project(authored, evaluation=True)
     step = raw["documents"]["reach-model"]["payload"]["step_seconds"] * 3
     raw["documents"]["slow-model"] = {
+        "label": "Slow model",
         "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
         "differences": {"/step_seconds": {"value": step}},
     }

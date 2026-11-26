@@ -31,6 +31,7 @@ def _report_project() -> Project:
     project = _project()
     project.documents["velocity-report"] = RootDocument.model_validate(
         {
+            "label": "Velocity report",
             "schema": "feedbax.report_document.v1",
             "payload": json.loads((_FIXTURES / "velocity-summary.report.json").read_bytes()),
         }
@@ -216,6 +217,7 @@ def test_wrong_or_ambiguous_figure_ref_is_refused_and_text_report_needs_no_regis
             {
                 "steps": {
                     "report": {
+                        "label": "Report",
                         "kind": "report",
                         "base": {
                             "inline": {

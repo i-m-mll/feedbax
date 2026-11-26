@@ -1,15 +1,16 @@
+import { holdsMissing, joinText, plainText, referentName, Shown, type ShownText } from '@/components/ui/ShownText';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { MarkerType, type OnConnectStart } from '@xyflow/react';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
-import { fetchComponents } from '@/api/components';
+import { componentsQuery } from '@/api/components';
 import { projectModelFields, readEvaluateModel, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, isRefusal } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
-import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { evaluateOrigin, studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { baseChain, baseOf, documentPayload } from '../documentPayload';
-import { nameOf } from '../memberNames';
+import { labelOf } from '../memberLabels';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { Box, House, Search, TriangleAlert } from 'lucide-react';
 import clsx from 'clsx';
@@ -25,7 +26,7 @@ import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { ChangeMark, type ChangeMarkProps } from '@/components/ui/ChangeMark';
 import { ValueField, changeTip } from '@/components/values/ValueField';
-import { fromFieldView, type ExceptionMentions } from '@/components/values/adapters/fieldView';
+import { fromFieldView, type SourceNaming } from '@/components/values/adapters/fieldView';
 import { rawField } from '@/components/values/adapters/raw';
 import type { ChangeSource, FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -99,7 +100,7 @@ type Props = {
   sections: DrawerSections;
   /** Opens Problems showing only those inside the element. */
   openProblems?: (element: ModelAddress, opener: HTMLElement) => void;
-  exceptions?: ExceptionMentions;
+  sourceNaming: SourceNaming;
   /** The step's trial: the epochs an intervention's Window names and the Task variables a source can read. */
   trial?: StudioTrialAuthoring;
 };
@@ -213,11 +214,11 @@ function LeafChoices({ entries, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, relate, path, setPath, sections, openProblems, exceptions, trial }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, relate, path, setPath, sections, openProblems, sourceNaming, trial }: Props) {
   const selected = useModelSelection(state, model?.id);
   const variables = trial?.variables ?? noVariables;
   const epochs = useMemo(() => trial ? windowEpochs(trial) : [], [trial]);
-  const variableName = (id: string) => variables.find((variable) => variable.id === id)?.name ?? id;
+  const variableName = (id: string) => plainText(referentName(variables.find((variable) => variable.id === id), id));
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
   const viewport = useRef<CanvasViewport>(null);
@@ -273,7 +274,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   /** Components whose add is pending, drawn where they were placed under the id the add gives them. */
   const [placing, setPlacing] = useState<readonly Placing[]>([]);
 
-  const registryQuery = useQuery({ queryKey: ['components'], queryFn: fetchComponents, enabled: active && !!model, staleTime: 300_000 });
+  const registryQuery = useQuery({ ...componentsQuery, enabled: active && !!model });
   const registry = useMemo(() => modelRegistry(registryQuery.data ?? []), [registryQuery.data]);
   const readBody = evaluate && { ...evaluate, revision: saved.revision };
   /** The runs of the selected sweep values: a Model edit is stored on them, and their differences are drawn. */
@@ -452,7 +453,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             (file.kind === 'variant' && file.id !== variant))
             : [{ kind: 'document' as const, id: fieldBody.document },
               ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
-              ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
+              ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.reference.key }] : [])];
           const settled = await editor.storeEdit('Set Field', { files: result.files ?? [], created: result.created },
             { reviewedRevision: current.revision, dependencies });
           if (settled.status === 'refused') return shownError(settled.error);
@@ -465,20 +466,21 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
   const fieldName = (address: ModelAddress) => address.element.kind === 'field' ? address.element.path.map(String).join('.') : addressKey(address);
   const shownChain = model ? baseChain(saved.project.documents, model.id) : [];
-  const changedFrom: ChangeSource | undefined = evaluate ? { kind: 'evaluate', name: nameOf(saved.names.steps, evaluate.run.step) }
-    : shownChain[1] === undefined ? undefined : { kind: 'base', name: nameOf(saved.names.documents, shownChain[1]) };
+  const changedFrom: ChangeSource | undefined = evaluate ? { kind: 'evaluate', name: labelOf(saved.project.steps, evaluate.run.step) }
+    : shownChain[1] === undefined ? undefined : { kind: 'base', name: labelOf(saved.project.documents, shownChain[1]) };
   const projectedLists = fieldBodies.map((fieldBody, index) => (fieldsData?.[index]?.fields ?? []).map((field) => {
+    const evaluateSource = attachments.data?.field_sources?.[addressKey(field.address)] ??
+      attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ?? attachments.data?.source ?? undefined;
     const model = fromFieldView(field, {
       id: addressKey(field.address),
-      planSources: field.sources?.filter((source) => !(source.kind === 'document' && shownChain.includes(source.name))),
-      exceptions,
+      planSources: field.sources && {
+        ...sourceNaming, sources: field.sources.filter((source) => !(source.kind === 'document' && shownChain.includes(source.key))),
+      },
       changed: field.changed && changedFrom ? {
         from: changedFrom,
         reset: canEditField ? () => editField(fieldBody, field.address, { kind: 'reset' }) : undefined,
       } : undefined,
-      source: attachments.data?.field_sources?.[addressKey(field.address)] ??
-        attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ??
-        attachments.data?.source ?? undefined,
+      source: evaluateSource && evaluateOrigin(evaluateSource, sourceNaming.names.step),
       commit: canEditField ? (edit) => editField(fieldBody, field.address, edit) : undefined,
       rowSelection: !!fieldRows?.length,
       multipleRows: !evaluate && (fieldRows?.length ?? 0) > 1,
@@ -1006,7 +1008,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const from = shown?.value ? model?.id : shownChain[1];
     if (!shown || !from) return undefined;
     return {
-      letter: changeLetters[shown.difference.change], tip: changeTip({ kind: 'base', name: nameOf(saved.names.documents, from) }),
+      letter: changeLetters[shown.difference.change], tip: changeTip({ kind: 'base', name: labelOf(saved.project.documents, from) }),
       reset: editTopology ? () => {
         void apply(studioName('reset'), { op: 'reset_difference', address }, false, shown.value ? valueRuns : undefined);
       } : undefined,
@@ -1060,7 +1062,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         const card = at(outerGraph, source.owner === 'component' ? { kind: 'component', id: source.component } : { kind: 'inputs' });
         return [{
           key: `${depth}:${endKey(source)}`, source, outerPath, position: positionsOf(saved, model.id)?.[addressKey(card)],
-          label: [...outerPath.map((id, index) => modelPath(model.value, outerPath.slice(0, index)).owner.interior.components?.[id]?.name ?? id),
+          label: [...modelPath(model.value, outerPath).entries.map(({ name }) => name),
             [owner, port.name].filter(Boolean).join('.')].join(' › '),
         }];
       });
@@ -1222,13 +1224,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const key = addressKey(address);
     const source = idFor(from);
     const target = idFor(to);
-    const endpoint = (end: typeof from) => {
-      const port = portMap.get(idFor(end))?.find((candidate) => candidate.end.port === end.port);
-      const owner = end.owner === 'component' ? drawnInterior?.components?.[end.component!]?.name
-        : studioName(end.owner === 'outputs' ? 'outputs' : 'inputs');
-      return [owner, port?.name ?? end.port].filter(Boolean).join('.');
-    };
-    const wireLabel = `${endpoint(from)} → ${endpoint(to)}`;
+    const shownWire = wireName(from, to);
+    const wireLabel = plainText(shownWire);
     const row = (end: typeof from, direction: Port['direction']) => portMap.get(idFor(end))
       ?.findIndex((candidate) => candidate.direction === direction && candidate.end.port === end.port) ?? 0;
     depths.set(id, row(from, 'output') + row(to, 'input'));
@@ -1248,8 +1245,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const drawnWire = drawnInterior?.wires?.[id];
     return {
       id, source, target, type, ariaLabel: studioAccessibleName('wire', wireLabel),
-      domAttributes: preview || displacedAttachments
-        ? { 'data-preview': preview ?? 'displaced' } as NonNullable<ModelEdge['domAttributes']> : undefined,
+      domAttributes: preview || displacedAttachments || holdsMissing(shownWire) ? {
+        ...preview || displacedAttachments ? { 'data-preview': preview ?? 'displaced' } : {},
+        ...holdsMissing(shownWire) ? { 'aria-invalid': true } : {},
+      } as NonNullable<ModelEdge['domAttributes']> : undefined,
       selectable: !ghost || marked.has(key),
       sourceHandle: `${isPhysical ? 'physical' : 'output'}:${from.port}`,
       targetHandle: `${isPhysical ? 'physical' : 'input'}:${to.port}`,
@@ -1466,11 +1465,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       return (await attempt(studioName('setValue'), difference, false))?.reason;
     };
   }
-  function endLabel(end: { owner: string; component?: string; port: string }) {
+  /** The name of a wire end: its owner's and its port's, each marked missing when the drawn graph lacks it. */
+  function endLabel(end: { owner: string; component?: string; port: string }): ShownText {
     const port = portMap.get(idFor(end))?.find((candidate) => candidate.end.port === end.port);
-    const name = end.owner === 'component' ? drawnInterior?.components?.[end.component!]?.name
+    const owner = end.owner === 'component' ? referentName(drawnInterior?.components?.[end.component!], end.component!)
       : studioName(end.owner === 'outputs' ? 'outputs' : 'inputs');
-    return [name, port?.name ?? end.port].filter(Boolean).join('.');
+    return joinText([owner, referentName(port, end.port)], '.');
+  }
+  function wireName(source: Parameters<typeof endLabel>[0], target: Parameters<typeof endLabel>[0]): ShownText {
+    return joinText([endLabel(source), endLabel(target)], ' → ');
   }
   const selectionKeys = selectedHere.map(addressKey);
   function attachmentRows(rows: readonly { owner: ModelAddress; item: Attachment; port?: string }[]) {
@@ -1589,7 +1592,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
     const wire = address.element.kind === 'wire' ? interior?.wires?.[address.element.id] : undefined;
     const reason = addressedProblems.get(addressKey(address));
-    return <Inspector name={wire ? `${endLabel(wire.source)} → ${endLabel(wire.target)}` : studioName('wire')}
+    return <Inspector name={wire ? <Shown text={wireName(wire.source, wire.target)} /> : studioName('wire')}
       type={wire ? studioName('wire') : undefined} attachments={attachmentsShown}>
       {reason && <MentionRow name={studioName('wire')} detail={reason} placeShown={false} />}
     </Inspector>;
@@ -1612,7 +1615,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       return item && <Inspector name={attachmentName(item)}>{rows(scope, attachmentFields(item, undefined, noNames))}</Inspector>;
     }
     const ends = element.kind === 'wire' ? drawnInterior?.wires?.[element.id] : undefined;
-    return <Inspector name={ends ? `${endLabel(ends.source)} → ${endLabel(ends.target)}` : studioName('wire')} type={studioName('wire')} />;
+    return <Inspector name={ends ? <Shown text={wireName(ends.source, ends.target)} /> : studioName('wire')} type={studioName('wire')} />;
   }
 
   const inspector = libraryItem ? <Inspector name={libraryItem.name} type={libraryItem.group}>
@@ -1628,7 +1631,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     : component && selection ? componentInspector(selection, component)
     : attachment && selection ? attachmentInspector(selection, attachment)
     : ownerAddress ? ownerInspector(ownerAddress)
-    : <Inspector name={currentPath.length ? owner && 'name' in owner ? String(owner.name) : model.id : nameOf(saved.names.documents, model.id)}
+    : <Inspector name={currentPath.length && owner && 'name' in owner ? String(owner.name) : labelOf(saved.project.documents, model.id)}
       type={currentPath.length ? undefined : studioName('model')}>
       {fieldRegion}
       {fields(projectedFields.length ? [] : modelFields(model.value,

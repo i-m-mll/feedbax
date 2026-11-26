@@ -94,7 +94,7 @@ def test_text_and_studio_compile_one_shared_plan_before_any_results(tmp_path):
 
 def test_named_document_difference_reaches_steps_based_on_it_and_updates_memoized_sources():
     data = _project_data()
-    data["steps"]["sibling"] = {"kind": "train", "base": {"step": "fit"}}
+    data["steps"]["sibling"] = {"label": "Sibling", "kind": "train", "base": {"step": "fit"}}
     data["steps"]["fit"]["sweep"] = {
         "axes": {"seed": {"values": {"fixed": {"patches": {"seed": {"value": 2}}}}}},
     }
@@ -108,6 +108,7 @@ def test_named_document_difference_reaches_steps_based_on_it_and_updates_memoize
 
     path = "/interior/components/plant/fields/mass"
     data["documents"]["point-mass-2"] = {
+        "label": "Point mass 2",
         "schema": data["documents"]["point-mass"]["schema"], "base": {"document": "point-mass"},
         "differences": {path: {"value": 3}},
     }
@@ -215,6 +216,7 @@ def _chained_train_data():
     }
     for name in ("flat", "rewarm"):
         steps[name] = {
+            "label": "Train",
             "kind": "train",
             "base": {"step": "fit"},
             "inputs": {"checkpoint": {"step": "fit", "checkpoint": "last"}},
@@ -525,7 +527,7 @@ def test_axis_clauses_choose_current_rows_and_rank_binding_keeps_exact_keys():
     assert subset.candidates == 3
     assert tuple(key.row for key in subset.members) == ("seed=a", "seed=c")
 
-    data["documents"]["selected"] = {"schema": "subset", "payload": reference["where"]}
+    data["documents"]["selected"] = {"label": "Selected", "schema": "subset", "payload": reference["where"]}
     reference["where"] = {"subset": "selected"}
     named = compile_project(Project.model_validate(data))
     assert named.runs == plan.runs and named.requests == plan.requests
@@ -634,7 +636,7 @@ def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
             }
         },
     }
-    data["steps"]["child"] = {"kind": "train", "base": {"step": "fit"}}
+    data["steps"]["child"] = {"label": "Child", "kind": "train", "base": {"step": "fit"}}
     data["steps"]["evaluate"]["inputs"]["subject"].update({"step": "child", "where": {"clauses": [{"seed": [{"id": "a", "label": "a"}]}]}})
     requested = RunKey("default", "child", "seed=a")
     consumer = RunKey("default", "evaluate", "default")

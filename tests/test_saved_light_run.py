@@ -49,6 +49,7 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
     task["validation_trials"] = task["validation_trials"][:1]
     raw["steps"] = {
         "rollout": {
+            "label": "Rollout",
             "kind": "evaluate",
             "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
                 "seed": 17, "trial_policy": "paired", "variation": [],
@@ -61,10 +62,12 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
             },
         },
         "plot": {
+            "label": "Plot",
             "kind": "analyze",
             "base": {"inline": {
                 "inputs": {"states": {"kind": "dataset"}},
                 "views": {"target": {
+                    "label": "Target",
                     "inputs": {"states": {"input": "states"}},
                     "figure": {
                         "data": ["states"],
@@ -175,6 +178,7 @@ def test_saved_operation_products_can_be_read_without_a_figure(host, tmp_path, m
     definition["steps"] = {
         "analyze": definition["steps"]["analyze"],
         "baseline": {
+            "label": "Baseline",
             "kind": "evaluate",
             "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
                 "seed": 17, "trial_policy": "paired", "variation": [],
@@ -629,6 +633,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     definition = _saved_light_definition(paired=True)
     analysis = definition["documents"]["velocity-analysis"]["payload"]
     analysis["operations"]["speed"] = {
+        "label": "Speed",
         "operation": "feedbax.trial_speed",
         "params": {"velocity": analysis["operations"]["align"]["params"]["velocity"]},
         "inputs": {"states": {"input": "states"}},
@@ -640,10 +645,12 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     speed_figure["color_scales"] = scales
     speed_figure["layers"][0]["encode"]["color"] = color
     analysis["views"]["by_trial"] = {
+        "label": "By trial",
         "figure": speed_figure,
         "inputs": {"speed": {"element": "speed", "product": "speed"}},
     }
     analysis["views"]["motion"] = {
+        "label": "Motion",
         "figure": {
             "data": ["states"], "layout": [{"name": "motion", "row": 1, "col": 1}],
             "color_scales": scales,

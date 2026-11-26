@@ -1,7 +1,8 @@
 import type {
   ExpressionPartSite, FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FieldValue, FunctionInfo, JsonValue, Level, NodePath, ScopedValue,
-  StudioEvaluateValueSource, StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, TextSpan, ValueType,
+  StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, TextSpan, ValueType,
 } from '@/generated/studioContracts';
+import type { EvaluateOrigin } from '@/components/activity/studioVocabulary';
 
 /**
  * What a field holds, which decides its widget. A vector, list or group is drawn through its parts. A class is a group
@@ -49,8 +50,8 @@ export interface ChangeMark {
 }
 
 /** The mark of a value an Evaluate step changes; a value it trains is not a change, and is its origin. */
-export function evaluateChange(source: StudioEvaluateValueSource | undefined): ChangeMark | undefined {
-  return source?.kind === 'evaluate' ? { from: { kind: 'evaluate', name: source.step } } : undefined;
+export function evaluateChange(origin: EvaluateOrigin | undefined): ChangeMark | undefined {
+  return origin?.kind === 'evaluate' ? { from: { kind: 'evaluate', name: origin.step } } : undefined;
 }
 
 /** `commit`, with Reset going to `change`'s reset. A field that takes no edit takes no Reset. */

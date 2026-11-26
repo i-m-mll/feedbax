@@ -11,7 +11,6 @@ import type {
   ColorEncoding, ContinuousColorScale, DatasetPort, FieldDescriptor, FigureDocument, FigurePanel, JsonValue, OrdinalColorScale,
   PointsLayer, RuleLayer, SpanLayer, TrajectoryLayer, VariableBinding,
 } from '@/generated/studioContracts';
-import { generatedName } from './generatedName';
 
 type Layer = FigureDocument['layers'][number];
 type ColorScale = ContinuousColorScale | OrdinalColorScale;
@@ -78,10 +77,17 @@ function encodingLabel(encoding: Encoding, fields: RoleFields) {
   return [base, ...select].join(' · ');
 }
 
+/** `base` while no part of the figure is keyed by it, then the first free of `base-2`, `base-3`, …. */
+function freeKey(base: string, taken: (key: string) => boolean) {
+  let key = base;
+  for (let number = 2; taken(key); number += 1) key = `${base}-${number}`;
+  return key;
+}
+
 /** A new layer of `mark`, reading what the figure's first layer reads, so it draws before any of its fields is edited. */
 function newLayer(mark: AddedMark, figure: FigureDocument): Layer {
   const first = figure.layers[0];
-  const name = generatedName(mark, (name) => figure.layers.some((layer) => layer.name === name));
+  const name = freeKey(mark, (name) => figure.layers.some((layer) => layer.name === name));
   const place = { name, role: first?.role ?? figure.data[0], panel: first?.panel ?? figure.layout[0].name };
   if (mark === 'rule') return { ...place, mark, encode: { axis: 'y', at: 0 } };
   if (mark === 'span') return { ...place, mark, encode: { axis: 'x', start: 0, end: 1 } };
@@ -119,12 +125,12 @@ export function FigureLayers({ figure, fields, edit, refusal }: {
     setChosen({ kind: 'layer', name: next.name });
   };
   const addScale = () => {
-    const name = generatedName('scale', (name) => name in scales);
+    const name = freeKey('scale', (name) => name in scales);
     edit?.(studioName('colorScale'), { ...figure, color_scales: { ...scales, [name]: { kind: 'continuous' } } });
     setChosen({ kind: 'scale', name });
   };
   const addRole = () => {
-    const role = generatedName(`data-${figure.data.length + 1}`, (name) => figure.data.includes(name));
+    const role = freeKey(`data-${figure.data.length + 1}`, (name) => figure.data.includes(name));
     edit?.(studioName('dataRole'), { ...figure, data: [...figure.data, role] });
   };
   const remove = ({ kind, name }: Part) => {
@@ -285,7 +291,7 @@ function layerFields(figure: FigureDocument, layer: Layer, offered: RoleFields, 
         return replaced({ ...layer, encode: rest } as Layer);
       }
       const scaleNames = Object.keys(figure.color_scales ?? {});
-      const scale = color?.scale ?? scaleNames[0] ?? generatedName('scale', () => false);
+      const scale = color?.scale ?? scaleNames[0] ?? freeKey('scale', () => false);
       const scales = scale in (figure.color_scales ?? {}) ? figure.color_scales
         : { ...figure.color_scales, [scale]: { kind: 'continuous' as const } };
       const { color: _, ...unfixed } = style;

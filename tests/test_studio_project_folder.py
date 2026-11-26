@@ -70,7 +70,7 @@ def study(tmp_path: Path):
         }}},
         "exceptions": {"z_first": {"where": {"rows": []}}, "a_second": {"where": {"rows": []}}},
     }
-    raw["documents"][_SETTINGS] = {"schema": "example.settings", "payload": {"value": 1}}
+    raw["documents"][_SETTINGS] = {"label": "Document", "schema": "example.settings", "payload": {"value": 1}}
     project = Project.model_validate(raw)
     root = tmp_path / "reach"
     for name, data in dump_text_project(
@@ -177,7 +177,7 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     ]
     for entry in (
         model, task, objective,
-        {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}},
+        {"kind": "step", "id": "train", "step": {"label": "Step", "kind": "train", "base": {"inline": {}}}},
     ):
         response = client.post(
             f"{url}/files", json={"revision": snapshot["revision"], "file": entry}
@@ -262,7 +262,7 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
                 "revision": snapshot["revision"],
                 "file": {
                     "kind": "step", "id": "train",
-                    "step": {"kind": "train", "base": {"inline": {}}},
+                    "step": {"label": "Step", "kind": "train", "base": {"inline": {}}},
                 },
             },
         )
@@ -489,6 +489,7 @@ def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
         "long": {"patches": {"training_config.n_batches": {"value": 3}}},
     }}}}
     child = {
+        "label": "Train",
         "kind": "train",
         "base": {"step": "train"},
         "inputs": {"checkpoint": {"step": "train", "checkpoint": "last", "where": {"rule": "rate=slow,fast"}}},
@@ -656,8 +657,9 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     root, client = study
     original = load_text_project(root)
     authored = original.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    authored["documents"]["selected"] = {"schema": "subset", "payload": {"clauses": [{"seed": [{"id": "10", "label": "First"}]}]}}
+    authored["documents"]["selected"] = {"label": "Selected", "schema": "subset", "payload": {"clauses": [{"seed": [{"id": "10", "label": "First"}]}]}}
     authored["steps"]["follow"] = {
+        "label": "Follow",
         "kind": "train",
         "base": {"step": "fit"},
         "sweep": {"axes": {"seed": None, "checkpoint": {"input": "checkpoint"}}},
@@ -788,8 +790,9 @@ def _plan_dependencies(root: Path) -> None:
         "10": {"label": "First", "patches": {seed_path: {"value": 10}}},
         "2": {"patches": {seed_path: {"value": 2}}},
     }}}}
-    authored["documents"]["selected"] = {"schema": "subset", "payload": {"clauses": [{"seed": [{"id": "10", "label": "First"}]}]}}
+    authored["documents"]["selected"] = {"label": "Selected", "schema": "subset", "payload": {"clauses": [{"seed": [{"id": "10", "label": "First"}]}]}}
     authored["steps"]["follow"] = {
+        "label": "Follow",
         "kind": "train",
         "base": {"step": "fit"},
         "sweep": {"axes": {"seed": None, "checkpoint": {"input": "checkpoint"}}},
@@ -800,7 +803,7 @@ def _plan_dependencies(root: Path) -> None:
     }
     independent = deepcopy(fit["base"]["inline"])
     independent["seed"] = 88
-    authored["steps"]["independent"] = {"kind": "train", "base": {"inline": independent}}
+    authored["steps"]["independent"] = {"label": "Independent", "kind": "train", "base": {"inline": independent}}
     project = Project.model_validate(authored)
     for relative, data in dump_text_project(
         project, ProjectConfiguration(project="reach", store="results"),
@@ -1025,7 +1028,7 @@ def test_list_projects_reads_authored_folders_without_opening_or_creating_them(t
     assert opened.status_code == 200, opened.text
     response = client.post(f"{url}/files", json={
         "revision": opened.json()["snapshot"]["revision"],
-        "file": {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}},
+        "file": {"kind": "step", "id": "train", "step": {"label": "Step", "kind": "train", "base": {"inline": {}}}},
     })
     assert response.status_code == 201, response.text
     edited, = client.get("/api/projects").json()["projects"]
@@ -1159,7 +1162,7 @@ def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path
     created = document["snapshot"]
     project_id = created["project_id"]
     url = f"/api/projects/{project_id}/files"
-    train = {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}}
+    train = {"kind": "step", "id": "train", "step": {"label": "Step", "kind": "train", "base": {"inline": {}}}}
     response = client.post(url, json={"revision": created["revision"], "file": train})
     assert response.status_code == 201, response.text
     step_revision = response.json()["snapshot"]
@@ -1168,6 +1171,7 @@ def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path
     assert json.loads(step_file.read_bytes()) == train["step"]
 
     task = {"kind": "document", "id": "task", "document": {
+        "label": "Document",
         "schema": "feedbax.spec.task_document", "payload": BLANK_TASK.model_dump(mode="json"),
     }}
     rejected = client.post(url, json={"revision": created["revision"], "file": task})
@@ -1547,6 +1551,7 @@ def _shared_training(tmp_path, *, continuations=0, other=True, third=False, chec
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     inline = raw["steps"]["train"]["base"]["inline"]
     raw["documents"]["training"] = {
+        "label": "Training",
         "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": {key: inline[key] for key in TRAINING_DOCUMENT_KEYS},
     }
     inline |= {key: {"document": "training", "pointer": f"/{key}"} for key in TRAINING_DOCUMENT_KEYS}
@@ -1561,12 +1566,13 @@ def _shared_training(tmp_path, *, continuations=0, other=True, third=False, chec
     parent = "train"
     for number in range(2, continuations + 2):
         raw["steps"][f"train-{number}"] = {
+            "label": "Train",
             "kind": "train", "base": {"step": parent},
             "inputs": {"checkpoint": {"step": parent, "checkpoint": "last"}},
             "deltas": [] if number > 2 else [{"layer_id": "initialize", "patches": [
                 {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
             ]}],
-        } if checkpoints else {"kind": "train", "base": {"step": parent}, "deltas": [{"layer_id": "seed", "patches": [
+        } if checkpoints else {"label": "Train", "kind": "train", "base": {"step": parent}, "deltas": [{"layer_id": "seed", "patches": [
             {"path": "seed", "op": "add", "value": 10 + number},
         ]}]}
         parent = f"train-{number}"
@@ -1854,7 +1860,7 @@ def test_a_sweep_on_a_training_document_step_is_the_step_s_own(tmp_path):
         for name, payload in (("training-2", load_text_project(root).project.documents["training"].payload),
                               ("training-3", lacking)):
             created = client.post(f"{_URL}/files", json={"revision": train.revision, "file": {
-                "kind": "document", "id": name, "document": {"schema": "feedbax.spec.training_document", "payload": payload},
+                "kind": "document", "id": name, "document": {"label": "Document", "schema": "feedbax.spec.training_document", "payload": payload},
             }})
             assert created.status_code == 201, created.text
         changed = train.choose("train", "training-3")
@@ -1988,7 +1994,7 @@ def test_choosing_a_document_and_then_the_one_it_replaced_leaves_the_step_as_it_
         train = _Training(client, root)
         payload = load_text_project(root).project.documents["training"].payload
         created = client.post(f"{_URL}/files", json={"revision": train.revision, "file": {
-            "kind": "document", "id": "training-2", "document": {"schema": "feedbax.spec.training_document", "payload": payload},
+            "kind": "document", "id": "training-2", "document": {"label": "Document", "schema": "feedbax.spec.training_document", "payload": payload},
         }})
         assert created.status_code == 201, created.text
         file = root / "steps" / "train-2.json"

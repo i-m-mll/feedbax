@@ -1,4 +1,4 @@
-import type { ExceptionMentions } from '@/components/values/adapters/fieldView';
+import type { SourceNaming } from '@/components/values/adapters/fieldView';
 import { documentPayload } from './documentPayload';
 import { conditionLabels } from './evaluateAuthoring';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
@@ -97,7 +97,7 @@ interface DetailInputs {
   readonly modelProblems?: readonly StudioProjectWindowMapProblem[];
   readonly drawerSections: DrawerSections;
   readonly openModelProblems?: (element: ModelAddress, opener: HTMLElement) => void;
-  readonly exceptions?: ExceptionMentions;
+  readonly sourceNaming: SourceNaming;
   /** The step's trial, whose epochs and Task variables the Model's attachments read. */
   readonly trial?: StudioTrialAuthoring;
 }
@@ -355,7 +355,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     setPath: (path, document = storedId) => { if (document) input.setModelPath(document, path); },
     sections: input.drawerSections,
     openProblems: input.openModelProblems,
-    exceptions: input.exceptions,
+    sourceNaming: input.sourceNaming,
     trial: input.trial,
   });
   return {

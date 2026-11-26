@@ -20,7 +20,7 @@ from feedbax.contracts.operation import (
 )
 from feedbax.contracts.project import (
     DocumentReference, DocumentEdit, LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue,
-    member_display_name, member_name,
+    member_name,
 )
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_inputs import StepReference
@@ -393,8 +393,7 @@ def _variable_names(
             if len(labels) == 1:
                 names[key] = labels.pop()
                 continue
-        leaf = path_parts(key)[-1].replace("/", " ") if key.startswith("/") else key
-        names[key] = (field.label or field.quantity if field is not None else None) or member_display_name(leaf)
+        names[key] = (field.label or field.quantity if field is not None else None) or "Signal"
     return names
 
 

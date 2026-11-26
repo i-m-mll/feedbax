@@ -2,6 +2,7 @@
   "schema_version": "feedbax.analysis_document.v1",
   "operations": {
     "align": {
+      "label": "Align",
       "operation": "feedbax.aligned_velocity",
       "params": {
         "position": "/v1/model/state/plant/effector~1position",
@@ -11,6 +12,7 @@
       "inputs": {"states": {"input": "states"}}
     },
     "summarize": {
+      "label": "Summarize",
       "operation": "feedbax.summarize_velocity",
       "params": {"ddof": 1, "bounds_scale": 1.0},
       "inputs": {"velocity": {"element": "align", "product": "velocity"}}
@@ -18,6 +20,7 @@
   },
   "views": {
     "profile": {
+      "label": "Profile",
       "figure": {"document": "velocity-figure"},
       "inputs": {"summary": {"element": "summarize", "product": "summary"}}
     }

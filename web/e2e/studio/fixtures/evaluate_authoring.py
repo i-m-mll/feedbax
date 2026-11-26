@@ -55,6 +55,7 @@ def files():
     rows = (("control", 731, 0.04), ("comparison", 732, 0.06), ("unselected", 733, 0.08))
     evaluate = {
         "kind": "evaluate",
+        "label": "Conditions",
         "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
             "seed": 731, "trial_set": {"kind": "sample", "count": 1},
             "trial_policy": "paired", "variation": {},
@@ -98,6 +99,7 @@ def own_sweep_files():
     }}}}
     evaluate = {
         "kind": "evaluate",
+        "label": "Probe",
         "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
             "seed": 731, "trial_set": {"kind": "sample", "count": 1}, "trial_policy": "paired", "variation": [],
         }}},

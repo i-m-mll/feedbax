@@ -180,6 +180,7 @@ def timing_definition(scenario, batch_size, trial_count):
     assert len(task.condition_ids) >= trial_count
     raw = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["steps"]["check"] = {
+        "label": "Check",
         "kind": "evaluate",
         "inputs": {"subject": {"step": "train", "checkpoint": {"every": 1}}},
         "base": {"inline": {

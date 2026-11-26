@@ -167,6 +167,9 @@ class ComponentParamContract:
     runtime_type: type["ComponentOwner"]
     build_context_fields: frozenset[str] = frozenset()
 
+    def field_title(self, name: str) -> str:
+        return self.model.model_fields[name].title or name.replace("_", " ").capitalize()
+
     @property
     def param_schema(self) -> tuple[ParamSchema, ...]:
         return parameter_schema_from_model(self.model)

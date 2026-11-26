@@ -28,7 +28,6 @@ from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetDescriptor
 from feedbax.contracts.effective_success import (
     RequestObject, Success, read_effective_request, read_success_request, success_content_ref,
 )
-from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.expression_values import Expression
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
@@ -39,6 +38,7 @@ from feedbax.contracts.jobs import (
     StudioBestRankGroup,
     StudioPlanRequest,
     StudioProjectWindowMap,
+    StudioProjectWindowMapAxis,
     StudioProjectWindowMapCoordinate,
     StudioProjectWindowMapInputAxis,
     StudioProjectWindowMapEdge,
@@ -89,7 +89,10 @@ from feedbax.planner.project_plan import (
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
-from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates, sweep_value_name
+from feedbax.contracts.project_sweep import (
+    CheckpointRuleAxis, SetAxis, authored_sweep_axis_name, axis_coordinates, sweep_value_name,
+)
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.run_rule import (
     METRIC_CONDITION_FALSE, RuleRefusal, bind_metric_conditions, choose, metric_condition_holds,
 )
@@ -420,6 +423,31 @@ class ProjectPlanRead:
             at: value for _, values in gathered.values() for at, value in values.items()
         }
 
+        def axes(variant: str, step_id: str) -> list[StudioProjectWindowMapAxis]:
+            at = variant, step_id
+            projected = {axis.id: axis for axis in gathered.get(at, ([], {}))[0]}
+            step = plan.steps[at]
+            sweep = step.sweep
+            project = plan.variant_projects.get(variant)
+            if sweep is None and project is not None:
+                sweep = project.steps[step_id].sweep
+            if sweep is not None:
+                for number, (key, axis) in enumerate(sweep.axes.items(), 1):
+                    if axis is None:
+                        continue
+                    if key not in projected:
+                        title = step.unexpanded_axis_titles.get(key)
+                        if isinstance(axis, SetAxis) and project is not None:
+                            document = project.documents.get(axis.set)
+                            if document is not None and document.schema_id == SET_DOCUMENT_SCHEMA_ID:
+                                title = document.label
+                        projected[key] = StudioProjectWindowMapAxis(
+                            id=key, name=axis.label or title or authored_sweep_axis_name(axis, number), values=[],
+                        )
+                    elif axis.label is not None:
+                        projected[key] = projected[key].model_copy(update={"name": axis.label})
+            return list(projected.values())
+
         def figure_reference(key: RunKey, element: str) -> StepReference | None:
             candidates = [
                 row.selection_coordinates
@@ -433,7 +461,7 @@ class ProjectPlanRead:
                     values for values in candidates if axis in values and values[axis].value_id == value.value_id
                 ]
                 if len(others) != len(candidates):
-                    axes[axis] = [SelectedAxisValue(id=value.value_id, label=sweep_value_name(axis, value))]
+                    axes[axis] = [SelectedAxisValue(id=value.value_id, label=sweep_value_name(value))]
                     candidates = others
             if len(candidates) != 1:
                 return None
@@ -453,14 +481,14 @@ class ProjectPlanRead:
             variants=[variant for variant in plan.variants if includes(variant)],
             steps=[
                 StudioProjectWindowMapStep(
-                    variant=variant, step_id=step_id, label=member_display_name(step_id, step.label),
+                    variant=variant, step_id=step_id, label=step.label,
                     kind=step.kind, group=step.group,
                     inputs=list(inputs(variant, step_id)),
                     document_ids=document_ids.get((variant, step_id), {}),
                     document_uses=sorted(document_uses[variant, step_id]),
                     exceptions=list(exceptions(variant, step_id)),
                     status_counts=dict(counts[variant, step_id]),
-                    axes=gathered[variant, step_id][0] if (variant, step_id) in gathered else [],
+                    axes=axes(variant, step_id),
                     rule_metrics=sorted(rule_metrics[variant, step_id]),
                 )
                 for (variant, step_id), step in plan.steps.items() if includes(variant)
@@ -487,7 +515,7 @@ class ProjectPlanRead:
                     if row.kind in {"train", "evaluate", "synthesize"} else None,
                     coordinates={
                         axis: StudioProjectWindowMapCoordinate(
-                            value_id=coordinate.value_id, label=sweep_value_name(axis, coordinate), value=coordinate.value,
+                            value_id=coordinate.value_id, label=sweep_value_name(coordinate), value=coordinate.value,
                             axis_value=axis_values[row.key, axis],
                         )
                         for axis, coordinate in axis_coordinates(row.coordinates, {}, row.kept_axes).items()
@@ -766,7 +794,7 @@ class ProjectPlanService:
         metrics = sorted(common_train_metrics(rows)) if body.ranked else []
         try:
             chosen = choose(
-                body.rule, rows, coordinates=lambda row: coordinates[id(row)], producer=step.label or body.step,
+                body.rule, rows, coordinates=lambda row: coordinates[id(row)], producer=step.label,
                 ranked=body.ranked, final_metrics=common_train_metrics if step.kind == "train" else None,
             )
         except RuleRefusal as refusal:
@@ -1097,7 +1125,7 @@ def _dependency_state(
     ):
         if (source := next((key for key, state in inputs.items() if state in states), None)) is not None:
             key = source.run if isinstance(source, ElementKey) else source
-            label = plan.steps[key.variant, key.step].label or key.step
+            label = plan.steps[key.variant, key.step].label
             return status, message.format(label)
     return None
 

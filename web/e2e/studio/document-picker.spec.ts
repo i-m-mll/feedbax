@@ -251,7 +251,7 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
     await expect(picker('Model')).toHaveText(created);
     await expect.poll(async () => {
       const key = await model();
-      return key && (await saved()).names.documents[key];
+      return key && (await saved()).project.documents?.[key]?.label;
     }).toBe(created);
     const { status, details } = await trainProblems();
     if (choice === 'New') {

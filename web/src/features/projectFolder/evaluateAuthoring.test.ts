@@ -40,7 +40,7 @@ it('saves nothing for an empty draft, a list that says no rule as its text, and 
 
 it('moves an Evaluate subject between a checkpoint and an initial Model and back without residue', () => {
   const evaluate: Step = {
-    kind: 'evaluate',
+    kind: 'evaluate', label: 'Evaluate',
     base: { inline: { evaluation_type: 'feedbax.rollout', params: { trial_set: { kind: 'every_condition' } } } },
     sweep: { axes: { subject: { input: 'subject' } } },
     inputs: { subject: { step: 'train', checkpoint: 'last' } },
@@ -67,7 +67,7 @@ it('moves an Evaluate subject between a checkpoint and an initial Model and back
 // Catches a Loaded Model chosen as the subject but still read as an initial Model, which would evaluate untrained weights.
 it('reads a Loaded Model subject with its weights, on the Task and Objective the step already declares', () => {
   const initial: Step = {
-    kind: 'evaluate',
+    kind: 'evaluate', label: 'Evaluate',
     base: { inline: { evaluation_type: 'feedbax.rollout', params: { trial_set: { kind: 'every_condition' } } } },
     inputs: {
       subject: { kind: 'initial_model', source: { document: 'arm' } },

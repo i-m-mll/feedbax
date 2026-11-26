@@ -4,7 +4,7 @@ import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type K
 import { createPortal } from 'react-dom';
 import { appTip } from '@window-shell/browser/tooltip';
 import {
-  studioAccessibleName, studioEvaluateValueSource, studioFieldKindLabel, studioFieldLabel, studioFormat, studioName,
+  studioAccessibleName, studioFieldKindLabel, studioFieldLabel, studioFormat, studioName,
   studioParameterLabel,
 } from '@/components/activity/studioVocabulary';
 import { selectionButton } from '@/features/pipeline/selection';

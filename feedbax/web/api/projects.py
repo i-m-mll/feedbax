@@ -31,6 +31,8 @@ from feedbax.contracts.studio_authoring import (
 from feedbax.contracts.studio_project import (
     StudioMemberCommand,
     StudioMemberCommandResult,
+    StudioMemberName,
+    StudioMemberNameRequest,
     StudioPresentationWrite,
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
@@ -338,11 +340,9 @@ def read_scene_geometry(
 
 @router.get("/examples")
 def list_project_examples(request: Request, response: Response) -> StudioProjectExamples:
-    from feedbax.contracts.project import member_display_name
-
     return _project_response(response, lambda: StudioProjectExamples(examples=[
-        StudioProjectExample(id=key, name=member_display_name(key))
-        for key in request.app.state.project_folders.project_examples()
+        StudioProjectExample(id=key, name=example.label)
+        for key, example in request.app.state.project_folders.project_examples().items()
     ]))
 
 
@@ -527,6 +527,15 @@ def create_project_file(
 ) -> StudioProjectDocument:
     return _project_response(
         response, lambda: request.app.state.project_folders.create_file(project_id, body)
+    )
+
+
+@router.post("/{project_id}/members/name")
+def name_project_member(
+    project_id: ProjectName, body: StudioMemberNameRequest, request: Request, response: Response,
+) -> StudioMemberName:
+    return _project_response(
+        response, lambda: request.app.state.project_folders.member_name(project_id, body)
     )
 
 

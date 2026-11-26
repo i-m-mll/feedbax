@@ -124,7 +124,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
                     "file": {
                         "kind": "step",
                         "id": name,
-                        "step": {"kind": "train", "base": {"inline": payload}},
+                        "step": {"label": "Step", "kind": "train", "base": {"inline": payload}},
                     },
                 }
             ),
@@ -420,6 +420,7 @@ def _saved_chain(folders):
         snapshot,
         "prefix",
         {
+            "label": "Train",
             "kind": "train",
             "base": {"inline": payload},
         },
@@ -429,6 +430,7 @@ def _saved_chain(folders):
         snapshot,
         "child",
         {
+            "label": "Train",
             "kind": "train",
             "base": {"step": "prefix"},
             "inputs": {"checkpoint": {"step": "prefix", "checkpoint": "last"}},
@@ -563,6 +565,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
     source_payload = managed_train_payload(batches=4)
     source_payload["seed"] = 12
     snapshot = _saved_step(folders, snapshot, "prefix", {
+        "label": "Train",
         "kind": "train", "base": {"inline": source_payload},
     })
     preserve = state_policy == "preserve"
@@ -579,6 +582,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
         child["settings"]["optimizer"]["type"] = "adamw"
         child["trial_documents"]["model"]["interior"]["components"]["cell"]["fields"]["trainable"] = False
     snapshot = _saved_step(folders, snapshot, "child", {
+        "label": "Train",
         "kind": "train", "base": {"inline": child},
         "inputs": {"checkpoint": {"step": "prefix", "checkpoint": "last"}},
     })
@@ -586,6 +590,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
     incompatible["checkpoint_initialization"]["state"] = "preserve"
     incompatible["settings"]["optimizer"]["type"] = "sgd"
     snapshot = _saved_step(folders, snapshot, "incompatible", {
+        "label": "Train",
         "kind": "train", "base": {"inline": incompatible},
         "inputs": {"checkpoint": {"step": "prefix", "checkpoint": "last"}},
     })

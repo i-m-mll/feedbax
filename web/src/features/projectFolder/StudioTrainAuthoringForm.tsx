@@ -7,7 +7,7 @@ import {
   catalogEntries, projectTrainFields, readStudioTrainAuthoring, useAuthoringCatalog,
 } from '@/api/studioAuthoring';
 import { studioName } from '@/components/activity/studioVocabulary';
-import { nameOf } from './memberNames';
+import { labelOf } from './memberLabels';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { MenuItem, MenuSubmenu } from '@/components/ui/Menu';
@@ -230,7 +230,7 @@ function useTrainForm(props: Props) {
   /** The changed mark of the field at `id`, a pointer in the definition: the base of the document it is read from. */
   const changeMark = (id: string, reset?: () => Promise<string | undefined>): ChangeMark | undefined => {
     const base = baseOf(saved.project.documents, trainFieldDocument(saved.project.steps?.[stepId], id));
-    return base === undefined ? undefined : { from: { kind: 'base', name: nameOf(saved.names.documents, base) }, reset };
+    return base === undefined ? undefined : { from: { kind: 'base', name: labelOf(saved.project.documents, base) }, reset };
   };
   const { project_id: projectId, revision } = saved;
   const methodLabel = useId();

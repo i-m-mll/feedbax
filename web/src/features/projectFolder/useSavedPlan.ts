@@ -4,13 +4,13 @@ import { fetchSavedTrainRuns } from '@/api/jobs';
 import { useFollowingQuery } from '@/hooks/useFollowingQuery';
 import type { Project, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import type { ProjectEditController } from './projectEditController';
-import type { ProjectNames } from './memberNames';
+import type { VariantNames } from './memberLabels';
 
 const planKey = (project: string, revision: string) => ['saved-train-runs', project, revision] as const;
 
 /**
  * The plan of a project window. What is drawn reads `shown`, the last plan read, with `project`, the project it was
- * compiled from, and `names`, that revision's names: while a newer revision's plan is read they stay as they were and
+ * compiled from, and `names`, the labels that revision's variants give its members: while a newer revision's plan is read they stay as they were and
  * switch together when it arrives.
  * What a gesture does waits for the shown revision's plan: `whenCurrent` runs it once that plan is drawn, and `read()`
  * gives the plan of the latest saved revision once it has been read.
@@ -18,7 +18,7 @@ const planKey = (project: string, revision: string) => ['saved-train-runs', proj
 export interface SavedPlan {
   readonly shown: StudioSavedTrainRuns | undefined;
   readonly project: Project;
-  readonly names: ProjectNames;
+  readonly names: VariantNames;
   /** Whether `shown` is the plan of the shown revision. */
   readonly current: boolean;
   /** Whether the shown revision's plan is still to be read, so a gesture waits: until it is current or has failed. */
@@ -44,9 +44,8 @@ export function useSavedPlan(editor: ProjectEditController): SavedPlan {
     placeholderData: keepPreviousData,
     gcTime: 0,
   }, String(planVersion));
-  const names = useMemo<ProjectNames>(() => ({ names: saved.names, variant_names: saved.variant_names }),
-    [saved.names, saved.variant_names]);
-  const compiled = useRef<{ revision: string; project: Project; names: ProjectNames }>();
+  const names = saved.variant_names;
+  const compiled = useRef<{ revision: string; project: Project; names: VariantNames }>();
   if (query.data?.revision === saved.revision) compiled.current = { revision: saved.revision, project: saved.project, names };
   const read = query.data;
   const earlier = read && read.revision !== saved.revision
