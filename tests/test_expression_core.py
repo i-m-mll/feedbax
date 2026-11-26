@@ -173,6 +173,27 @@ def test_text_is_shown_back_as_written_with_operators_infix(written, shown):
     assert print_field(parsed(written, names), names) == shown
 
 
+@pytest.mark.parametrize(
+    ("written", "shown"),
+    [
+        ("1.0", "1"),
+        ("-0.0", "0"),
+        ("1.0 st", "1 st"),
+        ("45.0°", "45°"),
+        ("1.0E-07", "1e-7"),
+        ("1.0E+21", "1e+21"),
+        ("0.15000000596046448", "0.15000000596046448"),
+        ("(-2.0) ** (1.0 + 0.1)", "(-2) ** (1 + 0.1)"),
+        ("true and not false", "true and not false"),
+    ],
+)
+def test_editor_prints_canonical_numbers_without_rewriting_the_tree(written, shown):
+    expected = site()
+    tree = parsed(written, expected)
+    assert print_field(tree, expected) == shown
+    assert parsed(shown, expected) == tree
+
+
 def test_scope_ids_survive_rename_and_duplicate_names_report_second():
     variable = ScopedValue(
         id="variable-id", name="start", type=ValueType(base=ValueBase.REAL), level=Level.TRIAL

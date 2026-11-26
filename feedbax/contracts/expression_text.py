@@ -13,6 +13,7 @@ from typing import Literal
 
 from lark import Lark, Token, Tree, UnexpectedInput
 
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
     RESERVED_NAMES,
@@ -509,9 +510,7 @@ def _printed(node: Expression, names: Mapping[str, str]) -> tuple[str, int]:
         case UnresolvedValue(text=text):
             return text, _ATOM
         case LiteralValue(value=value, unit=unit):
-            if unit == "st" and type(value) is float and value.is_integer():
-                value = int(value)
-            text = str(value).lower() + ("°" if unit == "°" else f" {unit}" if unit else "")
+            text = canonical_json_v2_bytes(value).decode() + ("°" if unit == "°" else f" {unit}" if unit else "")
             return text, _UNARY if text.startswith("-") else _ATOM
         case NameValue(reference=reference):
             name = names[reference]
