@@ -6,19 +6,26 @@ from pathlib import Path
 import re
 
 import pytest
+from fastapi.testclient import TestClient
 
+from feedbax.application.project_writer import dump_text_project
+from feedbax.application.stored_regions import StoredRegionRegistries
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import (
-    STUDIO_PRESENTATION_FILENAME, ProjectConfiguration, TextProject, dump_text_project,
-    parse_text_project_files, read_text_project_snapshot,
+    STUDIO_PRESENTATION_FILENAME,
+    ProjectConfiguration,
+    TextProject,
+    parse_text_project_files,
+    read_text_project_snapshot,
 )
 from feedbax.contracts.project_storage import write_project_file
+from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.contracts.stored_regions import StoredRegionRegistries
 from feedbax.contracts.studio_project import CreateNamedDocument, PresentationDocument, StudioProjectCreateFiles
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
+from feedbax.web.app import create_app
 from tests.support.browser_seed_actions import FileSeed, FolderSeed, HomeSeed, NonSeed
 
 
@@ -171,3 +178,44 @@ def test_browser_json_seed(path, registries, tmp_path):
 
 def test_browser_json_payload_roles_point_to_fixtures():
     assert _JSON_PAYLOAD_ROLES.keys() <= {str(path.relative_to(_FIXTURES)) for path in _JSON_FIXTURES}
+
+
+def test_browser_evaluate_expression_argument_survives_repair(tmp_path):
+    from web.e2e.studio.fixtures.evaluate_authoring import TARGET_Y, files
+
+    app = create_app(projects_dir=tmp_path)
+    with TestClient(app) as client:
+        created = client.post("/api/projects", json={"name": "evaluate-fixture"})
+        assert created.status_code == 201, created.text
+        snapshot = created.json()["snapshot"]
+        project_id = snapshot["project_id"]
+        route = f"/api/projects/{project_id}"
+        for file in files():
+            reply = client.post(f"{route}/files", json={"revision": snapshot["revision"], "file": file})
+            assert reply.status_code == 201, reply.text
+            snapshot = reply.json()["snapshot"]
+
+        folders = app.state.project_folders
+        plan = folders.read_plan(project_id, revision=snapshot["revision"]).plan
+        assert [(problem.code, problem.row) for problem in plan.diagnostics] == [
+            ("authored_graph_variation", "seed=control"),
+        ]
+        before = {run.key: run.request_id for run in plan.runs}
+        edit = client.patch(route, json={"revision": snapshot["revision"], "files": [{
+            "address": {"kind": "step", "id": "conditions"},
+            "patches": [{"op": "remove", "path": "/sweep/exceptions/raw-control/patches/params.variation/value/raw-mass"}],
+        }]})
+        assert edit.status_code == 200, edit.text
+        snapshot = edit.json()
+        conditions = snapshot["project"]["steps"]["conditions"]
+        patch = conditions["sweep"]["exceptions"]["raw-control"]["patches"]["params.variation"]
+        assert patch["value"] == {"row-y": {"op": "replace", "path": TARGET_Y, "value": 0.04}}
+
+        plan = folders.read_plan(project_id, revision=snapshot["revision"]).plan
+        assert not plan.diagnostics
+        (control,) = (run for run in plan.runs if run.key.row == "seed=control")
+        assert {run.key: run.request_id for run in plan.runs if run.key != control.key} == before
+        request = decode_request(plan.requests[control.request_id], plan.documents.__getitem__)
+        (task,) = (edit["value"] for edit in request.spec.params["variation"] if edit["path"] == "task")
+        (target,) = (variable["value"] for variable in task["variables"] if variable["id"] == "target")
+        assert [(part["value"], part["unit"]) for part in target["args"]] == [(0.18, "m"), (0.04, "m")]

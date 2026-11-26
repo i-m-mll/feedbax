@@ -221,7 +221,9 @@ def test_a_step_using_a_duplicate_diverges_alone(studio):
 
     response = client.patch(URL, json={
         "revision": used["revision"], "address": {"kind": "document", "id": copy},
-        "patches": [{"op": "replace", "path": "/payload/variables/start/value/args/0/args/0/value", "value": -0.35}],
+        "patches": [{
+            "op": "replace", "path": "/payload/variables/start/value", "value": "[U(-0.35, 0.5), U(-0.3, 0.45)]",
+        }],
     })
     assert response.status_code == 200, response.text
     edited = _requests(folders, response.json()["revision"])

@@ -118,9 +118,7 @@ def test_a_task_document_field_edit_on_some_evaluate_runs_reaches_their_requests
     evaluate = raw["steps"]["baseline"]
     evaluate["sweep"] = {"axes": {"probe": {"values": {"near": {"value": 1}, "far": {"value": 2}}}}}
     raw["steps"] = {"train": raw["steps"]["train"], "baseline": evaluate}
-    target = {"kind": "call", "function": "vector", "args": [
-        {"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (0.25, -0.1)
-    ]}
+    target = "vector(0.25 m, -0.1 m)"
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "fields", Project.model_validate(raw))
     before = folders.read_plan("fields", revision=None)
@@ -145,7 +143,7 @@ def test_a_task_document_field_edit_on_some_evaluate_runs_reaches_their_requests
             variations[run.key] = spec
     task = TaskDocument.model_validate(_replacement_task(variations.pop(far)))
     variable = next(variable for variable in task.variables if variable.id == "target")
-    assert variable.value.model_dump(mode="json", exclude_unset=True) == target
+    assert [(coordinate.value, coordinate.unit) for coordinate in variable.value.args] == [(0.25, "m"), (-0.1, "m")]
     assert [spec.params["variation"] for spec in variations.values()] == [[]]
 
 
@@ -181,8 +179,9 @@ def test_a_list_typed_in_an_evaluate_s_trials_sweeps_them_across_its_subjects(tm
         url = "/api/projects/trials/authoring/train/baseline/fields"
         shown = client.post(url, json={"revision": before.revision})
         assert shown.status_code == 200, shown.text
-        trials = next(field for field in shown.json()["fields"] if field["id"] == "/params/trial_set/count")
-        assert "sweep" in trials["site"]["kinds"]
+        view = shown.json()
+        trials = next(field for field in view["fields"] if field["id"] == "/params/trial_set/count")
+        assert "sweep" in view["sites"][trials["site"]]["kinds"]
         reply = client.post(url, json={
             "revision": before.revision, "field": "/params/trial_set/count", "edit": {"kind": "text", "text": "1, 4"},
         })
@@ -204,10 +203,18 @@ def test_a_range_on_an_integer_task_parameter_plans_whole_values():
         "path": "trial_documents.python_task.params.n_steps", "range": {"start": 5, "stop": 9, "count": 3},
     }}))
     assert plan.diagnostics == ()
-    values = sorted(
-        _replacement_task(decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec)["params"]["n_steps"]
-        for run in plan.runs if run.kind == "evaluate"
-    )
+    values = []
+    for run in plan.runs:
+        if run.kind != "evaluate":
+            continue
+        spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        if spec.params["variation"]:
+            values.append(_replacement_task(spec)["params"]["n_steps"])
+        else:
+            producer = next(train for train in plan.runs if train.key == run.inputs["subject"].producer)
+            train = decode_request(plan.requests[producer.request_id], plan.documents.__getitem__).spec
+            values.append(train.trial_documents.python_task.params["n_steps"])
+    values.sort()
     assert values == [5, 7, 9] and all(type(value) is int for value in values)
 
 

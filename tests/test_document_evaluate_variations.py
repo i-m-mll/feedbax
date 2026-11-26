@@ -197,7 +197,7 @@ def _set_model_field(address, value):
 
 
 def _thelen_project(documents):
-    _, _, task, objective = documents
+    _, source_model, task, objective = documents
     raw = document_project(documents, evaluation=True)
     model = raw["documents"]["reach-model"]["payload"]
     config = {
@@ -247,7 +247,7 @@ def _thelen_project(documents):
         raw, "condition", [_set_model_field(_owner_field("muscle", "optimal_muscle_length"), 0.24)],
         base=trained, components=components,
     )
-    return raw, config | {"dt": model["step_seconds"]}, samples
+    return raw, config | {"dt": source_model.step_seconds}, samples
 
 
 def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  # noqa: F811
@@ -398,7 +398,7 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
 
 def test_a_model_document_that_changes_the_trained_clock_is_refused_at_its_field(tmp_path, authored):  # noqa: F811
     raw = document_project(authored, evaluation=True)
-    step = raw["documents"]["reach-model"]["payload"]["step_seconds"] * 3
+    step = f"{authored[1].step_seconds * 3} s"
     raw["documents"]["slow-model"] = {
         "label": "Slow model",
         "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},

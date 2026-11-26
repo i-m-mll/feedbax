@@ -12,7 +12,8 @@ from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, Content
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef
 from feedbax.contracts.method_checkpoint import MethodCheckpointManifest, method_checkpoint_extra_path
 from feedbax.contracts.jobs import JobStatus
-from feedbax.contracts.project_io import dump_text_project, read_text_project_snapshot
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import read_text_project_snapshot
 from feedbax.host import HostClient
 from feedbax.jobs import JobConflict, JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider

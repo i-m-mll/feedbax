@@ -78,7 +78,7 @@ class _Studio:
 
 def _graph_project():
     return {"documents": {"model": {"label": "Model", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": {
-        "step_seconds": 0.01,
+        "step_seconds": "10 ms",
         "ports": {
             "inputs": {
                 "vector": {"label": "Vector", "type": {"shape": [2]}},
@@ -215,7 +215,7 @@ def _invalid_model_field(studio):
     edit = studio.model_edit("model", prepared["command"], files=prepared["files"])
     reopened = studio.reopen(edit["snapshot"], "document", "model")
     fields = reopened["project"]["documents"]["model"]["payload"]["interior"]["components"]["plant"]["fields"]
-    assert fields["mass"] == {"kind": "unresolved", "text": text}
+    assert fields["mass"] == text
     view = studio.post("/model/fields", **field, revision=reopened["revision"])
     [saved] = [item for item in view["fields"] if item["address"] == MASS]
     assert saved["text"] == text
@@ -261,7 +261,7 @@ def _invalid_checkpoint(studio):
     assert any(problem["path"] == "inputs.subject.checkpoint" for problem in prepared["problems"])
     reopened = studio.reopen(studio.write(prepared["files"]), "step", "baseline")
     [exception] = reopened["project"]["steps"]["baseline"]["sweep"]["exceptions"].values()
-    assert exception["patches"][CHECKPOINT_RULE_TARGET]["value"] == held
+    assert exception["patches"][CHECKPOINT_RULE_TARGET]["value"] == held["text"]
     assert any(
         (problem["address"], problem["path"]) == ("steps/baseline.json", "inputs.subject.checkpoint")
         and (problem.get("authored_path") or "").endswith("/value")

@@ -6,7 +6,8 @@ import shutil
 import subprocess
 
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.examples import load_shipped_projects
 from tests.support.hang import HANG_SECONDS
 

@@ -8,12 +8,13 @@ from pydantic import ValidationError
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import RootDocument, Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, load_text_project
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 
 
 def _leaf(name: str = "Gain") -> dict:
-    return {"kind": "leaf", "name": name, "type": "feedbax.Scale", "fields": {"name": "scientific"}}
+    return {"kind": "leaf", "name": name, "type": "feedbax.Scale", "fields": {"scale": 2.0}}
 
 
 def _three_levels() -> dict:
@@ -71,13 +72,15 @@ def test_physical_ports_and_connections_are_confined_to_physical_interiors() -> 
 
 def test_scientific_projection_preserves_declared_meaning_on_rename() -> None:
     payload = _three_levels()
-    original = ModelDocument.model_validate(payload).scientific_projection()
     outer = payload["interior"]["components"]["outer"]
+    inner_leaf = outer["interior"]["components"]["inner"]["interior"]["components"]["same"]
+    inner_leaf["fields"]["name"] = "scientific"
+    original = ModelDocument.model_validate(payload).scientific_projection()
     outer["name"] = "Renamed"
     outer["ports"]["outputs"][0]["name"] = "renamed"
-    outer["interior"]["components"]["inner"]["interior"]["components"]["same"]["name"] = "Same"
+    inner_leaf["name"] = "Same"
     assert ModelDocument.model_validate(payload).scientific_projection() == original
-    outer["interior"]["components"]["inner"]["interior"]["components"]["same"]["fields"]["name"] = "new"
+    inner_leaf["fields"]["name"] = "new"
     assert ModelDocument.model_validate(payload).scientific_projection() != original
 
     payload = _three_levels()

@@ -33,7 +33,7 @@ from feedbax.contracts.project_sweep import Row, Sweep
 from feedbax.contracts.strict_json import strict_json_loads
 
 if TYPE_CHECKING:
-    from feedbax.contracts.stored_regions import StoredRegionRegistries
+    from feedbax.contracts.stored_regions import StoredRegionResolver
 
 
 PROJECT_SCHEMA_VERSION = "feedbax.project.v1"
@@ -389,7 +389,7 @@ def _revision_bytes(model: StrictModel, *, exclude: set[str] | None = None) -> b
     ).encode("utf-8")
 
 
-def dump_studio_project(project_file: StudioProjectFile, *, registries: StoredRegionRegistries | None = None) -> bytes:
+def dump_studio_project(project_file: StudioProjectFile, *, registries: StoredRegionResolver) -> bytes:
     """Serialize the semantic model beside its presentation."""
     protected = (
         ("project", family, name, *path)
@@ -434,7 +434,7 @@ def _text_project_models(
 
 
 def dump_text_project(
-    project: Project, configuration: ProjectConfiguration, *, registries: StoredRegionRegistries | None = None,
+    project: Project, configuration: ProjectConfiguration, *, registries: StoredRegionResolver,
     only: Collection[str] | None = None,
 ) -> dict[str, bytes]:
     """Produce authored project file bytes, optionally for the paths being created."""
@@ -446,7 +446,7 @@ def dump_text_project(
 
 
 def text_project_changes(
-    before: TextProject, after: Project, *, registries: StoredRegionRegistries | None = None,
+    before: TextProject, after: Project, *, registries: StoredRegionResolver,
     only: Collection[str] | None = None,
 ) -> dict[str, bytes | None]:
     """Write changed authored values and use the exact preimage of a repaired invalid file."""

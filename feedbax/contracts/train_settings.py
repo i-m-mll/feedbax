@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import JsonValue, ValidationError
 
@@ -10,12 +10,23 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-    from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
 
 
-def normalize_train_method(
-    request: DocumentTrainingRequestSpec, registry: TrainingMethodRegistry,
-) -> tuple[DocumentTrainingRequestSpec, RegisteredTrainingMethod, BaseModel]:
+class TrainMethodSettings(Protocol):
+    @property
+    def key(self) -> str: ...
+
+    @property
+    def settings_model(self) -> type[BaseModel]: ...
+
+
+class TrainSettingsResolver[MethodT: TrainMethodSettings](Protocol):
+    def resolve(self, key: str) -> MethodT: ...
+
+
+def normalize_train_method[MethodT: TrainMethodSettings](
+    request: DocumentTrainingRequestSpec, registry: TrainSettingsResolver[MethodT],
+) -> tuple[DocumentTrainingRequestSpec, MethodT, BaseModel]:
     try:
         method = registry.resolve(request.method)
     except KeyError as error:
@@ -29,7 +40,7 @@ def normalize_train_method(
 
 
 def train_sweep_basis(
-    payload: dict[str, JsonValue], path: str, registry: TrainingMethodRegistry | None,
+    payload: dict[str, JsonValue], path: str, registry: TrainSettingsResolver[TrainMethodSettings] | None,
 ) -> dict[str, JsonValue]:
     """Expose a missing declared Train setting for a sweep replacement."""
     from feedbax.contracts.manifest import OverridePatch
@@ -47,12 +58,8 @@ def train_sweep_basis(
         value = value[name]
     else:
         return payload
-    if not isinstance((method := payload.get("method")), str):
+    if registry is None or not isinstance((method := payload.get("method")), str):
         return payload
-    if registry is None:
-        from feedbax.application.composition import load_application
-
-        registry = load_application().bundle.training_methods
     try:
         model = registry.resolve(method).settings_model
         effective: JsonValue = model.model_validate(settings, extra="forbid").model_dump(mode="json")

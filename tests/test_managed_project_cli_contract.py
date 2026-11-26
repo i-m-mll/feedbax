@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.application.project_writer import dump_text_project
 from feedbax.bin.project_commands import PROJECT_COMMANDS
 from feedbax.cli import main
 from feedbax.contracts.jobs import (
@@ -14,7 +15,6 @@ from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEM
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
-    dump_text_project,
     read_text_project_snapshot,
 )
 from feedbax.contracts.studio_authoring import StudioAuthoringCatalog

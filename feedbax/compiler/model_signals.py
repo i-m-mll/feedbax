@@ -156,13 +156,16 @@ def model_measure_scope(model: ModelDocument, signals: ModelSignalTable) -> Mode
         scope = leaf.port.composites
         owner = owner_at(scope)
         prefix = labels[scope]
+        label = leaf.name
         if isinstance(end, ComponentPortAddress):
             if end.component not in owner.interior.components:
                 continue
             prefix = (*prefix, owner.interior.components[end.component].name)
-        elif scope:
-            prefix = (*prefix, "Outputs")
-        path = (*prefix, leaf.name, *map(str, leaf.path))
+        elif isinstance(end, OutputBoundaryEnd):
+            if scope:
+                prefix = (*prefix, "Outputs")
+            label = next((port.name for port in owner.ports.outputs if port.id == end.port), label)
+        path = (*prefix, label, *map(str, leaf.path))
         address = leaf.address.to_text()
         name = ".".join(path)
         if name in used:

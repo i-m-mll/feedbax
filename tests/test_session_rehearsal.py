@@ -21,7 +21,8 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.execution_target import SessionTargetProfile
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, project_declaration_name
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, project_declaration_name
 from feedbax.planner.project_plan import RunKey
 from feedbax.host import HostError
 from feedbax.jobs import JobService

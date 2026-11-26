@@ -267,7 +267,7 @@ def _project_task_drafts(documents, task: StoredTaskDocument, show_objective: bo
         task.lower(first=True)
     except StoredTaskDraftError as error:
         if error.path[:1] == ("validation_trials",) and error.path[2:3] not in (("over",), ("combination",), ("label",)):
-            problems.append(Problem(code=ProblemCode.STRUCTURE, path=("task", *error.path), reason=str(error)))
+            problems.append(Problem(code=ProblemCode.STRUCTURE, path=error.path, reason=str(error)))
     return _Projection(None, variables, signals, epochs, fields, tuple(problems), stored_task=task)
 
 
@@ -379,6 +379,8 @@ def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None 
 
 def _authored_trial_problem(problem: Problem) -> Problem:
     path = authored_task_link_path(problem.path)
+    if path[:2] == ("task", "validation_trials"):
+        path = path[1:]
     return problem if path is problem.path else problem.model_copy(update={"path": path})
 
 
@@ -2151,8 +2153,10 @@ def trial_authoring(
         reads_model=compiled.reads_model if compiled else False,
         tasks=tasks, task_problems=task_problems,
         input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
-        outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
-                 for value in paired.model.outputs] if paired else [],
+        outputs=[StudioTrialOutput(
+            address=ModelAddress.from_text(value.id),
+            value=value.model_copy(update={"name": ".".join(output_paths.get(value.id, (value.name,)))}),
+        ) for value in paired.model.outputs] if paired else [],
         resets=resets, unresolved_links=unresolved_links,
         fields=fields, **sites.tables(fields), problems=[
             *(_authored_trial_problem(problem) for problem in (*projected.problems, *field_problems)), *refused,

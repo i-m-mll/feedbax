@@ -4,7 +4,8 @@ from fastapi.testclient import TestClient
 
 from feedbax import project_folder
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.planner.project_plan import compile_project
 from feedbax.project_folder import ProjectFolderLocation
 from feedbax.web.app import create_app
@@ -16,10 +17,7 @@ def _project_with_choice(folder, count, *, alternatives=()):
     raw = document_project(authored_documents())
     raw["documents"]["task"]["payload"]["variables"]["width"] = {
         "label": "Width", "type": {"base": "real"},
-        "value": {
-            "kind": "draw", "family": "choice", "per": "trial",
-            "args": [{"kind": "literal", "value": float(index)} for index in range(count)],
-        },
+        "value": "choice(" + ", ".join(map(str, range(count))) + ")",
     }
     for key in alternatives:
         candidate = deepcopy(raw["documents"]["task"])

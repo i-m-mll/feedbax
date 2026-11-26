@@ -22,6 +22,8 @@ from typing import Literal, Protocol, TYPE_CHECKING
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
+from feedbax.application.project_writer import dump_text_project
+from feedbax.application.stored_regions import StoredRegionRegistries
 from feedbax._atomic import sync_parent_directories, write_bytes_atomic
 from feedbax._secure_fs import (
     DirectoryRecord, SecurePathRigor, close_directory_chain, directory_open_flags, open_directory_chain,
@@ -49,7 +51,7 @@ from feedbax.contracts.project import (
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_storage import stored_keyed_collection, write_project_file
-from feedbax.contracts.stored_regions import StoredRegionRegistries
+from feedbax.contracts.stored_regions import StoredRegionResolver
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     ProjectReadError,
@@ -60,7 +62,6 @@ from feedbax.contracts.project_io import (
     TextProject,
     TextProjectExternalInputs,
     authored_declaration_revision,
-    dump_text_project,
     parse_text_project_files,
     project_declaration_name,
     read_text_project_declaration,
@@ -986,7 +987,7 @@ def write_new_project_folder(
     project: Project,
     configuration: ProjectConfiguration,
     presentation: PresentationDocument,
-    *, registries: StoredRegionRegistries | None = None,
+    *, registries: StoredRegionResolver | None = None,
 ) -> None:
     """Publish the ordinary authored folder and presentation in one exclusive rename."""
     root = destination.parent.resolve(strict=True)

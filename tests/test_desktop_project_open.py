@@ -11,8 +11,11 @@ import pytest
 
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.project import ExternalBase, InlineBase
+from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.project_io import (
-    ProjectConfiguration, STUDIO_WRITE_LOCK_FILENAME, dump_text_project, read_text_project_snapshot,
+    ProjectConfiguration,
+    STUDIO_WRITE_LOCK_FILENAME,
+    read_text_project_snapshot,
 )
 from feedbax.contracts.studio_project import StudioProjectRename
 from feedbax import project_folder

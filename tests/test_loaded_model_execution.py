@@ -135,20 +135,18 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
         raw["documents"]["shorter"] = deepcopy(raw["documents"]["task"])
         short_task = raw["documents"]["shorter"]["payload"]
         short_task["fixed_steps"] = 7
-        short_task["epochs"]["move"]["end"]["length"]["value"] = 7
+        short_task["epochs"]["move"]["end"]["length"] = "7 st"
         raw["documents"]["loads"] = {"label": "Loads", "schema": "feedbax.set_document.v2", "payload": {"entries": {
             "pulse": {"label": "Pulse", "task_variables": {"amplitude": {
                 "label": "Amplitude", "type": {"base": "real", "shape": [2]},
-                "value": {"kind": "call", "function": "vector", "args": [
-                    {"kind": "literal", "value": 1.0}, {"kind": "literal", "value": 0.0},
-                ]},
+                "value": "[1, 0]",
             }}, "differences": {"/interior/wires/plant-wire/attachments": {"value": {"pulse": {
                 "kind": "intervention", "operation": "Add",
                 "operands": {"value": {"kind": "task", "variable": "amplitude"}},
                 "window": {"spans": [{
                     "kind": "interval",
-                    "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
-                    "end": {"offset": {"value": 2, "unit": "st"}},
+                    "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": "2 st"},
+                    "end": {"offset": "2 st"},
                 }]},
             }}}}},
         }}}

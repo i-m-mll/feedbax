@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
+from feedbax.application.stored_regions import StoredRegionRegistries
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patches
@@ -31,7 +32,6 @@ from feedbax.contracts.project_resolution import (
 )
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.project_storage import stored_keyed_collection, stored_project_value
-from feedbax.contracts.stored_regions import StoredRegionRegistries
 from feedbax.contracts.project_sweep import (
     AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
 )

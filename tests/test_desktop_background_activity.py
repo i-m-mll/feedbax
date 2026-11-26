@@ -15,7 +15,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.desktop.__main__ import _register_stop
 from feedbax.desktop.activity import register_activity
 from feedbax.host import HostClient, Job

@@ -317,7 +317,7 @@ class ModelEditDraft:
         port = self.port(owner, graph, other, direction)
         if port is None:
             raise _Refusal(address, "The other port must exist before adding a boundary port")
-        name = _signal_end_name(owner, graph, other, direction)
+        name = "Output" if direction == "output" else _signal_end_name(owner, graph, other, direction)
         created = _new_port(owner, direction, name, port)
         end = _card(boundary, created["id"])
         self.changed.append(_address(address.composites, "port", end=end))

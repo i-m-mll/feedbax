@@ -6,7 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, load_text_project
 from tests.support.browser_seed_actions import FolderSeed, NonSeed
 from tests.support.managed_train_fixture import managed_train_project
 
