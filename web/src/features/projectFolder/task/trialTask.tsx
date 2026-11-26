@@ -292,8 +292,13 @@ export function TrialVariableInspector({ view, commit, runs, entries, id }: {
  */
 export function unfedTasks(view: TrialView): ReadonlyMap<string, string> {
   const inputs = new Map(view.inputs.map(({ address, name }) => [JSON.stringify(address), name]));
-  return new Map(view.tasks.flatMap(({ document, problems }) => {
-    const unfed = problems.find(({ path = [], model_address }) => path[0] === 'model' && path[1] === 'inputs' && model_address);
+  const problemAt = (index: number) => {
+    const problem = view.task_problems[index];
+    if (!problem) throw new Error(`The Task view names problem ${index} of ${view.task_problems.length}`);
+    return problem;
+  };
+  return new Map(view.tasks.flatMap(({ document, problem_indices }) => {
+    const unfed = problem_indices.map(problemAt).find(({ path = [], model_address }) => path[0] === 'model' && path[1] === 'inputs' && model_address);
     const name = unfed && inputs.get(JSON.stringify(unfed.model_address));
     return name ? [[document, studioFormat('leavesUnfed', { name })] as const] : [];
   }));
