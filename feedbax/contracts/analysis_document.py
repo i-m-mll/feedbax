@@ -62,12 +62,14 @@ class FigureElement(StrictModel, Generic[_Figure]):
     inputs: dict[ProjectName, DatasetSource]
 
 
-class AnalysisDocument(StrictModel, Generic[_Figure]):
+class AnalysisPayload(StrictModel, Generic[_Figure]):
     schema_version: Literal["feedbax.analysis_document.v1"] = "feedbax.analysis_document.v1"
     inputs: dict[ProjectName, AnalyzeInput] = Field(default_factory=dict)
     operations: dict[ProjectName, OperationElement] = Field(default_factory=dict)
     views: dict[ProjectName, FigureElement[_Figure]] = Field(default_factory=dict)
 
+
+class AnalysisDocument(AnalysisPayload[_Figure], Generic[_Figure]):
     @model_validator(mode="after")
     def _unique_elements(self) -> AnalysisDocument:
         if not self.operations and not self.views:
