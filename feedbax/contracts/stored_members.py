@@ -3,10 +3,24 @@
 from collections.abc import Iterable
 from typing import Annotated, Any
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import AfterValidator, BaseModel, StringConstraints
 
 
 type StoredMemberKey = Annotated[str, StringConstraints(strict=True, pattern=r"^[A-Za-z_][A-Za-z0-9_-]*$")]
+
+
+type StoredMembers[T] = dict[StoredMemberKey, T]
+
+
+def _canonical_model_address(text: str) -> str:
+    from feedbax.contracts.model_address import ModelAddress
+
+    ModelAddress.from_text(text)
+    return text
+
+
+type StoredModelAddressKey = Annotated[str, StringConstraints(strict=True), AfterValidator(_canonical_model_address)]
+type StoredAddressedMembers[T] = dict[StoredModelAddressKey, T]
 
 
 def project_member[ModelT: BaseModel](source: BaseModel, target: type[ModelT], **overrides: Any) -> ModelT:
