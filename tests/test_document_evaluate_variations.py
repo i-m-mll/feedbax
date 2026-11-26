@@ -17,14 +17,14 @@ from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import ModelEditRequest
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.objective_document import ObjectiveTerm
+from feedbax.contracts.objective_document import ObjectiveTerm, StoredObjectiveDocument
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import ResolvedRolloutBinding, RolloutParameters
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-from feedbax.contracts.task_document import Cell, Signal
+from feedbax.contracts.task_document import Cell, Signal, StoredTaskDocument
 from feedbax.jobs import JobService
 from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.application.bundle import new_application_registry_bundle
@@ -43,7 +43,6 @@ from tests.test_model_document_plan import (
     _attachment_owner,
     _end,
     _model_controller,
-    _port,
     _scale_attachment,
     _wire,
 )
@@ -209,19 +208,19 @@ def _thelen_project(documents):
         "initial_activation": 0.25,
     }
     model["interior"]["components"]["muscle"] = {
-        "kind": "leaf", "name": "Muscle", "type": "feedbax.RigidTendonHillMuscleThelen",
+        "kind": "leaf", "label": "Muscle", "type": "feedbax.RigidTendonHillMuscleThelen",
         "fields": config | {"vmax_factor": 10.0},
     }
     samples = {"excitation": 0.5, "musculotendon_length": 0.36, "musculotendon_velocity": -0.31}
     signals = list(task.signals)
     for port, sample in samples.items():
-        model["ports"]["inputs"].append(_port(port, port, shape=[]))
+        model["ports"]["inputs"][port] = {"label": port, "type": {"shape": []}}
         model["interior"]["wires"][port] = _wire({"owner": "inputs", "port": port}, _end("muscle", port))
         signals.append(Signal(
             id=port, name=port, type=ValueType(base=ValueBase.REAL),
             cells=(Cell(id="hold-move", first_epoch="hold", last_epoch="move", value=LiteralValue(value=sample)),),
         ))
-    model["ports"]["outputs"].append(_port("muscle-force", "muscle_force", shape=[]))
+    model["ports"]["outputs"]["muscle-force"] = {"label": "Muscle force", "type": {"shape": []}}
     model["interior"]["wires"]["muscle-force"] = _wire(
         _end("muscle", "force"), {"owner": "outputs", "port": "muscle-force"},
     )
@@ -230,10 +229,12 @@ def _thelen_project(documents):
         "element": {"kind": "port", "end": {"owner": "outputs", "port": "muscle-force"}},
     })
     term = ObjectiveTerm(id="muscle-force", measure=NameValue(reference=address.to_text()))
-    raw["documents"]["objective"]["payload"] = objective.model_copy(
-        update={"terms": (*objective.terms, term)},
+    raw["documents"]["objective"]["payload"] = StoredObjectiveDocument.from_lowered(
+        objective.model_copy(update={"terms": (*objective.terms, term)}),
     ).model_dump(mode="json")
-    raw["documents"]["task"]["payload"] = task.model_copy(update={"signals": tuple(signals)}).model_dump(mode="json")
+    raw["documents"]["task"]["payload"] = StoredTaskDocument.from_lowered(
+        task.model_copy(update={"signals": tuple(signals)}),
+    ).model_dump(mode="json")
     components = new_application_registry_bundle().components
     trained = read_changed_model(
         raw, "train", [_set_model_field(_owner_field("muscle", "vmax_factor"), config["vmax_factor"])],
@@ -354,7 +355,7 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
 
     controller = _model_controller(raw)
     controller["components"]["passthrough"] = {
-        "kind": "leaf", "name": "Passthrough", "type": "feedbax.Activation", "fields": {"activation": "identity"},
+        "kind": "leaf", "label": "Passthrough", "type": "feedbax.Activation", "fields": {"activation": "identity"},
     }
     original = controller["wires"]["read"]
     original["target"], output = _end("passthrough", "input"), original["target"]
@@ -444,8 +445,8 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     jobs = JobService(host, registry)
     raw = document_project(authored, evaluation=True)
     steps = raw["steps"]
-    selected = [raw["documents"]["task"]["payload"]["validation_trials"][0]]
-    raw["documents"]["task"]["payload"]["validation_trials"] = selected
+    task = raw["documents"]["task"]["payload"]
+    task["validation_trials"] = dict(list(task["validation_trials"].items())[:1])
 
     def step(variation):
         result = deepcopy(steps["baseline"])

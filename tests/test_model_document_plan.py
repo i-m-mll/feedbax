@@ -2234,7 +2234,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     reopened = ProjectFolderService(folders.root)
     reopened_view = ProjectPlanService(reopened, jobs).read(project, revision=None)
     reopened_model = reopened.read(project).project.documents[model_name].payload
-    assert ModelDocument.model_validate(reopened_model) == ModelDocument.model_validate(
+    assert StoredModelDocument.model_validate(reopened_model) == StoredModelDocument.model_validate(
         raw["documents"][model_name]["payload"],
     )
     assert reopened_view.settled.plan.requests == plan.plan.requests
