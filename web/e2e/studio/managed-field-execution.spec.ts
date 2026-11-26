@@ -58,7 +58,7 @@ test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }
   expect(prepared.ok(), await prepared.text()).toBe(true);
   expect((await prepared.json()).problems ?? []).toEqual([]);
   const factorAxis = (saved: StudioProjectSnapshot) => Object.values(saved.project.steps?.train.sweep?.axes ?? {})
-    .find((axis) => axis !== null && 'path' in axis && typeof axis.path === 'string' && axis.path.includes('"id":"training-scale"'));
+    .find((axis) => axis !== null && 'path' in axis && typeof axis.path === 'string' && axis.path.includes('training-scale'));
   await expect.poll(async () => factorAxis(await save())).toMatchObject({
     range: { start: 0.5, stop: 1, count: 2 },
   });

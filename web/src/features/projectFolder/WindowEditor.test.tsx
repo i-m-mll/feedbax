@@ -56,8 +56,7 @@ test('every window the editor stores is one the contract accepts, and removing t
   await user.click(await screen.findByRole('option', { name: 'Length' }));
   const lengthened = stored.at(-1)!;
   expect(WindowSchema.parse(lengthened)).toEqual(lengthened);
-  expect(lengthened.spans[0]).toMatchObject({ kind: 'interval', end: { offset: '0 s' } });
-  expect('anchor' in (lengthened.spans[0] as { end: object }).end).toBe(false);
+  expect((lengthened.spans[0] as { end: object }).end).toEqual({});
 
   rerender(<WindowEditor window={lengthened} host={host(lengthened, stored)} />);
   await user.click(screen.getByRole('combobox', { name: 'Kind Span 1' }));

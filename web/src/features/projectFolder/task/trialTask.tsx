@@ -18,7 +18,7 @@ import { TrialTaskGrid } from './trialGrid';
 import { TaskVariables, type VariableEdits } from './TaskVariables';
 import { TaskDocumentBody } from './TaskView';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
-import type { WeightPart } from '@/generated/studioContracts';
+import type { StudioSetEntryParts, WeightPart } from '@/generated/studioContracts';
 import type { EntryTask, ModelStart, SetEntryWeight, TaskSelection, TaskSetVariable, TaskVariable, UnstartedValue, VariableInitializes } from './taskModel';
 
 const sameType = (a: ValueType, b: ValueType) => studioValueType(a) === studioValueType(b);
@@ -226,8 +226,7 @@ function useVariables(view: TrialView, commit?: Commit, runs?: TrialRuns, entrie
   };
 }
 
-const entryWeight = (weight: WeightPart | { on?: WeightPart; off?: WeightPart } | null | undefined): SetEntryWeight | undefined =>
-  weight == null || typeof weight === 'number' ? weight ?? undefined : { on: weight.on ?? 1, off: weight.off ?? 1 };
+const entryWeight = (weight: WeightPart | StudioSetEntryParts | null): SetEntryWeight | undefined => weight ?? undefined;
 
 /**
  * The Sets the step's trials apply, as the service lists them, each weighed by `weigh` with its axis and limited by

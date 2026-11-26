@@ -1,5 +1,5 @@
 import {
-  type ComponentDefinition, type DelayInitialWire, type JsonValue, type ModelAddress, type StoredExpression,
+  type ComponentDefinition, type DelayInitialWire, type JsonValue, type ModelAddress,
   type StoredInterventionAttachment, type StoredModelDocument, type StoredModelSignalSource,
 } from '@/generated/studioContracts';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
@@ -29,17 +29,8 @@ export function modelFields(model: StoredModelDocument, change?: FieldChange): F
 /** A component's raw fields: a composite's substeps, a leaf's declared parameters that the server does not project. */
 export function componentFields(component: Component, definition: ComponentDefinition | undefined, change?: FieldChange,
   projected?: ReadonlySet<string>): FieldModel[] {
-  if (component.kind === 'composite') {
-    const domain = component.interior.physical_domain;
-    if (projected?.has('substeps') || (domain !== 'planar_multibody' && domain !== 'spatial_multibody')) return [];
-    const label = studioName('substeps');
-    const text = typeof component.substeps === 'string';
-    return [rawField({
-      id: 'substeps', label, type: { kind: text ? 'string' : 'integer' }, value: component.substeps ?? 1,
-      change: change && ((value) => text ? typed(value, label, (written) => change(['substeps'], written))
-        : typeof value === 'number' && value > 0 ? change(['substeps'], value) : studioReason('takesPositive', label)),
-    })];
-  }
+  // A composite's Substeps is the field the Service projects for it.
+  if (component.kind === 'composite') return [];
   const values = { ...definition?.default_params, ...component.fields };
   return (definition?.param_schema ?? [])
     .filter(({ name }) => !projected?.has(name))
@@ -48,11 +39,10 @@ export function componentFields(component: Component, definition: ComponentDefin
 }
 
 /**
- * An attachment's raw fields; `width` is the size of the signal it acts on, which a new Add's value has. Its sources (`attachmentSources`) and an intervention's Window are the caller's rows,
+ * An attachment's raw fields. Its sources (`attachmentSources`) and an intervention's Window are the caller's rows,
  * since each can read a Task variable or a port.
  */
-export function attachmentFields(item: Attachment, change?: AttachmentChange,
-  projected?: ReadonlySet<string>, width = 1): FieldModel[] {
+export function attachmentFields(item: Attachment, change?: AttachmentChange, projected?: ReadonlySet<string>): FieldModel[] {
   const write = (next: Attachment): ReturnType<RawChange> => change?.(next);
   if (item.kind === 'hold') return [];
   if (item.kind === 'delay') {
@@ -73,24 +63,16 @@ export function attachmentFields(item: Attachment, change?: AttachmentChange,
   return [rawField({
     id: 'operation', label: studioName('operation'), value: operationOf(item) ?? item.operation,
     type: { kind: 'choice', options: operations.map((operation) => ({ value: operation, label: studioName(operation) })) },
-    change: change && ((operation) => write({
-      ...item, operation: String(operation),
-      operands: Object.fromEntries(Object.entries(operationValues(operation as Operation, width))
-        .map(([name, value]) => [name, { kind: 'value', value }])),
-    })),
+    // Operands left out of another operation are the Service's defaults for it.
+    change: change && ((operation) => {
+      const { operands: _, ...rest } = item;
+      return write({ ...rest, operation: String(operation) });
+    }),
   })];
 }
 
 const operations = ['add', 'scale', 'clamp'] as const;
 type Operation = typeof operations[number];
-const operationDefaults: Record<Operation, Record<string, StoredExpression>> = {
-  add: { value: '[0]' }, scale: { factor: 1 }, clamp: { low: -1, high: 1 },
-};
-
-/** A new intervention's operand values: Add's value is the zero vector of the signal's `width` elements. */
-const operationValues = (operation: Operation, width: number): Record<string, StoredExpression> =>
-  operation === 'add' ? { value: `[${Array.from({ length: width }, () => '0').join(', ')}]` } : operationDefaults[operation];
-
 /** An intervention's operation, by its stored name; none for a name no operation has, which the Service refuses. */
 export function operationOf(item: StoredInterventionAttachment): Operation | undefined {
   const operation = item.operation.toLowerCase();
@@ -112,9 +94,9 @@ export interface AttachmentSource {
   readonly label: string;
   readonly field: string;
   readonly read: SourceValue;
-  /** The value it holds when it reads nothing: the value of a new attachment. */
-  readonly unlinked: StoredExpression;
   readonly set?: (value: SourceValue) => ReturnType<RawChange>;
+  /** Stores the source as reading nothing, which the Service reads as its default; none for an operand, which has no such store. */
+  readonly clear?: () => ReturnType<RawChange>;
 }
 
 /** A port's address in `graph`, as a model address names it. */
@@ -131,18 +113,18 @@ function signalEnd(port: ModelAddress | undefined): DelayInitialWire['source'] {
   return end.owner === 'inputs' ? { owner: 'inputs', port: end.port } : null;
 }
 
-/** A stored source as it reads in `graph`; none stored reads `unlinked`. */
-function readSource(graph: ModelAddress, source: StoredModelSignalSource | undefined, unlinked: StoredExpression): SourceValue {
-  if (!source) return { kind: 'value', value: unlinked };
+/** A stored source as it reads in `graph`; none stored is the Service's default value, which its projected field shows. */
+export function readSource(graph: ModelAddress, source: StoredModelSignalSource | undefined): SourceValue {
+  if (!source) return { kind: 'value', value: undefined };
   if (source.kind === 'wire') return { kind: 'wire', port: portAddress(graph, source.source) };
   return source.kind === 'task' ? source : { kind: 'value', value: source.value as JsonValue };
 }
 
 /** One source of `item`: its label, the field projected for its own value, and its store as `write` keeps it. */
 function signalSource(id: string, label: string, field: string, graph: ModelAddress, stored: StoredModelSignalSource | undefined,
-  unlinked: StoredExpression, write?: (source: StoredModelSignalSource) => ReturnType<RawChange>): AttachmentSource {
+  write?: (source: StoredModelSignalSource) => ReturnType<RawChange>): AttachmentSource {
   return {
-    id, label, field, read: readSource(graph, stored, unlinked), unlinked,
+    id, label, field, read: readSource(graph, stored),
     set: write && ((value) => {
       if (value.kind === 'task') return write(value);
       if (value.kind === 'wire') return write({ kind: 'wire', source: signalEnd(value.port) });
@@ -152,16 +134,19 @@ function signalSource(id: string, label: string, field: string, graph: ModelAddr
   };
 }
 
-/** The sources of an attachment in `graph`, the graph that holds it, acting on a signal of `width` elements. */
-export function attachmentSources(item: Attachment, graph: ModelAddress, change?: AttachmentChange, width = 1): AttachmentSource[] {
+/** The sources of an attachment in `graph`, the graph that holds it: an intervention's are the operands it stores. */
+export function attachmentSources(item: Attachment, graph: ModelAddress, change?: AttachmentChange): AttachmentSource[] {
   if (item.kind === 'delay') {
-    return [signalSource('initial', studioName('initial'), 'initial_source.value', graph, item.initial_source, 0,
-      change && ((initial_source) => change({ ...item, initial_source })))];
+    const { initial_source: _, ...unread } = item;
+    return [{
+      ...signalSource('initial', studioName('initial'), 'initial_source.value', graph, item.initial_source,
+        change && ((initial_source) => change({ ...item, initial_source }))),
+      clear: change && (() => change(unread)),
+    }];
   }
   if (item.kind !== 'intervention') return [];
-  const operation = operationOf(item);
-  return Object.entries(operation ? operationValues(operation, width) : {}).map(([name, unlinked]) =>
-    signalSource(name, humanizeLabel(name), `operands.${name}.value`, graph, item.operands?.[name], unlinked,
+  return Object.entries(item.operands ?? {}).map(([name, stored]) =>
+    signalSource(name, humanizeLabel(name), `operands.${name}.value`, graph, stored,
       change && ((source) => change({ ...item, operands: { ...item.operands, [name]: source } }))));
 }
 

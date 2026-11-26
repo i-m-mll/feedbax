@@ -317,7 +317,7 @@ export async function createEvaluation(
       kind: 'evaluate', label,
       base: { inline: {
         evaluation_type: rollout,
-        params: { trial_set: trialSet, seed: 0, trial_policy: 'paired', variation: [] },
+        params: { trial_set: trialSet, seed: 0 },
       } },
       inputs: { subject: { step: step.id, ...checkpoint, ...(where && { where }) } },
       sweep: { axes: { subject: { input: 'subject' } } },

@@ -59,7 +59,9 @@ export function stepReport({ draft, saved }: Pick<ProjectEditSnapshot, 'draft' |
   const authored = document ? draft.documents?.[document] : undefined;
   const parsed = authored?.schema === 'feedbax.report_document.v1'
     ? ReportDocumentSchema.safeParse(documentPayload(draft.documents, saved.composed, document!)) : undefined;
-  return { step, document, report: parsed?.success ? parsed.data : undefined };
+  const values = document ? saved.report_values[document] : undefined;
+  if (parsed?.success && !values) throw new Error(`The Report ${document} has no values`);
+  return { step, document, report: parsed?.success ? parsed.data : undefined, values };
 }
 
 export function useManagedReport({
@@ -80,7 +82,7 @@ export function useManagedReport({
   focused: boolean;
 }) {
   const { draft, outside, pending, saved } = snapshot;
-  const { step, document, report } = stepReport(snapshot, stepId);
+  const { step, document, report, values } = stepReport(snapshot, stepId);
   const planned = run && projection?.window_map?.rows.find(({ key }) => savedRunId(key) === savedRunId(run));
   const retained = planned?.light?.result ?? planned?.light?.previous;
   const previewUrl = retained?.products.report;
@@ -246,7 +248,7 @@ export function useManagedReport({
         {refusalAt('title')}
       </label>
       <label className="grid gap-1">{studioName('completeness')}
-        <Select aria-label={studioName('completeness')} disabled={!editable} value={report.completeness ?? 'complete'}
+        <Select aria-label={studioName('completeness')} disabled={!editable} value={values!.completeness}
           items={[
             { value: 'complete', label: studioName('complete') },
             { value: 'allow_omissions', label: studioName('allowOmissions') },

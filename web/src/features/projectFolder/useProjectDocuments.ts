@@ -34,17 +34,19 @@ export const blankDocuments = {
     schema: 'feedbax.spec.training_document',
     payload: {
       method: supervisedTrainMethod,
-      settings: { optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } } },
+      settings: {},
       training_config: { n_batches: 1000, batch_size: 64 },
     },
   },
   analysis: {
     schema: analysisDocumentSchemaId,
-    payload: { inputs: { states: { kind: 'dataset' } }, operations: {}, views: {} },
+    payload: {
+      inputs: { states: { kind: 'dataset' } },
+    },
   },
   report: {
     schema: 'feedbax.report_document.v1',
-    payload: { schema_version: 'feedbax.report_document.v1', title: 'Report', blocks: [] },
+    payload: { title: 'Report', blocks: [] },
   },
 } satisfies Record<AuthoredRole, UnnamedDocument>;
 

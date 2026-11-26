@@ -3,6 +3,7 @@ import {
   parseContract,
   type ContractTypeMap,
   type EvaluateModelRequest,
+  type ModelAttachmentDefaultsRequest,
   type ModelConnectionReviewRequest,
   type ModelEditRequest,
   type ModelFieldRequest,
@@ -146,8 +147,10 @@ export async function writeProjectPresentation(id: string, body: StudioPresentat
   return readFolder('StudioProjectSnapshot', id, path, { method: 'PUT', body: sentBody('StudioPresentationWrite', body, path, 'PUT'), signal });
 }
 
-type ModelRequest = 'ModelEditRequest' | 'ModelUndoRequest' | 'ModelConnectionReviewRequest' | 'ModelProjectionRequest' | 'ModelFieldRequest' | 'EvaluateModelRequest';
-type ModelResponse = 'ModelEditResponse' | 'ModelConnectionReview' | 'ModelProjection' | 'ModelFieldResponse' | 'EvaluateModelState';
+type ModelRequest = 'ModelEditRequest' | 'ModelUndoRequest' | 'ModelConnectionReviewRequest' | 'ModelProjectionRequest' | 'ModelFieldRequest' | 'EvaluateModelRequest'
+  | 'ModelAttachmentDefaultsRequest';
+type ModelResponse = 'ModelEditResponse' | 'ModelConnectionReview' | 'ModelProjection' | 'ModelFieldResponse' | 'EvaluateModelState'
+  | 'ModelAttachmentDefaults';
 
 async function modelRequest<K extends ModelRequest, R extends ModelResponse>(
   id: string, action: string, request: K, response: R, body: ContractTypeMap[K], signal?: AbortSignal,
@@ -186,6 +189,11 @@ export function projectModelFields(id: string, body: ModelFieldRequest, signal?:
 
 export function readEvaluateModel(id: string, body: EvaluateModelRequest, signal?: AbortSignal) {
   return modelRequest(id, 'evaluate-model', 'EvaluateModelRequest', 'EvaluateModelState', body, signal);
+}
+
+/** The operands the Service gives a new `operation` intervention on `owner`. */
+export function readAttachmentDefaults(id: string, body: ModelAttachmentDefaultsRequest, signal?: AbortSignal) {
+  return modelRequest(id, 'attachment-defaults', 'ModelAttachmentDefaultsRequest', 'ModelAttachmentDefaults', body, signal);
 }
 
 

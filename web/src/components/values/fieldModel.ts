@@ -1,5 +1,5 @@
 import type {
-  ExpressionPartSite, FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FieldValue, StudioFieldFunction, JsonValue, Level, NodePath, StudioFieldName,
+  DrawCadence, ExpressionPartSite, FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FieldValue, StudioFieldFunction, JsonValue, Level, NodePath, StudioFieldName,
   StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, TextSpan, ValueType,
 } from '@/generated/studioContracts';
 import type { EvaluateOrigin } from '@/components/activity/studioVocabulary';
@@ -136,6 +136,8 @@ export interface FieldModel {
   readonly curve?: readonly (number | null)[];
   /** How often the site's consumer reads the value again. */
   readonly finest?: Level;
+  /** The cadence a new Draw at this site is drawn at, as the Service gives it. */
+  readonly drawPer?: DrawCadence;
   readonly names: readonly StudioFieldName[];
   readonly functions: readonly StudioFieldFunction[];
   /** The functions and names that fit at each node of the value: its root, `['args', 0]` and so on. */
@@ -194,11 +196,14 @@ export function valueKind(value: FieldValue, functions: readonly StudioFieldFunc
   }
 }
 
-/** A draw as its parts: a family, the text of each argument (undefined while unfilled), and when it is drawn. */
+/**
+ * A draw as its parts: a family, the text of each argument (undefined while unfilled), and when it is drawn; none
+ * where the site gives a new Draw no cadence, which its text then leaves to the Service.
+ */
 export interface DrawDraft {
   readonly family: string;
   readonly args: readonly (string | undefined)[];
-  readonly per: 'run' | 'trial';
+  readonly per?: DrawCadence;
 }
 
 /** A family whose first parameter is the draw's centre (a mean, a region's centre). */
@@ -219,7 +224,7 @@ export const perIsFree = (model: FieldModel) => (model.finest ?? 0) >= 1;
 export function drawOf(model: FieldModel): DrawDraft | undefined {
   const value = model.structure?.value;
   if (value?.kind !== 'draw') return undefined;
-  return { family: value.family, args: model.structure!.arguments ?? [], per: value.per ?? 'trial' };
+  return { family: value.family, args: model.structure!.arguments ?? [], per: value.per };
 }
 
 /** The arguments a family takes: each named parameter, or for a family of any count, at least its least. */
@@ -234,7 +239,7 @@ export function withFamily(model: FieldModel, draft: DrawDraft | undefined, fami
   const args = family.parameters?.length
     ? family.parameters.map(({ name }) => named.get(name))
     : !previous?.parameters?.length && draft ? draft.args : Array.from({ length: slots(family) }, () => undefined);
-  return { family: family.id, args, per: draft?.per ?? (perIsFree(model) ? 'trial' : 'run') };
+  return { family: family.id, args, per: draft?.per ?? model.drawPer };
 }
 
 /** The text a filled draft writes; undefined while a part is empty. */

@@ -106,7 +106,7 @@ export function fromFieldView(field: StudioFieldView, tables: FieldSites, option
     part('stop', 'last', String(range.stop), (text) => updateRange('stop', text)),
     part('count', 'count', String(range.count), (text) => updateRange('count', text), true),
     {
-      ...base, id: 'scale', label: studioName('spacing'), text: null, value: range.scale ?? 'linear', kind: 'value',
+      ...base, id: 'scale', label: studioName('spacing'), text: null, value: range.scale, kind: 'value',
       type: { kind: 'choice', options: [
         { value: 'linear', label: studioName('linear') }, { value: 'log', label: studioName('logarithmic') },
       ] },
@@ -156,6 +156,7 @@ export function fromFieldView(field: StudioFieldView, tables: FieldSites, option
     revealOrigin: source.reveal,
     structure: field.structure ?? undefined,
     finest: site.finest,
+    drawPer: site.draw_per,
     names: site.names ?? [],
     functions: site.functions,
     menus: { kind: 'listed', parts: site.parts },

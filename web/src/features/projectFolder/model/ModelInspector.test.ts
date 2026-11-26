@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { StoredDelayAttachmentSchema, StoredInterventionAttachmentSchema, type ModelAddress } from '@/generated/studioContracts';
-import { attachmentSources, type SourceValue } from './ModelInspector';
+import { attachmentFields, attachmentSources, type SourceValue } from './ModelInspector';
 import { storedAttachment, type Attachment } from './modelGraph';
 
 const graph: ModelAddress = { composites: ['core'], element: { kind: 'graph' } };
@@ -31,11 +31,25 @@ describe('attachmentSources', () => {
     }
   });
 
-  // Catches: a Task variable read back as a value or a port, or a cleared operand left empty.
-  it('stores a Task variable by its id, and Clear gives the operand its own zero again', () => {
+  // Catches: a Task variable read back as a value or a port.
+  it('stores a Task variable by its id', () => {
     const varied = stored(add, { kind: 'task', variable: 'amplitude' });
     expect(attachmentSources(varied, graph)[0].read).toEqual({ kind: 'task', variable: 'amplitude' });
-    const source = attachmentSources(varied, graph)[0];
-    expect(stored(varied, { kind: 'value', value: source.unlinked })).toMatchObject({ operands: { value: { kind: 'value', value: '[0]' } } });
+  });
+
+  // Catches: a cleared Initial stored as a literal of Studio's own instead of the Service's default.
+  it("clears a delay's Initial by storing none", () => {
+    let written: Attachment | undefined;
+    const linked: Attachment = { ...delay, initial_source: { kind: 'task', variable: 'amplitude' } };
+    void attachmentSources(linked, graph, (next) => { written = next; })[0].clear!();
+    expect(written).toEqual(delay);
+  });
+
+  // Catches: another operation stored with the operands of the one it replaced, which the Service would keep.
+  it('stores another operation without operands, so the Service gives its own', async () => {
+    let written: Attachment | undefined;
+    const [operation] = attachmentFields(add, (next) => { written = next; });
+    await operation.commit!({ kind: 'set', value: 'clamp' });
+    expect(written).toEqual({ kind: 'intervention', id: 'i', operation: 'clamp' });
   });
 });
