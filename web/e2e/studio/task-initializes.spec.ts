@@ -2,11 +2,9 @@ import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioTrialAuthoring, StoredTaskDocument as TaskDocument } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
+import { stateLinkKey } from './fixtures/trialFields';
 
 test.use({ viewport: { width: 1440, height: 900 } });
-
-/** The stored link key of the plant's effector position: the Service's compact address text. */
-const position = 'component.plant.state."effector/position"';
 
 // Catches a Model start the Model needs that no row shows or marks, a row for a start nothing needs, a row whose choice
 // of variable does not write the link, and an Initializes choice that does not bring the row back when it is undone.
@@ -45,6 +43,7 @@ test('a start the Model needs and no variable initializes is a row with its prob
   await page.keyboard.press('Escape');
   await mapStep(page, 'train').click();
 
+  const position = await stateLinkKey(request, snapshot.project_id, 'plant', 'effector/position');
   await pick(picker(positionName), 'origin');
   await expect.poll(links).toEqual({ [position]: 'start' });
   await expect(picker(positionName)).toHaveCount(0);
@@ -95,12 +94,7 @@ test('Initializes opens on the Model\'s components and descends to the states a 
 // Catches a link's problem named by a pointer or a document member no view shows, and a reveal that marks the Task as a
 // whole instead of the cell of the variable whose link it is.
 test('a link to a field the Model lacks is named and revealed at its variable\'s Initializes', async ({ page, request }) => {
-  const files = await fixture('ordinary-files', '2') as { kind: string; id: string; document?: { payload: Record<string, any> } }[];
-  const nowhere = 'component.nowhere.state."effector/position"';
-  for (const file of files) {
-    const payload = file.document?.payload;
-    if (payload?.variables) payload.links = { [nowhere]: 'start' };
-  }
+  const files = await fixture('task-link-files', 'simple-reaches', 'start', 'nowhere', 'state', 'effector/position');
   const { snapshot } = await seedManagedProject(request, files);
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
@@ -140,11 +134,11 @@ test('a Train added to an empty project reads a Task and Model with no Problem b
 
 // Catches a link naming no variable that leaves its Model value with no row, or names its problem by the Task's links.
 test('a link to a variable the Task lacks is marked and named at the Model value it leaves unstarted', async ({ page, request }) => {
-  const files = await fixture('ordinary-files', '2') as { kind: string; id: string; document?: { payload: Record<string, any> } }[];
+  const files = await fixture('task-link-files', 'simple-reaches', 'ghost', 'plant', 'state', 'effector/position') as
+    { kind: string; id: string; document?: { payload: Record<string, any> } }[];
   for (const file of files) {
     const payload = file.document?.payload;
     if (payload?.interior) payload.interior.components.plant.type = 'reaching_task.AnchoredPointMass';
-    if (payload?.variables) payload.links = { [position]: 'ghost' };
   }
   const { snapshot } = await seedManagedProject(request, files);
   const positionName = 'Point mass · effector position';

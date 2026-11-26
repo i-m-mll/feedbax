@@ -2,6 +2,7 @@ import { expect, test, jobTimeout } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
+import { modelField } from './fixtures/serviceViews';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -75,14 +76,13 @@ test('a Model value edit changes only its authored variant and keeps exact share
   const patchEntries = Object.entries(edited.project.sweep?.rows?.compare?.patches ?? {});
   expect(patchEntries).toHaveLength(1);
   const [[key, writeValue]] = patchEntries;
-  const prefix = 'documents.point-mass.';
-  expect(key.startsWith(prefix)).toBe(true);
-  expect(JSON.parse(key.slice(prefix.length))).toEqual({
-    composites: [], element: {
-      kind: 'field', parent: { kind: 'component', id: 'plant' }, path: ['fields', 'mass'],
-    },
-  });
-  expect(writeValue).toMatchObject({ value: 2 });
+  const massOf = async (variant: string) => {
+    const field = await modelField(request, projectPath, 'point-mass', 'plant', 'Mass', { variant, step: 'train', row: 'default' });
+    return Number(field.effective ?? field.text);
+  };
+  expect(await massOf('compare')).toBe(2);
+  expect(await massOf('base')).toBe(1);
+  expect(await massOf('control')).toBe(1);
   expect(edited.project.sweep).toEqual({
     ...before.project.sweep, rows: {
       ...before.project.sweep?.rows, compare: {

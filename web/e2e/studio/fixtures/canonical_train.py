@@ -7,7 +7,9 @@ from pathlib import Path
 import sys
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_sweep import model_field_path
 from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.planner.project_plan import RunKey
@@ -68,6 +70,32 @@ def ordinary_files(batches: str, *rates: str, scenario: str = "simple-reaches"):
         for name in names
     ]
     files.append({"kind": "step", "id": "train", "step": step})
+    return files
+
+
+def _field(component: str, *path: str) -> ModelAddress:
+    return ModelAddress.model_validate({
+        "composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": component}, "path": list(path)},
+    })
+
+
+def mass_range_files(start: str, stop: str, count: str):
+    """Ordinary files whose Train sweeps the point mass's mass over a range."""
+    *documents, train = ordinary_files("2")
+    train["step"]["sweep"] = {"axes": {"mass": {
+        "path": model_field_path(_field("plant", "fields", "mass")),
+        "range": {"start": float(start), "stop": float(stop), "count": int(count)},
+    }}}
+    return [*documents, train]
+
+
+def task_link_files(scenario: str, variable: str, component: str, *path: str):
+    """Ordinary files whose Task links only ``variable`` to the field at ``path`` of ``component``."""
+    files = ordinary_files("2", scenario=scenario)
+    for file in files:
+        payload = file.get("document", {}).get("payload", {})
+        if "variables" in payload:
+            payload["links"] = {_field(component, *path).to_authored_text(): variable}
     return files
 
 
@@ -316,6 +344,12 @@ ACTIONS = {
     "managed-files": FileSeed(lambda: [*ordinary_files("2"), successor_file()]),
     "ordinary-files": FileSeed(ordinary_files, cases=(("2",), ("2", "0.001", "0.01"))),
     "delayed-reaches-files": FileSeed(lambda: ordinary_files("2", scenario="delayed-reaches")),
+    "mass-range-files": FileSeed(mass_range_files, cases=(("1.000123456789", "2.000987654321", "3"),)),
+    "task-link-files": FileSeed(task_link_files, cases=(
+        ("delayed-reaches", "start", "plant", "reset", "effector", "elsewhere"),
+        ("simple-reaches", "start", "nowhere", "state", "effector/position"),
+        ("simple-reaches", "ghost", "plant", "state", "effector/position"),
+    )),
     "run-saved-cli": NonSeed(run_saved_cli, "executes the CLI to submit a saved Train"),
     "seed-variants": HomeSeed(seed_variants),
     "history-files": FileSeed(history_files),

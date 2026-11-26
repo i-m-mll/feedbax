@@ -248,14 +248,8 @@ test('an addressed Model numeric field authors a step sweep from the inspector',
 });
 
 test('an authored component range reopens as its exact rule and To List keeps row IDs', async ({ page, request }) => {
-  const [model, task, objective, train] = await fixture('ordinary-files', '2');
-  train.step.sweep = { axes: { mass: {
-    path: JSON.stringify({ composites: [],
-      element: { kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['fields', 'mass'] },
-    }),
-    range: { start: 1.000123456789, stop: 2.000987654321, count: 3 },
-  } } };
-  const { snapshot, projectPath } = await seedManagedProject(request, [model, task, objective, train]);
+  const files = await fixture('mass-range-files', '1.000123456789', '2.000987654321', '3');
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
   await page.goto(`/?project=${snapshot.project_id}`);
   await page.reload();
   await mapStep(page, 'train').click();
