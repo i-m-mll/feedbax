@@ -121,13 +121,13 @@ _STEP_FIXTURES = {
 }
 _PRESENTATION = {
     "documents": {"model": {
-        "positions": {"point": {"x": -0.0, "y": 1.0}},
-        "flipped": {"point": True},
-        "collapsed": {"controller": True},
-        "waypoints": {"wire": [{"x": 1.0, "y": 2.0}]},
+        "positions": {"component.point": {"x": -0.0, "y": 1.0}},
+        "flipped": {"component.point": True},
+        "collapsed": {"controller/graph": True},
+        "waypoints": {"wire.route": [{"x": 1.0, "y": 2.0}]},
         "camera": {"x": 0, "y": 0, "zoom": 0.5},
     }},
-    "steps": {"train": {"sweep_order": ["length"], "model_positions": {"model": {"point": {"x": 2, "y": 0}}}}},
+    "steps": {"train": {"sweep_order": ["length"], "model_positions": {"model": {"component.point": {"x": 2, "y": 0}}}}},
     "visible_groups": ["trial"],
 }
 

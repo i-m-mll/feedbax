@@ -1,6 +1,7 @@
 """Project the selected run's compiler and task facts onto stored Model addresses."""
 
 from collections import defaultdict
+from collections.abc import Iterator
 from typing import cast, get_args
 
 from feedbax.compiler.model_document import inspect_model_signals
@@ -8,9 +9,12 @@ from feedbax.compiler.model_edit import conserving_port_type, model_ungroup_elig
 from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf
 from feedbax.contracts.model_address import (
-    AttachmentElement, ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement, WireElement,
+    AttachmentElement, ComponentElement, ComponentPortAddress, FieldElement, GraphElement, InputsElement,
+    ModelAddress, OutputsElement, PhysicalConnectionElement, PortElement, WireElement,
 )
-from feedbax.contracts.model_document import DelayAttachment, ModelTime, PhysicalPortType, SignalType
+from feedbax.contracts.model_document import (
+    CompositeComponent, DelayAttachment, ModelDocument, ModelTime, PhysicalInterior, PhysicalPortType, SignalType,
+)
 from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.time_units import length_steps
@@ -43,6 +47,32 @@ def _boundary_port(composites, direction, port):
         "composites": composites,
         "element": {"kind": "port", "end": {"owner": "boundary" if direction == "physical" else direction + "s", "port": port}},
     })
+
+
+def _placed_addresses(
+    owner: ModelDocument | CompositeComponent, scope: tuple[str, ...] = (),
+) -> Iterator[ModelAddress]:
+    for element in (GraphElement(kind="graph"), InputsElement(kind="inputs"), OutputsElement(kind="outputs")):
+        yield ModelAddress(composites=scope, element=element)
+    for key, component in owner.interior.components.items():
+        yield ModelAddress(composites=scope, element=ComponentElement(kind="component", id=key))
+        for direction, ports in (("output", component.attachments.sources), ("input", component.attachments.sinks)):
+            for port, attachments in ports.items():
+                parent = _port(scope, key, direction, port).element
+                for item in attachments:
+                    element = AttachmentElement(kind="attachment", parent=parent, id=item.id)
+                    yield ModelAddress(composites=scope, element=element)
+        if isinstance(component, CompositeComponent):
+            yield from _placed_addresses(component, (*scope, key))
+    for key, wire in owner.interior.wires.items():
+        parent = WireElement(kind="wire", id=key)
+        yield ModelAddress(composites=scope, element=parent)
+        for item in wire.attachments:
+            element = AttachmentElement(kind="attachment", parent=parent, id=item.id)
+            yield ModelAddress(composites=scope, element=element)
+    if isinstance(owner.interior, PhysicalInterior):
+        for key in owner.interior.connections:
+            yield ModelAddress(composites=scope, element=PhysicalConnectionElement(kind="physical_connection", id=key))
 
 
 def _delay_steps(owner, period: float | None, scope: tuple[str, ...] = ()):
@@ -225,8 +255,13 @@ def model_projection(folders, project_id, body, bundle):
                 address=leaf.address, type=leaf.signal_type,
                 readers=tuple(readers.get(leaf.address.to_text(), ())),
             ))
+    placed = {address.to_text(): address.to_authored_text() for address in _placed_addresses(model)}
+    if model != authored:
+        placed.update((address.to_text(), address.to_authored_text()) for address in _placed_addresses(authored))
+    for item in (*ports, *physical_ports, *table.problems, *differences["base_differences"], *differences["value_differences"]):
+        placed[item.address.to_text()] = item.address.to_authored_text()
     return ModelProjection(
-        ports=tuple(ports), physical_ports=tuple(physical_ports), problems=table.problems, task_signals=task_signals,
+        address_texts=placed, ports=tuple(ports), physical_ports=tuple(physical_ports), problems=table.problems, task_signals=task_signals,
         delay_steps=dict(_delay_steps(model, model.step_seconds if isinstance(model.step_seconds, float) else None)),
         task_inputs=tuple(
             ModelTaskInput(composites=(), element=_boundary_port((), "input", port.id).element, signal_id=signal.id)
