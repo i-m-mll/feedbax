@@ -55,7 +55,7 @@ import {
   holds, modelRegistry, portId, portTypeLabel, shortName, storedAttachment, wireEnd, withRemoved, chainItems,
   type Attachment, type Component, type LibraryEntry, type PhysicalInterior, type Port,
 } from './modelGraph';
-import { modelLayout } from './modelLayout';
+import { compactLayoutKey, modelLayout } from './modelLayout';
 import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
@@ -273,6 +273,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const [held, setHeld] = useState<ReadonlyMap<string, ModelPosition>>();
   /** Components whose add is pending, drawn where they were placed under the id the add gives them. */
   const [placing, setPlacing] = useState<readonly Placing[]>([]);
+  /** Where and how each component this view added was placed, by runtime key: its card keeps that until the Service spells it. */
+  const landed = useRef(new Map<string, Pick<Placing, 'position' | 'flipped'>>());
 
   const registryQuery = useQuery({ ...componentsQuery, enabled: active && !!model });
   const registry = useMemo(() => modelRegistry(registryQuery.data ?? []), [registryQuery.data]);
@@ -293,6 +295,18 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     enabled: active && !!projectionBody,
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], projectionBody) ? previous : undefined,
   });
+  const projectedTexts = useRef<{ documents: ReadonlySet<string>; texts: ModelProjection['address_texts'] }>({ documents: new Set(), texts: {} });
+  /**
+   * Every compact text the Service has answered in this view. A text is a function of its address alone, so a text
+   * answered for one run or revision stays good for the next, and the canvas keeps its places while a read is pending.
+   */
+  const addressTexts = useMemo(() => {
+    if (!projection.data || !model) return projectedTexts.current.texts;
+    const { documents, texts } = projectedTexts.current;
+    projectedTexts.current = { documents: new Set([...documents, model.id]), texts: { ...texts, ...projection.data.address_texts } };
+    return projectedTexts.current.texts;
+  }, [projection.data, model?.id]);
+  const projected = !!model && projectedTexts.current.documents.has(model.id);
   const projectedPorts = useMemo(() => new Map<string, Port['type']>([...projection.data?.ports ?? [], ...projection.data?.physical_ports ?? []]
     .map(({ address, type }) => [addressKey(address), type])), [projection.data]);
   /** The numeric fields under each struct-valued port, by port: Add Term on such a port relates one of them. */
@@ -567,7 +581,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       parameters: (definition.param_schema ?? []).map(({ name }) => name),
     },
   })), [entries]);
-  const layout = modelLayout(model && saved.presentation?.documents?.[model.id], addressKey);
+  const layoutKey = useMemo(() => compactLayoutKey(addressTexts), [addressTexts]);
+  const layout = modelLayout(model && saved.presentation?.documents?.[model.id], layoutKey);
+  /** An element whose compact text the Service has not answered yet: its card waits, rather than drawing at a default place first. */
+  const awaitingText = (address: ModelAddress) => projection.isFetching && layoutKey(address) === undefined;
   /**
    * Where each component without a saved position was first shown: it stays there, whatever is added or removed. A
    * boundary card's place follows from the components (`outputsAt`), so it is not held.
@@ -578,6 +595,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const stored = held?.get(key) ?? layout.position(address);
     if (stored) return stored;
     const shown = JSON.stringify([saved.project_id, model?.id, key]);
+    if (awaitingText(address)) return landed.current.get(key)?.position ?? initial();
     if (address.element.kind !== 'component') return initial();
     const first = shownAt.current.get(shown) ?? initial();
     if (interior) shownAt.current.set(shown, first);
@@ -591,7 +609,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
    * not move when a selected value removes a component.
    */
   const gridColumns = Math.max(0, ...Object.keys(drawnInterior?.components ?? {}).map((id, index) =>
-    layout.position(at(graph, { kind: 'component', id })) ? 0 : index + 1));
+    layout.position(at(graph, { kind: 'component', id })) || awaitingText(at(graph, { kind: 'component', id })) ? 0 : index + 1));
   const outputsAt = { x: 245 + 235 * Math.max(1, Math.min(gridColumns, 4)), y: 38 };
   const placed = model ? placing.filter((item) => item.document === model.id && item.graph === graphId && !interior?.components?.[item.id]) : [];
   const mountKey = JSON.stringify([saved.project_id, model?.id, graphId]);
@@ -842,8 +860,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (!model) return false;
     const item = { document: model.id, graph: graphId, id: modelMemberKey(), component, position, flipped };
     setPlacing((prior) => [...prior, item]);
+    const key = addressKey(at(graph, { kind: 'component', id: item.id }));
+    landed.current.set(key, { position, flipped });
     try {
-      return await adding(item.id);
+      const added = await adding(item.id);
+      if (!added) landed.current.delete(key);
+      return added;
     } finally {
       setPlacing((prior) => prior.filter((other) => other !== item));
     }
@@ -1138,10 +1160,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       position: cardPosition(address, () => ghost && wasAt ? wasAt : definition ? positionAt(index)
         : id === inputCard ? { x: 18, y: 38 } : outputsAt),
       selected: !!definition && selectedIds.has(key),
+      hidden: !!definition && awaitingText(address) && !landed.current.has(key),
       draggable: !ghost && editTopology && !locked && !pick,
       selectable: !!definition && !pick,
       data: {
-        address, name, headline, ports, collapsed: !!definition && collapsed, flipped: layout.flipped(address),
+        address, name, headline, ports, collapsed: !!definition && collapsed, flipped: awaitingText(address) ? landed.current.get(key)?.flipped : layout.flipped(address),
         locked: ghost || locked || !editTopology, physicalConnections: !!physical, stacked: definition?.kind === 'composite',
         ghost, change: definition && changeMark(address), portChanges: portChanges.get(id),
         selected: !!definition && selectedIds.has(key),
@@ -1689,10 +1712,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       {evaluate && !refused && <StudioRegion state={studioReadState(
         'model', attachments.data, attachments.error, () => { void attachments.refetch(); },
       )} />}
-      {!evaluate && projection.error && <StudioRegion state={studioReadState(
+      {(!projected || !evaluate && projection.error) && <StudioRegion state={studioReadState(
         'model', projection.data, projection.error, () => { void projection.refetch(); },
       )} />}
-      <div ref={canvasArea} className="min-h-0 flex-1">
+      {projected && <div ref={canvasArea} className="min-h-0 flex-1">
         <ModelCanvas key={mountKey} nodes={nodes} edges={edges} physical={!!physical} locked={locked} canEdit={editTopology}
           collapsed={collapsed} viewportRef={viewport} collapse={collapse} lock={lock} viewportCommands={viewportCommands}
           onCanvasPoint={(point) => { cursor.current = point; }}
@@ -1750,7 +1773,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             void apply(studioName('moveAttachment'), { op: 'move_wire_attachment', address, destination, after })
               .then((ok) => { if (ok) select(attachmentAddress(destination, id)); });
           }} />
-      </div>
+      </div>}
     </div> : null,
     drawer: model && <Drawer>
       {editTopology && <LibraryList sections={sections} section="model.library" name={studioName('library')} searchName="searchLibrary"

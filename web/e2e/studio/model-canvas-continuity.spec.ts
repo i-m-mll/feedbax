@@ -196,25 +196,40 @@ test('Model cards added from the Library overlap no other card and stay put acro
   expect(await flow()).toEqual(shown);
 });
 
-/** A card whose data changes while its name is edited stays shown, and the edit keeps the focus. */
-test('a Model card renamed while its ports load keeps the name field focused', async ({ page, request }) => {
+/**
+ * A Model card is drawn only once the Service has answered where it is stored, so it appears at its stored place and
+ * not first at a default one; a move stores the card under its compact address, and the card is there after a reload.
+ */
+test('a moved Model card is stored under its compact address and is drawn there after a reload', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const projection = await hold(page, `${projectPath}/model/projection`, () => true);
   const model = await openModel(page, snapshot.project_id);
   const card = model.locator('.react-flow__node[data-id="cell"]');
-  await expect(card).toBeVisible();
   await projection.sent;
-  await card.locator('header').click();
-  await page.keyboard.press('F2');
-  const name = card.getByRole('textbox', { name: 'Name', exact: true });
-  await expect(name).toBeFocused();
-  await page.keyboard.type('Renamed');
-  const before = await card.evaluate((element) => element.innerHTML);
-
+  await animationFrames(page, 10);
+  await expect(card).toHaveCount(0);
   projection.release();
-  await expect.poll(() => card.evaluate((element) => element.innerHTML)).not.toBe(before);
-  await expect(name).toBeFocused();
-  await expect(name).toHaveValue(/Renamed$/);
+  await projected(model);
+
+  const header = (await card.locator('header').boundingBox())!;
+  const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/model/edit` &&
+    response.request().postDataJSON()?.command?.operation?.op === 'move_cards');
+  await page.mouse.move(header.x + 20, header.y + header.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(header.x + 100, header.y + header.height / 2 + 70, { steps: 8 });
+  await page.mouse.up();
+  const { result } = await (await saved).json() as { result: { status: string; snapshot: typeof snapshot } };
+  expect(result.status).toBe('applied');
+  const positions = result.snapshot.presentation?.documents?.['point-mass']?.positions ?? {};
+  expect(Object.keys(positions).length).toBeGreaterThan(0);
+  for (const key of Object.keys(positions)) expect(key).not.toMatch(/[{"]/);
+  const moved = await card.evaluate((node) => (node as HTMLElement).style.transform);
+
+  await page.reload();
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await projected(model);
+  expect(await card.evaluate((node) => (node as HTMLElement).style.transform)).toBe(moved);
 });
 
 /** A field stays editable while another edit saves, and an edit made in it then lands once that save completes. */
