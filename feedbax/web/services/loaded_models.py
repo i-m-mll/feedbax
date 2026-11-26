@@ -1,5 +1,6 @@
 """Publish fitted native weights and export retained model products."""
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentTreeRef
 from feedbax.contracts.effective_success import success_content_ref
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, ModelFitReport
@@ -7,7 +8,7 @@ from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, Stor
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_inputs import DocumentReference
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.studio_loaded_model import (
     StudioLoadedModelDoesNotFit, StudioLoadedModelExportRequest, StudioLoadedModelImported,
     StudioLoadedModelImportQuery, StudioLoadedModelImportResult, StudioLoadedModelUnreadableArchive,

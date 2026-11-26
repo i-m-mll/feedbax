@@ -393,7 +393,7 @@ def dump_studio_project(project_file: StudioProjectFile, *, registries: StoredRe
     """Serialize the semantic model beside its presentation."""
     protected = (
         ("project", family, name, *path)
-        for (family, name), paths in protected_project_fields(project_file.project).items()
+        for (family, name), paths in protected_project_fields(project_file.project, registries=registries).items()
         for path in paths
     )
     return write_project_file(project_file, protected=protected, registries=registries, source="Studio project")
@@ -405,7 +405,7 @@ def project_semantic_root(project: Project) -> str:
 
 
 def _text_project_models(
-    project: Project, configuration: ProjectConfiguration,
+    project: Project, configuration: ProjectConfiguration, *, registries: StoredRegionResolver,
 ) -> dict[str, tuple[StrictModel, Collection[StoredPath]]]:
     sweep = project.sweep
     rows = sweep.rows if sweep is not None else {}
@@ -418,7 +418,7 @@ def _text_project_models(
         sweep=declaration_sweep,
         variants=list(rows),
     )
-    protected = protected_project_fields(project)
+    protected = protected_project_fields(project, registries=registries)
     return {
         project_declaration_name(configuration.project): (manifest, ()),
         **{
@@ -440,7 +440,7 @@ def dump_text_project(
     """Produce authored project file bytes, optionally for the paths being created."""
     return {
         name: write_project_file(model, protected=protected, registries=registries, source=name)
-        for name, (model, protected) in _text_project_models(project, configuration).items()
+        for name, (model, protected) in _text_project_models(project, configuration, registries=registries).items()
         if only is None or name in only
     }
 
@@ -450,8 +450,8 @@ def text_project_changes(
     only: Collection[str] | None = None,
 ) -> dict[str, bytes | None]:
     """Write changed authored values and use the exact preimage of a repaired invalid file."""
-    old = _text_project_models(before.project, before.configuration)
-    new = _text_project_models(after, before.configuration)
+    old = _text_project_models(before.project, before.configuration, registries=registries)
+    new = _text_project_models(after, before.configuration, registries=registries)
     changes = {}
     for name in only if only is not None else sorted(old.keys() | new.keys()):
         if name not in old and name not in new:

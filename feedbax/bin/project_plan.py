@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from feedbax.application.stored_regions import project_holders
 from feedbax.bin.project_commands import CommandOutput
 
 from feedbax._atomic import write_bytes_atomic
@@ -43,7 +44,7 @@ from feedbax.planner.project_plan_io import (
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
 from feedbax.contracts.project_sweep import DEFAULT_SWEEP_ROW
 from feedbax.contracts.result_address import (
-    AddressProblem, ResultAddress, ResultTarget, parse_labels, project_holders, row_names, row_selector, selects,
+    AddressProblem, ResultAddress, ResultTarget, parse_labels, row_names, row_selector, selects,
 )
 from feedbax.persistence.project_subject import terminal_train_reader
 

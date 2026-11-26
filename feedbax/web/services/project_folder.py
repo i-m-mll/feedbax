@@ -150,7 +150,7 @@ class ProjectFolderService(ProjectFolder):
         read_pin = TextProjectExternalInputs(
             text, authority=location.path, authority_identity=location.identity,
         ).read
-        return BaseReaders(external=read_pin, figure_external=read_pin)
+        return BaseReaders(external=read_pin, figure_external=read_pin, stored_regions=self._stored_regions)
 
     def review_model_connections(
         self, project_id: str, body: ModelConnectionReviewRequest, bundle: ApplicationRegistryBundle,

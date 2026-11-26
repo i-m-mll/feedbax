@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -10,8 +10,11 @@ from pydantic import BaseModel
 
 from feedbax.application.composition import load_application
 from feedbax.contracts.analysis_document import OperationElement
+from feedbax.contracts.project import Document, Project, RootDocument
+from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document as _compose_document
+from feedbax.contracts.result_address import ElementHolders, project_holders as _project_holders
 from feedbax.contracts.stored_model import StoredLeafComponent, model_leaf_expression_values
-from feedbax.contracts.stored_regions import StoredRegion, StoredTrainInline, declared_stored_region
+from feedbax.contracts.stored_regions import StoredRegion, StoredRegionResolver, StoredTrainInline, declared_stored_region
 from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.contracts.training_document import TrainingDocument
@@ -98,3 +101,17 @@ class StoredRegionRegistries:
                         yield value.parameters
                     case "components":
                         yield value.params.model
+
+
+_INSTALLED_REGIONS = StoredRegionRegistries()
+
+
+def compose_document(
+    read_document: Callable[[str], Document | None], name: str, *, regions: StoredRegionResolver | None = None,
+) -> RootDocument | ProjectDiagnostic:
+    """Compose a document using supplied or installed application declarations."""
+    return _compose_document(read_document, name, regions=_INSTALLED_REGIONS if regions is None else regions)
+
+
+def project_holders(project: Project) -> ElementHolders:
+    return _project_holders(project, regions=_INSTALLED_REGIONS)

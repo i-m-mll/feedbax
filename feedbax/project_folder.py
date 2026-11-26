@@ -23,7 +23,7 @@ from typing import Literal, Protocol, TYPE_CHECKING
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from feedbax.application.project_writer import dump_text_project
-from feedbax.application.stored_regions import StoredRegionRegistries
+from feedbax.application.stored_regions import StoredRegionRegistries, compose_document
 from feedbax._atomic import sync_parent_directories, write_bytes_atomic
 from feedbax._secure_fs import (
     DirectoryRecord, SecurePathRigor, close_directory_chain, directory_open_flags, open_directory_chain,
@@ -46,11 +46,13 @@ from feedbax.contracts.stored_model import (
     STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, authored_model_payload,
 )
 from feedbax.contracts.project import (
-    BasedDocument, Document, LoadedModelDocument, OrderProjectValue, Project, RootDocument, Sha256,
-    apply_differences, apply_document_edit, diff, json_pointer_parts, member_name,
+    BasedDocument, Document, DocumentEdit, LoadedModelDocument, OrderDocumentMembers, OrderProjectValue, Project, RootDocument, Sha256,
+    apply_document_edit, diff, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.project_storage import stored_keyed_collection, write_project_file
+from feedbax.contracts.project_storage import (
+    apply_document_differences, difference_parent_paths, document_difference_basis, stored_keyed_collection, write_project_file,
+)
 from feedbax.contracts.stored_regions import StoredRegionResolver
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
@@ -77,7 +79,7 @@ from feedbax.contracts.project_io import (
 from feedbax.planner.project_plan import (
     ProjectPlan, ProjectPlanMemo, RunKey, _builtin_model_registry, compile_project, compiler_authority, project_variants,
 )
-from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, ResolutionCode, compose_document
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, ResolutionCode
 from feedbax.plugins.declarations import declaration_package
 from feedbax.project_environment import PackageAvailability
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_path, model_field_target
@@ -392,6 +394,7 @@ def preview_authored_files(project: Project, files: Sequence[StudioProjectFilePa
 
 def document_file(
     name: str, document: Document, content: dict[str, JsonValue], base: dict[str, JsonValue] | None,
+    *, regions: StoredRegionResolver | None = None, edits: Sequence[DocumentEdit] | None = None,
 ) -> StudioProjectFilePatch | None:
     """The document's file holding ``content``: its payload, or its differences from ``base``; none when unchanged."""
     address = AuthoredFileAddress(kind="document", id=name)
@@ -401,9 +404,26 @@ def document_file(
             return None
         return StudioProjectFilePatch(address=address, patches=[SetProjectValue(op="replace", path="/payload", value=content)])
     assert base is not None
-    differences = diff(base, content, keyed_collection=keyed)
+    if regions is None:
+        regions = StoredRegionRegistries()
+    basis = document_difference_basis(
+        document.schema_id, base, difference_parent_paths(document.differences), registries=regions,
+    )
+    differences = diff(basis, content, keyed_collection=keyed)
+    if edits is not None:
+        for path, previous in document.differences.items():
+            ordered = isinstance(previous, OrderDocumentMembers)
+            if any(path == edit.path or path.startswith(edit.path + "/")
+                   or not ordered and edit.path.startswith(path + "/") for edit in edits):
+                continue
+            if any(path.startswith(parent + "/") and not isinstance(difference, OrderDocumentMembers)
+                   for parent, difference in differences.items()):
+                continue
+            if not ordered:
+                differences = {at: difference for at, difference in differences.items() if not at.startswith(path + "/")}
+            differences[path] = previous
     if differences == document.differences:
-        previous = apply_differences(base, document.differences, keyed_collection=keyed)
+        previous = apply_document_differences(document.schema_id, base, document.differences, registries=regions)
         if not diff(previous, content, keyed_collection=keyed):
             return None
     return StudioProjectFilePatch(address=address, patches=[SetProjectValue(
@@ -568,7 +588,10 @@ def compile_saved_project(
     source_runs = frozenset(source_runs)
     stamp = (
         project_id, text.revision, semantic_root, text.root, store, source_runs,
-        compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods),
+        compiler_authority(
+            components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods,
+            stored_regions=readers.stored_regions,
+        ),
         readers.external is not None, readers.figure_external is not None,
     )
     observations: dict[str, dict[object, object]] = {}
@@ -1141,7 +1164,7 @@ class ProjectFolder:
         problems = []
         for name, document in documents.items():
             if isinstance(document, BasedDocument):
-                entry = compose_document(documents.get, name)
+                entry = compose_document(documents.get, name, regions=self._stored_regions)
                 if isinstance(entry, ProjectDiagnostic):
                     problems.append(StudioProjectWindowMapProblem.from_diagnostic(
                         replace(entry, authored_file=f"documents/{entry.document or name}.json"),
@@ -1291,8 +1314,10 @@ class ProjectFolder:
 
     def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:
         if not _may_read_figure_pin(text.project):
-            return BaseReaders()
-        return BaseReaders(figure_external=TextProjectExternalInputs(text, authority=self.root).read)
+            return BaseReaders(stored_regions=self._stored_regions)
+        return BaseReaders(
+            figure_external=TextProjectExternalInputs(text, authority=self.root).read, stored_regions=self._stored_regions,
+        )
 
     @contextmanager
     def admission_plan(self, project_id: str) -> Iterator[SettledProjectPlan]:
@@ -1415,7 +1440,7 @@ class ProjectFolder:
             check_revision("project", revision, text.revision)
             existing = name in text.project.documents
             if existing:
-                document = compose_document(text.project.documents.get, name)
+                document = compose_document(text.project.documents.get, name, regions=self._stored_regions)
                 if isinstance(document, ProjectDiagnostic) or document.schema_id != LOADED_MODEL_SCHEMA_ID:
                     raise ProjectFileExists(f"documents/{name}.json")
                 saved = LoadedModelDocument.model_validate(document.payload)
@@ -1541,7 +1566,7 @@ class ProjectFolder:
             return new_step_name(project.steps, member.step)
         if member.document not in project.documents:
             raise ProjectFolderNotFound(f"documents/{member.document}.json")
-        entry = compose_document(project.documents.get, member.document)
+        entry = compose_document(project.documents.get, member.document, regions=self._stored_regions)
         if isinstance(entry, ProjectDiagnostic):
             raise ProjectFolderInvalid(entry.detail)
         if entry.schema_id != ANALYSIS_SCHEMA or not isinstance(entry.payload, dict):
@@ -1551,7 +1576,7 @@ class ProjectFolder:
         for name, document in project.documents.items():
             if document.schema_id != ANALYSIS_SCHEMA:
                 continue
-            composed = compose_document(project.documents.get, name)
+            composed = compose_document(project.documents.get, name, regions=self._stored_regions)
             if isinstance(composed, ProjectDiagnostic):
                 continue
             elements = analysis_elements(composed.payload)
@@ -1582,7 +1607,7 @@ class ProjectFolder:
 
             def composed(name: str) -> dict:
                 """The document ``name`` as a root document holding its composed payload, under its own label."""
-                document = compose_document(text.project.documents.get, name)
+                document = compose_document(text.project.documents.get, name, regions=self._stored_regions)
                 if isinstance(document, ProjectDiagnostic):
                     raise ProjectFolderInvalid(f"{member_name(text.project.documents, name)} cannot be composed: {document.detail}")
                 return document.model_dump(mode="json", by_alias=True)
@@ -1590,7 +1615,7 @@ class ProjectFolder:
             def element_keys() -> set[str]:
                 return {
                     key for name, document in text.project.documents.items() if document.schema_id == ANALYSIS_SCHEMA
-                    if isinstance(entry := compose_document(text.project.documents.get, name), RootDocument)
+                    if isinstance(entry := compose_document(text.project.documents.get, name, regions=self._stored_regions), RootDocument)
                     for key in payload_elements(entry.payload)
                 }
 
@@ -1874,7 +1899,7 @@ class ProjectFolder:
         base = None
         if isinstance(entry, BasedDocument):
             base, _ = model_edit_source(snapshot, entry.base.document)
-        files = [file] if (file := document_file(document, entry, payload, base)) is not None else []
+        files = [file] if (file := document_file(document, entry, payload, base, regions=self._stored_regions)) is not None else []
         if patches := _layout_patches(
             snapshot.presentation, {document: layout}, had_entry=had_entry, had_documents=had_documents,
         ):

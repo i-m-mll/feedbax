@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
-from functools import cache, lru_cache
+from copy import deepcopy
+from functools import cache, lru_cache, partial
 from types import MappingProxyType, UnionType
 from typing import Annotated, Any, TYPE_CHECKING, TypeAliasType, Union, get_args, get_origin
 
@@ -22,7 +23,10 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import ExpressionSiteKind
 from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.objective_document import ObjectiveTerm, StoredObjectiveTerm
-from feedbax.contracts.project import ExternalBase, InlineBase, RootDocument, SetDocumentValue, Step
+from feedbax.contracts.project import (
+    Differences, ExternalBase, InlineBase, OrderDocumentMembers, Payload, RootDocument, SetDocumentValue, Step,
+    apply_differences, json_pointer_parts,
+)
 from feedbax.contracts.project_sweep import AxisValue, NamedAxis, SetValue, Sweep, SweepException
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.stored_members import StoredAddressedMembers, StoredMembers
@@ -309,12 +313,14 @@ def _same_stored_value(left: JsonValue, right: JsonValue, *, real_site: bool) ->
 def _projected_file(
     model: BaseModel, exclude: set[str] | None, protected: Iterable[StoredPath],
     *, keep_explicit: bool = False, registries: StoredRegionResolver | None = None,
+    parents: frozenset[StoredPath] = frozenset(),
 ) -> tuple[JsonValue, set[StoredPath]]:
     from feedbax.contracts.stored_regions import StoredRegion, declared_stored_region, step_inline_model, typed_region
 
     resolve_region = registries.region if registries is not None else declared_stored_region
     real_tokens: set[StoredPath] = set()
     prefixes = {path[:end] for path in protected for end in range(1, len(path) + 1)}
+    parent_prefixes = {path[:end] for path in parents for end in range(1, len(path) + 1)}
     _, base_tags = _schema_inventory()
     tags = {model: set(fields) for model, fields in base_tags.items()}
     registered_here: set[type[BaseModel]] = set()
@@ -323,7 +329,7 @@ def _projected_file(
         context = {key: value for key, value in child.items() if key in region.contextual}
         declared = {key: value for key, value in child.items() if key not in context}
         typed, encoded, complete = typed_region(region, declared, inline=inline)
-        if not complete and not inline:
+        if not complete and not inline and not parents:
             authored = region.authored_values(child)
             remember_reals(authored, path)
             return authored
@@ -376,11 +382,17 @@ def _projected_file(
                     or isinstance(value, OverridePatch) and name == "value"
                     or keep_explicit and key in encoded
                 )
-                if key not in encoded and not observed:
+                parent_needed = child_path in parents
+                if key not in encoded and not (observed or parent_needed):
                     continue
-                raw = getattr(value, name)
+                raw = getattr(value, name, None)
                 child = encoded[key] if key in encoded else to_jsonable_python(raw, by_alias=True)
-                region = resolve_region(value, name) if isinstance(child, dict) and (explicit or child) else None
+                needed = parent_needed and isinstance(child, dict)
+                if key not in encoded and not (observed or needed):
+                    continue
+                region = None
+                if (not parents or child_path in parent_prefixes) and isinstance(child, dict) and (explicit or child or needed):
+                    region = resolve_region(value, name)
                 if region is not None:
                     if region.model is None:
                         remember_reals(child, child_path)
@@ -389,7 +401,7 @@ def _projected_file(
                     if not (isinstance(child.get("document"), str) and child.keys() <= {"document", "pointer", "unresolved"}):
                         child = project_region(region, child, child_path)
                         raw = child
-                if not (required or observed) and (
+                if not (required or observed or needed) and (
                     isinstance(value, _REFINEMENTS) or _same_stored_value(
                         child, _field_default(cls, name),
                         real_site=isinstance(value, (ObjectiveTerm, StoredObjectiveTerm)) and name == "weight",
@@ -422,6 +434,60 @@ def _projected_file(
         return encoded
 
     return project(model, model.model_dump(mode="json", by_alias=True), ()), real_tokens
+
+
+def difference_parent_paths(differences: Differences) -> Iterator[StoredPath]:
+    for path, difference in differences.items():
+        parts = json_pointer_parts(path)
+        yield parts if isinstance(difference, OrderDocumentMembers) else parts[:-1]
+
+
+def document_difference_basis(
+    schema_id: str, base: Payload, parent_paths: Iterable[StoredPath], *, registries: StoredRegionResolver | None = None,
+) -> Payload:
+    """Expose the declared object defaults required to apply a based document's paths."""
+    missing: dict[StoredPath, None] = {}
+    parents: set[StoredPath] = set()
+    for parts in parent_paths:
+        current: JsonValue = base
+        for index, part in enumerate(parts):
+            if not isinstance(current, dict):
+                break
+            if part not in current:
+                missing[parts[:index + 1]] = None
+                parents.update(parts[:end] for end in range(index + 1, len(parts) + 1))
+                break
+            current = current[part]
+    if not missing or (model := stored_document_models().get(schema_id)) is None:
+        return base
+    try:
+        typed = model.model_validate(base)
+        projected, _ = _projected_file(typed, None, (), registries=registries, parents=frozenset(parents))
+    except ValueError:
+        return base
+    if not isinstance(projected, dict):
+        return base
+
+    # Insert only declared objects that were absent from the authored base.
+    result = deepcopy(base)
+    for path in missing:
+        candidate: JsonValue = projected
+        for part in path:
+            candidate = candidate.get(part) if isinstance(candidate, dict) else None
+        if isinstance(candidate, dict):
+            target = result
+            for part in path[:-1]:
+                target = target[part]
+            target[path[-1]] = candidate
+    return result
+
+
+def apply_document_differences(
+    schema_id: str, base: Payload, differences: Differences, *, registries: StoredRegionResolver | None = None,
+) -> Payload:
+    """Apply persisted differences over the declared parents in the base document."""
+    basis = document_difference_basis(schema_id, base, difference_parent_paths(differences), registries=registries)
+    return apply_differences(basis, differences, keyed_collection=partial(stored_keyed_collection, schema_id))
 
 
 def stored_project_value(

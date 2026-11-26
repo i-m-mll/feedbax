@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 
 from pydantic import JsonValue
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.compiler.model_document import model_tau_seconds
@@ -27,7 +28,7 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import BasedDocument, InlineBase, SetProjectValue
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.project_sources import ValueSource, pointer

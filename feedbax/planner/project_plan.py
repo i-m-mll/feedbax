@@ -15,6 +15,7 @@ from pydantic import Field, JsonValue, TypeAdapter, ValidationError
 from pydantic_core import to_json
 
 from feedbax.application.composition import application_python_tasks, load_application
+from feedbax.application.stored_regions import StoredRegionRegistries
 from feedbax.checkpoint_coordinates import MAX_CHECKPOINT_COORDINATE
 from feedbax.plugins.declarations import UnknownDeclaration, missing_declaration
 from feedbax.contracts import request_identity
@@ -34,6 +35,7 @@ from feedbax.contracts.matrix_core import apply_stored_patch_in_place, apply_val
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+from feedbax.contracts.stored_regions import StoredRegionResolver
 from feedbax.contracts.model_input import DocumentInput, InitialModelSource, authored_document_input, encode_document_input
 from feedbax.contracts.member_family import FamilyProblem, StoredFamilyMember, expand_members, family_reason
 from feedbax.contracts.objective_document import ObjectiveDocument, StoredObjectiveDocument, objective_weight_title
@@ -48,7 +50,8 @@ from feedbax.contracts.project import (
 )
 from feedbax.contracts.run_rule import RuleRefusal, bind_metric_conditions
 from feedbax.contracts.project_storage import (
-    stored_expression_site, stored_keyed_collection, stored_project_expression_site, stored_project_value,
+    difference_parent_paths, document_difference_basis, stored_expression_site, stored_keyed_collection,
+    stored_project_expression_site, stored_project_value,
 )
 from feedbax.contracts.expression_text import RuleBest
 from feedbax.contracts.project_inputs import (
@@ -637,6 +640,7 @@ class SourceSnapshot:
     variant_sites: dict[str, bool]
     sweeps: dict[tuple[str, str], SourceSweep]
     training_methods: TrainingMethodRegistry | None = field(default=None, repr=False, compare=False)
+    stored_regions: StoredRegionResolver | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -647,7 +651,9 @@ class PlanSourceIndex:
 
     @cached_property
     def _resolver(self) -> _Compiler:
-        readers = BaseReaders(external=self.externals.get, figure_external=self.externals.get)
+        readers = BaseReaders(
+            external=self.externals.get, figure_external=self.externals.get, stored_regions=self.snapshot.stored_regions,
+        )
         project = self.snapshot.project
         methods = self.snapshot.training_methods
         if methods is None and any(step.kind == "train" for step in project.steps.values()):
@@ -2147,12 +2153,13 @@ def compiler_authority(
     training_methods: TrainingMethodRegistry | None,
     figure_templates: FigureTemplateRegistry | None,
     synthesis_methods: SynthesisMethodRegistry | None = None,
+    *, stored_regions: StoredRegionResolver | None = None,
 ) -> tuple[object, ...]:
     """Identify the compiler code and registries whose output a memoized plan depends on."""
     return (
         compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
         request_identity.request_codec_authority(), components, operations, functions, python_tasks, training_methods,
-        figure_templates, synthesis_methods,
+        figure_templates, synthesis_methods, id(stored_regions),
     )
 
 
@@ -2174,7 +2181,11 @@ class _Compiler:
         capture_sources: bool = False,
     ):
         self.project = project
-        self.readers = readers
+        self.regions = readers.stored_regions if readers.stored_regions is not None else StoredRegionRegistries(
+            training_methods=training_methods, synthesis_methods=synthesis_methods, operations=operations,
+            python_tasks=python_tasks, components=components,
+        )
+        self.readers = replace(readers, stored_regions=self.regions)
         self.previous = previous
         self.operations = operations
         self.figure_templates = figure_templates
@@ -2260,7 +2271,7 @@ class _Compiler:
                     )
                 if target.document is None:
                     raise ValueError("A project Model field target must name a step or document")
-                entry = compose_document(self.project.documents.get, target.document)
+                entry = compose_document(self.project.documents.get, target.document, regions=self.regions)
                 return isinstance(entry, RootDocument) and entry.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID and _integer_model_site(
                     StoredModelDocument.model_validate(entry.payload).lower(components), address, components,
                 )
@@ -2384,12 +2395,16 @@ class _Compiler:
                 ))):
                     path = based_writes[document][0][0]
                     documents = DOCUMENTS.validate_python(data["documents"])
-                    base = compose_document(documents.get, documents[document].base.document)
+                    base = compose_document(documents.get, documents[document].base.document, regions=self.regions)
                     if isinstance(base, ProjectDiagnostic):
                         raise ValueError(base.detail)
                     keyed = partial(stored_keyed_collection, base.schema_id)
+                    differences = documents[document].differences
+                    basis = document_difference_basis(
+                        base.schema_id, base.payload, difference_parent_paths(differences), registries=self.regions,
+                    )
                     content = {"documents": {document: {"payload": apply_differences(
-                        base.payload, documents[document].differences, keyed_collection=keyed,
+                        basis, differences, keyed_collection=keyed,
                     )}}}
                     for path, patch in based_writes[document]:
                         if isinstance(patch, SetField):
@@ -2416,7 +2431,7 @@ class _Compiler:
                                     origins = place_source(origins, parts, shape)
                     data["documents"][document]["differences"] = {
                         at: difference.model_dump(mode="json") for at, difference in diff(
-                            base.payload, content["documents"][document]["payload"], keyed_collection=keyed,
+                            basis, content["documents"][document]["payload"], keyed_collection=keyed,
                         ).items()
                     }
                 self.variants[row.id] = Project.model_validate(data)
@@ -2464,7 +2479,7 @@ class _Compiler:
             MappingProxyType(self.selected_definitions),
             SourceSnapshot(
                 self.project.model_copy(deep=True), self.variant_sites, self.source_sweeps,
-                training_methods=self.training_methods,
+                training_methods=self.training_methods, stored_regions=self.regions,
             ) if self.source_sweeps is not None else None,
             MappingProxyType(self.exception_matches),
             MappingProxyType(dict(self.variants)),
@@ -2489,7 +2504,7 @@ class _Compiler:
     def shared_key_diagnostics(self) -> list[ProjectDiagnostic]:
         """A diagnostic on each Analysis document holding a key an unrelated document holds, once for every variant
         that shares it."""
-        found = {variant: shared_element_keys(project) for variant, project in self.variants.items()}
+        found = {variant: shared_element_keys(project, regions=self.regions) for variant, project in self.variants.items()}
         everywhere = set.intersection(*(set(keys) for keys in found.values())) if found else set()
         problems = []
         for variant, keys in found.items():
@@ -2817,7 +2832,7 @@ class _Compiler:
                             (document, _), = source_models
                             # The row patches the composed document. Its stored key
                             # presence selects each strict Add or Replace.
-                            composed = compose_document(read, document)
+                            composed = compose_document(read, document, regions=self.regions)
                             if not isinstance(composed, ProjectDiagnostic) and isinstance(composed.payload, dict):
                                 model = document, composed.payload
                     sets = resolve_set_axes(composition.sweep, read, model)
@@ -3440,7 +3455,7 @@ class _Compiler:
             if shared is None:
                 detail = f"Shares no document with {member_name(documents, subject)}." if subject else "Requires a subject Model document."
                 return replace(problem(EVALUATION_MODEL, detail), code=ResolutionCode.BAD_REFERENCE)
-            base = compose_document(read, shared)
+            base = compose_document(read, shared, regions=self.regions)
             if isinstance(base, ProjectDiagnostic):
                 return replace(base, step=key.step, row=key.row, variant=key.variant)
             assert isinstance(base.payload, dict)
@@ -3593,7 +3608,7 @@ class _Compiler:
                 )
                 if shared is None or not isinstance(slots["model"], dict):
                     raise ValueError("The Evaluate Model must share a document with the Loaded Model.")
-                base = compose_document(project.documents.get, shared)
+                base = compose_document(project.documents.get, shared, regions=self.regions)
                 if isinstance(base, ProjectDiagnostic):
                     raise ValueError(base.detail)
                 assert isinstance(base.payload, dict)
@@ -5042,7 +5057,7 @@ class _Compiler:
                     ResolutionCode.BAD_REFERENCE, path, "Choose a Loaded Model document.", name,
                     missing_subject=reference.source.document if reference.source.unresolved else None,
                 )
-            document = compose_document(self.variants[variant].documents.get, reference.source.document)
+            document = compose_document(self.variants[variant].documents.get, reference.source.document, regions=self.regions)
             if isinstance(document, ProjectDiagnostic):
                 return replace(document, path=path, step=name)
             try:
@@ -5102,7 +5117,7 @@ class _Compiler:
                     ResolutionCode.MISSING_DOCUMENT, f"{path}.where", subset_document,
                     name, document=subset_document, missing_subject=subset_document,
                 )
-            document = compose_document(self.variants[variant].documents.get, subset_document)
+            document = compose_document(self.variants[variant].documents.get, subset_document, regions=self.regions)
             if isinstance(document, ProjectDiagnostic):
                 return replace(document, path=f"{path}.where", step=name)
             try:
@@ -5397,6 +5412,7 @@ def compile_project(
         ).plan()
     authority = compiler_authority(
         components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods,
+        stored_regions=readers.stored_regions,
     )
     ticket, previous = memo._begin(authority)
     compiler = _Compiler(
@@ -5406,6 +5422,7 @@ def compile_project(
     plan = compiler.plan()
     if authority == compiler_authority(
         components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods,
+        stored_regions=readers.stored_regions,
     ):
         memo._publish(ticket, authority, compiler.work)
     return plan

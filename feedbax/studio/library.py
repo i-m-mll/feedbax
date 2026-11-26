@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.contracts.project import DOCUMENT, Document, RootDocument
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.plugins.bootstrap import installed_packages
 from feedbax.plugins.declarations import DistributionSource

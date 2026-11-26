@@ -25,12 +25,13 @@ from feedbax.contracts.matrix_core import (
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
-from feedbax.contracts.project_storage import stored_expression_site, stored_keyed_collection, stored_step_expression_site
+from feedbax.contracts.project_storage import (
+    apply_document_differences, stored_expression_site, stored_step_expression_site,
+)
 from feedbax.contracts.project import (
     DifferenceNotApplied,
     Document,
     RootDocument,
-    apply_differences,
     base_chain,
     check_typed_payload,
     DocumentReference,
@@ -82,6 +83,7 @@ from feedbax.contracts.project_sweep import (
 from feedbax.contracts.run_matrix import CompositionDeltaError, apply_composition_deltas
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.stored_regions import StoredRegionResolver
 from feedbax.contracts.train_settings import TrainMethodSettings, TrainSettingsResolver, train_sweep_basis
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 
@@ -277,6 +279,7 @@ class BaseReaders:
     figure_external: Callable[[str], bytes | None] | None = None
     terminal_train: Callable[[str], TerminalTrainSource | None] | None = None
     imported_model: Callable[[LoadedModelRead], ResolvedImportedModel] | None = None
+    stored_regions: StoredRegionResolver | None = None
 
 
 def _at_sweep_origin(problem: ProjectDiagnostic, source: ValueSource) -> ProjectDiagnostic:
@@ -498,7 +501,9 @@ def composed_document_sources(project: Project, name: str, variant_sources: Any 
     return _Documents(project, variant_sources=variant_sources).shape(name)
 
 
-def compose_document(read_document: Callable[[str], Document | None], name: str) -> RootDocument | ProjectDiagnostic:
+def compose_document(
+    read_document: Callable[[str], Document | None], name: str, *, regions: StoredRegionResolver | None = None,
+) -> RootDocument | ProjectDiagnostic:
     """The document ``name`` as a root document holding its composed payload."""
     document = read_document(name)
     if document is None:
@@ -508,7 +513,7 @@ def compose_document(read_document: Callable[[str], Document | None], name: str)
     if isinstance(document, RootDocument):
         return document
     try:
-        payload = _Documents(Project(), read_document=read_document).payload(name, document, "document")
+        payload = _Documents(Project(), read_document=read_document, regions=regions).payload(name, document, "document")
     except _Problem as error:
         return error.diagnostic
     return RootDocument.model_construct(schema_id=document.schema_id, label=document.label, payload=payload)
@@ -525,12 +530,14 @@ class _Documents:
         external: Callable[[str], bytes | None] | None = None,
         partial_figures: bool = False,
         row_patches: Mapping[str, tuple[_DocumentRowPatch, ...]] | None = None,
+        regions: StoredRegionResolver | None = None,
         training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
     ):
         self.step = step
         self.variant_sources = variant_sources
         self.read_document = project.documents.get if read_document is None else read_document
         self.row_patches = row_patches or {}
+        self.regions = regions
         self.training_methods = training_methods
         self.used: set[str] = set()
         self.edited: dict[str, JsonValue] = {}
@@ -587,9 +594,7 @@ class _Documents:
         if not isinstance(content, dict):
             raise problem(ResolutionCode.INVALID_DOCUMENT, "base.document", f"{label} is not an object")
         try:
-            payload = apply_differences(
-                content, document.differences, keyed_collection=partial(stored_keyed_collection, document.schema_id),
-            )
+            payload = apply_document_differences(document.schema_id, content, document.differences, registries=self.regions)
         except DifferenceNotApplied as error:
             raise problem(ResolutionCode.INVALID_DELTA, f"differences.{error.path}", str(error)) from error
         try:
@@ -945,7 +950,7 @@ class _Resolver:
         self.training_methods = training_methods
 
     def documents(self, step: str) -> _Documents:
-        return _Documents(self.project, step, self.variant_sources, self.read_document)
+        return _Documents(self.project, step, self.variant_sources, self.read_document, regions=self.readers.stored_regions)
 
     def base_origins(
         self, name: str, base: InlineBase | RunBase | ExternalBase, payload: Any
@@ -1358,7 +1363,7 @@ class _Resolver:
             self.project, name, self.variant_sources, self.read_document,
             external=self.readers.figure_external if self.project.steps[name].kind == "analyze" else None,
             partial_figures=partial_figures,
-            row_patches=state.row_document_patches, training_methods=self.training_methods,
+            row_patches=state.row_document_patches, training_methods=self.training_methods, regions=self.readers.stored_regions,
         )
 
     def finish(
@@ -1595,7 +1600,7 @@ def validate_project_documents(
     readers: BaseReaders = BaseReaders(),
 ) -> tuple[ProjectDiagnostic, ...]:
     """Validate inlined document payloads using the caller's explicit schema authorities."""
-    documents = _Documents(project, external=readers.figure_external)
+    documents = _Documents(project, external=readers.figure_external, regions=readers.stored_regions)
     failures = []
     for name, document in project.documents.items():
         validator = schemas.get(document.schema_id)

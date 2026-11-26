@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
+from feedbax.application.stored_regions import compose_document
 from feedbax._atomic import write_bytes_atomic
 from feedbax._secure_fs import (
     DirectoryRecord, SecurePathRigor, close_directory_chain, open_directory_chain, open_existing_file,
@@ -23,7 +24,7 @@ from feedbax.contracts.loaded_model import (
 )
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import Document, LoadedModelDocument, ProjectModelArchive
-from feedbax.contracts.project_resolution import LoadedModelRead, ProjectDiagnostic, ResolvedImportedModel, compose_document
+from feedbax.contracts.project_resolution import LoadedModelRead, ProjectDiagnostic, ResolvedImportedModel
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.project_subject import resolve_imported_model

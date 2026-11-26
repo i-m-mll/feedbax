@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import replace
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.compiler.model_attachment import lower_model_difference_values, resolve_effective_model
 from feedbax.compiler.model_document import ModelCompilationProblem
 from feedbax.compiler.model_edit import model_ungroup_eligibility
@@ -21,7 +22,7 @@ from feedbax.contracts.project import (
 )
 from feedbax.planner.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, SelectedRunDefinition
 from feedbax.contracts.project_io import project_declaration_name
-from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.project_folder import ProjectFolderInvalid
 from feedbax.project_model_selection import selected_model

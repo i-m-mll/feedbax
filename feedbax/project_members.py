@@ -12,14 +12,15 @@ import unicodedata
 
 from pydantic import JsonValue
 
+from feedbax.application.stored_regions import compose_document, project_holders
 from feedbax.contracts.project import (
     DOCUMENT, Document, LoadedModelDocument, Project, RootDocument, Step, base_chain, diff, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_inputs import DocumentReference, NamedSubset, StepReference
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.result_address import (
-    ANALYSIS_SCHEMA, ELEMENT_FAMILIES, ElementHolders, family_documents, payload_elements, project_holders,
+    ANALYSIS_SCHEMA, ELEMENT_FAMILIES, ElementHolders, family_documents, payload_elements,
 )
 from feedbax.contracts.studio_project import KeyedFamily, MemberFamily, StudioMemberName
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
