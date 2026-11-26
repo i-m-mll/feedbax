@@ -9,15 +9,40 @@ export const createHoverCardHandle = PreviewCard.createHandle;
 
 /** How long after the last scroll a card stays shut, so rows passing under a still pointer do not open one. */
 const scrollQuiet = 200;
+/** How long the pointer rests on a trigger before its card opens. */
+const restDelay = 400;
+
+/** Whether anything scrolled or dragged recently enough that no card opens; one document holds one pointer. */
+const quiet = { dragging: false, scrolledAt: -Infinity };
+const blocked = () => quiet.dragging || performance.now() - quiet.scrolledAt < scrollQuiet;
 
 export interface HoverCardTriggerProps<Payload> extends Omit<ComponentProps<typeof PreviewCard.Trigger>, 'handle' | 'payload' | 'delay' | 'closeDelay'> {
   handle: HoverCardHandle<Payload>;
   payload: Payload;
 }
 
-/** Opens its card after the pointer rests on it for 400 ms, or when it takes keyboard focus. */
+/**
+ * Opens its card after the pointer rests on it for `restDelay`, or when it takes keyboard focus. A rest after moving
+ * on it counts too, so a card kept shut while the trigger scrolled under the pointer opens once the pointer moves.
+ */
 export function HoverCardTrigger<Payload>(props: HoverCardTriggerProps<Payload>) {
-  return <PreviewCard.Trigger {...props} delay={400} closeDelay={0} />;
+  const { handle, onPointerMove, onPointerLeave } = props;
+  const rest = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(rest.current), []);
+  return <PreviewCard.Trigger {...props} delay={restDelay} closeDelay={0}
+    onPointerMove={(event) => {
+      onPointerMove?.(event);
+      clearTimeout(rest.current);
+      if (event.pointerType !== 'mouse' || handle.isOpen) return;
+      const trigger = event.currentTarget;
+      rest.current = setTimeout(() => {
+        if (!handle.isOpen && !blocked() && trigger.matches(':hover')) handle.open(trigger.id);
+      }, restDelay);
+    }}
+    onPointerLeave={(event) => {
+      onPointerLeave?.(event);
+      clearTimeout(rest.current);
+    }} />;
 }
 
 export interface HoverCardProps<Payload> {
@@ -33,13 +58,11 @@ export function HoverCard<Payload>({ handle, children, beside, className }: Hove
   const layer = usePopupLayer();
   const actions = useRef<PreviewCard.Root.Actions>(null);
   const [trigger, setTrigger] = useState<Element | null>(null);
-  const blocked = useRef({ dragging: false, scrolledAt: -Infinity });
   useEffect(() => {
-    const state = blocked.current;
     const close = () => actions.current?.close();
-    const scrolled = () => { state.scrolledAt = performance.now(); close(); };
-    const dragged = () => { state.dragging = true; close(); };
-    const dropped = () => { state.dragging = false; };
+    const scrolled = () => { quiet.scrolledAt = performance.now(); close(); };
+    const dragged = () => { quiet.dragging = true; close(); };
+    const dropped = () => { quiet.dragging = false; };
     document.addEventListener('scroll', scrolled, { capture: true, passive: true });
     document.addEventListener('dragstart', dragged, true);
     document.addEventListener('dragend', dropped, true);
@@ -60,8 +83,7 @@ export function HoverCard<Payload>({ handle, children, beside, className }: Hove
     },
   }, [trigger]);
   return <PreviewCard.Root handle={handle} actionsRef={actions} onOpenChange={(open, details) => {
-    const { dragging, scrolledAt } = blocked.current;
-    if (open && (dragging || performance.now() - scrolledAt < scrollQuiet)) details.cancel();
+    if (open && blocked()) details.cancel();
     else if (open && details.trigger) setTrigger(details.trigger);
   }}>
     {({ payload }) => payload === undefined ? null : <PreviewCard.Portal container={layer}>

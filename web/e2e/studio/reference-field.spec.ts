@@ -65,7 +65,7 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   await tab(page, 'Runs').click();
   const inputs = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const subject = inputs.getByRole('combobox', { name: 'Subject', exact: true });
-  await expect(subject).toHaveText('train');
+  await expect(subject).toHaveText('Train');
 
   const toDocument = await saved(page, project, () => pick(subject, models[0].name));
   expect(toDocument.project.steps!.baseline.inputs).toMatchObject({
@@ -82,7 +82,7 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   const toCheckpoint = await saved(page, project, () => mapStep(page, 'train').click());
   expect(toCheckpoint.project.steps!.baseline.inputs).toEqual({ subject: { step: 'train', checkpoint: 'last' } });
   await expect(page.locator('[data-pick]')).toHaveCount(0);
-  await expect(subject).toHaveText('train');
+  await expect(subject).toHaveText('Train');
   await expect(inputs.getByRole('combobox', { name: 'Task', exact: true })).toHaveCount(0);
 
   await mapStep(page, 'analyze').click();
@@ -94,9 +94,9 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   const policy = inspector.getByRole('combobox', { name: 'Policy', exact: true });
   await policy.click();
   const listbox = page.getByRole('listbox');
-  await expect(listbox.getByRole('option')).toHaveText([...models.map(({ name }) => name), 'train']);
+  await expect(listbox.getByRole('option')).toHaveText([...models.map(({ name }) => name), 'Train']);
   await page.keyboard.press('Escape');
-  const bound = await saved(page, project, () => pick(policy, 'train'));
+  const bound = await saved(page, project, () => pick(policy, 'Train'));
   expect(bound.project.steps!.analyze.inputs?.policy).toEqual({ step: 'train', checkpoint: 'last' });
   await canvas.getByRole('group', { name: 'Select protocol', exact: true }).click();
   const protocol = inspector.getByRole('combobox', { name: 'Protocol', exact: true });

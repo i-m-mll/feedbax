@@ -41,7 +41,7 @@ test('a duplicated Train step reads its source\'s results until it differs, and 
   await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 30_000 });
   const before = await saved();
 
-  await command('Duplicate Step train');
+  await command('Duplicate Step Train');
   await expect.poll(async () => Object.keys((await saved()).project.steps ?? {}).sort()).toEqual(['baseline', 'train', 'train-2']);
   const duplicated = await saved();
   expect(duplicated.project.steps!['train-2']).toEqual(before.project.steps!.train);
@@ -60,7 +60,7 @@ test('a duplicated Train step reads its source\'s results until it differs, and 
   expect(restored.presentation).toEqual(before.presentation);
 
   await mapStep(page, 'train').click();
-  await command('Duplicate Step train');
+  await command('Duplicate Step Train');
   await expect.poll(async () => Object.keys((await saved()).project.steps ?? {}).sort()).toEqual(['baseline', 'train', 'train-2']);
   const edited = await request.patch(projectPath, { data: {
     revision: (await saved()).revision, address: { kind: 'step', id: 'train-2' },

@@ -36,7 +36,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await add.click();
   const chooser = page.getByRole('menu');
   const train = chooser.getByRole('menuitem', { name: 'Train', exact: true });
-  await expect(chooser.getByRole('menuitem')).toHaveText(['Train', 'Evaluate', 'Analyze', 'Report']);
+  await expect(chooser.getByRole('menuitem')).toHaveText(['Train', 'Synthesize', 'Evaluate', 'Analyze', 'Report']);
   await expect(chooser.getByRole('menuitem', { name: 'Evaluate', exact: true })).toHaveAttribute('aria-disabled', 'true');
   const replayPath = `${projectPath}/history/replay`;
   const creation = post(page, `${projectPath}/files`);

@@ -54,7 +54,7 @@ test('Rename labels a step, an operation and a figure; Change Key rewrites the R
 
   await mapStep(page, 'analyze').click();
   await mapStep(page, 'analyze').press('F2');
-  const stepName = page.locator('[data-map-step="analyze"]').getByRole('textbox', { name: 'Rename analyze', exact: true });
+  const stepName = page.locator('[data-map-step="analyze"]').getByRole('textbox', { name: 'Rename Analyze', exact: true });
   const labelled = await member(() => stepName.fill('Velocity').then(() => stepName.press('Enter')));
   expect(labelled.project.steps?.analyze.label).toBe('Velocity');
   expect(Object.keys(labelled.project.steps ?? {}).sort()).toEqual(Object.keys(before.project.steps ?? {}).sort());

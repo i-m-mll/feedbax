@@ -44,7 +44,7 @@ test("an Evaluate of a checkpoint reads its Train's Objective, and after the run
         return document.activeElement === element;
       }).map((element) => element.outerHTML.slice(0, 80)));
     expect(focused).toEqual([]);
-    await expect(slot(page).getByRole('button', { name: 'train', exact: true })).toBeVisible();
+    await expect(slot(page).getByRole('button', { name: 'Train', exact: true })).toBeVisible();
 
     const runs = `/api/projects/${projectId}/train-runs`;
     const plans = page.getByRole('table', { name: 'Runs', exact: true });
@@ -58,7 +58,7 @@ test("an Evaluate of a checkpoint reads its Train's Objective, and after the run
       expect((await response.json() as StudioJobSubmission).items[0].disposition).toBe('admitted');
       await expect(plans.getByText('Done', { exact: true }).first()).toBeVisible({ timeout: 25_000 });
     }
-    await plans.getByRole('button', { name: /^\d+ baseline$/ }).click();
+    await plans.getByRole('button', { name: /^\d+ Baseline$/ }).click();
     await tab(page, 'Objective').click();
     await expect(terms(page).getByRole('columnheader', { name: 'Covered', exact: true })).toBeVisible();
     const value = await column(page, 'Value');
@@ -73,6 +73,6 @@ test("an Evaluate of a checkpoint reads its Train's Objective, and after the run
       await expect(cells.nth(value)).toHaveText(/\d/);
       await expect(cells.nth(covered)).toHaveText(`${run} of ${run}`);
     }
-    await slot(page).getByRole('button', { name: 'train', exact: true }).click();
+    await slot(page).getByRole('button', { name: 'Train', exact: true }).click();
     await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
   });
