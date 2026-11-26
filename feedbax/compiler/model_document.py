@@ -565,7 +565,7 @@ class _Lower:
             if isinstance(operand, DelayInitialValue):
                 node = _generated("intervention_constant", key, origin["id"], field)
                 add_generated(node, "feedbax.Constant", {
-                    "value": list(value) if isinstance(value, tuple) else value, "dtype": "float32",
+                    "value": list(value) if isinstance(value, tuple) else value, "dtype": _model_float_dtype(),
                 }, origin=origin, inputs=())
                 return node, "output"
             raise ValueError("Choose the intervention's operand source.")
