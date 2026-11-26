@@ -317,6 +317,7 @@ def _instantiate_graph(
     artifact_provider: ArtifactBlobProvider | None = None,
     scoped_schedule: SignalSchedule | None = None,
     inherited_period: float | None = None,
+    capture_authored_arrays: bool = True,
 ) -> Graph:
     """Instantiate a resolved graph for the graph compiler."""
     period = spec.step_seconds if inherited_period is None else inherited_period
@@ -442,6 +443,7 @@ def _instantiate_graph(
                 initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
                 artifact_provider=artifact_provider,
                 inherited_period=period,
+                capture_authored_arrays=capture_authored_arrays,
             )
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
@@ -459,6 +461,7 @@ def _instantiate_graph(
                 initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
                 artifact_provider=artifact_provider,
                 inherited_period=period,
+                capture_authored_arrays=capture_authored_arrays,
             )
             continue
         meta = metadata_registry.get(node_type)
@@ -518,7 +521,7 @@ def _instantiate_graph(
                     f"outputs={tuple(component.output_ports)!r}; "
                     f"spec inputs={declared_input_ports!r}, outputs={declared_output_ports!r}"
                 )
-        if declarations := authored_array_values.get(node_name):
+        if capture_authored_arrays and (declarations := authored_array_values.get(node_name)):
             binding = component_bindings[node_name]
             assert meta is not None
             component_bindings[node_name] = replace(
