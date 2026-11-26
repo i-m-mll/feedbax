@@ -370,7 +370,7 @@ def document_file(
         return StudioProjectFilePatch(address=address, patches=[SetProjectValue(op="replace", path="/payload", value=content)])
     assert base is not None
     differences = diff(base, content, keyed_collection=keyed)
-    if differences == document.differences:
+    if differences == document.differences and tuple(differences) == tuple(document.differences):
         return None
     return StudioProjectFilePatch(address=address, patches=[SetProjectValue(
         op="replace" if "differences" in document.model_fields_set else "add", path="/differences",

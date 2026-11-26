@@ -16,7 +16,7 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.project import (
     BasedDocument, Differences, Document, DocumentBase, DocumentEdit, DocumentReference, InlineBase, Payload, Project,
-    DifferenceNotApplied, OrderDocumentMembers, RemoveDocumentValue, RemoveProjectValue,
+    DifferenceNotApplied, OrderDocumentMembers, OrderProjectValue, RemoveDocumentValue, RemoveProjectValue,
     SetDocumentValue, SetProjectValue, StepBase,
     apply_differences,
     apply_document_edit, based_on, diff,
@@ -309,7 +309,7 @@ def _composed(project: Project, name: str) -> Payload:
     return entry.payload
 
 
-def _edited(content: Payload, edits: Sequence[DocumentEdit], name: str) -> Payload:
+def _edited(content: Payload, edits: Sequence[DocumentEdit], name: str, keyed_collection) -> Payload:
     """``content`` with ``edits``: a value set or removed at each path, whatever the document held there."""
     result = deepcopy(content)
     for edit in edits:
@@ -323,7 +323,7 @@ def _edited(content: Payload, edits: Sequence[DocumentEdit], name: str) -> Paylo
             if isinstance(edit, SetProjectValue):
                 edit = edit.model_copy(update={"op": "replace" if parts[-1] in parent else "add"})
         try:
-            apply_document_edit(result, edit, document_edit_value(edit))
+            apply_document_edit(result, edit, document_edit_value(edit), keyed_collection=keyed_collection)
         except ValueError as error:
             raise ProjectFolderInvalid(f"The edit does not apply to {name}: {error}") from error
     return result
@@ -355,7 +355,8 @@ class _DocumentStores:
 
 def _document_stores(
     project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: frozenset[str] | None, readers: DocumentUsers,
-    taken: set[str], adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None, *, orders: Differences | None = None,
+    taken: set[str], adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
+    *, orders: Differences | None = None, fork_ordered: bool = False,
 ) -> _DocumentStores:
     """Where ``edits`` of ``shown`` are stored for the ``chosen`` steps, every step when None.
 
@@ -401,13 +402,13 @@ def _document_stores(
         inherits = isinstance(document, BasedDocument) and document.base.document in after
         if name in seen or chosen is not None and not inherits and not lit_steps(documents, readers, name) & chosen:
             return
-        content = _edited(old(name), edits if adapt is None else adapt(old(name)), member_name(documents, name))
+        keyed = partial(stored_keyed_collection, document.schema_id)
+        content = _edited(old(name), edits if adapt is None else adapt(old(name)), member_name(documents, name), keyed)
         if orders:
-            content = apply_differences(
-                content, orders, keyed_collection=partial(stored_keyed_collection, document.schema_id),
-            )
+            content = apply_differences(content, orders, keyed_collection=keyed)
         delta = changes(name, old(name), content)
-        if chosen is None or changed(name, content, ()) <= chosen:
+        order = fork_ordered and any(isinstance(edit, OrderDocumentMembers) for edit in delta.values())
+        if chosen is None or not order and changed(name, content, ()) <= chosen:
             if delta:
                 after[name] = content
                 stores.written[name] = (old(name), content)
@@ -508,7 +509,7 @@ class _Store:
                     op="replace" if _holds(before, json_pointer_parts(edit.path)) else "add", value=edit.value,
                 )
                 for name, (before, after) in stores.written.items()
-                for edit in content_edits(before, after, schema_id=self.view.documents[name].schema_id, dotted=True)
+                for edit in content_edits(before, after, dotted=True)
             )
         self.view = preview_stored(self.view, StoredEdit(
             stores.files if self.variant is None else [], tuple(stores.created),
@@ -711,7 +712,9 @@ def document_write(
     if variant is not None and view is None:
         raise ValueError("An edit in a variant reads the variant's project.")
     store = _Store(project, variant, view or project)
-    stores = _document_stores(store.view, shown, edits, chosen, readers, set(), adapt, orders=orders)
+    stores = _document_stores(
+        store.view, shown, edits, chosen, readers, set(), adapt, orders=orders, fork_ordered=variant is not None,
+    )
     store.documents(stores)
     store.point(stores.pointing, named)
     return store.stored(chosen)
@@ -720,7 +723,7 @@ def document_write(
 def content_edits(
     before: Payload, after: Payload, *, schema_id: str | None = None, dotted: bool = False,
 ) -> list[DocumentEdit]:
-    """Express composed differences as editor patches, replacing a collection when its order changes."""
+    """Express composed differences as editor patches on the stored keys."""
     differences = (
         diff(before, after, keyed_collection=partial(stored_keyed_collection, schema_id))
         if schema_id is not None else diff(before, after)
@@ -728,8 +731,6 @@ def content_edits(
     whole = set()
     for path, difference in differences.items():
         parts = json_pointer_parts(path)
-        if isinstance(difference, OrderDocumentMembers):
-            whole.add(parts)
         if dotted and (boundary := next((index for index, part in enumerate(parts) if "." in part), None)) is not None:
             whole.add(parts[:boundary])
     edits: list[DocumentEdit] = []
@@ -741,6 +742,8 @@ def content_edits(
             if replacement not in written:
                 edits.append(SetProjectValue(op="replace", path=pointer(replacement), value=_member(after, replacement)))
                 written.add(replacement)
+        elif isinstance(difference, OrderDocumentMembers):
+            edits.append(OrderProjectValue(op="order", path=path, order=difference.order))
         elif isinstance(difference, RemoveDocumentValue):
             edits.append(RemoveProjectValue(op="remove", path=path))
         else:
