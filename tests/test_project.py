@@ -450,38 +450,47 @@ def test_document_base_follows_root_alias_before_deltas():
 
 
 def test_selected_row_sources_follow_expression_edits_inherited_rows_and_document_paths():
+    from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
+
     project = Project.model_validate(
         {
             "documents": {
-                "settings": _training_document("Settings", {
-                    "value": {"kind": "call", "function": "vector", "args": [
-                        {"kind": "literal", "value": 2}, {"kind": "literal", "value": 4},
-                    ]},
-                    "limit": 10,
-                }),
+                "task": {
+                    "schema": STORED_TASK_DOCUMENT_SCHEMA_ID,
+                    "label": "Task",
+                    "payload": {
+                        "id": "task",
+                        "variables": {"goal": {
+                            "label": "Goal", "type": {"base": "real", "shape": [3]},
+                            "value": "vector(2, 4)", "count": 10,
+                        }},
+                        "epochs": {"trial": {"label": "Trial", "end": {"kind": "length", "length": 1}}},
+                        "signals": {},
+                    },
+                },
             },
             "steps": {
                 "fit": {
                     "label": "Fit",
                     "kind": "train",
-                    "base": {"document": "settings", "pointer": "/settings"},
+                    "base": {"document": "task", "pointer": "/variables/goal"},
                     "deltas": [
                         {
                             "layer_id": "insert",
                             "patches": [{
-                                "path": "value.args.0", "op": "add", "value": {"kind": "literal", "value": 1},
+                                "path": "value.args.0", "op": "add", "value": 1,
                             }],
                         },
                     ],
                     "sweep": {
                         "rows": {
-                            "first": {"patches": {"limit": {"value": 11}}},
+                            "first": {"patches": {"count": {"value": 11}}},
                             "derived": {"from": "first"},
                         },
                         "exceptions": {
                             "raise": {
                                 "where": {"rows": ["derived"]},
-                                "patches": {"limit": {"value": 12}},
+                                "patches": {"count": {"value": 12}},
                             },
                         },
                     },
@@ -494,13 +503,13 @@ def test_selected_row_sources_follow_expression_edits_inherited_rows_and_documen
     assert not isinstance(template, ProjectDiagnostic)
     result = template.resolve(include_sources=True)
     assert isinstance(result, ResolvedStep)
-    assert [argument["value"] for argument in result.payload["value"]["args"]] == [1, 2, 4]
-    assert result.payload["limit"] == 12
+    assert result.payload["value"] == "[1, 2, 4]"
+    assert result.payload["count"] == 12
     assert result.sources is not None
-    assert result.sources["/value/args/0/value"].path == "/deltas/0/patches/0/value/value"
-    assert result.sources["/value/args/1/value"].path == "/settings/value/args/0/value"
-    assert result.sources["/value/args/2/value"].path == "/settings/value/args/1/value"
-    assert (result.sources["/limit"].kind, result.sources["/limit"].name) == ("exception", "raise")
+    assert result.sources["/value/args/0/value"].path == "/deltas/0/patches/0/value"
+    assert result.sources["/value/args/1/value"].path == "/variables/goal/value"
+    assert result.sources["/value/args/2/value"].path == "/variables/goal/value"
+    assert (result.sources["/count"].kind, result.sources["/count"].name) == ("exception", "raise")
 
 
 def test_selected_sibling_rows_keep_original_sources_after_member_writes():

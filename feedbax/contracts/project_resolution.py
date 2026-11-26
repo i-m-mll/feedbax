@@ -20,12 +20,12 @@ from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.loaded_model import encode_imported_model_document
 from feedbax.contracts.matrix_core import (
-    apply_stored_patch_copy, apply_stored_patch_in_place, replay_stored_patch_copy, resolve_segment,
+    ExpressionNodePatch, ExpressionSite, apply_stored_patch_in_place, prepare_stored_patch, replay_stored_patch_copy, resolve_segment,
     validate_stored_patch_path,
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
-from feedbax.contracts.project_storage import stored_keyed_collection
+from feedbax.contracts.project_storage import stored_expression_site, stored_keyed_collection, stored_step_expression_site
 from feedbax.contracts.project import (
     DifferenceNotApplied,
     Document,
@@ -51,6 +51,8 @@ from feedbax.contracts.project_inputs import (
     InitialModelReference, InputBinding, LoadedModelReference, ObjectiveDocumentReference, SelectedAxisValueProblem, TaskDocumentReference,
 )
 from feedbax.contracts.project_sources import (
+    ExpressionSources,
+    expression_source_leaves,
     SourceList,
     SourceObject,
     ValueSource,
@@ -472,11 +474,18 @@ def _figure_slot(path: str) -> str | None:
 
 def _written_sources(shape: Any, at: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str, ...], Any]]:
     """The places a variant wrote in a sparse source tree, each with the sources of the value it wrote there."""
-    if isinstance(shape, ValueSource) or isinstance(shape, SourceObject | SourceList) and shape.source is not None:
+    if isinstance(shape, (ValueSource, ExpressionSources)) or (
+        isinstance(shape, (SourceObject, SourceList)) and shape.source is not None
+    ):
         yield at, shape
     elif isinstance(shape, SourceObject):
         for key, child in shape.items():
             yield from _written_sources(child, (*at, key))
+
+
+def composed_document_sources(project: Project, name: str, variant_sources: Any = None) -> Any:
+    """Describe a document's authored origins before a variant changes its composition."""
+    return _Documents(project, variant_sources=variant_sources).shape(name)
 
 
 def compose_document(read_document: Callable[[str], Document | None], name: str) -> RootDocument | ProjectDiagnostic:
@@ -530,6 +539,7 @@ class _Documents:
         self.used: set[str] = set()
         self.edited: dict[str, JsonValue] = {}
         self.edited_sources: dict[str, Any] = {}
+        self.edited_expressions: dict[str, list[ExpressionNodePatch | None]] = {}
         self.external = external
         self.pinned: dict[str, tuple[ExternalBase, JsonValue]] = {}
         self.partial_figures = partial_figures
@@ -614,6 +624,8 @@ class _Documents:
                         if isinstance(difference, SetDocumentValue) else None
                     ))
                 for parts, source in _written_sources(source_at(self.variant_sources, ("documents", name, "payload"))):
+                    if isinstance(source, ExpressionSources) and source.source is None:
+                        source = replace(source, source=first_source(source_at(shape, parts)))
                     shape = place_source(shape, parts, source)
                 self.shapes[name] = shape
         return self.shapes[name]
@@ -635,11 +647,15 @@ class _Documents:
         if patches:
             if reference.document not in self.edited:
                 draft = deepcopy(payload)
+                expression_site = partial(stored_expression_site, document.schema_id)
+                expressions = []
                 for item in patches:
                     try:
                         if not isinstance(draft, dict):
                             raise ValueError("A variant writes into an object payload only")
-                        draft = apply_stored_patch_copy(draft, item.patch)
+                        physical, expression = prepare_stored_patch(draft, item.patch, expression_site=expression_site)
+                        draft = replay_stored_patch_copy(draft, physical)
+                        expressions.append(expression)
                     except ValueError as error:
                         problem = _Problem(
                             ResolutionCode.INVALID_SWEEP, item.patch.path, str(error),
@@ -649,6 +665,7 @@ class _Documents:
                             problem.diagnostic = _at_sweep_origin(problem.diagnostic, origin)
                         raise problem from error
                 self.edited[reference.document] = draft
+                self.edited_expressions[reference.document] = expressions
             payload = self.edited[reference.document]
         if (
             document.schema_id == FIGURE_DOCUMENT_SCHEMA
@@ -732,9 +749,11 @@ class _Documents:
                 deepcopy(self.shape(name)) if based
                 else source_shape(cast(RootDocument, document).payload, ValueSource("document", name), variant)
             )
-            for item in patches:
+            for item, expression in zip(patches, self.edited_expressions[name], strict=True):
                 assert item.source is not None
-                shape = patch_source(shape, item.patch, source_shape(item.patch.value, item.source, item.override))
+                shape = patch_source(
+                    shape, item.patch, source_shape(item.patch.value, item.source, item.override), expression=expression,
+                )
             self.edited_sources[name] = shape
         return source_at(self.edited_sources[name], parts)
 
@@ -780,6 +799,11 @@ class _Documents:
             yield from self.source_leaves(
                 selected, self.source(value, selected), path, output, active
             )
+        elif isinstance(shape, ExpressionSources):
+            if shape.source is not None:
+                yield output, shape.source
+            for parts, source in expression_source_leaves(shape.nodes, shape.source):
+                yield output + pointer(parts), source
         elif isinstance(value, dict) and value:
             for key, item in value.items():
                 yield from self.source_leaves(
@@ -814,6 +838,8 @@ class _Documents:
                     "document", value.document, value.pointer or "",
                 ), parts, path, active)
             return self.source_leaf(selected, self.source(value, selected), parts, path, active)
+        if isinstance(shape, ExpressionSources):
+            return first_source(source_at(shape, parts))
         if not parts:
             if isinstance(shape, (SourceObject, SourceList)):
                 return shape.source
@@ -893,6 +919,7 @@ class _StepState:
     document_uses: frozenset[str] = frozenset()
     root_document: str | None = None
     row_document_patches: Mapping[str, tuple[_DocumentRowPatch, ...]] = field(default_factory=dict)
+    root_pointer: tuple[str, ...] = ()
 
 
 class _Resolver:
@@ -930,6 +957,13 @@ class _Resolver:
             if override is None else source_shape(payload, source, override)
         )
 
+    def expression_site(self, state: _StepState, kind: StepKind) -> ExpressionSite:
+        if state.root_document is not None:
+            read = self.read_document or self.project.documents.get
+            if (document := read(state.root_document)) is not None:
+                return lambda path: stored_expression_site(document.schema_id, (*state.root_pointer, *path))
+        return partial(stored_step_expression_site, kind)
+
     def state(self, name: str, active: tuple[str, ...] = ()) -> _StepState:
         if name in active:
             raise _Problem(
@@ -956,12 +990,14 @@ class _Resolver:
                 parent = self.select_row(name, base, parent)
         else:
             root_document = None
+            root_pointer = ()
             document_uses = frozenset()
             if isinstance(base, DocumentReference):
                 documents = self.documents(name)
                 payload, reference = documents.base(base)
                 origins = documents.source(reference, payload) if self.track_sources else None
                 root_document = reference.document
+                root_pointer = json_pointer_parts(reference.pointer)
                 document_uses = frozenset(documents.used)
             else:
                 payload = self.read_base(name, base)
@@ -980,6 +1016,7 @@ class _Resolver:
                 origins=origins,
                 document_uses=document_uses,
                 root_document=root_document,
+                root_pointer=root_pointer,
             )
         payload = parent.payload
         written = parent.written
@@ -999,12 +1036,18 @@ class _Resolver:
                 else patch
                 for patch in layer.patches
             ]
+            expressions: list[ExpressionNodePatch | None] = []
+            expression_site = self.expression_site(parent, step.kind)
+
+            def apply(owned: dict, patch: OverridePatch) -> None:
+                expressions.append(apply_stored_patch_in_place(owned, patch, expression_site=expression_site))
+
             try:
                 payload, _, written = apply_composition_deltas(
                     payload,
                     [layer.model_copy(update={"patches": patches})],
                     ancestor_written_paths=written,
-                    apply_patch=apply_stored_patch_in_place,
+                    apply_patch=apply,
                 )
             except CompositionDeltaError as error:
                 raise _Problem(
@@ -1023,11 +1066,13 @@ class _Resolver:
                     layer=layer.layer_id,
                 ) from error
             if origins is not None:
-                for j, patch in enumerate(patches):
+                for j, (patch, expression) in enumerate(zip(patches, expressions, strict=True)):
                     path = ("deltas", str(i), "patches", str(j), "value")
                     source = ValueSource("step", name, pointer(path), step=name)
                     override = source_at(self.variant_sources, ("steps", name, *path))
-                    origins = patch_source(origins, patch, source_shape(patch.value, source, override))
+                    origins = patch_source(
+                        origins, patch, source_shape(patch.value, source, override), expression=expression,
+                    )
         try:
             sweep = inherit_sweep(
                 parent.sweep, step.sweep, author=name if self.track_sources else None
@@ -1045,6 +1090,7 @@ class _Resolver:
             origins,
             parent.document_uses,
             parent.root_document,
+            root_pointer=parent.root_pointer,
         )
 
     def read_base(self, step: str, base: InlineBase | RunBase | ExternalBase) -> JsonValue:
@@ -1090,6 +1136,7 @@ class _Resolver:
                 requires=parent.requires,
                 document_uses=parent_step.document_uses,
                 root_document=parent.root_document,
+                root_pointer=parent.root_pointer,
             )
         else:
             raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child, missing_subject=base.row)
@@ -1107,6 +1154,7 @@ class _Resolver:
         return _StepState(
             selected.payload, inputs=selected.inputs, origins=origins, document_uses=selected.document_uses,
             root_document=state.root_document,
+            root_pointer=state.root_pointer,
         )
 
     def row_source(self, author: str, row: ExpandedRow, path: str) -> tuple[ValueSource, Any]:
@@ -1174,6 +1222,7 @@ class _Resolver:
         model_document = None
         fields = []
         document_uses = state.document_uses
+        expression_site = self.expression_site(state, self.project.steps[name].kind)
         try:
             for path, write in row.patches.items():
                 address = None
@@ -1230,7 +1279,8 @@ class _Resolver:
                 if patch.op != "remove":
                     patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
                 variation = payload["params"]["variation"] if variation_index is not None else None
-                payload = replay_stored_patch_copy(payload, patch)
+                physical, expression = prepare_stored_patch(payload, patch, expression_site=expression_site)
+                payload = replay_stored_patch_copy(payload, physical)
                 if origins is not None:
                     author = row.patch_authors.get(authored, name)
                     source, override = self.row_source(author, row, authored)
@@ -1248,7 +1298,7 @@ class _Resolver:
                         children = [source_at(held, (entry,)) for entry in previous_keys]
                         children[variation_index:variation_index + 1] = [shape]
                         shape = SourceList(getattr(held, "source", None), iter(children), patch.value)
-                    origins = patch_source(origins, patch, shape)
+                    origins = patch_source(origins, patch, shape, expression=expression)
             if fields:
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
@@ -1283,7 +1333,7 @@ class _Resolver:
             raise problem from error
         return _StepState(
             payload, inputs=inputs, requires=state.requires, origins=origins, document_uses=document_uses,
-            root_document=state.root_document, row_document_patches={
+            root_document=state.root_document, root_pointer=state.root_pointer, row_document_patches={
                 document: tuple(patches) for document, patches in documents.items()
             },
         )

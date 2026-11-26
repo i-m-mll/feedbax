@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from copy import copy, deepcopy
+from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
@@ -11,9 +12,12 @@ import re
 from string import Formatter
 from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import Field, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 
 from feedbax.contracts._authoring_inputs import AuthoringTextReader, read_authoring_text
+from feedbax.contracts.expression_storage import StoredTime
+from feedbax.contracts.expression_text import parse_stored_expression, print_stored_expression
+from feedbax.contracts.expression_values import Expression, UnresolvedValue
 from feedbax.contracts.expressions import ContextItem, ExpressionContext, ValueExpr, evaluate_query
 from feedbax.contracts.extraction import SourceBinding, load_expression_context, set_dotted_path
 from feedbax.contracts.base import (
@@ -692,24 +696,96 @@ def apply_override_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dic
     return _patch_copy(root, patch, by_id=True)
 
 
+type ExpressionSiteKind = Literal["expression", "time"]
+type ExpressionSite = Callable[[tuple[str, ...]], ExpressionSiteKind | None]
+
+
+@dataclass(frozen=True)
+class ExpressionNodePatch:
+    """A whole-field stored write and the matching node edit for provenance."""
+
+    field: tuple[str, ...]
+    before: dict[str, Any]
+    node: OverridePatch
+
+
+_EXPRESSION = TypeAdapter(Expression)
+_STORED_TIME = TypeAdapter(StoredTime)
+
+
+def prepare_stored_patch(
+    root: dict[str, Any], patch: OverridePatch, *, expression_site: ExpressionSite | None = None,
+) -> tuple[OverridePatch, ExpressionNodePatch | None]:
+    """Translate a typed expression-node path to one validated authored field write."""
+    site = _stored_expression_site(root, patch.path, expression_site)
+    if site is None:
+        return patch, None
+    field, kind, raw = site
+    parts = tuple(patch.path.split("."))[len(field):]
+    leaf_value = _validate_expression_node_path(parts, patch.path)
+    before = _parse_expression_for_patch(raw, patch.path).model_dump(mode="json")
+    if kind == "time" and isinstance(_STORED_TIME.validate_python(raw), UnresolvedValue):
+        raise ValueError(f"Expected a literal time at {patch.path!r}.")
+    value = patch.value
+    if not leaf_value and patch.op != "remove":
+        value = _parse_expression_for_patch(value, patch.path).model_dump(mode="json")
+    node = patch.model_copy(update={"path": ".".join(parts), "value": value})
+    changed = replay_stored_patch_copy(before, node)
+    text = print_stored_expression(_EXPRESSION.validate_python(changed))
+    _parse_expression_for_patch(text, patch.path)
+    if kind == "time" and isinstance(_STORED_TIME.validate_python(text), UnresolvedValue):
+        raise ValueError(f"Expected a literal time at {patch.path!r}.")
+    scalar = patch.model_copy(update={"path": ".".join(field), "op": "replace", "value": text})
+    return scalar, ExpressionNodePatch(field, before, node)
+
+
+def _parse_expression_for_patch(raw: Any, path: str) -> Expression:
+    if type(raw) not in (str, float, int, bool):
+        raise ValueError(f"Expected an authored expression scalar or text at {path!r}.")
+    parsed = parse_stored_expression(raw)
+    if isinstance(parsed, tuple):
+        raise ValueError(f"Cannot patch expression at {path!r}: {parsed[0].reason}")
+    return parsed.value
+
+
+def _validate_expression_node_path(parts: tuple[str, ...], path: str) -> bool:
+    position = 0
+    while position + 1 < len(parts):
+        parent, child = parts[position:position + 2]
+        if parent == "args" and _ARRAY_INDEX_RE.fullmatch(child) is None:
+            raise ValueError(f"An expression argument needs a non-negative decimal index: {path!r}")
+        if parent not in {"args", "kwargs"}:
+            raise ValueError(f"Expected an expression argument or keyword: {path!r}")
+        position += 2
+    if position == len(parts):
+        return False
+    if parts[position] == "value":
+        return True
+    raise ValueError(f"Expected an expression node or its literal value: {path!r}")
+
+
 def apply_stored_patch_in_place(
     root: dict[str, Any],
     patch: OverridePatch,
     *,
     error_context: Literal["override", "delta"] = "override",
-) -> None:
+    expression_site: ExpressionSite | None = None,
+) -> ExpressionNodePatch | None:
     """Apply an authored sweep patch, with absent object keys already removed."""
-    validate_stored_patch_path(root, patch.path)
+    physical, expression = prepare_stored_patch(root, patch, expression_site=expression_site)
     apply_value_patch_in_place(
-        root, patch.path.split("."), patch.op, patch.value, path=patch.path, error_context=error_context,
+        root, physical.path.split("."), physical.op, physical.value, path=patch.path, error_context=error_context,
         allow_absent_remove=True,
     )
+    return expression
 
 
-def apply_stored_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dict[str, Any]:
+def apply_stored_patch_copy(
+    root: dict[str, Any], patch: OverridePatch, *, expression_site: ExpressionSite | None = None,
+) -> dict[str, Any]:
     """Apply an authored sweep patch, copying the containers along its path."""
-    validate_stored_patch_path(root, patch.path)
-    return replay_stored_patch_copy(root, patch)
+    physical, _ = prepare_stored_patch(root, patch, expression_site=expression_site)
+    return replay_stored_patch_copy(root, physical)
 
 
 def replay_stored_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dict[str, Any]:
@@ -816,30 +892,33 @@ def resolve_segment(container: Any, segment: str, *, path: str, by_id: bool = Tr
 
 
 def validate_stored_patch_path(root: Any, path: str) -> None:
-    """Validate a dotted write as far as its target is visible in the stored payload."""
-    parts = path.split(".")
+    """Validate the visible path before a document reference is followed."""
+    _stored_expression_site(root, path, None)
+
+
+def _stored_expression_site(
+    root: Any, path: str, expression_site: ExpressionSite | None,
+) -> tuple[tuple[str, ...], ExpressionSiteKind, Any] | None:
+    parts = tuple(path.split("."))
     value = root
-    expression_args = False
     for index, part in enumerate(parts):
         if isinstance(value, list):
-            if not expression_args:
-                raise ValueError(f"A stored path cannot traverse an array: {path!r}")
-            if _ARRAY_INDEX_RE.fullmatch(part) is None:
-                raise ValueError(f"An expression argument needs a non-negative decimal index: {path!r}")
+            raise ValueError(f"A stored path cannot traverse an array: {path!r}")
         key = resolve_segment(value, part, path=path, by_id=False)
         if key is None:
-            return
+            return None
         child = value[key]
-        if (
-            index < len(parts) - 1 and part in {"links", "task_links"}
-            and isinstance(child, dict) and all(isinstance(link, str) for link in child.values())
-        ):
-            raise ValueError(f"Link members require a JSON pointer: {path!r}")
-        expression_args = part == "args" and isinstance(value, dict) and (
-            value.get("kind") == "call" and isinstance(value.get("function"), str)
-            or value.get("kind") == "draw" and isinstance(value.get("family"), str)
-        )
+        if index < len(parts) - 1:
+            if part in {"links", "task_links"} and isinstance(child, dict) and all(
+                isinstance(link, str) for link in child.values()
+            ):
+                raise ValueError(f"Link members require a JSON pointer: {path!r}")
+            if expression_site is not None and not isinstance(child, (dict, list)):
+                prefix = parts[:index + 1]
+                if (kind := expression_site(prefix)) is not None:
+                    return prefix, kind, child
         value = child
+    return None
 
 
 def stored_parts(root: Any, parts: Sequence[str]) -> tuple[str, ...]:

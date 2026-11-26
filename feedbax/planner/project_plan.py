@@ -46,7 +46,9 @@ from feedbax.contracts.project import (
     apply_differences, base_chain, diff, json_pointer_parts, member_name, nearest_shared_base,
 )
 from feedbax.contracts.run_rule import RuleRefusal, bind_metric_conditions
-from feedbax.contracts.project_storage import stored_keyed_collection, stored_project_value
+from feedbax.contracts.project_storage import (
+    stored_expression_site, stored_keyed_collection, stored_project_expression_site, stored_project_value,
+)
 from feedbax.contracts.expression_text import RuleBest
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
@@ -85,6 +87,7 @@ from feedbax.contracts.project_resolution import (
     ResolvedImportedModel, TerminalTrainSource,
     _TrialResolution,
     compose_document,
+    composed_document_sources,
     compose_step,
     composed_loaded_model_projection,
     reference_write_target,
@@ -123,7 +126,9 @@ from feedbax.contracts.project_sweep import (
     model_field_target,
     sweep_patch,
 )
-from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, place_source, pointer, source_shape
+from feedbax.contracts.project_sources import (
+    ExpressionSources, ValueSource, changed_sources, patch_source, place_source, pointer, source_at, source_shape,
+)
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.set_document import SetProblem, document_subject_model, model_slot, resolve_set_axes, trial_model_path
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
@@ -159,7 +164,8 @@ from feedbax.contracts.request_specs import (
 )
 from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import (
-    PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, StoredTaskDocument, TaskAdditions, TaskDocument, add_to_task,
+    PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, StoredTaskDocument,
+    TaskAdditions, TaskDocument, add_to_task,
 )
 from feedbax.contracts.training import lower_stored_trial_documents
 from feedbax.contracts.train_settings import normalize_train_method, setting_field_title
@@ -721,7 +727,11 @@ def resolve_authored_evaluation_task(
             elif relative and (isinstance(task, StoredTaskDocument) or relative.startswith("params.")):
                 content = stored_project_value(task, keep_explicit=True)
                 assert isinstance(content, dict)
-                apply_stored_patch_in_place({"task": content}, edit)
+                apply_stored_patch_in_place(
+                    {"task": content}, edit,
+                    expression_site=lambda path: stored_expression_site(STORED_TASK_DOCUMENT_SCHEMA_ID, path[1:])
+                    if isinstance(task, StoredTaskDocument) else None,
+                )
                 task = type(task).model_validate(content)
             else:
                 raise ValueError("expected an addressed Task edit")
@@ -2113,10 +2123,8 @@ class _Compiler:
                         "base" in data["documents"].get(parts[1], {})
                     ):
                         based_writes.setdefault(parts[1], []).append((path, patch))
-                        if origins is not None and patch.op != "remove":
-                            source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
-                            origins = place_source(origins, parts, source_shape(patch.value, source))
                         continue
+                    expression = None
                     if parts[0] == "steps" and parts[2:] == ("deltas", "-"):
                         from feedbax.contracts.run_matrix import MatrixCompositionDelta
 
@@ -2134,10 +2142,12 @@ class _Compiler:
                             origins = place_source(origins, parts[:-1], source_shape([], None))
                         step["deltas"] = [*deltas, deepcopy(patch.value)]
                     else:
-                        apply_stored_patch_in_place(data, patch)
+                        expression = apply_stored_patch_in_place(
+                            data, patch, expression_site=partial(stored_project_expression_site, data),
+                        )
                     if origins is not None:
                         source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
-                        origins = patch_source(origins, patch, source_shape(patch.value, source))
+                        origins = patch_source(origins, patch, source_shape(patch.value, source), expression=expression)
                 for document in sorted(based_writes, key=lambda name: len(base_chain(
                     DOCUMENTS.validate_python(data["documents"]), name,
                 ))):
@@ -2160,7 +2170,22 @@ class _Compiler:
                                 mode="json", exclude_unset=True,
                             )
                         else:
-                            apply_stored_patch_in_place(content, patch)
+                            expression = apply_stored_patch_in_place(
+                                content, patch, expression_site=partial(stored_project_expression_site, data),
+                            )
+                            if origins is not None:
+                                parts = tuple(patch.path.split("."))
+                                source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
+                                shape = source_shape(patch.value, source)
+                                if expression is not None:
+                                    field = expression.field
+                                    if not isinstance(source_at(origins, field), ExpressionSources):
+                                        document_origins = composed_document_sources(self.project, document, origins)
+                                        inherited = source_at(document_origins, field[3:])
+                                        origins = place_source(origins, field, inherited)
+                                    origins = patch_source(origins, patch, shape, expression=expression)
+                                elif patch.op != "remove":
+                                    origins = place_source(origins, parts, shape)
                     data["documents"][document]["differences"] = {
                         at: difference.model_dump(mode="json") for at, difference in diff(
                             base.payload, content["documents"][document]["payload"], keyed_collection=keyed,
