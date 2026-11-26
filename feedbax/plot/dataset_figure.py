@@ -101,6 +101,22 @@ class _Source:
         return labels
 
 
+class _EmptyGroupLabel(str):
+    def __repr__(self) -> str:
+        return ""
+
+    def __format__(self, spec: str) -> str:
+        return ""
+
+
+def _layer_label(layer: FigureLayer, group: Mapping[str, Label]) -> str:
+    template = layer.style.label or layer.name
+    if None not in group.values():
+        return template.format_map(group)
+    values = {name: _EmptyGroupLabel() if value is None else value for name, value in group.items()}
+    return " ".join(template.format_map(values).split())
+
+
 def _selected(
     source: _Source,
     selections: Mapping[str, Selection],
@@ -547,7 +563,7 @@ def _trial_traces(
                 samples = AlignedSeries(time, np.column_stack(tuple(positions.values())), trial.alignment.span)
                 series.append(samples)
                 inside = (time >= trial.alignment.span.start) & (time <= trial.alignment.span.end)
-                label = (layer.style.label or layer.name).format_map(row.group)
+                label = _layer_label(layer, row.group)
                 if is_time:
                     positions["x"] = time
                 traces.append(_path_trace(
@@ -624,7 +640,7 @@ def render(
             if isinstance(layer, RuleLayer | SpanLayer):
                 for group, positions, member in _layer_groups(source, layer):
                     printed = source.group_names(group)
-                    label = (layer.style.label or layer.name).format_map(printed)
+                    label = _layer_label(layer, printed)
                     references[layer.panel].extend(
                         _references(source, layer, positions, member, label, layer.style.color or next(colors))
                     )
@@ -666,7 +682,7 @@ def render(
                             printed, group, channels, color, _trial_samples(source, channels["x"], positions), record, options,
                         ))
                     else:
-                        label = (layer.style.label or layer.name).format_map(printed)
+                        label = _layer_label(layer, printed)
                         drawn = _draw(layer, channels, label, color, group=group)
                         layer_legends.append((label, group.get(MEMBER), drawn))
                         traces[layer.panel].extend(drawn)
