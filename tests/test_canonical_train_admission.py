@@ -414,6 +414,7 @@ _CHAIN_UPDATES = 64
 def _saved_chain(folders):
     snapshot = folders.new("saved-chain").snapshot
     payload = managed_stored_train_payload(batches=_CHAIN_UPDATES)
+    payload["settings"]["optimizer"] = {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.002}}
     payload["training_config"]["snapshot_interval"] = 16
     snapshot = _saved_step(
         folders,

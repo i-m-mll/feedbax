@@ -248,7 +248,9 @@ def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_
         (issue,) = run.problems
         assert issue.path.startswith("/trial_documents/model/")
         assert issue.model_address == ModelAddress.model_validate({
-            "composites": [], "element": {"kind": "component", "id": "plant"},
+            "composites": [], "element": {
+                "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
+            },
         })
 
 
@@ -460,10 +462,13 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
 
 
 def test_managed_train_stores_only_scientific_model_names(authored):
+    from feedbax.application.bundle import new_application_registry_bundle
+    from feedbax.compiler.model_document import complete_model_fields
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.request_identity import request_id
 
-    plan = compile_project(Project.model_validate(document_project(authored)))
+    components = new_application_registry_bundle().components
+    plan = compile_project(Project.model_validate(document_project(authored)), components=components)
     identity, data = next(iter(plan.requests.items()))
     stored = json.loads(data)
     assert stored["schema"] == "feedbax.request.train.documents.v3"
@@ -477,7 +482,8 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     assert decoded.id == identity
     restored = decoded.spec.trial_documents.model
     assert restored.ports.inputs[0].name == "task-input"
-    assert restored.scientific_projection(keyed_root_ports=True) == authored[1].scientific_projection(keyed_root_ports=True)
+    effective = complete_model_fields(authored[1], components)
+    assert restored.scientific_projection(keyed_root_ports=True) == effective.scientific_projection(keyed_root_ports=True)
     assert encode_request(decoded.spec, decoded.inputs).data == data
     assert identity != request_id("train", stored["spec"], decoded.inputs)
 
