@@ -300,3 +300,49 @@ def test_task_view_size_tracks_authored_validation_and_objective_families(tmp_pa
     lengths = [size for size, _ in replies]
     # Only the written range texts and count digits grow here.
     assert max(lengths) - min(lengths) <= 64, replies
+
+
+def test_task_view_fields_track_authored_set_entries(tmp_path):
+    raw = document_project(authored_documents())
+    task = raw["documents"]["task"]["payload"]
+    task["validation_trials"] = {"reference": {"label": "Reference", "variables": {"catch": False}}}
+    differences = {"/interior/wires/task-wire/attachments": {"value": {"pulse": {
+        "kind": "intervention", "operation": "Scale",
+        "operands": {"factor": {"kind": "task", "variable": "amount"}},
+    }}}}
+    entry = {
+        "label": "Pulse {k}", "differences": differences,
+        "task_variables": {"amount": {"label": "Amount", "type": {"base": "real"}, "value": "1 + k"}},
+    }
+    raw["documents"]["bank"] = {
+        "label": "Bank", "schema": SET_DOCUMENT_SCHEMA_ID, "payload": {"entries": {"pulse": entry}},
+    }
+    raw["steps"]["train"]["set_fields"] = {"pulse": {"axis": {"set": "bank"}, "sampling": {"kind": "listed"}}}
+    app = create_app(projects_dir=tmp_path)
+    folders = app.state.project_folders
+    field_counts = []
+    with TestClient(app) as client:
+        for count in (2, 12, 24):
+            entry["over"] = {"k": f"0..{count - 1}"}
+            _save_project(folders, "families", Project.model_validate(raw))
+            response = client.post("/api/projects/families/authoring/trials", json={
+                "revision": folders.read("families").revision,
+                "run": {"variant": "default", "step": "train", "row": "default"},
+            })
+            assert response.status_code == 200, response.text
+            view = response.json()
+            assert not view["problems"], view["problems"]
+            placed, = view["set_fields"][0]["entries"]
+            assert placed["member_count"] == count
+            representative, = [value for value in view["variables"] if "set_entry" in value]
+            variables = task["variables"].keys() | {representative["id"]}
+            assert set(view["task"]["variables"]) == variables
+            assert {value["id"] for value in view["variables"]} == variables
+            assert set(view["task"]["signals"]) == task["signals"].keys()
+            paths = [field["path"] for field in view["fields"]]
+            assert {path.split("/")[3] for path in paths if path.startswith("/task/variables/")} == variables
+            assert {path.split("/")[3] for path in paths if path.startswith("/task/signals/")} == task["signals"].keys()
+            assert _field(view, f"/task/variables/{representative['id']}/value")["text"] == "1 + k"
+            field_counts.append(len(paths))
+
+    assert len(set(field_counts)) == 1, field_counts

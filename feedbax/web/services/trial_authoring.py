@@ -153,6 +153,7 @@ class _Projection:
     stored_task: StoredTaskDocument | PythonTaskSelection | None = None
     family_editor: FamilyEditor = field(default_factory=FamilyEditor)
     set_variables: dict[str, _SetVariableView] = field(default_factory=dict)
+    generated_set_members: set[str] = field(default_factory=set)
 
 
 def _project(
@@ -1074,12 +1075,13 @@ def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
             problems=(*problems, *_planned_family_problems(plan, key, families, problems)),
             family_editor=families, stored_task=stored_task,
         )
-    origins = _set_origins(plan, key, definition, projected)
+    origins, trial_sets = _set_origins(plan, key, definition, projected)
+    hidden = _generated_set_members(plan, key, definition, projected, origins) if first and trial_sets else set()
 
     def member(value: ScopedValue) -> ScopedValue:
         return value.model_copy(update={"set_entry": item.origin}) if (item := origins.get(value.id)) else value
 
-    if origins:
+    if origins or hidden:
         @cache
         def indices(axis, name, key):
             item = next(
@@ -1096,16 +1098,24 @@ def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
         family_problems = []
         fields = {}
         for path, site in projected.fields.items():
-            scoped = site.model_copy(update={"names": tuple(map(member, site.names))})
+            if len(path) > 2 and path[0] == "task" and path[1] in {"variables", "signals"} and path[2] in hidden:
+                continue
+            scoped = site.model_copy(update={"names": tuple(member(name) for name in site.names if name.id not in hidden)})
             if (path[:2] == ("task", "variables") and len(path) == 4 and path[3] in ("value", "count")
                     and (item := origins.get(path[2])) is not None and item.source.over is not None):
                 names, problems = indices(item.origin.axis, item.origin.set, item.origin.entry)
                 family_problems.extend(problem for problem in problems if problem not in family_problems)
                 scoped = with_family_indices(scoped, names)
             fields[path] = scoped
+        condition_variables = projected.set_condition_variables
         projected = replace(
-            projected, variables=tuple(map(member, projected.variables)), fields=fields,
-            set_variables=origins, problems=(*projected.problems, *family_problems),
+            projected, variables=tuple(member(value) for value in projected.variables if value.id not in hidden),
+            signals=tuple(value for value in projected.signals if value.id not in hidden),
+            fields=fields, set_variables=origins, problems=(*projected.problems, *family_problems),
+            generated_set_members=hidden, set_condition_variables=(
+                tuple(value for value in condition_variables if value.id not in hidden)
+                if condition_variables is not None else None
+            ),
         )
     return documents, projected, graph
 
@@ -1212,17 +1222,41 @@ def _set_variables(project: Project, key: RunKey, row: PlannedRow | None) -> Ite
                 yield id, _SetVariableView(origin, source, generated, scoped=selected is None)
 
 
-def _set_origins(plan, key, definition, projection) -> dict[str, _SetVariableView]:
-    origins = {}
+def _set_origins(plan, key, definition, projection) -> tuple[dict[str, _SetVariableView], bool]:
+    """Read authored Set origins for this run and any inherited placements."""
+    sources = [key]
     if (
         ("task",) not in projection.task_origins
         and not definition.payload.get("trial_documents", {}).get("task")
         and (subject := evaluate_subject(definition)) is not None
     ):
-        parent = subject[0]
-        origins.update(_set_variables(plan.variant_projects[parent.variant], parent, plan.row(parent)))
-    origins.update(_set_variables(plan.variant_projects[key.variant], key, plan.row(key)))
-    return origins
+        sources.insert(0, subject[0])
+    origins = {}
+    trial_sets = False
+    for source in sources:
+        variant = plan.variant_projects[source.variant]
+        trial_sets |= bool(variant.steps[source.step].set_fields)
+        origins.update(_set_variables(variant, source, plan.row(source)))
+    return origins, trial_sets
+
+
+def _generated_set_members(plan, key, definition, projection, origins) -> set[str]:
+    """Keep authored Task members and each Set entry's existing editor representative."""
+    task = projection.stored_task
+    payload = _effective_task_payload(plan, definition, include_variation=False)
+    if not isinstance(task, StoredTaskDocument) or not isinstance(payload, dict):
+        return set()
+    authored = stored_trial_task_slot(payload)
+    if plan.steps[key.variant, key.step].kind == "evaluate" and projection.task_origins:
+        settings = authored_rollout_settings(definition.payload.get("params"))
+        authored = resolve_authored_evaluation_task(authored, settings.variation)
+    if not isinstance(authored, StoredTaskDocument):
+        return set()
+    visible = authored.variables.keys() | authored.signals.keys() | origins.keys()
+    members = task.variables.keys() | task.signals.keys() | {
+        value.id for value in (*projection.variables, *projection.signals)
+    }
+    return members - visible
 
 
 def _set_variable_edit(project, plan, key, path, change, site):
@@ -2124,6 +2158,12 @@ def trial_authoring(
         for field in projected.resets
     ]
     reset_keys = {reset.address_text for reset in resets}
+    if (generated := projected.generated_set_members) and isinstance(stored_task, StoredTaskDocument):
+        stored_task = stored_task.model_copy(update={
+            "variables": {id: value for id, value in stored_task.variables.items() if id not in generated},
+            "signals": {id: value for id, value in stored_task.signals.items() if id not in generated},
+            "links": {address: id for address, id in stored_task.links.items() if id not in generated},
+        })
     unresolved_links = [
         StudioTrialUnresolvedLink(key=key, path=task_start_path(reset_model, ModelAddress.from_authored_text(key)))
         for key in stored_task.links if key not in reset_keys
