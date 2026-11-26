@@ -1,0 +1,30 @@
+{
+  "schema": "feedbax.spec.model.v2",
+  "label": "Heavy point mass",
+  "base": {"document": "campaign-point-mass"},
+  "differences": {
+    "/interior/components/plant/fields/mass": {"value": 2},
+    "/ports/inputs/level": {"value": {"label": "Level", "type": {"shape": [1]}}},
+    "/ports/outputs/level-out": {"value": {"label": "Level out", "type": {"shape": [1]}}},
+    "/interior/components/level-gain": {
+      "value": {
+        "kind": "leaf",
+        "label": "Level gain",
+        "type": "feedbax.Gain",
+        "fields": {"gain": 1}
+      }
+    },
+    "/interior/wires/level-in": {
+      "value": {
+        "source": {"owner": "inputs", "port": "level"},
+        "target": {"owner": "component", "component": "level-gain", "port": "input"}
+      }
+    },
+    "/interior/wires/level-echo": {
+      "value": {
+        "source": {"owner": "component", "component": "level-gain", "port": "output"},
+        "target": {"owner": "outputs", "port": "level-out"}
+      }
+    }
+  }
+}

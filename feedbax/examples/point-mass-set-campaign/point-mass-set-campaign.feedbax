@@ -1,0 +1,5 @@
+{
+  "schema_version": "feedbax.project.v1",
+  "store": "store",
+  "settings": {"example_label": "Hold campaign"}
+}

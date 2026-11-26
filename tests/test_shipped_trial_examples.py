@@ -48,7 +48,7 @@ def test_studio_can_author_the_generated_blank_documents():
 
 def test_shipped_trial_documents_have_unique_names():
     projects = load_shipped_projects()
-    assert "point-mass-reaching" in projects
+    assert {"point-mass-reaching", "point-mass-set-campaign"} <= projects.keys()
     seen: dict[tuple[str, str], str] = {}
     for folder, project in projects.items():
         for name, document in project.documents.items():
