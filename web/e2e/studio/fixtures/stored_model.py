@@ -4,12 +4,16 @@ import json
 from pathlib import Path
 import sys
 
+from pydantic import TypeAdapter
+
+from feedbax.contracts.model_document import ModelComponent
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.contracts.stored_model import stored_model_component
 from feedbax.desktop.release import AppPaths
 from tests.support.model_documents import changed_model
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.test_model_document_plan import _add_attachment, _attachment_owner, _end, _model_project, _planar_arm, _wire
+from tests.test_model_document_plan import _add_attachment, _attachment_owner, _end, _model_project, _planar_arm
 
 
 def add_physical_interior(raw, scope):
@@ -18,28 +22,30 @@ def add_physical_interior(raw, scope):
     if scope == "equations":
         interior["components"]["equations"] = {
             "kind": "composite",
-            "name": "Equations",
-            "ports": {"physical": [{"id": "free", "name": "Free end", "type": "translational"}]},
+            "label": "Equations",
+            "ports": {"physical": {"free": {"label": "Free end", "type": "translational"}}},
             "interior": {
                 "physical_domain": "translational",
-                "components": {"mass": {"kind": "leaf", "name": "Mass", "type": "feedbax.Mass", "fields": {"mass": 1.0}}},
+                "components": {"mass": {"kind": "leaf", "label": "Mass", "type": "feedbax.Mass", "fields": {"mass": 1.0}}},
             },
         }
         return
 
-    arm = _planar_arm()
+    arm = stored_model_component(TypeAdapter(ModelComponent).validate_python(_planar_arm())).model_dump(
+        mode="json", exclude_defaults=True,
+    )
     interior["components"]["arm"] = arm
     if scope == "mechanics-port":
-        arm["ports"]["physical"] = [{"id": "mount", "name": "Mount", "type": "frame"}]
+        arm["ports"]["physical"] = {"mount": {"label": "Mount", "type": "frame"}}
         return
 
     interior["components"]["linear"] = {
-        "kind": "leaf", "name": "Readout", "type": "feedbax.Linear",
+        "kind": "leaf", "label": "Readout", "type": "feedbax.Linear",
         "fields": {"output_size": 6, "initialization": "zeros"},
     }
     interior["wires"].update(
-        sample=_wire(_end("arm", "pos"), _end("linear", "input")),
-        drive=_wire(_end("linear", "output"), _end("arm", "drive")),
+        sample={"source": _end("arm", "pos"), "target": _end("linear", "input")},
+        drive={"source": _end("linear", "output"), "target": _end("arm", "drive")},
     )
 
 

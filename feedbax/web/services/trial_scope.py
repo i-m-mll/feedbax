@@ -16,7 +16,8 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.project import (
     BasedDocument, Differences, Document, DocumentBase, DocumentEdit, DocumentReference, InlineBase, Payload, Project,
-    DifferenceNotApplied, OrderDocumentMembers, OrderProjectValue, RemoveDocumentValue, RemoveProjectValue,
+    DifferenceNotApplied, KeyedCollectionPath, OrderDocumentMembers, OrderProjectValue,
+    RemoveDocumentValue, RemoveProjectValue,
     SetDocumentValue, SetProjectValue, StepBase,
     apply_differences,
     apply_document_edit, based_on, diff,
@@ -309,7 +310,7 @@ def _composed(project: Project, name: str) -> Payload:
     return entry.payload
 
 
-def _edited(content: Payload, edits: Sequence[DocumentEdit], name: str, keyed_collection) -> Payload:
+def _edited(content: Payload, edits: Sequence[DocumentEdit], name: str, keyed_collection: KeyedCollectionPath) -> Payload:
     """``content`` with ``edits``: a value set or removed at each path, whatever the document held there."""
     result = deepcopy(content)
     for edit in edits:
@@ -355,8 +356,7 @@ class _DocumentStores:
 
 def _document_stores(
     project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: frozenset[str] | None, readers: DocumentUsers,
-    taken: set[str], adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
-    *, orders: Differences | None = None, fork_ordered: bool = False,
+    taken: set[str], adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None, *, fork_ordered: bool = False,
 ) -> _DocumentStores:
     """Where ``edits`` of ``shown`` are stored for the ``chosen`` steps, every step when None.
 
@@ -404,8 +404,6 @@ def _document_stores(
             return
         keyed = partial(stored_keyed_collection, document.schema_id)
         content = _edited(old(name), edits if adapt is None else adapt(old(name)), member_name(documents, name), keyed)
-        if orders:
-            content = apply_differences(content, orders, keyed_collection=keyed)
         delta = changes(name, old(name), content)
         order = fork_ordered and any(isinstance(edit, OrderDocumentMembers) for edit in delta.values())
         if chosen is None or not order and changed(name, content, ()) <= chosen:
@@ -700,7 +698,7 @@ def variant_view(plan, project: Project, variant: str | None) -> Project:
 def document_write(
     project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], readers: DocumentUsers,
     variant: str | None = None, named: Mapping[str, tuple[str, str]] = {}, view: Project | None = None,
-    *, adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None, orders: Differences | None = None,
+    *, adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
 ) -> StoredEdit:
     """Store ``edits`` of the document ``shown`` for the ``chosen`` steps, which read it or a document based on it.
 
@@ -713,7 +711,7 @@ def document_write(
         raise ValueError("An edit in a variant reads the variant's project.")
     store = _Store(project, variant, view or project)
     stores = _document_stores(
-        store.view, shown, edits, chosen, readers, set(), adapt, orders=orders, fork_ordered=variant is not None,
+        store.view, shown, edits, chosen, readers, set(), adapt, fork_ordered=variant is not None,
     )
     store.documents(stores)
     store.point(stores.pointing, named)
@@ -731,6 +729,8 @@ def content_edits(
     whole = set()
     for path, difference in differences.items():
         parts = json_pointer_parts(path)
+        if dotted and isinstance(difference, OrderDocumentMembers):
+            raise ProjectFolderInvalid("Reorder members in their document. A sweep patch cannot store their order.")
         if dotted and (boundary := next((index for index, part in enumerate(parts) if "." in part), None)) is not None:
             whole.add(parts[:boundary])
     edits: list[DocumentEdit] = []
@@ -811,7 +811,7 @@ _ABSENT = object()
 
 def evaluation_document_write(
     project: Project, plan, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], slot: str,
-    variant: str | None = None, *, orders: Differences | None = None,
+    variant: str | None = None,
 ) -> StoredEdit:
     """:func:`document_write` of ``shown`` for the ``chosen`` steps of ``variant``, among which an Evaluate step may
     read it through its subject at ``trial_documents.<slot>``.
@@ -838,9 +838,7 @@ def evaluation_document_write(
     def readers(name: str) -> frozenset[str]:
         return plan.document_users(variant_id, name) | (frozenset(named) if name == shown else frozenset())
 
-    return document_write(
-        project, shown, edits, chosen, readers, variant, named, variant_view(plan, project, variant), orders=orders,
-    )
+    return document_write(project, shown, edits, chosen, readers, variant, named, variant_view(plan, project, variant))
 
 
 def _holds(payload: Any, parts: Sequence[str]) -> bool:
@@ -907,17 +905,12 @@ def model_document_store(folders, project_id: str, project: Project, body, befor
     project = preview_authored_files(project, body.files)
     entry = project.documents[body.document]
     base = _composed(project, entry.base.document) if isinstance(entry, BasedDocument) else None
-    content = _in_form_of(before, after, base)
-    edits = content_edits(before, content)
-    orders = {
-        path: record for path, record in diff(before, content, keyed_collection=model_keyed_collection).items()
-        if isinstance(record, OrderDocumentMembers)
-    }
+    edits = content_edits(before, _in_form_of(before, after, base), schema_id=entry.schema_id)
     if body.step is None:
-        return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set(), orders=orders).files)
+        return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set()).files)
     plan = folders.read_plan(project_id, revision=body.revision).plan
     return head + evaluation_document_write(
-        project, plan, body.document, edits, {body.step, *body.chosen_steps}, "model", body.variant, orders=orders,
+        project, plan, body.document, edits, {body.step, *body.chosen_steps}, "model", body.variant,
     )
 
 

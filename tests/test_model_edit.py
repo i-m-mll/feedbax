@@ -616,6 +616,24 @@ def test_incompatible_local_physical_ports_keep_an_addressed_connection():
     assert problem.address == result.changed[0]
 
 
+def test_ungroup_rekeys_attachments_when_distinct_chains_share_a_key():
+    raw = _start().model_dump(mode="json")
+    outer = raw["document"]["interior"]["components"]["outer"]["interior"]
+    outer["wires"]["out"]["attachments"][0]["id"] = "output-probe"
+    state = ModelEditState.model_validate(raw)
+    result = _execute(state, "ungroup", address=_address(("outer",), "component", id="child"))
+    assert not isinstance(result, ModelEditProblem), result
+    stored = StoredModelDocument.from_lowered(result.state.document)
+    chain = stored.interior.components["outer"].interior.wires["out"].attachments
+    first, second = chain
+    assert first == "output-probe" and second != first
+    old = ModelAddress.model_validate(_address(("outer", "child"), "attachment",
+                                               parent={"kind": "wire", "id": "output"}, id=first))
+    assert result.relocations[old.to_text()] == ModelAddress.at_stored_path(
+        ("interior", "components", "outer", "interior", "wires", "out", "attachments", second),
+    )
+
+
 def _graphs(owner, scope=()):
     graph = owner.interior
     yield scope, owner, graph
