@@ -960,8 +960,10 @@ def test_objective_offsets_project_paired_editable_fields(tmp_path):
         assert field(shown, start)["text"] == ""
         assert field(shown, start)["conversion"] is None
         assert field(shown, end)["conversion"] == {"value": .05, "unit": "s"}
-        assert field(shown, start)["can_sweep"]
-        assert {"value", "formula", "link", "draw", "sweep"} <= set(field(shown, start)["site"]["kinds"])
+        assert not field(shown, start)["can_sweep"]
+        assert {"value", "formula", "link", "draw"} <= set(field(shown, start)["site"]["kinds"])
+        assert "sweep" not in field(shown, start)["site"]["kinds"]
+        assert "sweep" not in field(shown, end)["site"]["kinds"]
 
         edit(start, "-25 ms")
         reopened = author()
@@ -978,11 +980,11 @@ def test_objective_offsets_project_paired_editable_fields(tmp_path):
         assert "offset" not in cleared["objective"]["terms"]["effort"]["window"]["spans"][0]["start"]
         assert field(cleared, start)["text"] == ""
 
-        edit(end, "linspace(3 st, 5 st, 3)")
-        plan = folders.read_plan("window", revision=body["revision"]).plan
-        runs = plan.runs
-        assert len(runs) == 3 and all(run.admission_problem is None for run in runs), plan.diagnostics
-        assert len({run.request_id for run in runs}) == 3
+        for text in ("3 st, 5 st", "linspace(3 st, 5 st, 3)"):
+            refused = author({"kind": "expression", "path": end, "edit": {"kind": "text", "text": text}})
+            assert not refused["files"]
+            assert any(problem["reason"] == "This field takes one expression." for problem in refused["problems"])
+        assert field(author(), end)["text"] == "5 st"
 
 
 def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader(tmp_path):
@@ -1540,3 +1542,34 @@ def test_task_structure_allocates_a_valid_key_without_changing_the_label(tmp_pat
         view = reply.json()
         assert view["files"], view
         assert view["task"]["variables"]["variable-1-rate-2"]["label"] == "1 rate"
+
+
+def test_order_in_a_variant_creates_a_based_collection_order(tmp_path):
+    raw = _stored_editor_project()
+    raw["documents"]["objective"]["payload"]["terms"]["later"] = {"measure": {"kind": "literal", "value": 2}}
+    raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
+    name = "variant-order"
+    route = f"/api/projects/{name}"
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+        _save_project(folders, name, Project.model_validate(raw))
+        revision = folders.read(name).revision
+        run = {"variant": "treated", "step": "train", "row": "default"}
+        order = ["later", "effort"]
+        reply = client.post(f"{route}/authoring/trials", json={
+            "revision": revision, "run": run,
+            "change": {"kind": "objective", "edits": [{"op": "order", "path": "/terms", "order": order}]},
+        })
+        assert reply.status_code == 200, reply.text
+        edit = reply.json()
+        created, = edit["created"]
+        assert created["document"]["base"] == {"document": "objective"}
+        assert created["document"]["differences"] == {"/terms": {"order": order}}
+        saved = client.patch(route, json={"revision": revision, "files": edit["files"], "created": edit["created"]})
+        assert saved.status_code == 200, saved.text
+        for variant, expected in (("treated", order), ("control", list(reversed(order)))):
+            shown = client.post(f"{route}/authoring/trials", json={
+                "revision": saved.json()["revision"], "run": run | {"variant": variant},
+            })
+            assert shown.status_code == 200, shown.text
+            assert list(shown.json()["objective"]["terms"]) == expected
