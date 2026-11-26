@@ -6,29 +6,11 @@ from pydantic import Field, JsonValue, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import (
-    AttachmentElement, ComponentElement, ModelAddress, ModelElementId, SignalSource, SignalTarget, WireElement,
+    ComponentElement, ModelAddress, ModelElementId, SignalSource, SignalTarget, WireElement,
 )
-from feedbax.contracts.model_document import LeafComponent, WireAttachment
+from feedbax.contracts.stored_model import StoredLeafComponent, StoredWireAttachment
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
-
-
-class AddModelAttachment(StrictModel):
-    op: Literal["add"]
-    owner: ModelAddress
-    attachment: WireAttachment
-    after: ModelElementId | None
-
-    @model_validator(mode="after")
-    def _owner(self) -> "AddModelAttachment":
-        validate_cross_field_refinements("AddModelAttachment", self)
-        return self
-
-    @property
-    def address(self) -> ModelAddress:
-        return self.owner.model_copy(update={"element": AttachmentElement(
-            kind="attachment", parent=self.owner.element, id=self.attachment.id,
-        )})
 
 
 class ExistingModelAttachment(StrictModel):
@@ -40,15 +22,21 @@ class ExistingModelAttachment(StrictModel):
         return self
 
 
-class ChangeModelAttachment(ExistingModelAttachment):
-    op: Literal["change"]
-    attachment: WireAttachment
-    after: ModelElementId | None = None
+class AddModelAttachment(ExistingModelAttachment):
+    op: Literal["add"]
+    attachment: StoredWireAttachment
+    after: ModelElementId | None
 
     @model_validator(mode="after")
-    def _id(self) -> "ChangeModelAttachment":
-        validate_cross_field_refinements("ChangeModelAttachment", self)
+    def _wire_hold(self) -> "AddModelAttachment":
+        validate_cross_field_refinements("AddModelAttachment", self)
         return self
+
+
+class ChangeModelAttachment(ExistingModelAttachment):
+    op: Literal["change"]
+    attachment: StoredWireAttachment
+    after: ModelElementId | None = None
 
 
 class RemoveModelAttachment(ExistingModelAttachment):
@@ -64,7 +52,7 @@ class SetField(StrictModel):
 class AddModelComponent(StrictModel):
     op: Literal["add_component"]
     address: ModelAddress
-    component: LeafComponent
+    component: StoredLeafComponent
 
     @model_validator(mode="after")
     def _component_address(self) -> "AddModelComponent":

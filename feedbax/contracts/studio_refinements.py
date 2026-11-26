@@ -92,20 +92,6 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
     ),
     "TaskTrialSampleRequest": (_ONE_TRIAL_SOURCE,),
     "TrialDocuments": (_ONE_TRIAL_SOURCE,),
-    "AddModelAttachment": (
-        CrossFieldRefinement(
-            "model-attachment.owner",
-            "Expected a wire or port owner",
-            lambda value: value.owner.element.kind not in {"wire", "port"},
-            'value.owner.element.kind !== "wire" && value.owner.element.kind !== "port"',
-        ),
-        CrossFieldRefinement(
-            "model-attachment.hold-owner",
-            "A Hold requires a wire",
-            lambda value: value.attachment.kind == "hold" and value.owner.element.kind != "wire",
-            'value.attachment.kind === "hold" && value.owner.element.kind !== "wire"',
-        ),
-    ),
     "ExistingModelAttachment": (
         CrossFieldRefinement(
             "model-attachment.address",
@@ -273,13 +259,16 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
 
 
 CROSS_FIELD_REFINEMENTS["RemoveModelAttachment"] = CROSS_FIELD_REFINEMENTS["ExistingModelAttachment"]
-CROSS_FIELD_REFINEMENTS["ChangeModelAttachment"] = (
+CROSS_FIELD_REFINEMENTS["ChangeModelAttachment"] = CROSS_FIELD_REFINEMENTS["ExistingModelAttachment"]
+CROSS_FIELD_REFINEMENTS["AddModelAttachment"] = (
     *CROSS_FIELD_REFINEMENTS["ExistingModelAttachment"],
     CrossFieldRefinement(
-        "model-attachment.retained-id",
-        "A replacement must retain the addressed attachment ID",
-        lambda value: value.address.element.kind == "attachment" and value.attachment.id != value.address.element.id,
-        'value.address.element.kind === "attachment" && value.attachment.id !== value.address.element.id',
+        "model-attachment.hold-owner",
+        "A Hold requires a wire",
+        lambda value: value.attachment.kind == "hold"
+        and value.address.element.kind == "attachment" and value.address.element.parent.kind != "wire",
+        'value.attachment.kind === "hold" && value.address.element.kind === "attachment"'
+        ' && value.address.element.parent.kind !== "wire"',
     ),
 )
 
@@ -525,8 +514,8 @@ CROSS_FIELD_REFINEMENTS.update(
 REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     "SessionTargetProfile": frozenset({"_remote_id"}),
     "SessionTarget": frozenset({"_remote_id"}),
-    "AddModelAttachment": frozenset({"_owner"}),
-    "ChangeModelAttachment": frozenset({"_attachment", "_id"}),
+    "AddModelAttachment": frozenset({"_attachment", "_wire_hold"}),
+    "ChangeModelAttachment": frozenset({"_attachment"}),
     "RemoveModelAttachment": frozenset({"_attachment"}),
     "ModelPorts": frozenset({"_unique_ports"}),
     "StoredModelPorts": frozenset({"_unique_ports"}),
