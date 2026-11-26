@@ -48,7 +48,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance
 from feedbax.application.composition import load_application
-from feedbax.host.model_input import prepare_model_task, reconstruct_model
+from feedbax.host.model_input import ImportedModelWeights, prepare_model_task, reconstruct_model
 from feedbax.persistence.canonical_evaluate import (
     ROLLOUT_TYPE,
     ROLLOUT_JAX_BACKEND,
@@ -242,12 +242,14 @@ def _prepare_weighted_rollout(
     coordinate: int | None = None, imported_subject_sha256: str | None = None,
     synthesized_source: SynthesizedModelSource | None = None,
 ) -> PreparedRollout:
+    imported = imported_subject_sha256 is not None
     resolved = resolve_rollout(
-        initial, task_source, objective, slot.graph, params, registry=registry,
+        initial, task_source, objective, None if imported else slot.graph, params, registry=registry,
         model_assets=slot.provider, input_bindings=input_bindings,
     )
     paired, variant, source_pair = resolved.paired, resolved.variant, resolved.source_pair
-    source = synthesized_source or CheckpointModelSource(tree=slot.tree, encoding=slot.encoding, initial=initial)
+    source_type = ImportedModelWeights if imported else CheckpointModelSource
+    source = synthesized_source or source_type(tree=slot.tree, encoding=slot.encoding, initial=initial)
     restored = reconstruct_model(
         source, registry=registry, artifacts=slot.provider, template=source_pair.resolution,
         variant=None if paired is source_pair else paired.resolution, source_overrides=variant.source_overrides,

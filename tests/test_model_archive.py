@@ -19,11 +19,13 @@ from feedbax.contracts.loaded_model import (
 )
 from feedbax.contracts.model_checkpoint import ModelReplicaManifest
 from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_input import InitialModelSource
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.examples import load_shipped_projects
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.host.model_archive import UnreadableModelArchive, export_model_archive, stage_model_archive
 from feedbax.host.model_checkpoint import SemanticModelSlot, SemanticModelWriter
+from feedbax.host.model_input import ImportedModelWeights, ReconstructedModel, reconstruct_model
 from feedbax.persistence.array_container import decode_array_container, encode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE
@@ -35,6 +37,10 @@ def native_archive(tmp_path_factory):
     model = ModelDocument.model_validate(project.documents["point-mass"].payload)
     task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
     registry = new_application_registry_bundle()
+    return model, registry.components, *_publish_archive(model, task, registry, tmp_path_factory.mktemp("native-train"))
+
+
+def _publish_archive(model, task, registry, transaction):
     trial = compile_trial_execution(
         model, task, registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
         input_bindings={"target_pos": "target_pos"},
@@ -43,7 +49,6 @@ def native_archive(tmp_path_factory):
     template = trial.executable.graph
     other = eqx.tree_at(lambda graph: graph.nodes["readout"].layer.weight, template,
                         jnp.full_like(template.nodes["readout"].layer.weight, 0.25))
-    transaction = tmp_path_factory.mktemp("native-train")
     writer = SemanticModelWriter.for_graph(trial.executable.resolved.graph, None, registry.components)
     assert writer is not None
     checkpoint = writer.publish(transaction, (template, other), templates=(template, template), replica_ids=("a", "b"))
@@ -51,7 +56,7 @@ def native_archive(tmp_path_factory):
     archive = export_model_archive(store, checkpoint.tree, checkpoint.encoding)
     assert isinstance(archive, bytes), archive
     rmtree(transaction)
-    return model, registry.components, template, other, archive, checkpoint
+    return template, other, archive, checkpoint
 
 
 def _read_files(raw):
@@ -87,6 +92,47 @@ def test_native_archive_preserves_replicas_in_a_new_store(native_archive, tmp_pa
     first, second = slot.restore_all((template, template))
     assert eqx.tree_equal(first, template) and eqx.tree_equal(second, other)
     assert export_model_archive(store, result.weights, result.encoding) == raw
+
+
+def test_archive_fits_changed_noise_without_changing_learned_weights(tmp_path):
+    project = load_shipped_projects()["point-mass-reaching"]
+    raw = project.documents["point-mass"].payload
+    raw["interior"]["components"]["motor-noise"] = {
+        "kind": "leaf", "name": "Motor noise", "type": "feedbax.Noise",
+        "fields": {"std": 0.5, "shape": [2]},
+    }
+    task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
+    registry = new_application_registry_bundle()
+    trained = ModelDocument.model_validate(raw)
+    first, second, archive, checkpoint = _publish_archive(trained, task, registry, tmp_path / "trained")
+    noise = raw["interior"]["components"]["motor-noise"]["fields"]
+    noise["std"] = 0.0
+    selected = ModelDocument.model_validate(raw)
+
+    store = ImmutableArtifactBlobProvider(tmp_path / "loaded")
+    with stage_model_archive(archive, selected, store, components=registry.components) as imported:
+        assert isinstance(imported, ImportedModelSource), imported
+        assert (imported.weights, imported.encoding) == (checkpoint.tree, checkpoint.encoding)
+        pinned = decode_imported_model_document(store.get_object(imported.model))
+        model = reconstruct_model(
+            ImportedModelWeights(
+                initial=InitialModelSource(document=pinned), tree=imported.weights, encoding=imported.encoding,
+            ),
+            registry=registry, artifacts=store,
+        )
+        assert isinstance(model, ReconstructedModel), model
+        for original, restored in zip((first, second), model.graphs, strict=True):
+            assert restored.nodes["motor-noise"].std == 0.0
+            np.testing.assert_array_equal(restored.nodes["readout"].layer.weight, original.nodes["readout"].layer.weight)
+        assert export_model_archive(store, imported.weights, imported.encoding) == archive
+
+    noise["shape"] = [3]
+    with stage_model_archive(archive, ModelDocument.model_validate(raw), store, components=registry.components) as rejected:
+        assert isinstance(rejected, ModelFitReport), rejected
+        assert any(
+            problem.kind == "graph_mismatch" and problem.address.startswith("/graph/nodes/motor-noise/params/shape")
+            for problem in rejected.problems
+        )
 
 
 def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_archive, tmp_path):

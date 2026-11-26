@@ -453,8 +453,8 @@ def _move_set(project: Project, command: SetToField | SetToSweep) -> StoredEdit:
     axes = dict((raw.get("sweep") or {}).get("axes", {}))
     if isinstance(command, SetToField):
         axis = _authored_axis(project, command.step, command.axis)
-        if step.kind != "train" or not isinstance(axis, SetAxis):
-            raise ProjectFolderInvalid("To Field needs a Train's Set axis.")
+        if step.kind not in {"train", "evaluate"} or not isinstance(axis, SetAxis):
+            raise ProjectFolderInvalid("To Field needs a Train or Evaluate Set axis.")
         if command.axis in field_sets:
             raise ProjectFolderInvalid(f"{command.axis} already has a Set field.")
         sweep = step.sweep
@@ -490,7 +490,7 @@ def _move_set(project: Project, command: SetToField | SetToSweep) -> StoredEdit:
 def _set_field_weight(project: Project, command: SetFieldWeight) -> StoredEdit:
     step = project.steps[command.step]
     field = step.set_fields.get(command.axis)
-    if step.kind != "train" or field is None:
+    if step.kind not in {"train", "evaluate"} or field is None:
         raise ProjectFolderInvalid(f"{command.axis} is not a Set field of {member_name(project.steps, command.step)}.")
     entry, part, weight = command.entry, command.part, command.weight
     if entry is not None:

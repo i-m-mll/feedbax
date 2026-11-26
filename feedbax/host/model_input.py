@@ -10,20 +10,44 @@ from feedbax.compiler.graph import ExecutableGraph, GraphCompilationError, Graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.execution.trial_resolution import PreparedTrialExecution, declared_model_input_prototypes, resolve_trial_execution
 from feedbax.contracts.expression_values import Problem, ProblemCode
-from feedbax.contracts.model_input import InitialModelSource, ModelSource, SynthesizedModelSource
+from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, ModelSource, SynthesizedModelSource
+from feedbax.contracts.model_occurrence import graph_leaf_specs
+from feedbax.contracts.model_values import scalar_source_parameters
 from feedbax.contracts.project import json_pointer_parts
+from feedbax.contracts.semantic_values import semantic_key
 from feedbax.objectives.document import ObjectiveUse
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.host.model_checkpoint import ModelCheckpointError, ModelRestoreTarget, SemanticModelSlot
 
 if TYPE_CHECKING:
     from feedbax.compiler.graph import ResolvedGraph
+    from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.objective_document import ObjectiveDocument
     from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.runtime.graph import Graph
+
+
+class ImportedModelWeights(CheckpointModelSource):
+    """An archive's immutable learned values, paired with the authored Model selected at Load."""
+
+
+def _imported_source_overrides(
+    archived: GraphSpec, destination: GraphSpec, components: ComponentRegistry,
+) -> dict[str, float]:
+    retained = dict(graph_leaf_specs(archived))
+    overrides = {}
+    for path, node in graph_leaf_specs(destination):
+        prior = retained.get(path)
+        if prior is None or prior.type != node.type or prior.revision not in (None, node.revision):
+            continue
+        source = scalar_source_parameters(prior, components)
+        for name, value in scalar_source_parameters(node, components).items():
+            if name in source and source[name] != value:
+                overrides[semantic_key("model", "value", path, name)] = value
+    return overrides
 
 
 @dataclass(frozen=True)
@@ -95,15 +119,21 @@ def reconstruct_model(
             raise ModelCheckpointError("/model", "model slot differs from its authenticated source")
         definition = source.initial
         if template is None:
+            graph = slot.graph
+            if isinstance(source, ImportedModelWeights):
+                graph = lower_model_document(
+                    definition.document, registry.components, supplied_inputs=frozenset(graph.input_bindings),
+                ).graph
             prototypes = declared_model_input_prototypes(definition.document)
             template = resolve_graph(
-                GraphDocument(graph=slot.graph), registry.components,
-                {
-                    target: prototypes[name]
-                    for name, target in slot.graph.input_bindings.items()
-                    if name in prototypes
-                },
+                GraphDocument(graph=graph), registry.components,
+                {target: prototypes[name] for name, target in graph.input_bindings.items() if name in prototypes},
             )
+        overrides = source_overrides or {}
+        if isinstance(source, ImportedModelWeights):
+            target = variant or template
+            graph = target.resolved.graph if isinstance(target, ExecutableGraph) else target.graph
+            overrides = _imported_source_overrides(slot.graph, graph, registry.components) | overrides
         ids = slot.replica_ids
         if len(ids) != 1 and (isinstance(template, ExecutableGraph) or isinstance(variant, ExecutableGraph)):
             raise ModelCheckpointError("/model/replicas", "replica restore requires an unrealized template")
@@ -114,8 +144,8 @@ def reconstruct_model(
         graphs = slot.restore_all(
             tuple(source.graph for source in sources),
             synthesized=isinstance(source, SynthesizedModelSource),
-            targets=None if variant is None else tuple(
-                ModelRestoreTarget(target.resolved.graph, target.graph, source_overrides or {}) for target in targets
+            targets=None if variant is None and not overrides else tuple(
+                ModelRestoreTarget(target.resolved.graph, target.graph, overrides) for target in targets
             ),
         )
         return ReconstructedModel(

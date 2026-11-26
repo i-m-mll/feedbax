@@ -508,6 +508,72 @@ def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
     assert not folders.read(PROJECT).project.steps["other"].set_fields
 
 
+@pytest.mark.parametrize(("subject", "sampling"), [
+    ("checkpoint", "weighted"), ("checkpoint", "listed"), ("initial", "weighted"),
+])
+def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, subject, sampling):
+    raw = document_project(authored_documents(), evaluation=True)
+    if subject == "initial":
+        train = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
+        step = raw["steps"]["baseline"]
+        step["inputs"] = {
+            "subject": {"kind": "initial_model", "source": train["model"]},
+            "task": {"kind": "task", "source": train["task"]},
+        }
+        step["base"]["inline"]["params"]["input_bindings"] = train["input_bindings"]
+    raw["documents"]["loads"] = {
+        "schema": "feedbax.set_document.v1",
+        "payload": {"entries": {"pulse": {"differences": {
+            "/interior/wires/effector-wire/attachments": {"value": [{
+                "id": "pulse", "kind": "intervention", "operation": "Add",
+                "operands": {"value": {"kind": "value", "value": [2, 0]}},
+                "window": {"spans": [{
+                    "kind": "interval",
+                    "start": {"anchor": {"kind": "epoch", "edge": "start", "epoch": "move"}},
+                    "end": {"offset": {"value": 2, "unit": "st"}},
+                }]},
+            }]},
+        }}}},
+    }
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        folders = client.app.state.project_folders
+        if sampling == "listed":
+            raw["steps"]["baseline"]["set_fields"] = {
+                "loads": {"axis": {"set": "loads"}, "sampling": {"kind": "listed"}},
+            }
+        _save_project(folders, PROJECT, Project.model_validate(raw))
+        if sampling == "weighted":
+            applied = _set_edit(folders, client, {"kind": "apply_set", "step": "baseline", "set": "loads"})
+            assert not applied.get("problems"), applied
+            assert list(_runs(folders, "baseline")) == ["loads=pulse"]
+            _set_edit(folders, client, {"kind": "set_to_field", "step": "baseline", "axis": "loads"})
+            _set_edit(folders, client, {
+                "kind": "set_field_weight", "step": "baseline", "axis": "loads", "entry": None, "weight": 0,
+            })
+        revision = folders.read(PROJECT).revision
+        key = {"variant": "default", "step": "baseline", "row": "default"}
+        plan = folders.read_plan(PROJECT, revision=revision).plan
+        assert not plan.diagnostics, plan.diagnostics
+        (row,) = [item for item in plan.runs if item.key.step == "baseline"]
+        assert not row.problems and "loads" in row.document_uses, row.problems
+        reply = client.post(f"{BASE}/authoring/trials", json={"revision": revision, "run": key})
+        assert reply.status_code == 200, reply.text
+        projected = reply.json()
+        (field,) = projected["set_fields"]
+        assert field["sampling"]["kind"] == sampling and not projected["problems"], projected["problems"]
+        if sampling == "weighted":
+            assert field["entries"][0]["entry"] is None and field["entries"][0]["weight"] == 0
+            change = {"kind": "expression", "path": "/set_fields/loads/condition",
+                      "edit": {"kind": "text", "text": "catch"}}
+            edit = client.post(f"{BASE}/authoring/trials", json={"revision": revision, "run": key, "change": change})
+            assert edit.status_code == 200, edit.text
+            body = edit.json()
+            assert body["files"] and not body["problems"], body["problems"]
+            applied = client.patch(BASE, json={"revision": revision, "files": body["files"]})
+            assert applied.status_code == 200, applied.text
+            assert folders.read(PROJECT).project.steps["baseline"].set_fields["loads"].condition.reference == "catch"
+
+
 def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
     raw = document_project(authored_documents())
     raw["documents"]["task"]["payload"]["variables"].append({
