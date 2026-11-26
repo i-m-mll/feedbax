@@ -208,12 +208,12 @@ export function WindowEditor({ window, host, labelId }: { window: Window | null 
 }
 
 /** A Window in a table cell: its text, which opens the editor. */
-export function WindowCell({ window, host, labelId }: { window: Window | null | undefined; host: WindowHost; labelId?: string }) {
+export function WindowCell({ window, host }: { window: Window | null | undefined; host: WindowHost }) {
   const text = windowText(window, host);
   const { changed } = host;
   return <Popover>
     <div data-field-box="" className={fieldBox}>
-      <PopoverTrigger aria-labelledby={labelId} aria-label={labelId ? undefined : studioName('window')}
+      <PopoverTrigger aria-label={studioAccessibleName('window', text || studioName('wholeTrial'))}
         className="flex h-full min-w-0 flex-1 items-center truncate px-control-inline text-left font-mono text-xs outline-none">
         {text || <span className="font-sans text-shell-muted">{studioName('wholeTrial')}</span>}
       </PopoverTrigger>

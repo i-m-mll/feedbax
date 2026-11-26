@@ -94,21 +94,23 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
     await fitMap();
     const before = await camera();
     const bounds = (await paneControl.boundingBox())!;
-    const point = { x: bounds.width - 80, y: bounds.height - 40 };
-    const samples = viewport.evaluate((node) => new Promise<number[]>((resolve) => {
-      node.ownerDocument.addEventListener('dblclick', () => {
+    const samples = viewport.evaluate((node) => new Promise<{ frames: number[]; point: { x: number; y: number } }>((resolve) => {
+      node.ownerDocument.addEventListener('dblclick', (event) => {
+        const pane = (event.target as HTMLElement).getBoundingClientRect();
+        const point = { x: event.clientX - pane.left, y: event.clientY - pane.top };
         const start = performance.now();
         const frames: number[] = [];
         const sample = () => {
           frames.push(new DOMMatrixReadOnly(getComputedStyle(node).transform).a);
           if (performance.now() - start < 350) requestAnimationFrame(sample);
-          else resolve(frames);
+          else resolve({ frames, point });
         };
         sample();
       }, { capture: true, once: true });
     }));
-    await paneControl.dblclick({ position: point });
-    const frames = await samples;
+    // The pane can have a fractional size, while the browser delivers the pointer at whole pixels.
+    await paneControl.dblclick({ position: { x: bounds.width - 80, y: bounds.height - 40 } });
+    const { frames, point } = await samples;
     const after = await camera();
     expect(after.zoom).toBeCloseTo(before.zoom * 2);
     expect((point.x - after.x) / after.zoom).toBeCloseTo((point.x - before.x) / before.zoom);
@@ -183,7 +185,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   await expect(idlePath).toHaveCSS('stroke', 'rgb(255, 255, 255)');
   expect(await donePath.getAttribute('d')).not.toBe(await idlePath.getAttribute('d'));
   await expect(child.getByRole('button', { name: / · Not run$/ })).toHaveCount(2);
-  await expect(page.getByRole('log', { name: 'Status' }).getByText(/^Train · train · seed=.+: Done$/)).toHaveCount(1);
+  await expect(page.getByRole('log', { name: 'Status' }).getByText(`Train · Train · ${included.label}: Done`, { exact: true })).toHaveCount(1);
   const vision = await page.context().newCDPSession(page);
   try {
     await vision.send('Emulation.setEmulatedVisionDeficiency', { type: 'achromatopsia' });

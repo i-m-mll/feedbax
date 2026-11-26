@@ -15,7 +15,7 @@ from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.rollout import VariationEdits, authored_variation
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.model_values import component_model_facts, model_owner_problem
+from feedbax.contracts.model_values import component_model_facts, is_finite_source_scalar, model_owner_problem
 from feedbax.contracts.rollout import CannotRun
 
 if TYPE_CHECKING:
@@ -107,15 +107,6 @@ def validate_evaluation_source(graph: GraphSpec, components: ComponentRegistry) 
 
 def _public_input_ports(ports):
     return [name for name in ports if not is_trial_binding(name)]
-
-
-def _finite_float32(value: object) -> bool:
-    limit = 3.4028234663852886e38
-    return type(value) in (int, float) and -limit <= value <= limit
-
-
-
-
 
 
 def _replacement_task(patch, path):
@@ -252,8 +243,11 @@ def resolve_evaluation_variant(
                     if declared is not None:
                         if declared.kind == "parameter":
                             raise ValueError("M2 Evaluate preserves retained learned values")
-                        if not _finite_float32(patch.value):
+                        if not is_finite_source_scalar(patch.value):
                             raise ValueError("expected a finite scalar for a declared source value")
+                        if patch.op == "add" and parameter in node.params:
+                            # Compilation materializes a default absent from the authored Model.
+                            patch = patch.model_copy(update={"op": "replace"})
                         overrides[semantic_key("model", "value", (*owners, name), parameter)] = float(patch.value)
                 case _:
                     raise ValueError("patch is outside the qualified task and graph variation profile")

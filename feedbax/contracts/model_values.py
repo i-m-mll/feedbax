@@ -106,6 +106,23 @@ def component_model_facts(node: ComponentSpec, components: ComponentRegistry) ->
     return None if owner is None else owner.model_facts
 
 
+def is_finite_source_scalar(value: object) -> bool:
+    limit = 3.4028234663852886e38
+    return type(value) in (int, float) and -limit <= value <= limit
+
+
+def scalar_source_parameters(node: ComponentSpec, components: ComponentRegistry) -> dict[str, float]:
+    """The scalar configuration values a compatible Model may choose independently of its weights."""
+    owner = component_model_facts(node, components)
+    if owner is None or not owner.checkpointable or owner.is_fixed_configuration(node):
+        return {}
+    return {
+        value.symbol: float(config)
+        for value in owner.values if value.kind == "source"
+        if is_finite_source_scalar(config := node.params.get(value.symbol))
+    }
+
+
 @dataclass(frozen=True)
 class ModelOwnerProblem:
     path: tuple[str, ...]
