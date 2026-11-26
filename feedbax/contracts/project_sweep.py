@@ -267,11 +267,18 @@ class ListedSetTrials(StrictModel):
     kind: Literal["listed"]
 
 
+def _set_entry_weight[T](weights: Mapping[str, T], entry: str, family: str | None, default: T) -> T:
+    return weights.get(entry, weights.get(family, default) if family is not None else default)
+
+
 class WeightedSetTrials(StrictModel):
     kind: Literal["weighted"]
     weights: dict[ProjectName, WeightPart] = Field(default_factory=dict)
     none: WeightPart = 1.0
     """Unspecified entries receive one part, including entries added to the Set later."""
+
+    def weight_for(self, entry: str | None, *, family: str | None = None) -> WeightPart:
+        return self.none if entry is None else _set_entry_weight(self.weights, entry, family, 1.0)
 
 
 class SetEntryParts(StrictModel):
@@ -282,6 +289,9 @@ class SetEntryParts(StrictModel):
 class CooccurringSetTrials(StrictModel):
     kind: Literal["cooccurring"]
     weights: dict[ProjectName, SetEntryParts] = Field(default_factory=dict)
+
+    def weight_for(self, entry: str, *, family: str | None = None) -> SetEntryParts:
+        return _set_entry_weight(self.weights, entry, family, SetEntryParts())
 
 
 type SetTrialSampling = Annotated[
