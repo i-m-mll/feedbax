@@ -57,8 +57,10 @@ from feedbax.contracts.execution_target import (
     CloseWhenIdle, ExecutionTargets, HostRuntime, KeepOpen, LocalTarget, LocalTargetProfile, OffTarget, OpeningObservation, ReadyTarget,
     SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnreachableTarget,
 )
-from feedbax.contracts.analysis_document import AnalysisDocument
-from feedbax.contracts.figure_document import StoredFigureDocument
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, AnalysisDocument
+from feedbax.contracts.figure_document import (
+    STORED_FIGURE_DOCUMENT_SCHEMA_ID, FigureDocument, StoredFigureDocument,
+)
 from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.contracts.studio_figure import (
     FigureLayoutMeta, FigurePanelMeta, FigureProduct, FigureRun, FigureTraceMeta, PlotlyLayout, PlotlyTrace,
@@ -538,6 +540,7 @@ AUTHORED_CONTRACT_MODELS = (
     ValidityAction,
     ValidityAcceptance,
     AnalysisDocument,
+    FigureDocument,
     StoredFigureDocument,
     TaskDocument,
     StoredTaskDocument,
@@ -1529,6 +1532,8 @@ def generate() -> str:
         f"export const taskDocumentSchemaId = {json.dumps(STORED_TASK_DOCUMENT_SCHEMA_ID)};\n"
         f"export const objectiveDocumentSchemaId = {json.dumps(STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID)};\n"
         f"export const setDocumentSchemaId = {json.dumps(SET_DOCUMENT_SCHEMA_ID)};\n"
+        f"export const analysisDocumentSchemaId = {json.dumps(ANALYSIS_SCHEMA)};\n"
+        f"export const figureDocumentSchemaId = {json.dumps(STORED_FIGURE_DOCUMENT_SCHEMA_ID)};\n"
         f"export const loadedModelDocumentSchemaId = {json.dumps(LOADED_MODEL_SCHEMA_ID)};\n\n"
         f"export const firstTrainTask: Document = {json.dumps(first_train_task().model_dump(mode='json', by_alias=True), indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"

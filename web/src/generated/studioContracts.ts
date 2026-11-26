@@ -2811,7 +2811,6 @@ export type AddSetEntry = {
 };
 
 export type AnalysisDocument = {
-  "schema_version"?: "feedbax.analysis_document.v1";
   "inputs"?: Record<string, AnalyzeDatasetInput | AnalyzeModelInput | AnalyzeTaskInput>;
   "operations"?: Record<string, OperationElement>;
   "views"?: Record<string, FigureElement>;
@@ -3279,7 +3278,7 @@ export type FigureDocumentView = {
 };
 
 export type FigureElement = {
-  "figure": FigureDocument | FigureTemplateRef | DocumentReference;
+  "figure": StoredFigureDocument | FigureTemplateRef | DocumentReference;
   "label": string;
   "inputs": Record<string, StepInput | OperationDataset>;
 };
@@ -4554,6 +4553,12 @@ export type StudioAnalysisPlace = {
   "field"?: Pointer | null;
 };
 
+export type StudioAnalyzeAddFigureLayer = {
+  "kind": "add_figure_layer";
+  "view": string;
+  "layer": StoredLineLayer | StoredTrajectoryLayer | StoredBandLayer | StoredPointsLayer | StoredRuleLayer | StoredSpanLayer;
+};
+
 export type StudioAnalyzeAuthoring = {
   "revision": Sha256;
   "document": string;
@@ -4563,14 +4568,15 @@ export type StudioAnalyzeAuthoring = {
   "sources": Record<string, Record<string, Array<StepInput | OperationDataset>>>;
   "variables": Record<string, Record<string, Array<string>>>;
   "variable_names"?: Record<string, string>;
-  "figure": FigureDocument;
+  "figure": StoredFigureDocument;
+  "created_layer"?: StoredMemberKey | null;
   "changed"?: Array<Pointer>;
   "files"?: Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
-export type StudioAnalyzeChange = StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset;
+export type StudioAnalyzeChange = StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset | StudioAnalyzeAddFigureLayer;
 
 export type StudioAnalyzeEdit = {
   "kind": "edit";
@@ -6068,6 +6074,8 @@ export const modelDocumentSchemaId = "feedbax.spec.model.v2";
 export const taskDocumentSchemaId = "feedbax.spec.task_document.v2";
 export const objectiveDocumentSchemaId = "feedbax.spec.objective_document.v2";
 export const setDocumentSchemaId = "feedbax.set_document.v2";
+export const analysisDocumentSchemaId = "feedbax.analysis_document.v2";
+export const figureDocumentSchemaId = "feedbax.figure_document.v2";
 export const loadedModelDocumentSchemaId = "feedbax.spec.loaded_model";
 
 export const firstTrainTask: Document = {
@@ -11419,7 +11427,6 @@ export const AddSetEntrySchema: z.ZodType<AddSetEntry> = z.lazy(() =>
 
 export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
   z.object({
-    "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AnalyzeDatasetInputSchema, AnalyzeModelInputSchema, AnalyzeTaskInputSchema])).optional(),
     "operations": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), OperationElementSchema).optional(),
     "views": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), FigureElementSchema).optional(),
@@ -12055,7 +12062,7 @@ export const FigureDocumentViewSchema: z.ZodType<FigureDocumentView> = z.lazy(()
 
 export const FigureElementSchema: z.ZodType<FigureElement> = z.lazy(() =>
   z.object({
-    "figure": z.union([FigureDocumentSchema, FigureTemplateRefSchema, DocumentReferenceSchema]),
+    "figure": z.union([StoredFigureDocumentSchema, FigureTemplateRefSchema, DocumentReferenceSchema]),
     "label": z.string().min(1),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepInputSchema, OperationDatasetSchema])),
   }).strict()
@@ -13793,6 +13800,14 @@ export const StudioAnalysisPlaceSchema: z.ZodType<StudioAnalysisPlace> = z.lazy(
   }).strict()
 ) as unknown as z.ZodType<StudioAnalysisPlace>;
 
+export const StudioAnalyzeAddFigureLayerSchema: z.ZodType<StudioAnalyzeAddFigureLayer> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("add_figure_layer"),
+    "view": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "layer": z.union([StoredLineLayerSchema, StoredTrajectoryLayerSchema, StoredBandLayerSchema, StoredPointsLayerSchema, StoredRuleLayerSchema, StoredSpanLayerSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeAddFigureLayer>;
+
 export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -13803,7 +13818,8 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "sources": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([StepInputSchema, OperationDatasetSchema])))),
     "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
     "variable_names": z.record(z.string(), z.string()).optional(),
-    "figure": FigureDocumentSchema,
+    "figure": StoredFigureDocumentSchema,
+    "created_layer": z.union([StoredMemberKeySchema, z.null()]).optional(),
     "changed": z.array(PointerSchema).optional(),
     "files": z.array(StudioProjectFilePatchSchema).optional(),
     "created": z.array(CreateNamedDocumentSchema).optional(),
@@ -13812,7 +13828,7 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
 ) as unknown as z.ZodType<StudioAnalyzeAuthoring>;
 
 export const StudioAnalyzeChangeSchema: z.ZodType<StudioAnalyzeChange> = z.lazy(() =>
-  z.union([StudioAnalyzeWireSchema, StudioAnalyzeEditSchema, StudioAnalyzeRemoveSchema, StudioAnalyzeResetSchema])
+  z.union([StudioAnalyzeWireSchema, StudioAnalyzeEditSchema, StudioAnalyzeRemoveSchema, StudioAnalyzeResetSchema, StudioAnalyzeAddFigureLayerSchema])
 ) as unknown as z.ZodType<StudioAnalyzeChange>;
 
 export const StudioAnalyzeEditSchema: z.ZodType<StudioAnalyzeEdit> = z.lazy(() =>
@@ -15678,6 +15694,7 @@ export const contractSchemas = {
   ValidityAction: ValidityActionSchema,
   ValidityAcceptance: ValidityAcceptanceSchema,
   AnalysisDocument: AnalysisDocumentSchema,
+  FigureDocument: FigureDocumentSchema,
   StoredFigureDocument: StoredFigureDocumentSchema,
   TaskDocument: TaskDocumentSchema,
   StoredTaskDocument: StoredTaskDocumentSchema,
@@ -15877,6 +15894,7 @@ export interface ContractTypeMap {
   ValidityAction: ValidityAction;
   ValidityAcceptance: ValidityAcceptance;
   AnalysisDocument: AnalysisDocument;
+  FigureDocument: FigureDocument;
   StoredFigureDocument: StoredFigureDocument;
   TaskDocument: TaskDocument;
   StoredTaskDocument: StoredTaskDocument;

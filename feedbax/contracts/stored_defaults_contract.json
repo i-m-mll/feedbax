@@ -1,6 +1,5 @@
 {
-  "feedbax.contracts.analysis_document.AnalysisPayload[JsonValue]": {
-    "schema_version": "feedbax.analysis_document.v1",
+  "feedbax.contracts.analysis_document.AnalysisPayload[Union[StoredFigureDocument, FigureTemplateRef, DocumentReference]]": {
     "inputs": {},
     "operations": {},
     "views": {}
@@ -10,7 +9,7 @@
   },
   "feedbax.contracts.analysis_document.AnalyzeModelInput": {},
   "feedbax.contracts.analysis_document.AnalyzeTaskInput": {},
-  "feedbax.contracts.analysis_document.FigureElement[JsonValue]": {},
+  "feedbax.contracts.analysis_document.FigureElement[Union[StoredFigureDocument, FigureTemplateRef, DocumentReference]]": {},
   "feedbax.contracts.analysis_document.OperationDataset": {
     "unresolved": null
   },
@@ -62,6 +61,214 @@
       "angle": 0
     },
     "space": null
+  },
+  "feedbax.contracts.figure_document.BandEncodings": {
+    "color": null
+  },
+  "feedbax.contracts.figure_document.BandStyle": {
+    "label": null,
+    "color": null,
+    "line_dash": null,
+    "line_width": null,
+    "showlegend": null,
+    "band_alpha": 0.2
+  },
+  "feedbax.contracts.figure_document.ColorEncoding": {},
+  "feedbax.contracts.figure_document.ContinuousColorScale": {
+    "palette": "viridis",
+    "domain": null,
+    "title": null,
+    "legend": true
+  },
+  "feedbax.contracts.figure_document.ErrorBounds": {},
+  "feedbax.contracts.figure_document.FigureDocumentView": {
+    "shared_xaxes": false,
+    "shared_yaxes": "all",
+    "horizontal_spacing": null,
+    "vertical_spacing": null,
+    "width": null,
+    "height": null,
+    "title": null,
+    "legend_tracegroupgap": null,
+    "legend_x": null,
+    "legend_y": null,
+    "legend_xanchor": null,
+    "legend_yanchor": null,
+    "margin": null,
+    "hovermode": null,
+    "legend_gutter": null
+  },
+  "feedbax.contracts.figure_document.FigureTemplateRef": {
+    "settings": {}
+  },
+  "feedbax.contracts.figure_document.IndexSelection": {},
+  "feedbax.contracts.figure_document.LineEncodings": {
+    "color": null
+  },
+  "feedbax.contracts.figure_document.LineStyle": {
+    "label": null,
+    "color": null,
+    "line_dash": null,
+    "line_width": null,
+    "showlegend": null
+  },
+  "feedbax.contracts.figure_document.OrdinalColorScale": {
+    "palette": "category10",
+    "domain": null,
+    "title": null,
+    "legend": true
+  },
+  "feedbax.contracts.figure_document.PointsEncodings": {
+    "color": null,
+    "error_y": null
+  },
+  "feedbax.contracts.figure_document.PointsStyle": {
+    "label": null,
+    "color": null,
+    "line_dash": null,
+    "line_width": null,
+    "showlegend": null,
+    "marker_size": null
+  },
+  "feedbax.contracts.figure_document.RuleEncodings": {},
+  "feedbax.contracts.figure_document.SpanEncodings": {},
+  "feedbax.contracts.figure_document.SpanStyle": {
+    "label": null,
+    "color": null,
+    "line_dash": null,
+    "line_width": null,
+    "showlegend": null,
+    "fill_alpha": 0.15
+  },
+  "feedbax.contracts.figure_document.StoredBandLayer": {
+    "select": {},
+    "group": [],
+    "style": {
+      "label": null,
+      "color": null,
+      "line_dash": null,
+      "line_width": null,
+      "showlegend": null,
+      "band_alpha": 0.2
+    }
+  },
+  "feedbax.contracts.figure_document.StoredFigureDocument": {
+    "theme": "plotly_white",
+    "color_scales": {},
+    "view": {
+      "shared_xaxes": false,
+      "shared_yaxes": "all",
+      "horizontal_spacing": null,
+      "vertical_spacing": null,
+      "width": null,
+      "height": null,
+      "title": null,
+      "legend_tracegroupgap": null,
+      "legend_x": null,
+      "legend_y": null,
+      "legend_xanchor": null,
+      "legend_yanchor": null,
+      "margin": null,
+      "hovermode": null,
+      "legend_gutter": null
+    },
+    "caption": null
+  },
+  "feedbax.contracts.figure_document.StoredFigurePanel": {
+    "title": null,
+    "axes_labels": null,
+    "x_axis": null,
+    "y_axis": null,
+    "z_axis": null
+  },
+  "feedbax.contracts.figure_document.StoredLineLayer": {
+    "select": {},
+    "group": [],
+    "style": {
+      "label": null,
+      "color": null,
+      "line_dash": null,
+      "line_width": null,
+      "showlegend": null
+    }
+  },
+  "feedbax.contracts.figure_document.StoredPointsLayer": {
+    "select": {},
+    "group": [],
+    "style": {
+      "label": null,
+      "color": null,
+      "line_dash": null,
+      "line_width": null,
+      "showlegend": null,
+      "marker_size": null
+    }
+  },
+  "feedbax.contracts.figure_document.StoredRuleLayer": {
+    "select": {},
+    "group": [],
+    "style": {
+      "label": null,
+      "color": null,
+      "line_dash": null,
+      "line_width": null,
+      "showlegend": null
+    }
+  },
+  "feedbax.contracts.figure_document.StoredSpanLayer": {
+    "select": {},
+    "group": [],
+    "style": {
+      "label": null,
+      "color": null,
+      "line_dash": null,
+      "line_width": null,
+      "showlegend": null,
+      "fill_alpha": 0.15
+    }
+  },
+  "feedbax.contracts.figure_document.StoredTrajectoryLayer": {
+    "select": {},
+    "group": [],
+    "style": {
+      "label": null,
+      "color": null,
+      "line_dash": null,
+      "line_width": null,
+      "showlegend": null
+    }
+  },
+  "feedbax.contracts.figure_document.TrajectoryEncodings": {
+    "color": null,
+    "z": null
+  },
+  "feedbax.contracts.figure_document.VariableBinding": {
+    "select": {}
+  },
+  "feedbax.contracts.figure_layout.AxisLabels": {
+    "x": null,
+    "y": null,
+    "z": null
+  },
+  "feedbax.contracts.figure_layout.DataDerivedAxisRange": {
+    "schema_id": "feedbax.spec.data_derived_axis_range",
+    "schema_version": "feedbax.spec.data_derived_axis_range.v1"
+  },
+  "feedbax.contracts.figure_layout.FigureMarginParams": {
+    "l": null,
+    "r": null,
+    "t": null,
+    "b": null,
+    "pad": null,
+    "autoexpand": null
+  },
+  "feedbax.contracts.figure_layout.PanelAxis": {
+    "type": null,
+    "range": null,
+    "derived_range": null,
+    "quantity": null,
+    "unit": null,
+    "frame": null
   },
   "feedbax.contracts.loaded_model.ImportedModelSource": {},
   "feedbax.contracts.manifest.OverridePatch": {
@@ -204,6 +411,7 @@
     "sweep": null,
     "variants": []
   },
+  "feedbax.contracts.project_storage.StoredFigurePayload": {},
   "feedbax.contracts.project_sweep.AxisCondition": {
     "rule": "",
     "rows": null
