@@ -202,6 +202,13 @@ def _read_replica(
         raise _ArchiveReadError("/" + path, str(error)) from error
 
 
+def _comparable_wires(wires: Sequence[WireSpec]) -> list[WireSpec]:
+    # Recurrent wires can name retained carry. Plain wires have no such slot, so
+    # an authored rename affects neither their directed connection nor archive fit.
+    comparable = [wire if wire.is_recurrent else wire.model_copy(update={"id": None}) for wire in wires]
+    return sorted(comparable, key=lambda wire: canonical_json_v2_bytes(wire.model_dump(mode="json")))
+
+
 def _comparable_graph(graph: GraphSpec, components: ComponentRegistry) -> GraphSpec:
     return graph.model_copy(update={
         "nodes": {
@@ -213,7 +220,7 @@ def _comparable_graph(graph: GraphSpec, components: ComponentRegistry) -> GraphS
             }) if (sources := scalar_source_parameters(node, components)) else node
             for name, node in graph.nodes.items()
         },
-        "wires": sorted(graph.wires, key=WireSpec.authored_id),
+        "wires": _comparable_wires(graph.wires),
         "subgraphs": {
             name: _comparable_graph(interior, components) if isinstance(interior, GraphSpec) else interior
             for name, interior in (graph.subgraphs or {}).items()

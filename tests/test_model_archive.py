@@ -371,6 +371,10 @@ def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_
         authored = json.loads(model_file.read_bytes())
         authored["payload"]["ports"]["inputs"]["target_pos"]["label"] = "Requested target"
         authored["payload"]["ports"]["outputs"]["effector"]["label"] = "Point mass state"
+        authored["payload"]["interior"]["wires"] = {
+            {"target": "target-in", "decode": "readout-in"}.get(key, key): wire
+            for key, wire in authored["payload"]["interior"]["wires"].items()
+        }
         model_file.write_text(json.dumps(authored))
         prior = client.get(f"/api/projects/{project}").json()
         url = f"/api/projects/{project}/loaded-models/import"
@@ -388,6 +392,38 @@ def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_
         assert payload.lower().weights == checkpoint.tree
         assert payload.model.document == "point-mass"
         assert client.post(url, params=query, content=archive, headers=headers).status_code == 409
+
+
+@pytest.mark.parametrize("change", ["endpoint", "duplicate"])
+def test_fit_checks_plain_wire_endpoints_and_multiplicity(native_archive, tmp_path, change):
+    model, components, _, _, raw, _ = native_archive
+    files = _read_files(raw)
+    graph = GraphSpec.model_validate_json(files["graph.json"])
+    index, wire = next((index, wire) for index, wire in enumerate(graph.wires) if not wire.is_recurrent)
+    if change == "endpoint":
+        graph.wires[index] = wire.model_copy(update={"target_port": "different-port"})
+    else:
+        graph.wires.append(wire.model_copy(update={"id": "duplicate"}))
+    files["graph.json"] = canonical_json_v2_bytes(graph.model_dump(mode="json"))
+    store = ImmutableArtifactBlobProvider(tmp_path / "rejected")
+    with stage_model_archive(_as_archive(files), model, store, components=components) as result:
+        assert isinstance(result, ModelFitReport), result
+        problem, = result.problems
+        assert (problem.kind, problem.address) == ("graph_mismatch", "/graph/wires")
+    assert not store.root.exists()
+
+
+def test_fit_still_checks_names_used_in_delay_carry(float32_delay_archive, tmp_path):
+    model, registry, _, _, raw, _ = float32_delay_archive
+    authored = model.model_dump(mode="json")
+    wires = authored["interior"]["wires"]
+    wires["command-out"] = wires.pop("command")
+    model = ModelDocument.model_validate(authored)
+    store = ImmutableArtifactBlobProvider(tmp_path / "rejected")
+    with stage_model_archive(raw, model, store, components=registry.components) as result:
+        assert isinstance(result, ModelFitReport), result
+        assert any(problem.kind == "graph_mismatch" for problem in result.problems)
+    assert not store.root.exists()
 
 
 @pytest.mark.parametrize("unsupported_owner", [False, True])
