@@ -15,7 +15,9 @@ from pydantic import TypeAdapter
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
-from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document, model_input_prototypes
+from feedbax.compiler.model_document import (
+    ModelCompilationProblem, complete_model_fields, lower_model_document, model_input_prototypes,
+)
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.builtins.templates.mechanics_templates import two_link_arm_6muscle_template_graph
 from feedbax.contracts import request_identity
@@ -239,10 +241,10 @@ def _rename_components(model):
 
 
 @pytest.mark.parametrize(("delay", "step", "conversion", "delay_steps"), [
-    ({"value": 0.05, "unit": "s"}, 0.02, {"value": 3, "unit": "st"}, 3),
-    ({"value": 0.05, "unit": "s"}, 0.01, {"value": 5, "unit": "st"}, 5),
-    ({"value": 3, "unit": "st"}, 0.01, {"value": 0.03, "unit": "s"}, 3),
-    ({"value": 0.001, "unit": "s"}, 0.01, None, None),
+    ("0.05 s", "0.02 s", {"value": 3, "unit": "st"}, 3),
+    ("0.05 s", "0.01 s", {"value": 5, "unit": "st"}, 5),
+    ("3 st", "0.01 s", {"value": 0.03, "unit": "s"}, 3),
+    ("0.001 s", "0.01 s", None, None),
 ])
 def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_path, delay, step, conversion, delay_steps):
     raw = _model_project()
@@ -264,7 +266,7 @@ def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_pat
         assert fields.status_code == 200, fields.text
         (shown,) = [field for field in fields.json()["fields"] if field["label"] == "Delay"]
         assert shown.get("conversion") == conversion
-        if delay["unit"] == "st":
+        if delay == "3 st":
             assert shown["text"] == "3 st"
         projected = client.post(url + "/model/projection", json={"revision": revision, "document": "reach-model"})
         assert projected.status_code == 200, projected.text
@@ -275,10 +277,10 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     model = raw["documents"]["point-mass"]["payload"]
     pulse = {
-        "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+        "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": "vector(0.5, 0)"}},
         "window": {"spans": [{
             "kind": "interval", "start": {"anchor": {"kind": "trial", "edge": "start"}},
-            "end": {"offset": {"value": 2, "unit": "st"}},
+            "end": {"offset": "2 st"},
         }]},
     }
     model["interior"]["wires"]["drive"]["attachments"] = {"pulse": pulse}
@@ -415,7 +417,7 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
     raw["steps"].pop("baseline")
     model = raw["documents"]["reach-model"]["payload"]
     raw["steps"]["train"]["base"]["inline"]["alias"] = {"document": "reach-model", "pointer": "/step_seconds"}
-    model["step_seconds"] = 0.02
+    model["step_seconds"] = "0.02 s"
     model["interior"]["components"]["plant"]["fields"]["mass"] = 1.25
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "fields", Project.model_validate(raw))
@@ -450,10 +452,10 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
         assert {(problem.step, problem.row, problem.path) for problem in plan.diagnostics} == {
             (key.step, key.row, "payload.alias") for key in keys
         }
-        for key, period in zip(keys, (0.01, 0.02, 0.03), strict=True):
+        for key, clock in zip(keys, ("0.01 s", "0.02 s", "0.03 s"), strict=True):
             definition = plan.selected_definitions[key]
-            assert definition.payload["trial_documents"]["model"]["step_seconds"] == pytest.approx(period)
-            assert definition.payload["alias"] == pytest.approx(period)
+            assert definition.payload["trial_documents"]["model"]["step_seconds"] == clock
+            assert definition.payload["alias"] == clock
             assert definition.document_ids["payload.trial_documents.model"] == "reach-model"
             source = definition.sources["/payload/trial_documents/model/step_seconds"]
             assert source.kind == "sweep_value"
@@ -948,10 +950,10 @@ def test_a_rate_swept_for_adam_only_reads_as_the_selected_runs_have_it(tmp_path)
         adam = train.runs(tmp_path, "adam-rate", optimizer="adam")
         train.number(rate, {"kind": "text", "text": "0.002, 0.003"}, adam, group)
         adam, sgd = (train.runs(tmp_path, "adam-rate", optimizer=key) for key in ("adam", "sgd"))
-        (held,) = {
-            definition.payload["settings"]["optimizer"]["learning_rate"]["value"]
-            for key, definition in train.plan(tmp_path, "adam-rate").selected_definitions.items() if key in sgd
-        }
+        plan = train.plan(tmp_path, "adam-rate")
+        (sgd_run,) = [run for run in plan.runs if run.key in sgd]
+        spec = decode_request(plan.requests[sgd_run.request_id], plan.documents.__getitem__).spec
+        held = spec.settings["optimizer"]["learning_rate"]["value"]
 
         def field(keys=(), axes=None, named=None):
             body = client.post(url + "/authoring/train/train/fields", json=train.scope(keys, axes, named=named)).json()
@@ -1151,9 +1153,9 @@ def _group_reaching_pipeline(raw, registry):
     task = raw["documents"]["task"]["payload"]
     links = {}
     for key, link in task["links"].items():
-        address = ModelAddress.from_text(key)
+        address = ModelAddress.from_authored_text(key)
         moved = address.model_copy(update={"composites": (group, *address.composites)})
-        links[moved.to_text()] = link
+        links[moved.to_authored_text()] = link
     task["links"] = links
     return group
 
@@ -1326,8 +1328,8 @@ def test_unresolved_relative_link_is_reported_at_the_task():
     _use_initial_evaluation(raw)
     links = raw["documents"]["task"]["payload"]["links"]
     key = next(iter(links))
-    address = ModelAddress.from_text(key)
-    missing = address.model_copy(update={"composites": ("absent",)}).to_text()
+    address = ModelAddress.from_authored_text(key)
+    missing = address.model_copy(update={"composites": ("absent",)}).to_authored_text()
     links[missing] = links.pop(key)
     plan = compile_project(Project.model_validate(raw))
 
@@ -1453,7 +1455,7 @@ def test_train_model_attachment_rebinds_a_pointer_with_the_same_authored_value()
     raw = _model_project()
     del raw["steps"]["baseline"]
     model = raw["documents"]["reach-model"]["payload"]
-    model["interior"]["components"]["plant"]["fields"]["mass"] = model["step_seconds"] = 0.01
+    model["interior"]["components"]["plant"]["fields"].update(mass=0.01, damping=0.01)
     train = raw["steps"]["train"]
     optimizer = train["base"]["inline"]["settings"]["optimizer"]["learning_rate"]
     mass = "/interior/components/plant/fields/mass"
@@ -1479,7 +1481,7 @@ def test_train_model_attachment_rebinds_a_pointer_with_the_same_authored_value()
         return run.request_id
 
     before = train_request(0.02)
-    alias["pointer"] = "/step_seconds"
+    alias["pointer"] = "/interior/components/plant/fields/damping"
     assert train_request(0.01) != before
 
 
@@ -1544,8 +1546,8 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
 
 
 # Equivalent stored edits retain these managed requests with key-based external Model ports.
-_VARIANT_WIRE = "evaluate:67b6b7b07886af24685d0bafb6b138bc8d3d8a1d8388c00f15270a9f5fb43c8b"
-_VARIANT_FIELD = "evaluate:fe38d5d871dfa3e929d611f55b4497ebf72f2f9c9a5c844ea77b7999aa303aa9"
+_VARIANT_WIRE = "evaluate:a4f50fd94931ca0e47f7d90aafb84122c8bc225e23a243b81bffe27c1b51e122"
+_VARIANT_FIELD = "evaluate:380a46acf9f9e17d0d3c8fed47af55b35ed4d059df247f2f7c0680bc87d18511"
 
 
 @pytest.mark.parametrize(("operation", "expected"), [
@@ -1594,6 +1596,16 @@ def test_a_variant_edit_of_an_evaluation_is_a_document_the_variant_points_it_at(
     prior = {run.key: run.request_id for run in before.plan.runs}
     result_ids = {run.key: run.request_id for run in after.plan.runs}
     treated = RunKey("treated", "baseline", "default")
+    original = decode_request(before.plan.requests[prior[treated]], before.plan.documents.__getitem__).spec
+    varied = decode_request(after.plan.requests[result_ids[treated]], after.plan.documents.__getitem__).spec
+    assert {**varied.params, "variation": original.params["variation"]} == original.params
+    variation = varied.params["variation"]
+    if operation["op"] == "set_field":
+        assert variation == [{"op": "replace", "path": "graph.nodes.plant.params.mass", "value": 2.5}]
+    else:
+        (scale,) = [patch for patch in variation if patch["path"].startswith("graph.subgraphs.wrapper.subgraphs.controller.nodes.")]
+        assert scale["op"] == "add" and scale["value"]["type"] == "feedbax.Scale"
+        assert scale["value"]["params"] == {"fixed": True, "scale": 0.5}
     assert result_ids[treated] == expected
     assert {key: value for key, value in result_ids.items() if key != treated} == {
         key: value for key, value in prior.items() if key != treated
@@ -1674,7 +1686,7 @@ def test_group_keeps_delay_on_a_crossing_gru_output():
     payload = raw["documents"]["reach-model"]["payload"]
     controller = payload["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
     controller["interior"]["wires"]["decode"]["attachments"] = {
-        "feedback": {"kind": "delay", "delay": {"value": 1, "unit": "st"}},
+        "feedback": {"kind": "delay", "delay": "1 st"},
     }
     state = ModelEditState(document=StoredModelDocument.model_validate(payload).lower())
     ports = ModelRegistryPorts(registry.components)
@@ -1778,7 +1790,7 @@ def test_linked_delay_repeats_the_completed_reset_state():
     model = raw["documents"]["reach-model"]["payload"]
     controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
     delay = controller["interior"]["wires"]["carry"]["attachments"]["carry"]
-    delay["delay"]["value"] = 3
+    delay["delay"] = "3 st"
     delay["initial_source"] = {"kind": "wire", "source": _end("cell", "hidden")}
     plan = compile_project(Project.model_validate(raw))
     assert not plan.diagnostics
@@ -2136,7 +2148,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     if grouped:
         model = raw["documents"]["reach-model"]["payload"]
         controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
-        controller["interior"]["wires"]["carry"]["attachments"]["carry"]["delay"]["value"] = 3
+        controller["interior"]["wires"]["carry"]["attachments"]["carry"]["delay"] = "3 st"
         controller["interior"]["wires"]["decode"]["attachments"] = {
             key: _scale_attachment(factor)
             for key, factor in (("train-scale", 0.95), ("train-extra", 0.9))
@@ -2266,9 +2278,9 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     reopened = ProjectFolderService(folders.root)
     reopened_view = ProjectPlanService(reopened, jobs).read(project, revision=None)
     reopened_model = reopened.read(project).project.documents[model_name].payload
-    assert StoredModelDocument.model_validate(reopened_model) == StoredModelDocument.model_validate(
-        raw["documents"][model_name]["payload"],
-    )
+    saved_model = StoredModelDocument.model_validate(reopened_model).lower(registry.components)
+    original_model = StoredModelDocument.model_validate(raw["documents"][model_name]["payload"]).lower(registry.components)
+    assert complete_model_fields(saved_model, registry.components) == complete_model_fields(original_model, registry.components)
     assert reopened_view.settled.plan.requests == plan.plan.requests
     assert reopened_view.attempts_by_run[train][0].job_id == train_job.job_id
     assert reopened_view.attempts_by_run[train][0].successful_receipt == train_receipt
@@ -2425,7 +2437,7 @@ def test_shipped_effector_delay_keeps_the_full_recorded_value(tmp_path):
                 "address": {"composites": [], "element": {
                     "kind": "attachment", "parent": {"kind": "wire", "id": "effector"}, "id": "observe-lag",
                 }},
-                "attachment": {"kind": "delay", "delay": {"value": 2, "unit": "st"}},
+                "attachment": {"kind": "delay", "delay": "2 st"},
             }}},
         })
     assert response.status_code == 200, response.text

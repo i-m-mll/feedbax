@@ -16,10 +16,13 @@ from feedbax.jobs import JobService
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_document_train_pair import authored, document_project  # noqa: F401
+from tests.test_document_train_pair import authored, document_project
 from tests.support.host import job_row, token, wait_until
 from tests.support.model_documents import read_changed_model
 from tests.test_model_document_plan import _add_attachment, _attachment_address, _attachment_owner, _model_controller
+
+
+__all__ = ("authored",)
 
 
 def _field(parent, *path):
@@ -53,10 +56,10 @@ def _managed_project(authored):
     return raw
 
 
-def test_saved_managed_train_clock_range_preserves_equal_request_identity(tmp_path, authored):  # noqa: F811
+def test_saved_managed_train_clock_range_preserves_equal_request_identity(tmp_path, authored):
     raw = document_project(authored)
     train = raw["steps"]["train"]
-    raw["documents"]["reach-model"]["payload"]["step_seconds"] = 0.02
+    raw["documents"]["reach-model"]["payload"]["step_seconds"] = "0.02 s"
     baseline = compile_project(Project.model_validate(raw))
     assert not baseline.diagnostics, baseline.diagnostics
     (original,) = baseline.runs
@@ -190,7 +193,7 @@ def test_vector_operand_member_edit_does_not_reset_attachment_anchors(authored):
     _, model, _, _ = authored
     owner = _attachment_owner("read")
     first = _add_attachment(owner, "first", None)
-    first["attachment"]["operands"]["factor"]["value"] = [0.1, 0.8]
+    first["attachment"]["operands"]["factor"]["value"] = "vector(0.1, 0.8)"
     address = _wire_field("first", "operands", "factor", "value", 0)
     records = [
         first, _add_attachment(owner, "second", "first"),
