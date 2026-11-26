@@ -30,7 +30,6 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import BasedDocument, InlineBase, SetProjectValue
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.planner.project_plan import RunKey
-from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.project_sweep import NamedAxis, SetValue, model_field_path, model_field_target
 from feedbax.contracts.studio_field import (
@@ -49,7 +48,7 @@ from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, p
 from feedbax.studio.selection import StoredEdit, merged_files
 from feedbax.studio.value_structure import value_structure
 from feedbax.web.services.authored_scope import choose_prepared_edit, selected_edit_runs
-from feedbax.web.services.axis_values import axis_values
+from feedbax.web.services.value_sources import PlanSourceNames
 from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
@@ -414,7 +413,6 @@ def model_fields(
     shown = project.documents.get(body.document)
     changes, restored = (shown.differences, shown.base.document) if isinstance(shown, BasedDocument) else ({}, None)
     definitions = ()
-    visible_axis_values = {}
     runs = None
     held: dict[str, list[int | float]] = {}
     evaluate = None
@@ -439,10 +437,6 @@ def model_fields(
         plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key, *scoped)).plan
         definitions = tuple((item, plan.selected_definitions[item]) for item in (scoped or (key,))
                             if item in plan.selected_definitions)
-        if definitions:
-            visible_axis_values = axis_values(
-                row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)
-            )
         definition = plan.selected_definitions.get(key)
         if definition is not None and (model_payload := selected_model(definition, body.document)) is not None:
             effective_model = StoredModelDocument.model_validate(model_payload).lower(components)
@@ -486,6 +480,7 @@ def model_fields(
     fields = []
     sites = FieldSiteIndex()
     targets = {}
+    source_names = PlanSourceNames(plan) if plan is not None and definitions else None
     for field_key, field in visible_fields.items():
         numeric = field.numeric
         resolved = effective_fields.get(field_key)
@@ -508,15 +503,10 @@ def model_fields(
             changed = inherited is None or (
                 inherited.numeric.value, inherited.numeric.unit, inherited.expression
             ) != (numeric.value, numeric.unit, field.expression)
-        # The window map groups equal coordinates. Keep the stored origin key and path.
-        sources = dict.fromkeys(
-            replace(source, value=value_id) if (
-                source.kind == "sweep_value" and source.step == run.step and source.axis is not None
-                and (value_id := visible_axis_values.get((run, source.axis))) is not None
-            ) else source
-            for run, definition in definitions
+        sources = {
+            source: run for run, definition in definitions
             if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None
-        )
+        }
         view = project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
             sites=sites, held=held.get(field_key, ()),
@@ -524,7 +514,7 @@ def model_fields(
             scoped=bool(body.rows or body.axes),
             address=field.address, address_text=field.address.to_authored_text(), problems=_held_problems(field, functions, period)
             or (_held_problems(resolved, functions, period) if resolved is not None else []),
-            sources=[StudioPlanReviewSource.from_source(source) for source in sources],
+            sources=[source_names.project(source, run) for source, run in sources.items()] if source_names else [],
             changed=changed,
         )
         if field.window_offset or field.address.element.path[0] == "operands" and isinstance(field.address.element.parent, AttachmentElement):

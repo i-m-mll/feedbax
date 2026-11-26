@@ -166,6 +166,7 @@ def test_evaluate_ungroup_eligibility_reads_the_selected_axis_model(tmp_path):
     from tests.test_canonical_evaluate_admission import _save_project
 
     data = _data()
+    data["steps"]["fee"]["label"] = "Training source"
     wrapper = "idle-wrapper"
     data["documents"]["model"]["payload"]["interior"]["components"][wrapper] = {
         "kind": "composite", "label": "Idle wrapper",
@@ -192,6 +193,9 @@ def test_evaluate_ungroup_eligibility_reads_the_selected_axis_model(tmp_path):
             })
             assert response.status_code == 200, response.text
             state = response.json()
+            assert state["source"] == {
+                "kind": "trained", "reference": {"kind": "step", "key": "fee"}, "name": "Training source",
+            }
             assert state["resolved_model"] is not None, state["problems"]
             assert wrapper in state["resolved_model"]["interior"]["components"]
             return next(item["reason"] for item in state["ungroup"] if item["address"] == address)

@@ -667,15 +667,25 @@ class PlanSourceIndex:
             methods = load_application().bundle.training_methods
         return _Compiler(project, readers, (), python_tasks=application_python_tasks(), training_methods=methods)
 
+    def variant_project(self, variant: str) -> Project:
+        """The saved authored project after applying the named variant."""
+        compiler = self._resolver
+        if variant not in compiler.variants:
+            compiler.source_variants = frozenset({variant})
+            compiler.expand_variants(self.snapshot.variant_sites)
+        return compiler.variants[variant]
+
+    def variant_label(self, variant: str) -> str:
+        self.variant_project(variant)
+        compiler = self._resolver
+        return _variant_label(compiler.variant_rows[variant], compiler.variant_order.index(variant) + 1)
+
     @cached_property
     def _templates(self) -> Callable[[str, str], tuple[StepTemplate, dict[str, ExpandedRow]]]:
         @cache
         def template(variant: str, step: str):
             compiler = self._resolver
-            if variant not in compiler.variants:
-                compiler.source_variants = frozenset({variant})
-                compiler.expand_variants(self.snapshot.variant_sites)
-            project = compiler.variants[variant]
+            project = self.variant_project(variant)
             template = compose_step(
                 project, step, readers=compiler.readers, track_sources=True,
                 variant_sources=compiler.variant_sources.get(variant), training_methods=compiler.training_methods,
@@ -874,6 +884,7 @@ class ProjectPlan:
     exception_matches: Mapping[tuple[str, str], Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
     variant_projects: Mapping[str, Project] = field(default_factory=dict, repr=False, compare=False)
     """Each variant's project, its row applied; a variant whose row does not apply has none."""
+    variant_labels: Mapping[str, str] = field(default_factory=dict, repr=False, compare=False)
 
     def detached(self) -> ProjectPlan:
         """Return this plan with its own copies of the selected payloads, which callers may change."""
@@ -921,6 +932,10 @@ class ProjectPlan:
         return MappingProxyType(
             {key: definition.sources for key, definition in self.selected_definitions.items()}
         )
+
+
+def _variant_label(row: ExpandedRow, number: int) -> str:
+    return row.label or ("Default" if row.id == DEFAULT_SWEEP_ROW else f"Variant {number}")
 
 
 @dataclass(frozen=True)
@@ -2496,6 +2511,10 @@ class _Compiler:
             ) if self.source_sweeps is not None else None,
             MappingProxyType(self.exception_matches),
             MappingProxyType(dict(self.variants)),
+            MappingProxyType({
+                name: _variant_label(self.variant_rows[name], number)
+                for number, name in enumerate(self.variant_order, 1) if name in self.variant_rows
+            }),
         )
 
     def holders(self, variant: str) -> ElementHolders:
