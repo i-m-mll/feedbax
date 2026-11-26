@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 
 from feedbax.project_folder import ProjectFolderLocation
 from feedbax.web.app import create_app
-from tests.support.environment_project import OPERATION, PACKAGE_SOURCE, environment_project, rollout_project, write_project
+from tests.support.environment_project import (
+    OPERATION, PACKAGE_SOURCE, environment_project, rollout_project, trained_project, write_project,
+)
 from tests.support.hang import HANG_SECONDS
 
 REPO = Path(__file__).resolve().parents[1]
@@ -41,6 +43,19 @@ def test_a_package_the_project_cannot_load_is_one_problem_and_its_runs_cannot_ru
     )
     status = {row["key"]["step"]: row["status"] for row in plan["window_map"]["rows"]}
     assert status["analysis-0"] == status["analysis-1"] == "cannot_run"
+
+
+def test_a_model_component_from_a_package_it_cannot_load_is_the_same_one_problem(host, tmp_path, monkeypatch):
+    """Caught: an absent component reading "unknown leaf type" on each Train row instead of naming its package."""
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    write_project(tmp_path / "projects" / "component", trained_project())
+    with TestClient(create_app(projects_dir=tmp_path / "projects", automatic_run="off")) as client:
+        plan = _window_map(client, "component")
+    problems = plan["window_map"]["problems"]
+    assert [(problem["code"], problem["package"]) for problem in problems if problem["step"] is None] == [
+        ("package_unavailable", "environment_fixture"),
+    ]
+    assert {problem["step"] for problem in problems if problem["code"] == "missing_package"} == {"train"}
 
 
 def test_a_project_without_an_environment_is_told_so(host, tmp_path, monkeypatch):

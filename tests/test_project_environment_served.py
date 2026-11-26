@@ -20,7 +20,6 @@ from feedbax.host import HostClient
 from feedbax.host.io import OWNER_ENV
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.persistence.evidence import read_execution_evidence
 from feedbax.project_folder import ProjectFolderLocation
 from tests.support.environment_project import (
     OPERATION, PACKAGE_SOURCE, analysis_step, environment_project, trained_project,
@@ -118,9 +117,11 @@ def test_studio_opened_on_a_uv_project_runs_its_package(tmp_path):
         assert {Path(job["data"]["runtime"]) for job in jobs} == {interpreter}
         store = ImmutableArtifactBlobProvider(folder / "results")
         lock = sha256((repository / "uv.lock").read_bytes()).hexdigest()
-        analysis = next(job for job in jobs if job["state"] == "succeeded" and job["request"].startswith("analyze:"))
-        receipt = SuccessView(store).read_attempt(analysis["id"]).receipt
-        assert read_execution_evidence(store, receipt.execution_evidence).provenance.lock_sha256 == lock
+        view = SuccessView(store)
+        receipts = [view.read_attempt(job["id"]).receipt for job in jobs if job["state"] == "succeeded"]
+        assert "environment-fixture" in {receipt.provider.distribution for receipt in receipts if receipt.provider}
+        locks = {receipt.provenance.lock_sha256 for receipt in receipts if receipt.provenance}
+        assert locks == {lock}, "results were recorded against another environment's lock"
         assert not list(home.rglob("*.feedbax")), "opening the project copied it under the home"
 
         source = repository / PACKAGE_SOURCE / "__init__.py"
@@ -132,12 +133,13 @@ def test_studio_opened_on_a_uv_project_runs_its_package(tmp_path):
         assert studio.run("again") == {"again": {"succeeded"}}
         assert host.ping()["pid"] == host_pid
 
-        source.write_text(source.read_text() + "\ndef broken(:\n")
+        edited = source.read_text()
+        source.write_text(edited + "\ndef broken(:\n")
         problems = wait_until(lambda: studio.window()[1]["problems"])
-        packaged = {problem.get("package") for problem in problems}
-        assert packaged == {"environment_fixture"}
+        packaged = {problem.get("package") for problem in problems if problem["code"] != "blocked_input"}
+        assert packaged == {"environment_fixture"}, problems
         assert len({(problem["code"], problem["detail"]) for problem in problems if problem["step"] is None}) == 1
-        source.write_text(original)
+        source.write_text(edited)
         wait_until(lambda: studio.answering() and not studio.window()[1]["problems"])
     finally:
         launcher.send_signal(signal.SIGTERM)
