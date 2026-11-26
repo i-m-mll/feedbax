@@ -13,11 +13,12 @@ from feedbax.application.composition import application_python_tasks
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.set_fields import lower_trial_sets
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_document import InterventionAttachment, ModelDocument
 from feedbax.contracts.project import Project, RootDocument
 from feedbax.contracts.project_sweep import TrialSetField
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import stored_model_attachment
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.execution.trial_resolution import (
     PreparedTrialExecution, PreviewTrialSource, compile_trial_execution, preview_trial_source,
@@ -93,9 +94,10 @@ def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slo
     with jax.enable_x64(source != "task" or jax.config.x64_enabled):
         registry = ComponentRegistry()
         if source == "set":
+            stored = stored_model_attachment(InterventionAttachment.model_validate(attachment | {"id": "pulse"}))
             bank = RootDocument(label="Document", schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"pulse": {
                 "label": "Pulse",
-                "differences": {"/interior/wires/out/attachments": {"value": {"pulse": attachment}}},
+                "differences": {"/interior/wires/out/attachments": {"value": {"pulse": stored.model_dump(mode="json")}}},
             }}})
             field = TrialSetField.model_validate({"axis": {"set": "bank"}, "sampling": {"kind": "weighted", "none": 0}})
             model, task, _ = lower_trial_sets(model, task, {"bank": field}, {"bank": bank}.get, registry, functions=functions)
@@ -123,12 +125,7 @@ def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
         return {"source": a, "target": b}
 
     def address(kind, **fields):
-        return ModelAddress.model_validate({"composites": [], "element": {"kind": kind, **fields}}).to_text()
-
-    def choice(*values, unit=None):
-        return {"kind": "draw", "family": "choice", "args": [
-            {"kind": "literal", "value": value} | ({"unit": unit} if unit else {}) for value in values
-        ]}
+        return ModelAddress.model_validate({"composites": [], "element": {"kind": kind, **fields}}).to_authored_text()
 
     command = port("component", "output", "drive")
     effector = port("component", "effector", "plant")
@@ -167,9 +164,9 @@ def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
     bank = RootDocument(label="Document", schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"curl": {
         "label": "Curl",
         "task_variables": {
-            "amp": {"label": "Amplitude", "type": {"base": "real"}, "value": choice(1.0, 2.0)},
+            "amp": {"label": "Amplitude", "type": {"base": "real"}, "value": "choice(1, 2)"},
             "onset": {"label": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
-                      "value": choice(0.02, 0.04, unit="s")},
+                      "value": "choice(0.02 s, 0.04 s)"},
         },
         "task_links": {
             address(
@@ -191,8 +188,8 @@ def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
                 "window": {"spans": [{
                     "kind": "interval", "start": {
                         "anchor": {"kind": "epoch", "epoch": "move", "edge": "start"},
-                        "offset": {"value": 0, "unit": "st"},
-                    }, "end": {"offset": {"value": 2, "unit": "st"}},
+                        "offset": "0 st",
+                    }, "end": {"offset": "2 st"},
                 }]},
             }}},
         },
@@ -312,11 +309,9 @@ def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
         "kind": "interval",
         "start": {
             "anchor": {"kind": "epoch", "edge": "start", "epoch": "move"},
-            "offset": {"kind": "draw", "family": "choice", "args": [
-                {"kind": "literal", "value": onset, "unit": "st"} for onset in (15, 30, 45)
-            ]},
+            "offset": "choice(15 st, 30 st, 45 st)",
         },
-        "end": {"offset": {"value": 5, "unit": "st"}},
+        "end": {"offset": "5 st"},
     }]}
     entries = {
         name: {"label": name.upper(), "differences": {"/interior/wires/effector-wire/attachments": {
@@ -325,7 +320,7 @@ def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
                 "window": window,
             }},
         }}}
-        for name, vector in {"x": [1.0, 0.0], "y": [0.0, 2.0], "z": [-3.0, -3.0]}.items()
+        for name, vector in {"x": "[1, 0]", "y": "[0, 2]", "z": "[-3, -3]"}.items()
     }
     raw["documents"]["bank"] = {"label": "Bank", "schema": "feedbax.set_document.v2", "payload": {"entries": entries}}
     raw["steps"]["train"]["set_fields"] = {"bank": {
@@ -435,7 +430,7 @@ def test_set_free_twin_keeps_trial_values_and_matches_the_unmodified_train():
         return request, prepared
 
     plain_request, plain = training(raw)
-    for bank, vector in (("choice-bank", [1.0, 0.0]), ("switch-bank", [0.0, 2.0])):
+    for bank, vector in (("choice-bank", "[1, 0]"), ("switch-bank", "[0, 2]")):
         raw["documents"][bank] = {
             "label": "Document",
             "schema": "feedbax.set_document.v2",

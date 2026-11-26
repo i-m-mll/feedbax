@@ -94,6 +94,11 @@ def stored_expression_value(value: Expression, *, scopes: Mapping[str, str] | No
     return print_stored_expression(store_expression(value, scopes=scopes))
 
 
+def rename_expression_references(value: Expression, references: Mapping[str, str]) -> Expression:
+    """Replace the named references of an expression while preserving its representation."""
+    return _map_refs(value, lambda reference: references.get(reference, reference))
+
+
 def lower_expression(value: Expression) -> Expression:
     """Resolve key spellings without consulting presentation labels or the editor's scope."""
     return _map_refs(value, _lowered_reference)

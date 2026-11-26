@@ -242,7 +242,7 @@ def _project_until_drafts(documents, task: StoredTaskDocument, show_objective: b
         ScopedValue(id=key, name=key, type=time, level=Level.STEP) for key in ("time", "t")
     ))
     condition = Site(expected=ValueType(base=ValueBase.BOOLEAN), finest=Level.STEP, names=names)
-    fields = _unpaired_objective_sites(documents, signals) if show_objective and documents.objective else {}
+    fields = _unpaired_objective_sites(documents, signals, variables=variables) if show_objective and documents.objective else {}
     problems = []
     for key, epoch in task.epochs.items():
         if isinstance(epoch.end, StoredUntil) and isinstance(epoch.end.limit, UnresolvedValue):
@@ -266,16 +266,20 @@ def _declared_output_names(model: ModelDocument) -> tuple[ScopedValue, ...]:
     )
 
 
-def _unpaired_objective_sites(documents, signals) -> dict[tuple[str | int, ...], Site]:
+def _unpaired_objective_sites(documents, signals, *, variables=None) -> dict[tuple[str | int, ...], Site]:
     """Each term's Measure and Weight over the names the documents declare, for a Model and Task that do not pair.
 
     A commit through one of these sites is parsed, not checked: the declared names have no resolved types."""
+    if variables is None:
+        variables = tuple(
+            ScopedValue(id=variable.id, name=variable.name, type=variable.type, level=Level.STEP)
+            for variable in (documents.task.variables if documents.task is not None else ())
+        )
     names = (
         *_declared_output_names(documents.model),
         *((ScopedValue(id="time", name="time", type=ValueType(base=ValueBase.REAL), level=Level.STEP),)
-          if isinstance(documents.task_source, TaskDocument) else ()),
-        *(ScopedValue(id=variable.id, name=variable.name, type=variable.type, level=Level.STEP)
-          for variable in (documents.task.variables if documents.task is not None else ())),
+          if isinstance(documents.task_source, TaskDocument | StoredTaskDocument) else ()),
+        *variables,
         *signals,
     )
     weight_names = (*names, *(
@@ -416,7 +420,12 @@ _STORED_TIME = TypeAdapter(StoredTime)
 
 
 def _set_spellings(names):
-    return {name.id: stored_set_reference(name.set_entry) for name in names if name.set_entry is not None}
+    return {
+        name.id: stored_set_reference(origin)
+        for name in names
+        if (origin := name.set_entry) is not None
+        and name.id == scoped_set_member_id(origin.axis, origin.entry, origin.variable)
+    }
 
 
 def _expression_edit(change, documents, stored_task, stored_objective, projection, bundle):
@@ -1115,7 +1124,11 @@ def _set_condition_site(definition, projection):
     variables = projection.set_condition_variables
     if variables is None:
         task = definition.payload.get("trial_documents", {}).get("task")
-        variables = StoredTaskDocument.model_validate(task).lower().variables if task is not None else ()
+        if task is not None:
+            authored = StoredTaskDocument.model_validate(task)
+            variables = tuple(variable.lower(key) for key, variable in authored.variables.items())
+        else:
+            variables = ()
     resolved = {variable.id: variable for variable in projection.variables}
     return trial_set_condition_site(tuple(
         resolved.get(variable.id) or ScopedValue(id=variable.id, name=variable.name, type=variable.type, level=Level.TRIAL)

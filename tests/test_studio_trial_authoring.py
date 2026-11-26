@@ -350,16 +350,12 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         assert not view.problems
         (output,) = view.outputs
         assert isinstance(output.address, ModelAddress)
-        term = {"label": "Control effort", "measure": CallValue(
-            kind="call", function="sqnorm", args=(NameValue(kind="name", reference=output.value.id),)
-        ).model_dump(mode="json"), "weight": LiteralValue(value=2).model_dump(mode="json")}
+        term = {"label": "Control effort", "measure": f"sqnorm({output.address.to_authored_text()})", "weight": 2}
         windowed = term | {"window": {"spans": [{"kind": "epoch", "epoch": "move"}]}}
 
         def squared_target(source):
             return {
-                "measure": CallValue(
-                    kind="call", function="sqnorm", args=(NameValue(kind="name", reference=source),),
-                ).model_dump(mode="json"),
+                "measure": f"sqnorm({source})",
                 "measure_type": {"base": "real", "dimensions": LENGTH.raised(2).model_dump(mode="json")},
             }
         revised = author(revision, {"kind": "objective", "edits": [{
@@ -376,7 +372,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         assert any(field.path == "/objective/terms/effort/measure" for field in view.fields)
         assert not view.problems
         marked = author(revision, {"kind": "objective", "edits": [
-            {"op": "replace", "path": "/terms/effort/measure/args/0/reference", "value": "unknown"},
+            {"op": "replace", "path": "/terms/effort/measure", "value": "sqnorm(unknown)"},
         ]})
         assert marked.files
         assert any(problem.code == "unknown_name" for problem in marked.problems)
@@ -881,18 +877,25 @@ def test_studio_saves_an_objective_ramp_weighted_by_a_delayed_signal(tmp_path):
         assert not reread.json()["problems"], reread.text
         field = next(field for field in reread.json()["fields"] if field["path"] == path)
         assert field["text"] == text
+        stored = folders.read(project).project.documents["objective"].payload["terms"]["effort"]
+        assert stored["weight"] == "(t / T) ** 2 * sqnorm(lag(outputs.command, 5))"
 
 
-def test_trial_authoring_shows_authored_fields_for_a_windowed_set_entry(tmp_path):
+@pytest.mark.parametrize("weighted", [False, True])
+def test_trial_authoring_shows_authored_fields_for_a_windowed_set_entry(tmp_path, weighted):
     from feedbax.desktop.release import AppPaths
     from web.e2e.studio.fixtures.set_authoring import seed_window
 
-    project = seed_window(str(tmp_path), "windowed-set")
+    project = seed_window(str(tmp_path), "windowed-set", weighted=weighted)
     folders = ProjectFolderService(AppPaths.resolve(instance_root=tmp_path).web / "projects")
     snapshot = folders.read(project)
     plan = folders.read_plan(project, revision=snapshot.revision).plan
-    assert not plan.diagnostics
-    selected = next(row for row in plan.rows if row.coordinates["pulse"].value_id == "force")
+    assert not plan.diagnostics, plan.diagnostics
+    if weighted:
+        (selected,) = plan.rows
+    else:
+        selected = next(row for row in plan.rows if row.coordinates["pulse"].value_id == "force")
+    assert not selected.problems, selected.problems
     body = {
         "revision": snapshot.revision,
         "run": {"variant": selected.key.variant, "step": selected.key.step, "row": selected.key.row},
@@ -1163,9 +1166,7 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
     from feedbax.contracts.rollout import ROLLOUT_TYPE
 
     raw = document_project(authored_documents())
-    raw["documents"]["task"]["payload"]["variables"]["target"]["value"] = CallValue(
-        function="vector", args=(LiteralValue(value=0.18, unit="m"), LiteralValue(value=0.05, unit="m")),
-    ).model_dump(mode="json")
+    raw["documents"]["task"]["payload"]["variables"]["target"]["value"] = "[0.18 m, 0.05 m]"
     raw["steps"]["check"] = {"label": "Check", "kind": "evaluate", "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
         "seed": 731, "trial_policy": "paired", "variation": [], "trial_set": {"kind": "every_condition"},
     }}}, "inputs": {"subject": {"step": "train", "checkpoint": "last"}}}
@@ -1179,9 +1180,8 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         reply = client.post("/api/projects/check/authoring/trials", json={
             "revision": before.revision, "run": run, "scope": {"kind": "step"},
-            "change": {"kind": "task", "edits": [
-                {"op": "replace", "path": "/variables/target/value/args/0/value", "value": 0.24},
-            ]},
+            "change": {"kind": "expression", "path": "/task/variables/target/value",
+                       "edit": {"kind": "text", "text": "[0.24 m, 0.05 m]"}},
         })
         assert reply.status_code == 200, reply.text
         edited = reply.json()
@@ -1194,7 +1194,7 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
         assert saved.status_code == 200, saved.text
         view = client.post("/api/projects/check/authoring/trials", json={"revision": saved.json()["revision"], "run": run})
         assert view.status_code == 200, view.text
-    assert view.json()["task"]["variables"]["target"]["value"]["args"][0]["value"] == 0.24
+    assert view.json()["task"]["variables"]["target"]["value"] == "[0.24 m, 0.05 m]"
     assert view.json()["task_document"] == created["id"]
     trained = {row.key: row for row in before.plan.rows if row.key.step == "train"}
     after = folders.read_plan("check", revision=None).plan
@@ -1409,6 +1409,27 @@ def test_until_authoring_switches_and_refuses_a_limit_that_rounds_to_zero(tmp_pa
         assert restored.files and not restored.problems
         assert restored.task.epochs[name].end.kind == "length"
         assert_empty_condition(change("length", "rest"), "rest")
+
+
+def test_editing_a_draw_bound_replaces_the_authored_expression(tmp_path):
+    project = "draw-bound"
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+        _save_project(folders, project, load_shipped_projects()["point-mass-reaching"])
+        revision = folders.read(project).revision
+        route = f"/api/projects/{project}"
+        path = "/task/epochs/hold/end/length/args/0"
+        edit = client.post(f"{route}/authoring/trials", json={
+            "revision": revision, "run": {"variant": "default", "step": "delayed-reaches", "row": "default"},
+            "change": {"kind": "expression", "path": path, "edit": {"kind": "text", "text": "6 st"}},
+        })
+        assert edit.status_code == 200, edit.text
+        prepared = edit.json()
+        assert not prepared["problems"] and prepared["files"], prepared
+        saved = client.patch(route, json={"revision": revision, "files": prepared["files"]})
+        assert saved.status_code == 200, saved.text
+        task = folders.read(project).project.documents["delayed-reaches-task"].payload
+        assert task["epochs"]["hold"]["end"]["length"] == "U(6 st, 14 st)"
 
 
 def test_expression_menu_reuses_the_exact_projected_pairing(tmp_path, monkeypatch):

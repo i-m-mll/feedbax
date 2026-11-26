@@ -458,6 +458,19 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         assert saved.status_code == 200, saved.text
         objective = folders.read(PROJECT).project.documents["objective"].payload
         assert objective["terms"]["effort"]["weight"] == "set.hold.shift.amount"
+        other = variables["shift · Other"]
+        revision = saved.json()["revision"]
+        own = client.post(f"{BASE}/authoring/trials", json=body | {"revision": revision, "change": {
+            "kind": "expression", "path": f"/task/variables/{other['id']}/value",
+            "edit": {"kind": "text", "text": "'reach · shift · Amount' + 4"},
+        }})
+        assert own.status_code == 200, own.text
+        shown = own.json()
+        assert not shown["problems"] and shown["files"], shown
+        saved = client.patch(BASE, json={"revision": revision, "files": shown["files"]})
+        assert saved.status_code == 200, saved.text
+        entry = folders.read(PROJECT).project.documents["reach-bank"].payload["entries"]["shift"]
+        assert entry["task_variables"]["other"]["value"] == "amount + 4"
 
 
 def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
@@ -577,7 +590,7 @@ def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, sub
         "payload": {"entries": {"pulse": {"label": "Pulse", "differences": {
             "/interior/wires/effector-wire/attachments": {"value": {"pulse": {
                 "kind": "intervention", "operation": "Add",
-                "operands": {"value": {"kind": "value", "value": [2, 0]}},
+                "operands": {"value": {"kind": "value", "value": "[2, 0]"}},
                 "window": {"spans": [{
                     "kind": "interval",
                     "start": {"anchor": {"kind": "epoch", "edge": "start", "epoch": "move"}},
