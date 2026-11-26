@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFixtureRunner } from './python';
+import type { StudioActivityJob, StudioJobSnapshot } from '../../../src/generated/studioContracts';
 
 export const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 
@@ -28,12 +29,14 @@ const backendModules: Record<StudioBackend, string> = {
 };
 
 /**
- * Bounds the wait for a Studio's first job to report progress. Each Studio home starts with an
- * idle Host, so its first worker imports feedbax and, for programs the shared JAX cache lacks,
- * compiles (about 10 s, more under parallel load) before training starts; later jobs report
- * within about 3 s.
+ * Bounds a wait for a Job to reach a state. A Job reports only after its worker imports feedbax and, for programs the
+ * shared JAX cache lacks, compiles: about 10 s alone, and up to several times that while the tier's other Jobs and
+ * other work on the machine share the CPU.
  */
-export const firstJobTimeout = 20_000;
+export const jobTimeout = 90_000;
+
+/** Bounds a Studio's start: its backend imports feedbax and opens its home, about 10 s alone and longer under load. */
+const launchTimeout = 60_000;
 
 export type Studio = {
   origin: string;
@@ -141,7 +144,7 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
     },
     startBackend: async () => {
       start('--backend-only');
-      await expect.poll(healthy, { timeout: 15_000 }).toBe(true);
+      await expect.poll(healthy, { timeout: launchTimeout }).toBe(true);
     },
     serviceLog: log,
   };
@@ -199,10 +202,44 @@ const traced = base.extend<{ namedTrace: void; cpuThrottle: void }, { fixtureRun
   }, { auto: true }],
 });
 
+/** Job statuses that hold a place in the Host's queue or a compute slot. */
+const unsettled = new Set<StudioActivityJob['status']>([
+  'queued', 'awaiting_authorization', 'blocked', 'waiting', 'starting', 'running', 'stopping', 'collecting',
+]);
+
+async function unsettledJobs(origin: string) {
+  const response = await fetch(`${origin}/api/jobs`);
+  if (!response.ok) throw new Error(`Listing the Studio's Jobs failed with ${response.status}: ${await response.text()}`);
+  return (await response.json() as StudioJobSnapshot).jobs.filter((job) => unsettled.has(job.status));
+}
+
+/**
+ * Force-stops every Job a test left in its worker's shared queue and waits until none holds a place,
+ * so the worker's next test starts on an empty queue whether this one passed or failed.
+ */
+async function settleJobs(origin: string) {
+  const left = await unsettledJobs(origin);
+  if (!left.length) return;
+  const stopping = left.filter((job) => job.status !== 'stopping');
+  if (stopping.length) {
+    const response = await fetch(`${origin}/api/jobs/stop`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ job_ids: stopping.map((job) => job.job_id), mode: 'force' }),
+    });
+    if (response.status !== 202) throw new Error(`Stopping leftover Jobs failed with ${response.status}: ${await response.text()}`);
+  }
+  await expect.poll(async () => (await unsettledJobs(origin)).map((job) => `${job.label}: ${job.status}`),
+    { message: 'Jobs a test left behind settle after a force stop' }).toEqual([]);
+}
+
 type WorkerFixtures = { studioBackend: StudioBackend; studioFrontend: StudioFrontend; studio: Studio };
 
-/** Each worker owns one Studio; tests in the worker share its home and job host. */
-export const test = traced.extend<{}, WorkerFixtures>({
+/** Each worker owns one Studio; tests in the worker share its home and job host, and each leaves the queue empty. */
+export const test = traced.extend<{ settledJobs: void }, WorkerFixtures>({
+  settledJobs: [async ({ studio }, use) => {
+    await use();
+    await settleJobs(studio.origin);
+  }, { auto: true }],
   studioBackend: ['app', { scope: 'worker', option: true }],
   studioFrontend: ['preview', { scope: 'worker', option: true }],
   studio: [async ({ studioBackend, studioFrontend }, use) => {
@@ -212,7 +249,7 @@ export const test = traced.extend<{}, WorkerFixtures>({
     } finally {
       await close();
     }
-  }, { scope: 'worker', timeout: 60_000 }],
+  }, { scope: 'worker', timeout: launchTimeout }],
   baseURL: async ({ studio }, use) => {
     await use(studio.origin);
   },
@@ -245,7 +282,7 @@ export const isolatedTest = traced.extend<{ studio: Studio }>({
         }
       }
     }
-  }, { timeout: 60_000 }],
+  }, { timeout: launchTimeout }],
   baseURL: async ({ studio }, use) => {
     await use(studio.origin);
   },

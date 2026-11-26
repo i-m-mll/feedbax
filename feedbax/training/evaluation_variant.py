@@ -54,7 +54,7 @@ class EvaluationVariant:
         ]
         if edits:
             return CannotRun(self.edit_origins[max(edits, key=len)], problem.reason)
-        if problem.path[:1] in {("task",), ("python_task",)} or problem.path[:2] == ("model", "inputs"):
+        if at or problem.path[:2] == ("model", "inputs"):
             task_edits = [origin for target, origin in self.edit_origins.items() if target[0] == "task"]
             if len(task_edits) == 1:
                 return CannotRun(task_edits[0], problem.reason)

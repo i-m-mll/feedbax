@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Locator } from '@playwright/test';
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -103,7 +103,6 @@ test('a failed Train run draws the Host\'s reason in its row', async ({ page, re
 });
 
 test('a real Model edit updates map, drawer, and Runs from the saved plan', { tag: '@round' }, async ({ page, request }, info) => {
-  test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const host = await request.get('/api/jobs');
   expect(host.ok(), await host.text()).toBe(true);
@@ -139,7 +138,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   // A second Run pressed while the first is submitted waits for it, then attaches to the job the first submitted.
   await page.keyboard.press('Enter');
   expect((await (await run).response())!.status()).toBe(202);
-  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   await expect(runButton).toBeFocused();
   // However often Run is pressed, the run has one job.
   const jobsSubmitted = (await Promise.all(submissions)).flatMap(({ items }) => items.map(({ job_id }) => job_id));
@@ -181,8 +180,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   await expect(drawer.getByRole('treeitem', { name: 'Train Done', exact: true })).toBeVisible();
 });
 
-test('outside saved-folder edits join the mounted Undo history', async ({ page, request, studio }, info) => {
-  test.setTimeout(45_000);
+test('outside saved-folder edits join the mounted Undo history', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const root = join(studio.home, 'state', 'web', 'projects', configuration.project);
   const modelPath = join(root, 'documents', 'point-mass.json');
@@ -241,7 +239,7 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   const changed = JSON.parse(beforeOutside);
   changed.payload.interior.components.plant.fields.mass = 3;
   await outside(modelPath, json(changed));
-  await expect(mass).toHaveValue('3', { timeout: 2_000 });
+  await expect(mass).toHaveValue('3', { timeout: jobTimeout });
   await menu('Undo Outside Change');
   await history('Meta+Z', 'Model', '/history/replay');
   await expect(mass).toHaveValue('2');
@@ -275,10 +273,10 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   const outsideModel = structuredClone(changed);
   outsideModel.payload.interior.components.plant.fields.mass = 4;
   await outside(modelPath, json(outsideModel));
-  await expect(mass).toHaveValue('4', { timeout: 2_000 });
+  await expect(mass).toHaveValue('4', { timeout: jobTimeout });
   await outside(stepPath, json(outsideStep));
   await tab('Runs').click();
-  await expect(batchSize).toHaveValue('8', { timeout: 2_000 });
+  await expect(batchSize).toHaveValue('8', { timeout: jobTimeout });
   const burst = await history('Meta+Z', 'Runs', '/history/replay');
   expect(burst.files.map(({ address }: { address: { id: string } }) => address.id).sort()).toEqual(['point-mass', 'train']);
   await expect(batchSize).toHaveValue('6');
@@ -486,7 +484,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   expect(host.ok(), await host.text()).toBe(true);
   // The first plan of these multibody models compiles their MuJoCo and JAX kinematics in the
   // backend (about 5-8 s cold, 0.5 s warm), so this read waits on that real cost.
-  const read = await request.get(`${projectPath}/train-runs?revision=${snapshot.revision}&window_map=true`, { timeout: 20_000 });
+  const read = await request.get(`${projectPath}/train-runs?revision=${snapshot.revision}&window_map=true`, { timeout: jobTimeout });
   expect(read.ok(), await read.text()).toBe(true);
   const { window_map } = await read.json() as StudioSavedTrainRuns;
   const problems = window_map!.problems;
@@ -695,7 +693,7 @@ test('a view with nothing to show is dimmed in the rail, and an open one gives w
   await mapStep(page, 'planar').click();
   await expect(sceneTab).not.toHaveAttribute('aria-disabled', 'true');
   // The first plan of a multibody model compiles its kinematics in the backend, which this read waits on.
-  await sceneTab.click({ timeout: 20_000 });
+  await sceneTab.click({ timeout: jobTimeout });
   await expect(scene).toBeVisible();
   await mapStep(page, 'flat').click();
   await expect(runs).toBeVisible();

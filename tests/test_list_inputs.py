@@ -52,7 +52,7 @@ def _two_model_definition(masses=None):
             patch["value"] = mass
         values[new] = value
     steps["analyze"]["inputs"]["states"] = [{"step": "conditions"}, {"step": "conditions_b"}]
-    bounds = definition["documents"]["velocity-figure"]["payload"]["layers"][0]
+    bounds = definition["documents"]["velocity-figure"]["payload"]["layers"]["bounds"]
     bounds["group"] = ["source", "model", "mass"]
     bounds["style"] = {"label": "{source} {model} {mass}"}
     return definition
@@ -155,7 +155,7 @@ def _figures_by(definition):
     views = documents["velocity-analysis"]["payload"]["views"]
     for name, group in (("models", ["model", "mass"]), ("masses", ["mass"])):
         figure = deepcopy(documents["velocity-figure"])
-        figure["payload"]["layers"][0] |= {"group": group, "style": {"label": " ".join(f"{{{g}}}" for g in group)}}
+        figure["payload"]["layers"]["bounds"] |= {"group": group, "style": {"label": " ".join(f"{{{g}}}" for g in group)}}
         documents[f"{name}-figure"] = figure
         views[name] = deepcopy(views["profile"]) | {"figure": {"document": f"{name}-figure"}}
     return definition

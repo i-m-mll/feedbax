@@ -40,7 +40,7 @@ from feedbax.contracts.array_values import (
     _parse_array_value_payload,
     materialize_array_value,
 )
-from feedbax.component_registry.declarations import DeclaredComponent
+from feedbax.component_registry.declarations import split_lowering_metadata
 from feedbax.component_registry import (
     format_missing_interior_message,
     required_interior_domain,
@@ -582,22 +582,7 @@ def _split_lowering_metadata(
     component_registry: Any,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Separate graph-level controls from the component's own parameters."""
-    params = dict(node_spec.params)
-    lowering_metadata = {}
-    if node_spec.type == "feedbax.Sum" and "channel_adapter" in params:
-        lowering_metadata["channel_adapter"] = params.pop("channel_adapter")
-    if isinstance(params.get("trainable"), bool):
-        declaration = component_registry.get(node_spec.type)
-        if declaration is not None and not _component_owns_trainability(declaration):
-            lowering_metadata["trainable"] = params.pop("trainable")
-    return params, lowering_metadata
-
-
-def _component_owns_trainability(declaration: DeclaredComponent) -> bool:
-    contract = declaration.params
-    return (
-        "trainable" in contract.model.model_fields or "trainable" in contract.build_context_fields
-    )
+    return split_lowering_metadata(node_spec.type, node_spec.params, component_registry.get(node_spec.type))
 
 
 def _validate_dynamic_component_ports(

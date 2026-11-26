@@ -8,7 +8,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_stored_patch_copy, prepare_stored_patch
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolvedStep, ResolutionCode, compose_document, compose_step
-from feedbax.contracts.project_storage import stored_expression_site
+from feedbax.contracts.project_storage import stored_expression_site, stored_step_expression_site
 from feedbax.contracts.project_sweep import expand_sweep
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID, StoredTaskDocument
 from feedbax.planner.project_plan import PlanSourceIndex, compile_project, project_variants, resolve_authored_evaluation_task
@@ -138,6 +138,7 @@ def test_authored_evaluate_and_project_variant_paths_change_only_the_literal_num
     assert derived.payload["variables"]["goal"]["value"] == "U(1 m, 8 m)"
     assert variant.documents["task"].payload["variables"]["goal"]["value"] == "U(1 m, 4 m)"
     assert stored_expression_site(STORED_TASK_DOCUMENT_SCHEMA_ID, ("variables", "goal", "label")) is None
+    assert stored_step_expression_site("synthesize", ("task", "epochs", "prep", "end", "length")) == "expression"
 
 
 

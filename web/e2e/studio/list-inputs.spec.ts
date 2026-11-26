@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import type { StudioJobSnapshot, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
@@ -9,20 +9,23 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-/** Drags a wire from a card's output handle and drops it on another card. */
+/**
+ * Drags a wire from a card's output handle and drops it on another card. The map moves its cards when it draws a newer
+ * plan, and every card that accepts the wire shows it from the start of the drag, so the drag starts once the map draws
+ * the saved revision's plan and the pointer goes to where the card's head is then.
+ */
 async function wire(page: Page, source: string, target: string) {
+  const card = page.locator(`[data-map-step="${target}"]`);
+  await expect(page.getByRole('region', { name: 'Pipeline Map', exact: true }).last()).not.toHaveAttribute('aria-busy', 'true');
   await page.locator(`[data-map-step="${source}"]`).hover();
-  const from = (await page.locator(`[data-map-handle="${source}"]`).boundingBox())!;
-  const to = (await page.locator(`[data-map-step="${target}"]`).boundingBox())!;
-  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.locator(`[data-map-handle="${source}"]`).hover();
   await page.mouse.down();
-  await page.mouse.move(to.x + to.width / 2, to.y + 12, { steps: 8 });
-  await expect(page.locator(`[data-map-step="${target}"]`)).toHaveAttribute('data-pick', 'allowed');
+  await card.hover({ position: { x: 40, y: 12 } });
+  await expect(card).toHaveAttribute('data-pick', 'allowed');
   await page.mouse.up();
 }
 
 test('binds lists of selections to an Evaluate subject and an Analyze dataset role', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(180_000);
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.list_inputs', 'seed', studio.home, 'lists'));
   const path = '/api/projects/' + project;
   const runPath = path + '/train-runs';
@@ -120,7 +123,7 @@ test('binds lists of selections to an Evaluate subject and an Analyze dataset ro
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
   await activate(page, figures.getByRole('button', { name: 'Profile', exact: true }));
   const legend = figures.locator('svg.main-svg text.legendtext');
-  await expect(legend.filter({ hasText: /^Conditions (?!b )/ }).first()).toBeVisible({ timeout: 20_000 });
+  await expect(legend.filter({ hasText: /^Conditions (?!b )/ }).first()).toBeVisible({ timeout: jobTimeout });
   await expect(legend.filter({ hasText: /^Conditions b / }).first()).toBeVisible();
   // Each trace is a distinct run and condition, so no two legend entries share a name, and a run with no value
   // on a grouped label names none.

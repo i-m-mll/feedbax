@@ -17,7 +17,8 @@ from feedbax.contracts.model_origin import ModelProductKey, SynthesizedModelOrig
 from feedbax.contracts.operation import DatasetPort, JaxOperation
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_specs import SynthesisRequestSpec, TrialDocuments
+from feedbax.contracts.request_specs import SynthesisRequestSpec
+from feedbax.contracts.training import lower_stored_trial_documents
 from feedbax.examples import load_shipped_projects
 from feedbax.host.synthesis import PreparedSynthesis, synthesize_model
 from feedbax.host import light_jobs, light_worker
@@ -109,8 +110,7 @@ def test_served_synthesis_documents_bind_in_trials_and_model_view(host, tmp_path
     project = "synthesis-authoring"
     raw["documents"]["extra-model"] = raw["documents"]["point-mass"]
     signals = raw["documents"]["simple-reaches-task"]["payload"]["signals"]
-    signal = next(value for value in signals if value["id"] == "target_pos")
-    signals.append(signal | {"id": "alternate_target", "name": "Alternate target"})
+    signals["alternate_target"] = signals["target_pos"] | {"label": "Alternate target"}
     _save_project(ProjectFolderService(tmp_path), project, Project.model_validate(raw))
     route = f"/api/projects/{project}"
     run = {"variant": "default", "step": "synthesize", "row": "default"}
@@ -251,7 +251,7 @@ def test_saved_synthesize_model_runs_evaluation_train_start_and_export(host, tmp
 def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):
     project = load_shipped_projects()["point-mass-reaching"]
     spec = SynthesisRequestSpec(
-        trial_documents=TrialDocuments.model_validate({
+        trial_documents=lower_stored_trial_documents({
             "model": project.documents["point-mass"].payload,
             "task": project.documents["simple-reaches-task"].payload,
             "objective": project.documents["simple-reaches-objective"].payload,
@@ -327,9 +327,9 @@ def test_analyze_reads_a_declared_synthesis_dataset(tmp_path, monkeypatch):
         "base": {"inline": {
             "inputs": {"diagnostic": {"kind": "dataset"}},
             "views": {"result": {"label": "Result", "inputs": {"data": {"input": "diagnostic"}}, "figure": {
-                "data": ["data"], "layout": [{"name": "values", "row": 1, "col": 1}],
-                "layers": [{"name": "values", "role": "data", "panel": "values", "mark": "line",
-                            "encode": {"x": "sample", "y": "value"}}],
+                "data": ["data"], "layout": {"values": {"row": 1, "col": 1}},
+                "layers": {"values": {"role": "data", "panel": "values", "mark": "line",
+                                      "encode": {"x": "sample", "y": "value"}}},
             }}},
         }},
     }

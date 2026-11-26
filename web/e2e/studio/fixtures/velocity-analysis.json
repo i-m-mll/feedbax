@@ -1,5 +1,4 @@
 {
-  "schema_version": "feedbax.analysis_document.v1",
   "operations": {
     "align": {
       "label": "Align",

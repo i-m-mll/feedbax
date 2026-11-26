@@ -15,6 +15,7 @@ from feedbax.builtins.figure_templates import SpeedByTrial, SpeedByTrialSettings
 from feedbax.cli import main
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.code_validity import SourcePath
+from feedbax.contracts.figure_document import StoredFigureDocument
 from feedbax.contracts.project import Project
 from feedbax.contracts.receipt_validity import FileDifference, ReceiptValidity
 from feedbax.planner.project_plan import ElementKey, RunKey, compile_project
@@ -44,9 +45,8 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     raw = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task = raw["documents"]["simple-reaches-task"]["payload"]
-    target = next(signal for signal in task["signals"] if signal["id"] == "target_pos")
-    target["name"] = "Requested target"
-    task["validation_trials"] = task["validation_trials"][:1]
+    task["signals"]["target_pos"]["label"] = "Requested target"
+    task["validation_trials"] = {"trial-1": task["validation_trials"]["trial-1"]}
     raw["steps"] = {
         "rollout": {
             "label": "Rollout",
@@ -71,14 +71,14 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
                     "inputs": {"states": {"input": "states"}},
                     "figure": {
                         "data": ["states"],
-                        "layout": [{"name": "position", "row": 1, "col": 1}],
-                        "layers": [{
-                            "name": "target-x", "role": "states", "panel": "position", "mark": "line",
+                        "layout": {"position": {"row": 1, "col": 1}},
+                        "layers": {"target-x": {
+                            "role": "states", "panel": "position", "mark": "line",
                             "encode": {
                                 "x": "transition_start",
                                 "y": {"variable": "/v1/task/output/target_pos", "select": {"xy": "x"}},
                             },
-                        }],
+                        }},
                     },
                 }},
             }},
@@ -142,13 +142,13 @@ def _saved_light_definition(*, paired=False):
     task = load_shipped_projects()["point-mass-reaching"].documents["simple-reaches-task"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task["payload"]["fixed_steps"] = 8
     del task["payload"]["validation_trials"]
-    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"]["value"] = 8
     evaluation["documents"]["task"] = task
     project["documents"] = evaluation["documents"] | {
         name: project["documents"][name]
         for name in ("velocity-analysis", "velocity-figure", "velocity-report")
     }
-    project["documents"]["velocity-figure"]["payload"]["layers"][0]["style"] = {"label": "{condition}"}
+    project["documents"]["velocity-figure"]["payload"]["layers"]["bounds"]["style"] = {"label": "{condition}"}
     project["steps"]["train"] = train
     step = "conditions" if paired else "baseline"
     project["steps"][step] = evaluation["steps"][step]
@@ -170,7 +170,7 @@ def test_saved_operation_products_can_be_read_without_a_figure(host, tmp_path, m
     task = shipped["documents"]["simple-reaches-task"]
     del task["payload"]["validation_trials"]
     task["payload"]["fixed_steps"] = 8
-    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"]["value"] = 8
     definition["documents"] = {
         "point-mass": shipped["documents"]["point-mass"], "task": task,
         "velocity-analysis": definition["documents"]["velocity-analysis"],
@@ -268,7 +268,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
     project = "reaching"
     definition = _saved_light_definition()
     model_key = definition["steps"]["train"]["base"]["inline"]["trial_documents"]["model"]["document"]
-    definition["documents"][model_key]["payload"]["interior"]["components"]["plant"]["name"] = "Point mass"
+    definition["documents"][model_key]["payload"]["interior"]["components"]["plant"]["label"] = "Point mass"
     folders = ProjectFolderService(projects)
     _save_project(folders, project, Project.model_validate(definition))
     project_id = folders.open(project).snapshot.project_id
@@ -641,11 +641,13 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         "inputs": {"states": {"input": "states"}},
     }
     analysis["views"]["profile"]["figure"] = {"template": "feedbax.VelocitySummary"}
-    speed_figure = SpeedByTrial(SpeedByTrialSettings()).model_dump(mode="json", exclude_unset=True)
+    speed_figure = StoredFigureDocument.from_lowered(SpeedByTrial(SpeedByTrialSettings())).model_dump(
+        mode="json", exclude_unset=True,
+    )
     color = {"field": "mass.value", "scale": "load"}
     scales = {"load": {"kind": "continuous", "legend": False}}
     speed_figure["color_scales"] = scales
-    speed_figure["layers"][0]["encode"]["color"] = color
+    speed_figure["layers"]["trial-speed"]["encode"]["color"] = color
     analysis["views"]["by_trial"] = {
         "label": "By trial",
         "figure": speed_figure,
@@ -654,10 +656,10 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     analysis["views"]["motion"] = {
         "label": "Motion",
         "figure": {
-            "data": ["states"], "layout": [{"name": "motion", "row": 1, "col": 1}],
+            "data": ["states"], "layout": {"motion": {"row": 1, "col": 1}},
             "color_scales": scales,
-            "layers": [{
-                "name": "motion", "mark": "trajectory", "role": "states", "panel": "motion",
+            "layers": {"motion": {
+                "mark": "trajectory", "role": "states", "panel": "motion",
                 "group": ["member", "condition", "trial"], "select": {"checkpoint": {"index": 0}},
                 "encode": {
                     axis: {
@@ -665,7 +667,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
                         "select": {"xy": {"index": index}},
                     } for index, axis in enumerate(("x", "y"))
                 } | {"color": color},
-            }],
+            }},
         },
         "inputs": {"states": {"input": "states"}},
     }

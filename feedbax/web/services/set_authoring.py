@@ -19,7 +19,9 @@ from feedbax.contracts.set_document import (
     SET_DOCUMENT_SCHEMA_ID, SetMisfit, SetEntry, axis_from_set, check_fit, entry_pointer,
     read_set, resolve_set_axes, set_from_axis, sets_offered, step_model,
 )
-from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_project import (
+    AuthoredFileAddress, CreateNamedDocument, RemoveProjectValue, StudioProjectFilePatch,
+)
 from feedbax.contracts.studio_sets import (
     AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetEntryTask,
     SetFieldWeight, SetToField, SetToSweep,
@@ -137,8 +139,9 @@ def _set_store(folders, project_id: str, project: Project, step: str, body: Stud
         )
         return result if isinstance(result, list) else result.value
     if isinstance(command, RemoveAxisValue) and (body.selection is None or not body.selection.rows):
-        values = axis_values(row for row in plan.rows if row.key in selected)
-        selected = frozenset(key for key in selected if values.get((key, command.axis)) == command.value)
+        selected = frozenset(
+            row.key for row in plan.rows if row.key in selected and row.axis_keys.get(command.axis) == command.value
+        )
         if not selected:
             raise ProjectFolderInvalid("The selected axis value changed.")
     names = {
@@ -149,7 +152,7 @@ def _set_store(folders, project_id: str, project: Project, step: str, body: Stud
     if names:
         content = preview_stored(project, stored)
         chosen = {key.step for key in selected} or {step}
-        narrow = StoredEdit(list(stored.files), stored.created)
+        narrow = stored
         for name in sorted(names):
             readers = set_readers(project, name)
             targets = chosen & readers
@@ -191,8 +194,12 @@ def _authored_axis(project: Project, step: str, axis: str):
 
 
 def _with_axes(address, raw, axes: dict[str, Any]) -> StudioProjectFilePatch:
-    sweep = raw.get("sweep") or {}
-    return file_value(address, raw, ("sweep",), sweep | {"axes": axes})
+    sweep = {name: value for name, value in (raw.get("sweep") or {}).items() if name != "axes"}
+    if axes:
+        sweep["axes"] = axes
+    if sweep:
+        return file_value(address, raw, ("sweep",), sweep)
+    return StudioProjectFilePatch(address=address, patches=[RemoveProjectValue(op="remove", path="/sweep")])
 
 
 def _copy_key(value: str, taken) -> str:

@@ -1185,6 +1185,8 @@ export interface ModelFieldRequest {
 }
 
 export interface ModelFieldResponse {
+  sites?: Record<string, StudioFieldSite>;
+  function_lists?: Record<string, StudioFieldFunction[]>;
   fields?: ModelFieldView[];
   files?: StudioProjectFilePatch[];
   created?: CreateNamedDocument[];
@@ -1256,7 +1258,7 @@ export interface StudioFieldView {
   mixed?: boolean;
   unit?: string | null;
   conversion?: TimeValue | null;
-  site: SiteProjection;
+  site: string;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
   can_sweep?: boolean;
@@ -1273,7 +1275,7 @@ export interface ModelFieldView {
   mixed?: boolean;
   unit?: string | null;
   conversion?: TimeValue | null;
-  site: SiteProjection;
+  site: string;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
   can_sweep?: boolean;
@@ -1293,7 +1295,7 @@ export interface TrainFieldView {
   mixed?: boolean;
   unit?: string | null;
   conversion?: TimeValue | null;
-  site: SiteProjection;
+  site: string;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
   can_sweep?: boolean;
@@ -1315,6 +1317,8 @@ export interface TrainFieldRequest {
 }
 
 export interface TrainFieldResponse {
+  sites?: Record<string, StudioFieldSite>;
+  function_lists?: Record<string, StudioFieldFunction[]>;
   fields?: TrainFieldView[];
   files?: StudioProjectFilePatch[];
   created?: CreateNamedDocument[];
@@ -2811,7 +2815,6 @@ export type AddSetEntry = {
 };
 
 export type AnalysisDocument = {
-  "schema_version"?: "feedbax.analysis_document.v1";
   "inputs"?: Record<string, AnalyzeDatasetInput | AnalyzeModelInput | AnalyzeTaskInput>;
   "operations"?: Record<string, OperationElement>;
   "views"?: Record<string, FigureElement>;
@@ -3009,13 +3012,6 @@ export type ContentRef = {
   "size": number;
   "media_type"?: string | null;
   "tree"?: boolean;
-};
-
-export type ContentTreeRef = {
-  "schema_id"?: "feedbax.spec.content_tree_ref";
-  "schema_version"?: "feedbax.spec.content_tree_ref.v1";
-  "tree_id": string;
-  "descriptor": ContentObjectRef;
 };
 
 export type ContinuousColorScale = {
@@ -3254,7 +3250,6 @@ export type FieldTextResult = {
 export type FieldValue = Expression | SweepList | SweepRange | SweepSample;
 
 export type FigureDocument = {
-  "schema_version"?: "feedbax.figure_document.v1";
   "data": Array<Name>;
   "layout": Array<FigurePanel>;
   "layers": Array<LineLayer | TrajectoryLayer | BandLayer | PointsLayer | RuleLayer | SpanLayer>;
@@ -3262,6 +3257,7 @@ export type FigureDocument = {
   "color_scales"?: Record<string, ContinuousColorScale | OrdinalColorScale>;
   "view"?: FigureDocumentView;
   "caption"?: string | null;
+  "schema_version"?: "feedbax.figure_document.v1";
 };
 
 export type FigureDocumentView = {
@@ -3283,7 +3279,7 @@ export type FigureDocumentView = {
 };
 
 export type FigureElement = {
-  "figure": FigureDocument | FigureTemplateRef | DocumentReference;
+  "figure": StoredFigureDocument | FigureTemplateRef | DocumentReference;
   "label": string;
   "inputs": Record<string, StepInput | OperationDataset>;
 };
@@ -3354,13 +3350,6 @@ export type ImportedModelProvenance = {
   "model_revision": string;
   "weights_sha256": string;
   "replicas": Array<string>;
-};
-
-export type ImportedModelSource = {
-  "kind": "imported";
-  "model": ContentObjectRef;
-  "weights": ContentTreeRef;
-  "encoding": SemanticModelEncoding;
 };
 
 export type IndexSelection = {
@@ -3481,10 +3470,16 @@ export type LiteralValue = {
   "unit"?: string | null;
 };
 
+export type LoadedModelAsset = {
+  "sha256": string;
+  "size_bytes": number;
+};
+
 export type LoadedModelDocument = {
-  "schema_version": "feedbax.spec.loaded_model.v1";
   "model": DocumentReference;
-  "source": ImportedModelSource;
+  "model_revision": LoadedModelAsset;
+  "weights": LoadedModelAsset;
+  "encoding_sha256": Sha256;
   "archive"?: ProjectModelArchive | null;
 };
 
@@ -3993,10 +3988,6 @@ export type SelectedAxisValueProblem = {
   "remaining": Array<SelectedAxisValue>;
 };
 
-export type SemanticModelEncoding = {
-  "descriptor_sha256": string;
-};
-
 export type SetAxis = {
   "label"?: string | null;
   "set": string;
@@ -4267,6 +4258,16 @@ export type StoreSubset = {
 
 export type StoredAddressedMembers_StoredMemberKey_ = Record<string, StoredMemberKey>;
 
+export type StoredBandLayer = {
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "band";
+  "encode": BandEncodings;
+  "style"?: BandStyle;
+};
+
 export type StoredCell = {
   "first_epoch": string;
   "last_epoch": string;
@@ -4296,6 +4297,26 @@ export type StoredEpoch = {
 };
 
 export type StoredExpression = AuthoredExpressionValue;
+
+export type StoredFigureDocument = {
+  "data": Array<Name>;
+  "layout": StoredMembers_StoredFigurePanel__MinLen_min_length_1_;
+  "layers": StoredMembers_Annotated_Union_StoredLineLayer__StoredTrajectoryLayer__StoredBandLayer__StoredPointsLayer__StoredRuleLayer__StoredSpanLayer___FieldInfo_annotation_NoneType__required_True__discriminator__mark_____MinLen_min_length_1_;
+  "theme"?: Name;
+  "color_scales"?: Record<string, ContinuousColorScale | OrdinalColorScale>;
+  "view"?: FigureDocumentView;
+  "caption"?: string | null;
+};
+
+export type StoredFigurePanel = {
+  "row": number;
+  "col": number;
+  "title"?: string | null;
+  "axes_labels"?: AxisLabels | null;
+  "x_axis"?: PanelAxis | null;
+  "y_axis"?: PanelAxis | null;
+  "z_axis"?: PanelAxis | null;
+};
 
 export type StoredGraphInterior = {
   "components"?: StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____;
@@ -4331,6 +4352,16 @@ export type StoredLength = {
   "max_steps"?: number | null;
 };
 
+export type StoredLineLayer = {
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "line";
+  "encode": LineEncodings;
+  "style"?: LineStyle;
+};
+
 export type StoredMemberKey = string;
 
 export type StoredMembers_Annotated_Union_StoredDelayAttachment__StoredHoldAttachment__StoredInterventionAttachment__StoredProbeAttachment___FieldInfo_annotation_NoneType__required_True__discriminator__kind____ = Record<string, StoredDelayAttachment | StoredHoldAttachment | StoredInterventionAttachment | StoredProbeAttachment>;
@@ -4339,6 +4370,8 @@ export type StoredMembers_Annotated_Union_StoredInterventionAttachment__StoredPr
 
 export type StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____ = Record<string, StoredLeafComponent | StoredCompositeComponent>;
 
+export type StoredMembers_Annotated_Union_StoredLineLayer__StoredTrajectoryLayer__StoredBandLayer__StoredPointsLayer__StoredRuleLayer__StoredSpanLayer___FieldInfo_annotation_NoneType__required_True__discriminator__mark_____MinLen_min_length_1_ = Record<string, StoredLineLayer | StoredTrajectoryLayer | StoredBandLayer | StoredPointsLayer | StoredRuleLayer | StoredSpanLayer>;
+
 export type StoredMembers_ModelPhysicalConnection_ = Record<string, ModelPhysicalConnection>;
 
 export type StoredMembers_SetEntry_ = Record<string, SetEntry>;
@@ -4346,6 +4379,8 @@ export type StoredMembers_SetEntry_ = Record<string, SetEntry>;
 export type StoredMembers_StoredCell_ = Record<string, StoredCell>;
 
 export type StoredMembers_StoredEpoch__MinLen_min_length_1_ = Record<string, StoredEpoch>;
+
+export type StoredMembers_StoredFigurePanel__MinLen_min_length_1_ = Record<string, StoredFigurePanel>;
 
 export type StoredMembers_StoredModelWire_ = Record<string, StoredModelWire>;
 
@@ -4421,6 +4456,16 @@ export type StoredPhysicalPort = {
   "type": "translational" | "rotational" | "frame";
 };
 
+export type StoredPointsLayer = {
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "points";
+  "encode": PointsEncodings;
+  "style"?: PointsStyle;
+};
+
 export type StoredProbeAttachment = {
   "kind": "probe";
   "label": string;
@@ -4430,6 +4475,16 @@ export type StoredRepeat = {
   "first_epoch": string;
   "last_epoch": string;
   "count": StoredExpression;
+};
+
+export type StoredRuleLayer = {
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "rule";
+  "encode": RuleEncodings;
+  "style"?: LineStyle;
 };
 
 export type StoredSignal = {
@@ -4452,6 +4507,16 @@ export type StoredSignalOutput = {
   "type": SignalType;
 };
 
+export type StoredSpanLayer = {
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "span";
+  "encode": SpanEncodings;
+  "style"?: SpanStyle;
+};
+
 export type StoredTaskDocument = {
   "id": string;
   "variables": StoredMembers_StoredVariable_;
@@ -4464,6 +4529,16 @@ export type StoredTaskDocument = {
 };
 
 export type StoredTime = AuthoredExpressionText;
+
+export type StoredTrajectoryLayer = {
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "trajectory";
+  "encode": TrajectoryEncodings;
+  "style"?: LineStyle;
+};
 
 export type StoredUntil = {
   "kind"?: "until";
@@ -4516,6 +4591,12 @@ export type StudioAnalysisPlace = {
   "field"?: Pointer | null;
 };
 
+export type StudioAnalyzeAddFigureLayer = {
+  "kind": "add_figure_layer";
+  "view": string;
+  "layer": StoredLineLayer | StoredTrajectoryLayer | StoredBandLayer | StoredPointsLayer | StoredRuleLayer | StoredSpanLayer;
+};
+
 export type StudioAnalyzeAuthoring = {
   "revision": Sha256;
   "document": string;
@@ -4525,14 +4606,15 @@ export type StudioAnalyzeAuthoring = {
   "sources": Record<string, Record<string, Array<StepInput | OperationDataset>>>;
   "variables": Record<string, Record<string, Array<string>>>;
   "variable_names"?: Record<string, string>;
-  "figure": FigureDocument;
+  "figure": StoredFigureDocument;
+  "created_layer"?: StoredMemberKey | null;
   "changed"?: Array<Pointer>;
   "files"?: Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
-export type StudioAnalyzeChange = StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset;
+export type StudioAnalyzeChange = StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset | StudioAnalyzeAddFigureLayer;
 
 export type StudioAnalyzeEdit = {
   "kind": "edit";
@@ -4795,6 +4877,44 @@ export type StudioEvaluationPointProgress = {
   "status": "scored" | "failed";
 };
 
+export type StudioFieldFunction = {
+  "id": string;
+  "signature": string;
+  "label"?: string | null;
+  "parameters"?: Array<FunctionParameter>;
+  "display_class": FunctionClass;
+  "min_args": number;
+  "max_args": number | null;
+  "keywords"?: Array<string>;
+};
+
+export type StudioFieldName = {
+  "id": string;
+  "name": string;
+  "type": StudioFieldNameType;
+  "list_count"?: number | null;
+  "set_entry"?: SetVariableOrigin | null;
+};
+
+export type StudioFieldNameType = {
+  "base": ValueBase;
+  "shape"?: Array<number>;
+  "space"?: SignalSpace | null;
+};
+
+export type StudioFieldSite = {
+  "expected": ValueType;
+  "finest": Level;
+  "names"?: Array<StudioFieldName>;
+  "structural"?: boolean;
+  "list_count"?: number | null;
+  "repeat_count"?: number | null;
+  "kinds": Array<FieldKind>;
+  "functions": string;
+  "parts": Array<ExpressionPartSite>;
+  "name_paths"?: Record<string, Array<string>>;
+};
+
 export type StudioInputPlace = {
   "part": "input";
   "role": string;
@@ -4900,6 +5020,16 @@ export type StudioNewStepName = {
 export type StudioObjectivePlace = {
   "part": "objective";
   "document": string | null;
+};
+
+export type StudioObjectiveTerm = {
+  "measure": Expression;
+  "measure_type"?: ValueType;
+  "weight"?: Expression;
+  "reduction"?: Reduction;
+  "window"?: Window | null;
+  "enabled"?: boolean;
+  "label"?: string | null;
 };
 
 export type StudioOperationDatasetPage = {
@@ -5366,7 +5496,7 @@ export type StudioTaskCatalog = {
 
 export type StudioTaskChoice = {
   "document": string;
-  "problems": Array<Problem>;
+  "problem_indices": Array<number>;
 };
 
 export type StudioTaskPlace = {
@@ -5448,6 +5578,8 @@ export type StudioTrainingPlace = {
 };
 
 export type StudioTrialAuthoring = {
+  "sites"?: Record<string, StudioFieldSite>;
+  "function_lists"?: Record<string, Array<StudioFieldFunction>>;
   "revision": Sha256;
   "run": StudioSavedTrainKey;
   "expression_context": string;
@@ -5464,6 +5596,7 @@ export type StudioTrialAuthoring = {
   "set_fields"?: Array<StudioSetField>;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
+  "task_problems": Array<Problem>;
   "variables": Array<ScopedValue>;
   "signals": Array<ScopedValue>;
   "epochs": Array<StudioTrialEpoch>;
@@ -5544,7 +5677,7 @@ export type StudioTrialField = {
   "mixed"?: boolean;
   "unit"?: string | null;
   "conversion"?: TimeValue | null;
-  "site": SiteProjection;
+  "site": string;
   "sweep"?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   "selected_value"?: string | null;
   "can_sweep"?: boolean;
@@ -5572,7 +5705,7 @@ export type StudioTrialObjectiveSource = {
 
 export type StudioTrialObjectiveTermAdd = {
   "kind": "add_objective_term";
-  "term": StoredObjectiveTerm;
+  "term": StudioObjectiveTerm;
 };
 
 export type StudioTrialOutput = {
@@ -6013,6 +6146,7 @@ export const blankStoredTask = {
     "epoch": {
       "label": "epoch",
       "end": {
+        "kind": "length",
         "length": "1 s"
       }
     }
@@ -6027,7 +6161,9 @@ export const modelDocumentSchemaId = "feedbax.spec.model.v2";
 export const taskDocumentSchemaId = "feedbax.spec.task_document.v2";
 export const objectiveDocumentSchemaId = "feedbax.spec.objective_document.v2";
 export const setDocumentSchemaId = "feedbax.set_document.v2";
-export const loadedModelDocumentSchemaId = "feedbax.spec.loaded_model";
+export const analysisDocumentSchemaId = "feedbax.analysis_document.v2";
+export const figureDocumentSchemaId = "feedbax.figure_document.v2";
+export const loadedModelDocumentSchemaId = "feedbax.spec.loaded_model.v2";
 
 export const firstTrainTask: Document = {
   "schema": "feedbax.spec.task_document.v2",
@@ -8499,6 +8635,8 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
 export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(() =>
   z
     .object({
+      "sites": z.record(z.string(), StudioFieldSiteSchema).optional(),
+      "function_lists": z.record(z.string(), z.array(StudioFieldFunctionSchema)).optional(),
       "fields": z.array(ModelFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "created": z.array(CreateNamedDocumentSchema).optional(),
@@ -8610,7 +8748,7 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
       "conversion": TimeValueSchema.nullable().optional(),
-      "site": SiteProjectionSchema,
+      "site": z.string(),
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "can_sweep": z.boolean().optional(),
@@ -8631,7 +8769,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
       "conversion": TimeValueSchema.nullable().optional(),
-      "site": SiteProjectionSchema,
+      "site": z.string(),
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "can_sweep": z.boolean().optional(),
@@ -8655,7 +8793,7 @@ export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
       "conversion": TimeValueSchema.nullable().optional(),
-      "site": SiteProjectionSchema,
+      "site": z.string(),
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "can_sweep": z.boolean().optional(),
@@ -8685,6 +8823,8 @@ export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =
 export const TrainFieldResponseSchema: z.ZodType<TrainFieldResponse> = z.lazy(() =>
   z
     .object({
+      "sites": z.record(z.string(), StudioFieldSiteSchema).optional(),
+      "function_lists": z.record(z.string(), z.array(StudioFieldFunctionSchema)).optional(),
       "fields": z.array(TrainFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "created": z.array(CreateNamedDocumentSchema).optional(),
@@ -11275,7 +11415,6 @@ export const AddSetEntrySchema: z.ZodType<AddSetEntry> = z.lazy(() =>
 
 export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
   z.object({
-    "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AnalyzeDatasetInputSchema, AnalyzeModelInputSchema, AnalyzeTaskInputSchema])).optional(),
     "operations": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), OperationElementSchema).optional(),
     "views": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), FigureElementSchema).optional(),
@@ -11553,15 +11692,6 @@ export const ContentRefSchema: z.ZodType<ContentRef> = z.lazy(() =>
     "tree": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<ContentRef>;
-
-export const ContentTreeRefSchema: z.ZodType<ContentTreeRef> = z.lazy(() =>
-  z.object({
-    "schema_id": z.literal("feedbax.spec.content_tree_ref").optional(),
-    "schema_version": z.literal("feedbax.spec.content_tree_ref.v1").optional(),
-    "tree_id": z.string().regex(new RegExp("^content-tree://sha256/[0-9a-f]{64}$")),
-    "descriptor": ContentObjectRefSchema,
-  }).strict()
-) as unknown as z.ZodType<ContentTreeRef>;
 
 export const ContinuousColorScaleSchema: z.ZodType<ContinuousColorScale> = z.lazy(() =>
   z.object({
@@ -11886,7 +12016,6 @@ export const FieldValueSchema: z.ZodType<FieldValue> = z.lazy(() =>
 
 export const FigureDocumentSchema: z.ZodType<FigureDocument> = z.lazy(() =>
   z.object({
-    "schema_version": z.literal("feedbax.figure_document.v1").optional(),
     "data": z.array(NameSchema).min(1),
     "layout": z.array(FigurePanelSchema).min(1),
     "layers": z.array(z.union([LineLayerSchema, TrajectoryLayerSchema, BandLayerSchema, PointsLayerSchema, RuleLayerSchema, SpanLayerSchema])).min(1),
@@ -11894,6 +12023,7 @@ export const FigureDocumentSchema: z.ZodType<FigureDocument> = z.lazy(() =>
     "color_scales": z.record(NameSchema, z.union([ContinuousColorScaleSchema, OrdinalColorScaleSchema])).optional(),
     "view": FigureDocumentViewSchema.optional(),
     "caption": z.union([z.string(), z.null()]).optional(),
+    "schema_version": z.literal("feedbax.figure_document.v1").optional(),
   }).strict()
 ) as unknown as z.ZodType<FigureDocument>;
 
@@ -11919,7 +12049,7 @@ export const FigureDocumentViewSchema: z.ZodType<FigureDocumentView> = z.lazy(()
 
 export const FigureElementSchema: z.ZodType<FigureElement> = z.lazy(() =>
   z.object({
-    "figure": z.union([FigureDocumentSchema, FigureTemplateRefSchema, DocumentReferenceSchema]),
+    "figure": z.union([StoredFigureDocumentSchema, FigureTemplateRefSchema, DocumentReferenceSchema]),
     "label": z.string().min(1),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepInputSchema, OperationDatasetSchema])),
   }).strict()
@@ -12010,15 +12140,6 @@ export const ImportedModelProvenanceSchema: z.ZodType<ImportedModelProvenance> =
     "replicas": z.array(z.string().min(1)).min(1),
   }).strict()
 ) as unknown as z.ZodType<ImportedModelProvenance>;
-
-export const ImportedModelSourceSchema: z.ZodType<ImportedModelSource> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("imported"),
-    "model": ContentObjectRefSchema,
-    "weights": ContentTreeRefSchema,
-    "encoding": SemanticModelEncodingSchema,
-  }).strict()
-) as unknown as z.ZodType<ImportedModelSource>;
 
 export const IndexSelectionSchema: z.ZodType<IndexSelection> = z.lazy(() =>
   z.object({
@@ -12182,11 +12303,19 @@ export const LiteralValueSchema: z.ZodType<LiteralValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<LiteralValue>;
 
+export const LoadedModelAssetSchema: z.ZodType<LoadedModelAsset> = z.lazy(() =>
+  z.object({
+    "sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "size_bytes": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<LoadedModelAsset>;
+
 export const LoadedModelDocumentSchema: z.ZodType<LoadedModelDocument> = z.lazy(() =>
   z.object({
-    "schema_version": z.literal("feedbax.spec.loaded_model.v1"),
     "model": DocumentReferenceSchema,
-    "source": ImportedModelSourceSchema,
+    "model_revision": LoadedModelAssetSchema,
+    "weights": LoadedModelAssetSchema,
+    "encoding_sha256": Sha256Schema,
     "archive": z.union([ProjectModelArchiveSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<LoadedModelDocument>;
@@ -12882,12 +13011,6 @@ export const SelectedAxisValueProblemSchema: z.ZodType<SelectedAxisValueProblem>
   }).strict()
 ) as unknown as z.ZodType<SelectedAxisValueProblem>;
 
-export const SemanticModelEncodingSchema: z.ZodType<SemanticModelEncoding> = z.lazy(() =>
-  z.object({
-    "descriptor_sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-  }).strict()
-) as unknown as z.ZodType<SemanticModelEncoding>;
-
 export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
   z.object({
     "label": z.union([z.string().min(1), z.null()]).optional(),
@@ -13246,6 +13369,18 @@ export const StoredAddressedMembers_StoredMemberKey_Schema: z.ZodType<StoredAddr
   z.record(StoredModelAddressKeySchema, StoredMemberKeySchema)
 ) as unknown as z.ZodType<StoredAddressedMembers_StoredMemberKey_>;
 
+export const StoredBandLayerSchema: z.ZodType<StoredBandLayer> = z.lazy(() =>
+  z.object({
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("band"),
+    "encode": BandEncodingsSchema,
+    "style": BandStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredBandLayer>;
+
 export const StoredCellSchema: z.ZodType<StoredCell> = z.lazy(() =>
   z.object({
     "first_epoch": z.string(),
@@ -13287,6 +13422,30 @@ export const StoredEpochSchema: z.ZodType<StoredEpoch> = z.lazy(() =>
 export const StoredExpressionSchema: z.ZodType<StoredExpression> = z.lazy(() =>
   AuthoredExpressionValueSchema
 ) as unknown as z.ZodType<StoredExpression>;
+
+export const StoredFigureDocumentSchema: z.ZodType<StoredFigureDocument> = z.lazy(() =>
+  z.object({
+    "data": z.array(NameSchema).min(1),
+    "layout": StoredMembers_StoredFigurePanel__MinLen_min_length_1_Schema,
+    "layers": StoredMembers_Annotated_Union_StoredLineLayer__StoredTrajectoryLayer__StoredBandLayer__StoredPointsLayer__StoredRuleLayer__StoredSpanLayer___FieldInfo_annotation_NoneType__required_True__discriminator__mark_____MinLen_min_length_1_Schema,
+    "theme": NameSchema.optional(),
+    "color_scales": z.record(NameSchema, z.union([ContinuousColorScaleSchema, OrdinalColorScaleSchema])).optional(),
+    "view": FigureDocumentViewSchema.optional(),
+    "caption": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredFigureDocument>;
+
+export const StoredFigurePanelSchema: z.ZodType<StoredFigurePanel> = z.lazy(() =>
+  z.object({
+    "row": z.number().int().safe().gt(0),
+    "col": z.number().int().safe().gt(0),
+    "title": z.union([z.string(), z.null()]).optional(),
+    "axes_labels": z.union([AxisLabelsSchema, z.null()]).optional(),
+    "x_axis": z.union([PanelAxisSchema, z.null()]).optional(),
+    "y_axis": z.union([PanelAxisSchema, z.null()]).optional(),
+    "z_axis": z.union([PanelAxisSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredFigurePanel>;
 
 export const StoredGraphInteriorSchema: z.ZodType<StoredGraphInterior> = z.lazy(() =>
   z.object({
@@ -13336,6 +13495,18 @@ export const StoredLengthSchema: z.ZodType<StoredLength> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StoredLength>;
 
+export const StoredLineLayerSchema: z.ZodType<StoredLineLayer> = z.lazy(() =>
+  z.object({
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("line"),
+    "encode": LineEncodingsSchema,
+    "style": LineStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredLineLayer>;
+
 export const StoredMemberKeySchema: z.ZodType<StoredMemberKey> = z.lazy(() =>
   z.string().regex(new RegExp("^[A-Za-z_][A-Za-z0-9_-]*$"))
 ) as unknown as z.ZodType<StoredMemberKey>;
@@ -13352,6 +13523,10 @@ export const StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeC
   z.record(StoredMemberKeySchema, z.union([StoredLeafComponentSchema, StoredCompositeComponentSchema]))
 ) as unknown as z.ZodType<StoredMembers_Annotated_Union_StoredLeafComponent__StoredCompositeComponent___FieldInfo_annotation_NoneType__required_True__discriminator__kind____>;
 
+export const StoredMembers_Annotated_Union_StoredLineLayer__StoredTrajectoryLayer__StoredBandLayer__StoredPointsLayer__StoredRuleLayer__StoredSpanLayer___FieldInfo_annotation_NoneType__required_True__discriminator__mark_____MinLen_min_length_1_Schema: z.ZodType<StoredMembers_Annotated_Union_StoredLineLayer__StoredTrajectoryLayer__StoredBandLayer__StoredPointsLayer__StoredRuleLayer__StoredSpanLayer___FieldInfo_annotation_NoneType__required_True__discriminator__mark_____MinLen_min_length_1_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, z.union([StoredLineLayerSchema, StoredTrajectoryLayerSchema, StoredBandLayerSchema, StoredPointsLayerSchema, StoredRuleLayerSchema, StoredSpanLayerSchema])).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' })
+) as unknown as z.ZodType<StoredMembers_Annotated_Union_StoredLineLayer__StoredTrajectoryLayer__StoredBandLayer__StoredPointsLayer__StoredRuleLayer__StoredSpanLayer___FieldInfo_annotation_NoneType__required_True__discriminator__mark_____MinLen_min_length_1_>;
+
 export const StoredMembers_ModelPhysicalConnection_Schema: z.ZodType<StoredMembers_ModelPhysicalConnection_> = z.lazy(() =>
   z.record(StoredMemberKeySchema, ModelPhysicalConnectionSchema)
 ) as unknown as z.ZodType<StoredMembers_ModelPhysicalConnection_>;
@@ -13367,6 +13542,10 @@ export const StoredMembers_StoredCell_Schema: z.ZodType<StoredMembers_StoredCell
 export const StoredMembers_StoredEpoch__MinLen_min_length_1_Schema: z.ZodType<StoredMembers_StoredEpoch__MinLen_min_length_1_> = z.lazy(() =>
   z.record(StoredMemberKeySchema, StoredEpochSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' })
 ) as unknown as z.ZodType<StoredMembers_StoredEpoch__MinLen_min_length_1_>;
+
+export const StoredMembers_StoredFigurePanel__MinLen_min_length_1_Schema: z.ZodType<StoredMembers_StoredFigurePanel__MinLen_min_length_1_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredFigurePanelSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' })
+) as unknown as z.ZodType<StoredMembers_StoredFigurePanel__MinLen_min_length_1_>;
 
 export const StoredMembers_StoredModelWire_Schema: z.ZodType<StoredMembers_StoredModelWire_> = z.lazy(() =>
   z.record(StoredMemberKeySchema, StoredModelWireSchema)
@@ -13488,6 +13667,18 @@ export const StoredPhysicalPortSchema: z.ZodType<StoredPhysicalPort> = z.lazy(()
   }).strict()
 ) as unknown as z.ZodType<StoredPhysicalPort>;
 
+export const StoredPointsLayerSchema: z.ZodType<StoredPointsLayer> = z.lazy(() =>
+  z.object({
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("points"),
+    "encode": PointsEncodingsSchema,
+    "style": PointsStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredPointsLayer>;
+
 export const StoredProbeAttachmentSchema: z.ZodType<StoredProbeAttachment> = z.lazy(() =>
   z.object({
     "kind": z.literal("probe"),
@@ -13502,6 +13693,18 @@ export const StoredRepeatSchema: z.ZodType<StoredRepeat> = z.lazy(() =>
     "count": StoredExpressionSchema,
   }).strict()
 ) as unknown as z.ZodType<StoredRepeat>;
+
+export const StoredRuleLayerSchema: z.ZodType<StoredRuleLayer> = z.lazy(() =>
+  z.object({
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("rule"),
+    "encode": RuleEncodingsSchema,
+    "style": LineStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredRuleLayer>;
 
 export const StoredSignalSchema: z.ZodType<StoredSignal> = z.lazy(() =>
   z.object({
@@ -13529,6 +13732,18 @@ export const StoredSignalOutputSchema: z.ZodType<StoredSignalOutput> = z.lazy(()
   }).strict()
 ) as unknown as z.ZodType<StoredSignalOutput>;
 
+export const StoredSpanLayerSchema: z.ZodType<StoredSpanLayer> = z.lazy(() =>
+  z.object({
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("span"),
+    "encode": SpanEncodingsSchema,
+    "style": SpanStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredSpanLayer>;
+
 export const StoredTaskDocumentSchema: z.ZodType<StoredTaskDocument> = z.lazy(() =>
   z.object({
     "id": z.string(),
@@ -13545,6 +13760,18 @@ export const StoredTaskDocumentSchema: z.ZodType<StoredTaskDocument> = z.lazy(()
 export const StoredTimeSchema: z.ZodType<StoredTime> = z.lazy(() =>
   AuthoredExpressionTextSchema
 ) as unknown as z.ZodType<StoredTime>;
+
+export const StoredTrajectoryLayerSchema: z.ZodType<StoredTrajectoryLayer> = z.lazy(() =>
+  z.object({
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("trajectory"),
+    "encode": TrajectoryEncodingsSchema,
+    "style": LineStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredTrajectoryLayer>;
 
 export const StoredUntilSchema: z.ZodType<StoredUntil> = z.lazy(() =>
   z.object({
@@ -13615,6 +13842,14 @@ export const StudioAnalysisPlaceSchema: z.ZodType<StudioAnalysisPlace> = z.lazy(
   }).strict()
 ) as unknown as z.ZodType<StudioAnalysisPlace>;
 
+export const StudioAnalyzeAddFigureLayerSchema: z.ZodType<StudioAnalyzeAddFigureLayer> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("add_figure_layer"),
+    "view": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "layer": z.union([StoredLineLayerSchema, StoredTrajectoryLayerSchema, StoredBandLayerSchema, StoredPointsLayerSchema, StoredRuleLayerSchema, StoredSpanLayerSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeAddFigureLayer>;
+
 export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -13625,7 +13860,8 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "sources": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([StepInputSchema, OperationDatasetSchema])))),
     "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
     "variable_names": z.record(z.string(), z.string()).optional(),
-    "figure": FigureDocumentSchema,
+    "figure": StoredFigureDocumentSchema,
+    "created_layer": z.union([StoredMemberKeySchema, z.null()]).optional(),
     "changed": z.array(PointerSchema).optional(),
     "files": z.array(StudioProjectFilePatchSchema).optional(),
     "created": z.array(CreateNamedDocumentSchema).optional(),
@@ -13634,7 +13870,7 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
 ) as unknown as z.ZodType<StudioAnalyzeAuthoring>;
 
 export const StudioAnalyzeChangeSchema: z.ZodType<StudioAnalyzeChange> = z.lazy(() =>
-  z.union([StudioAnalyzeWireSchema, StudioAnalyzeEditSchema, StudioAnalyzeRemoveSchema, StudioAnalyzeResetSchema])
+  z.union([StudioAnalyzeWireSchema, StudioAnalyzeEditSchema, StudioAnalyzeRemoveSchema, StudioAnalyzeResetSchema, StudioAnalyzeAddFigureLayerSchema])
 ) as unknown as z.ZodType<StudioAnalyzeChange>;
 
 export const StudioAnalyzeEditSchema: z.ZodType<StudioAnalyzeEdit> = z.lazy(() =>
@@ -13976,6 +14212,52 @@ export const StudioEvaluationPointProgressSchema: z.ZodType<StudioEvaluationPoin
   }).strict()
 ) as unknown as z.ZodType<StudioEvaluationPointProgress>;
 
+export const StudioFieldFunctionSchema: z.ZodType<StudioFieldFunction> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "signature": z.string(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "parameters": z.array(FunctionParameterSchema).optional(),
+    "display_class": FunctionClassSchema,
+    "min_args": z.number().int().safe(),
+    "max_args": z.union([z.number().int().safe(), z.null()]),
+    "keywords": z.array(z.string()).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFieldFunction>;
+
+export const StudioFieldNameSchema: z.ZodType<StudioFieldName> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "type": StudioFieldNameTypeSchema,
+    "list_count": z.union([z.number().int().safe(), z.null()]).optional(),
+    "set_entry": z.union([SetVariableOriginSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFieldName>;
+
+export const StudioFieldNameTypeSchema: z.ZodType<StudioFieldNameType> = z.lazy(() =>
+  z.object({
+    "base": ValueBaseSchema,
+    "shape": z.array(z.number().int().safe()).optional(),
+    "space": z.union([SignalSpaceSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFieldNameType>;
+
+export const StudioFieldSiteSchema: z.ZodType<StudioFieldSite> = z.lazy(() =>
+  z.object({
+    "expected": ValueTypeSchema,
+    "finest": LevelSchema,
+    "names": z.array(StudioFieldNameSchema).optional(),
+    "structural": z.boolean().optional(),
+    "list_count": z.union([z.number().int().safe(), z.null()]).optional(),
+    "repeat_count": z.union([z.number().int().safe(), z.null()]).optional(),
+    "kinds": z.array(FieldKindSchema),
+    "functions": z.string(),
+    "parts": z.array(ExpressionPartSiteSchema),
+    "name_paths": z.record(z.string(), z.array(z.string())).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFieldSite>;
+
 export const StudioInputPlaceSchema: z.ZodType<StudioInputPlace> = z.lazy(() =>
   z.object({
     "part": z.literal("input"),
@@ -14120,6 +14402,18 @@ export const StudioObjectivePlaceSchema: z.ZodType<StudioObjectivePlace> = z.laz
     "document": z.union([z.string(), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<StudioObjectivePlace>;
+
+export const StudioObjectiveTermSchema: z.ZodType<StudioObjectiveTerm> = z.lazy(() =>
+  z.object({
+    "measure": ExpressionSchema,
+    "measure_type": ValueTypeSchema.optional(),
+    "weight": ExpressionSchema.optional(),
+    "reduction": ReductionSchema.optional(),
+    "window": z.union([WindowSchema, z.null()]).optional(),
+    "enabled": z.boolean().optional(),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioObjectiveTerm>;
 
 export const StudioOperationDatasetPageSchema: z.ZodType<StudioOperationDatasetPage> = z.lazy(() =>
   z.object({
@@ -14712,7 +15006,7 @@ export const StudioTaskCatalogSchema: z.ZodType<StudioTaskCatalog> = z.lazy(() =
 export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "problems": z.array(ProblemSchema),
+    "problem_indices": z.array(z.number().int().safe().min(0)),
   }).strict()
 ) as unknown as z.ZodType<StudioTaskChoice>;
 
@@ -14814,6 +15108,8 @@ export const StudioTrainingPlaceSchema: z.ZodType<StudioTrainingPlace> = z.lazy(
 
 export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.lazy(() =>
   z.object({
+    "sites": z.record(z.string(), StudioFieldSiteSchema).optional(),
+    "function_lists": z.record(z.string(), z.array(StudioFieldFunctionSchema)).optional(),
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
     "expression_context": z.string(),
@@ -14830,6 +15126,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "set_fields": z.array(StudioSetFieldSchema).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),
+    "task_problems": z.array(ProblemSchema),
     "variables": z.array(ScopedValueSchema),
     "signals": z.array(ScopedValueSchema),
     "epochs": z.array(StudioTrialEpochSchema),
@@ -14928,7 +15225,7 @@ export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
     "mixed": z.boolean().optional(),
     "unit": z.union([z.string(), z.null()]).optional(),
     "conversion": z.union([TimeValueSchema, z.null()]).optional(),
-    "site": SiteProjectionSchema,
+    "site": z.string(),
     "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
     "selected_value": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "can_sweep": z.boolean().optional(),
@@ -14962,7 +15259,7 @@ export const StudioTrialObjectiveSourceSchema: z.ZodType<StudioTrialObjectiveSou
 export const StudioTrialObjectiveTermAddSchema: z.ZodType<StudioTrialObjectiveTermAdd> = z.lazy(() =>
   z.object({
     "kind": z.literal("add_objective_term"),
-    "term": StoredObjectiveTermSchema,
+    "term": StudioObjectiveTermSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioTrialObjectiveTermAdd>;
 
@@ -15500,6 +15797,8 @@ export const contractSchemas = {
   ValidityAction: ValidityActionSchema,
   ValidityAcceptance: ValidityAcceptanceSchema,
   AnalysisDocument: AnalysisDocumentSchema,
+  FigureDocument: FigureDocumentSchema,
+  StoredFigureDocument: StoredFigureDocumentSchema,
   TaskDocument: TaskDocumentSchema,
   StoredTaskDocument: StoredTaskDocumentSchema,
   StoredObjectiveDocument: StoredObjectiveDocumentSchema,
@@ -15698,6 +15997,8 @@ export interface ContractTypeMap {
   ValidityAction: ValidityAction;
   ValidityAcceptance: ValidityAcceptance;
   AnalysisDocument: AnalysisDocument;
+  FigureDocument: FigureDocument;
+  StoredFigureDocument: StoredFigureDocument;
   TaskDocument: TaskDocument;
   StoredTaskDocument: StoredTaskDocument;
   StoredObjectiveDocument: StoredObjectiveDocument;

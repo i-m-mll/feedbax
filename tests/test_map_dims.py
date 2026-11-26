@@ -124,7 +124,7 @@ def test_a_dimensions_parameter_plans_a_request_per_other_label_and_a_figure_spl
     assert {label for entry in summary.entries for label in entry.coordinates} >= {"source", "model", "mass"}
     assert len(summary.entries) == 8
 
-    figure = base["documents"]["velocity-figure"]["payload"]["layers"][0]
+    figure = base["documents"]["velocity-figure"]["payload"]["layers"]["bounds"]
     figure["group"] = ["source", "model", "nothing"]
     (problem,) = (problem for problem in _compile(base).diagnostics if problem.step == "analyze")
     assert "nothing" in problem.detail
@@ -142,7 +142,6 @@ def _two_cards():
     analysis = documents["velocity-analysis"]["payload"]
     align = analysis["operations"].pop("align")
     documents["pair-analysis"] = {"label": "Pair analysis", "schema": documents["velocity-analysis"]["schema"], "payload": {
-        "schema_version": analysis["schema_version"],
         "inputs": {"left": {"kind": "dataset"}, "right": {"kind": "dataset"}},
         "operations": {
             f"align_{side}": deepcopy(align) | {"inputs": {"states": {"input": role}}}

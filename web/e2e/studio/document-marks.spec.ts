@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
-import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import type { BasedDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { applyTo } from './fixtures/controls';
 import { documentChoice } from './fixtures/members';
@@ -64,8 +64,7 @@ function modelView(page: Page) {
   return { primary, picker, menu, inspector, mass, card, open, setMass };
 }
 
-test('a based document marks the value it changes, and Reset of its only one gives the step its runs on the base', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a based document marks the value it changes, and Reset of its only one gives the step its runs on the base', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, requests, documents } = await project(request);
   const { picker, mass, open, setMass } = modelView(page);
 
@@ -91,8 +90,7 @@ test('a based document marks the value it changes, and Reset of its only one giv
   expect(await requests()).toEqual(initial);
 });
 
-test('an edit in an Evaluate step\'s Model view makes a document for the evaluation alone', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('an edit in an Evaluate step\'s Model view makes a document for the evaluation alone', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, requests, documents } = await project(request, [evaluation('check', 'train')]);
   const { picker, menu, mass, card, open, setMass } = modelView(page);
 
@@ -159,8 +157,7 @@ test('Detach of an evaluation\'s based Model is stored, marks the Evaluate\'s Mo
   await expect(header.getByRole('alert')).toHaveCount(0);
 });
 
-test('a second Evaluate step and a new Train step can each pick the evaluation\'s document', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a second Evaluate step and a new Train step can each pick the evaluation\'s document', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, saved } = await project(request, [evaluation('check', 'train'), evaluation('check-2', 'train', 'Check 2')]);
   const { picker, menu, open, setMass } = modelView(page);
   const reads = async (step: string) => {
@@ -186,8 +183,7 @@ test('a second Evaluate step and a new Train step can each pick the evaluation\'
   }
 });
 
-test('a Train step put in an Evaluate step\'s Model view takes the edit, and no document is made', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a Train step put in an Evaluate step\'s Model view takes the edit, and no document is made', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, requests, documents } = await project(request, [evaluation('check', 'train')]);
   const { picker, card, open, setMass } = modelView(page);
 
@@ -206,7 +202,6 @@ test('a Train step put in an Evaluate step\'s Model view takes the edit, and no 
 });
 
 test('an Evaluate step pointed at a Model document unrelated to its subject\'s cannot run, for that document', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot, runs, documents } = await project(request, [evaluation('check', 'train')]);
   const { picker, menu } = modelView(page);
 
@@ -232,8 +227,7 @@ test('an Evaluate step pointed at a Model document unrelated to its subject\'s c
   await expect(page.locator('[data-slot="primary"]').getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
 });
 
-test('a based Objective document marks the term value it changes, and Reset gives it the base\'s', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a based Objective document marks the term value it changes, and Reset gives it the base\'s', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, requests, documents } = await project(request);
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
   const picker = primary.locator('.studio-window-slot__header').getByRole('button', { name: /^Objective Document / });
@@ -266,7 +260,6 @@ test('a based Objective document marks the term value it changes, and Reset give
 });
 
 test('an attachment a based Model document adds is marked as authored there, and not in a document based on it', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot: seeded } = await project(request);
   const { snapshot } = await appendManagedFiles(request, seeded, [
     { kind: 'document', id: 'point-mass-2', document: {
@@ -303,7 +296,6 @@ test('an attachment a based Model document adds is marked as authored there, and
 });
 
 test('a based Training document marks the value it changes inside its field, and Reset on the mark gives it the base\'s', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot: seeded, saved, requests, documents } = await project(request);
   const keys = ['method', 'settings', 'training_config'] as const;
   const inline = (seeded.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
@@ -346,12 +338,11 @@ test('a based Training document marks the value it changes inside its field, and
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(batches).toHaveValue(base);
   await expect(batches).not.toHaveAccessibleDescription(/Changed/);
-  await expect.poll(async () => (await documents())['training-2']).toMatchObject({ differences: {} });
+  await expect.poll(async () => ((await documents())['training-2'] as BasedDocument).differences ?? {}).toEqual({});
   expect(await requests()).toEqual(initial);
 });
 
 test('a based Training document marks the class it changes, and Reset gives it the base\'s', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot: seeded, documents } = await project(request);
   const keys = ['method', 'settings', 'training_config'] as const;
   const inline = (seeded.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
@@ -385,7 +376,6 @@ test('a based Training document marks the class it changes, and Reset gives it t
 });
 
 test('an Evaluate step\'s Task edit marks the value its document changes, and Reset gives it the base\'s', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const files = (JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring')) as { kind: string; id: string }[])
     .filter(({ id }) => id !== 'conditions');
   const { snapshot, projectPath } = await seedManagedProject(request, [...files, evaluation('check', 'train')]);
@@ -413,11 +403,10 @@ test('an Evaluate step\'s Task edit marks the value its document changes, and Re
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(target).toHaveValue(base);
   await expect(target).not.toHaveAccessibleDescription('Changed by Check');
-  await expect.poll(async () => (await documents())[created[0]]).toMatchObject({ differences: {} });
+  await expect.poll(async () => ((await documents())[created[0]] as BasedDocument).differences ?? {}).toEqual({});
 });
 
-test('a narrowed edit for two of three readers makes one document, and later edits of the base reach it by the document rule', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a narrowed edit for two of three readers makes one document, and later edits of the base reach it by the document rule', { tag: '@slow' }, async ({ page, request }) => {
   const [...files] = await fixture('history-files');
   const sibling = files.at(-1) as { id: string; step: { base: { inline: { seed: number } } } };
   const third = structuredClone(sibling);
@@ -457,8 +446,7 @@ test('a narrowed edit for two of three readers makes one document, and later edi
   expect((await documents())['point-mass-2']).toMatchObject({ differences: {} });
 });
 
-test('a subject moved to a new document leaves its evaluation\'s document as it was, and picking the old one back restores the evaluation', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a subject moved to a new document leaves its evaluation\'s document as it was, and picking the old one back restores the evaluation', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, requests, documents } = await project(request, [evaluation('check', 'train')]);
   const { picker, menu, open, setMass } = modelView(page);
 

@@ -30,12 +30,13 @@ from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
 )
 from feedbax.contracts.project_sources import ValueSource, pointer
-from feedbax.contracts.project_storage import stored_keyed_collection
+from feedbax.contracts.project_storage import stored_keyed_collection, stored_project_value
+from feedbax.contracts.stored_regions import StoredRegionRegistries
 from feedbax.contracts.project_sweep import (
     AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
-from feedbax.contracts.stored_model import StoredModelDocument, model_keyed_collection
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, model_keyed_collection
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.project_members import generated_name, numbered_document_label
 from feedbax.project_folder import _free_member_name, document_file
@@ -899,13 +900,38 @@ def _member(payload: Any, parts: Sequence[str]) -> Any:
     return payload
 
 
+def model_content_edits(
+    before: Payload, after: Payload, base: Payload | None = None, *, components=None,
+) -> list[DocumentEdit]:
+    target = _in_form_of(before, after, base)
+    if base is not None:
+        restored = [
+            parts for path, change in diff(before, target).items()
+            if isinstance(change, SetDocumentValue)
+            and (parts := json_pointer_parts(path))[-4:-3] == ("components",)
+            and parts[-2:-1] == ("fields",)
+            and _member(base, parts) is _ABSENT
+        ]
+        if restored:
+            canonical = stored_project_value(
+                StoredModelDocument.model_validate(target), registries=StoredRegionRegistries(components=components),
+            )
+            for parts in restored:
+                if _member(canonical, parts) is _ABSENT:
+                    fields = _member(target, parts[:-1])
+                    del fields[parts[-1]]
+                    if not fields and _member(base, parts[:-1]) is _ABSENT:
+                        del _member(target, parts[:-2])["fields"]
+    return content_edits(before, target, schema_id=STORED_MODEL_DOCUMENT_SCHEMA_ID)
+
+
 def model_document_store(folders, project_id: str, project: Project, body, before: Payload, after: Payload) -> StoredEdit:
     """Store a Model edit of ``body.document`` by the document rule, after the request's step files."""
     head = StoredEdit(list(body.files), reached=frozenset(file.address.id for file in body.files))
     project = preview_authored_files(project, body.files)
     entry = project.documents[body.document]
     base = _composed(project, entry.base.document) if isinstance(entry, BasedDocument) else None
-    edits = content_edits(before, _in_form_of(before, after, base), schema_id=entry.schema_id)
+    edits = model_content_edits(before, after, base, components=folders.components)
     if body.step is None:
         return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set()).files)
     plan = folders.read_plan(project_id, revision=body.revision).plan
@@ -1245,6 +1271,8 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
     On one value of a named axis the value holds its differences from the document: on its patches when the axis is
     inline, on the set's entry when it reads a set, which is then an edit of the set for the chosen steps. Any other
     selection holds the change on the sweep's exception for it.
+
+    A named value can restore inherited order by dropping a removal, even when the row-relative edit needs Order.
     """
     step = body.step
     document = body.document
@@ -1252,14 +1280,14 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
         row.content, _in_form_of(row.content, after, _composed(project, document)),
         keyed_collection=model_keyed_collection,
     )
-    if any(isinstance(record, OrderDocumentMembers) for record in delta.values()):
-        raise ProjectFolderInvalid("Reorder members in the Model document. A run-scoped patch cannot store their order.")
     address = AuthoredFileAddress(kind="step", id=step)
     authored = project.steps[step]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
     stored = StoredEdit([], reached=frozenset({step}))
     named = selected_value(project, step, row.scope)
     if named is None:
+        if any(isinstance(record, OrderDocumentMembers) for record in delta.values()):
+            raise ProjectFolderInvalid("Reorder members in the Model document. A run-scoped patch cannot store their order.")
         writes = [
             OverridePatch(path=_payload_target(document, path), op="remove") if isinstance(record, RemoveDocumentValue)
             else OverridePatch(
@@ -1272,11 +1300,22 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
             stored = stored.then([_selection_file(address, raw, authored, row.scope, writes)])
     else:
         base = _composed(project, document)
+        previous = _value_differences(project, step, named, document)
         try:
-            edited = apply_differences(value_model(project, step, named, document), delta)
+            edited = apply_differences(
+                apply_differences(base, previous), delta, keyed_collection=model_keyed_collection,
+            )
+            restored = {
+                path for path, record in delta.items()
+                if isinstance(record, SetDocumentValue) and isinstance(previous.get(path), RemoveDocumentValue)
+            }
+            remaining = {path: record for path, record in previous.items() if path not in restored}
+            if restored and not diff(apply_differences(base, remaining), edited, keyed_collection=model_keyed_collection):
+                differences = remaining
+            else:
+                differences = diff(base, edited, keyed_collection=model_keyed_collection)
         except DifferenceNotApplied as error:
             raise ProjectFolderInvalid(f"The edit does not apply to the selected value: {error}") from error
-        differences = diff(base, edited, keyed_collection=model_keyed_collection)
         if any(isinstance(record, OrderDocumentMembers) for record in differences.values()):
             raise ProjectFolderInvalid("Reorder members in the Model document. A sweep value cannot store their order.")
         if named.set is None:

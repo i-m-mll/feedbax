@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
@@ -6,7 +6,6 @@ import { pick } from './fixtures/controls';
 test.use({ viewport: { width: 1440, height: 900 } });
 
 test('a Model value edit changes only its authored variant and keeps exact shared Train results', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(55_000);
   const id = await fixture('seed-variants', studio.home, 'model-variants');
   const projectPath = `/api/projects/${id}`;
   const trainPath = `${projectPath}/train-runs`;
@@ -43,7 +42,7 @@ test('a Model value edit changes only its authored variant and keeps exact share
   const accepted = await admission;
   expect(accepted.status(), await accepted.text()).toBe(202);
   expect(accepted.request().postDataJSON().run_keys).toEqual([{ variant: 'base', step: 'train', row: 'default' }]);
-  await expect(runs.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  await expect(runs.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   const initial = await rows(before.revision);
   expect(initial.base.result?.receipt.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
   for (const variant of ['compare', 'control']) {

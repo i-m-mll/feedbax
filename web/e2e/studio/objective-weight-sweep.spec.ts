@@ -18,8 +18,7 @@ async function twoTerms() {
 
 // Catches a Weight that refuses a sweep, a sweep stored at the term's position (it would follow Move Earlier to the
 // other term), an Inspector that shows the swept Weight without its values, and an Add Sweep that cannot reach a Weight.
-test("a Weight cell's sweep is an axis on the Train step, listed in the Inspector, that stays on its term", async ({ page, request }) => {
-  test.setTimeout(60_000);
+test("a Weight cell's sweep is an axis on the Train step, listed in the Inspector, that stays on its term", { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await twoTerms());
   const train = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project.steps!.train;
   await page.goto(`/?project=${snapshot.project_id}`);

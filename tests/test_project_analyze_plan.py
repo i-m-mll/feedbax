@@ -9,9 +9,10 @@ from pydantic import ValidationError
 import pytest
 
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.base import sha256_bytes
-from feedbax.contracts.figure_document import FigureDocument
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureDocument
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import BasedDocument, RootDocument, DocumentReference, Project, Step
 from feedbax.contracts.project_io import (
@@ -51,7 +52,7 @@ def _project() -> Project:
     project.documents["velocity-analysis"] = RootDocument.model_validate(
         {
             "label": "Velocity analysis",
-            "schema": "feedbax.analysis_document.v1",
+            "schema": ANALYSIS_SCHEMA,
             "payload": json.loads((_FIXTURES / "velocity-analysis.json").read_bytes()) | {
                 "inputs": {"states": {"kind": "dataset"}},
             },
@@ -60,20 +61,19 @@ def _project() -> Project:
     project.documents["velocity-figure"] = RootDocument.model_validate(
         {
             "label": "Velocity figure",
-            "schema": "feedbax.figure_document.v1",
+            "schema": STORED_FIGURE_DOCUMENT_SCHEMA_ID,
             "payload": {
                 "data": ["summary"],
                 "theme": "plotly_white",
-                "layout": [{"name": "velocity", "row": 1, "col": 1}],
-                "layers": [{
-                    "name": "bounds",
+                "layout": {"velocity": {"row": 1, "col": 1}},
+                "layers": {"bounds": {
                     "mark": "band",
                     "role": "summary",
                     "panel": "velocity",
                     "select": {"checkpoint": {"index": 0}},
                     "group": ["condition"],
                     "encode": {"x": "state_time", "y": "mean", "lower": "lower", "upper": "upper"},
-                }],
+                }},
             },
         }
     )
@@ -112,6 +112,7 @@ def _decode(plan, name):
 
 def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     project = _project()
+    project.documents["velocity-analysis"].payload["operations"]["summarize"]["params"]["bounds_scale"] = 1.5
     operations = _operations()
     upstream = project.model_copy(deep=True)
     upstream.steps.pop("analyze")
@@ -151,7 +152,7 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
         request_id=summary.id, role="summary"
     )
     assert row.elements[ElementKey(_KEY, "profile")].inputs["summary"][0].element == ElementKey(_KEY, "summarize")
-    assert figure.spec.document == FigureDocument.model_validate(project.documents["velocity-figure"].payload)
+    assert figure.spec.document == StoredFigureDocument.model_validate(project.documents["velocity-figure"].payload).lower()
     rollout = decode_request(plan.requests[evaluate.request_id], plan.documents.__getitem__)
     condition = RolloutParameters.model_validate(rollout.spec.params).condition_id()
     assert figure.spec.names["condition"] == {condition: "Baseline"}
@@ -248,7 +249,7 @@ def test_snapshot_names_follow_authored_edits_and_variant_overrides(tmp_path):
     project.documents["velocity-analysis"].payload["operations"]["align"]["label"] = "Align velocity"
     project.documents["broken-document"] = BasedDocument(
         label="Broken document",
-        schema="feedbax.figure_document.v1", base={"document": "absent-figure"},
+        schema=STORED_FIGURE_DOCUMENT_SCHEMA_ID, base={"document": "absent-figure"},
     )
     project.sweep = Sweep.model_validate({"rows": {
         "baseline": {},
@@ -289,7 +290,7 @@ def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(ho
     velocity = analysis["operations"]["align"]["params"]["velocity"]
     analysis["views"]["profile"] = {"label": "Profile", "figure": {"template": "feedbax.SpeedByTrial"}, "inputs": {}}
     summary = analysis["operations"]["summarize"]
-    summary["params"].pop("ddof")
+    summary.pop("params")
     analysis["views"]["summary"] = {
         "label": "Summary",
         "figure": {"template": "feedbax.VelocitySummary"}, "inputs": {},
@@ -330,10 +331,49 @@ def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(ho
         after = edit.json()
         assert after["document"] == after["created"][0]["id"] != before["document"]
         assert "/operations/trial_speed" in after["changed"]
+        assert after["created"][0]["document"]["differences"]["/operations/summarize/params"] == {"value": {"ddof": 0}}
         assert after["sources"]["profile"]["speed"] == [{"element": "trial_speed", "product": "speed"}]
         assert after["sources"]["summary"]["summary"] == [{"element": "summarize", "product": "summary"}]
         assert {problem["place"]["field"] for problem in after["problems"]} == {"/inputs/speed", "/inputs/summary"}
         assert client.get(url).json()["revision"] == revision
+
+
+def test_add_figure_layer_allocates_a_key_across_based_analyses(host, tmp_path, monkeypatch):
+    project = _project()
+    profile = project.documents["velocity-analysis"].payload["views"]["profile"]
+    profile["figure"] = deepcopy(project.documents["velocity-figure"].payload)
+    layer = {
+        "mark": "line", "role": "summary", "panel": "velocity",
+        "encode": {"x": "state_time", "y": "mean"}, "group": ["condition"],
+    }
+    project.documents["alternative"] = BasedDocument(
+        schema=ANALYSIS_SCHEMA, label="Alternative", base={"document": "velocity-analysis"},
+        differences={"/views/profile/figure/layers/line": {"value": layer}},
+    )
+    root = tmp_path / "reach"
+    for name, content in dump_text_project(project, ProjectConfiguration(project="reach", store="results")).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    url = "/api/projects/reach"
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        revision = client.get(url).json()["revision"]
+        response = client.post(f"{url}/authoring/analyze", json={
+            "revision": revision, "key": {"variant": "default", "step": "analyze", "row": "default"},
+            "change": {"kind": "add_figure_layer", "view": "profile", "layer": layer},
+        })
+        assert response.status_code == 200, response.text
+        edit = response.json()
+        assert "trial-summary" in edit["figure"]["layers"]
+        assert edit["created_layer"] == "line-2"
+        saved = client.patch(url, json={"revision": revision, "files": edit["files"], "created": edit["created"]})
+        assert saved.status_code == 200, saved.text
+        document = saved.json()["project"]["documents"]["velocity-analysis"]
+        layers = document["payload"]["views"]["profile"]["figure"]["layers"]
+        assert list(layers) == ["bounds", "line-2"] and layers["line-2"] == layer
+    runtime = _decode(compile_project(load_text_project(root).project, operations=_operations()), "profile")
+    assert [item.name for item in runtime.spec.document.layers] == ["bounds", "line-2"]
 
 
 def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
@@ -471,12 +511,38 @@ def test_named_figure_matches_inline_and_variant_edit_reaches_both_views():
         assert (source.kind, source.name, source.path) == ("variant", "dark", "/documents/velocity-figure/payload/theme")
 
 
+def test_figure_request_review_uses_keys_and_keeps_layer_order():
+    project = _project()
+    layers = project.documents["velocity-figure"].payload["layers"]
+    layers["zero"] = {"mark": "rule", "role": "summary", "panel": "velocity", "encode": {"axis": "y", "at": 0}}
+    operations = _operations()
+    before = compile_project(project, operations=operations, capture_sources=True)
+    profile = ElementKey(_KEY, "profile")
+    assert not before.diagnostics
+
+    edited = deepcopy(project)
+    edited.documents["velocity-figure"].payload["layers"]["bounds"]["style"] = {"line_dash": "dash"}
+    after = compile_project(edited, operations=operations, capture_sources=True)
+    change = diff_analyze_elements(before, after)[profile]
+    assert change.path == "payload.views.profile.figure.layers.bounds.style.line_dash"
+    assert change.after_source.path == "/layers/bounds/style/line_dash"
+
+    reordered = deepcopy(project)
+    reordered.documents["velocity-figure"].payload["layers"] = dict(reversed(list(layers.items())))
+    after_order = compile_project(reordered, operations=operations, capture_sources=True)
+    assert after_order.elements[profile].request_id != before.elements[profile].request_id
+    assert [layer.name for layer in _decode(after_order, "profile").spec.document.layers] == ["zero", "bounds"]
+    assert diff_analyze_elements(before, after_order)[profile].path == "payload.views.profile.figure.layers"
+
+
 def test_installed_figure_template_shares_identity_with_its_inline_figure():
     project = _project()
     authored = project.documents["velocity-figure"]
     profile = project.documents["velocity-analysis"].payload["views"]["profile"]
     saved_source = profile["figure"]
-    profile["figure"] = VelocitySummary(VelocitySummarySettings()).model_dump(mode="json", exclude_unset=True)
+    profile["figure"] = StoredFigureDocument.from_lowered(VelocitySummary(VelocitySummarySettings())).model_dump(
+        mode="json", exclude_unset=True,
+    )
     bundle = new_application_registry_bundle()
     bundle.seal()
     memo = ProjectPlanMemo()
@@ -522,7 +588,7 @@ def test_named_figure_pin_does_not_supply_an_external_train_base():
     raw = json.dumps(train.base.inline).encode()
     project.documents["train-pin"] = RootDocument.model_validate({
         "label": "Train pin",
-        "schema": "feedbax.figure_document.v1",
+        "schema": STORED_FIGURE_DOCUMENT_SCHEMA_ID,
         "payload": {"path": "train.json", "sha256": sha256_bytes(raw)},
     })
     project.steps["external"] = train.model_copy(update={"base": DocumentReference(document="train-pin")})
@@ -554,17 +620,13 @@ def test_refuses_named_figure_at_its_authored_field_and_keeps_inline_sibling():
         ResolutionCode.INVALID_DOCUMENT, "velocity-figure", "schema", "payload.views.profile.figure",
     )
 
-    figure.schema_id = "feedbax.figure_document.v1"
-    figure.payload["layers"][0].setdefault("style", {})["band_alpha"] = -1
+    figure.schema_id = STORED_FIGURE_DOCUMENT_SCHEMA_ID
+    figure.payload["layers"]["bounds"].setdefault("style", {})["band_alpha"] = -1
     malformed = compile_project(project, operations=operations)
-    problem, layers = malformed.diagnostics
+    (problem,) = malformed.diagnostics
     assert (problem.code, problem.document, problem.document_path, problem.path, problem.element) == (
-        ResolutionCode.INVALID_DOCUMENT, "velocity-figure", "payload.layers.0.style.band_alpha",
-        "payload.views.profile.figure.layers.0.style.band_alpha", "profile",
-    )
-    assert (layers.code, layers.document, layers.document_path, layers.path, layers.element) == (
-        ResolutionCode.INVALID_DOCUMENT, "velocity-figure", "payload.layers",
-        "payload.views.profile.figure.layers", "profile",
+        ResolutionCode.INVALID_DOCUMENT, "velocity-figure", "payload.layers.bounds.style.band_alpha",
+        "payload.views.profile.figure.layers.bounds.style.band_alpha", "profile",
     )
     for refused in (wrong_schema, malformed):
         assert set(refused.elements) == set(initial.elements) - {ElementKey(_KEY, "profile")}
@@ -597,13 +659,13 @@ def test_element_aliases_share_identity_and_refusals_name_the_authored_element()
 def test_figure_binding_fails_closed():
     project = _project()
     operations = _operations()
-    project.documents["velocity-figure"].payload["layers"][0]["encode"]["upper"] = "unknown_upper"
+    project.documents["velocity-figure"].payload["layers"]["bounds"]["encode"]["upper"] = "unknown_upper"
     refused = compile_project(project, operations=operations)
     (problem,) = refused.diagnostics
     assert (problem.document, problem.element, problem.path) == (
         "velocity-figure",
         "profile",
-        "payload.views.profile.figure.layers.0.encode.upper",
+        "payload.views.profile.figure.layers.bounds.encode.upper",
     )
     assert "upper" in problem.detail and "unknown_upper" in problem.detail
     assert len(refused.elements) == 2

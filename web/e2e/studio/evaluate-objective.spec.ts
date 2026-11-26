@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Page } from '@playwright/test';
 import type { StudioJobSubmission } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
@@ -26,7 +26,6 @@ const shownMeasures = async (page: Page) => {
 // Objective that the keyboard can reach, and a finished run whose terms have no Value or do not count the trials they cover.
 test("an Evaluate of a checkpoint reads its Train's Objective, and after the run each term's Value and Covered",
   { tag: '@round' }, async ({ page, studio }) => {
-    test.setTimeout(80_000);
     const projectId = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'objective'));
     await page.goto(`/?project=${encodeURIComponent(projectId)}`);
     await mapStep(page, 'train').click();
@@ -56,7 +55,7 @@ test("an Evaluate of a checkpoint reads its Train's Objective, and after the run
       const response = await accepted;
       expect(response.status(), await response.text()).toBe(202);
       expect((await response.json() as StudioJobSubmission).items[0].disposition).toBe('admitted');
-      await expect(plans.getByText('Done', { exact: true }).first()).toBeVisible({ timeout: 25_000 });
+      await expect(plans.getByText('Done', { exact: true }).first()).toBeVisible({ timeout: jobTimeout });
     }
     await plans.getByRole('button', { name: /^\d+ Baseline$/ }).click();
     await tab(page, 'Objective').click();

@@ -4,9 +4,9 @@ from collections.abc import Callable
 
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
-from feedbax.contracts.analysis_document import AnalysisDocument, DatasetSource, OperationDataset, StepInput
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, AnalysisDocument, DatasetSource, OperationDataset, StepInput
 from feedbax.contracts.dataset import FieldDescriptor
-from feedbax.contracts.figure_document import FigureDocument, FigureTemplateRef, validate_figure_bindings
+from feedbax.contracts.figure_document import FigureTemplateRef, StoredFigureDocument, validate_figure_bindings
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.model_document import ModelDocument
@@ -20,26 +20,29 @@ from feedbax.contracts.operation import (
     require_dataset_port,
 )
 from feedbax.contracts.project import (
-    DocumentReference, DocumentEdit, LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue,
-    member_name,
+    DocumentReference, DocumentEdit, LoadedModelDocument, Payload, Project, RemoveProjectValue, SetProjectValue,
+    base_chain, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_inputs import StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
 from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.project_storage import stored_project_value
 from feedbax.contracts.semantic_values import model_state_address
 from feedbax.contracts.studio_analyze import (
+    StudioAnalyzeAddFigureLayer,
     StudioAnalyzeAuthoring,
-    StudioAnalyzeChange,
     StudioAnalyzeEdit,
     StudioAnalyzeRemove,
     StudioAnalyzeRequest,
+    StudioAnalyzeReset,
     StudioAnalyzeWire,
 )
 from feedbax.contracts.studio_place import path_parts, task_start
 from feedbax.jobs import JobConflict, JobNotFound
 from feedbax.planner.project_plan import EVALUATION_MODEL, PlannedAnalyzeRun, PlannedRun, ProjectPlan, RunKey, compile_project
 from feedbax.plot.templates import FigureTemplateRegistry
+from feedbax.project_members import generated_name
 from feedbax.web.services.authored_scope import preview_plan
 from feedbax.web.services.project_folder import ProjectFolderInvalid
 from feedbax.web.services.project_plan import ProjectPlanRead, ProjectPlanService
@@ -118,14 +121,15 @@ def _sources(
 
     for name, view in analysis.views.items():
         figure = row.figures.get(name) if row is not None else None
-        if figure is None and isinstance(view.figure, FigureTemplateRef):
+        if figure is None:
             try:
-                template = templates.resolve(view.figure.template)
-                figure = template.function(template.settings_model.model_validate(view.figure.settings))
+                if isinstance(view.figure, FigureTemplateRef):
+                    template = templates.resolve(view.figure.template)
+                    figure = template.function(template.settings_model.model_validate(view.figure.settings))
+                elif isinstance(view.figure, StoredFigureDocument):
+                    figure = view.figure.lower()
             except (KeyError, ValueError):
                 continue
-        if figure is None and isinstance(view.figure, FigureDocument):
-            figure = view.figure
         if figure is None:
             continue
         for role in figure.data:
@@ -214,12 +218,50 @@ def _review_wire(
             raise ValueError(problem.detail)
 
 
+def _parameter_edits(payload: Payload, edits: list[DocumentEdit], registry: OperationRegistry) -> list[DocumentEdit]:
+    """Give the first parameter write a container when its defaults were omitted."""
+    operations = payload.get("operations", {})
+    if not isinstance(operations, dict):
+        return edits
+    operations = dict(operations)
+    present = {key for key, value in operations.items() if isinstance(value, dict) and "params" in value}
+    adapted = []
+    for edit in edits:
+        match json_pointer_parts(edit.path):
+            case ("operations", key):
+                if isinstance(edit, SetProjectValue) and isinstance(edit.value, dict):
+                    operations[key] = edit.value
+                    present.discard(key)
+                    if "params" in edit.value:
+                        present.add(key)
+                elif isinstance(edit, RemoveProjectValue):
+                    operations.pop(key, None)
+                    present.discard(key)
+            case ("operations", key, "params"):
+                if isinstance(edit, SetProjectValue):
+                    present.add(key)
+                elif isinstance(edit, RemoveProjectValue):
+                    present.discard(key)
+            case ("operations", key, "params", *_):
+                operation = operations.get(key)
+                if isinstance(edit, SetProjectValue) and key not in present and isinstance(operation, dict):
+                    try:
+                        registry.resolve(operation["operation"])
+                    except KeyError:
+                        pass
+                    else:
+                        adapted.append(SetProjectValue(op="add", path=pointer(("operations", key, "params")), value={}))
+                        present.add(key)
+        adapted.append(edit)
+    return adapted
+
+
 def analyze_edit(
     project: Project,
     plan: ProjectPlan,
     key: RunKey,
     document: str,
-    change: StudioAnalyzeChange,
+    change: StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset,
     chosen: frozenset[str],
     registry: OperationRegistry,
     states: DatasetPort | None,
@@ -249,7 +291,9 @@ def analyze_edit(
         edits = _removal(_analysis(project, document), change.element)
     else:
         edits = base_value_edits(project, document, change.paths)
-    stored = document_write(project, document, edits, chosen, users)
+    stored = document_write(
+        project, document, edits, chosen, users, adapt=lambda payload: _parameter_edits(payload, edits, registry),
+    )
     if not (stored.files or stored.created):
         return stored, plan
     candidate = preview_stored(project, stored)
@@ -257,6 +301,27 @@ def analyze_edit(
     if family is not None:
         _review_wire(reviewed, key, analysis, family, change, states)
     return stored, reviewed
+
+
+def _add_figure_layer(
+    project: Project, document: str, change: StudioAnalyzeAddFigureLayer,
+) -> tuple[str, StudioAnalyzeEdit]:
+    view = _analysis(project, document).views.get(change.view)
+    if view is None or not isinstance(view.figure, StoredFigureDocument):
+        raise ValueError("Select a view with an inline Figure.")
+    used = set(view.figure.layers)
+    for name in project.documents:
+        if name != document and document in base_chain(project.documents, name):
+            based = _catalog_analysis(project, name)
+            child = based.views.get(change.view) if based is not None else None
+            if child is not None and isinstance(child.figure, StoredFigureDocument):
+                used.update(child.figure.layers)
+    key = generated_name(change.layer.mark, used.__contains__)
+    edit = SetProjectValue(
+        op="add", path=pointer(("views", change.view, "figure", "layers", key)),
+        value=stored_project_value(change.layer),
+    )
+    return key, StudioAnalyzeEdit(kind="edit", edits=[edit])
 
 
 def _variable_choices(
@@ -414,7 +479,7 @@ def analyze_authoring(
     ):
         raise ProjectFolderInvalid(f"{member_name(project.steps, key.step)} has no named Analysis document.")
     document = None if step.base.unresolved else project.documents.get(step.base.document)
-    if body.change and (document is None or document.schema_id != "feedbax.analysis_document.v1"):
+    if body.change and (document is None or document.schema_id != ANALYSIS_SCHEMA):
         raise ProjectFolderInvalid("The selected step has no saved analysis document.")
     bound = step.inputs.get("states")
     references = bound if isinstance(bound, list) else [] if bound is None else [bound]
@@ -451,9 +516,13 @@ def analyze_authoring(
         definitions = list(registry.definitions())
         stored = StoredEdit([])
         saved_document = step.base.document
-        if body.change:
+        change = body.change
+        created_layer = None
+        if isinstance(change, StudioAnalyzeAddFigureLayer):
+            created_layer, change = _add_figure_layer(project, saved_document, change)
+        if change:
             stored, plan = analyze_edit(
-                project, plan, key, saved_document, body.change, frozenset(body.chosen_steps), registry, states,
+                project, plan, key, saved_document, change, frozenset(body.chosen_steps), registry, states,
                 compile_candidate=lambda candidate: preview_plan(service.folders, settled, candidate),
             )
             if stored.files or stored.created:
@@ -489,7 +558,8 @@ def analyze_authoring(
         sources=sources,
         variables=variables,
         variable_names=_variable_names(variables, states, models, task_names),
-        figure=VelocitySummary(VelocitySummarySettings()),
+        figure=StoredFigureDocument.from_lowered(VelocitySummary(VelocitySummarySettings())),
+        created_layer=created_layer if stored.files or stored.created else None,
         changed=changed_from_base(project, saved_document),
         files=stored.files,
         created=list(stored.created),

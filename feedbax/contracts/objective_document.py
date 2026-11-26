@@ -40,8 +40,11 @@ class _TermIdentity(ValueRecord):
     id: str
 
 
-class ObjectiveTerm(_TermFields[Expression, Window], _TermIdentity):
+class ObjectiveTermValue(_TermFields[Expression, Window]):
     weight: Expression = LiteralValue(value=1)
+
+
+class ObjectiveTerm(ObjectiveTermValue, _TermIdentity):
     name: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
 
 
@@ -88,3 +91,15 @@ class StoredObjectiveDocument(ValueRecord):
         return project_member(objective, cls, {
             "terms": lambda terms: keyed_members((term.id, StoredObjectiveTerm.from_lowered(term)) for term in terms),
         })
+
+
+def objective_weight_title(payload: object, path: tuple[str, ...]) -> str | None:
+    """Name a scalar Weight axis by the current label of its Objective term."""
+    if len(path) not in (3, 4) or path[0] != "terms" or path[2] != "weight" or path[3:] not in ((), ("value",)):
+        return None
+    terms = payload.get("terms") if isinstance(payload, dict) else None
+    term = terms.get(path[1]) if isinstance(terms, dict) else None
+    if not isinstance(term, dict):
+        return None
+    label = term.get("label") or path[1].replace("-", " ").replace("_", " ").capitalize()
+    return f"{label} weight"

@@ -10,7 +10,7 @@ import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('authors an ordered shared Report from a planned Analyze figure', async ({ page, request, studio }, info) => {
+test('authors an ordered shared Report from a planned Analyze figure', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const home = studio.home;
   const module = 'web.e2e.studio.fixtures.managed_report';
   const project = JSON.parse(await runProjectFixture(module, 'seed', home, 'managed-report'));

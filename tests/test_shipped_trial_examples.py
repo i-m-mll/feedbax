@@ -1,5 +1,6 @@
 """Exercise the installed examples through ordinary project and training entry points."""
 
+import json
 from math import isfinite
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import numpy as np
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.project import RootDocument
 from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
@@ -29,6 +31,19 @@ from feedbax.host.model_checkpoint import SemanticModelSlot, SemanticModelWriter
 _VALIDATION_COUNTS = {"simple-reaches": 28, "delayed-reaches": 28, "stabilization": 4}
 _REACH_TERMS = {"effector_position", "effector_final_velocity", "nn_hidden", "nn_output"}
 _POINT_MASS_REFERENCE = Path(__file__).parent / "fixtures" / "point_mass_one_update.npz"
+
+
+def test_studio_can_author_the_generated_blank_documents():
+    source = Path(__file__).resolve().parents[1] / "web/src/generated/studioContracts.ts"
+    generated = source.read_text()
+    for name, schema in (
+        ("blankStoredModel", STORED_MODEL_DOCUMENT_SCHEMA_ID),
+        ("blankStoredTask", STORED_TASK_DOCUMENT_SCHEMA_ID),
+        ("blankStoredObjective", STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID),
+    ):
+        data = generated.split(f"export const {name} = ", 1)[1]
+        payload, _ = json.JSONDecoder().raw_decode(data)
+        RootDocument(schema=schema, label="Blank", payload=payload)
 
 
 def test_shipped_trial_documents_have_unique_names():

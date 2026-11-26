@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
+from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef, ContentTreeRef
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
@@ -13,8 +13,7 @@ from feedbax.contracts.request_refs import Name, ReferenceValue, Sha256
 from feedbax.contracts.strict_json import strict_json_loads
 
 
-LOADED_MODEL_SCHEMA_ID = "feedbax.spec.loaded_model"
-LOADED_MODEL_SCHEMA_VERSION = "feedbax.spec.loaded_model.v1"
+LOADED_MODEL_SCHEMA_ID = "feedbax.spec.loaded_model.v2"
 IMPORTED_MODEL_MEDIA_TYPE = "application/vnd.feedbax.imported-model+json"
 
 
@@ -34,6 +33,22 @@ def decode_imported_model_document(raw: bytes) -> ModelDocument:
     if encode_imported_model_document(model) != raw:
         raise ValueError("Imported Model must use its canonical scientific projection")
     return model
+
+
+class LoadedModelAsset(StrictModel):
+    """The authored pin of an immutable object."""
+
+    sha256: Sha256
+    size_bytes: Annotated[int, Field(ge=0)]
+
+    def lower(self) -> ContentObjectRef:
+        return ContentObjectRef(
+            object_id=f"{CONTENT_OBJECT_REF_PREFIX}{self.sha256}", sha256=self.sha256, size_bytes=self.size_bytes,
+        )
+
+    @classmethod
+    def from_ref(cls, ref: ContentObjectRef) -> "LoadedModelAsset":
+        return cls(sha256=ref.sha256, size_bytes=ref.size_bytes)
 
 
 class ImportedModelSource(ReferenceValue):

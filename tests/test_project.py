@@ -4,7 +4,6 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.base import sha256_bytes
-from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA
 from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project, RootDocument
 from feedbax.contracts.project_io import (
@@ -427,15 +426,15 @@ def test_document_base_follows_root_alias_before_deltas():
         {
             "documents": {
                 "condition": _training_document("Condition", {"gain": 3}),
-                "alias": {"label": "Alias", "schema": FIGURE_DOCUMENT_SCHEMA, "payload": {
-                    "document": "condition", "pointer": "/settings",
-                }},
+                "alias": _training_document("Alias", {
+                    "target": {"document": "condition", "pointer": "/settings"},
+                }),
             },
             "steps": {
                 "evaluate": {
                     "label": "Evaluate",
                     "kind": "evaluate",
-                    "base": {"document": "alias"},
+                    "base": {"document": "alias", "pointer": "/settings/target"},
                     "deltas": [
                         {"layer_id": "higher-gain", "patches": [{"path": "gain", "value": 6}]}
                     ],

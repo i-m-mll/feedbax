@@ -40,7 +40,7 @@ class InitialModelSource(ReferenceValue):
 
     def encode(self) -> bytes:
         projection = self.model_dump(mode="json")
-        projection["document"] = self.document.scientific_projection()
+        projection["document"] = self.document.scientific_projection(keyed_root_ports=True)
         return canonical_json_v2_bytes(projection)
 
     @classmethod
@@ -49,7 +49,7 @@ class InitialModelSource(ReferenceValue):
         if not isinstance(projection, dict) or not isinstance(projection.get("document"), dict):
             raise ValueError("Invalid initial Model source")
         try:
-            restore_model_display_names(projection["document"])
+            restore_model_display_names(projection["document"], keyed_root_ports=True)
         except (AttributeError, KeyError, TypeError) as error:
             raise ValueError("Invalid initial Model document projection") from error
         source = cls.model_validate(projection)
@@ -98,7 +98,7 @@ def authored_document_input(
 
         if document.schema_id != LOADED_MODEL_SCHEMA_ID:
             raise ValueError("Loaded model input requires a Loaded Model document")
-        return LoadedModelDocument.model_validate(document.payload).source
+        return LoadedModelDocument.model_validate(document.payload).lower()
     if isinstance(reference, ObjectiveDocumentReference):
         if document.schema_id != STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID:
             raise ValueError("Objective input requires an Objective document")
