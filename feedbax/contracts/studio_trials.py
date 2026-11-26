@@ -12,7 +12,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
     AxisValueRuns, ListedRuns, StudioEvaluateValueSource,
 )
-from feedbax.contracts.objective_document import StoredObjectiveDocument, StoredObjectiveTerm
+from feedbax.contracts.objective_document import ObjectiveTermValue, StoredObjectiveDocument
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
@@ -69,11 +69,17 @@ class StudioTrialDocumentEdit(StrictModel):
     edits: list[ProjectValueEdit] = Field(min_length=1)
 
 
+class StudioObjectiveTerm(ObjectiveTermValue):
+    """The typed editor value of a new Objective term."""
+
+    label: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
+
+
 class StudioTrialObjectiveTermAdd(StrictModel):
     """Add an Objective term under a key allocated by the Service."""
 
     kind: Literal["add_objective_term"]
-    term: StoredObjectiveTerm
+    term: StudioObjectiveTerm
 
 
 class StudioTrialDocumentReset(StrictModel):

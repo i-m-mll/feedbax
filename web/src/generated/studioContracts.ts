@@ -4902,6 +4902,16 @@ export type StudioObjectivePlace = {
   "document": string | null;
 };
 
+export type StudioObjectiveTerm = {
+  "measure": Expression;
+  "measure_type"?: ValueType;
+  "weight"?: Expression;
+  "reduction"?: Reduction;
+  "window"?: Window | null;
+  "enabled"?: boolean;
+  "label"?: string | null;
+};
+
 export type StudioOperationDatasetPage = {
   "field": Name;
   "offset": DimensionSize;
@@ -5572,7 +5582,7 @@ export type StudioTrialObjectiveSource = {
 
 export type StudioTrialObjectiveTermAdd = {
   "kind": "add_objective_term";
-  "term": StoredObjectiveTerm;
+  "term": StudioObjectiveTerm;
 };
 
 export type StudioTrialOutput = {
@@ -14121,6 +14131,18 @@ export const StudioObjectivePlaceSchema: z.ZodType<StudioObjectivePlace> = z.laz
   }).strict()
 ) as unknown as z.ZodType<StudioObjectivePlace>;
 
+export const StudioObjectiveTermSchema: z.ZodType<StudioObjectiveTerm> = z.lazy(() =>
+  z.object({
+    "measure": ExpressionSchema,
+    "measure_type": ValueTypeSchema.optional(),
+    "weight": ExpressionSchema.optional(),
+    "reduction": ReductionSchema.optional(),
+    "window": z.union([WindowSchema, z.null()]).optional(),
+    "enabled": z.boolean().optional(),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioObjectiveTerm>;
+
 export const StudioOperationDatasetPageSchema: z.ZodType<StudioOperationDatasetPage> = z.lazy(() =>
   z.object({
     "field": NameSchema,
@@ -14962,7 +14984,7 @@ export const StudioTrialObjectiveSourceSchema: z.ZodType<StudioTrialObjectiveSou
 export const StudioTrialObjectiveTermAddSchema: z.ZodType<StudioTrialObjectiveTermAdd> = z.lazy(() =>
   z.object({
     "kind": z.literal("add_objective_term"),
-    "term": StoredObjectiveTermSchema,
+    "term": StudioObjectiveTermSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioTrialObjectiveTermAdd>;
 

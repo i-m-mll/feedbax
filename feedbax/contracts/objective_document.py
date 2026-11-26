@@ -40,8 +40,11 @@ class _TermIdentity(ValueRecord):
     id: str
 
 
-class ObjectiveTerm(_TermFields[Expression, Window], _TermIdentity):
+class ObjectiveTermValue(_TermFields[Expression, Window]):
     weight: Expression = LiteralValue(value=1)
+
+
+class ObjectiveTerm(ObjectiveTermValue, _TermIdentity):
     name: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
 
 
