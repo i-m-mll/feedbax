@@ -95,7 +95,7 @@ interface ReplayTarget extends ReplayContent {
   readonly content?: string;
 }
 
-export type ProjectEditValidation = (before: AuthoredProject, after: AuthoredProject) => void;
+export type ProjectEditValidation = (before: AuthoredProject, after: AuthoredProject, direction: PendingEdit['direction']) => void;
 
 interface History {
   readonly undo: readonly Gesture[];
@@ -837,7 +837,7 @@ export class ProjectEditController {
             pending.settle(savedEdit);
             continue;
           }
-          pending.gesture.validate?.(base, applied.project);
+          pending.gesture.validate?.(base, applied.project, pending.direction);
           const edits = [{ address, patches: applied.edits }];
           const adjusted = sameFile ? gesture : { ...gesture, files: edits, inverse: [{ address, patches: applied.inverse }] };
           const direction = sameFile ? pending.direction : 'edit';
@@ -902,7 +902,7 @@ export class ProjectEditController {
     files: readonly StudioProjectFilePatch[],
     project: ProjectEditContent,
   ) {
-    gesture.validate?.(this.draft, project);
+    gesture.validate?.(this.draft, project, direction);
     this.outsideBurst = undefined;
     const historyAfter = moveHistory(this.history, gesture, direction);
     let settle!: PendingEdit['settle'];

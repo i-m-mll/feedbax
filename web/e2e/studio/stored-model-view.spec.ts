@@ -117,8 +117,8 @@ test('authors and reopens an addressed Model through the project history', { tag
     initial_source: { kind: 'wire', source: { owner: 'component', component: component.id, port: 'hidden' } },
   });
   await model.focus();
-  const undone = await apply(() => page.keyboard.press('Meta+Z'), 'undo');
-  expect(stored(undone.snapshot).interior.wires?.[wire.id].attachments?.[0]).not.toHaveProperty('initial_source');
+  await apply(() => page.keyboard.press('Meta+Z'), 'undo');
+  await expect(inspector.getByRole('button', { name: 'Initial kind: Value', exact: true })).toBeVisible();
   await model.focus();
   const redone = await apply(() => page.keyboard.press('Meta+Shift+Z'), 'undo');
   expect(stored(redone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({

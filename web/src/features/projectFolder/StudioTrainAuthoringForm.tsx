@@ -67,19 +67,12 @@ function validateRecipe(
     bases.push({ kind: 'step', id: source.step });
     source = authored.steps?.[source.step]?.base;
   }
-  let edited: AuthoredProject | undefined;
-  const sameStep = (a: AuthoredProject, b: AuthoredProject) => sameAuthoredFile(a, b, address);
-  return (before, after) => {
-    if (JSON.stringify(before.sweep) !== JSON.stringify(authored.sweep) ||
+  return (before, _after, direction) => {
+    // Replaying an acknowledged gesture uses the saved revision. The writer can omit defaults from its optimistic form.
+    if ((direction === 'edit' && !sameAuthoredFile(before, authored, address)) ||
+        JSON.stringify(before.sweep) !== JSON.stringify(authored.sweep) ||
         documents.some((id) => JSON.stringify(before.documents?.[id]) !== JSON.stringify(authored.documents?.[id])) ||
         bases.some((base) => !sameAuthoredFile(before, authored, base))) {
-      throw new ProjectEditConflictError();
-    }
-    if (!edited && sameStep(before, authored)) {
-      edited = after;
-    } else if (!edited ||
-               !(sameStep(before, authored) && sameStep(after, edited) ||
-                 sameStep(before, edited) && sameStep(after, authored))) {
       throw new ProjectEditConflictError();
     }
   };
