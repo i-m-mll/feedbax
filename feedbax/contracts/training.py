@@ -83,6 +83,7 @@ class TrialDocuments(StrictModel):
 
 def lower_stored_trial_documents(
     value: object, *, components: ComponentRegistry | None = None, first: bool = False,
+    objective: ObjectiveDocument | None = None,
 ) -> TrialDocuments:
     """Lower resolved authored Train slots once, before pairing and request encoding."""
     if not isinstance(value, dict):
@@ -91,5 +92,5 @@ def lower_stored_trial_documents(
     return TrialDocuments.model_validate(value | {
         "model": StoredModelDocument.model_validate(value.get("model")).lower(components),
         "task": StoredTaskDocument.model_validate(task).lower(first=first) if task is not None else None,
-        "objective": StoredObjectiveDocument.model_validate(value.get("objective")).lower(),
+        "objective": objective if objective is not None else StoredObjectiveDocument.model_validate(value.get("objective")).lower(first=first),
     })

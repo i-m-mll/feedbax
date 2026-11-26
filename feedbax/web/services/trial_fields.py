@@ -7,17 +7,21 @@ from typing import TypeGuard
 
 from pydantic import BaseModel
 
+from feedbax.contracts.expression_check import infer_constant_type
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
-    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, SequenceValue, Site, SweepList,
+    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, SequenceValue, Site, SweepList,
     SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.expression_site import read_field
-from feedbax.contracts.expression_text import ParsedField, print_stored_expression
+from feedbax.contracts.expression_text import ParsedField, parse_sequence_rule, print_stored_expression
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.member_family import ExpandedFamilyMember, FamilyProblem, NamedIndexValue, expand_family
 from feedbax.contracts.matrix_core import prepare_stored_patch
-from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, objective_weight_title
+from feedbax.contracts.objective_document import (
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, StoredObjectiveDocument, objective_weight_title,
+)
 from feedbax.contracts.project import Payload, SetProjectValue, Step
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_storage import stored_expression_site
@@ -34,7 +38,7 @@ from feedbax.web.services.project_folder import ProjectFolderInvalid
 type FieldPath = tuple[str, ...]
 """A path into a document's payload that names a member of a list of identified items by its id."""
 
-_EXPRESSIONS = (LiteralValue, NameValue, CallValue, DrawValue, UnresolvedValue)
+_EXPRESSIONS = (LiteralValue, NameValue, CallValue, DrawValue, SequenceValue, UnresolvedValue)
 
 
 def member(value: object, part: str) -> object:
@@ -69,6 +73,88 @@ def site_expression(document: BaseModel, path: FieldPath) -> Expression | None:
     if isinstance(value, TimeValue):
         return window_offset_expression(value)
     return value if isinstance(value, _EXPRESSIONS) else None
+
+
+def with_family_indices(site: Site, indices: tuple[ScopedValue, ...]) -> Site:
+    """Put the family indices in the member's lexical scope."""
+    if not indices:
+        return site
+    names = {index.id for index in indices}
+    return site.model_copy(update={"names": (*(
+        value for value in site.names if value.id not in names and value.name not in names
+    ), *indices)})
+
+
+def family_indices(member: ExpandedFamilyMember, functions: FunctionRegistry, path: FieldPath):
+    names, problems = [], []
+    for key, value in member.indices.items():
+        kind = infer_constant_type(value, functions, path=(*path, "over", key))
+        if isinstance(kind, tuple):
+            problems.extend(kind)
+        else:
+            names.append(ScopedValue(id=key, name=key, type=kind, level=Level.RUN))
+    return tuple(names), tuple(problems)
+
+
+def family_problem(error: FamilyProblem, path: FieldPath) -> Problem:
+    return Problem(code=ProblemCode.STRUCTURE, path=(*path, *error.path), reason=family_reason(str(error), error.coordinates))
+
+
+def family_reason(reason, coordinates):
+    if not coordinates:
+        return reason
+    values = ", ".join(f"{name}={value}" for name, value in coordinates.items())
+    return f"{reason} (family {values})"
+
+
+def is_family_rule(path: FieldPath) -> bool:
+    return len(path) == 5 and path[:2] == ("objective", "terms") and path[3] == "over"
+
+
+@dataclass(frozen=True)
+class ObjectiveEditor:
+    objective: ObjectiveDocument
+    names: dict[str, tuple[ScopedValue, ...]]
+    coordinates: dict[str, dict[str, str]]
+    rules: dict[FieldPath, tuple[Site, Expression]]
+    problems: tuple[Problem, ...]
+
+
+def objective_editor(stored: StoredObjectiveDocument, functions: FunctionRegistry) -> ObjectiveEditor:
+    """Prepare one member per authored term, with separate rule and expression sites."""
+    terms, names, coordinates, rules, problems = [], {}, {}, {}, []
+    for key, term in stored.terms.items():
+        path = ("objective", "terms", key)
+        try:
+            member = next(expand_family(key, term, first=True, label_placeholders=False))
+        except FamilyProblem as error:
+            problems.append(family_problem(error, path))
+            terms.append(term.lower(key).model_copy(update={"enabled": False}))
+        else:
+            terms.append(member.value.lower(key))
+            coordinates[key] = dict(member.coordinates)
+            names[key], found = family_indices(member, functions, path)
+            problems.extend(found)
+        types = {index.id: index.type for index in names.get(key, ())}
+        for name, rule in (term.over or {}).items():
+            rule_path = (*path, "over", name)
+            if isinstance(rule, str):
+                parsed = parse_sequence_rule(rule)
+                value = UnresolvedValue(text=rule) if isinstance(parsed, tuple) else parsed.value
+                expected = types.get(name, ValueType(base=ValueBase.REAL))
+                rules[rule_path] = Site(expected=expected, finest=Level.RUN, structural=True), value
+                continue
+            for item, value in rule.items():
+                item_path = (*rule_path, item)
+                if isinstance(value, NamedIndexValue):
+                    value = value.value
+                    item_path = (*item_path, "value")
+                actual = infer_constant_type(value, functions, path=item_path)
+                if isinstance(actual, tuple):
+                    problems.extend(actual)
+                    actual = types.get(name, ValueType(base=ValueBase.REAL))
+                rules[item_path] = Site(expected=actual, finest=Level.RUN, structural=True), value
+    return ObjectiveEditor(ObjectiveDocument(id=stored.id, terms=tuple(terms)), names, coordinates, rules, tuple(problems))
 
 
 def is_window_offset(role: str, path: FieldPath) -> bool:

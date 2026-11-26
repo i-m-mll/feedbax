@@ -1,7 +1,7 @@
 """Shared expansion of authored Objective, Set, and validation-trial families."""
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import islice
 from math import prod
 from string import Formatter
@@ -40,6 +40,7 @@ class ExpandedFamilyMember[Member: StoredFamilyMember]:
     source_key: str
     value: Member
     coordinates: Mapping[str, str]
+    indices: Mapping[str, Expression] = field(default_factory=dict)
 
 
 class FamilyProblem(ValueError):
@@ -180,9 +181,8 @@ def expand_family[Member: StoredFamilyMember](
     for selection in select_combinations(dimensions, choices):
         coordinates = {name: selected.key for name, selected in selection.items()}
         generated_key = "-".join((key, *coordinates.values()))
-        bound = _bind(member.model_copy(update={"over": None, "combination": "cross"}), {
-            name: selected.value for name, selected in selection.items()
-        })
+        indices = {name: selected.value for name, selected in selection.items()}
+        bound = _bind(member.model_copy(update={"over": None, "combination": "cross"}), indices)
         if (label := getattr(bound, "label", None)) is not None:
             try:
                 label = _label(label, selection, placeholders=label_placeholders)
@@ -192,7 +192,7 @@ def expand_family[Member: StoredFamilyMember](
             except ValueError as error:
                 raise FamilyProblem(key, ("label",), str(error), coordinates) from error
             bound = bound.model_copy(update={"label": label})
-        yield ExpandedFamilyMember(generated_key, key, bound, coordinates)
+        yield ExpandedFamilyMember(generated_key, key, bound, coordinates, indices)
 
 
 def expand_members[Member: StoredFamilyMember](
