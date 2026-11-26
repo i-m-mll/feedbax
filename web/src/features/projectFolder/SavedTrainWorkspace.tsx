@@ -2004,7 +2004,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             }
           }}>
           <ProblemList entries={problemEntries(shownProblems)} refusal={refusal?.kind === 'problem' ? refusal : undefined} canReveal={(problem) => !!addressedStep(problem)}
-            onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} />
+            onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} stepName={stepLabel} />
         </StudioProblems>}
         activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
           onToggle={activity.invoke}
@@ -2280,9 +2280,10 @@ function ProblemDestination({ reveal, action, children }: { reveal: Reveal; acti
 }
 
 /** The document a problem's place is in, or else its step: what the Problems panel groups it under. */
-function problemHolder(problem: StudioProjectWindowMapProblem) {
+function problemHolder(problem: StudioProjectWindowMapProblem): { kind: 'document' | 'step'; id: string } | null {
   const place = problem.place;
-  return place && 'document' in place && place.document ? place.document : problem.step;
+  if (place && 'document' in place && place.document) return { kind: 'document', id: place.document };
+  return problem.step ? { kind: 'step', id: problem.step } : null;
 }
 
 /** Whether a problem is about its document as a whole, which the group heading naming that document already says. */
@@ -2291,32 +2292,37 @@ function namedByHolder(problem: StudioProjectWindowMapProblem, holder: string | 
   return !!place && 'document' in place && place.document === holder && studioPlaceIsDocument(place) && !problem.document_path;
 }
 
-function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVariant }: {
+function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVariant, stepName }: {
   entries: readonly ProblemEntry[];
   /** The problem whose repair was refused, and why. */
   refusal?: { problem: string; reason: string };
   onChoose(problem: StudioProjectWindowMapProblem): void;
   canReveal(problem: StudioProjectWindowMapProblem): boolean;
   showVariant: boolean;
+  /** A step's name, by the Service's naming rule. */
+  stepName(id: string): string;
 }) {
-  const groups = new Map<string | null, ProblemEntry[]>();
+  const groups = new Map<string | null, { holder: ReturnType<typeof problemHolder>; entries: ProblemEntry[] }>();
   for (const entry of listed) {
-    const name = problemHolder(entry.problem);
-    if (!groups.has(name)) groups.set(name, []);
-    groups.get(name)!.push(entry);
+    const holder = problemHolder(entry.problem);
+    const key = holder && `${holder.kind}:${holder.id}`;
+    if (!groups.has(key)) groups.set(key, { holder, entries: [] });
+    groups.get(key)!.entries.push(entry);
   }
-  return <div className="space-y-2">{[...groups].map(([name, entries]) => {
+  return <div className="space-y-2">{[...groups].map(([key, { holder, entries }]) => {
     const first = entries.find(({ problem }) => canReveal(problem))?.problem;
-    return <section key={name ?? ''}>
+    const name = holder && (holder.kind === 'step' ? stepName(holder.id) : holder.id);
+    return <section key={key ?? ''}>
       {name && <h2 className="font-medium">{first
         ? <Button variant="ghost" size="content" className="rounded-control px-control-inline text-left font-medium"
           onClick={() => onChoose(first)}>{name}</Button>
         : name}</h2>}
       <ul>{entries.map(({ problem, runs }, index) => <li key={index} className="break-words">
         <ProblemRow problem={problem} refusal={refusal?.problem === problemKey(problem) ? refusal.reason : undefined}
-          context={[problem.step !== name ? problem.step : null, showVariant ? problem.variant : null,
+          context={[problem.step && !(holder?.kind === 'step' && holder.id === problem.step) ? stepName(problem.step) : null,
+            showVariant ? problem.variant : null,
             runs > 1 ? studioFormat('runCount', { count: runs }) : null].flatMap((part) => part ? [part] : [])}
-          placeShown={!namedByHolder(problem, name)}
+          placeShown={!namedByHolder(problem, holder?.kind === 'document' ? holder.id : null)}
           onReveal={canReveal(problem) ? () => onChoose(problem) : undefined} />
       </li>)}</ul>
     </section>;

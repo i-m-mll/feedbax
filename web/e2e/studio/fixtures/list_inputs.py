@@ -30,7 +30,7 @@ def seed(home: str, project_id: str):
     steps["analyze"]["inputs"]["states"] = {"step": "conditions"}
     layer = raw["documents"]["velocity-figure"]["payload"]["layers"][0]
     layer["group"] = ["source", "model", "rate", "mass"]
-    layer["style"] = {"label": "{source} {model} {mass}"}
+    layer["style"] = {"label": "{source} {model} {rate} {mass}"}
     return _seed(home, project_id, raw)
 
 
