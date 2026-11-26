@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
+from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, AnalysisDocument, DatasetSource, OperationDataset, StepInput
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.figure_document import FigureTemplateRef, StoredFigureDocument, validate_figure_bindings
@@ -20,8 +21,8 @@ from feedbax.contracts.operation import (
     require_dataset_port,
 )
 from feedbax.contracts.project import (
-    DocumentReference, DocumentEdit, LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue,
-    base_chain, member_name,
+    DocumentReference, DocumentEdit, LoadedModelDocument, Payload, Project, RemoveProjectValue, SetProjectValue,
+    base_chain, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_inputs import StepReference
@@ -218,6 +219,44 @@ def _review_wire(
             raise ValueError(problem.detail)
 
 
+def _parameter_edits(payload: Payload, edits: list[DocumentEdit], registry: OperationRegistry) -> list[DocumentEdit]:
+    """Give the first parameter write a container when its defaults were omitted."""
+    operations = payload.get("operations", {})
+    if not isinstance(operations, dict):
+        return edits
+    operations = dict(operations)
+    present = {key for key, value in operations.items() if isinstance(value, dict) and "params" in value}
+    adapted = []
+    for edit in edits:
+        match json_pointer_parts(edit.path):
+            case ("operations", key):
+                if isinstance(edit, SetProjectValue) and isinstance(edit.value, dict):
+                    operations[key] = edit.value
+                    present.discard(key)
+                    if "params" in edit.value:
+                        present.add(key)
+                elif isinstance(edit, RemoveProjectValue):
+                    operations.pop(key, None)
+                    present.discard(key)
+            case ("operations", key, "params"):
+                if isinstance(edit, SetProjectValue):
+                    present.add(key)
+                elif isinstance(edit, RemoveProjectValue):
+                    present.discard(key)
+            case ("operations", key, "params", *_):
+                operation = operations.get(key)
+                if isinstance(edit, SetProjectValue) and key not in present and isinstance(operation, dict):
+                    try:
+                        registry.resolve(operation["operation"])
+                    except KeyError:
+                        pass
+                    else:
+                        adapted.append(SetProjectValue(op="add", path=pointer(("operations", key, "params")), value={}))
+                        present.add(key)
+        adapted.append(edit)
+    return adapted
+
+
 def analyze_edit(
     project: Project,
     plan: ProjectPlan,
@@ -253,7 +292,9 @@ def analyze_edit(
         edits = _removal(_analysis(project, document), change.element)
     else:
         edits = base_value_edits(project, document, change.paths)
-    stored = document_write(project, document, edits, chosen, users)
+    stored = document_write(
+        project, document, edits, chosen, users, adapt=lambda payload: _parameter_edits(payload, edits, registry),
+    )
     if not (stored.files or stored.created):
         return stored, plan
     candidate = preview_stored(project, stored)
@@ -369,7 +410,9 @@ def _states_port(
     }) if planned is not None else states
 
 
-def _state_models(project: Project, plan: ProjectPlan, row: PlannedAnalyzeRun) -> list[ModelDocument]:
+def _state_models(
+    project: Project, plan: ProjectPlan, row: PlannedAnalyzeRun, components: ComponentRegistry | None,
+) -> list[ModelDocument]:
     members = {binding.producer for binding in row.inputs.get("states", ())}
     documents = dict.fromkeys(
         name for run in plan.runs if run.key in members
@@ -382,7 +425,7 @@ def _state_models(project: Project, plan: ProjectPlan, row: PlannedAnalyzeRun) -
             loaded = LoadedModelDocument.model_validate(document.payload)
             document = compose_document(project.documents.get, loaded.model.document)
         if not isinstance(document, ProjectDiagnostic) and document.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID:
-            models.append(StoredModelDocument.model_validate(document.payload).lower())
+            models.append(StoredModelDocument.model_validate(document.payload).lower(components))
     return models
 
 
@@ -505,7 +548,7 @@ def analyze_authoring(
             and path_parts(problem.path)[3:4] in (("params",), ("inputs",))
         )
         variables = {definition.key: _variable_choices(definition, states, dimensions) for definition in definitions}
-        models = _state_models(project, plan, row) if row is not None and states is not None else []
+        models = _state_models(project, plan, row, service.folders.components) if row is not None and states is not None else []
         task_names = _task_names(plan, row) if row is not None and states is not None else {}
     except (JobConflict, JobNotFound, KeyError, ValueError) as error:
         raise ProjectFolderInvalid(str(error)) from error

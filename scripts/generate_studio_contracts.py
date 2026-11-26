@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAliasType, Union, get_args, get_origin, get_type_hints
 from uuid import UUID
 
-from pydantic import BaseModel, JsonValue
+from pydantic import BaseModel, JsonValue, PlainSerializer
 from pydantic.fields import FieldInfo
+from pydantic_core import PydanticUndefined
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -1117,6 +1118,14 @@ def _annotation_metadata(annotation: Any) -> tuple[Any, ...]:
     return tuple(metadata)
 
 
+def _wire_annotation(annotation: Any) -> Any:
+    """Use the serializer's declared wire type when it differs from the Python value."""
+    for item in _annotation_metadata(annotation):
+        if isinstance(item, PlainSerializer) and item.return_type is not PydanticUndefined:
+            return item.return_type
+    return annotation
+
+
 def _unique_metadata(metadata: tuple[Any, ...]) -> tuple[Any, ...]:
     result: list[Any] = []
     seen: set[tuple[str, str]] = set()
@@ -1133,7 +1142,7 @@ def ts_type(annotation: Any) -> str:
 
     if annotation is ModelSignalSource:
         return "ModelSignalSource"
-    annotation = _unwrap_annotated(annotation)
+    annotation = _unwrap_annotated(_wire_annotation(annotation))
     if annotation is Any:
         return "unknown"
     if annotation is JsonValue:
@@ -1157,8 +1166,8 @@ def ts_type(annotation: Any) -> str:
     args = get_args(annotation)
 
     if origin is list or (origin is tuple and len(args) == 2 and args[1] is Ellipsis):
-        item = _unwrap_annotated(args[0]) if args else Any
-        item_type = ts_type(item)
+        item = _unwrap_annotated(_wire_annotation(args[0])) if args else Any
+        item_type = ts_type(args[0]) if args else ts_type(Any)
         if (
             _is_union(item)
             or (get_origin(item) is Literal and len(get_args(item)) > 1)
@@ -1245,6 +1254,7 @@ def zod_schema(
 ) -> str:
     """Return a zod expression for a Python annotation."""
 
+    annotation = _wire_annotation(annotation)
     annotation_metadata = _annotation_metadata(annotation)
     field_metadata = () if field is None else tuple(field.metadata)
     metadata = _unique_metadata(annotation_metadata + field_metadata)
@@ -1452,7 +1462,7 @@ def model_dependencies(model: type[BaseModel]) -> tuple[type[BaseModel], ...]:
     dependencies: list[type[BaseModel]] = []
 
     def collect(annotation: Any) -> None:
-        annotation = _alias_value(annotation)
+        annotation = _alias_value(_wire_annotation(annotation))
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             if annotation is not model and annotation not in dependencies:
                 dependencies.append(annotation)
@@ -1470,7 +1480,7 @@ def generate() -> str:
     schemas = "\n\n".join(emit_schema(model) for model in MODEL_TYPES)
     authored_types, authored_schemas = emit_authored_contracts(AUTHORED_CONTRACT_MODELS, MODEL_TYPES)
     blank_stored_model = StoredModelDocument(
-        step_seconds=0.01, ports=StoredModelPorts(), interior=StoredGraphInterior(),
+        step_seconds=TimeValue(value=0.01, unit="s"), ports=StoredModelPorts(), interior=StoredGraphInterior(),
     )
     blank_stored_objective = StoredObjectiveDocument(id="objective")
     acausal_report_defaults = {

@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns, StudioSavedTrainRunRequest } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
@@ -25,7 +25,6 @@ async function savedPlan(request: APIRequestContext, projectPath: string) {
 // step's card.
 test('a metric condition offers the declared metric, refuses an unknown one, and leaves failing runs Not chosen and uncounted',
   { tag: '@round' }, async ({ page, request, studio }) => {
-    test.setTimeout(59_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
     const { snapshot, projectPath } = await seedManagedProject(request,
@@ -62,7 +61,7 @@ test('a metric condition offers the declared metric, refuses an unknown one, and
       && new URL(response.url()).pathname === projectPath + '/train-runs');
     await primary(page).getByRole('button', { name: 'Run', exact: true }).click();
     expect(((await posted).request().postDataJSON() as StudioSavedTrainRunRequest).run_keys).toHaveLength(trains.length);
-    await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(trains.length, { timeout: 30_000 });
+    await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(trains.length, { timeout: jobTimeout });
     const finished = (await savedPlan(request, projectPath)).rows.filter(({ key }) => key.step === 'train');
     const measures: Record<string, number> = JSON.parse(await runProjectFixture(evaluation, 'train-measures',
       studio.home, snapshot.project_id, 'train_loss', ...finished.map(({ result }) => result!.job_id)));

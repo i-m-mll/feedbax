@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field, model_validator
 
@@ -14,6 +14,9 @@ from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, StoredTaskDocument, TaskDocument
 from feedbax.contracts.trial_bindings import selected_signal_id
+
+if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
 
 
 class TrialDocuments(StrictModel):
@@ -46,17 +49,19 @@ class TrialDocuments(StrictModel):
             port.id: selected_signal_id(port.id, signal_keys, bindings) for port in self.model.ports.inputs
         }
 
-    def without_signal_labels(self) -> TrialDocuments:
-        """Use stable signal IDs as names while retaining the resolved input choices."""
-        if self.task is None or not self.task.signals:
+    def without_task_labels(self) -> TrialDocuments:
+        """Use stable Task keys as names while retaining the resolved input choices."""
+        if self.task is None:
             return self
-        signal_keys = {signal.id for signal in self.task.signals}
-        bindings = self.resolved_signal_bindings(signal_keys)
-        for port in self.model.ports.inputs:
-            default = selected_signal_id(port.id, signal_keys, {})
-            if bindings[port.id] == default:
-                del bindings[port.id]
-        task = self.task.with_signal_ids_as_names()
+        bindings = self.input_bindings
+        if self.task.signals:
+            signal_keys = {signal.id for signal in self.task.signals}
+            bindings = self.resolved_signal_bindings(signal_keys)
+            for port in self.model.ports.inputs:
+                default = selected_signal_id(port.id, signal_keys, {})
+                if bindings[port.id] == default:
+                    del bindings[port.id]
+        task = self.task.with_member_keys_as_names()
         if bindings == self.input_bindings and task is self.task:
             return self
         return self.model_copy(update={"task": task, "input_bindings": bindings})
@@ -66,8 +71,8 @@ class TrialDocuments(StrictModel):
         if isinstance(task, PythonTaskSelection):
             return self.input_bindings if task == self.python_task else {}
         original = self.task
-        if original is None or original.without_markers().with_signal_ids_as_names() != (
-            task.without_markers().with_signal_ids_as_names()
+        if original is None or original.without_markers().with_member_keys_as_names() != (
+            task.without_markers().with_member_keys_as_names()
         ):
             return {}
         return self.resolved_signal_bindings({signal.id for signal in original.signals})
@@ -78,13 +83,13 @@ class TrialDocuments(StrictModel):
         return self
 
 
-def lower_stored_trial_documents(value: object) -> TrialDocuments:
+def lower_stored_trial_documents(value: object, *, components: ComponentRegistry | None = None) -> TrialDocuments:
     """Lower resolved authored Train slots once, before pairing and request encoding."""
     if not isinstance(value, dict):
         raise ValueError("Choose Model, Task and Objective documents for Train.")
     task = value.get("task")
     return TrialDocuments.model_validate(value | {
-        "model": StoredModelDocument.model_validate(value.get("model")).lower(),
+        "model": StoredModelDocument.model_validate(value.get("model")).lower(components),
         "task": StoredTaskDocument.model_validate(task).lower() if task is not None else None,
         "objective": StoredObjectiveDocument.model_validate(value.get("objective")).lower(),
     })

@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { captureStudioWindow, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
@@ -6,7 +6,6 @@ import { scanStudio } from './fixtures/studioAccessibility';
 test.use({ viewport: { width: 1440, height: 900 } });
 
 test('navigates and resizes the saved pipeline canvas without changing zoom', { tag: '@round' }, async ({ page, request }, info) => {
-  test.setTimeout(55_000);
   const [model, task, objective, train, successor] = await fixture('managed-files');
   const unrelated = { ...structuredClone(train), id: 'unrelated' };
   train.step.base.inline.seed = 0;
@@ -173,7 +172,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   expect(submitted.status(), await submitted.text()).toBe(202);
   expect((await submitted.json() as StudioJobSubmission).items[0].disposition).toBe('admitted');
   await mapStep(page, 'train').press('Enter');
-  await expect(mark(included)).toHaveAccessibleName(/ · Done$/, { timeout: 18_000 });
+  await expect(mark(included)).toHaveAccessibleName(/ · Done$/, { timeout: jobTimeout });
   await expect(mark(excluded)).toHaveAccessibleName(/ · Not run$/);
   const done = mark(included).locator('[data-status-mark="succeeded"] svg');
   const idle = mark(excluded).locator('[data-status-mark="not_run"] svg');

@@ -6,7 +6,7 @@ import { chooseStepKind } from './fixtures/studioKeyboard';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('a continuation started from its Model keeps its definition and continues again, and a step based on a row shows its refusal', async ({ page, request }) => {
+test('a continuation started from its Model keeps its definition and continues again, and a step based on a row shows its refusal', { tag: '@slow' }, async ({ page, request }) => {
   const files = await fixture('ordinary-files', '2');
   const train = files.at(-1).step;
   train.sweep = { rows: { slow: {}, fast: { patches: { 'settings.optimizer.learning_rate.value': { value: 0.003 } } } } };

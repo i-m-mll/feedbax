@@ -38,8 +38,8 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
     model = raw["documents"][model_name]
     interior = model["payload"]["interior"]
     interior["components"].update({
-        "motor-noise": {"kind": "leaf", "name": "Motor noise", "type": "feedbax.Noise", "fields": {"shape": [2]}},
-        "actuate": {"kind": "leaf", "name": "Actuate", "type": "feedbax.Sum"},
+        "motor-noise": {"kind": "leaf", "label": "Motor noise", "type": "feedbax.Noise", "fields": {"shape": [2]}},
+        "actuate": {"kind": "leaf", "label": "Actuate", "type": "feedbax.Sum"},
     })
 
     def port(component, name):
@@ -135,22 +135,22 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
         raw["documents"]["shorter"] = deepcopy(raw["documents"]["task"])
         short_task = raw["documents"]["shorter"]["payload"]
         short_task["fixed_steps"] = 7
-        short_task["epochs"][0]["end"]["length"]["value"] = 7
+        short_task["epochs"]["move"]["end"]["length"]["value"] = 7
         raw["documents"]["loads"] = {"label": "Loads", "schema": "feedbax.set_document.v2", "payload": {"entries": {
-            "pulse": {"label": "Pulse", "task_variables": [{
-                "id": "amplitude", "name": "Amplitude", "type": {"base": "real", "shape": [2]},
+            "pulse": {"label": "Pulse", "task_variables": {"amplitude": {
+                "label": "Amplitude", "type": {"base": "real", "shape": [2]},
                 "value": {"kind": "call", "function": "vector", "args": [
                     {"kind": "literal", "value": 1.0}, {"kind": "literal", "value": 0.0},
                 ]},
-            }], "differences": {"/interior/wires/plant-wire/attachments": {"value": [{
-                "id": "pulse", "kind": "intervention", "operation": "Add",
+            }}, "differences": {"/interior/wires/plant-wire/attachments": {"value": {"pulse": {
+                "kind": "intervention", "operation": "Add",
                 "operands": {"value": {"kind": "task", "variable": "amplitude"}},
                 "window": {"spans": [{
                     "kind": "interval",
                     "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
                     "end": {"offset": {"value": 2, "unit": "st"}},
                 }]},
-            }]}}},
+            }}}}},
         }}}
         next_train = deepcopy(train)
         next_train["base"]["inline"]["training_config"]["n_batches"] = 1

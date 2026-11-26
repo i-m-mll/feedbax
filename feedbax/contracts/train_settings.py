@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -26,6 +26,48 @@ def normalize_train_method(
         "seed": 0 if request.seed is None else request.seed,
         "settings": settings.model_dump(mode="json"),
     }), method, settings
+
+
+def train_sweep_basis(
+    payload: dict[str, JsonValue], path: str, registry: TrainingMethodRegistry | None,
+) -> dict[str, JsonValue]:
+    """Expose a missing declared Train setting for a sweep replacement."""
+    from feedbax.contracts.manifest import OverridePatch
+    from feedbax.contracts.matrix_core import apply_stored_patch_copy
+
+    root, *parts = path.split(".")
+    if root != "settings" or not parts or not isinstance((settings := payload.get("settings")), dict):
+        return payload
+    value = settings
+    for index, name in enumerate(parts):
+        if not isinstance(value, dict):
+            return payload
+        if name not in value:
+            break
+        value = value[name]
+    else:
+        return payload
+    if not isinstance((method := payload.get("method")), str):
+        return payload
+    if registry is None:
+        from feedbax.application.composition import load_application
+
+        registry = load_application().bundle.training_methods
+    try:
+        model = registry.resolve(method).settings_model
+        effective: JsonValue = model.model_validate(settings, extra="forbid").model_dump(mode="json")
+    except (KeyError, ValidationError):
+        return payload
+    missing = None
+    for offset, name in enumerate(parts):
+        if not isinstance(effective, dict) or name not in effective:
+            return payload
+        effective = effective[name]
+        if offset == index:
+            missing = effective
+    return apply_stored_patch_copy(payload, OverridePatch(
+        op="add", path=".".join((root, *parts[:index + 1])), value=missing,
+    ))
 
 
 def setting_schema_node(schema: dict, node: dict, value: JsonValue) -> dict:

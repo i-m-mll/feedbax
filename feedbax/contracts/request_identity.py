@@ -300,7 +300,7 @@ def encode_request(
         raise ValueError(f"Unknown request spec model: {type(spec).__name__}")
     kind, descriptor = match
     if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)):
-        canonical_trial = spec.trial_documents.without_signal_labels()
+        canonical_trial = spec.trial_documents.without_task_labels()
         if canonical_trial is not spec.trial_documents:
             spec = spec.model_copy(update={"trial_documents": canonical_trial})
     inputs = _validated_inputs(inputs)
@@ -330,7 +330,7 @@ def encode_request(
     )
     train_task = None
     if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)) and trial is None:
-        omit_model_display_names(projection["trial_documents"]["model"])
+        omit_model_display_names(projection["trial_documents"]["model"], keyed_root_ports=True)
     if descriptor is DOCUMENT_TRAIN_REQUEST:
         if capture_train_task:
             train_task = _encoded_train_task(projection) if trial is None else (
@@ -429,7 +429,7 @@ def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> Decode
         spec_payload[name] = _read_object(document)
     if descriptor.spec_type in (DocumentTrainingRequestSpec, SynthesisRequestSpec):
         try:
-            restore_model_display_names(spec_payload["trial_documents"]["model"])
+            restore_model_display_names(spec_payload["trial_documents"]["model"], keyed_root_ports=True)
         except (AttributeError, KeyError, TypeError) as error:
             raise ValueError("Invalid stored managed model projection") from error
     restored = decode(spec_payload, descriptor.spec_type, fields)

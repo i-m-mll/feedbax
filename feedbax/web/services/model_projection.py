@@ -186,7 +186,7 @@ def model_projection(folders, project_id, body, bundle):
     snapshot = folders.read(project_id, revision=body.revision)
     payload, layout = model_edit_source(snapshot, body.document)
     stored = StoredModelDocument.model_validate(payload)
-    authored = stored.lower()
+    authored = stored.lower(bundle.components)
     differences = model_differences(folders, project_id, body, snapshot, stored.model_dump(mode="json"), layout)
     selected = None
     step = snapshot.project.steps.get(body.run.step) if body.run is not None else None
@@ -231,6 +231,6 @@ def model_projection(folders, project_id, body, bundle):
         task_inputs=tuple(
             ModelTaskInput(composites=(), element=_boundary_port((), "input", port.id).element, signal_id=signal.id)
             for port, signal in bound
-        ), resolved_model=StoredModelDocument.from_lowered(model),
+        ), resolved_model=StoredModelDocument.from_lowered(model, bundle.components),
         ungroup=model_ungroup_eligibility(model), **differences,
     )

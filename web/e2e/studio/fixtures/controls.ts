@@ -25,7 +25,7 @@ export async function reveal(page: Page, panel: 'Drawer' | 'Inspector') {
   await expect(async () => {
     if (await show.isVisible()) await show.click();
     await expect(hide).toBeVisible({ timeout: 1_000 });
-  }).toPass({ timeout: 5_000 });
+  }).toPass();
 }
 
 const detailsDrawer = (page: Page) => page.getByRole('complementary', { name: 'Details Drawer', exact: true });

@@ -364,8 +364,16 @@ def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_
     with TestClient(create_app(projects_dir=tmp_path / "projects")) as client:
         created = client.post("/api/projects", json={"name": "load", "example": "point-mass-reaching"})
         assert created.status_code == 201, created.text
-        prior = created.json()["snapshot"]
-        url = f"/api/projects/{prior['project_id']}/loaded-models/import"
+        project = created.json()["snapshot"]["project_id"]
+        folders = client.app.state.project_folders
+        root = folders.read_authored_snapshot(project, revision=None).root
+        model_file = root / "documents" / "point-mass.json"
+        authored = json.loads(model_file.read_bytes())
+        authored["payload"]["ports"]["inputs"]["target_pos"]["label"] = "Requested target"
+        authored["payload"]["ports"]["outputs"]["effector"]["label"] = "Point mass state"
+        model_file.write_text(json.dumps(authored))
+        prior = client.get(f"/api/projects/{project}").json()
+        url = f"/api/projects/{project}/loaded-models/import"
         query = {"name": "imported", "model": "point-mass", "revision": prior["revision"]}
         headers = {"Content-Type": "application/octet-stream"}
         rejected = client.post(url, params=query, content=b"not an archive", headers=headers)
@@ -377,7 +385,7 @@ def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_
         saved = imported.json()
         assert saved["document"] == "imported"
         payload = LoadedModelDocument.model_validate(saved["snapshot"]["project"]["documents"]["imported"]["payload"])
-        assert payload.source.weights == checkpoint.tree
+        assert payload.lower().weights == checkpoint.tree
         assert payload.model.document == "point-mass"
         assert client.post(url, params=query, content=archive, headers=headers).status_code == 409
 

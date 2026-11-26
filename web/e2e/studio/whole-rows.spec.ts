@@ -7,7 +7,6 @@ test.use({ viewport: { width: 1400, height: 900 } });
 // and fades its last row), and a window whose map and shelf leave the Task view too short to show the grid under the
 // Variables table; and a list that hides rows marking it by fading the rows it shows, or not marking it at all.
 test('the Task tab shows whole rows in its Outline and the grid under the Variables table', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const primary = page.locator('[data-slot="primary"]');
   const drawer = page.locator('[data-studio-focus-region="drawer"]');

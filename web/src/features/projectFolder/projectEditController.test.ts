@@ -311,6 +311,27 @@ it('undoes and redoes placement while preserving a later fold', async () => {
   editor.dispose();
 });
 
+// Catches a successful create refused because the Service stored the file canonically, without the defaults sent.
+it('acknowledges a created file the Service stores without the defaults the request spelled out', async () => {
+  const { editor, create, restore } = fixture();
+  const address = { kind: 'document', id: 'reach-task' } as const;
+  const authored = { schema: 'feedbax.spec.task', label: 'Task', payload: { epochs: [], links: [] } };
+  const stored = { schema: authored.schema, label: authored.label, payload: { epochs: [] } };
+  create.mockImplementationOnce(async () => {
+    const snapshot = {
+      ...initial, revision: hex(61),
+      project: { ...initial.project, documents: { ...initial.project.documents, [address.id]: stored } },
+      file_revisions: [...initial.file_revisions, { address, revision: hex(60), data: btoa(JSON.stringify(stored)) }],
+    };
+    restore(snapshot);
+    return { configuration: { project: 'reach', store: 'results' }, snapshot };
+  });
+  await editor.createFiles('New Task', [{ ...address, document: authored }], initial.revision);
+  expect(editor.getSnapshot().saved.project.documents?.[address.id]).toEqual(stored);
+  expect(editor.getSnapshot().undoName).toBe('New Task');
+  editor.dispose();
+});
+
 it('does not attribute a preexisting identical file to a failed create', async () => {
   const { editor, create } = fixture();
   create.mockRejectedValueOnce(new ApiRequestError('network', '/api/projects/reach/files', 'Offline'));

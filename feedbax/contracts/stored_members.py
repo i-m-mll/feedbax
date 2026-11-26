@@ -1,6 +1,7 @@
 """Keyed member contracts shared by the authored document kinds."""
 
 from collections.abc import Callable, Iterable, Mapping
+from hashlib import sha256
 from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, StringConstraints
@@ -12,10 +13,15 @@ type StoredMemberKey = Annotated[str, StringConstraints(strict=True, pattern=r"^
 type StoredMembers[T] = dict[StoredMemberKey, T]
 
 
+def scoped_set_member_id(*parts: str) -> str:
+    """Identify a lowered Set member by the keys that name its authoring scope."""
+    return "set-" + sha256("\0".join(parts).encode()).hexdigest()[:28]
+
+
 def _canonical_model_address(text: str) -> str:
     from feedbax.contracts.model_address import ModelAddress
 
-    ModelAddress.from_text(text)
+    ModelAddress.from_authored_text(text)
     return text
 
 

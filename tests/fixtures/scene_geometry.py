@@ -61,7 +61,7 @@ def _model(count: int) -> dict:
         return {"label": name, "type": {"base": "real", "shape": [size]}}
 
     return {
-        "step_seconds": 0.002,
+        "step_seconds": "0.002 s",
         "ports": {},
         "interior": {"components": {"mechanics": {
             "kind": "composite", "label": "Mechanics",

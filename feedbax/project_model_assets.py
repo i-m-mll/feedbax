@@ -22,7 +22,7 @@ from feedbax.contracts.loaded_model import (
     ImportedModelSource, ModelFitReport, decode_imported_model_document,
 )
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.project import LoadedModelDocument, ProjectModelArchive
+from feedbax.contracts.project import ProjectModelArchive
 from feedbax.contracts.project_resolution import LoadedModelRead, ResolvedImportedModel
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.project_subject import resolve_imported_model
@@ -38,10 +38,6 @@ _ARCHIVE = TypeAdapter(ProjectModelArchive)
 
 class ModelAssetError(ValueError):
     """The project assets cannot supply their declared Loaded Model."""
-
-
-def model_archive_path(document: str, loaded: LoadedModelDocument) -> str:
-    return _ARCHIVE.validate_python(loaded.archive or f"models/{document}.feedbax-model")
 
 
 def _projection_path(source: ImportedModelSource) -> str:
@@ -200,26 +196,14 @@ def _read_available[T](store: ImmutableArtifactBlobProvider, read: Callable[[], 
         raise
 
 
-def _read_projection(
-    directory: int, loaded: LoadedModelDocument, legacy_model: bytes | None,
-) -> tuple[bytes, str]:
-    path = _projection_path(loaded.source)
-    try:
-        return _read_asset(directory, path), path
-    except FileNotFoundError:
-        if loaded.archive is not None or legacy_model is None:
-            raise
-    return legacy_model, f"Model document {loaded.model.document!r}"
-
-
 def read_pinned_project_model(
-    root: Path, store_path: Path, loaded: LoadedModelDocument, navigation_model: bytes | None,
+    root: Path, store_path: Path, source: ImportedModelSource, navigation_model: Callable[[], bytes | None],
 ) -> ModelDocument:
     """Read the existing Load's pinned Model before fitting a repair upload."""
     store = ImmutableArtifactBlobProvider(store_path)
-    if (raw := _read_available(store, lambda: store.get_object(loaded.source.model))) is not None:
+    if (raw := _read_available(store, lambda: store.get_object(source.model))) is not None:
         return decode_imported_model_document(raw)
-    projection = _projection_path(loaded.source)
+    projection = _projection_path(source)
     try:
         with _models_directory(root) as (directory, chain):
             raw = _read_asset(directory, projection)
@@ -227,10 +211,11 @@ def read_pinned_project_model(
     except FileNotFoundError as error:
         # An explicitly repeated Load can replace a missing project projection
         # using its exact authored source.
-        if navigation_model is None:
+        raw = navigation_model()
+        if raw is None:
             raise ModelAssetError("The existing Load needs its pinned Model projection.") from error
-        raw, projection = navigation_model, f"Model document {loaded.model.document!r}"
-    return _require_pinned_model(raw, loaded.source.model, path=projection)
+        projection = "The navigation Model"
+    return _require_pinned_model(raw, source.model, path=projection)
 
 
 def portable_model_reader(
@@ -240,16 +225,15 @@ def portable_model_reader(
     store = ImmutableArtifactBlobProvider(store_path)
 
     def read(request: LoadedModelRead) -> ResolvedImportedModel:
-        loaded = LoadedModelDocument.model_validate_json(request.authored)
-        source = loaded.source
+        source = request.source
         if (result := _read_available(store, lambda: resolve_imported_model(store, source))) is not None:
             return result
-        archive = model_archive_path(request.document, loaded)
+        archive = request.archive
         projection = _projection_path(source)
         try:
             with _models_directory(root) as (directory, chain):
                 raw = _read_asset(directory, archive)
-                authored, projection = _read_projection(directory, loaded, request.legacy_model)
+                authored = _read_asset(directory, projection)
                 recheck_directory_chain(chain, error_factory=ModelAssetError, context="Project models directory")
         except FileNotFoundError as error:
             raise ModelAssetError(f"Loaded Model {request.document!r} needs its project assets {archive} and {projection}.") from error

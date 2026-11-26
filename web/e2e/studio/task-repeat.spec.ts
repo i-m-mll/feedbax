@@ -20,8 +20,7 @@ async function files() {
 // Catches a Repeat that writes no bracket over the selected columns or none of count 2, a bracket count that does not
 // reach the nominal shelf as one instance per repetition, an Item whose Each Repeat does not write the repetition's
 // read `[i]`, and a Repeat crossing another that is refused, or stored without a row and a mark of its own.
-test('Repeat brackets the selected columns, its count repeats them on the shelf, and Each Repeat reads the repetition', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('Repeat brackets the selected columns, its count repeats them on the shelf, and Each Repeat reads the repetition', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await files());
   const task = async () => {
     const { project } = (await (await request.get(projectPath)).json()) as StudioProjectSnapshot;

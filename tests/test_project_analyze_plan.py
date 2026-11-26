@@ -112,6 +112,7 @@ def _decode(plan, name):
 
 def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     project = _project()
+    project.documents["velocity-analysis"].payload["operations"]["summarize"]["params"]["bounds_scale"] = 1.5
     operations = _operations()
     upstream = project.model_copy(deep=True)
     upstream.steps.pop("analyze")
@@ -289,7 +290,7 @@ def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(ho
     velocity = analysis["operations"]["align"]["params"]["velocity"]
     analysis["views"]["profile"] = {"label": "Profile", "figure": {"template": "feedbax.SpeedByTrial"}, "inputs": {}}
     summary = analysis["operations"]["summarize"]
-    summary["params"].pop("ddof")
+    summary.pop("params")
     analysis["views"]["summary"] = {
         "label": "Summary",
         "figure": {"template": "feedbax.VelocitySummary"}, "inputs": {},
@@ -330,6 +331,7 @@ def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(ho
         after = edit.json()
         assert after["document"] == after["created"][0]["id"] != before["document"]
         assert "/operations/trial_speed" in after["changed"]
+        assert after["created"][0]["document"]["differences"]["/operations/summarize/params"] == {"value": {"ddof": 0}}
         assert after["sources"]["profile"]["speed"] == [{"element": "trial_speed", "product": "speed"}]
         assert after["sources"]["summary"]["summary"] == [{"element": "summarize", "product": "summary"}]
         assert {problem["place"]["field"] for problem in after["problems"]} == {"/inputs/speed", "/inputs/summary"}
@@ -507,6 +509,30 @@ def test_named_figure_matches_inline_and_variant_edit_reaches_both_views():
     for view in ("profile", "second"):
         source = revised.sources[dark][f"/payload/views/{view}/figure/theme"]
         assert (source.kind, source.name, source.path) == ("variant", "dark", "/documents/velocity-figure/payload/theme")
+
+
+def test_figure_request_review_uses_keys_and_keeps_layer_order():
+    project = _project()
+    layers = project.documents["velocity-figure"].payload["layers"]
+    layers["zero"] = {"mark": "rule", "role": "summary", "panel": "velocity", "encode": {"axis": "y", "at": 0}}
+    operations = _operations()
+    before = compile_project(project, operations=operations, capture_sources=True)
+    profile = ElementKey(_KEY, "profile")
+    assert not before.diagnostics
+
+    edited = deepcopy(project)
+    edited.documents["velocity-figure"].payload["layers"]["bounds"]["style"] = {"line_dash": "dash"}
+    after = compile_project(edited, operations=operations, capture_sources=True)
+    change = diff_analyze_elements(before, after)[profile]
+    assert change.path == "payload.views.profile.figure.layers.bounds.style.line_dash"
+    assert change.after_source.path == "/layers/bounds/style/line_dash"
+
+    reordered = deepcopy(project)
+    reordered.documents["velocity-figure"].payload["layers"] = dict(reversed(list(layers.items())))
+    after_order = compile_project(reordered, operations=operations, capture_sources=True)
+    assert after_order.elements[profile].request_id != before.elements[profile].request_id
+    assert [layer.name for layer in _decode(after_order, "profile").spec.document.layers] == ["zero", "bounds"]
+    assert diff_analyze_elements(before, after_order)[profile].path == "payload.views.profile.figure.layers"
 
 
 def test_installed_figure_template_shares_identity_with_its_inline_figure():

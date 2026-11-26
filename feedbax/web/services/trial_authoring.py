@@ -4,8 +4,11 @@
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from functools import partial
+from functools import cache, partial
 
+from pydantic_core import to_json
+
+from feedbax.contracts.base import sha256_bytes
 from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_values import (
     Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, TextSpan, UnresolvedValue,
@@ -18,14 +21,16 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.studio_scope import StoreKind
 from feedbax.compiler.model_reset import ModelResetField
 from feedbax.compiler.model_signals import model_measure_scope
-from feedbax.compiler.set_fields import entry_variable_id, rename_entry_references
+from feedbax.compiler.set_fields import rename_entry_references
+from feedbax.contracts.stored_members import scoped_set_member_id
 from feedbax.compiler.set_fields import resolve_trial_set_condition, trial_set_condition_site
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
-from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.compiler.model_attachment import lower_model_difference_values, resolve_effective_model
 from feedbax.contracts.project import (
-    LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue, apply_differences, apply_document_edits, diff,
+    LoadedModelDocument, Payload, Project, RemoveProjectValue, RootDocument, SetProjectValue,
+    apply_differences, apply_document_edits, diff,
     OrderDocumentMembers, OrderProjectValue, base_chain, json_pointer_parts, member_name,
 )
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
@@ -41,10 +46,12 @@ from feedbax.contracts.request_refs import BestRank
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_rollout_settings, authored_variation
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.project_storage import stored_keyed_collection, stored_project_value
+from feedbax.contracts.stored_members import project_member
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.contracts.studio_sets import SetEntryTask
 from feedbax.contracts.studio_place import task_start_path
 from feedbax.studio.authoring import training_document_choice
+from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
@@ -126,6 +133,8 @@ def _project(
     documents, bundle, *, show_objective=True, graph_override=None,
     objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
 ) -> _Projection:
+    from feedbax.compiler.model_document import complete_model_fields
+
     task = documents.task_source
     fields = {}
     if isinstance(task, PythonTaskSelection):
@@ -149,9 +158,9 @@ def _project(
 
     task_sites = {}
     paired = pair_trial_source(
-        documents.model, task, bundle.components, bundle.expression_functions,
+        complete_model_fields(documents.model, bundle.components), task, bundle.components, bundle.expression_functions,
         python_tasks=bundle.python_tasks, input_bindings=documents.input_bindings,
-        task_sites=task_sites, graph_override=graph_override, reset_fields=resets,
+        task_sites=task_sites, graph_override=graph_override, reset_fields=resets, keyed_root_ports=True,
     )
     partial = None
     if isinstance(paired, tuple):
@@ -268,15 +277,14 @@ def _input_rows(documents, projection) -> list[StudioTrialInput]:
     ]
 
 
-def _selected_task(project, document) -> TaskDocument | PythonTaskSelection | None:
-    entry = compose_document(project.documents.get, document)
-    if isinstance(entry, ProjectDiagnostic):
-        return None
+_TASK_DOCUMENT_SCHEMAS = frozenset({STORED_TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID})
+
+
+def _task_payload(entry: RootDocument) -> TaskDocument | PythonTaskSelection:
     if entry.schema_id == STORED_TASK_DOCUMENT_SCHEMA_ID:
         return StoredTaskDocument.model_validate(entry.payload).lower()
-    if entry.schema_id == PYTHON_TASK_SCHEMA_ID:
-        return PythonTaskSelection.model_validate(entry.payload)
-    return None
+    assert entry.schema_id == PYTHON_TASK_SCHEMA_ID
+    return PythonTaskSelection.model_validate(entry.payload)
 
 
 def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None = None):
@@ -286,6 +294,45 @@ def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None 
     if isinstance(task, PythonTaskSelection):
         return documents.model_copy(update={"task": None, "python_task": task, "input_bindings": bindings})
     return documents.model_copy(update={"task": task, "python_task": None, "input_bindings": bindings})
+
+
+def _task_choices(
+    folders: ProjectFolderService, project: Project, documents: TrialDocuments | _InitialTrialDocuments,
+    bundle: ApplicationRegistryBundle, graph: GraphSpec | None, objective_use: ObjectiveUse,
+) -> tuple[list[StudioTaskChoice], list[Problem]]:
+    """Project the available Tasks and share equal problems across their pairings."""
+    choices = []
+    problems: list[Problem] = []
+    indices: dict[str, int] = {}
+    pairing_context = sha256_bytes(to_json((
+        documents.model, documents.objective, graph, sorted(documents.input_bindings.items()), objective_use.value,
+    )))
+
+    def pair(entry: RootDocument) -> tuple[Problem, ...]:
+        return _project(
+            _with_task(documents, _task_payload(entry)), bundle,
+            show_objective=False, graph_override=graph, objective_use=objective_use,
+        ).problems
+
+    for name, document in sorted(project.documents.items()):
+        if document.schema_id not in _TASK_DOCUMENT_SCHEMAS:
+            continue
+        entry = compose_document(project.documents.get, name)
+        if isinstance(entry, ProjectDiagnostic):
+            continue
+        key = (
+            bundle.components, bundle.expression_functions, bundle.python_tasks, pairing_context,
+            entry.schema_id, sha256_bytes(to_json(entry.payload)),
+        )
+        found = folders.task_choice_problems(key, partial(pair, entry))
+        references = []
+        for problem in found:
+            index = indices.setdefault(problem.model_dump_json(), len(problems))
+            if index == len(problems):
+                problems.append(problem)
+            references.append(index)
+        choices.append(StudioTaskChoice(document=name, problem_indices=list(dict.fromkeys(references))))
+    return choices, problems
 
 
 def _field_document(documents, role):
@@ -436,16 +483,30 @@ def _swept_document(plan, key, definition, role) -> str | None:
     return producer.document_ids.get(slot)
 
 
-def _field_sweep(project, plan, key, definition, path, site, label) -> TrialFieldSweep | None:
+@dataclass(frozen=True)
+class _SweepSource:
+    document: str
+    payload: Payload
+    parsed: StoredTaskDocument | StoredObjectiveDocument
+
+
+def _sweep_source(project, plan, key, definition, role) -> _SweepSource | None:
+    """Resolve and validate the authored document once for the view's numeric fields."""
+    validate = {"objective": StoredObjectiveDocument.model_validate, "task": StoredTaskDocument.model_validate}.get(role)
+    if validate is None or (document := _swept_document(plan, key, definition, role)) is None:
+        return None
+    entry = compose_document(project.documents.get, document)
+    if isinstance(entry, ProjectDiagnostic) or not isinstance(entry.payload, dict):
+        return None
+    return _SweepSource(document, entry.payload, validate(entry.payload))
+
+
+def _field_sweep(project, key, path, site, label, sweep_source) -> TrialFieldSweep | None:
     """The number at ``path`` of a document the step reads whole, when the step can sweep it."""
     role, *rest = path
-    if is_window_offset(role, tuple(rest[:7])):
+    if is_window_offset(role, tuple(rest[:7])) or (source := sweep_source(role)) is None:
         return None
-    parse = {"objective": StoredObjectiveDocument.model_validate, "task": StoredTaskDocument.model_validate}.get(role)
-    if parse is None:
-        return None
-    document = _swept_document(plan, key, definition, role)
-    return trial_field_sweep(project, key.step, document, role, tuple(map(str, rest)), site, label, parse)
+    return trial_field_sweep(project.steps[key.step], source.payload, source.parsed, role, tuple(map(str, rest)), site, label)
 
 
 def _task_field(task):
@@ -521,8 +582,11 @@ def _restore_variation_refs(definition, index, edit):
 
 
 def _task_selection_writes(definition, value):
-    raw = definition.payload["params"]["variation"]
+    params = definition.payload["params"]
     replacement = {"op": "replace", "path": "task", "value": value}
+    if "variation" not in params:
+        return [_override("params.variation", "add", {"task": replacement})]
+    raw = params["variation"]
     if isinstance(raw, list):
         retained = [
             _restore_variation_refs(definition, index, edit) for index, edit in enumerate(raw)
@@ -591,10 +655,10 @@ def _chosen_document(project, document, role):
 
 
 def _chosen_task(project, document):
-    task = _selected_task(project, document)
-    if task is None:
+    entry = compose_document(project.documents.get, document)
+    if isinstance(entry, ProjectDiagnostic) or entry.schema_id not in _TASK_DOCUMENT_SCHEMAS:
         raise ProjectFolderInvalid(f"{member_name(project.documents, document)} is not a Task document.")
-    return task
+    return _task_payload(entry)
 
 
 def _evaluation_task_path(definition):
@@ -611,7 +675,7 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
         if model is None:
             raise ProjectFolderInvalid("The selected Loaded Model is unavailable.")
     else:
-        model = StoredModelDocument.model_validate(subject.payload).lower()
+        model = StoredModelDocument.model_validate(subject.payload).lower(bundle.components)
     task = definition.input_documents["task"]
     if task.schema_id == PYTHON_TASK_SCHEMA_ID:
         source = PythonTaskSelection.model_validate(task.payload)
@@ -620,8 +684,9 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
     objective = definition.input_documents.get("objective")
     differences = MODEL_DIFFERENCE_BATCHES.validate_python(definition.payload.get(MODEL_ATTACHMENTS, {}))
     if differences and subject.schema_id != LOADED_MODEL_SCHEMA_ID:
+        writes = tuple(item for batch in differences.values() for item in batch)
         model = resolve_effective_model(
-            model, bundle.components, tuple(item for batch in differences.values() for item in batch),
+            model, bundle.components, lower_model_difference_values(model, bundle.components, writes),
             functions=bundle.expression_functions,
         )
     params = authored_rollout_settings(definition.payload.get("params"))
@@ -702,6 +767,18 @@ def _evaluate_documents(plan, key, definition, bundle):
         documents, task, input_bindings=documents.input_bindings | authored_bindings | params.input_bindings,
     )
     paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
+    project = plan.variant_projects[key.variant]
+    if (
+        isinstance(stored_task, StoredTaskDocument) and isinstance(task, TaskDocument)
+        and (definition.task_additions or project.steps[key.step].set_fields)
+    ):
+        set_ids = {id for id, _, _, _ in _set_variables(project, key, plan.row(key))}
+        additions = {
+            variable.id: project_member(variable, StoredVariable, label=variable.name)
+            for variable in task.variables if variable.id in set_ids and variable.id not in stored_task.variables
+        }
+        if additions:
+            stored_task = stored_task.model_copy(update={"variables": stored_task.variables | additions})
     return documents, replace(
         paired, task_origins=_task_edit_origins(edits), stored_task=stored_task,
         set_condition_variables=authored_task.variables if isinstance(authored_task, TaskDocument) else (),
@@ -792,7 +869,7 @@ def _pairing(plan, key, bundle, *, definition=None):
         definition = _definition(plan, key)
     step = plan.steps[key.variant, key.step]
     if step.kind == "train":
-        documents = lower_stored_trial_documents(definition.payload.get("trial_documents"))
+        documents = lower_stored_trial_documents(definition.payload.get("trial_documents"), components=bundle.components)
         run = next((item for item in plan.runs if item.key == key), None)
         if run is not None and run.train is not None and run.train.task != documents.task_source:
             encoded = plan.requests.get(run.request_id)
@@ -804,7 +881,7 @@ def _pairing(plan, key, bundle, *, definition=None):
     if step.kind == "synthesize":
         task = trial_task_slot(definition.payload.get("task"))
         documents = TrialDocuments(
-            model=StoredModelDocument.model_validate(definition.payload.get("model")).lower(),
+            model=StoredModelDocument.model_validate(definition.payload.get("model")).lower(bundle.components),
             task=task if isinstance(task, TaskDocument) else None,
             python_task=task if isinstance(task, PythonTaskSelection) else None,
             objective=StoredObjectiveDocument.model_validate(definition.payload.get("objective")).lower(),
@@ -860,7 +937,7 @@ def _set_variables(project: Project, key: RunKey, row: PlannedRow | None) -> Ite
             if source is None:
                 continue
             for variable in source.task_variables:
-                id = entry_variable_id(axis, entry, variable) if scoped else variable
+                id = scoped_set_member_id(axis, entry, variable) if scoped else variable
                 yield id, SetVariableOrigin(
                     step=key.step, axis=axis, set=name, entry=entry, variable=variable,
                 ), scoped, source
@@ -878,7 +955,7 @@ def _set_variable_edit(project, plan, key, path, change):
     [(origin, scoped, source)] = choices
     (edit,) = change.edits
     assert isinstance(edit, SetProjectValue)
-    refs = {entry_variable_id(origin.axis, origin.entry, variable): variable for variable in source.task_variables}
+    refs = {scoped_set_member_id(origin.axis, origin.entry, variable): variable for variable in source.task_variables}
     value = rename_entry_references(edit.value, refs) if scoped else edit.value
     previous = stored_project_value(source.task_variables[origin.variable], keep_explicit=True)
     variables = source.task_variables | {origin.variable: StoredVariable.model_validate(previous | {"value": value})}
@@ -929,7 +1006,7 @@ def _set_condition_edit(expression, path, body, folders, project, settled, key, 
 
 def _prepare_edits(
     body, folders, project_id, project, settled, key, bundle, definition, documents, projected,
-    stored_task, stored_objective, *, change,
+    stored_task, stored_objective, *, change, sweep_source,
 ):
     scope = body.scope
     plan = settled.plan
@@ -941,20 +1018,19 @@ def _prepare_edits(
             return _set_condition_edit(expression, path, body, folders, project, settled, key, bundle, definition, projected)
         holder = next((path[:end] for end in range(len(path), 0, -1) if path[:end] in projected.fields), path)
         site = projected.fields.get(holder)
-        swept = _field_sweep(project, plan, key, definition, path, site, _field_label(holder)) if (
+        swept = _field_sweep(project, key, path, site, _field_label(holder), sweep_source) if (
             site is not None and projected.pair is not None
         ) else None
         if holder != path and swept is None:
             raise ProjectFolderInvalid("The selected field is unavailable.")
         if swept is not None and (holder != path or routes_to_sweep(expression.edit, swept, site, bundle.expression_functions)):
             readers = lambda name: plan.document_users(key.variant, name)  # noqa: E731
-            shown = _swept_document(plan, key, definition, swept.role)
-            entry = compose_document(project.documents.get, shown)
-            if isinstance(entry, ProjectDiagnostic):
-                raise ProjectFolderInvalid(entry.detail)
+            source = sweep_source(swept.role)
+            assert source is not None
+            shown = source.document
             variant = None if key.variant == plan.variants[0] else key.variant
             made = trial_field_sweep_edit(
-                expression.edit, swept, key.step, entry.payload, bundle.expression_functions,
+                expression.edit, swept, key.step, source.payload, bundle.expression_functions,
                 (lambda edits: document_write(project, shown, edits, {key.step}, readers)) if step.kind in {"train", "synthesize"}
                 else lambda edits: evaluation_document_write(project, plan, shown, edits, {key.step}, "task", variant),
             )
@@ -1481,7 +1557,7 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
 
 def _trial_fields(
     path, site: Site, expression, functions, sweep, row, problems, name_paths, period,
-    menu_fields: dict[str, TrialExpressionField],
+    menu_fields: dict[str, TrialExpressionField], sites: FieldSiteIndex,
 ) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
@@ -1503,7 +1579,7 @@ def _trial_fields(
         current = at(expression, inner)
         view = project_numeric_field(
             StudioTrialField, swept.field, swept.axis, functions, row, current.value,
-            period=period, effective_unit=current.unit, defer_parts=True,
+            sites=sites, period=period, effective_unit=current.unit, defer_parts=True,
             path=pointer(tuple(map(str, (*path, *inner)))),
         )
         if inner:
@@ -1511,7 +1587,7 @@ def _trial_fields(
             fields.append(view)
         elif view.sweep is not None or view.can_sweep:
             return [view.model_copy(update={
-                "site": projection, "problems": _field_problems(path, site, view.text, functions, problems),
+                "site": sites.reference(projection), "problems": _field_problems(path, site, view.text, functions, problems),
             })]
     if _epoch_end_field(path, "limit"):
         projection = projection.model_copy(update={"kinds": (FieldKind.VALUE,), "functions": (), "parts": ()})
@@ -1528,14 +1604,14 @@ def _trial_fields(
         if isinstance(resolved, tuple):
             marks = [problem.model_copy(update={"path": path}) for problem in resolved]
     return [StudioTrialField(
-        path=field_path, label=_field_label(path), site=projection, text=text,
+        path=field_path, label=_field_label(path), site=sites.reference(projection), text=text,
         structure=value_structure(expression, site, functions) if shown else None,
         conversion=time_conversion(expression, period, trial_time_use(path[0], path[1:])),
         problems=marks,
     ), *fields]
 
 
-def _condition_field(placement, site, functions, row, menu_fields):
+def _condition_field(placement, site, functions, row, menu_fields, sites: FieldSiteIndex):
     path = "set_fields", placement.axis, "condition"
     condition = placement.condition
     problems = ()
@@ -1549,7 +1625,7 @@ def _condition_field(placement, site, functions, row, menu_fields):
                 Problem(code=ProblemCode.STRUCTURE, reason=item.detail, path=path)
                 for item in row.problems if item.path == pointer(path)
             )
-    (view,) = _trial_fields(path, site, condition, functions, lambda *_: None, row, problems, {}, None, menu_fields)
+    (view,) = _trial_fields(path, site, condition, functions, lambda *_: None, row, problems, {}, None, menu_fields, sites)
     if view.text and view.problems:
         span = TextSpan(start=0, end=len(view.text))
         view = view.model_copy(update={"problems": [
@@ -1625,6 +1701,7 @@ def trial_authoring(
                 definition = base
         if definition is None:
             definition = _definition(plan, key)
+        sweep_source = cache(partial(_sweep_source, project, plan, key, definition))
         documents, projected, graph = _pairing(plan, key, bundle, definition=definition)
         stored_task = projected.stored_task or _stored_task_view(plan, definition, documents.task_source)
         stored_objective = StoredObjectiveDocument.from_lowered(documents.objective) if documents.objective else None
@@ -1645,7 +1722,7 @@ def trial_authoring(
         if change is not None:
             stored, refused, preview = _prepare_edits(
                 body, folders, project_id, snapshot.project, settled, key, bundle, definition, documents, projected,
-                stored_task, stored_objective, change=change,
+                stored_task, stored_objective, change=change, sweep_source=sweep_source,
             )
             if isinstance(refused, list):
                 store_choices, refused = refused, ()
@@ -1664,6 +1741,7 @@ def trial_authoring(
                         and item.variant in (None, key.variant)
                     )
                     projected = replace(projected, problems=problems)
+                sweep_source = cache(partial(_sweep_source, project, plan, key, definition))
     except (ValueError, TypeError, KeyError) as error:
         raise ProjectFolderInvalid(str(error)) from error
     paired = projected.pair
@@ -1697,7 +1775,7 @@ def trial_authoring(
         if model_document is not None:
             authored_model = compose_document(project.documents.get, model_document)
             if not isinstance(authored_model, ProjectDiagnostic):
-                reset_model = StoredModelDocument.model_validate(authored_model.payload).lower()
+                reset_model = StoredModelDocument.model_validate(authored_model.payload).lower(bundle.components)
         objective_source = StudioTrialObjectiveSource(
             kind="synthesize" if producer is not None and producer.kind == "synthesize" else "train",
             step=upstream[0].step,
@@ -1738,11 +1816,12 @@ def trial_authoring(
     def sweep(path, site, label):
         if paired is None or _epoch_end_field(path, "limit"):
             return None
-        return _field_sweep(project, plan, key, definition, path, site, label)
+        return _field_sweep(project, key, path, site, label, sweep_source)
 
     clock = documents.model.step_seconds
     period = clock if isinstance(clock, float) else None
     fields = []
+    sites = FieldSiteIndex()
     menu_fields: dict[str, TrialExpressionField] = {}
     for path, site in projected.fields.items():
         if path[1:2] == ("validation_trials",):
@@ -1751,7 +1830,7 @@ def trial_authoring(
             continue  # Internal gate and operand signals are not editable Task fields.
         fields.extend(_trial_fields(
             path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems,
-            output_paths, period, menu_fields,
+            output_paths, period, menu_fields, sites,
         ))
     origins = {}
     if (
@@ -1771,13 +1850,18 @@ def trial_authoring(
     if set_fields:
         site = _set_condition_site(definition, projected)
         fields.extend(
-            _condition_field(placement, site, bundle.expression_functions, row, menu_fields)
+            _condition_field(placement, site, bundle.expression_functions, row, menu_fields, sites)
             for placement in set_fields
         )
     field_problems = [
         problem for field in fields for problem in field.problems
         if not _held_problems(problem.path, projected.problems)
     ]
+    tasks, task_problems = _task_choices(
+        folders, project, documents, bundle, graph,
+        ObjectiveUse.INHERITED if objective_source is not None and objective_source.kind in {"train", "synthesize"}
+        else ObjectiveUse.TRAIN,
+    )
     return StudioTrialAuthoring(
         revision=snapshot.revision, run=body.run,
         expression_context=folders.trial_expression_menus.remember(
@@ -1801,22 +1885,14 @@ def trial_authoring(
         n_steps=compiled.n_steps if compiled else None,
         batch_size=_batch_size(step.kind, definition.payload),
         reads_model=compiled.reads_model if compiled else False,
-        tasks=[
-            StudioTaskChoice(document=name, problems=list(_project(
-                _with_task(documents, other), bundle, show_objective=False, graph_override=graph,
-                objective_use=ObjectiveUse.INHERITED if objective_source is not None and objective_source.kind in {"train", "synthesize"}
-                else ObjectiveUse.TRAIN,
-            ).problems))
-            for name in sorted(project.documents)
-            if (other := _selected_task(project, name)) is not None
-        ],
+        tasks=tasks, task_problems=task_problems,
         input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
         resets=[StudioTrialReset(address=field.address, path=task_start_path(reset_model, field.address),
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
-        fields=fields, problems=[*projected.problems, *field_problems, *refused],
+        fields=fields, **sites.tables(fields), problems=[*projected.problems, *field_problems, *refused],
         created_term=created_term if stored.files or stored.created else None,
         files=stored.files, created=list(stored.created),
         store_choices=store_choices,

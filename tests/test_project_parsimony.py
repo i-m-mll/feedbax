@@ -6,17 +6,21 @@ from functools import partial, reduce
 import json
 from operator import getitem
 from pathlib import Path
+from typing import get_args
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, RootModel, ValidationError
 import pytest
 
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.canonical_json import CanonicalJsonError, canonical_json_v2_bytes
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureDocument
 from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project import BasedDocument, Project, RootDocument, apply_differences, diff
+from feedbax.contracts.project import (
+    BasedDocument, InlineBase, Project, RootDocument, Step, StepKind, apply_differences, diff,
+)
 from feedbax.contracts.project_io import (
-    STUDIO_PRESENTATION_FILENAME, ProjectConfiguration, ProjectReadError, dump_text_project, parse_text_project_files,
+    STUDIO_PRESENTATION_FILENAME, ProjectConfiguration, dump_text_project, parse_text_project_files,
     TextProjectManifest,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
@@ -24,13 +28,16 @@ from feedbax.contracts.project_storage import (
     stored_defaults_manifest, stored_document_models, stored_keyed_collection, stored_project_value, write_project_file,
 )
 from feedbax.contracts.project_sweep import AxisValue, NamedAxis, Row, Sweep, SweepException
+from feedbax.contracts.rollout import ROLLOUT_TYPE
+from feedbax.contracts.stored_regions import StoredRegion, StoredRegionRegistries, step_inline_model, typed_region
 from feedbax.contracts.studio_project import PresentationDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import project_variants
+from tests.support.python_task import REACHING_TASK, reaching_python_task  # noqa: F401
 
 _SHA = "d" * 64
-_OBJECT = {"object_id": f"content-object://sha256/{_SHA}", "sha256": _SHA, "size_bytes": 42}
+_OBJECT = {"sha256": _SHA, "size_bytes": 42}
 _TASK = {
     "id": "task", "variables": {}, "signals": {}, "fixed_steps": None,
     "epochs": {"trial": {"label": "Trial", "end": {"kind": "length", "length": {"kind": "literal", "value": 1}}}},
@@ -47,38 +54,81 @@ _FIGURE = {
         "zero": {"mark": "rule", "role": "summary", "panel": "markers", "encode": {"axis": "x", "at": 0.0}},
     },
 }
+_TIME = {"kind": "literal", "value": 0.2, "unit": "s"}
+_MODEL = {
+    "step_seconds": 0.01, "ports": {}, "interior": {"components": {
+        "cell": {"kind": "leaf", "label": "Cell", "type": "feedbax.VanillaRNN", "fields": {"hidden_size": 4, "tau": _TIME}},
+    }},
+}
+_METHOD = "feedbax.supervised_gradient"
+_TRAIN_SETTINGS = {
+    "grad_clip": 1.0,
+    "optimizer": {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.01}, "b1": 0.9},
+}
+_ANALYSIS = {
+    "inputs": {"states": {"kind": "dataset", "cardinality": "many"}},
+    "operations": {"summary": {
+        "label": "Velocity", "operation": "feedbax.summarize_velocity",
+        "params": {"ddof": 0, "bounds_scale": 1.0, "variable": "parallel_velocity"},
+        "inputs": {"states": {"input": "states"}},
+    }},
+    "views": {"profile": {"label": "Profile", "figure": _FIGURE, "inputs": {"summary": {"input": "states"}}}},
+}
+_REPORT = {
+    "title": "Report", "blocks": [{"markdown": "## Summary"}, {"figure": "velocity", "caption": None}],
+    "completeness": "complete",
+}
 _DOCUMENT_FIXTURES = {
-    STORED_MODEL_DOCUMENT_SCHEMA_ID: {"step_seconds": 0.01, "ports": {}, "interior": {}},
+    STORED_MODEL_DOCUMENT_SCHEMA_ID: _MODEL,
     STORED_TASK_DOCUMENT_SCHEMA_ID: _TASK,
-    "feedbax.spec.python_task": {"type": "feedbax.example_task", "params": {}},
+    "feedbax.spec.python_task": {"type": REACHING_TASK, "params": {"n_steps": 50, "x": 0.15, "y": 0.0}},
     STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID: {"id": "score", "terms": {
         "effort": {"enabled": True, "weight": {"kind": "literal", "value": 1.0},
          "measure": {"kind": "literal", "value": 2.0}, "reduction": "mean"},
     }},
     "feedbax.spec.training_document": {
-        "method": "feedbax.example_training", "settings": {"schedule": {"value": False, "scale": 1.0}},
+        "method": _METHOD, "settings": _TRAIN_SETTINGS,
         "training_config": {"batch_size": 128, "snapshot_interval": 100, "replicates": 1},
     },
-    "feedbax.spec.loaded_model": {
-        "schema_version": "feedbax.spec.loaded_model.v1", "model": {"document": "model"}, "archive": None,
-        "source": {"kind": "imported", "model": _OBJECT,
-                   "weights": {"tree_id": f"content-tree://sha256/{_SHA}", "descriptor": _OBJECT},
-                   "encoding": {"descriptor_sha256": _SHA}},
+    LOADED_MODEL_SCHEMA_ID: {
+        "model": {"document": "model"}, "model_revision": _OBJECT, "archive": None,
+        "weights": {"sha256": "e" * 64, "size_bytes": 54}, "encoding_sha256": "f" * 64,
     },
-    "feedbax.set_document.v2": {"entries": {"nominal": {"label": "Nominal", "differences": {}}}},
-    ANALYSIS_SCHEMA: {
-        "inputs": {"states": {"kind": "dataset", "cardinality": "many"}},
-        "operations": {"align": {
-            "label": "Align", "operation": "feedbax.aligned_velocity", "params": {}, "inputs": {"states": {"input": "states"}},
-        }},
-        "views": {"profile": {"label": "Profile", "figure": _FIGURE, "inputs": {"summary": {"input": "states"}}}},
-    },
+    "feedbax.set_document.v2": {"entries": {"nominal": {
+        "label": "Nominal",
+        "differences": {
+            "/interior/components/cell/fields/tau": {"value": _TIME},
+            "/interior/components/cell/fields/hidden_size": {"value": 4},
+        },
+    }}},
+    ANALYSIS_SCHEMA: _ANALYSIS,
     STORED_FIGURE_DOCUMENT_SCHEMA_ID: _FIGURE,
-    "feedbax.report_document.v1": {
-        "title": "Report", "blocks": [{"markdown": "## Summary"}, {"figure": "velocity", "caption": None}],
-        "completeness": "complete",
-    },
+    "feedbax.report_document.v1": _REPORT,
     "subset": {"rule": "", "clauses": [{"noise": [{"id": "nominal", "label": "Nominal"}]}]},
+}
+
+_TRIALS = {"model": _MODEL, "task": _TASK, "objective": _DOCUMENT_FIXTURES[STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID]}
+_STEP_FIXTURES = {
+    "train": {"method": _METHOD, "training_config": {"n_batches": 3, "replicates": 1}, "settings": _TRAIN_SETTINGS,
+              "trial_documents": _TRIALS | {"input_bindings": {}}},
+    "synthesize": _TRIALS | {"method": "feedbax.constant_parameters", "settings": {"value": 0.0}},
+    "evaluate": {"evaluation_type": ROLLOUT_TYPE, "params": {
+        "seed": 7, "trial_policy": "paired", "variation": [], "retention": "raw_states",
+        "trial_set": {"kind": "every_condition"},
+    }},
+    "analyze": _ANALYSIS,
+    "report": _REPORT,
+}
+_PRESENTATION = {
+    "documents": {"model": {
+        "positions": {"point": {"x": -0.0, "y": 1.0}},
+        "flipped": {"point": True},
+        "collapsed": {"controller": True},
+        "waypoints": {"wire": [{"x": 1.0, "y": 2.0}]},
+        "camera": {"x": 0, "y": 0, "zoom": 0.5},
+    }},
+    "steps": {"train": {"sweep_order": ["length"], "model_positions": {"model": {"point": {"x": 2, "y": 0}}}}},
+    "visible_groups": ["trial"],
 }
 
 type _Path = tuple[str | int, ...]
@@ -99,11 +149,49 @@ def _refinement_fields(value: object, path: _Path = ()) -> Iterator[tuple[_Path,
             yield from _refinement_fields(child, (*path, index))
 
 
+def _effective_payload(value, encoded, registries):
+    """Interpret stored values with registered types and defaults before comparing reads."""
+    if isinstance(value, RootModel):
+        return _effective_payload(value.root, encoded, registries)
+    if isinstance(value, RootDocument):
+        model = stored_document_models()[value.schema_id]
+        assert model is not None, f"{value.schema_id} has no stored payload model"
+        payload = model.model_validate(value.payload)
+        return encoded | {"payload": _effective_payload(payload, payload.model_dump(mode="json", by_alias=True), registries)}
+    if isinstance(value, BaseModel):
+        def read_field(name, field):
+            key = field.serialization_alias or field.alias or name
+            child = getattr(value, name)
+            if isinstance(value, Step) and isinstance(child, InlineBase):
+                region = StoredRegion(step_inline_model(value.kind, child.inline))
+                return {"inline": read_region(region, child.inline, inline=True)}
+            if isinstance(encoded[key], dict) and (region := registries.region(value, name)) is not None:
+                return read_region(region, encoded[key])
+            return _effective_payload(child, encoded[key], registries)
+
+        def read_region(region, raw, *, inline=False):
+            if region.model is None:
+                return raw
+            context = {key: item for key, item in raw.items() if key in region.contextual}
+            typed, values, _ = typed_region(region, {key: item for key, item in raw.items() if key not in context}, inline=inline)
+            return _effective_payload(typed, values, registries) | context
+
+        for name, field in type(value).model_fields.items():
+            key = field.serialization_alias or field.alias or name
+            if key in encoded:
+                encoded[key] = read_field(name, field)
+        return encoded
+    if isinstance(value, dict) and isinstance(encoded, dict):
+        return {key: _effective_payload(value.get(key), child, registries) for key, child in encoded.items()}
+    if isinstance(value, (tuple, list)) and isinstance(encoded, list):
+        return [_effective_payload(item, child, registries) for item, child in zip(value, encoded, strict=True)]
+    return encoded
+
+
 def _meaning(model: BaseModel) -> tuple[bytes, tuple]:
     """Read values with defaults filled, retaining which refinement fields the author set."""
-    value = model.model_dump(mode="json", by_alias=True)
-    if isinstance(model, RootDocument) and (payload_model := stored_document_models()[model.schema_id]) is not None:
-        value["payload"] = payload_model.model_validate(model.payload).model_dump(mode="json", by_alias=True)
+    encoded = model.model_dump(mode="json", by_alias=True)
+    value = _effective_payload(model, encoded, StoredRegionRegistries())
     return canonical_json_v2_bytes(value), tuple(_refinement_fields(model))
 
 
@@ -134,19 +222,25 @@ def _positions_of_keys(value: object, prefix: _Path = ()) -> Iterator[_Path]:
 
 def _verify_parsimony(root: Path, project: Project, *, observe: _Observe | None = None) -> dict[str, bytes]:
     configuration = ProjectConfiguration(project="fixture", store="results", settings={})
-    presentation = PresentationDocument.model_validate({
-        "documents": {"model": {"positions": {"point": {"x": -0.0, "y": 1.0}}, "flipped": {}}},
-    })
+    presentation = PresentationDocument.model_validate(_PRESENTATION)
     files = dump_text_project(project, configuration) | {STUDIO_PRESENTATION_FILENAME: write_project_file(presentation)}
     reopened, shown, expected = _read(files, root, observe)
     assert {key: _meaning(value) for key, value in reopened.project.documents.items()} == {
         key: _meaning(value) for key, value in project.documents.items()
+    }
+    assert {key: _meaning(value) for key, value in reopened.project.steps.items()} == {
+        key: _meaning(value) for key, value in project.steps.items()
     }
     if observe is not None:
         assert observe(reopened.project) == observe(project)
     rewritten = dump_text_project(reopened.project, reopened.configuration)
     assert rewritten | {STUDIO_PRESENTATION_FILENAME: write_project_file(shown)} == files
 
+    _verify_essential_keys(files, root, observe, expected)
+    return files
+
+
+def _verify_essential_keys(files, root, observe, expected):
     for relative, data in files.items():
         original = json.loads(data)
         for path in _positions_of_keys(original):
@@ -155,14 +249,15 @@ def _verify_parsimony(root: Path, project: Project, *, observe: _Observe | None 
             candidate = files | {relative: json.dumps(edited).encode()}
             try:
                 _, _, changed = _read(candidate, root, observe)
-            except (ProjectReadError, ValidationError):
+            except ValueError:
                 continue
             assert changed != expected, f"{relative} repeats a default at {path}"
-    return files
 
 
+@pytest.mark.usefixtures("reaching_python_task")
 @pytest.mark.parametrize("schema", sorted(stored_document_models()))
 def test_each_registered_document_has_a_parsimonious_file(tmp_path, schema):
+    assert stored_document_models()[schema] is not None, f"{schema} has no stored payload model"
     assert schema in _DOCUMENT_FIXTURES, f"Register a document harness fixture for {schema}."
     document = RootDocument(schema=schema, label="Fixture", payload=_DOCUMENT_FIXTURES[schema])
     files = _verify_parsimony(tmp_path, Project(documents={"fixture": document}))
@@ -170,6 +265,93 @@ def test_each_registered_document_has_a_parsimonious_file(tmp_path, schema):
         # The existing expression tree's scalar type can change whether the checker accepts it.
         term = json.loads(files["documents/fixture.json"])["payload"]["terms"]["effort"]
         assert type(term["measure"]["value"]) is float
+
+
+@pytest.mark.parametrize("kind", get_args(StepKind.__value__))
+def test_each_inline_step_has_a_parsimonious_file(tmp_path, kind):
+    assert kind in _STEP_FIXTURES, f"Register an inline step harness fixture for {kind}."
+    step = Step.model_validate({"kind": kind, "label": kind.title(), "base": {"inline": _STEP_FIXTURES[kind]}})
+    _verify_parsimony(tmp_path, Project(steps={kind: step}))
+
+
+def test_set_fields_deltas_and_variant_refinements_are_parsimonious(tmp_path):
+    project = Project.model_validate({
+        "documents": {"perturbations": {
+            "schema": "feedbax.set_document.v2",
+            "label": "Perturbations",
+            "payload": _DOCUMENT_FIXTURES["feedbax.set_document.v2"],
+        }},
+        "steps": {"train": {
+            "kind": "train",
+            "label": "Train",
+            "base": {"inline": _STEP_FIXTURES["train"] | {"seed": 0}},
+            "set_fields": {"perturbation": {
+                "axis": {"set": "perturbations", "optional": False},
+                "sampling": {"kind": "weighted", "weights": {"nominal": 2.0}, "none": 1.0},
+                "condition": {"kind": "literal", "value": True},
+            }},
+            "deltas": [{
+                "layer_id": "seed",
+                "patches": [{"path": "seed", "value": 7}],
+                "acknowledges_ancestor_paths": [],
+                "schema_id": None,
+                "schema_version": None,
+            }],
+            "sweep": {"axes": {"length": {"values": {"long": {
+                "patches": {"training_config.n_batches": {"value": 4}},
+            }}}}},
+        }},
+        "sweep": {"rows": {"longer": {"patches": {"steps.train.base.inline.training_config.n_batches": {"value": 5}}}}},
+    })
+    files = _verify_parsimony(tmp_path, project)
+    train = json.loads(files["steps/train.json"])
+    assert train["base"]["inline"]["seed"] == 0
+    assert json.loads(files["variants/longer.json"])["patches"]
+
+
+def test_a_based_objective_retains_the_expression_and_default_it_writes(tmp_path):
+    schema = STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+    term = deepcopy(_DOCUMENT_FIXTURES[schema]["terms"]["effort"])
+    project = Project.model_validate({"documents": {
+        "objective": {"schema": schema, "label": "Objective", "payload": _DOCUMENT_FIXTURES[schema]},
+        "alternative": {"schema": schema, "label": "Alternative", "base": {"document": "objective"},
+                        "differences": {"/terms/alternate": {"value": term}}},
+    }})
+
+    def observe(project: Project):
+        document = compose_document(project.documents.get, "alternative")
+        return _meaning(document) if isinstance(document, RootDocument) else document
+
+    files = _verify_parsimony(tmp_path, project, observe=observe)
+    derived = json.loads(files["documents/alternative.json"])
+    assert derived["differences"]["/terms/alternate"]["value"] == term
+
+
+@pytest.mark.usefixtures("reaching_python_task")
+@pytest.mark.parametrize(("family", "name", "path", "value"), [
+    ("documents", STORED_MODEL_DOCUMENT_SCHEMA_ID, ("payload", "interior", "components", "cell", "fields", "hidden_size"), 4),
+    ("documents", "feedbax.spec.python_task", ("payload", "params", "x"), 0.15),
+    ("documents", "feedbax.spec.training_document", ("payload", "settings", "grad_clip"), 1.0),
+    ("documents", ANALYSIS_SCHEMA, ("payload", "operations", "summary", "params", "bounds_scale"), 1.0),
+    ("documents", STORED_FIGURE_DOCUMENT_SCHEMA_ID, ("payload", "theme"), "plotly_white"),
+    ("steps", "synthesize", ("base", "inline", "settings"), {"value": 0.0}),
+    ("steps", "evaluate", ("base", "inline", "params", "trial_policy"), "paired"),
+])
+def test_the_harness_refuses_a_restated_registry_default(tmp_path, family, name, path, value):
+    if family == "documents":
+        document = RootDocument(schema=name, label="Fixture", payload=_DOCUMENT_FIXTURES[name])
+        project = Project(documents={"fixture": document})
+    else:
+        step = Step.model_validate({"kind": name, "label": "Fixture", "base": {"inline": _STEP_FIXTURES[name]}})
+        project = Project(steps={"fixture": step})
+    files = _verify_parsimony(tmp_path, project)
+    relative = f"{family}/fixture.json"
+    authored = json.loads(files[relative])
+    reduce(getitem, path[:-1], authored)[path[-1]] = value
+    redundant = files | {relative: json.dumps(authored).encode()}
+    _, _, expected = _read(redundant, tmp_path, None)
+    with pytest.raises(AssertionError, match="repeats a default"):
+        _verify_essential_keys(redundant, tmp_path, None, expected)
 
 
 def test_stored_defaults_have_a_pinned_schema_contract():

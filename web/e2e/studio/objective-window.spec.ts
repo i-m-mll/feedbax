@@ -8,8 +8,7 @@ const squared = { base: 'real', dimensions: { length: 2 } };
 
 // Catches a Window cell whose interval is stored closed (21 samples), anchored at the wrong edge of its epoch, or with
 // offsets the shelf does not apply: `[move + 0.1 s, move + 0.3 s)` at a Step of 0.01 s is 20 samples from move + 0.1 s.
-test("a term's interval, authored in its Window cell, applies on the shelf over its half-open span", async ({ page, request }) => {
-  test.setTimeout(60_000);
+test("a term's interval, authored in its Window cell, applies on the shelf over its half-open span", { tag: '@slow' }, async ({ page, request }) => {
   const files = await fixture('delayed-reaches-files') as { document?: { payload: Record<string, any> } }[];
   for (const file of files) {
     const payload = file.document?.payload;

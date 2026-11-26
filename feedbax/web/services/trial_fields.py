@@ -14,8 +14,8 @@ from feedbax.contracts.expression_values import (
 )
 from feedbax.contracts.expression_site import read_field
 from feedbax.contracts.expression_text import ParsedField
-from feedbax.contracts.project import BasedDocument, Project, RootDocument, SetProjectValue, json_pointer_parts
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.objective_document import objective_weight_title
+from feedbax.contracts.project import BasedDocument, Payload, Project, RootDocument, SetProjectValue, Step, json_pointer_parts
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
@@ -190,24 +190,18 @@ class TrialFieldSweep:
 
 
 def trial_field_sweep(
-    project: Project, step_id: str, document: str | None, role: str, path: FieldPath, site: Site, label: str,
-    parse: Callable[[dict], BaseModel],
+    step: Step, payload: Payload, parsed: BaseModel, role: str, path: FieldPath, site: Site, label: str,
 ) -> TrialFieldSweep | None:
-    """The number at ``path`` of ``document``, read by the step in ``role``, when it is one the step can sweep.
+    """The number at ``path`` of a validated sweep source, when the step can sweep it.
 
-    ``site`` is the site of the expression the number lies in; ``parse`` reads the document's payload.
+    ``payload`` retains the authored key presence and ``site`` describes the enclosing expression.
     """
-    entry = compose_document(project.documents.get, document) if document is not None else None
-    if entry is None or isinstance(entry, ProjectDiagnostic) or not isinstance(entry.payload, dict):
-        return None
-    parsed = parse(entry.payload)
     node = site_expression(parsed, path)
     if node is None and is_window_offset(role, path) and isinstance(at(parsed, path[:-1]), WindowPosition):
         node = window_offset_expression(None)
     if not _numeric(node):
         return None
     time_use = trial_time_use(role, path) if node.unit in {"s", "st"} else None
-    step = project.steps[step_id]
     def validate(value):
         if time_use == "offset" and node.unit == "st":
             return time_steps(TimeValue(value=value, unit="st"), 1)
@@ -223,11 +217,15 @@ def trial_field_sweep(
     )
     patch = ".".join(("trial_documents", role, *path, "value"))
     target = SweepTarget(node.value, lambda _value: [], patch)
-    named = _names(parsed, path) or (role,)
+    weight = objective_weight_title(payload, path) if role == "objective" else None
+    named = path[1:3] if weight is not None else _names(parsed, path) or (role,)
     return TrialFieldSweep(
         role, path, field,
-        FieldSweeps(step, target, label, named, integer=node.unit == "st" and time_use in {"length", "offset"}),
-        at(entry.payload, path) is not None, path,
+        FieldSweeps(
+            step, target, weight or label, named, integer=node.unit == "st" and time_use in {"length", "offset"},
+            derived_label=weight is not None,
+        ),
+        at(payload, path) is not None, path,
     )
 
 

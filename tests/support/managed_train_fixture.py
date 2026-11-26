@@ -34,10 +34,7 @@ def managed_train_project(*, batches: int = 2, scenario: str = "simple-reaches")
     model["ports"]["outputs"] = {"command": model["ports"]["outputs"]["command"]}
     objective = example.documents[trial["objective"]["document"]].payload
     objective["terms"] = {"command": {
-        "measure": {
-            "kind": "call", "function": "sqnorm",
-            "args": [{"kind": "name", "reference": COMMAND_ADDRESS}],
-        },
+        "measure": "sqnorm(outputs.command)",
         "reduction": "last",
     }}
     return Project(
@@ -46,7 +43,8 @@ def managed_train_project(*, batches: int = 2, scenario: str = "simple-reaches")
     )
 
 
-def managed_train_payload(*, batches: int = 2, scenario: str = "simple-reaches") -> dict:
+def managed_stored_train_payload(*, batches: int = 2, scenario: str = "simple-reaches") -> dict:
+    """A Train step's keyed inline definition, suitable for an authored project."""
     project = managed_train_project(batches=batches, scenario=scenario).model_dump(
         mode="json", by_alias=True, exclude_unset=True,
     )
@@ -54,6 +52,15 @@ def managed_train_payload(*, batches: int = 2, scenario: str = "simple-reaches")
     documents = payload["trial_documents"]
     for name in ("model", "task", "objective"):
         documents[name] = project["documents"][documents[name]["document"]]["payload"]
+    return payload
+
+
+def managed_train_payload(*, batches: int = 2, scenario: str = "simple-reaches") -> dict:
+    """The lowered Train payload used by request and execution tests."""
+    from feedbax.contracts.training import lower_stored_trial_documents
+
+    payload = managed_stored_train_payload(batches=batches, scenario=scenario)
+    payload["trial_documents"] = lower_stored_trial_documents(payload["trial_documents"]).model_dump(mode="json")
     return payload
 
 
@@ -75,12 +82,10 @@ def managed_evaluation_step(subject: str) -> dict:
 def managed_train_spec(*, batches: int = 2):
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
     from feedbax.contracts.train_settings import normalize_train_method
-    from feedbax.contracts.training import lower_stored_trial_documents
     from feedbax.application.composition import load_application
 
     registries = load_application().bundle
     payload = managed_train_payload(batches=batches)
-    payload["trial_documents"] = lower_stored_trial_documents(payload["trial_documents"])
     spec, _, _ = normalize_train_method(
         DocumentTrainingRequestSpec.model_validate(payload), registries.training_methods,
     )
