@@ -267,3 +267,16 @@ def read_position_track(dataset: Dataset, name: str, selection: tuple[int, ...])
     if field.frame != "world" or values.shape != (dataset.descriptor.dimensions["state_time"], 2):
         raise ValueError("The retained position has an incompatible state layout.")
     return TrialStateTrack(samples=values.tolist(), units=field.units, frame=field.frame)
+
+
+def read_linear_state_track(dataset: Dataset, name: str, span: slice, selection: tuple[int, ...]) -> TrialStateTrack:
+    """Project a planar effector from the reset-inclusive vector of the selected trial."""
+    from numpy import isfinite
+
+    values = dataset.data(name, selection)
+    if values.ndim != 2 or values.shape[0] != dataset.descriptor.dimensions["state_time"]:
+        raise ValueError("The retained linear state has an incompatible time axis.")
+    positions = values[:, span]
+    if positions.shape[1] != 2 or not isfinite(positions).all():
+        raise ValueError("The retained linear state has an incompatible position slice.")
+    return TrialStateTrack(samples=positions.tolist(), units="m", frame="world")
