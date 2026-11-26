@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 import pytest
 
 from feedbax.contracts.canonical_json import CanonicalJsonError, canonical_json_v2_bytes
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project, RootDocument
 from feedbax.contracts.project_io import (
     STUDIO_PRESENTATION_FILENAME, ProjectConfiguration, ProjectReadError, dump_text_project, parse_text_project_files,
@@ -20,22 +21,24 @@ from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_docu
 from feedbax.contracts.project_storage import stored_defaults_manifest, stored_document_models, write_project_file
 from feedbax.contracts.project_sweep import AxisValue, NamedAxis, Row, Sweep, SweepException
 from feedbax.contracts.studio_project import PresentationDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import project_variants
 
 _SHA = "d" * 64
 _OBJECT = {"object_id": f"content-object://sha256/{_SHA}", "sha256": _SHA, "size_bytes": 42}
 _TASK = {
-    "id": "task", "variables": [], "signals": [], "fixed_steps": None,
-    "epochs": [{"id": "trial", "name": "Trial", "end": {"kind": "length", "length": {"kind": "literal", "value": 1}}}],
+    "id": "task", "variables": {}, "signals": {}, "fixed_steps": None,
+    "epochs": {"trial": {"label": "Trial", "end": {"kind": "length", "length": {"kind": "literal", "value": 1}}}},
 }
 _DOCUMENT_FIXTURES = {
-    "feedbax.spec.model": {"step_seconds": 0.01, "ports": {}, "interior": {}},
-    "feedbax.spec.task_document": _TASK,
+    STORED_MODEL_DOCUMENT_SCHEMA_ID: {"step_seconds": 0.01, "ports": {}, "interior": {}},
+    STORED_TASK_DOCUMENT_SCHEMA_ID: _TASK,
     "feedbax.spec.python_task": {"type": "feedbax.example_task", "params": {}},
-    "feedbax.spec.objective_document": {"id": "score", "terms": [
-        {"id": "effort", "enabled": True, "weight": {"kind": "literal", "value": 1.0},
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID: {"id": "score", "terms": {
+        "effort": {"enabled": True, "weight": {"kind": "literal", "value": 1.0},
          "measure": {"kind": "literal", "value": 2.0}, "reduction": "mean"},
-    ]},
+    }},
     "feedbax.spec.training_document": {
         "method": "feedbax.example_training", "settings": {"schedule": {"value": False, "scale": 1.0}},
         "training_config": {"batch_size": 128, "snapshot_interval": 100, "replicates": 1},
@@ -150,9 +153,9 @@ def test_each_registered_document_has_a_parsimonious_file(tmp_path, schema):
     assert schema in _DOCUMENT_FIXTURES, f"Register a document harness fixture for {schema}."
     document = RootDocument(schema=schema, label="Fixture", payload=_DOCUMENT_FIXTURES[schema])
     files = _verify_parsimony(tmp_path, Project(documents={"fixture": document}))
-    if schema == "feedbax.spec.objective_document":
+    if schema == STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID:
         # The existing expression tree's scalar type can change whether the checker accepts it.
-        term, = json.loads(files["documents/fixture.json"])["payload"]["terms"]
+        term = json.loads(files["documents/fixture.json"])["payload"]["terms"]["effort"]
         assert type(term["measure"]["value"]) is float
 
 
@@ -182,9 +185,9 @@ def test_refinement_keeps_the_default_an_author_explicitly_set(tmp_path):
 def test_a_default_retains_its_presence_when_other_files_observe_it(tmp_path):
     project = Project.model_validate({
         "documents": {
-            "base": {"schema": "feedbax.spec.task_document", "label": "Base", "payload": _TASK},
+            "base": {"schema": STORED_TASK_DOCUMENT_SCHEMA_ID, "label": "Base", "payload": _TASK},
             "derived": {
-                "schema": "feedbax.spec.task_document", "label": "Derived", "base": {"document": "base"},
+                "schema": STORED_TASK_DOCUMENT_SCHEMA_ID, "label": "Derived", "base": {"document": "base"},
                 "differences": {"/fixed_steps": {"op": "remove"}},
             },
         },
@@ -204,7 +207,7 @@ def test_a_default_retains_its_presence_when_other_files_observe_it(tmp_path):
 
 
 def test_opaque_patch_values_keep_types_the_legacy_expression_checker_reads(tmp_path):
-    schema = "feedbax.spec.objective_document"
+    schema = STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
     base = _DOCUMENT_FIXTURES[schema]
     path = "documents.base.payload.terms.effort.measure.value"
     project = Project.model_validate({
@@ -219,7 +222,7 @@ def test_opaque_patch_values_keep_types_the_legacy_expression_checker_reads(tmp_
     })
     files = _verify_parsimony(tmp_path, project)
     terms = json.loads(files["documents/derived.json"])["differences"]["/terms"]["value"]
-    assert type(terms[0]["measure"]["value"]) is float
+    assert type(terms["effort"]["measure"]["value"]) is float
     assert type(json.loads(files["variants/larger.json"])["patches"][path]["value"]) is float
 
 
