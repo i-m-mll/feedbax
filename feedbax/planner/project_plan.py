@@ -92,7 +92,7 @@ from feedbax.contracts.project_resolution import (
 from feedbax.contracts.result_address import (
     AddressProblem, ElementHolders, analyze_cards, payload_elements, shared_element_keys,
 )
-from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_rollout_settings, resolve_trial_ids
+from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, RolloutSettings, authored_rollout_settings, resolve_trial_ids
 from feedbax.contracts.retained_state import RetainedStateField
 from feedbax.contracts.rollout_dataset import common_rollout_port, rollout_dataset_port, rollout_update_axis
 from feedbax.contracts.project_sweep import (
@@ -2357,6 +2357,12 @@ class _Compiler:
                             except KeyError:
                                 return None
                             return setting_field_title(schema, parts[1:], resolved.payload.get("settings"))
+                    if kind == "evaluate" and parts[0] == "params":
+                        resolved = resolved_definition()
+                        if isinstance(resolved, ResolvedStep) and resolved.payload.get("evaluation_type") == ROLLOUT_TYPE:
+                            return setting_field_title(
+                                RolloutSettings.model_json_schema(), parts[1:], resolved.payload.get("params"),
+                            )
                     return None
                 labels = {
                     _model_field_title(model, target.address, self.components or _builtin_model_registry())
@@ -2403,8 +2409,10 @@ class _Compiler:
                         continue
                     axis = origin[1]
                     coordinate = row.coordinates.get(axis)
-                    if coordinate is not None and type(coordinate.value) in (int, float):
-                        style = field_title(path), field_unit(path)
+                    if coordinate is not None:
+                        number = type(coordinate.value) in (int, float)
+                        title = field_title(path) if number or origin[0] == "sweep_value" else None
+                        style = title, field_unit(path) if number else None
                         if style != (None, None):
                             styles.setdefault(axis, set()).add(style)
                 if not styles:
