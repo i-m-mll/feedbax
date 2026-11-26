@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, Field, FiniteFloat, JsonValue, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Document, Project, Sha256, Step
 from feedbax.contracts.project import ProjectValueEdit as ProjectValueEdit
@@ -14,6 +15,7 @@ from feedbax.contracts.project import RemoveProjectValue as RemoveProjectValue
 from feedbax.contracts.project import SetProjectValue as SetProjectValue
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.project_io import ProjectConfiguration
+from feedbax.contracts.result_address import analysis_elements, analyze_cards, authored_analysis_payload
 
 
 class PresentationPosition(StrictModel):
@@ -77,8 +79,33 @@ class StudioAuthoredDeclaration(StrictModel):
     data: str
 
 
+class StudioProjectMemberNames(StrictModel):
+    documents: dict[str, str]
+    steps: dict[str, str]
+    elements: dict[str, dict[str, str]]
+
+    @classmethod
+    def from_project(cls, project: Project) -> StudioProjectMemberNames:
+        elements = {}
+        for card in analyze_cards(project):
+            names = {}
+            for key, member in analysis_elements(authored_analysis_payload(project, card)).items():
+                label = member.get("label") if isinstance(member, dict) else None
+                names[key] = member_display_name(key, label if isinstance(label, str) else None)
+            elements[card] = names
+        return cls(
+            documents={key: member_display_name(key, document.label) for key, document in project.documents.items()},
+            steps={key: member_display_name(key, step.label) for key, step in project.steps.items()},
+            elements=elements,
+        )
+
+
 class StudioProjectSnapshot(StudioProjectRevision):
     project: Project
+    names: StudioProjectMemberNames
+    """The authored document and step names used by project-wide pickers and before selecting a variant."""
+    variant_names: dict[str, StudioProjectMemberNames]
+    """Effective names keyed by expanded project variant."""
     semantic_root: Sha256
     presentation: PresentationDocument | None
     presentation_error: Literal["unreadable_presentation"] | None = None

@@ -4,13 +4,12 @@ import { projectWindowPlan } from './projectWindowPlan';
 
 it('counts a step\'s chosen runs only, so a step whose chosen runs all succeeded reads as done', () => {
   const row = (name: string, status: StudioProjectWindowMapRow['status']): StudioProjectWindowMapRow => ({
-    key: { variant: 'base', step: 'evaluate', row: name }, label: name, status, coordinates: {},
+    key: { variant: 'base', step: 'evaluate', row: name }, name, label: name, status, coordinates: {},
   });
   const project: Project = { steps: { evaluate: { kind: 'evaluate', base: { inline: {} } } } };
   const saved: StudioSavedTrainRuns = {
     revision: '0'.repeat(64), rows: [],
     window_map: {
-      document_names: {},
       variants: ['base'],
       steps: [{ variant: 'base', step_id: 'evaluate', label: 'Evaluate', kind: 'evaluate', group: null, document_ids: {}, inputs: [],
         status_counts: { succeeded: 2, not_chosen: 1 } }],

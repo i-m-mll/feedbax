@@ -10,6 +10,7 @@ const presentationRevision = 'b'.repeat(64);
 
 function snapshot(): StudioProjectSnapshot {
   return {
+    names: { documents: {}, steps: {}, elements: {} }, variant_names: {},
     project_id: 'reaches',
     revision,
     presentation_revision: presentationRevision,

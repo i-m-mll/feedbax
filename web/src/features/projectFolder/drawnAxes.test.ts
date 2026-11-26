@@ -7,7 +7,7 @@ import { projectWindowPlan } from './projectWindowPlan';
 type Row = StudioProjectWindowMapRow;
 const seed = (value: number): Row['coordinates'] => ({ seed: { value_id: String(value), label: null, value, axis_value: String(value) } });
 const row = (step: string, name: string, fields: Partial<Row> = {}): Row => ({
-  key: { variant: 'base', step, row: name }, label: name, status: 'not_run', coordinates: {}, ...fields,
+  key: { variant: 'base', step, row: name }, name, label: name, status: 'not_run', coordinates: {}, ...fields,
 });
 const trainRows = (step: string, seeds: readonly number[]) => seeds.map((value) => row(step, `seed=${value}`, { coordinates: seed(value) }));
 /** An Evaluate row reading `train`'s run at `value`, carrying its seed as the planner sends it. */
@@ -40,7 +40,6 @@ function evaluateStep(
   const saved: StudioSavedTrainRuns = {
     revision: '0'.repeat(64), rows: [],
     window_map: {
-      document_names: {},
       variants: ['base'],
       steps: [...trains, 'evaluate'].map((step_id) => ({
         variant: 'base', step_id, label: step_id, kind: step_id === 'evaluate' ? 'evaluate' : 'train', group: null, document_ids: {},
@@ -117,7 +116,6 @@ it('lists steps in one order whether or not the plan has been read', () => {
   const saved: StudioSavedTrainRuns = {
     revision: '0'.repeat(64), rows: [],
     window_map: {
-      document_names: {},
       variants: ['base'], rows: [], edges: [], problems: [],
       steps: ['train-10', 'train-2', 'analyze'].map((step_id) => ({
         variant: 'base', step_id, label: step_id, kind: 'train', group: null, document_ids: {}, status_counts: {}, axes: [], inputs: [],
