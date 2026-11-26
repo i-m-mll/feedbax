@@ -201,7 +201,10 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
         }))
         assert not pairing["problems"], pairing["problems"]
         (origin,) = [item["set_entry"] for item in pairing["variables"] if item.get("set_entry")]
-        assert origin == {"step": "perturbed", "axis": "loads", "set": "loads", "entry": "pulse", "variable": "amplitude"}
+        assert origin == {
+            "step": "perturbed", "axis": "loads", "set": "loads", "entry": "pulse", "variable": "amplitude",
+            "label": "Pulse", "member_count": None,
+        }
         plan = folders.read_plan("receiver", revision=revision).plan
         paired_steps = {"baseline", "perturbed", "quiet"}
         members = {
