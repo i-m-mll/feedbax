@@ -178,6 +178,30 @@ def test_each_structural_change_leaves_a_document_that_compiles(tmp_path):
         assert task["links"] == [{"model_field": LINKED, "variable": "target"}]
 
 
+def test_task_rename_refuses_ambiguous_expression_names(tmp_path):
+    project = _project(tmp_path)
+    with project.client:
+        revision = project.snapshot()["revision"]
+        for member, id_, name, field in (
+            ("variable", "start", "time", "variables"),
+            ("signal", "target_pos", "time", "signals"),
+            ("epoch", "hold", "time", "epochs"),
+            ("epoch", "hold", "cue", "epochs"),
+            ("signal", "target_pos", "target", "signals"),
+            ("variable", "start", "command", "variables"),
+        ):
+            view = _change(project, {"op": "rename", "member": member, "id": id_, "name": name})
+            assert not view.files, (member, name)
+            (problem,) = view.problems
+            assert problem.code == "duplicate_name"
+            assert problem.path == (field, id_, "name")
+        assert project.snapshot()["revision"] == revision
+
+        # The parser accepts names in quotes. Epochs also have their own namespace.
+        assert not _made(project, {"op": "rename", "member": "signal", "id": "target_pos", "name": "Requested point"})
+        assert not _made(project, {"op": "rename", "member": "epoch", "id": "hold", "name": "target"})
+
+
 def test_a_variable_added_for_a_model_start_initializes_it_in_the_same_edit(tmp_path):
     """Catches naming a Model start that writes the variable without its link, or leaves the start linked twice."""
     project = _project(tmp_path)

@@ -53,6 +53,7 @@ from feedbax.contracts.studio_trials import (
 from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Length, PythonTaskSelection, TaskDocument, Variable,
 )
+from feedbax.contracts.task_structure import RenameMember as RenameTaskMember
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.time_units import TimeValue, length_steps
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
@@ -64,7 +65,7 @@ from feedbax.contracts.expression_check import check, references
 from feedbax.contracts.expression_site import FieldKind, project_site, read_field
 from feedbax.contracts.expression_text import parse, print_field, resolve_expression
 from feedbax.studio.value_structure import value_structure
-from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
+from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective, epoch_outcome_references
 from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.authored_scope import edited_authored_rows
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
@@ -886,8 +887,9 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
             if narrowed != stored:
                 candidates.append(("selected_readers", "Selected Readers", name, narrowed))
             return _validate_files(body, project, settled, key, selected, folders, bundle, candidates)
-    structural = isinstance(change, StudioTrialStructureEdit)
-    if structural:
+    renames = ()
+    if isinstance(change, StudioTrialStructureEdit):
+        renames = tuple(item for item in change.changes if isinstance(item, RenameTaskMember))
         change = _structure_edit(change, documents, definition)
         if not isinstance(change, StudioTrialDocumentEdit):
             return StoredEdit([]), change, None
@@ -1033,6 +1035,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
         body, project, settled, key, selected, folders, bundle, candidates,
         preserve=preserve, controlling=controlling if isinstance(change, StudioTrialDocumentEdit | StudioTrialBindingEdit) else None,
         other_runs=lambda rows: store_for(ListedRuns(kind="rows", rows=tuple(sorted(row.row for row in rows))), chosen),
+        renames=renames,
     )
 
 
@@ -1230,9 +1233,36 @@ def _resolved_value_files(authored, candidate, pairings, compile_sources, bundle
     ]
 
 
+def _rename_scope_problem(
+    task: TaskDocument | None, fields: dict[tuple[str | int, ...], Site], renames: tuple[RenameTaskMember, ...],
+) -> Problem | None:
+    """Refuse a rename that makes a Task reference ambiguous in an expression site."""
+    if task is None:
+        return None
+    members = {
+        "variable": ("variables", task.variables),
+        "epoch": ("epochs", task.epochs),
+        "signal": ("signals", task.signals),
+    }
+    for change in renames:
+        section, group = members[change.member]
+        if not any(item.id == change.id and item.name == change.name for item in group):
+            continue
+        references = epoch_outcome_references(change.id).keys() if change.member == "epoch" else {change.id}
+        for site in fields.values():
+            other_names = {item.name for item in site.names if item.id not in references}
+            name = next((item.name for item in site.names if item.id in references and item.name in other_names), None)
+            if name is not None:
+                return Problem(
+                    code=ProblemCode.DUPLICATE_NAME, reason=f"The name {name!r} is already in scope.",
+                    path=(section, change.id, "name"),
+                )
+    return None
+
+
 def _validate_files(
     body, project, settled, key, selected, folders, bundle, candidates,
-    *, preserve=None, controlling=None, other_runs=None, edited_rows=None,
+    *, preserve=None, controlling=None, other_runs=None, edited_rows=None, renames: tuple[RenameTaskMember, ...] = (),
 ):
     """Calculate each store's reach on the authored definitions before preparing its files."""
     possible = {
@@ -1309,6 +1339,8 @@ def _validate_files(
     for reached in decision.runs:
         if reached in candidate.selected_definitions:
             documents, projection, _ = _pairing(candidate, reached, bundle)
+            if renames and (problem := _rename_scope_problem(documents.task, projection.fields, renames)) is not None:
+                return StoredEdit([]), (problem,), None
             pairings[reached] = (documents, projection)
     if files := _resolved_value_files(authored, candidate, pairings, compile_sources, bundle):
         stored = stored.then(files)

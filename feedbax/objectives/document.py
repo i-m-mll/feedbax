@@ -106,14 +106,19 @@ class _EpochRead:
         return matches if self.name.list_count else matches[0]
 
 
+def epoch_outcome_references(epoch: str) -> dict[str, EpochEnd]:
+    """The stable references for the two outcomes an Until epoch exposes to expressions."""
+    return {f"epoch:{epoch}:{outcome.name.lower()}": outcome for outcome in (EpochEnd.CONDITION, EpochEnd.LIMIT)}
+
+
 def _epoch_reads(task: TrialSource) -> tuple[_EpochRead, ...]:
     reads = []
     for epoch, name in task.interface.epoch_conditions:
         slots = tuple(index for index, given in enumerate(task.epochs) if given == epoch)
-        for suffix, outcome in (("condition", EpochEnd.CONDITION), ("limit", EpochEnd.LIMIT)):
+        for reference, outcome in epoch_outcome_references(epoch).items():
             reads.append(_EpochRead(
                 ScopedValue(
-                    id=f"epoch:{epoch}:{suffix}", name=f"epoch.{name}.{suffix}",
+                    id=reference, name=f"epoch.{name}.{outcome.name.lower()}",
                     type=ValueType(base=ValueBase.BOOLEAN), level=Level.TRIAL,
                     list_count=len(slots) if len(slots) > 1 else None,
                 ),
