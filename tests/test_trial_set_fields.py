@@ -32,16 +32,29 @@ from tests.test_document_train_pair import authored_documents, document_project
 
 
 
-@pytest.mark.parametrize("operation, slot, parameter, changed", [
-    ("scale", "factor", 3.0, [3.0, 6.0]),
-    ("add", "value", 3.0, [4.0, 5.0]),
-    ("clamp", "high", 1.5, [1.0, 1.5]),
+@pytest.mark.parametrize("operation, slot, parameter, changed, source", [
+    ("scale", "factor", 3.0, [3.0, 6.0], "task"),
+    ("add", "value", 3.0, [4.0, 5.0], "task"),
+    ("clamp", "high", 1.5, [1.0, 1.5], "task"),
+    pytest.param("add", "value", 0.002, [1.002, 2.002], "literal", id="scalar-float64"),
+    pytest.param("scale", "factor", 0.002, [0.002, 0.004], "literal", id="scale-float64"),
+    pytest.param("clamp", "high", 1.002, [1.0, 1.002], "literal", id="clamp-float64"),
+    pytest.param("add", "value", [0.002, 0.0], [1.002, 2.0], "set", id="set-vector-float64"),
 ])
-def test_timed_intervention_reads_a_task_operand_on_its_exact_window(operation, slot, parameter, changed):
+def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slot, parameter, changed, source):
     functions, *_ = authored_documents()
-    operands = {slot: {"kind": "task", "variable": "gain"}}
+    operand = {"kind": "task", "variable": "gain"} if source == "task" else {"kind": "value", "value": parameter}
+    operands = {slot: operand}
     if operation == "clamp":
         operands["low"] = {"kind": "value", "value": -1.0}
+    attachment = {
+        "id": "pulse", "kind": "intervention", "operation": operation, "operands": operands,
+        "window": {"spans": [{
+            "kind": "interval",
+            "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
+            "end": {"offset": {"value": 2, "unit": "st"}},
+        }]},
+    }
     model = ModelDocument.model_validate({
         "step_seconds": 0.01,
         "ports": {
@@ -56,14 +69,7 @@ def test_timed_intervention_reads_a_task_operand_on_its_exact_window(operation, 
                 "out": {
                     "source": {"owner": "component", "component": "relay", "port": "output"},
                     "target": {"owner": "outputs", "port": "command"},
-                    "attachments": [{
-                        "id": "pulse", "kind": "intervention", "operation": operation, "operands": operands,
-                        "window": {"spans": [{
-                            "kind": "interval",
-                            "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
-                            "end": {"offset": {"value": 2, "unit": "st"}},
-                        }]},
-                    }],
+                    "attachments": [] if source == "set" else [attachment],
                 },
             },
         },
@@ -72,7 +78,7 @@ def test_timed_intervention_reads_a_task_operand_on_its_exact_window(operation, 
         "id": "task", "fixed_steps": 5,
         "variables": [{
             "id": "gain", "name": "gain", "type": {"base": "real"}, "value": {"kind": "literal", "value": parameter},
-        }],
+        }] if source == "task" else [],
         "epochs": [{"id": "move", "name": "Move", "end": {"kind": "length", "length": {
             "kind": "literal", "value": 5, "unit": "st",
         }}}],
@@ -84,17 +90,25 @@ def test_timed_intervention_reads_a_task_operand_on_its_exact_window(operation, 
             }}],
         }],
     })
-    compiled = compile_trial_execution(
-        model, task, ComponentRegistry(), functions, python_tasks=application_python_tasks(),
-    )
-    assert isinstance(compiled, PreparedTrialExecution), compiled
-    trial = compiled.execution.task.ahead(TaskParameters(), jr.key(0), jr.key(1))
-    graph = compiled.executable.graph
-    inputs = {port: trial.inputs[signal] for port, signal in compiled.execution.input_bindings}
-    reset = compiled.execution.reset.prepare(graph, trial.inits, key=jr.key(2), inputs=inputs)
-    after, _ = graph(inputs, reset.state, key=jr.key(3), n_steps=5, cycle_init=reset.cycle_init)
-    nominal = [1.0, 2.0]
-    np.testing.assert_array_equal(after["command"], [nominal, nominal, changed, changed, nominal])
+    with jax.enable_x64(source != "task" or jax.config.x64_enabled):
+        registry = ComponentRegistry()
+        if source == "set":
+            bank = RootDocument(schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"pulse": {
+                "differences": {"/interior/wires/out/attachments": {"value": [attachment]}},
+            }}})
+            field = TrialSetField.model_validate({"axis": {"set": "bank"}, "sampling": {"kind": "weighted", "none": 0}})
+            model, task, _ = lower_trial_sets(model, task, {"bank": field}, {"bank": bank}.get, registry, functions=functions)
+        compiled = compile_trial_execution(
+            model, task, registry, functions, python_tasks=application_python_tasks(),
+        )
+        assert isinstance(compiled, PreparedTrialExecution), compiled
+        trial = compiled.execution.task.ahead(TaskParameters(), jr.key(0), jr.key(1))
+        graph = compiled.executable.graph
+        inputs = {port: trial.inputs[signal] for port, signal in compiled.execution.input_bindings}
+        reset = compiled.execution.reset.prepare(graph, trial.inits, key=jr.key(2), inputs=inputs)
+        after, _ = graph(inputs, reset.state, key=jr.key(3), n_steps=5, cycle_init=reset.cycle_init)
+        nominal = [1.0, 2.0]
+        np.testing.assert_array_equal(after["command"], [nominal, nominal, changed, changed, nominal])
 
 
 def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
