@@ -323,14 +323,17 @@ function versionsMatch(a: StudioProjectRevision, b: StudioProjectRevision) {
   return a.revision === b.revision && a.presentation_revision === b.presentation_revision;
 }
 
+/**
+ * Whether `project` holds the file `file` creates, by its identity: its key, and its schema or step kind. The Service
+ * stores a created file canonically, without the defaults a request may spell out, so its content is not compared.
+ */
 export function containsCreatedFile(project: AuthoredProject, file: NamedFileCreation) {
-  const collection = file.kind === 'document' ? project.documents : project.steps;
-  if (!collection || !Object.prototype.hasOwnProperty.call(collection, file.id)) return false;
-  const actual = new Map(Object.entries(collection[file.id]));
-  const intended = Object.entries(file.kind === 'document' ? file.document : file.step);
-  return actual.size === intended.length && intended.every(([key, value]) =>
-    actual.has(key) && JSON.stringify(actual.get(key)) === JSON.stringify(value),
-  );
+  if (file.kind === 'document') {
+    const stored = project.documents?.[file.id];
+    return !!stored && Object.prototype.hasOwnProperty.call(project.documents, file.id) && stored.schema === file.document.schema;
+  }
+  const stored = project.steps?.[file.id];
+  return !!stored && Object.prototype.hasOwnProperty.call(project.steps, file.id) && stored.kind === file.step.kind;
 }
 
 function isAcknowledgedAddition(
