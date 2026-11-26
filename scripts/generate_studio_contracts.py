@@ -59,6 +59,7 @@ from feedbax.contracts.execution_target import (
     SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnreachableTarget,
 )
 from feedbax.contracts.analysis_document import AnalysisDocument
+from feedbax.contracts.figure_document import StoredFigureDocument
 from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.contracts.studio_figure import (
     FigureLayoutMeta, FigurePanelMeta, FigureProduct, FigureRun, FigureTraceMeta, PlotlyLayout, PlotlyTrace,
@@ -538,6 +539,7 @@ AUTHORED_CONTRACT_MODELS = (
     ValidityAction,
     ValidityAcceptance,
     AnalysisDocument,
+    StoredFigureDocument,
     TaskDocument,
     StoredTaskDocument,
     StoredObjectiveDocument,
