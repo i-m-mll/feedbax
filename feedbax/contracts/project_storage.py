@@ -15,9 +15,11 @@ from pydantic_core import to_jsonable_python
 
 from feedbax.contracts.authored_arrays import check_authored_array_budget
 from feedbax.contracts.canonical_json import validate_canonical_json_v2
+from feedbax.contracts.expression_storage import StoredExpression, StoredTime
 from feedbax.contracts.expression_values import LiteralValue
 from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureSource
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.matrix_core import ExpressionSiteKind
 from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.objective_document import ObjectiveTerm, StoredObjectiveTerm
 from feedbax.contracts.project import ExternalBase, InlineBase, RootDocument, SetDocumentValue, Step
@@ -103,6 +105,81 @@ def _keyed_collection_at(annotation: Any, path: StoredPath) -> bool:
             if _key(name, field) == path[0]:
                 return _keyed_collection_at(field.annotation, path[1:])
     return False
+
+
+@lru_cache(maxsize=4096)
+def stored_expression_site(schema_id: str, path: StoredPath) -> ExpressionSiteKind | None:
+    """Identify a declared scalar expression or time, without inspecting its content."""
+    model = stored_document_models().get(schema_id)
+    return _expression_site_at(model, path)
+
+
+def _expression_site_at(annotation: Any, path: StoredPath) -> ExpressionSiteKind | None:
+    if annotation is StoredExpression or annotation is StoredTime:
+        return None if path else "expression" if annotation is StoredExpression else "time"
+    if annotation is JsonValue:
+        return None
+    origin = get_origin(annotation)
+    arguments = get_args(annotation)
+    if origin in (StoredMembers, StoredAddressedMembers):
+        return _expression_site_at(arguments[0], path[1:]) if path else None
+    if origin is dict and len(arguments) == 2:
+        return _expression_site_at(arguments[1], path[1:]) if path else None
+    if origin is Annotated:
+        return _expression_site_at(arguments[0], path)
+    if origin in (Union, UnionType):
+        return next((site for arg in arguments if (site := _expression_site_at(arg, path)) is not None), None)
+    if isinstance(annotation, TypeAliasType):
+        return _expression_site_at(annotation.__value__, path)
+    if path and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        annotation.model_rebuild()
+        for name, field in annotation.model_fields.items():
+            if _key(name, field) == path[0]:
+                return _expression_site_at(field.annotation, path[1:])
+    return None
+
+
+@lru_cache(maxsize=4096)
+def stored_step_expression_site(kind: str, path: StoredPath) -> ExpressionSiteKind | None:
+    """Resolve an expression in a step's authored payload using its declared document roles."""
+    from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+    from feedbax.contracts.result_address import ANALYSIS_SCHEMA
+    from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
+    from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
+
+    if kind == "analyze":
+        return stored_expression_site(ANALYSIS_SCHEMA, path)
+    if kind == "synthesize":
+        from feedbax.contracts.synthesis import SynthesisStepPayload
+
+        return _expression_site_at(SynthesisStepPayload, path)
+    if kind in {"train", "evaluate"} and len(path) > 2 and path[0] == "trial_documents":
+        schema = {
+            "model": STORED_MODEL_DOCUMENT_SCHEMA_ID,
+            "task": STORED_TASK_DOCUMENT_SCHEMA_ID,
+            "objective": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID,
+        }.get(path[1])
+        return stored_expression_site(schema, path[2:]) if schema is not None else None
+    return None
+
+
+def stored_project_expression_site(
+    project: Mapping[str, Any], path: StoredPath,
+) -> ExpressionSiteKind | None:
+    """Resolve declarations for variants, whose paths start at the authored project."""
+    if len(path) < 3:
+        return None
+    family, name, *member_path = path
+    if family not in {"documents", "steps"}:
+        return None
+    member = project.get(family, {}).get(name, {})
+    if family == "documents" and member_path[0] == "payload":
+        return stored_expression_site(member.get("schema", ""), tuple(member_path[1:]))
+    if family == "steps":
+        if member_path[:2] == ["base", "inline"]:
+            return stored_step_expression_site(member.get("kind", ""), tuple(member_path[2:]))
+        return _expression_site_at(Step, tuple(member_path))
+    return None
 
 
 @cache
@@ -246,8 +323,9 @@ def _projected_file(
         declared = {key: value for key, value in child.items() if key not in context}
         typed, encoded, complete = typed_region(region, declared, inline=inline)
         if not complete and not inline:
-            remember_reals(child, path)
-            return child
+            authored = region.authored_values(child)
+            remember_reals(authored, path)
+            return authored
         cls = type(typed)
         if cls not in registered_here:
             registered_here.add(cls)
@@ -258,7 +336,7 @@ def _projected_file(
         if inline:
             known = {_key(name, field) for name, field in cls.model_fields.items()}
             return projected | {key: value for key, value in encoded.items() if key not in known}
-        return projected
+        return region.authored_values(projected)
 
     def remember_reals(value: JsonValue, path: StoredPath) -> None:
         if type(value) is float:

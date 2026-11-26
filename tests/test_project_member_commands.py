@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sweep import model_field_path
 from feedbax.contracts.project import Project
 from feedbax.web.app import create_app
 from tests.test_canonical_evaluate_admission import _save_project
@@ -20,7 +21,7 @@ MASS = {
     "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
 }
-MASS_TEXT = ModelAddress.model_validate(MASS).to_text()
+MASS_TEXT = model_field_path(ModelAddress.model_validate(MASS))
 
 
 @pytest.fixture
@@ -40,7 +41,7 @@ def studio(tmp_path):
             "documents": {"reach-model": {"positions": {
                 ModelAddress.model_validate({
                     "composites": [], "element": {"kind": "component", "id": "wrapper"},
-                }).to_text(): {"x": 1, "y": 2},
+                }).to_authored_text(): {"x": 1, "y": 2},
             }}},
         }))
         yield client, folders

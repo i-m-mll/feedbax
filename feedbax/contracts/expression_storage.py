@@ -17,6 +17,7 @@ from feedbax.contracts.expression_values import (
     LiteralValue,
     NameValue,
     Scalar,
+    SetVariableOrigin,
     UnresolvedValue,
 )
 from feedbax.contracts.model_address import ModelAddress
@@ -65,6 +66,10 @@ def stored_reference(reference: str) -> str:
     return reference
 
 
+def stored_set_reference(origin: SetVariableOrigin) -> str:
+    return f"set.{origin.axis}.{origin.entry}.{origin.variable}"
+
+
 def _lowered_reference(spelling: str) -> str:
     if found := _STORED_EPOCH.fullmatch(spelling):
         return f"epoch:{found[1]}:{found[2]}"
@@ -83,6 +88,15 @@ def store_expression(value: Expression, *, scopes: Mapping[str, str] | None = No
     if scopes is None:
         return _map_refs(value, stored_reference)
     return _map_refs(value, lambda reference: scopes.get(reference) or stored_reference(reference))
+
+
+def stored_expression_value(value: Expression, *, scopes: Mapping[str, str] | None = None) -> AuthoredExpressionValue:
+    return print_stored_expression(store_expression(value, scopes=scopes))
+
+
+def rename_expression_references(value: Expression, references: Mapping[str, str]) -> Expression:
+    """Replace the named references of an expression while preserving its representation."""
+    return _map_refs(value, lambda reference: references.get(reference, reference))
 
 
 def lower_expression(value: Expression) -> Expression:

@@ -1,5 +1,6 @@
 """Authored Objective documents and their lowering for execution."""
 
+from collections.abc import Mapping
 from enum import StrEnum
 
 from pydantic import Field
@@ -63,16 +64,29 @@ class StoredObjectiveTerm(_TermFields[StoredExpression, StoredWindow]):
 
     @classmethod
     def from_lowered(cls, term: ObjectiveTerm) -> "StoredObjectiveTerm":
+        return cls.from_value(term, label=term.name)
+
+    @classmethod
+    def from_value(
+        cls, term: ObjectiveTermValue, *, label: str | None, scopes: Mapping[str, str] | None = None,
+    ) -> "StoredObjectiveTerm":
         return project_member(term, cls, {
-            "measure": store_expression,
-            "weight": store_expression,
-            "window": lambda window: StoredWindow.from_lowered(window) if window is not None else None,
-        }, label=term.name)
+            "measure": lambda expression: store_expression(expression, scopes=scopes),
+            "weight": lambda expression: store_expression(expression, scopes=scopes),
+            "window": lambda window: StoredWindow.from_lowered(window, scopes=scopes) if window is not None else None,
+        }, label=label)
 
 
 class ObjectiveDocument(ValueRecord):
     id: str
     terms: tuple[ObjectiveTerm, ...] = ()
+
+    def for_execution(self) -> "ObjectiveDocument":
+        if all(term.name is None for term in self.terms):
+            return self
+        return self.model_copy(update={"terms": tuple(
+            term if term.name is None else term.model_copy(update={"name": None}) for term in self.terms
+        )})
 
 
 class StoredObjectiveDocument(ValueRecord):

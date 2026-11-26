@@ -319,7 +319,7 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
         payload = reopened["project"]["documents"]["model"]["payload"]
         outer = payload["interior"]["components"]["outer"]
         assert list(outer["interior"]["components"]) == [address.element.id]
-        assert reopened["presentation"]["documents"]["model"]["positions"][address.to_text()] == {
+        assert reopened["presentation"]["documents"]["model"]["positions"][address.to_authored_text()] == {
             "x": 2, "y": 3,
         }
         assert client.post(url + "/model/edit", json=body).status_code == 409
@@ -360,6 +360,54 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
         rejected = replay(replacement, redone.json()["result"]["undo_token"])
         assert rejected.status_code == 422 and "another project" in rejected.text
         assert client.get(url).json() == replacement
+
+
+def test_card_move_and_relabel_keep_compact_position_on_reopen(tmp_path):
+    shipped = load_shipped_projects()["point-mass-reaching"].documents["point-mass"]
+    project = Project(documents={"model": shipped})
+    root = tmp_path / "project"
+    for name, data in dump_text_project(project, ProjectConfiguration(project="project", store="store")).items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    plant = ModelAddress.from_authored_text("component.plant")
+    address = plant.model_dump(mode="json")
+    position = {"x": 18, "y": 25}
+    url = "/api/projects/project"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        def apply(snapshot, operation):
+            response = client.post(url + "/model/edit", json={
+                "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+                "document": "model", "command": {"operation": operation},
+            })
+            assert response.status_code == 200, response.text
+            result = response.json()["result"]
+            assert result["status"] == "applied", result
+            return result["snapshot"]
+
+        before = client.get(url).json()
+        moved = apply(before, {"op": "move_cards", "placements": [{"address": address, "position": position}]})
+        assert moved["presentation"]["documents"]["model"]["positions"] == {"component.plant": position}
+        renamed = apply(moved, {"op": "rename", "address": address, "name": "Hand"})
+        assert renamed["presentation_revision"] == moved["presentation_revision"]
+        stored = root / "presentation.json"
+        assert b'"component.plant":' in stored.read_bytes()
+        assert plant.to_text().encode() not in stored.read_bytes()
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        reopened = client.get(url + "/open").json()["snapshot"]
+        assert reopened == renamed
+        projection = client.post(url + "/model/projection", json={
+            "revision": reopened["revision"], "document": "model",
+        })
+        assert projection.status_code == 200, projection.text
+        assert projection.json()["address_texts"][plant.to_text()] == "component.plant"
+        legacy = client.put(url + "/presentation", json={
+            "revision": reopened["presentation_revision"],
+            "presentation": {"documents": {"model": {"positions": {plant.to_text(): position}}}},
+        })
+        assert legacy.status_code == 422, legacy.text
+        assert client.get(url + "/open").json()["snapshot"] == renamed
 
 
 def test_batch_created_model_recovers_its_original_file_revision_after_undo(tmp_path):
@@ -447,7 +495,7 @@ def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambi
         file.write_bytes(data)
     hold = ModelAddress.model_validate(_address(kind="wire", id="hold"))
     stale_layout = ModelAddress.model_validate(_address(kind="wire", id="old-layout"))
-    layout = {hold.to_text(): [{"x": 2, "y": 3}], stale_layout.to_text(): [{"x": 9, "y": 4}]}
+    layout = {hold.to_authored_text(): [{"x": 2, "y": 3}], stale_layout.to_authored_text(): [{"x": 9, "y": 4}]}
     url = "/api/projects/project"
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         before = client.get(url).json()
@@ -494,7 +542,7 @@ def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambi
         saved_layout = saved["presentation"]["documents"]["model"]["waypoints"]
         if ambiguous:
             assert key not in old_wires and not wire.get("attachments")
-            assert saved_layout == {stale_layout.to_text(): layout[stale_layout.to_text()]}
+            assert saved_layout == {stale_layout.to_authored_text(): layout[stale_layout.to_authored_text()]}
         else:
             original_wire = before["project"]["documents"]["model"]["payload"]["interior"]["wires"]["hold"]
             assert key == "hold" and wire["attachments"] == original_wire["attachments"]

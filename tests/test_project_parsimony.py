@@ -40,7 +40,7 @@ _SHA = "d" * 64
 _OBJECT = {"sha256": _SHA, "size_bytes": 42}
 _TASK = {
     "id": "task", "variables": {}, "signals": {}, "fixed_steps": None,
-    "epochs": {"trial": {"label": "Trial", "end": {"kind": "length", "length": {"kind": "literal", "value": 1}}}},
+    "epochs": {"trial": {"label": "Trial", "end": {"kind": "length", "length": "1 st"}}},
 }
 _FIGURE = {
     "data": ["summary"], "theme": "plotly_white",
@@ -54,9 +54,9 @@ _FIGURE = {
         "zero": {"mark": "rule", "role": "summary", "panel": "markers", "encode": {"axis": "x", "at": 0.0}},
     },
 }
-_TIME = {"kind": "literal", "value": 0.2, "unit": "s"}
+_TIME = "200 ms"
 _MODEL = {
-    "step_seconds": 0.01, "ports": {}, "interior": {"components": {
+    "step_seconds": "0.01 s", "ports": {}, "interior": {"components": {
         "cell": {"kind": "leaf", "label": "Cell", "type": "feedbax.VanillaRNN", "fields": {"hidden_size": 4, "tau": _TIME}},
     }},
 }
@@ -83,8 +83,7 @@ _DOCUMENT_FIXTURES = {
     STORED_TASK_DOCUMENT_SCHEMA_ID: _TASK,
     "feedbax.spec.python_task": {"type": REACHING_TASK, "params": {"n_steps": 50, "x": 0.15, "y": 0.0}},
     STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID: {"id": "score", "terms": {
-        "effort": {"enabled": True, "weight": {"kind": "literal", "value": 1.0},
-         "measure": {"kind": "literal", "value": 2.0}, "reduction": "mean"},
+        "effort": {"enabled": True, "weight": 1, "measure": 2, "reduction": "mean"},
     }},
     "feedbax.spec.training_document": {
         "method": _METHOD, "settings": _TRAIN_SETTINGS,
@@ -121,13 +120,13 @@ _STEP_FIXTURES = {
 }
 _PRESENTATION = {
     "documents": {"model": {
-        "positions": {"point": {"x": -0.0, "y": 1.0}},
-        "flipped": {"point": True},
-        "collapsed": {"controller": True},
-        "waypoints": {"wire": [{"x": 1.0, "y": 2.0}]},
+        "positions": {"component.point": {"x": -0.0, "y": 1.0}},
+        "flipped": {"component.point": True},
+        "collapsed": {"controller/graph": True},
+        "waypoints": {"wire.route": [{"x": 1.0, "y": 2.0}]},
         "camera": {"x": 0, "y": 0, "zoom": 0.5},
     }},
-    "steps": {"train": {"sweep_order": ["length"], "model_positions": {"model": {"point": {"x": 2, "y": 0}}}}},
+    "steps": {"train": {"sweep_order": ["length"], "model_positions": {"model": {"component.point": {"x": 2, "y": 0}}}}},
     "visible_groups": ["trial"],
 }
 
@@ -159,6 +158,10 @@ def _effective_payload(value, encoded, registries):
         payload = model.model_validate(value.payload)
         return encoded | {"payload": _effective_payload(payload, payload.model_dump(mode="json", by_alias=True), registries)}
     if isinstance(value, BaseModel):
+        if not isinstance(encoded, dict):
+            # Stored expression and time aliases encode typed nodes as scalars or text.
+            return value.model_dump(mode="json", by_alias=True)
+
         def read_field(name, field):
             key = field.serialization_alias or field.alias or name
             child = getattr(value, name)
@@ -172,7 +175,10 @@ def _effective_payload(value, encoded, registries):
         def read_region(region, raw, *, inline=False):
             if region.model is None:
                 return raw
-            context = {key: item for key, item in raw.items() if key in region.contextual}
+            context = {
+                key: region.lowered_expressions.get(key, item)
+                for key, item in raw.items() if key in region.contextual
+            }
             typed, values, _ = typed_region(region, {key: item for key, item in raw.items() if key not in context}, inline=inline)
             return _effective_payload(typed, values, registries) | context
 
@@ -262,9 +268,8 @@ def test_each_registered_document_has_a_parsimonious_file(tmp_path, schema):
     document = RootDocument(schema=schema, label="Fixture", payload=_DOCUMENT_FIXTURES[schema])
     files = _verify_parsimony(tmp_path, Project(documents={"fixture": document}))
     if schema == STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID:
-        # The existing expression tree's scalar type can change whether the checker accepts it.
         term = json.loads(files["documents/fixture.json"])["payload"]["terms"]["effort"]
-        assert type(term["measure"]["value"]) is float
+        assert type(term["measure"]) is int and term["measure"] == 2
 
 
 @pytest.mark.parametrize("kind", get_args(StepKind.__value__))
@@ -288,7 +293,7 @@ def test_set_fields_deltas_and_variant_refinements_are_parsimonious(tmp_path):
             "set_fields": {"perturbation": {
                 "axis": {"set": "perturbations", "optional": False},
                 "sampling": {"kind": "weighted", "weights": {"nominal": 2.0}, "none": 1.0},
-                "condition": {"kind": "literal", "value": True},
+                "condition": True,
             }},
             "deltas": [{
                 "layer_id": "seed",
@@ -306,6 +311,7 @@ def test_set_fields_deltas_and_variant_refinements_are_parsimonious(tmp_path):
     files = _verify_parsimony(tmp_path, project)
     train = json.loads(files["steps/train.json"])
     assert train["base"]["inline"]["seed"] == 0
+    assert train["set_fields"]["perturbation"]["condition"] is True
     assert json.loads(files["variants/longer.json"])["patches"]
 
 
@@ -461,24 +467,37 @@ def test_a_default_retains_its_presence_when_other_files_observe_it(tmp_path):
     assert json.loads(files["documents/base.json"])["payload"]["fixed_steps"] is None
 
 
-def test_opaque_patch_values_keep_types_the_legacy_expression_checker_reads(tmp_path):
+def test_based_and_variant_patches_read_stored_objective_expressions(tmp_path):
     schema = STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
     base = _DOCUMENT_FIXTURES[schema]
-    path = "documents.base.payload.terms.effort.measure.value"
+    terms = deepcopy(base["terms"])
+    terms["effort"]["measure"] = "abs(-2)"
+    path = "documents.base.payload.terms.effort.measure"
     project = Project.model_validate({
         "documents": {
             "base": {"schema": schema, "label": "Base", "payload": base},
             "derived": {
                 "schema": schema, "label": "Derived", "base": {"document": "base"},
-                "differences": {"/terms": {"value": base["terms"]}},
+                "differences": {"/terms": {"value": terms}},
             },
         },
-        "sweep": {"rows": {"larger": {"patches": {path: {"op": "replace", "value": 3.0}}}}},
+        "sweep": {"rows": {"larger": {"patches": {path: {"op": "replace", "value": 3}}}}},
     })
-    files = _verify_parsimony(tmp_path, project)
-    terms = json.loads(files["documents/derived.json"])["differences"]["/terms"]["value"]
-    assert type(terms["effort"]["measure"]["value"]) is float
-    assert type(json.loads(files["variants/larger.json"])["patches"][path]["value"]) is float
+    def observe(project):
+        derived = compose_document(project.documents.get, "derived")
+        variant = project_variants(project).get("larger")
+        varied = compose_document(variant.documents.get, "base") if variant is not None else None
+        return tuple(_meaning(value) if isinstance(value, RootDocument) else value for value in (derived, varied))
+
+    derived, varied = observe(project)
+    assert derived == _meaning(RootDocument(schema=schema, label="Derived", payload=base | {"terms": terms}))
+    variant_terms = deepcopy(base["terms"])
+    variant_terms["effort"]["measure"] = 3
+    assert varied == _meaning(RootDocument(schema=schema, label="Base", payload=base | {"terms": variant_terms}))
+    files = _verify_parsimony(tmp_path, project, observe=observe)
+    difference = json.loads(files["documents/derived.json"])["differences"]["/terms"]
+    assert difference["value"] == terms
+    assert json.loads(files["variants/larger.json"])["patches"][path]["value"] == 3
 
 
 def test_project_numbers_round_trip_without_rounding_or_accepting_unsafe_integers():

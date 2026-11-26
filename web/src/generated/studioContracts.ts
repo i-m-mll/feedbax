@@ -1137,6 +1137,7 @@ export interface ModelRewiredElement {
 }
 
 export interface ModelProjection {
+  address_texts: Record<string, string>;
   ports?: ModelPortProjection[];
   physical_ports?: ModelPhysicalPortProjection[];
   delay_steps?: Record<string, number | null>;
@@ -1283,6 +1284,7 @@ export interface ModelFieldView {
   members?: StudioSweepValue[];
   changed?: boolean;
   address: ModelAddress;
+  address_text: string;
   problems?: Problem[];
   sources?: StudioPlanReviewSource[];
 }
@@ -2981,7 +2983,7 @@ export type CheckpointRuleAxis = {
   "checkpoint_rule": UpdateRule;
 };
 
-export type CheckpointRulePath = "{\"field\":\"checkpoint\",\"input\":\"subject\"}";
+export type CheckpointRulePath = "{@subject.checkpoint}";
 
 export type CodeDifference = SourceDifference | RegistryDifference;
 
@@ -5900,7 +5902,7 @@ export type TrialDocuments = {
 export type TrialSetField = {
   "axis": SetAxis;
   "sampling": SetTrialSampling;
-  "condition"?: Expression | null;
+  "condition"?: StoredExpression | null;
 };
 
 export type UnresolvedValue = {
@@ -8574,6 +8576,7 @@ export const ModelRewiredElementSchema: z.ZodType<ModelRewiredElement> = z.lazy(
 export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
   z
     .object({
+      "address_texts": z.record(z.string(), z.string()),
       "ports": z.array(ModelPortProjectionSchema).optional(),
       "physical_ports": z.array(ModelPhysicalPortProjectionSchema).optional(),
       "delay_steps": z.record(z.string(), z.number().int().safe().nullable()).optional(),
@@ -8784,6 +8787,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "members": z.array(StudioSweepValueSchema).optional(),
       "changed": z.boolean().optional(),
       "address": ModelAddressSchema,
+      "address_text": z.string(),
       "problems": z.array(ProblemSchema).optional(),
       "sources": z.array(StudioPlanReviewSourceSchema).optional(),
     })
@@ -11652,7 +11656,7 @@ export const CheckpointRuleAxisSchema: z.ZodType<CheckpointRuleAxis> = z.lazy(()
 ) as unknown as z.ZodType<CheckpointRuleAxis>;
 
 export const CheckpointRulePathSchema: z.ZodType<CheckpointRulePath> = z.lazy(() =>
-  z.literal("{\"field\":\"checkpoint\",\"input\":\"subject\"}")
+  z.literal("{@subject.checkpoint}")
 ) as unknown as z.ZodType<CheckpointRulePath>;
 
 export const CodeDifferenceSchema: z.ZodType<CodeDifference> = z.lazy(() =>
@@ -15525,7 +15529,7 @@ export const TrialSetFieldSchema: z.ZodType<TrialSetField> = z.lazy(() =>
   z.object({
     "axis": SetAxisSchema,
     "sampling": SetTrialSamplingSchema,
-    "condition": z.union([ExpressionSchema, z.null()]).optional(),
+    "condition": z.union([StoredExpressionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<TrialSetField>;
 

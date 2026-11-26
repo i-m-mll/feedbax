@@ -3,31 +3,32 @@
 from copy import deepcopy
 
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sweep import model_field_path
 from feedbax.contracts.project import Project, diff
 from feedbax.planner.project_plan import ProjectPlanMemo, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.request_identity import decode_request
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
-# Request identities for the shipped point-mass fixture, with Task signal labels projected by ID
-# and Model root port names excluded.
+# Request identities for the shipped point-mass fixture, with registered Model defaults filled
+# and Task member keys used for scientific names.
 # These witnesses hold the same changes expressed on the Evaluate step or in its Model and Task documents.
-FEE = "train:fa583901ea5b6d7ba92fe4aa9b6a8cfdd1351a7221cca985210005557c812ba4"
-DEFAULT = "evaluate:11b3d55b38edff880b2f61f343c620c4879e3a91504187244eec6372662e31c3"
-FIELD_CHANGED = "evaluate:8dd5574f606f0967f5e84fe2d00a4270fc26661be5130c20eb27e820e5755b03"
-ATTACHMENT_ADDED = "evaluate:979d082b32fef9d8667a67c93cd927c997a365f1c6caf7f21eda144e406a5dbd"
+FEE = "train:59e1fe5c6423e06f371aa8c253b856c44660d23cf6eedd438e11e4dcbfa619d0"
+DEFAULT = "evaluate:5346ca90011c79121c10220c7f4b5bacebbcaedc257ce7553f66b562d4d3a05a"
+FIELD_CHANGED = "evaluate:fb4761b410be641046b212c8d1b740e6a1a5f2e72429fe06e25d8c1d103d80eb"
+ATTACHMENT_ADDED = "evaluate:ed7265998849c72f78200755520fa86300373a10ba95bb2a9a7d34f8a7f364a2"
 # The replacement Task now pairs target_pos by stable ID without a generated override.
-FEWER_CONDITIONS = "evaluate:0a19f9c1899dc78f781eee263084fc9e813357b61caa1c9ce0ba778b0c01702b"
+FEWER_CONDITIONS = "evaluate:46759412c10b4cbb04ea5da508803900346975a52657cc48ba283a636a4a3131"
 SWEPT_PUSHED = (
     ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
-     "evaluate:fb56228e1a44d61f163eb110563f0e2d3ef0f4cabde9541cd1fc41de72a1afa9"),
+     "evaluate:12d2be2115ac1a2d21ca9a40a2b58a16bb9c89d9d4397147831ba83a7884b7b1"),
     ("trained==abb0ffe5124ac74b8d431462660c668b987dd969c5bf76fc07a20894a2b46eea",
-     "evaluate:352fd399323920910d7ea6221d457962a7cfed1c700ee261bb8cb5c4d21bc8b5"),
+     "evaluate:94ab00ba6d0054e0ef0f7d34a6d99cbf859832606fa6dec890fd23e06b5a1501"),
 )
 NEAREST_SHARED = {
-    "fee": "train:fd2940aa4c5036b912e4627fabb9d6d529d50df235c3fff9f9c66b362a35655e",
+    "fee": "train:84ca15c615742301ef78a87a36d436cac370e2ae19f73de24538913b2a66ce7c",
     "other": FEE,
-    "check": "evaluate:583b09d98b8fe38653c153d4143e5b6ffd53f072b8b2695225d3fe656781455c",
+    "check": "evaluate:f2103a2158cda042344b398de22849598763ac5372b85a12d44a15eecc5f67d3",
 }
 UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
@@ -122,7 +123,7 @@ def test_an_evaluation_names_the_documents_it_reads_and_reads_its_subjects_as_a_
 
 
 def test_an_evaluation_keeps_its_subjects_swept_value_under_its_documents_change():
-    mass = ModelAddress.model_validate(MASS).to_text()
+    mass = model_field_path(ModelAddress.model_validate(MASS))
 
     def swept():
         data = _data()

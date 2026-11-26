@@ -61,7 +61,7 @@ class TrialDocuments(StrictModel):
                 default = selected_signal_id(port.id, signal_keys, {})
                 if bindings[port.id] == default:
                     del bindings[port.id]
-        task = self.task.with_member_keys_as_names()
+        task = self.task.for_execution()
         if bindings == self.input_bindings and task is self.task:
             return self
         return self.model_copy(update={"task": task, "input_bindings": bindings})
@@ -71,9 +71,7 @@ class TrialDocuments(StrictModel):
         if isinstance(task, PythonTaskSelection):
             return self.input_bindings if task == self.python_task else {}
         original = self.task
-        if original is None or original.without_markers().with_member_keys_as_names() != (
-            task.without_markers().with_member_keys_as_names()
-        ):
+        if original is None or original.for_execution() != task.for_execution():
             return {}
         return self.resolved_signal_bindings({signal.id for signal in original.signals})
 

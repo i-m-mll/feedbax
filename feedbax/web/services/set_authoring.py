@@ -6,6 +6,7 @@ import re
 from itertools import count
 from typing import Any
 
+from feedbax.contracts.expression_storage import lower_expression
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase, member_name
 from feedbax.contracts.project_sources import pointer
@@ -61,7 +62,8 @@ def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
                 weight = sampling.weights.get(id, 1.0)
             rows.append(StudioSetFieldEntry(entry=id, label=entry.label, weight=weight))
         fields.append(StudioSetField(
-            axis=axis, set=field.axis.set, sampling=sampling, condition=field.condition, entries=rows,
+            axis=axis, set=field.axis.set, sampling=sampling,
+            condition=lower_expression(field.condition) if field.condition is not None else None, entries=rows,
         ))
     return fields
 

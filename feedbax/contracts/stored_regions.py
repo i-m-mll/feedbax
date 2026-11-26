@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from typing import Any, Annotated, TYPE_CHECKING
 
@@ -19,7 +19,7 @@ from feedbax.contracts.request_specs import (
     AnalysisRequestSpec, DocumentTrainingRequestSpec, EvaluationRequestSpec, ReportRequestSpec,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, EveryCondition, RolloutSettings, SampleTrials, SelectedConditions
-from feedbax.contracts.stored_model import StoredLeafComponent, StoredModelDocument
+from feedbax.contracts.stored_model import StoredLeafComponent, StoredModelDocument, model_leaf_expression_values
 from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PythonTaskSelection, StoredTaskDocument
 from feedbax.contracts.training_document import TrainingDocument
@@ -74,6 +74,13 @@ class StoredRegion:
     model: type[BaseModel] | None
     component: bool = False
     contextual: frozenset[str] = frozenset()
+    lowered_expressions: Mapping[str, Any] = field(default_factory=dict)
+    authored_expressions: Mapping[str, Any] = field(default_factory=dict)
+
+    def authored_values(self, values: dict) -> dict:
+        if not self.authored_expressions:
+            return values
+        return {key: self.authored_expressions.get(key, value) for key, value in values.items()}
 
     def validate(self, values: Mapping) -> BaseModel:
         assert self.model is not None
@@ -129,14 +136,19 @@ class StoredRegionRegistries:
                 task = self._registry("python_tasks").resolve(owner.type)
                 return StoredRegion(task.parameters if task is not None else None)
             if isinstance(owner, StoredLeafComponent) and field == "fields":
-                declaration = self._registry("components").get(owner.type)
+                components = self._registry("components")
+                declaration = components.get(owner.type)
                 if declaration is not None and owner.revision in (None, declaration.revision):
                     from feedbax.compiler.model_document import model_tau_seconds, split_model_field_context
 
-                    _, context = split_model_field_context(declaration, owner.fields)
+                    lowered, authored = model_leaf_expression_values(owner, components)
+                    _, context = split_model_field_context(declaration, owner.fields | lowered)
                     if declaration.name == "feedbax.VanillaRNN" and "tau" in context:
                         model_tau_seconds(context["tau"], 1.0)
-                    return StoredRegion(declaration.params.model, component=True, contextual=frozenset(context))
+                    return StoredRegion(
+                        declaration.params.model, component=True, contextual=frozenset(context),
+                        lowered_expressions=lowered, authored_expressions=authored,
+                    )
                 return StoredRegion(None)
             if isinstance(owner, StoredEvaluateInline) and field == "params" and (
                 getattr(owner, "evaluation_type", None) == ROLLOUT_TYPE
@@ -193,6 +205,8 @@ def typed_region(
     """Validate local values without completing a step fragment or resolving deferred authored values."""
     model = region.model
     assert model is not None
+    if region.lowered_expressions:
+        raw = {key: region.lowered_expressions.get(key, value) for key, value in raw.items()}
     try:
         typed = region.validate(raw)
     except ValidationError as error:

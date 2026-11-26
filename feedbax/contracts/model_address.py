@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from functools import lru_cache
 import re
 from typing import Annotated, Literal
 
@@ -388,3 +390,39 @@ def _authored_element(element: AddressedElement) -> str:
     if isinstance(element, PhysicalConnectionElement):
         return f"connection.{element.id}"
     return f"{element.kind}.{element.id}"
+
+
+@dataclass(frozen=True)
+class ModelFieldTarget:
+    address: ModelAddress
+    scope: tuple[Literal["steps", "documents"], str] | None = None
+
+    @property
+    def step(self) -> str | None:
+        return self.scope[1] if self.scope and self.scope[0] == "steps" else None
+
+    @property
+    def document(self) -> str | None:
+        return self.scope[1] if self.scope and self.scope[0] == "documents" else None
+
+
+@lru_cache(maxsize=4096)
+def authored_model_field_target(path: str) -> ModelFieldTarget | None:
+    """Read a Model field in braces and any step or document scope that precedes it."""
+    scope = None
+    if path.startswith(("steps.", "documents.")) and ".{" in path:
+        prefix, _, path = path.partition(".{")
+        match = re.fullmatch(r"(steps|documents)\.([A-Za-z0-9_][A-Za-z0-9_-]*)", prefix)
+        if match is None:
+            raise ValueError("A scoped Model field target must name one step or document")
+        group, name = match.groups()
+        scope = ("steps" if group == "steps" else "documents", name)
+        path = "{" + path
+    elif not path.startswith("{"):
+        return None
+    if not path.endswith("}"):
+        raise ValueError("A Model sweep target must close its address braces")
+    address = ModelAddress.from_authored_text(path[1:-1])
+    if not isinstance(address.element, FieldElement):
+        raise ValueError("A Model sweep target must name a field")
+    return ModelFieldTarget(address, scope)

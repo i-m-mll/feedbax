@@ -1,7 +1,8 @@
 """Authored Task documents and their lowering for execution."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from enum import IntEnum
+from functools import partial
 from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, model_validator
@@ -61,8 +62,8 @@ def _lower_optional(value: StoredExpression | None) -> Expression | None:
     return lower_expression(value) if value is not None else None
 
 
-def _store_optional(value: Expression | None) -> StoredExpression | None:
-    return store_expression(value) if value is not None else None
+def _store_optional(value: Expression | None, scopes: Mapping[str, str] | None = None) -> StoredExpression | None:
+    return store_expression(value, scopes=scopes) if value is not None else None
 
 
 def _check_expression_keys(keys: Iterable[str]) -> None:
@@ -88,9 +89,10 @@ class StoredVariable(_VariableFields[StoredExpression], _LabelledTaskMember):
                               id=key, name=self.label)
 
     @classmethod
-    def from_lowered(cls, variable: Variable) -> "StoredVariable":
-        return project_member(variable, cls, {"value": store_expression, "count": _store_optional},
-                              label=variable.name)
+    def from_lowered(cls, variable: Variable, *, scopes: Mapping[str, str] | None = None) -> "StoredVariable":
+        return project_member(variable, cls, {
+            "value": partial(store_expression, scopes=scopes), "count": partial(_store_optional, scopes=scopes),
+        }, label=variable.name)
 
 
 class _LengthFields[ExpressionT](ValueRecord):
@@ -156,11 +158,11 @@ def _lower_end(epoch: str, end: StoredEnd) -> End:
     return end
 
 
-def _stored_end(end: End) -> StoredEnd:
+def _stored_end(end: End, scopes: Mapping[str, str] | None) -> StoredEnd:
     if isinstance(end, Length):
-        return project_member(end, StoredLength, {"length": store_expression})
+        return project_member(end, StoredLength, {"length": partial(store_expression, scopes=scopes)})
     if isinstance(end, Until):
-        return project_member(end, StoredUntil, {"condition": store_expression})
+        return project_member(end, StoredUntil, {"condition": partial(store_expression, scopes=scopes)})
     return end
 
 
@@ -255,8 +257,10 @@ def _lower_variables(variables: dict[str, StoredVariable]) -> tuple[Variable, ..
     return tuple(variable.lower(key) for key, variable in variables.items())
 
 
-def _stored_variables(variables: tuple[Variable, ...]) -> dict[str, StoredVariable]:
-    return keyed_members((variable.id, StoredVariable.from_lowered(variable)) for variable in variables)
+def _stored_variables(
+    variables: tuple[Variable, ...], scopes: Mapping[str, str] | None = None,
+) -> dict[str, StoredVariable]:
+    return keyed_members((variable.id, StoredVariable.from_lowered(variable, scopes=scopes)) for variable in variables)
 
 
 def _lower_links(links: dict[str, str]) -> tuple[Link, ...]:
@@ -334,6 +338,10 @@ class TaskDocument(ValueRecord):
             for field, group in (("variables", self.variables), ("epochs", self.epochs), ("signals", self.signals))
         })
 
+    def for_execution(self) -> "TaskDocument":
+        """Project a Task onto the fields and stable names used in scientific requests."""
+        return self.without_markers().with_member_keys_as_names()
+
     @property
     def condition_ids(self) -> tuple[str, ...]:
         """Identify a fixed cohort by the variables that define each condition."""
@@ -353,12 +361,12 @@ def _lower_signal(key: str, signal: StoredSignal) -> Signal:
     }, id=key, name=signal.label, cells=cells)
 
 
-def _stored_signal(signal: Signal) -> StoredSignal:
-    cells = keyed_members((cell.id, project_member(cell, StoredCell, {"value": store_expression}))
+def _stored_signal(signal: Signal, scopes: Mapping[str, str] | None) -> StoredSignal:
+    cells = keyed_members((cell.id, project_member(cell, StoredCell, {"value": partial(store_expression, scopes=scopes)}))
                           for cell in signal.cells)
     return project_member(signal, StoredSignal, {
-        "absent": _store_optional,
-        "window": lambda window: StoredWindow.from_lowered(window) if window is not None else None,
+        "absent": partial(_store_optional, scopes=scopes),
+        "window": lambda window: StoredWindow.from_lowered(window, scopes=scopes) if window is not None else None,
         "intervention": lambda address: ModelAddress.from_text(address).to_authored_text() if address is not None else None,
     }, label=signal.name, cells=cells)
 
@@ -410,20 +418,23 @@ class StoredTaskDocument(ValueRecord):
 
     @classmethod
     def from_lowered(
-        cls, task: TaskDocument, *, trial_keys: Iterable[str] | None = None,
+        cls, task: TaskDocument, *, trial_keys: Iterable[str] | None = None, scopes: Mapping[str, str] | None = None,
     ) -> "StoredTaskDocument":
         """Project a producer's Task, retaining supplied validation row keys when available."""
         overrides = {}
         if trial_keys is not None:
             overrides["validation_trials"] = _stored_validation_trials(task.validation_trials, tuple(trial_keys))
         return project_member(task, cls, {
-            "variables": _stored_variables,
+            "variables": partial(_stored_variables, scopes=scopes),
             "epochs": lambda epochs: keyed_members(
-                (epoch.id, project_member(epoch, StoredEpoch, {"end": _stored_end}, label=epoch.name)) for epoch in epochs
+                (epoch.id, project_member(epoch, StoredEpoch, {"end": partial(_stored_end, scopes=scopes)},
+                                          label=epoch.name))
+                for epoch in epochs
             ),
-            "signals": lambda signals: keyed_members((signal.id, _stored_signal(signal)) for signal in signals),
+            "signals": lambda signals: keyed_members((signal.id, _stored_signal(signal, scopes)) for signal in signals),
             "repeats": lambda repeats: keyed_members(
-                (repeat.id, project_member(repeat, StoredRepeat, {"count": store_expression})) for repeat in repeats
+                (repeat.id, project_member(repeat, StoredRepeat, {"count": partial(store_expression, scopes=scopes)}))
+                for repeat in repeats
             ),
             "links": _stored_links,
             "validation_trials": _stored_validation_trials,

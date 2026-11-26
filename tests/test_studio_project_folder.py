@@ -25,6 +25,7 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.planner import project_plan
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sweep import model_field_path
 from feedbax.contracts.project import InlineBase, Project, StepBase, member_name
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
@@ -630,7 +631,7 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         assert reviewed.status_code == 200, reviewed.text
         recipe, = reviewed.json()["files"]
         assert recipe["address"] == {"kind": "variant", "id": "compare"}
-        target = f"documents.{_MODEL}.{field.to_text()}"
+        target = model_field_path(field, ("documents", _MODEL))
         assert recipe["patches"][0]["value"][target] == {"op": "replace", "value": 3}
         snapshot = client.patch(_URL, json={"revision": before["revision"], **recipe})
         assert snapshot.status_code == 200, snapshot.text
@@ -1321,7 +1322,7 @@ def test_named_document_edit_reopens_and_presentation_leaves_authored_identity(s
     presentation = {
         "documents": {
             _MODEL: {
-                "positions": {"plant": {"x": 40, "y": 20}},
+                "positions": {"component.plant": {"x": 40, "y": 20}},
                 "camera": {"x": 2, "y": 3, "zoom": 1.5},
             }
         },
@@ -1490,7 +1491,7 @@ def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkey
             "address": {"kind": "presentation", "id": "presentation"},
             "patches": [{
                 "op": "add", "path": "/steps",
-                "value": {"fit": {"model_positions": {_MODEL: {"plant": {"x": 1, "y": 2}}}}},
+                "value": {"fit": {"model_positions": {_MODEL: {"component.plant": {"x": 1, "y": 2}}}}},
             }],
         })
         before_write = _folder_state(root)
@@ -1520,7 +1521,7 @@ def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkey
     if placement:
         assert after["presentation_revision"] != before["presentation_revision"]
         assert after["presentation"]["steps"]["fit"]["model_positions"][_MODEL] == {
-            "plant": {"x": 1.0, "y": 2.0},
+            "component.plant": {"x": 1.0, "y": 2.0},
         }
     assert not (root / ".studio-patch.json").exists()
     stale = client.patch(_URL, json=body)

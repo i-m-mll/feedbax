@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sweep import model_field_path, model_field_target
 from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.project import BasedDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
@@ -19,7 +20,7 @@ from tests.test_evaluate_documents import MASS, TASK, _based, _data, _model, _wi
 
 _URL = "/api/projects/reach"
 _PLANT = {"composites": [], "element": {"kind": "component", "id": "plant"}}
-_MASS_TEXT = ModelAddress.model_validate(MASS).to_text()
+_MASS_TEXT = model_field_path(ModelAddress.model_validate(MASS))
 
 
 class _Project:
@@ -478,7 +479,7 @@ def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path
     address = ModelAddress.model_validate({"composites": [], "element": {
         "kind": "field", "parent": owner["element"], "path": ["fields", "hidden_size"],
     }})
-    path = address.to_text()
+    path = model_field_path(address)
     entries = {
         f"value-{index}": {"value": value, "patches": {path: {"value": value}, _MASS_TEXT: {"value": 2.0}}}
         for index, value in enumerate((64, 100, 128), start=1)
@@ -554,7 +555,7 @@ def test_grouping_a_swept_model_field_rewrites_its_target_by_identity(tmp_path):
     project = _Project(tmp_path, data)
     with project.client:
         result = project.edit({"op": "group", "selection": [_PLANT], "name": "Plant"})
-        target = ModelAddress.from_text(project.project().steps["fee"].sweep.axes["mass"].path)
+        target = model_field_target(project.project().steps["fee"].sweep.axes["mass"].path).address
         assert target.composites and target.element == ModelAddress.model_validate(MASS).element
         (group,) = target.composites
         assert project.composed("model")["interior"]["components"][group]["interior"]["components"]["plant"]
@@ -584,7 +585,7 @@ def test_place_registered_template_as_an_editable_composite(tmp_path, name, hidd
             "op": "add_component", "graph": {"composites": [], "element": {"kind": "graph"}}, "id": "controller",
             "component": {"kind": "definition", "definition": f"feedbax.{name}"}, "position": position,
         })
-        assert project.snapshot()["presentation"]["documents"]["model"]["positions"][address.to_text()] == position
+        assert project.snapshot()["presentation"]["documents"]["model"]["positions"][address.to_authored_text()] == position
 
     model = StoredModelDocument.model_validate(project.composed("model")).lower()
     component = model.interior.components["controller"]
