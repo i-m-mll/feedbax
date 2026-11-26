@@ -21,6 +21,7 @@ export type EditableCheckpointRule = 'last' | BatchCheckpoint | UpdateRule | Unr
 
 export function editableCheckpointRule(rule: CheckpointRule | null | undefined): EditableCheckpointRule | undefined {
   if (rule === 'last') return rule;
+  if (typeof rule === 'string') return { kind: 'unresolved', text: rule };
   const point = BatchCheckpointSchema.safeParse(rule);
   if (point.success) return point.data;
   const series = UpdateRuleSchema.safeParse(rule);
@@ -125,6 +126,7 @@ export function checkpointDraftRule(draft: CheckpointDraft, range?: CheckpointRa
     case 'list': {
       const text = draft.updates.trim();
       if (!text) return {};
+      if (text === 'last') return { rule: 'last' };
       const held = { rule: { kind: 'unresolved', text } as const };
       if (!/^\d+(?:\s*,\s*\d+)*$/.test(text)) {
         return { ...held, problem: { field: 'updates', reason: studioReason('invalidCheckpointRule', text) } };
