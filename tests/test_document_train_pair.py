@@ -15,14 +15,17 @@ from feedbax.execution import trial_resolution as trial_execution
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution, resolve_trial_execution
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
-from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.objective_document import (
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm, StoredObjectiveDocument,
+)
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import PlanRequests, ProjectPlanMemo, RunKey, compile_project
 from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, authored_model_payload
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID, StoredTaskDocument
 from feedbax.contracts.window import Window, WindowEpoch
 from feedbax.contracts.jobs import JobStatus
 from feedbax.expression_builtins import register_builtins
@@ -477,17 +480,20 @@ def test_managed_train_stores_only_scientific_model_names(authored):
 
 
 def document_project(authored, *, evaluation=False):
-    from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
-
     _, model, task, objective = authored
     raw = {
         "documents": {
-            "reach-model": {"label": "Reach model", "schema": MODEL_DOCUMENT_SCHEMA_ID, "payload": model.model_dump(mode="json")},
-            "task": {"label": "Task", "schema": TASK_DOCUMENT_SCHEMA_ID, "payload": task.model_dump(mode="json")},
+            "reach-model": {
+                "label": "Reach model", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": authored_model_payload(model),
+            },
+            "task": {
+                "label": "Task", "schema": STORED_TASK_DOCUMENT_SCHEMA_ID,
+                "payload": StoredTaskDocument.from_lowered(task).model_dump(mode="json"),
+            },
             "objective": {
                 "label": "Objective",
-                "schema": OBJECTIVE_DOCUMENT_SCHEMA_ID,
-                "payload": objective.model_dump(mode="json"),
+                "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID,
+                "payload": StoredObjectiveDocument.from_lowered(objective).model_dump(mode="json"),
             },
         },
         "steps": {

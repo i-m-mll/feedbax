@@ -8,7 +8,7 @@ import jax.random as jr
 import numpy as np
 
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
@@ -41,7 +41,7 @@ def test_shipped_trial_documents_have_unique_names():
             assert entry not in seen, (entry, seen[entry], folder)
             seen[entry] = folder
 
-    assert seen[MODEL_DOCUMENT_SCHEMA_ID, "point-mass"] == "point-mass-reaching"
+    assert seen[STORED_MODEL_DOCUMENT_SCHEMA_ID, "point-mass"] == "point-mass-reaching"
     for name in _VALIDATION_COUNTS:
         assert seen[TASK_DOCUMENT_SCHEMA_ID, f"{name}-task"] == "point-mass-reaching"
         assert seen[OBJECTIVE_DOCUMENT_SCHEMA_ID, f"{name}-objective"] == "point-mass-reaching"

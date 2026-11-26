@@ -13,8 +13,8 @@ from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GraphSpec
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_io import TextProject
-from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
@@ -78,7 +78,7 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
     roots = []
     graph_schemas = {GRAPH_SPEC_SCHEMA_ID: GraphSpec, ACAUSAL_GRAPH_SCHEMA_ID: AcausalGraphSpec}
     for name, document in text.project.documents.items():
-        if document.schema_id in (TASK_DOCUMENT_SCHEMA_ID, OBJECTIVE_DOCUMENT_SCHEMA_ID, TRAINING_DOCUMENT_SCHEMA_ID):
+        if document.schema_id in (STORED_TASK_DOCUMENT_SCHEMA_ID, STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, TRAINING_DOCUMENT_SCHEMA_ID):
             continue
         model = graph_schemas.get(document.schema_id)
         loaded = document.schema_id == LOADED_MODEL_SCHEMA_ID

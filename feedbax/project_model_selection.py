@@ -10,11 +10,12 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from feedbax.application.task_signals import model_task_signals
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import ScopedValue
-from feedbax.contracts.model_document import ModelDocument, SignalType
+from feedbax.contracts.model_document import SignalType
+from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.model_edit import ModelProjectionRequest, ModelTaskSignal
-from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.objective_document import StoredObjectiveDocument
 from feedbax.planner.project_plan import RunKey, SelectedRunDefinition
-from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_document import PythonTaskSelection, StoredTaskDocument, TaskDocument
 
 if TYPE_CHECKING:
     from feedbax.project_folder import ProjectFolder
@@ -46,16 +47,21 @@ def trial_document_slots(payload: Mapping) -> tuple[Mapping, str]:
     return (nested, "trial_documents.") if isinstance(nested, dict) else (payload, "")
 
 
-_TRIAL_TASK = TypeAdapter(TaskDocument | PythonTaskSelection)
+_TRIAL_TASK = TypeAdapter(StoredTaskDocument | PythonTaskSelection)
 
 
-def trial_task_slot(value: object, *, path: str = "task") -> TaskDocument | PythonTaskSelection:
+def stored_trial_task_slot(value: object, *, path: str = "task") -> StoredTaskDocument | PythonTaskSelection:
     from feedbax.project_folder import ProjectFolderInvalid
 
     try:
         return _TRIAL_TASK.validate_python(value)
     except ValidationError as error:
         raise ProjectFolderInvalid(f"{path} does not contain a Task or Python task selection.") from error
+
+
+def trial_task_slot(value: object, *, path: str = "task") -> TaskDocument | PythonTaskSelection:
+    task = stored_trial_task_slot(value, path=path)
+    return task.lower() if isinstance(task, StoredTaskDocument) else task
 
 
 def _trial_document[Document: BaseModel](path: str, value: object, schema: type[Document]) -> Document:
@@ -89,8 +95,8 @@ def selected_model_and_task(
         source = None
     objective = managed.get("objective")
     return (
-        _trial_document(f"{prefix}model", model, ModelDocument), model_task_signals(source, folders.python_tasks),
-        _trial_document(f"{prefix}objective", objective, ObjectiveDocument) if objective is not None else None,
+        _trial_document(f"{prefix}model", model, StoredModelDocument).lower(), model_task_signals(source, folders.python_tasks),
+        _trial_document(f"{prefix}objective", objective, StoredObjectiveDocument).lower() if objective is not None else None,
         managed.get("input_bindings", {}), source,
     )
 

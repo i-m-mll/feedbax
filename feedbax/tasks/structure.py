@@ -4,6 +4,7 @@ Members are addressed by id, and expressions refer to variables by id, so a rena
 variable stays referenced where it was read: the document still compiles to Problems there, and is returned.
 """
 
+import re
 from typing import assert_never
 
 from feedbax.contracts.expression_values import (
@@ -101,7 +102,11 @@ def _fresh(name: str, taken: set[str]) -> str:
 def _add(document: TaskDocument, change: AddMember) -> TaskDocument:
     field = _FIELDS[change.member]
     members = getattr(document, field)
-    id = _fresh(change.name, {item.id for item in members})
+    peers = document.variables + document.signals if change.member != "epoch" else members
+    key = re.sub(r"[^A-Za-z0-9_-]+", "-", change.name).strip("-")
+    if not key or not (key[0].isalpha() or key[0] == "_"):
+        key = f"{change.member}-{key}" if key else change.member
+    id = _fresh(key, {item.id for item in peers} | RESERVED_NAMES)
     value_type = change.type or _NUMBER
     added = {
         "variable": lambda: Variable(id=id, name=change.name, type=value_type, value=zero(value_type.base, value_type.shape)),
@@ -109,11 +114,11 @@ def _add(document: TaskDocument, change: AddMember) -> TaskDocument:
         "signal": lambda: Signal(id=id, name=change.name, type=value_type, cells=()),
     }[change.member]()
     index = len(members) if change.index is None else min(change.index, len(members))
-    links = tuple(link for link in document.links if link.model_field not in change.initializes)
-    return document.model_copy(update={
-        field: (*members[:index], added, *members[index:]),
-        "links": (*links, *(Link(model_field=address, variable=id) for address in change.initializes)),
-    })
+    updates = {field: (*members[:index], added, *members[index:])}
+    if change.initializes:
+        links = tuple(link for link in document.links if link.model_field not in change.initializes)
+        updates["links"] = (*links, *(Link(model_field=address, variable=id) for address in change.initializes))
+    return document.model_copy(update=updates)
 
 
 def _edit_member(

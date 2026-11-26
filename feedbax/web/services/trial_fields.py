@@ -244,8 +244,10 @@ def _names(document: BaseModel, path: FieldPath) -> tuple[str, ...]:
     list's."""
     names, value = [], document
     for part in path:
-        value = member(value, part)
-        if _id(value) == part:
+        parent, value = value, member(value, part)
+        if isinstance(parent, dict) and isinstance(value, BaseModel):
+            names.append(getattr(value, "label", None) or part)
+        elif _id(value) == part:
             names.append(getattr(value, "name", None) or part)
         elif not part.isdigit() and not isinstance(value, tuple | list):
             names.append(part)

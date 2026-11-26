@@ -9,7 +9,8 @@ from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.figure_document import FigureDocument, FigureTemplateRef, validate_figure_bindings
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.operation import (
     DatasetInputPort,
     DatasetPort,
@@ -355,8 +356,8 @@ def _state_models(project: Project, plan: ProjectPlan, row: PlannedAnalyzeRun) -
         if not isinstance(document, ProjectDiagnostic) and document.schema_id == LOADED_MODEL_SCHEMA_ID:
             loaded = LoadedModelDocument.model_validate(document.payload)
             document = compose_document(project.documents.get, loaded.model.document)
-        if not isinstance(document, ProjectDiagnostic) and document.schema_id == MODEL_DOCUMENT_SCHEMA_ID:
-            models.append(ModelDocument.model_validate(document.payload))
+        if not isinstance(document, ProjectDiagnostic) and document.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID:
+            models.append(StoredModelDocument.model_validate(document.payload).lower())
     return models
 
 

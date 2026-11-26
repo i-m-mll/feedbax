@@ -485,10 +485,9 @@ def bind_task_inputs(
     problems = []
     bindings = []
     by_id = {value.id: value for value in signals}
-    by_name = {value.name: value.id for value in signals}
     authored = input_bindings or {}
     for port in model.inputs:
-        signal_id = selected_signal_id(port.root_id, port.name, by_name, authored)
+        signal_id = selected_signal_id(port.root_id, by_id, authored)
         signal = by_id.get(signal_id) if signal_id is not None else None
         path = ("model", "inputs", port.id)
         if signal is None:

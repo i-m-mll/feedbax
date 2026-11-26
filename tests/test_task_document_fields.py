@@ -45,9 +45,9 @@ def _gain(project):
 def _with_gain():
     data = _data()
     payload = data["documents"][TASK]["payload"]
-    payload["variables"].insert(0, {
-        "id": "gain", "name": "gain", "type": {"base": "real"}, "value": {"kind": "literal", "value": 0.1},
-    })
+    payload["variables"] = {"gain": {
+        "label": "gain", "type": {"base": "real"}, "value": {"kind": "literal", "value": 0.1},
+    }} | payload["variables"]
     return data
 
 
@@ -64,7 +64,7 @@ def test_a_sweep_of_a_task_variable_stays_on_it_when_the_variables_are_reordered
 
         data = project.project().model_dump(mode="json", by_alias=True, exclude_unset=True)
         variables = data["documents"][TASK]["payload"]["variables"]
-        variables.append(variables.pop(0))
+        variables["gain"] = variables.pop("gain")
         reordered = _Project(tmp_path / "reordered", data)
         assert sorted(_gain(reordered)) == [0.1, 0.15, 0.2]
 
@@ -78,7 +78,7 @@ def test_a_task_field_s_text_is_what_its_edit_stored(tmp_path):
         assert not view.problems, view.problems
         _save(project, view)
         assert _text(project, "fee", path) == "60 st"
-        (epoch,) = project.composed(TASK)["epochs"]
+        (epoch,) = project.composed(TASK)["epochs"].values()
         assert epoch["end"]["length"] == {"kind": "literal", "value": 60, "unit": "st"}
 
 
