@@ -308,8 +308,8 @@ def test_an_evaluation_task_edit_makes_a_document_based_on_its_subjects(tmp_path
     project = _Project(tmp_path, _data())
     with project.client:
         task = project.composed(TASK)
-        bound = task["variables"][0]["value"]["args"][0]["args"][0]
-        path = "/variables/0/value/args/0/args/0/value"
+        bound = task["variables"]["start"]["value"]["args"][0]["args"][0]
+        path = "/variables/start/value/args/0/args/0/value"
         response = project.client.post(f"{_URL}/authoring/trials", json={
             "revision": project.snapshot()["revision"], "run": project.run("check"),
             "change": {"kind": "task", "edits": [{"op": "replace", "path": path, "value": bound["value"] - 0.1}]},
@@ -335,8 +335,8 @@ def test_a_variant_s_evaluation_task_edit_is_a_document_only_its_row_points_at(t
     with project.client:
         before = {run.key: run.request_id for run in project.plan().runs}
         steps = project.project().steps
-        path = "/variables/0/value/args/0/args/0/value"
-        bound = project.composed(TASK)["variables"][0]["value"]["args"][0]["args"][0]
+        path = "/variables/start/value/args/0/args/0/value"
+        bound = project.composed(TASK)["variables"]["start"]["value"]["args"][0]["args"][0]
         response = project.client.post(f"{_URL}/authoring/trials", json={
             "revision": project.snapshot()["revision"], "run": project.run("check") | {"variant": "treated"},
             "change": {"kind": "task", "edits": [{"op": "replace", "path": path, "value": bound["value"] - 0.1}]},
