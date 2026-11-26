@@ -26,18 +26,18 @@ from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFEREN
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.project import (
     LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue, apply_differences, apply_document_edits, diff,
-    OrderDocumentMembers, json_pointer_parts, member_name,
+    OrderDocumentMembers, OrderProjectValue, base_chain, json_pointer_parts, member_name,
 )
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, compose_step, resolve_step
 from feedbax.contracts.project_sweep import SetAxis
 from feedbax.contracts.set_document import SetEntry, read_set
 from feedbax.planner.project_plan import EVALUATION_TASK, PlannedRow, PlannedRun, RunKey, compile_project, own_task_variation
+from feedbax.project_members import generated_name
 from feedbax.project_model_selection import trial_document_slots, trial_task_slot
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, EvaluationRequestSpec, SynthesisRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
-from feedbax.contracts.stored_members import project_member
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.project_storage import stored_keyed_collection
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
@@ -49,7 +49,7 @@ from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
     StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialEpochInstance,
     StudioTrialExpressionEdit, StudioTrialField,
-    StudioTrialInput, StudioTrialObjectiveSource,
+    StudioTrialInput, StudioTrialObjectiveSource, StudioTrialObjectiveTermAdd,
     StudioTrialOutput, StudioTrialRelate, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope,
     StudioTrialStructureEdit,
 )
@@ -61,7 +61,7 @@ from feedbax.contracts.task_structure import RenameMember as RenameTaskMember
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.time_units import TimeValue, length_steps
 from feedbax.contracts.objective_document import (
-    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, StoredObjectiveDocument, StoredObjectiveTerm,
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, StoredObjectiveDocument,
 )
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.training import TrialDocuments, lower_stored_trial_documents
@@ -449,7 +449,8 @@ def _task_field(task):
 
 def _edit_value(value, change):
     raw = deepcopy(value)
-    apply_document_edits(raw, change.edits)
+    schema = STORED_TASK_DOCUMENT_SCHEMA_ID if change.kind == "task" else STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+    apply_document_edits(raw, change.edits, keyed_collection=partial(stored_keyed_collection, schema))
     return raw
 
 
@@ -469,6 +470,8 @@ def _override(path, op, value=None):
 def _edit_patches(prefix, change):
     patches = []
     for edit in change.edits:
+        if isinstance(edit, OrderProjectValue):
+            raise ProjectFolderInvalid("Ordering a collection needs a whole-step edit of a named document.")
         parts = json_pointer_parts(edit.path)
         if any(not part or "." in part for part in parts):
             raise ProjectFolderInvalid("This scoped edit needs path-safe field names.")
@@ -1010,7 +1013,7 @@ def _prepare_edits(
 
         def adapt(target):
             if change.kind == "objective":
-                return _objective_edits(raw, target, change)
+                return _objective_edits(target, change)
             if structural:
                 return _task_structure_edits(raw, target, change)
             return change.edits
@@ -1111,26 +1114,16 @@ def _task_structure_edits(shown, target, change):
     )
 
 
-def _ordered_terms(shown, target, change):
-    if len(change.edits) != 1 or not isinstance(edit := change.edits[0], SetProjectValue) or edit.path != "/terms":
-        return None
-    if edit.op != "replace" or not isinstance(edit.value, dict) or edit.value.keys() != shown.keys():
-        return None
-    if any(StoredObjectiveTerm.model_validate(value) != StoredObjectiveTerm.model_validate(shown[key])
-           for key, value in edit.value.items()):
-        return None
-    return {key: target[key] for key in edit.value if key in target} | target
-
-
-def _objective_edits(shown, target, change):
-    """Place edits on the same keyed terms, preserving each destination's values on a reorder."""
+def _objective_edits(target, change):
+    """Place edits on the same keyed terms, preserving each destination's own members."""
     terms = target.get("terms", {})
-    if (ordered := _ordered_terms(shown.get("terms", {}), terms, change)) is not None:
-        return [change.edits[0].model_copy(update={"value": ordered})] if "terms" in target else []
     edits = []
     for edit in change.edits:
         parts = json_pointer_parts(edit.path)
-        if parts == ("terms",) and edit.op == "add" and "terms" in target:
+        if isinstance(edit, OrderProjectValue):
+            if at(target, parts) is not None:
+                edits.append(edit)
+        elif parts == ("terms",) and edit.op == "add" and isinstance(edit.value, dict) and "terms" in target:
             edits.extend(SetProjectValue(op="add", path=pointer(("terms", key)), value=value)
                          for key, value in edit.value.items() if key not in terms)
         elif isinstance(at(target, parts[:-1]), dict):
@@ -1528,6 +1521,27 @@ def _batch_size(kind: str, payload) -> int | None:
     return count if isinstance(count, int) and count >= 1 else None
 
 
+def _objective_term_add(project, definition, step, objective, term):
+    """Allocate a term key once for the shown Objective and every possible based destination."""
+    if objective is None:
+        raise ProjectFolderInvalid("This step has no Objective document.")
+    used = set(objective.terms)
+    slot = ("inputs.objective" if step == "evaluate" else
+            "payload.objective" if step == "synthesize" else "payload.trial_documents.objective")
+    if document := definition.document_ids.get(slot):
+        for name in project.documents:
+            if document in base_chain(project.documents, name):
+                entry = compose_document(project.documents.get, name)
+                if not isinstance(entry, ProjectDiagnostic):
+                    used.update(entry.payload.get("terms", {}))
+    key = generated_name("term", used.__contains__)
+    value = term.model_dump(mode="json", exclude_unset=True)
+    op = (SetProjectValue(op="add", path=pointer(("terms", key)), value=value)
+          if "terms" in objective.model_fields_set
+          else SetProjectValue(op="add", path="/terms", value={key: value}))
+    return key, StudioTrialDocumentEdit(kind="objective", edits=[op])
+
+
 def trial_authoring(
     folders: ProjectFolderService, project_id: str, body: StudioTrialAuthoringRequest,
     bundle: ApplicationRegistryBundle,
@@ -1562,7 +1576,7 @@ def trial_authoring(
         stored_task = _stored_task_view(plan, definition, documents.task_source)
         stored_objective = StoredObjectiveDocument.from_lowered(documents.objective) if documents.objective else None
         stored, refused = StoredEdit([]), ()
-        related = None
+        created_term = None
         store_choices = None
         if body.store_choice is not None and body.change is None:
             raise ProjectFolderInvalid("A store choice requires the edit it was offered for.")
@@ -1571,15 +1585,10 @@ def trial_authoring(
 
             if projected.pair is None or documents.objective is None:
                 raise ProjectFolderInvalid("Relate needs a paired Model, Task, and Objective.")
-            term = related_term(change, documents.model, projected.pair, documents.objective, bundle.components)
-            value = project_member(term, StoredObjectiveTerm).model_dump(mode="json", exclude_unset=True)
-            edit = (
-                SetProjectValue(op="add", path=pointer(("terms", term.id)), value=value)
-                if "terms" in stored_objective.model_fields_set
-                else SetProjectValue(op="add", path="/terms", value={term.id: value})
-            )
-            change = StudioTrialDocumentEdit(kind="objective", edits=[edit])
-            related = term.id
+            term = related_term(change, documents.model, projected.pair, bundle.components)
+            created_term, change = _objective_term_add(project, definition, step.kind, stored_objective, term)
+        elif isinstance(change, StudioTrialObjectiveTermAdd):
+            created_term, change = _objective_term_add(project, definition, step.kind, stored_objective, change.term)
         if change is not None:
             stored, refused, preview = _prepare_edits(
                 body, folders, project_id, snapshot.project, settled, key, bundle, definition, documents, projected,
@@ -1755,7 +1764,7 @@ def trial_authoring(
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
         fields=fields, problems=[*projected.problems, *field_problems, *refused],
-        related_term=related if stored.files or stored.created else None,
+        created_term=created_term if stored.files or stored.created else None,
         files=stored.files, created=list(stored.created),
         store_choices=store_choices,
     )
