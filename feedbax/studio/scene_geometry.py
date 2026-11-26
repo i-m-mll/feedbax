@@ -12,7 +12,9 @@ import numpy as np
 from pydantic import JsonValue
 
 from feedbax.application.stored_regions import compose_document
+from feedbax.builtins.mechanics.linear_state_space import LinearStateSpace
 from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
+from feedbax.compiler.linear_state_geometry import LinearStatePoint, linear_state_point
 from feedbax.compiler.model_anchors import geometry_address, portable_model_anchors
 from feedbax.compiler.model_document import lower_planar_scene_interior
 from feedbax.component_registry import ComponentRegistry
@@ -103,6 +105,30 @@ def _pose_value(value: JsonValue, target: jax.Array) -> jax.Array:
     return jnp.broadcast_to(jnp.asarray(pose, dtype=target.dtype), target.shape)
 
 
+def _prepare_linear_state_geometry(
+    component: LeafComponent, point: LinearStatePoint, registry: ComponentRegistry,
+) -> MechanismPose:
+    resolved = registry.resolve_component_spec(component.type, component.fields, revision=component.revision)
+    owner_type = resolved.meta.owner_class
+    assert owner_type is not None and issubclass(owner_type, LinearStateSpace)
+    owner = owner_type(**resolved.params)
+    rest = owner.state_view(init_state_from_component(owner)).vector[point.span]
+    if rest.shape != (2,):
+        raise ValueError("The effector position slice lies outside the state vector.")
+    address = _component_address(point.owner)
+    anchor = geometry_address(point.owner, ("point",))
+    pose_key = point.address.to_text()
+
+    def pose(values: PoseValues):
+        supplied = values.get(pose_key)
+        position = _point(rest if supplied is None else _pose_value(supplied, rest))
+        return ScenePointGeometry(
+            kind="point", address=address, name=component.name, point=anchor, position=position,
+        ), [SceneAnchorGeometry(address=anchor, signal=None, position=position)]
+
+    return pose
+
+
 def _prepare_portable_geometry(
     component: LeafComponent,
     path: tuple[str, ...],
@@ -115,6 +141,9 @@ def _prepare_portable_geometry(
     facts = owner_class.model_facts
     if facts is None or not facts.states:
         return None
+
+    if point := linear_state_point(component, path, registry, {}):
+        return _prepare_linear_state_geometry(component, point, registry)
 
     representation = declaration.representation
     if representation is None:

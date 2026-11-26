@@ -312,3 +312,77 @@ def test_stacked_figure_matches_the_bound_member_with_repeated_trial_ids(unequal
     trial, _ = source.project({"mass": (1,), "trial": (1,)})
     assert trial.id == "second"
     assert trial.timeline[1].start == 3
+
+
+def test_loaded_linear_state_replay_poses_and_averages_retained_replicates(
+    tmp_path, unequal_epochs, saved_evaluation, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.contracts.artifact_custody import ContentTree, ContentTreeFile
+    from feedbax.contracts.loaded_model import ImportedModelSource, encode_imported_model_document
+    from feedbax.contracts.model_input import encode_document_input
+    from feedbax.contracts.project import Project
+    from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.studio.scene_geometry import prepare_scene_geometry
+
+    registry = ComponentRegistry()
+    payload = {
+        "step_seconds": "10 ms", "ports": {},
+        "interior": {"components": {"plant": {
+            "kind": "leaf", "label": "Point mass", "type": "feedbax.LinearStateSpace",
+            "fields": {"pos_slice": [0, 2], "initial_state": [99, 3, 5, -99]},
+        }}},
+    }
+    store = ImmutableArtifactBlobProvider(tmp_path)
+    model = StoredModelDocument.model_validate(payload).lower(registry)
+    model_pin = store.store_object(encode_imported_model_document(model))
+    tree = store.store_tree(ContentTree(files=(ContentTreeFile(relative_path="graph.json", object=model_pin),)))
+    ref, raw = encode_document_input(ImportedModelSource(
+        kind="imported", model=model_pin, weights=tree, encoding={"descriptor_sha256": "a" * 64},
+    ))
+    assert store.store_object(raw).sha256 == ref.sha256
+    manifest = SimpleNamespace(evaluation_spec=SimpleNamespace(inline={
+        "evaluation_type": "feedbax.rollout", "params": {"seed": 0, "trials": list(_TRIALS), "variation": [
+            {"path": "graph.nodes.plant.params.pos_slice", "op": "replace", "value": [1, 3]},
+        ]},
+    }))
+    monkeypatch.setattr(saved_evaluation, "_verified_manifest", lambda _: (manifest, ref))
+    descriptor = unequal_epochs.descriptor
+    vector = "/v1/model/state/plant/vector"
+    samples = unequal_epochs.data(_POSITION)
+
+    def replicate(offset):
+        return Dataset.from_arrays(
+            {name: Variable.from_field(unequal_epochs.data(name), field, field.dims)
+             for name, field in descriptor.variables.items() if name != _POSITION} | {
+                vector: Variable(np.pad(samples + offset, [(0, 0), (0, 0), (0, 0), (1, 1)], constant_values=99),
+                                 ("condition", "trial", "state_time", "plant:unit")),
+            },
+            coords={name: Variable.from_field(unequal_epochs.data(name), field, field.dims)
+                    for name, field in descriptor.coords.items()},
+            attrs={"trial_record": descriptor.attrs["trial_record"] | {"positions": []}},
+        )
+
+    dataset = stack_replicates(("alpha", "beta"), (replicate(0), replicate(100)))
+    monkeypatch.setattr(saved_evaluation, "open_states", lambda: nullcontext(dataset))
+    replay = saved_evaluation.replay("second", replicate=1, components=registry)
+    assert replay.position is not None
+    [trial] = replay.drawn.trials
+    track = trial.states[replay.position]
+    assert (track.frame, track.units) == ("world", "m")
+    assert track.samples == (samples[0, 1] + 100).tolist()
+    mean = saved_evaluation.replay(replicate=1, mean=TrialMeanSelection(by=[]), components=registry)
+    assert mean.mean.conditions[0].states[replay.position].mean[0] == [110, 105]
+
+    payload["interior"]["components"]["plant"]["fields"]["pos_slice"] = [1, 3]
+    project = Project.model_validate({"documents": {"fitted": {
+        "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "label": "Fitted Model", "payload": payload,
+    }}})
+    rest, moved = prepare_scene_geometry(project, "fitted", [{}, {replay.position: track.samples[-1]}], registry)
+    assert not rest.diagnostics and not moved.diagnostics
+    assert rest.mechanisms[0].name == "Point mass"
+    assert rest.mechanisms[0].position == (3, 5)
+    assert moved.mechanisms[0].position == tuple(track.samples[-1])

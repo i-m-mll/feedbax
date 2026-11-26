@@ -980,6 +980,7 @@ class ProjectPlanService:
         try:
             return result.replay(
                 body.trial, checkpoint=body.checkpoint, replicate=body.replicate, aggregate=body.aggregate, mean=body.mean,
+                components=self.folders.components,
             )
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
