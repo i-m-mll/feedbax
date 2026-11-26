@@ -307,6 +307,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         assert {choice.document for choice in initial.tasks} == {"probe-task", "task", "test-task", "unbound-task"}
         assert any(field.path == "/python_task/params/n_steps" for field in initial.fields)
         edited = author(revision, {"kind": "task", "edits": [
+            {"op": "ensure", "path": "/params", "collection": "object"},
             {"op": "add", "path": "/params/x", "value": 0.22},
             {"op": "add", "path": "/params/n_steps", "value": 12},
         ]})
@@ -698,9 +699,9 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
         "run": {"variant": selected.variant, "step": selected.step, "row": selected.row},
         "revision": before.revision, "scope": scope,
         "change": {"kind": "objective", "edits": [
-            {"op": "replace", "path": "/terms/0/weight/value", "value": 2},
+            {"op": "add", "path": "/terms/0/weight", "value": {"kind": "literal", "value": 2}},
         ] if kind == "step" else [
-            {"op": "add", "path": "/terms/-", "value": {"id": "term", "measure": {"kind": "literal", "value": 1}}},
+            {"op": "add", "path": "/terms", "value": [{"id": "term", "measure": {"kind": "literal", "value": 1}}]},
         ]},
     }
     with TestClient(create_app(projects_dir=tmp_path)) as client:
@@ -817,7 +818,9 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
 
         view = author()
         assert "fixed_steps" not in view["task"]
-        assert view["objective"] == objective
+        stored = folders.read(project).project.documents["objective"].payload
+        assert view["objective"] == stored
+        assert not {"enabled", "reduction", "window", "weight", "measure_type"} & stored["terms"][0].keys()
         for op, values in (
             ("add", {"enabled": False, "reduction": "sum", "window": {"spans": [{"kind": "epoch", "epoch": "move"}]}}),
             ("replace", {"enabled": True, "reduction": "mean", "window": None}),
@@ -833,7 +836,9 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
             assert saved.status_code == 200, saved.text
             body["revision"] = saved.json()["revision"]
             view = author()
-            assert view["objective"]["terms"][0] == term | values
+            expected = stored["terms"][0] | values if op == "add" else stored["terms"][0]
+            assert view["objective"]["terms"][0] == expected
+            assert folders.read(project).project.documents["objective"].payload["terms"][0] == expected
 
 
 def test_studio_saves_an_objective_ramp_weighted_by_a_delayed_signal(tmp_path):

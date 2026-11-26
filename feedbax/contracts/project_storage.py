@@ -68,7 +68,7 @@ def _schema_inventory() -> tuple[tuple[type[BaseModel], ...], dict[type[BaseMode
     roots = (RootDocument, BasedDocument, Project, Step, TextProjectManifest, StudioProjectFile, PresentationDocument)
     models: set[type[BaseModel]] = set()
     seen: set[Any] = set()
-    tags: dict[type[BaseModel], set[str]] = defaultdict(set)
+    tags: dict[type[BaseModel], set[str]] = defaultdict(set, {OverridePatch: {"op"}})
 
     def variants(annotation: Any) -> Iterator[type[BaseModel]]:
         if isinstance(annotation, TypeAliasType):
@@ -191,7 +191,7 @@ def _projected_file(
                 key = _key(name, field)
                 child_path = (*path, key)
                 explicit = name in value.model_fields_set
-                tagged = name in tags.get(cls, ()) or isinstance(value, OverridePatch) and name == "op"
+                tagged = name in tags.get(cls, ())
                 required = field.is_required() or tagged
                 observed = explicit and (
                     child_path in prefixes or isinstance(value, _REFINEMENTS)

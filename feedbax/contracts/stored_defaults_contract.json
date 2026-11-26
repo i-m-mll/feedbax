@@ -65,8 +65,7 @@
   },
   "feedbax.contracts.loaded_model.ImportedModelSource": {},
   "feedbax.contracts.manifest.OverridePatch": {
-    "value": null,
-    "op": "replace"
+    "value": null
   },
   "feedbax.contracts.model_address.ComponentPortEnd": {},
   "feedbax.contracts.model_address.InputBoundaryEnd": {},
