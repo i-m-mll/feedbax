@@ -56,7 +56,7 @@ async function speedFigure(page: Page, request: APIRequestContext, home: string,
   const projected = await request.get(path + '/train-runs', { params: { revision: seeded.revision, window_map: 'true' } });
   expect(projected.ok(), await projected.text()).toBe(true);
   const { window_map } = await projected.json() as StudioSavedTrainRuns;
-  const trials = window_map!.evaluations!.find(({ key }) => key.step === 'baseline')!.trials;
+  const trials = window_map!.evaluations!.find(({ key }) => key.step === 'baseline')!.trials.map(({ id }) => id);
   expect(trials).toHaveLength(64);
   return { trials };
 }

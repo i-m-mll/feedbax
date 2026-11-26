@@ -1,6 +1,5 @@
 import type { SourceNaming } from '@/components/values/adapters/fieldView';
 import { documentPayload } from './documentPayload';
-import { conditionLabels } from './evaluateAuthoring';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchSavedEvaluationReplay } from '@/api/jobs';
@@ -18,7 +17,7 @@ import type { PipelineSelection } from '@/features/pipeline/selection';
 import { bindStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   DocumentReferenceSchema, StoredModelDocumentSchema,
-  type EvaluateModelRequest, type StoredModelDocument, type StudioSavedEvaluationRow,
+  type EvaluateModelRequest, type StoredModelDocument, type StudioSavedEvaluationRow, type StudioTrialName,
   type StudioSavedTrainKey, type StudioProjectWindowMapProblem, type ModelAddress, type TrialRecord,
   type StudioSavedEvaluationReplayRequest, type StudioTrialAuthoring, type TrialMean, type TrialMeanOptions, type TrialMeanSelection,
 } from '@/generated/studioContracts';
@@ -116,16 +115,11 @@ export function drawnEvaluation(evaluation: StudioSavedEvaluationRow | undefined
   return result ? { result, trials: result.trials ?? evaluation!.trials, outOfDate: !evaluation!.result } : undefined;
 }
 
-/**
- * The trials a saved evaluation recorded, which the clock's picker lists, with each one's condition named by the Task's
- * `variables`; unnamed until the Task is read.
- */
-export function recordedTrials(evaluation: StudioSavedEvaluationRow | undefined, variables: readonly { readonly id: string; readonly name: string }[] | undefined) {
+/** The trials a saved evaluation recorded, which the clock's picker lists, by id with the Service's name of each. */
+export function recordedTrials(evaluation: StudioSavedEvaluationRow | undefined) {
   const drawn = drawnEvaluation(evaluation);
-  if (!drawn) return { ids: [], labels: [], outOfDate: false };
-  if (!variables) return { ids: drawn.trials, labels: [], outOfDate: drawn.outOfDate };
-  const labels = conditionLabels(drawn.trials, variables);
-  return { ids: drawn.trials, labels: drawn.trials.map((id) => labels.get(id) ?? id), outOfDate: drawn.outOfDate };
+  if (!drawn) return { ids: [], names: [], outOfDate: false };
+  return { ids: drawn.trials.map(({ id }) => id), names: drawn.trials.map(({ name }) => name), outOfDate: drawn.outOfDate };
 }
 
 /**
@@ -143,10 +137,10 @@ export type RecordedTrialRead =
  * `mean` (Mean). Every reply carries the By and Align the trials offer; Mean's carries its summaries beside every
  * trial's record.
  */
-function replayRequest(showing: TrialShowing, trials: readonly string[], mean: TrialMeanSelection):
+function replayRequest(showing: TrialShowing, trials: readonly StudioTrialName[], mean: TrialMeanSelection):
   Pick<StudioSavedEvaluationReplayRequest, 'trial' | 'mean'> {
   switch (showing.kind) {
-    case 'one': return { trial: trials[showing.index] };
+    case 'one': return { trial: trials[showing.index]?.id };
     case 'all': return { trial: null };
     case 'mean': return { trial: null, mean };
   }

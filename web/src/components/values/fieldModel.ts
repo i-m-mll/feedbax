@@ -139,6 +139,8 @@ export interface FieldModel {
   /** The cadence a new Draw at this site is drawn at, as the Service gives it. */
   readonly drawPer?: DrawCadence;
   readonly names: readonly StudioFieldName[];
+  /** The Set entry a name is marked with, where a Set entry adds it, by the name's id. */
+  readonly nameMarks?: ReadonlyMap<string, string>;
   readonly functions: readonly StudioFieldFunction[];
   /** The functions and names that fit at each node of the value: its root, `['args', 0]` and so on. */
   readonly menus?: PartMenus;
@@ -257,6 +259,8 @@ export interface Completion {
   readonly insert: string;
   readonly label: string;
   readonly detail: string;
+  /** The Set entry a name is marked with. */
+  readonly mark?: string;
 }
 
 /**
@@ -272,6 +276,7 @@ export function completions(model: FieldModel, before: string): { token: string;
   const names = model.names.filter(({ name }) => name.toLowerCase().startsWith(lower) && name !== token)
     .map(({ id, name, type, list_count }) => ({
       id: 'name:' + id, insert: repeated && list_count ? `${name}[i]` : name, label: name, detail: typeText(type),
+      mark: model.nameMarks?.get(id),
     }));
   const functions = model.functions.filter(({ id }) => id.toLowerCase().startsWith(lower))
     .map(({ id, signature }) => ({ id: 'function:' + id, insert: id + '(', label: id, detail: signature }));

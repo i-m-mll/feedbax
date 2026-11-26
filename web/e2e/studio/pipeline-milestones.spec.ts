@@ -383,7 +383,8 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const rates = sourceRows.map(({ coordinates }) => ({
     id: coordinates['learning-rate'].value_id, label: String(coordinates['learning-rate'].value),
   }));
-  const conditionIds = sourceRows[0].evaluation_conditions!.slice(0, 2);
+  const conditions = sourceRows[0].evaluation_conditions!.slice(0, 2);
+  const conditionIds = conditions.map(({ id }) => id);
   expect(conditionIds).toHaveLength(2);
   await launchRows(page, projectPath, sourceRows.map(({ key }) => key));
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: jobTimeout });
@@ -473,7 +474,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
     const edge = final.window_map!.edges.find(({ to_key }) => JSON.stringify(to_key) === JSON.stringify(row.key));
     const producer = final.rows.find(({ key }) => JSON.stringify(key) === JSON.stringify(edge?.from_key));
     expect(producer?.result).toBeDefined();
-    expect(row.trials).toEqual(conditionIds);
+    expect(row.trials).toEqual(conditions);
     expect(row.result?.checkpoint_source).toEqual({
       job_id: producer!.result!.job_id, request_id: producer!.request_id, completed_updates: 2,
     });

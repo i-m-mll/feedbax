@@ -1,7 +1,7 @@
 import { holdsMissing, Shown, type ShownText } from '@/components/ui/ShownText';
 import { useId, useRef, type ReactNode } from 'react';
 import { useDraft } from '@/hooks/useDraft';
-import { studioAccessibleName, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { NumberField } from '@/components/ui/NumberField';
@@ -12,7 +12,7 @@ import { FieldRow } from '@/components/ui/FieldRow';
 import { Section } from '@/components/ui/Section';
 import { ReferenceField } from '@/components/values/ReferenceField';
 import {
-  checkpointDraft, checkpointDraftRule, conditionLabels, emptyCheckpointDraft, validTrialSet,
+  checkpointDraft, checkpointDraftRule, emptyCheckpointDraft, validTrialSet,
   type CheckpointDraft, type CheckpointDraftField, type CheckpointKind, type CheckpointRange, type EditableCheckpointRule,
   type TrialDomain, type TrialSet,
 } from './evaluateAuthoring';
@@ -149,10 +149,8 @@ function toggle(ids: readonly string[], id: string, checked: boolean) {
  * Which trials the Evaluate runs: every condition, chosen conditions, or a number sampled from the task. A choice
  * saves once it names some trials. A saved sample's number is `count`, the step's own field, which takes a sweep.
  */
-export function TrialsEditor({ initial, domain, variables, disabled, refusal, count: savedCount, onSave }: {
+export function TrialsEditor({ initial, domain, disabled, refusal, count: savedCount, onSave }: {
   initial: TrialSet; domain: TrialDomain; disabled: boolean; refusal?: string; count?: ReactNode; onSave(rule: TrialSet): void;
-  /** The Task variables that name the domain's conditions. */
-  variables: readonly { readonly id: string; readonly name: string }[];
 }) {
   const [rule, setRule] = useDraft(initial);
   const count = useId();
@@ -189,7 +187,8 @@ export function TrialsEditor({ initial, domain, variables, disabled, refusal, co
         }} />
     </>}>
     {rule.kind === 'conditions' && domain.kind === 'fixed' && <fieldset disabled={disabled}>
-      <Checkboxes options={[...conditionLabels(domain.conditions, variables)].map(([id, label]) => ({ id, label }))} selected={rule.ids} disabled={disabled}
+      <Checkboxes options={domain.conditions.map(({ id, name }, index) => ({
+        id, label: name ?? studioFormat('trialOf', { index: index + 1, count: domain.conditions.length }) }))} selected={rule.ids} disabled={disabled}
         onToggle={(id, checked) => commit({ kind: 'conditions', ids: toggle(rule.ids, id, checked) })} />
     </fieldset>}
     {sampling && (initial.kind === 'sample' && savedCount || <FieldRow label={studioName('count')} htmlFor={count}>

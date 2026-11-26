@@ -9,7 +9,7 @@ import {
 } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
-  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceIsDocument, studioProblemName, studioReason, studioRunReason, studioRunStatus, studioStep, type SourceNames,
+  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceIsDocument, studioProblemName, studioReason, studioRunReason, studioRunStatus, studioStep,
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -369,11 +369,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     editor, project: saved.project, applies: !outside && reachable && variantApplies,
     perform, state: () => latestState.current, select: (next) => selection.select(next), confirmRemoval: runRemoval.confirm,
     ask: (anchor, choices) => askStore(anchor, choices),
-    valueName: (step, axis, entry) => {
-      const value = plan.steps.find(({ id }) => id === step)?.sweeps.find(({ id }) => id === axis)?.values.find(({ id }) => id === entry);
-      if (!value) throw new Error(`The plan has no value ${entry} of axis ${axis} of step ${step}.`);
-      return value.label;
-    },
   });
   const axisMenu: AxisMenu = (stepId, axis) => {
     const planned = plan.steps.find(({ id }) => id === stepId);
@@ -691,21 +686,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (!planned) throw new Error(`The plan has no step ${id}.`);
     return planned.label;
   };
-  const plannedAxis = (step: string, axis: string) => {
-    const planned = plan.steps.find((item) => item.id === step)?.sweeps.find((item) => item.id === axis);
-    if (!planned) throw new Error(`The plan has no axis ${axis} of step ${step}.`);
-    return planned;
-  };
-  const sourceNames: SourceNames = {
-    step: stepLabel,
-    document: (key) => labelOf(namedDocuments, key),
-    axis: (step, axis) => plannedAxis(step, axis).label,
-    value: (step, axis, value) => {
-      const planned = plannedAxis(step, axis).values.find((item) => item.id === value);
-      if (!planned) throw new Error(`The plan has no value ${value} of axis ${axis} of step ${step}.`);
-      return planned.valueLabel;
-    },
-  };
   /** The rows of its producer that selection `index` of the step's input `role` reads. */
   function selectionRows(role: string, index: number) {
     const binding = authored?.inputs?.[role];
@@ -863,7 +843,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     },
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
     fieldAxes: valueTerms && Object.fromEntries(valueTerms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]])),
-    sourceNaming: { names: sourceNames, exceptions: exceptionMention },
+    sourceNaming: { exceptions: exceptionMention },
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({
@@ -1482,7 +1462,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       const all = target.sweeps.find(({ id }) => id === axis)?.values;
       return !all || all.some(({ id }) => !values.has(id));
     }).map(([axis, values]) => {
-      const sweep = plannedAxis(target.id, axis);
+      const sweep = target.sweeps.find(({ id }) => id === axis);
+      if (!sweep) throw new Error(`The plan has no axis ${axis} of step ${target.id}.`);
       const names = [...values].map((value) => sweep.values.find(({ id }) => id === value)?.valueLabel ?? axisValueText(axis, value));
       return `${sweep.label} ${names.join(', ')}`;
     })];
@@ -2231,7 +2212,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                     {subjectDocuments && <SubjectDocuments subject={subjectDocuments} project={saved.project} documents={namedDocuments}
                       onChoose={applies && wholeStep ? onCurrentPlan('chooseSubjectDocument') : undefined} />}
                     {evaluationEditor && trial.view && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
-                      domain={evaluationEditor.domain} variables={trial.view.variables} disabled={!applies} refusal={refusedAt('trials')}
+                      domain={evaluationEditor.domain} disabled={!applies} refusal={refusedAt('trials')}
                       count={ownFieldProps && <StudioStepField {...ownFieldProps} anchor={trialCount} label={studioName('count')} />}
                       onSave={(rule) => onCurrentPlan('editEvaluation')('trials', studioName('trials'),
                         { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}

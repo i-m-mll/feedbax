@@ -411,7 +411,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     })));
     expect(new Set(retained.members.map(({ store_success_sha256 }: { store_success_sha256: string }) => store_success_sha256)).size).toBe(2);
     expect(retained.producers.sort()).toEqual(sources.map(({ result }) => result!.job_id).sort());
-    const condition = { seed: 0, trial_policy: 'paired', trials: firstCondition.trials };
+    const condition = { seed: 0, trial_policy: 'paired', trials: firstCondition.trials.map(({ id }) => id) };
     expect(retained.condition_inputs).toEqual([
       { ...condition, variation: [] },
       { ...condition, variation: [{ op: 'replace', path: `graph.nodes.${first.plantId}.params.mass`, value: 2 }] },

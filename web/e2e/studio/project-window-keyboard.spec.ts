@@ -257,7 +257,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
     receipt: { manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
     checkpoint_source: { job_id: continued.job_id, request_id: producer, completed_updates: totalUpdates },
   });
-  const [trial] = result.trials;
+  const trial = result.trials[0]?.id;
   expect(trial).toBeTruthy();
   expect(result.trials).toHaveLength(Object.keys((rootPayload(firstTrainTask) as { validation_trials: object }).validation_trials).length);
 

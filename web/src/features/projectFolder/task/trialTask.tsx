@@ -13,6 +13,7 @@ import { addressKey } from '../model/modelGraph';
 import {
   changedAt, initializesAnchor, startAnchor, trialField, variableAnchor, type Commit, type TrialRuns, type TrialView,
 } from '../StudioTrialAuthoring';
+import { taskVariableName } from './setEntries';
 import { VariableInspector } from './TaskInspector';
 import { TrialTaskGrid } from './trialGrid';
 import { TaskVariables, type VariableEdits } from './TaskVariables';
@@ -45,6 +46,8 @@ interface Owner {
   readonly entry: EntryTask;
   readonly variable: string;
 }
+
+const variableName = (view: TrialView, key: string, variable: StoredVariable) => taskVariableName(view, key, variable).name;
 
 /** Each variable a Set entry adds, by its id in the trials, with its entry as the read names it. */
 function owners(view: TrialView, entryOf?: (origin: SetVariableOrigin) => EntryTask | undefined): ReadonlyMap<string, Owner> {
@@ -114,7 +117,7 @@ function unstarted(view: TrialView, task: StoredTaskDocument, types: readonly St
     return [{
       ...startOf(reset), anchor: startAnchor(addressKey(reset.address)), reason, type: typeName(reset.type, types), valueType: reset.type,
       variables: Object.entries(task.variables).flatMap(([key, variable]) =>
-        fits(reset.type, variable.type) ? [{ id: key, name: variable.label }] : []),
+        fits(reset.type, variable.type) ? [{ id: key, name: variableName(view, key, variable) }] : []),
       initialize: commit && (async (variable: string) => reasonOf(await commit(studioAccessibleName('set', studioName('initializes')), {
         kind: 'structure', changes: [{ op: 'link', address_text: id, variable }],
       }))),
@@ -151,7 +154,7 @@ function variables(view: TrialView, task: StoredTaskDocument, types: readonly St
       ...trialField(view, projection, studioName('value'), runs, {
         id: `value:${key}`,
         changed: changedAt(view, 'task', stored('value'), commit), source: view.origin(view.task_source),
-        commit: commit && ((edit) => commit(studioAccessibleName('set', variable.label), { kind: 'expression', path, edit })),
+        commit: commit && ((edit) => commit(studioAccessibleName('set', variableName(view, key, variable)), { kind: 'expression', path, edit })),
         selectedMembers: sweep ? runs?.values(sweep) : undefined,
         chooseMember: sweep && runs?.choose ? (member, extend) => runs.choose!(sweep, member, extend) : undefined,
       }),
@@ -165,9 +168,8 @@ function variables(view: TrialView, task: StoredTaskDocument, types: readonly St
       commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('count')), { kind: 'expression', path: countPath, edit })),
     }) : rawField({ id: `count:${key}`, label: studioName('count'), value: '', type: { kind: 'readOnly' } }) : undefined;
     return {
-      id: key, name: variable.label, type: name, valueType: variable.type, typeChoice, value, count,
+      id: key, ...taskVariableName(view, key, variable), type: name, valueType: variable.type, typeChoice, value, count,
       level: levels.get(key) === 2 ? 'step' : 'trial', initializes: initializes(view, task, key, variable, commit, owner),
-      entry: owner?.entry.label,
     };
   });
 }
@@ -245,7 +247,7 @@ function setVariables(view: TrialView, setName: (set: string) => string, weigh?:
       }),
       entries: [...entries.filter(({ entry }) => entry !== null), ...entries.filter(({ entry }) => entry === null)]
         .map(({ entry, label, weight, member_count }) => ({
-          id: entry, label: entry === null ? studioName('none') : label || entry, weight: entryWeight(weight),
+          id: entry, label: label ?? studioName('none'), weight: entryWeight(weight),
           ...member_count != null && { members: member_count },
         })),
     };

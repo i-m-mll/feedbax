@@ -43,7 +43,7 @@ it('updates mounted Train Results in place from live points to their retained at
   }
   const evaluation: StudioSavedEvaluationRow = {
     key: { ...trainKey, step: 'evaluate' }, request_id: 'evaluate:series', status: 'queued', reason: null,
-    can_run: true, trials: ['a'], result: null,
+    can_run: true, trials: [{ id: 'a', name: 'Reach 0' }], result: null,
     checkpoint_series: { subject: trainKey, requested: [2, 4, 6] },
     checkpoint_attempt: {
       job_id: 'evaluation', placement: { location: 'live', reason: 'within_budget' },

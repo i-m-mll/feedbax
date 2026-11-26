@@ -163,7 +163,7 @@ export function useTrialClock({
   shelfView, elements, playhead,
 }: TrialClockInputs) {
   const clock = windowState.clock ?? defaultTrialClock;
-  const recorded = recordedTrials(evaluation, view?.variables);
+  const recorded = recordedTrials(evaluation);
   const period = view?.period_seconds;
   const task = view && taskDocumentOf(view);
   const offer: TrialOffer = {
@@ -253,7 +253,7 @@ export function useTrialClock({
     trial: shown?.kind === 'problems' ? undefined : shown,
     /** The Mean every figure draws, while Mean is picked. */
     mean: meanSelection(clock),
-    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} recordedOutOfDate={recorded.outOfDate} meanOptions={meanOptions} onChange={change}
+    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedNames={recorded.names} recordedOutOfDate={recorded.outOfDate} meanOptions={meanOptions} onChange={change}
       timeline={timeline} time={time} onTimeChange={setTime} axis={axis} shelfOpen={open}
       onShelfChange={(next) => shelfView && change({ ...clock, shelf: { ...clock.shelf, [shelfView]: next } })} />,
     shelf: pick && open && timeline.duration > 0 && (rows

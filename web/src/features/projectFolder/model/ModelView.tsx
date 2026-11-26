@@ -498,7 +498,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         from: changedFrom,
         reset: canEditField ? () => editField(fieldBody, field.address, { kind: 'reset' }) : undefined,
       } : undefined,
-      source: originsNamed && evaluateSource ? evaluateOrigin(evaluateSource, sourceNaming.names.step) : undefined,
+      source: originsNamed && evaluateSource ? evaluateOrigin(evaluateSource) : undefined,
       commit: canEditField ? (edit) => editField(fieldBody, field.address, edit) : undefined,
       rowSelection: !!fieldRows?.length,
       multipleRows: !evaluate && (fieldRows?.length ?? 0) > 1,

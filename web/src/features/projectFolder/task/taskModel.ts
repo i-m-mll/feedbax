@@ -61,15 +61,20 @@ export interface TaskVariable {
   readonly level: VariableLevel;
   readonly value: FieldModel;
   readonly initializes?: VariableInitializes;
-  /** The label of the Set entry that adds the variable, where one does. */
-  readonly entry?: string;
+  /** The Set entry that adds the variable, where one does. */
+  readonly entry?: EntryName;
+}
+
+/** A Set entry as the Task view names it: its stored label, and for a family the count the service gives. */
+export interface EntryName {
+  readonly label: string;
+  readonly members?: number;
 }
 
 /** A Set entry the step's trials read: its own Task variables and links, and the store of new ones. */
 export interface EntryTask {
   /** Which entry of which axis of which step, one key per entry. */
   readonly key: string;
-  readonly label: string;
   /** The entry's variables, by key. */
   readonly variables: Readonly<Record<string, StoredVariable>>;
   /** The entry's links: each Model address text with the key of the variable that initializes it. */

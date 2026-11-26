@@ -3,7 +3,7 @@ import { expect, it } from 'vitest';
 import type { Step } from '@/generated/studioContracts';
 import { applyAuthoredEdits, type ProjectEditContent } from './authoredEdits';
 import {
-  checkpointDraft, checkpointDraftRule, conditionLabels, editableCheckpointRule, storedCheckpointRule, evaluateSubject, evaluateSubjectEdits,
+  checkpointDraft, checkpointDraftRule, editableCheckpointRule, storedCheckpointRule, evaluateSubject, evaluateSubjectEdits,
   ordinaryEvaluation, selectionCheckpoints,
   type EvaluateSubject,
 } from './evaluateAuthoring';
@@ -88,19 +88,6 @@ it('reads a Loaded Model subject with its weights, on the Task and Objective the
     task: { kind: 'task', source: { document: 'reach' } },
   });
   expect(evaluateSubject(loaded)).toEqual({ kind: 'document', reads: 'loaded_model', document: 'arm-trained', task: 'reach' });
-});
-
-// Catches a condition shown as its raw JSON id, named by a variable every condition shares or by a variable's key, or
-// a variable the Task lacks read as though it were a name.
-it('names each condition by the names of the variables that vary across its cohort', () => {
-  const variables = [{ id: 'goal', name: 'Goal' }, { id: 'origin', name: 'Origin' }];
-  const a = '{"goal":[1,0],"origin":[0,0]}';
-  const b = '{"goal":[0,1],"origin":[0,0]}';
-  expect([...conditionLabels([a, b], variables).values()].map(plainText)).toEqual(['Goal = [1,0]', 'Goal = [0,1]']);
-  expect(plainText(conditionLabels(['{"goal":[1,0]}'], variables).get('{"goal":[1,0]}')!)).toBe('Goal = [1,0]');
-  expect(conditionLabels(['left'], variables).get('left')).toBe('left');
-  const dangling = conditionLabels(['{"gone":1}'], variables).get('{"gone":1}')!;
-  expect([plainText(dangling), holdsMissing(dangling)]).toEqual(['gone = 1', true]);
 });
 
 // Catches a listed subject drawing no Checkpoint editor, or one editor hiding selections whose rules differ.

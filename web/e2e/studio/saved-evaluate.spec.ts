@@ -162,7 +162,7 @@ function replayPosition(replay: StudioTrialReplayResponse) {
 }
 
 async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow, label: string, checkpoint?: number) {
-  const trialId = row.trials[trialIndex];
+  const trialId = row.trials[trialIndex].id;
   // The picked trial is the window's: once picked for one run, the Scene opens the next run on the same trial, so its
   // replay can be requested as soon as the Scene shows that run.
   const response = page.waitForResponse((response) => {
@@ -305,7 +305,7 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   });
   expect(invalidTrial.status()).toBe(422);
   const wrongJob = await request.post(replayPath, {
-    data: { revision, key: base.key, job_id: train.job_id, trial: base.trials[trialIndex] },
+    data: { revision, key: base.key, job_id: train.job_id, trial: base.trials[trialIndex].id },
   });
   expect(wrongJob.status()).toBe(404);
 
@@ -985,7 +985,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
     expect(await replayRow(row)).toEqual(replays.get(row.result!.job_id));
   }
   const finiteResult = finiteRow.result!;
-  const trialId = finiteRow.trials[trialIndex];
+  const trialId = finiteRow.trials[trialIndex].id;
   const finiteReplay = { revision, key: finiteRow.key, job_id: finiteResult.job_id, trial: trialId };
   expect((await request.post(replayPath, { data: finiteReplay })).status()).toBe(422);
   for (const { coordinate, samples } of fromCheckpoint.checkpoints) {

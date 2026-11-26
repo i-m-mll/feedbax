@@ -3,7 +3,7 @@ import type {
   StudioPlanReviewSource,
 } from '@/generated/studioContracts';
 import {
-  studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason, type EvaluateOrigin, type SourceNames,
+  studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason, type EvaluateOrigin,
 } from '@/components/activity/studioVocabulary';
 import { evaluateChange, valueKind, withReset, type ChangeMark, type FieldModel, type FieldRefusal } from '../fieldModel';
 
@@ -34,7 +34,6 @@ export type ExceptionMentions = (source: StudioPlanReviewSource) => ExceptionMen
 
 /** How a field names where the plan says its value comes from. */
 export interface SourceNaming {
-  readonly names: SourceNames;
   readonly exceptions?: ExceptionMentions;
 }
 
@@ -58,14 +57,14 @@ export interface FieldViewOptions {
 
 function origin({ planSources, source, changed }: FieldViewOptions) {
   if (!planSources?.sources.length) return { text: source?.kind === 'trained' && !changed ? studioEvaluateValueSource(source) : undefined };
-  const { sources, names, exceptions } = planSources;
+  const { sources, exceptions } = planSources;
   const mentions = sources.map((item) => item.kind === 'exception' ? exceptions?.(item) : undefined);
   const named = new Map(sources.flatMap((item, index) => {
     const mention = mentions[index];
     return mention ? [[JSON.stringify([item.step, item.variant, item.key]), mention] as const] : [];
   }));
   return {
-    text: [...new Set(sources.map((item, index) => studioPlanValueSource(item, names, mentions[index]?.runs)))].join(', '),
+    text: [...new Set(sources.map((item, index) => studioPlanValueSource(item, mentions[index]?.runs)))].join(', '),
     reveal: named.size === 1 ? [...named.values()][0].reveal : undefined,
   };
 }

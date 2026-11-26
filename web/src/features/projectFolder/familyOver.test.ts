@@ -27,7 +27,7 @@ it('gives a plain member no Over group', () => {
 it("names a rule's values as the Service does, and writes a rename where the value's label is stored", () => {
   const field = (key: string) => ({ path: `/objective/terms/speed/over/side/${key}`, label: '', text: '1', site: 'constant' });
   const named = {
-    ...view, fields: [field('neg'), field('pos')], sites: { constant: { expected: { base: 'real' }, finest: 'run', names: [], kinds: ['value'], parts: [], functions: 'none' } }, function_lists: { none: [] },
+    ...view, variables: [], fields: [field('neg'), field('pos')], sites: { constant: { expected: { base: 'real' }, finest: 'run', names: [], kinds: ['value'], parts: [], functions: 'none' } }, function_lists: { none: [] },
     menus: () => ({}),
     families: { '/objective/terms/speed': { member_count: 2, indices: { side: { count: 2, values: [
       { key: 'neg', name: 'Left' }, { key: 'pos', name: 'pos' },

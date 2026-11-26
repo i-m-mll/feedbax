@@ -49,7 +49,8 @@ import { sendWithStore, type AskStore } from './storeChoice';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
 import { WindowCell, WindowEditor, type WindowEpochChoice, type WindowHost } from './WindowEditor';
-import { FamilyCount, FamilyOver, type FamilyIndex } from './FamilyOver';
+import { FamilyCount, FamilyOver, familyText, type FamilyIndex } from './FamilyOver';
+import { entryMarks, taskVariableName } from './task/setEntries';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 type Relation = Extract<Change, { kind: 'relate' }>;
@@ -93,7 +94,7 @@ export function trialField(view: TrialView, projection: StudioTrialField, label:
   const [problem] = projection.problems ?? [];
   return {
     ...fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, view, options),
-    reason: problem?.reason, span: problem?.span ?? undefined, menus: view.menus(projection.path),
+    reason: problem?.reason, span: problem?.span ?? undefined, menus: view.menus(projection.path), nameMarks: entryMarks(view),
   };
 }
 
@@ -145,7 +146,7 @@ export function useTrialAuthoring(
       },
     });
     const origin = (source: StudioEvaluateValueSource | null | undefined) =>
-      source ? evaluateOrigin(source, (step) => labelOf(authored.steps, step)) : undefined;
+      source ? evaluateOrigin(source) : undefined;
     return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) }, menus, origin };
   }, [data, authored, run, project, queryClient]);
   /** Stores a change, answering with what the service made of it, or why the write was refused. */
@@ -270,7 +271,10 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
     Object.entries(items).map(([id, { label }]) => ({ id, name: label, reason: reasons.get(`${group}:${id}`) }));
   const task = 'variables' in view.task ? view.task : undefined;
   const groups = {
-    variables: task && entries('variables', task.variables),
+    variables: task && Object.entries(task.variables).map(([id, variable]) => {
+      const { name, entry } = taskVariableName(view, id, variable);
+      return { id, name, reason: reasons.get(`variables:${id}`), detail: entry && familyText(entry.label, entry.members) };
+    }),
     epochs: task && entries('epochs', task.epochs),
     signals: task ? entries('signals', task.signals) : view.signals.map(({ id, name }) => ({ id, name: humanizeLabel(name) })),
     validationTrials: task && Object.entries(task.validation_trials ?? {}).map(([id, trial]) => {

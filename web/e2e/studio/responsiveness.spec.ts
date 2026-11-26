@@ -349,7 +349,7 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
   const result = plan.window_map?.evaluations?.find(({ key }) => key.step === 'baseline');
   expect(result?.result?.job_id).toBe(evaluation.job_id);
   expect(result?.result?.checkpoint_source?.job_id).toBe(train.job_id);
-  const trial = result!.trials[1];
+  const trial = result!.trials[1].id;
   const row = plan.window_map!.rows.find(({ key }) => key.step === 'baseline')!;
   await table.getByRole('button', { name: runName(shownRunLabel(row)) }).click();
   await tabs.getByRole('tab', { name: 'Scene', exact: true }).click();

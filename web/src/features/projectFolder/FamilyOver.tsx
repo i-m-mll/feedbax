@@ -33,6 +33,11 @@ export function FamilyCount({ count }: { count: number | null | undefined }) {
   return count == null ? null : <span className="shrink-0 text-shell-muted tabular-nums">{studioFormat('memberCount', { count })}</span>;
 }
 
+/** A family member's name with its count, where it has one, as text: `Initial position {axis} {sign} × 4`. */
+export function familyText(name: string, count: number | null | undefined) {
+  return count == null ? name : `${name} ${studioFormat('memberCount', { count })}`;
+}
+
 /** The removals of an index or of a named value, in a menu named for what they remove from. */
 function IndexMenu({ of, items }: { of: string; items: readonly { name: string; remove: () => void }[] }) {
   return <Menu>
