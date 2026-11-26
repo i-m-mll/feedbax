@@ -31,7 +31,9 @@ test("a term's interval, authored in its Window cell, applies on the shelf over 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   const table = page.locator('[data-slot="primary"]').getByRole('tabpanel').getByRole('table', { name: 'Objective Terms', exact: true });
   const pulse = table.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename pulse' }) });
-  await pulse.getByRole('button', { name: 'Window', exact: true }).click();
+  const windowTrigger = pulse.getByRole('button', { name: /^Window / });
+  await expect(windowTrigger).toHaveAccessibleName('Window Whole Trial');
+  await windowTrigger.click();
   const editor = page.getByRole('dialog', { name: 'Window', exact: true });
   await editor.getByRole('button', { name: 'Add Span', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Interval', exact: true }).click();
@@ -47,7 +49,8 @@ test("a term's interval, authored in its Window cell, applies on the shelf over 
   await choose('End', 'Edge', 'Start');
   await enter(position('Start').getByRole('textbox', { name: 'Start', exact: true }), '0.1 s');
   await enter(position('End').getByRole('textbox', { name: 'End', exact: true }), '0.3 s');
-  await expect(pulse.getByRole('button', { name: 'Window', exact: true })).toHaveText('[move + 0.1 s, move + 0.3 s)');
+  await expect(windowTrigger).toHaveText('[move + 0.1 s, move + 0.3 s)');
+  await expect(windowTrigger).toHaveAccessibleName('Window [move + 0.1 s, move + 0.3 s)');
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   await expect(editor).toBeHidden();
 
