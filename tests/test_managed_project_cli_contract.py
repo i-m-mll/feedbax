@@ -19,11 +19,14 @@ from feedbax.contracts.project_io import (
     ProjectConfiguration,
     read_text_project_snapshot,
 )
+from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.studio_authoring import StudioAuthoringCatalog
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.store_check import StoreCheckResult
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.planner.project_plan import compile_project
+from feedbax.project_folder import ProjectRevisionConflict, resave_project_declaration
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.store_damage import writable_store_object
@@ -184,6 +187,53 @@ def test_check_reports_individual_restatements_in_saved_project_files(tmp_path, 
         (tmp_path / name).write_bytes(data)
     assert main(["check", str(tmp_path), "--json"]) == 0
     assert not StoreCheckResult.model_validate_json(capsys.readouterr().out).advice
+
+
+@pytest.mark.parametrize("with_variants", [False, True])
+def test_check_can_resave_a_declaration_without_changing_its_project(tmp_path, capsys, with_variants):
+    project = managed_train_project()
+    if with_variants:
+        project.sweep = Sweep.model_validate({"rows": {"first": {}, "second": {"patches": {
+            "steps.train.base.inline.training_config.n_batches": {"value": 3},
+        }}}})
+    configuration = ProjectConfiguration(
+        project="study", store="study-results", settings={"example_label": "Study", "custom": {"sample": 6}},
+    )
+    original = dump_text_project(project, configuration)
+    name = "study.feedbax"
+    path = tmp_path / name
+    declaration = json.loads(original[name])
+    if not with_variants:
+        declaration.update(sweep=None, variants=[])
+    old = json.dumps(declaration).encode()
+    for file, data in (original | {name: old}).items():
+        target = tmp_path / file
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    before = read_text_project_snapshot(tmp_path)
+    plan = compile_project(before.project)
+    requests = {run.key: run.request_id for run in plan.runs}
+    assert len(requests) == (2 if with_variants else 1) and not plan.diagnostics
+
+    assert main(["check", str(path), "--attempt", "some-run", "--fix-declaration", "--json"]) == 2
+    assert StudioProjectWindowMapProblem.model_validate_json(capsys.readouterr().err).code == "invalid_arguments"
+    assert path.read_bytes() == old
+    assert main(["check", str(path), "--fix-declaration", "--json"]) == 0
+    captured = capsys.readouterr()
+    report = StoreCheckResult.model_validate_json(captured.out)
+    assert not captured.err and not report.findings
+    assert not any(advice.code == "restated_default" and advice.address == name for advice in report.advice)
+
+    after = read_text_project_snapshot(tmp_path)
+    assert after.files == original
+    assert after.configuration == before.configuration
+    assert after.manifest == before.manifest
+    assert {run.key: run.request_id for run in compile_project(after.project).runs} == requests
+    assert resave_project_declaration(after) is after
+    with pytest.raises(ProjectRevisionConflict):
+        resave_project_declaration(before)
+    assert path.read_bytes() == original[name]
 
 
 def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, monkeypatch, capsys):

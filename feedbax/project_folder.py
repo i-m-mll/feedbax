@@ -998,6 +998,29 @@ def check_revision(resource: _Resource, expected: str, current: str) -> None:
         raise ProjectRevisionConflict(resource, current)
 
 
+def resave_project_declaration(project: TextProject) -> TextProject:
+    """Publish the declaration's canonical bytes against the caller's authored snapshot."""
+    declaration = project.declaration
+    data = write_project_file(project.manifest, source=declaration)
+    if data == project.files[declaration]:
+        return project
+    updated = parse_text_project_files(project.root, project.files | {declaration: data})
+    pending = _PendingFile(
+        address=AuthoredFileAddress(kind="declaration", id=project.configuration.project),
+        before=project.file_revisions[declaration],
+        data=data.decode(),
+    )
+
+    def guard() -> None:
+        current = read_text_project_snapshot(project.root, declaration=declaration)
+        check_revision("project", project.revision, current.revision)
+
+    location = ProjectFolderLocation.selected(project.root)
+    with _folder_lock(location, declaration=declaration) as folder:
+        _publish_patch(folder, [pending], guard)
+    return updated
+
+
 def _read_presentation(root: Path) -> tuple[bytes | None, str]:
     path = root / STUDIO_PRESENTATION_FILENAME
     try:

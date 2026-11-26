@@ -20,7 +20,9 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "project_dir", nargs="?", type=Path, default=Path("."),
         help="Project declaration file or directory to search upward (default: current directory).",
     )
-    parser.add_argument("--attempt", help="Check this committed result and its bound inputs.")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--attempt", help="Check this committed result and its bound inputs.")
+    action.add_argument("--fix-declaration", action="store_true", help="Re-save the project declaration in canonical form.")
     parser.epilog = (
         "Exit codes:\n"
         "  0  Success. The requested scope verified.\n"
@@ -50,6 +52,18 @@ def run(args: argparse.Namespace, output: CommandOutput) -> int:
     except (OSError, ValueError) as error:
         output.failure(error, path=args.project_dir)
         return 2
+
+    if args.fix_declaration:
+        from feedbax.project_folder import ProjectRevisionConflict, resave_project_declaration
+
+        try:
+            updated = resave_project_declaration(project)
+        except (OSError, ValueError, ProjectRevisionConflict) as error:
+            output.failure(error, path=project.root / project.declaration)
+            return 2
+        if updated is not project:
+            output.write(f"Re-saved {project.declaration}")
+        project = updated
 
     if args.attempt is None:
         advice = (*unrolled_family_advice(project.project), *restated_default_advice(project))
