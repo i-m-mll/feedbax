@@ -56,23 +56,32 @@ def bind_trial_places(
         **{name.id: TrialSignalPlace(kind="signal", id=name.id) for name in task.interface.signals},
         **{id: TrialAnchorPlace(kind="anchor", address=address) for id, address in model_places.items()},
     }
-    terms, observations = {}, {}
+    report_keys = objective.report_keys
+    grouped, offsets, observations = {}, {}, {}
     for term, layout in objective.point_operands().items():
+        report = report_keys[term]
+        offset = offsets.get(report, 0)
         observations_by_path: dict[NodePath, int] = {}
         places_by_path = {}
         for path, operand in layout.expressions.items():
             if isinstance(operand, NameValue) and operand.reference in declared:
                 places_by_path[path] = declared[operand.reference]
             elif not (references(operand) & unobserved):
-                places_by_path[path] = BoundComputedPlace(index=len(observations_by_path))
+                places_by_path[path] = BoundComputedPlace(index=offset + len(observations_by_path))
                 observations_by_path[path] = len(observations_by_path)
         relations = tuple((places_by_path[a], places_by_path[b]) for a, b in layout.relations
                           if a in places_by_path and b in places_by_path)
         places = tuple(places_by_path[path] for path in layout.places if path in places_by_path)
         if relations or places:
-            terms[term] = BoundTermPlaces(relations=relations, places=places)
+            reported_relations, reported_places = grouped.setdefault(report, ([], []))
+            reported_relations.extend(relations)
+            reported_places.extend(places)
             observations[term] = tuple(observations_by_path)
-    return TrialPlacePlan(terms, observations)
+            offsets[report] = offset + len(observations_by_path)
+    return TrialPlacePlan({
+        key: BoundTermPlaces(relations=tuple(relations), places=tuple(places))
+        for key, (relations, places) in grouped.items()
+    }, observations)
 
 
 def finite_points(values, defined):

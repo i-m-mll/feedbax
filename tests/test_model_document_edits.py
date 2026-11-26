@@ -1,6 +1,7 @@
 """Model edits, and an Evaluate step's edits of its Model and Task, are stored by the document rule."""
 
 from copy import deepcopy
+import json
 from pathlib import Path
 
 import pytest
@@ -140,7 +141,8 @@ def test_studio_authorizes_attachment_defaults_from_the_source_shape(tmp_path):
         project.edit(attachment("vector", "delay", {"kind": "delay"}, after=None))
         add = {"kind": "intervention", "operation": "add"}
         project.edit(attachment("vector", "shift", add, after="delay"))
-        saved = project.composed("model")
+        saved_file = project.root / "documents" / "model.json"
+        saved = json.loads(saved_file.read_bytes())["payload"]
         chain = saved["interior"]["wires"]["vector"]["attachments"]
         assert chain["delay"] == {"kind": "delay"}
         assert chain["shift"]["operands"] == {"value": {"kind": "value", "value": "[0, 0, 0]"}}
@@ -158,8 +160,10 @@ def test_studio_authorizes_attachment_defaults_from_the_source_shape(tmp_path):
         assert interval.end.offset == TimeValue(value=1, unit="st")
 
         project.edit(attachment("vector", "shift", {"kind": "intervention", "operation": "clamp"}, op="change"))
-        chain = project.composed("model")["interior"]["wires"]["vector"]["attachments"]
+        project.edit(attachment("vector", "delay", {"kind": "delay", "delay": "2 st"}, op="change"))
+        chain = json.loads(saved_file.read_bytes())["payload"]["interior"]["wires"]["vector"]["attachments"]
         assert chain["shift"]["operands"] == bounds
+        assert chain["delay"] == {"kind": "delay", "delay": "2 st"}
 
 
 def test_editing_the_base_for_its_remaining_reader_preserves_an_unselected_copy(tmp_path):

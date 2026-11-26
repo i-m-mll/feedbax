@@ -67,6 +67,54 @@ def test_update_series_expands_per_train_definition_without_store(tmp_path):
     assert all(problem.path == "inputs.subject.checkpoint" for problem in plan.plan.diagnostics)
 
 
+def test_evaluate_series_reads_current_family_label_without_renaming_the_request(tmp_path):
+    from unittest.mock import Mock
+
+    from feedbax.contracts.jobs import JobReceipt, StudioEvaluationCheckpoint, StudioEvaluationObjectiveSeries
+    from feedbax.persistence.canonical_evaluate import EvaluationResult
+
+    folders = ProjectFolderService(tmp_path / "projects")
+    raw = definition([{"at": 2}])
+    family = raw["documents"]["objective"]["payload"]["terms"]["effort"]
+    family["over"] = {"k": "0..1"}
+    jobs = Mock(spec=JobService)
+    result = Mock(spec=EvaluationResult)
+    jobs.read_evaluation_objective_attempt.return_value = result
+    service = ProjectPlanService(folders, jobs)
+    receipt = JobReceipt(manifest_id="record", manifest_sha256="1" * 64)
+    checkpoint = StudioEvaluationCheckpoint(
+        job_id="train", request_id="train-request", completed_updates=2, publication_cursor=1,
+        transaction=receipt, transaction_root_sha256="2" * 64, binding_sha256="3" * 64,
+    )
+    requests = []
+    for label in ("Effort family", "Renamed effort"):
+        family["label"] = label
+        _save_project(folders, "series", Project.model_validate(raw))
+        settled = folders.read_plan("series", revision=None)
+        assert not settled.plan.diagnostics
+        evaluate = next(run for run in settled.plan.runs if run.kind == "evaluate")
+        requests.append(evaluate.request_id)
+        result.objective_series.return_value = StudioEvaluationObjectiveSeries(
+            job_id="evaluation", request_id=evaluate.request_id, receipt=receipt, lineage=["train"],
+            condition=None, trials=["one"], seed=0, objective="4" * 64, requested=[2], gaps=[],
+            points=[{"checkpoint": checkpoint, "total": 1, "terms": [
+                {"path": "/effort", "name": "effort", "value": 1, "coverage": 1},
+            ]}],
+        )
+        read = StudioSavedEvaluationRead(
+            revision=settled.revision, key={"variant": evaluate.key.variant, "step": evaluate.key.step, "row": evaluate.key.row},
+            job_id="evaluation",
+        )
+        curve = service.evaluation_objective("series", read)
+        (term,) = curve.points[0].terms
+        assert (term.path, term.name, term.value) == ("/effort", label, 1)
+        decoded = result.objective_series.call_args.kwargs["objective"]
+        assert [(member.id, member.family, member.name) for member in decoded.terms] == [
+            ("effort-0", "effort", None), ("effort-1", "effort", None),
+        ]
+    assert requests[0] == requests[1]
+
+
 def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")

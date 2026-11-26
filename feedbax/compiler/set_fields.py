@@ -575,7 +575,7 @@ class _Union:
         })
         cohort = self.task.validation_trials
         if self.conditions:
-            cohort = _crossed_trials(cohort, self.conditions)
+            cohort = cross_set_validation_trials(cohort, self.conditions)
         links = self.links
         for node, (base, selectors) in self.curl_activation.items():
             enabled = selectors[0]
@@ -597,9 +597,10 @@ def _curl_address(component: str) -> str:
     )).to_text()
 
 
-def _crossed_trials(
+def cross_set_validation_trials(
     cohort: tuple[ValidationTrial, ...], conditions: Mapping[str, tuple[str, ...]],
 ) -> tuple[ValidationTrial, ...]:
+    """Pair fixed trials with the listed entries and retain both coordinates in each ID."""
     trials = []
     for row in cohort:
         for selected in product(*(enumerate(entries, 1) for entries in conditions.values())):
@@ -611,6 +612,17 @@ def _crossed_trials(
                 epoch_steps=row.epoch_steps,
             ))
     return tuple(trials)
+
+
+def listed_set_validation_choices(task: TaskDocument) -> dict[str, tuple[str, ...]]:
+    """Recover listed axes from a prepared Task's fixed selector assignments."""
+    first = task.validation_trials[0]
+    if first.id is None or "=" not in first.id:
+        return {}
+    return {
+        variable.id: tuple(entry for entry in variable.set_choices.entries if entry is not None)
+        for variable in task.variables if variable.set_choices is not None and variable.id in first.variables
+    }
 
 
 def _has_window(wire: ModelWire) -> bool:

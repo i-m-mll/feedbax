@@ -200,9 +200,12 @@ def _sample_trials(
             preview_problems=preview_problems,
         )
         assert isinstance(scorer, ObjectiveExecutor)
+        report_keys = scorer.report_keys
         for problem in preview_problems:
             term_id = str(problem.path[1])
-            term_problems[term_id].append(problem.model_copy(update={"path": ("objective", *problem.path)}))
+            term_problems[report_keys.get(term_id, term_id)].append(
+                problem.model_copy(update={"path": ("objective", *problem.path)}),
+            )
         outputs = {
             output.id: jnp.zeros((task.n_steps, *output.type.shape), _DTYPES[output.type.base])
             for output in scorer.names

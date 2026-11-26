@@ -7,7 +7,7 @@ from math import prod
 from string import Formatter
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, Field, PlainSerializer, StringConstraints
 
 from feedbax.contracts.combinations import (
     DEFAULT_COMBINATION_LIMIT, cross_dimension, select_combinations, zip_dimension, zip_length,
@@ -15,7 +15,9 @@ from feedbax.contracts.combinations import (
 from feedbax.contracts.expression_storage import AuthoredExpressionText, EXPRESSION_MEMBER_RESERVED_KEYS, StoredExpression
 from feedbax.contracts.expression_text import parse_sequence_rule, print_stored_expression
 from feedbax.contracts.expression_sequence import sequence_definition
-from feedbax.contracts.expression_values import DrawValue, Expression, NameValue, UnresolvedValue, ValueRecord, children
+from feedbax.contracts.expression_values import (
+    DrawValue, Expression, NameValue, SequenceValue, UnresolvedValue, ValueRecord, children,
+)
 
 
 type IndexName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z_0-9]*$")]
@@ -26,7 +28,30 @@ class NamedIndexValue(ValueRecord):
     label: str | None = Field(default=None, min_length=1)
 
 
-type IndexRule = AuthoredExpressionText | Annotated[dict[IndexName, StoredExpression | NamedIndexValue], Field(min_length=1)]
+def _read_index_sequence(value: object) -> SequenceValue | UnresolvedValue:
+    if isinstance(value, (SequenceValue, UnresolvedValue)):
+        return value
+    if not isinstance(value, str):
+        raise ValueError("A sequence index requires rule text.")
+    parsed = parse_sequence_rule(value)
+    return UnresolvedValue(text=value) if isinstance(parsed, tuple) else parsed.value
+
+
+def _write_index_sequence(value: SequenceValue | UnresolvedValue) -> str:
+    printed = print_stored_expression(value)
+    assert isinstance(printed, str)
+    return printed
+
+
+type StoredIndexSequence = Annotated[
+    SequenceValue | UnresolvedValue,
+    BeforeValidator(_read_index_sequence, json_schema_input_type=AuthoredExpressionText),
+    PlainSerializer(_write_index_sequence, return_type=AuthoredExpressionText),
+]
+
+type IndexRule = (
+    StoredIndexSequence | Annotated[dict[IndexName, StoredExpression | NamedIndexValue], Field(min_length=1)]
+)
 
 
 class StoredFamilyMember(ValueRecord):
@@ -67,11 +92,12 @@ def _constant(value: Expression) -> bool:
 
 
 def _index_values(rule: IndexRule) -> tuple[int, Iterator[_IndexValue]]:
-    if isinstance(rule, str):
-        parsed = parse_sequence_rule(rule)
-        if isinstance(parsed, tuple):
-            raise ValueError(parsed[0].reason)
-        sequence = sequence_definition(parsed.value)
+    if isinstance(rule, UnresolvedValue):
+        parsed = parse_sequence_rule(rule.text)
+        assert isinstance(parsed, tuple)
+        raise ValueError(parsed[0].reason)
+    if isinstance(rule, SequenceValue):
+        sequence = sequence_definition(rule)
 
         def sequence_values():
             for position, member in enumerate(sequence.members()):
