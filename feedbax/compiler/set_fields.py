@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from hashlib import sha256
 from itertools import product
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.contracts.stored_members import scoped_set_member_id
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_text import ParsedField, resolve_expression
 from feedbax.contracts.expression_values import (
@@ -43,9 +43,6 @@ class SetFieldProblem(ValueError):
         super().__init__(reason)
 
 
-def _id(*parts: str) -> str:
-    return "set-" + sha256("\0".join(parts).encode()).hexdigest()[:28]
-
 
 def _call(function: str, *args: Expression) -> CallValue:
     return CallValue(function=function, args=args)
@@ -58,9 +55,6 @@ def _component_port(component: str, port: str) -> ComponentPortEnd:
 _BOOL = ValueType(base=ValueBase.BOOLEAN)
 _INT = ValueType(base=ValueBase.INTEGER)
 
-
-def entry_variable_id(axis: str, entry: str, variable: str) -> str:
-    return _id(axis, entry, variable)
 
 
 def rename_entry_references(value, refs: Mapping[str, str]):
@@ -111,7 +105,7 @@ def _entry_label(entry: str, variable: str) -> str:
 
 
 def _entry_scope(axis: str, entry: str, source: SetEntry, shared_labels: frozenset[str]) -> SetEntry:
-    refs = {variable.id: entry_variable_id(axis, entry, variable.id) for variable in source.task_variables}
+    refs = {variable.id: scoped_set_member_id(axis, entry, variable.id) for variable in source.task_variables}
     renamed = rename_entry_references(source.model_dump(mode="json"), refs)
     for variable in renamed.get("task_variables", ()):
         variable["id"] = refs[variable["id"]]
@@ -210,7 +204,7 @@ class _Union:
             variable = next((variable for variable in self.variables if variable.id == reference), None)
             if variable is None:
                 raise ValueError(f"Intervention {attachment.id!r} links to missing Task variable {reference!r}.")
-            id = _id(*self.scope, context, attachment.id, key)
+            id = scoped_set_member_id(*self.scope, context, attachment.id, key)
             self.signals.append(Signal(
                 id=id, name=id, type=variable.type,
                 cells=(Cell(id=id, first_epoch=self.task.epochs[0].id, last_epoch=self.task.epochs[-1].id,
@@ -317,7 +311,7 @@ class _Union:
         if isinstance(parsed, tuple):
             raise refused(parsed[0].reason)
         try:
-            id = _id("eligibility", axis, "condition")
+            id = scoped_set_member_id("eligibility", axis, "condition")
             eligible = self.variable(id, _BOOL, parsed.value)
         except ValueError as error:
             raise refused(str(error)) from error
@@ -361,7 +355,7 @@ class _Union:
                         family="choice", args=(LiteralValue(value=False), LiteralValue(value=True)),
                         weights=(parts.off, parts.on),
                     )
-                    gates.append(select(_id(axis, entry), _BOOL, draw, False, (None, entry)))
+                    gates.append(select(scoped_set_member_id(axis, entry), _BOOL, draw, False, (None, entry)))
             else:
                 if not any(weights):
                     raise ValueError("The choice has zero total parts.")
@@ -383,16 +377,16 @@ class _Union:
         self, id: str, source: SignalSource, chain, active_source: SignalSource, active_chain,
         alt: _Alternative, window: Window | None = None, address: ModelAddress | None = None,
     ) -> ComponentPortEnd:
-        switch_id = _id(id, alt.axis, alt.entry)
-        gate_id = _id(switch_id, "gate")
+        switch_id = scoped_set_member_id(id, alt.axis, alt.entry)
+        gate_id = scoped_set_member_id(switch_id, "gate")
         self.components[switch_id] = LeafComponent(kind="leaf", name=switch_id, type="feedbax.Switch")
-        self.wires[_id(switch_id, "base")] = ModelWire(
+        self.wires[scoped_set_member_id(switch_id, "base")] = ModelWire(
             source=source, target=_component_port(switch_id, "false_input"), attachments=chain,
         )
-        self.wires[_id(switch_id, "entry")] = ModelWire(
+        self.wires[scoped_set_member_id(switch_id, "entry")] = ModelWire(
             source=active_source, target=_component_port(switch_id, "true_input"), attachments=active_chain,
         )
-        self.wires[_id(switch_id, "control")] = ModelWire(
+        self.wires[scoped_set_member_id(switch_id, "control")] = ModelWire(
             source=self.gate(alt, gate_id, window, address), target=_component_port(switch_id, "condition"),
         )
         return _component_port(switch_id, "output")
@@ -401,9 +395,9 @@ class _Union:
         self, id: str, source, chain, attachment: InterventionAttachment, alt: _Alternative,
         owner: AttachmentOwner | None = None,
     ):
-        context = _id(*self.scope, id, alt.axis, alt.entry, attachment.id)
+        context = scoped_set_member_id(*self.scope, id, alt.axis, alt.entry, attachment.id)
         if chain:
-            stem = _id(context, "stem")
+            stem = scoped_set_member_id(context, "stem")
             self.components[stem] = LeafComponent(kind="leaf", name=stem, type="feedbax.Input")
             self.wires[stem] = ModelWire(source=source, target=_component_port(stem, "input"), attachments=chain)
             source = _component_port(stem, "output")
@@ -416,7 +410,7 @@ class _Union:
     def source_chain(self, end: SignalSource, attachments):
         if not _needs_task(attachments):
             return attachments
-        owner = _id(end.owner, getattr(end, "component", ""), end.port)
+        owner = scoped_set_member_id(end.owner, getattr(end, "component", ""), end.port)
         end_address = end if isinstance(end, InputBoundaryEnd) else ComponentPortAddress(
             owner="component", component=end.component, port=end.port, direction="output",
         )
@@ -436,7 +430,7 @@ class _Union:
         if source == end:
             return chain
         if chain:
-            out = _id(*self.scope, owner, "source")
+            out = scoped_set_member_id(*self.scope, owner, "source")
             self.components[out] = LeafComponent(kind="leaf", name=out, type="feedbax.Input")
             self.wires[out] = ModelWire(source=source, target=_component_port(out, "input"), attachments=chain)
             source = _component_port(out, "output")
@@ -474,7 +468,7 @@ class _Union:
             self.components[name] = child.model_copy(update={"interior": model.interior, "ports": model.ports})
             for port in model.ports.inputs[len(child.ports.inputs):]:
                 self.inputs.append(port)
-                self.wires[_id(*self.scope, name, port.id)] = ModelWire(
+                self.wires[scoped_set_member_id(*self.scope, name, port.id)] = ModelWire(
                     source=InputBoundaryEnd(owner="inputs", port=port.id), target=_component_port(name, port.id),
                 )
 
@@ -537,7 +531,7 @@ class _Union:
             for selector in selectors[1:]:
                 enabled = _call("or", enabled, selector)
             active = _call("not", enabled) if base else enabled
-            variable = self.variable(_id(node, "active"), _BOOL, active)
+            variable = self.variable(scoped_set_member_id(node, "active"), _BOOL, active)
             links.append(Link(model_field=_curl_address(node), variable=variable.reference))
         task = self.task.model_copy(update={
             "variables": tuple(self.variables), "signals": tuple(self.signals),
