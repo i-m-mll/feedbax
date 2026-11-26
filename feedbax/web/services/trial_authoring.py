@@ -44,6 +44,7 @@ from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectF
 from feedbax.contracts.studio_sets import SetEntryTask
 from feedbax.contracts.studio_place import task_start_path
 from feedbax.studio.authoring import training_document_choice
+from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
@@ -1475,7 +1476,7 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
 
 def _trial_fields(
     path, site: Site, expression, functions, sweep, row, problems, name_paths, period,
-    menu_fields: dict[str, TrialExpressionField],
+    menu_fields: dict[str, TrialExpressionField], sites: FieldSiteIndex,
 ) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
@@ -1497,7 +1498,7 @@ def _trial_fields(
         current = at(expression, inner)
         view = project_numeric_field(
             StudioTrialField, swept.field, swept.axis, functions, row, current.value,
-            period=period, effective_unit=current.unit, defer_parts=True,
+            sites=sites, period=period, effective_unit=current.unit, defer_parts=True,
             path=pointer(tuple(map(str, (*path, *inner)))),
         )
         if inner:
@@ -1505,7 +1506,7 @@ def _trial_fields(
             fields.append(view)
         elif view.sweep is not None or view.can_sweep:
             return [view.model_copy(update={
-                "site": projection, "problems": _field_problems(path, site, view.text, functions, problems),
+                "site": sites.reference(projection), "problems": _field_problems(path, site, view.text, functions, problems),
             })]
     if _epoch_end_field(path, "limit"):
         projection = projection.model_copy(update={"kinds": (FieldKind.VALUE,), "functions": (), "parts": ()})
@@ -1522,14 +1523,14 @@ def _trial_fields(
         if isinstance(resolved, tuple):
             marks = [problem.model_copy(update={"path": path}) for problem in resolved]
     return [StudioTrialField(
-        path=field_path, label=_field_label(path), site=projection, text=text,
+        path=field_path, label=_field_label(path), site=sites.reference(projection), text=text,
         structure=value_structure(expression, site, functions) if shown else None,
         conversion=time_conversion(expression, period, trial_time_use(path[0], path[1:])),
         problems=marks,
     ), *fields]
 
 
-def _condition_field(placement, site, functions, row, menu_fields):
+def _condition_field(placement, site, functions, row, menu_fields, sites: FieldSiteIndex):
     path = "set_fields", placement.axis, "condition"
     condition = placement.condition
     problems = ()
@@ -1543,7 +1544,7 @@ def _condition_field(placement, site, functions, row, menu_fields):
                 Problem(code=ProblemCode.STRUCTURE, reason=item.detail, path=path)
                 for item in row.problems if item.path == pointer(path)
             )
-    (view,) = _trial_fields(path, site, condition, functions, lambda *_: None, row, problems, {}, None, menu_fields)
+    (view,) = _trial_fields(path, site, condition, functions, lambda *_: None, row, problems, {}, None, menu_fields, sites)
     if view.text and view.problems:
         span = TextSpan(start=0, end=len(view.text))
         view = view.model_copy(update={"problems": [
@@ -1737,6 +1738,7 @@ def trial_authoring(
     clock = documents.model.step_seconds
     period = clock if isinstance(clock, float) else None
     fields = []
+    sites = FieldSiteIndex()
     menu_fields: dict[str, TrialExpressionField] = {}
     for path, site in projected.fields.items():
         if path[1:2] == ("validation_trials",):
@@ -1745,7 +1747,7 @@ def trial_authoring(
             continue  # Internal gate and operand signals are not editable Task fields.
         fields.extend(_trial_fields(
             path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems,
-            output_paths, period, menu_fields,
+            output_paths, period, menu_fields, sites,
         ))
     origins = {}
     if (
@@ -1765,7 +1767,7 @@ def trial_authoring(
     if set_fields:
         site = _set_condition_site(definition, projected)
         fields.extend(
-            _condition_field(placement, site, bundle.expression_functions, row, menu_fields)
+            _condition_field(placement, site, bundle.expression_functions, row, menu_fields, sites)
             for placement in set_fields
         )
     field_problems = [
@@ -1810,7 +1812,7 @@ def trial_authoring(
         resets=[StudioTrialReset(address=field.address, path=task_start_path(reset_model, field.address),
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
-        fields=fields, problems=[*projected.problems, *field_problems, *refused],
+        fields=fields, **sites.tables(fields), problems=[*projected.problems, *field_problems, *refused],
         created_term=created_term if stored.files or stored.created else None,
         files=stored.files, created=list(stored.created),
         store_choices=store_choices,

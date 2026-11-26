@@ -32,7 +32,8 @@ def _project(seeds, axes):
         "schema": "feedbax.spec.python_task",
         "payload": {"type": REACHING_TASK, "params": {"x": 0.1, "n_steps": 5}},
     }
-    raw["documents"]["objective"]["payload"]["terms"][0].pop("window")
+    (term,) = raw["documents"]["objective"]["payload"]["terms"].values()
+    term.pop("window")
     if seeds:
         train["sweep"] = {"axes": {"seed": _axis("seed", seeds, op="add")}}
     evaluate = raw["steps"]["baseline"]
@@ -172,8 +173,9 @@ def test_a_list_typed_in_an_evaluate_s_trials_sweeps_them_across_its_subjects(tm
         url = "/api/projects/trials/authoring/train/baseline/fields"
         shown = client.post(url, json={"revision": before.revision})
         assert shown.status_code == 200, shown.text
-        trials = next(field for field in shown.json()["fields"] if field["id"] == "/params/trial_set/count")
-        assert "sweep" in trials["site"]["kinds"]
+        view = shown.json()
+        trials = next(field for field in view["fields"] if field["id"] == "/params/trial_set/count")
+        assert "sweep" in view["sites"][trials["site"]]["kinds"]
         reply = client.post(url, json={
             "revision": before.revision, "field": "/params/trial_set/count", "edit": {"kind": "text", "text": "1, 4"},
         })

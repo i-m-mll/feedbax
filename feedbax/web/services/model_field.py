@@ -39,6 +39,7 @@ from feedbax.contracts.expression_text import ParsedField, print_field
 from feedbax.contracts.task_document import StoredTaskDocument
 from feedbax.contracts.window import store_window_offset, window_offset_expression, window_offset_sites
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
+from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import StoredEdit, merged_files
 from feedbax.studio.value_structure import value_structure
@@ -340,7 +341,9 @@ def _field_store(
         retain_equivalent=body.edit is not None and body.edit.kind == "to_list",
     )
     if isinstance(choice, list):
-        return ModelFieldResponse(fields=response.fields, store_choices=choice)
+        return ModelFieldResponse(
+            fields=response.fields, sites=response.sites, function_lists=response.function_lists, store_choices=choice,
+        )
     return response.model_copy(update={"files": choice.files, "created": list(choice.created)})
 
 
@@ -451,6 +454,7 @@ def model_fields(
     if isinstance(period, UnresolvedValue):
         period = None
     fields = []
+    sites = FieldSiteIndex()
     targets = {}
     for field_key, field in visible_fields.items():
         numeric = field.numeric
@@ -474,7 +478,7 @@ def model_fields(
                                 if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
         view = project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
-            held=held.get(field_key, ()),
+            sites=sites, held=held.get(field_key, ()),
             period=period, effective_unit=resolved.numeric.unit if resolved else None,
             scoped=bool(body.rows or body.axes),
             address=field.address, problems=_held_problems(field, functions, period)
@@ -483,7 +487,7 @@ def model_fields(
             changed=changed,
         )
         if field.window_offset or field.address.element.path[0] == "operands" and isinstance(field.address.element.parent, AttachmentElement):
-            view = view.model_copy(update={"site": project_site(numeric.site, functions)})
+            view = view.model_copy(update={"site": sites.reference(project_site(numeric.site, functions))})
         if field.expression is not None:
             view = view.model_copy(update={
                 "text": print_field(field.expression, numeric.site),
@@ -493,7 +497,7 @@ def model_fields(
         fields.append(view)
         targets[field_key] = replace(field, numeric=numeric), axis
     if body.edit is None:
-        return ModelFieldResponse(fields=fields)
+        return ModelFieldResponse(fields=fields, **sites.tables(fields))
     if body.address is None or body.address.to_text() not in targets:
         raise ProjectFolderInvalid("Choose a supported field of the selected Model.")
     if body.run is None and (body.rows or body.axes or body.evaluate_scope is not None) or (
