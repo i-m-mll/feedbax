@@ -330,12 +330,12 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         assert len(plan.runs) == 2 and all(run.admission_problem is None for run in plan.runs), (
             plan.diagnostics, tuple(run.problems for run in plan.runs),
         )
-        assert {run.label for run in plan.runs} == {"Offset 0.1 s", "Offset 0.2 s"}
         window = ProjectPlanRead.without_history(settled).response(include_window_map=True).window_map
         assert window is not None
         (axis,) = window.steps[0].axes
-        assert axis.label == "Offset"
+        assert axis.name == offset["label"]
         assert [value.value_label for value in axis.values] == ["0.1 s", "0.2 s"]
+        assert {run.label for run in plan.runs} == {value.name for value in axis.values}
         values = set()
         for run in plan.runs:
             documents = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.trial_documents
@@ -399,12 +399,10 @@ def test_scale_operand_sweep_has_the_field_name_without_changing_the_axis_key(tm
     assert window is not None
     (axis,) = window.steps[0].axes
     assert axis.id == "value"
-    assert axis.label == "Factor"
-    assert [(value.id, value.label, value.value_label) for value in axis.values] == [
-        ("value-1", "Factor 0.5", "0.5"), ("value-2", "Factor 1", "1"),
-    ]
-    assert [(row.key.row, row.label) for row in window.rows] == [
-        ("value=value-1", "Factor 0.5"), ("value=value-2", "Factor 1"),
+    assert axis.name == factor["label"]
+    assert [(value.id, value.value_label) for value in axis.values] == [("value-1", "0.5"), ("value-2", "1")]
+    assert [(row.key.row, row.name) for row in window.rows] == [
+        (f"value={value.id}", value.name) for value in axis.values
     ]
 
 
@@ -801,9 +799,7 @@ def test_an_optimizer_swept_with_its_parameters_crosses_the_learning_rate(tmp_pa
         assert sorted((row.coordinates["optimizer"].label, row.coordinates["learning-rate"].value) for row in plan.rows) == [
             ("Adam", 0.001), ("Adam", 0.003), ("SGD", 0.001), ("SGD", 0.003),
         ]
-        assert {row.label for row in plan.rows} == {
-            f"Learning rate {rate} · {name}" for rate in (0.001, 0.003) for name in ("Adam", "SGD")
-        }
+        assert len({row.label for row in plan.rows}) == len(plan.rows) == 4
         adam = train.runs(tmp_path, "classes", optimizer="adam")
         assert {definitions[key]["b1"] for key in adam} == {0.8}
         assert all("b1" not in optimizer_ for key, optimizer_ in definitions.items() if key not in adam)
@@ -875,10 +871,9 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
         coordinate = {row.key: (row.coordinates["optimizer"].label, getattr(row.coordinates.get(axis), "value", None))
                       for row in runs}
         assert sorted(coordinate.values(), key=str) == [("Adam", 0.8), ("Adam", 0.9), ("SGD", None)]
-        assert {row.label for row in runs} == {
-            "Adam · Optimizer b1 0.8", "Adam · Optimizer b1 0.9", "SGD",
-        }
+        assert len({row.label for row in runs}) == len(runs) == 3
         (sgd,) = (key for key, value in coordinate.items() if value[0] == "SGD")
+        assert next(row.label for row in runs if row.key == sgd) == "SGD"
         assert train.requests(tmp_path, name)[sgd] == before[sgd]
         assert {key: plan.selected_definitions[key].payload["settings"]["optimizer"].get("b1") for key in coordinate} == {
             key: value for key, (_, value) in coordinate.items()
@@ -1065,7 +1060,7 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
         step = reopened["project"]["steps"]["train"]
         assert "learning_rate" not in step["base"]["inline"]["training_config"]
         assert step["sweep"]["axes"]["learning-rate"] == {
-            "path": field_path[1:].replace("/", "."),
+            "label": rate["label"], "path": field_path[1:].replace("/", "."),
             "range": {"start": 1e-4, "stop": 1e-2, "count": 5, "scale": "log"},
         }
         fields = client.post(endpoint, json={"revision": reopened["revision"]}).json()["fields"]

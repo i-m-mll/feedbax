@@ -52,7 +52,7 @@ def test_completed_train_metrics_return_every_retained_update(host, tmp_path, mo
             "revision": snapshot.revision,
             "file": {
                 "kind": "step", "id": "train",
-                "step": {"kind": "train", "base": {"inline": managed_train_payload(batches=3)}},
+                "step": {"label": "Train", "kind": "train", "base": {"inline": managed_train_payload(batches=3)}},
             },
         })).snapshot
         gate = run_job(token("metric-history-gate"), held_until_released(release), project=project)
