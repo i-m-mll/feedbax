@@ -43,6 +43,15 @@ from feedbax.web.services.trial_scope import (
 )
 
 
+def set_entry_member_count(id: str, entry: SetEntry) -> int | None:
+    if entry.over is None:
+        return None
+    try:
+        return family_member_count(id, entry)
+    except FamilyProblem:
+        return None  # Plan reports the invalid rule on the authored entry.
+
+
 def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
     fields = []
     for axis, field in project.steps[step].set_fields.items():
@@ -53,7 +62,7 @@ def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
         sampling = field.sampling
         rows = []
         if isinstance(sampling, WeightedSetTrials):
-            rows.append(StudioSetFieldEntry(entry=None, weight=sampling.weight_for(None)))
+            rows.append(StudioSetFieldEntry(entry=None, label=None, weight=sampling.weight_for(None)))
         for id, entry in entries.items():
             if isinstance(sampling, ListedSetTrials):
                 weight = None
@@ -62,15 +71,9 @@ def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
                 weight = StudioSetEntryParts(on=parts.on, off=parts.off)
             else:
                 weight = sampling.weight_for(id)
-            count = None
-            if entry.over is not None:
-                try:
-                    count = family_member_count(id, entry)
-                except FamilyProblem:
-                    pass  # Plan reports the invalid rule on the authored entry.
             rows.append(StudioSetFieldEntry(
-                entry=id, label=entry.label, weight=weight,
-                over=entry.over, combination=entry.combination, member_count=count,
+                entry=id, label=entry.label, weight=weight, over=entry.over, combination=entry.combination,
+                member_count=set_entry_member_count(id, entry),
             ))
         fields.append(StudioSetField(
             axis=axis, set=field.axis.set, sampling=sampling,
