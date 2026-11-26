@@ -323,8 +323,9 @@ def _projected_file(
         declared = {key: value for key, value in child.items() if key not in context}
         typed, encoded, complete = typed_region(region, declared, inline=inline)
         if not complete and not inline:
-            remember_reals(child, path)
-            return child
+            authored = region.authored_values(child)
+            remember_reals(authored, path)
+            return authored
         cls = type(typed)
         if cls not in registered_here:
             registered_here.add(cls)
@@ -335,7 +336,7 @@ def _projected_file(
         if inline:
             known = {_key(name, field) for name, field in cls.model_fields.items()}
             return projected | {key: value for key, value in encoded.items() if key not in known}
-        return projected
+        return region.authored_values(projected)
 
     def remember_reals(value: JsonValue, path: StoredPath) -> None:
         if type(value) is float:

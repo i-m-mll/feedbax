@@ -143,11 +143,9 @@ def _store_signal_source(source: ModelSignalSource) -> StoredModelSignalSource:
     return source
 
 
-def lower_model_numeric_field(component_type: str, name: str, kind: Literal["int", "float"], value: JsonValue) -> JsonValue:
-    """Restore a numeric leaf's runtime value from its authored expression."""
-    if value is None:
-        return None
-    expression = _STORED_EXPRESSION.validate_python(value)
+def _lower_numeric_expression(
+    component_type: str, name: str, kind: Literal["int", "float"], expression: Expression,
+) -> JsonValue:
     if (scalar := _number(expression)) is not None and (kind == "float" or type(scalar) is int):
         return scalar
     if component_type == "feedbax.VanillaRNN" and name == "tau" and isinstance(expression, LiteralValue):
@@ -155,6 +153,13 @@ def lower_model_numeric_field(component_type: str, name: str, kind: Literal["int
             time = literal_time(expression)
             return LiteralValue(value=time.value, unit=time.unit).model_dump(mode="json")
     return _held_expression(expression).model_dump(mode="json")
+
+
+def lower_model_numeric_field(component_type: str, name: str, kind: Literal["int", "float"], value: JsonValue) -> JsonValue:
+    """Restore a numeric leaf's runtime value from its authored expression."""
+    if value is None:
+        return None
+    return _lower_numeric_expression(component_type, name, kind, _STORED_EXPRESSION.validate_python(value))
 
 
 def stored_model_numeric_field(value: JsonValue) -> JsonValue:
@@ -182,6 +187,19 @@ def _numeric_fields(
     except KeyError:
         return {}
     return _numeric_params(declaration.params.model) if component.revision in (None, declaration.revision) else {}
+
+
+def model_leaf_expression_values(
+    component: StoredLeafComponent, components: ComponentRegistry,
+) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
+    """Return the lowered values and canonical authored spellings of declared expressions."""
+    lowered, authored = {}, {}
+    for name, kind in _numeric_fields(component, components).items():
+        if (raw := component.fields.get(name)) is not None:
+            expression = _STORED_EXPRESSION.validate_python(raw)
+            lowered[name] = _lower_numeric_expression(component.type, name, kind, expression)
+            authored[name] = _STORED_EXPRESSION.dump_python(expression, mode="json")
+    return lowered, authored
 
 
 def _leaf_fields(
