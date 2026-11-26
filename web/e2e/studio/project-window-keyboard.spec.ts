@@ -294,9 +294,9 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
 test('Model edits follow the lit users of a saved shared document', async ({ page, request }) => {
   test.fixme(true, 'Owned by I1 (element selection and inspector): undo selects the edited field address, which the Inspector does not resolve to its owner.');
   const [model, task, objective, train] = await fixture('managed-files');
-  const alpha = { ...train, id: 'alpha' };
-  const beta = { ...train, id: 'beta' };
-  const gamma = { kind: 'step', id: 'gamma', step: { kind: 'train', base: { step: 'alpha' } } };
+  const alpha = { ...train, id: 'alpha', step: { ...train.step, label: 'Alpha' } };
+  const beta = { ...train, id: 'beta', step: { ...train.step, label: 'Beta' } };
+  const gamma = { kind: 'step', id: 'gamma', step: { kind: 'train', label: 'Gamma', base: { step: 'alpha' } } };
   const { snapshot, projectPath } = await seedManagedProject(request, [
     model, task, objective, alpha, beta, gamma, ...alternateModelFiles([model, task, objective, train], 'other'),
   ]);
@@ -326,7 +326,7 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   const card = (step: string) => mapCard(page, step);
   await expect(modelView).toBeFocused();
   await expect(count).not.toContainText(' of ');
-  await expect(modelView.locator('header').first()).toContainText(model.id);
+  await expect(modelView.locator('header').first()).toContainText(model.document.label);
   for (const step of ['alpha', 'beta', 'gamma']) await expect(card(step)).toHaveAttribute('data-document-scope', 'lit');
   await expect(card('other')).toHaveAttribute('data-document-scope', 'faint');
   await expect(mapStep(page, 'alpha')).toHaveAttribute('aria-current', 'step');

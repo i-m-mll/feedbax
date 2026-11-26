@@ -2,8 +2,7 @@
 
 from enum import StrEnum
 
-from pydantic import Field
-
+from pydantic import Field, JsonValue
 from feedbax.contracts.expression_values import (
     Expression,
     LiteralValue,
@@ -38,3 +37,15 @@ class ObjectiveTerm(ValueRecord):
 class ObjectiveDocument(ValueRecord):
     id: str
     terms: tuple[ObjectiveTerm, ...] = ()
+
+def objective_weight_title(payload: JsonValue, path: tuple[str, ...]) -> str | None:
+    """Name a scalar Weight axis by the current name of its Objective term."""
+    if len(path) not in (3, 4) or path[0] != "terms" or path[2] != "weight" or path[3:] not in ((), ("value",)):
+        return None
+    terms = payload.get("terms") if isinstance(payload, dict) else None
+    if not isinstance(terms, list):
+        return None
+    for index, term in enumerate(terms, 1):
+        if isinstance(term, dict) and term.get("id") == path[1]:
+            return f"{term.get('name') or f'Term {index}'} weight"
+    return None
