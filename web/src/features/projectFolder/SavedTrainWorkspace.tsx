@@ -118,7 +118,7 @@ import { documentFamily, fittedModel, useProjectDocuments, type DocumentRole } f
 import { LoadedModelFacts } from './LoadedModelFacts';
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useSavedPlan } from './useSavedPlan';
-import { stepReport, useManagedReport } from './useManagedReport';
+import { figureName, stepReport, useManagedReport } from './useManagedReport';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import type { AxisMenu } from '@/components/pipeline/PipelineRunMarks';
 import { OfferedSets, setAuthoring } from './setAuthoring';
@@ -332,7 +332,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** Whether a command of the primary variant applies: until a plan names the variants it may, and a gesture waits. */
   const variantApplies = shown ? primaryVariant : true;
   const plan = useMemo(() => withMethodLabels(projectWindowPlan(plans.project, plans.names, shown, variant, validity.checking),
-    plans.project, authoringCatalog), [plans.project, shown, variant, validity.checking, authoringCatalog]);
+    plans.project, authoringCatalog), [plans.project, plans.names, shown, variant, validity.checking, authoringCatalog]);
   const shownPlan = useMemo(() => planWithRefusal(planWithRefusal(plan, readRefusal), refusal), [plan, readRefusal, refusal]);
   const activityResultState = useMemo<ActivityResultState>(() => {
     const states = new Map(plan.steps.flatMap(({ runs }) => runs.flatMap(({ state, results }) =>
@@ -893,7 +893,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     secondary: useManagedAnalyze(pinnedAnalyzeInputs('secondary')),
   };
   const report = useManagedReport({
-    editor, snapshot, plan, projection: shown, variant, stepId: step?.kind === 'report' ? step.id : undefined,
+    editor, snapshot, plan, names: plans.names, projection: shown, variant, stepId: step?.kind === 'report' ? step.id : undefined,
     run: step?.kind === 'report' ? namedRun : undefined,
     wholeStep, focused: windowState.mode !== 'map' && focusView === 'document',
     failures: stepFailures(step?.kind === 'report' ? step.id : undefined),
@@ -1464,11 +1464,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
 
   /** The name of the run a Report figure is read from, when its step has more than one run. */
-  function reportFigureRun(key: ReportFigureSource['key']) {
-    const runs = plan.steps.find(({ id }) => id === key.step)?.runs ?? [];
-    return runs.length > 1 ? runs.find(({ id }) => id === savedRunId(key))?.label : undefined;
-  }
-
   function stepExceptions(stepId: string, scope: string | null = variant) {
     return authoredMap?.steps.find(({ step_id, variant: id }) => step_id === stepId && id === scope)?.exceptions ?? [];
   }
@@ -1989,7 +1984,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             {reportChoices.figures.map((figure) => <Button variant="ghost" align="start"
               key={JSON.stringify([figure.key, figure.name])}
               onClick={() => chooseReportFigure(reportChoices.revision, figure)}>
-              {nameOf(saved.names.elements[figure.key.step], figure.name)}{reportFigureRun(figure.key) && ' · ' + reportFigureRun(figure.key)}
+              {figureName(plans.names, plan, figure, false)}
             </Button>)}
           </Dialog>}
           {insertMenu.menu}
@@ -2195,7 +2190,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   ? { name: fieldReveal.name, place: fieldReveal.place, detail: fieldReveal.reason, problem: fieldReveal.problem } : undefined}
                 upstreamDetail={checkpointLineage()}
                 detail={selectedEvaluation?.checkpoint_series
-                  ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation}
+                  ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation} stepName={stepLabel}
                     onShowStep={(stepId) => selection.select(selectStep(state, stepId))} /> : undefined}
                 fields={(authoring || inputEditor || evaluationEditor || authored?.kind === 'synthesize') &&
                   <FocusedFields request={slot === focusSlot && fieldFocus?.step === step.id ? fieldFocus : undefined}

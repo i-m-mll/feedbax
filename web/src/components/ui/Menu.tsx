@@ -149,7 +149,7 @@ export function MenuRadioItem({ value, disabled, glyph, mark, children }: {
   children: ReactNode;
 }) {
   return (
-    <BaseMenu.RadioItem className={popupItem} value={value} disabled={disabled} closeOnClick>
+    <BaseMenu.RadioItem className={popupItem} value={value} data-value={value} disabled={disabled} closeOnClick>
       <span className="flex size-[1em] shrink-0 items-center justify-center">
         <BaseMenu.RadioItemIndicator keepMounted={false}><Check /></BaseMenu.RadioItemIndicator>
       </span>

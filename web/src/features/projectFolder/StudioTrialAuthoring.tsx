@@ -29,6 +29,7 @@ import { changeTip, FieldChange, ValueField } from '@/components/values/ValueFie
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { isRecord, rawField } from '@/components/values/adapters/raw';
 import { fromFieldView, type FieldViewOptions } from '@/components/values/adapters/fieldView';
+import { nameOf } from './memberNames';
 import { partMenuKey } from '@/components/values/partMenu';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
@@ -113,15 +114,15 @@ export function useTrialAuthoring(
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === project &&
       JSON.stringify(previousQuery.queryKey[3]) === JSON.stringify(run) ? previous : undefined,
   });
-  const { project: authored } = useSyncExternalStore(editor.subscribe, editor.getSnapshot).saved;
+  const { project: authored, names } = useSyncExternalStore(editor.subscribe, editor.getSnapshot).saved;
   const data = query.data;
   /** An Evaluate step's documents change the values it reads; another step's differ from their documents' bases. */
   const view: TrialView | undefined = useMemo(() => {
     if (!data || !run) return undefined;
     const from = (document: string | null): ChangeSource | undefined => {
-      if (authored.steps?.[run.step]?.kind === 'evaluate') return { kind: 'evaluate', step: run.step };
+      if (authored.steps?.[run.step]?.kind === 'evaluate') return { kind: 'evaluate', name: nameOf(names.steps, run.step) };
       const base = baseOf(authored.documents, document);
-      return base === undefined ? undefined : { kind: 'base', document: base };
+      return base === undefined ? undefined : { kind: 'base', name: nameOf(names.documents, base) };
     };
     const menuKey = (context: string, field: string) => [project, context, field];
     /** Reads a menu of this view; once the service no longer holds it, reads the view again and asks that one. */

@@ -195,7 +195,7 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
   const scope = names(spec);
   const text = (id: string, authored: string) => texts[id] || authored;
   const changed = (from?: string): ChangeMark | undefined => from === undefined ? undefined
-    : { from: { kind: 'base', document: spec.base ?? '' }, reset: async () => undefined };
+    : { from: { kind: 'base', name: spec.base ?? '' }, reset: async () => undefined };
   const bounds = epochBounds({ ...spec, epochs: spec.epochs.map((epoch) => ({ ...epoch, end: text(`end:${epoch.id}`, epoch.end) })) });
   const variables: TaskVariable[] = spec.variables.map((variable) => ({
     id: variable.id, name: variable.name, type: variable.type, valueType: types[variable.type],
@@ -234,7 +234,7 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
 }
 
 export function pythonView(spec: PythonSpec): TaskPythonView {
-  const changed: ChangeMark = { from: { kind: 'base', document: 'perturbed-reaches' }, reset: async () => undefined };
+  const changed: ChangeMark = { from: { kind: 'base', name: 'Perturbed reaches' }, reset: async () => undefined };
   return {
     kind: 'python',
     parameters: [

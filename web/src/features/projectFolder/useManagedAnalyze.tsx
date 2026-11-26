@@ -266,7 +266,7 @@ export function useManagedAnalyze({
     const pointer = authoredPointer(path);
     const base = baseOf(saved.project.documents, document);
     if (!changedPaths.has(pointer) || base === undefined) return undefined;
-    return { from: { kind: 'base', document: base }, reset: canEdit ? async () => {
+    return { from: { kind: 'base', name: nameOf(saved.names.documents, base) }, reset: canEdit ? async () => {
       try { await editor.command((current) => save(current, studioName('reset'), { kind: 'reset', paths: [pointer] })); return undefined; }
       catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
     } : undefined };

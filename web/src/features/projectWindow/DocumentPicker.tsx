@@ -119,7 +119,7 @@ export function DocumentPicker({ model, editing, setEditing }: {
   const start = (part: DocumentEditing['part']) => () => { renaming.current = true; setEditing({ document, part }); };
   return <><Menu onOpenChange={(open) => { if (open) renaming.current = false; }}>
     <MenuTrigger ref={(element: HTMLElement | null) => setTrigger(element)} render={<Button variant="ghost" className="min-w-0 gap-1 px-1" />}
-      aria-label={studioAccessibleName(label, name)}>
+      aria-label={studioAccessibleName(label, name)} data-document={document}>
       <span className="studio-window-slot__document">{name}</span>
       {shown && <DocumentMarks python={shown.python} loaded={shown.loaded} problem={shown.problem} />}
       {count && count.users > 1 && count.lit < count.users &&

@@ -49,10 +49,10 @@ function Origin({ id, text, reveal }: { id: string; text: string; reveal?: () =>
 /** What a changed value differs from, as its mark's tip. */
 export function changeTip(from: ChangeSource) {
   switch (from.kind) {
-    case 'base': return studioFormat('changedFrom', { name: from.document });
+    case 'base': return studioFormat('changedFrom', { name: from.name });
     case 'value': return studioFormat('changedFrom', { name: from.text });
     case 'selected': return studioFormat('fieldSource', { kind: studioName('selectedValue'), name: from.text });
-    case 'evaluate': return studioEvaluateValueSource({ kind: 'evaluate', step: from.step });
+    case 'evaluate': return studioFormat('evaluateChangedValue', { step: from.name });
   }
 }
 
