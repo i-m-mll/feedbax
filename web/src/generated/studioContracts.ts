@@ -5350,7 +5350,7 @@ export type StudioTaskCatalog = {
 
 export type StudioTaskChoice = {
   "document": string;
-  "problems": Array<Problem>;
+  "problem_indices": Array<number>;
 };
 
 export type StudioTaskPlace = {
@@ -5450,6 +5450,7 @@ export type StudioTrialAuthoring = {
   "set_fields"?: Array<StudioSetField>;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
+  "task_problems": Array<Problem>;
   "variables": Array<ScopedValue>;
   "signals": Array<ScopedValue>;
   "epochs": Array<StudioTrialEpoch>;
@@ -14768,7 +14769,7 @@ export const StudioTaskCatalogSchema: z.ZodType<StudioTaskCatalog> = z.lazy(() =
 export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "problems": z.array(ProblemSchema),
+    "problem_indices": z.array(z.number().int().safe().min(0)),
   }).strict()
 ) as unknown as z.ZodType<StudioTaskChoice>;
 
@@ -14888,6 +14889,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "set_fields": z.array(StudioSetFieldSchema).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),
+    "task_problems": z.array(ProblemSchema),
     "variables": z.array(ScopedValueSchema),
     "signals": z.array(ScopedValueSchema),
     "epochs": z.array(StudioTrialEpochSchema),
