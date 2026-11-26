@@ -1,5 +1,6 @@
 """A uv project whose package supplies an operation, and the Studio project beside it that uses the operation."""
 
+from itertools import islice
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,11 +17,14 @@ COMPONENT = "environment_fixture.Readout"
 PACKAGE_SOURCE = Path("src") / "environment_fixture"
 
 
+def _keep_first_validation_trial(task: dict) -> None:
+    task["validation_trials"] = dict(islice(task["validation_trials"].items(), 1))
+
+
 def rollout_project(*operations: str) -> Project:
     """The shipped point mass, one rollout of it, and an Analyze step for each operation reading the rollout."""
     raw = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
-    task = raw["documents"]["simple-reaches-task"]["payload"]
-    task["validation_trials"] = task["validation_trials"][:1]
+    _keep_first_validation_trial(raw["documents"]["simple-reaches-task"]["payload"])
     raw["steps"] = {
         "rollout": {
             "kind": "evaluate",
@@ -61,9 +65,7 @@ def trained_project() -> Project:
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     sources = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
     model = raw["documents"][sources["model"]["document"]]["payload"]
-    raw["documents"][sources["task"]["document"]]["payload"]["validation_trials"] = (
-        raw["documents"][sources["task"]["document"]]["payload"]["validation_trials"][:1]
-    )
+    _keep_first_validation_trial(raw["documents"][sources["task"]["document"]]["payload"])
     components = model["interior"]["components"]
     components["readout"]["type"] = COMPONENT
     components["readout"]["fields"]["input_size"] = components["cell"]["fields"]["hidden_size"]
