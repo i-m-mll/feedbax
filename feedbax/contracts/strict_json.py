@@ -19,9 +19,10 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
-from pydantic import TypeAdapter
+if TYPE_CHECKING:
+    from pydantic import TypeAdapter
 
 __all__ = [
     "DuplicateJsonKeyError",

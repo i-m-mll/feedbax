@@ -12,6 +12,11 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from typing import Protocol
+
+
+class _JsonReader(Protocol):
+    def __call__(self, data: bytes, *, ref: str) -> dict: ...
 
 
 def _private(path: Path) -> None:
@@ -136,14 +141,15 @@ for distribution in distributions():
 
 _PACKAGE_VERIFY = """
 from importlib.metadata import distribution
-import json
 from pathlib import Path
 import sys
 from urllib.parse import unquote, urlsplit
+from feedbax.contracts.strict_json import strict_json_loads
 
-for pin, source in json.loads(sys.argv[1]):
+for pin, source in strict_json_loads(sys.argv[1], ref="project package pins"):
     installed = distribution(pin["distribution"])
-    direct = urlsplit(json.loads(installed.read_text("direct_url.json") or "{}").get("url", ""))
+    metadata = strict_json_loads(installed.read_text("direct_url.json") or "{}", ref="installed direct_url.json")
+    direct = urlsplit(metadata.get("url", ""))
     if (
         installed.version != pin["version"] or direct.scheme != "file" or direct.netloc
         or Path(unquote(direct.path)).resolve() != Path(source).resolve()
@@ -219,12 +225,14 @@ def _install_project_packages(root, settings, verify_tree, uv, python, env) -> N
     _publish(environment / "uv.lock", ("\n".join(lines) + "\n").encode())
 
 
-def _install(root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str, int]]) -> None:
+def _install(
+    root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str, int]], read_json: _JsonReader,
+) -> None:
     cached_probe = root / "probe.json"
     packages = settings.get("project_packages", [])
     if cached_probe.exists():
         probe = cached_probe.read_bytes()
-        if json.loads(probe).get("project_packages", []) != packages:
+        if read_json(probe, ref=str(cached_probe)).get("project_packages", []) != packages:
             raise ValueError("The completed install identifies different project packages.")
         sys.stdout.buffer.write(probe)
         return
@@ -258,7 +266,7 @@ def _install(root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str
         cwd=repo, env=env, timeout=30,
     )
     if packages:
-        probe = json.dumps(json.loads(probe) | {"project_packages": packages}).encode()
+        probe = json.dumps(read_json(probe, ref="RunPod environment probe") | {"project_packages": packages}).encode()
     _publish(cached_probe, probe)
     sys.stdout.buffer.write(probe)
 
@@ -276,7 +284,7 @@ def _complete(root: Path, settings: dict) -> None:
     _publish(root / "ready", b"")
 
 
-def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
+def bootstrap(verify_tree: Callable[[Path], tuple[str, int]], read_json: _JsonReader) -> None:
     action, location, *arguments = sys.argv[1:]
     if len(arguments) != (1 if action == "stage-uv" else 0):
         raise ValueError("Unexpected RunPod bootstrap arguments.")
@@ -288,7 +296,7 @@ def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
             pass
         return
     _private(root)
-    settings = json.load(sys.stdin.buffer) if action != "stage-uv" else {}
+    settings = read_json(sys.stdin.buffer.read(), ref="RunPod bootstrap settings") if action != "stage-uv" else {}
     with (root / "setup.lock").open("ab") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if action == "close-opening":
@@ -316,7 +324,7 @@ def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
             send_packages = _package_copies(root, settings.get("project_packages", []))
             print(json.dumps({"send": not (root / "repo").exists(), "send_uv": send_uv, "send_packages": send_packages}))
         elif action == "install":
-            _install(root, settings, verify_tree)
+            _install(root, settings, verify_tree, read_json)
         elif action == "complete":
             _complete(root, settings)
         else:

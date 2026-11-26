@@ -1,7 +1,6 @@
 """Pinned project-package sources for a remote Host session."""
 
 from importlib import metadata
-import json
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
@@ -13,6 +12,7 @@ from packaging.utils import canonicalize_name
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.orchestration.repo_snapshot import RepoSnapshotRecord, RepoSnapshotSourceFault, seal_repo_snapshot
 from feedbax.plugins.declarations import DistributionSource
 
@@ -48,7 +48,7 @@ def pin_project_package(source: DistributionSource, snapshot_parent: Path) -> Pr
     name = canonicalize_name(source.distribution)
     try:
         distribution = metadata.distribution(name)
-        installed = json.loads(distribution.read_text("direct_url.json") or "{}")
+        installed = strict_json_loads(distribution.read_text("direct_url.json") or "{}", ref=f"{name} direct_url.json")
         url = urlsplit(installed.get("url", ""))
         editable = installed.get("dir_info", {}).get("editable") is True
     except (AttributeError, TypeError, ValueError, metadata.PackageNotFoundError) as error:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from importlib import metadata
 import json
 import os
 from pathlib import Path
@@ -10,13 +11,16 @@ import sys
 
 import pytest
 
+from feedbax.contracts import strict_json
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.orchestration import runpod_bootstrap
-from feedbax.orchestration.repo_snapshot import RepoSnapshotRecord, SealedRepoSnapshot
+from feedbax.orchestration.project_packages import pin_project_package
+from feedbax.orchestration.repo_snapshot import RepoSnapshotRecord, RepoSnapshotSourceFault, SealedRepoSnapshot
 from feedbax.orchestration.runpod import SubprocessRunPodTransport
 from feedbax.orchestration.runpod_session import RunPodEnvironment, RunPodSessionProvider
 from feedbax.orchestration.runpod_session_provider import RunPodAcquisition
 from feedbax.orchestration.session import SessionError
+from feedbax.plugins.declarations import DistributionSource
 from tests.support.hang import HANG_SECONDS
 
 
@@ -62,10 +66,12 @@ def test_venue_stages_and_runs_exact_uv_offline(tmp_path):
     env = {**os.environ, "UV_OFFLINE": "1", "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
     uv_version = subprocess.check_output([executable, "--version"], timeout=HANG_SECONDS).decode().split()[1]
     # The CUDA probe is independent of staging and requires JAX in the venue venv.
-    script = Path(runpod_bootstrap.__file__).read_text() + """
-_PROBE = 'print("{}")'
-bootstrap(lambda _: ("repo-digest", 1))
-"""
+    script = "\n".join((
+        Path(strict_json.__file__).read_text(),
+        Path(runpod_bootstrap.__file__).read_text(),
+        "_PROBE = 'print(\"{}\")'",
+        'bootstrap(lambda _: ("repo-digest", 1), strict_json_loads)',
+    ))
 
     def call(action: str, payload: bytes, *arguments: str, check: bool = True):
         return subprocess.run(
@@ -107,3 +113,23 @@ bootstrap(lambda _: ("repo-digest", 1))
     call("stage-uv", binary, digest)
     assert call("install", install).stdout.strip() == b"{}"
     assert (root / "venv" / "bin" / "python").exists()
+
+    (root / "probe.json").write_bytes(b'{"project_packages":[{}],"project_packages":[]}')
+    duplicate_probe = call("install", install, check=False)
+    assert duplicate_probe.returncode != 0
+    assert b"duplicate JSON object key 'project_packages'" in duplicate_probe.stderr
+
+
+def test_project_package_rejects_ambiguous_editable_metadata(tmp_path, monkeypatch):
+    class Distribution:
+        version = "1.0"
+
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            return '{"url":"file:///chosen","dir_info":{"editable":false,"editable":true}}'
+
+    monkeypatch.setattr(metadata, "distribution", lambda _name: Distribution())
+    source = DistributionSource("fixture", "fixture", "1.0")
+    with pytest.raises(RepoSnapshotSourceFault) as refused:
+        pin_project_package(source, tmp_path)
+    assert isinstance(refused.value.__cause__, strict_json.DuplicateJsonKeyError)
