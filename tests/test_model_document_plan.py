@@ -1151,12 +1151,12 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     documents = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
     documents.pop("input_bindings")
     model = raw["documents"]["reach-model"]["payload"]
-    model["ports"]["inputs"]["unknown"] = model["ports"]["inputs"].pop("task-input") | {"label": "unknown"}
+    model["ports"]["inputs"]["unknown"] = model["ports"]["inputs"].pop("task-input") | {"label": "Unknown signal"}
     model["interior"]["wires"]["task-wire"]["source"]["port"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
     (problem,) = [problem for row in refused.rows if row.key.step == "train" for problem in row.problems]
     assert problem.path.startswith("/trial_documents/model/")
-    assert problem.detail == "Model input 'unknown' needs a Task signal."
+    assert problem.detail == "Model input 'Unknown signal' needs a Task signal."
     assert problem.model_address == ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "port", "end": {"owner": "inputs", "port": "unknown"}},
@@ -1401,7 +1401,7 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids(monkeypatch):
     assert outgoing.target_node == "readout"
     executable = compile_graph(
         GraphDocument(graph=variant.graph), registry,
-        input_prototypes={graph.input_bindings["reach_target"]: jax.ShapeDtypeStruct((2,), jnp.float32)},
+        input_prototypes={graph.input_bindings["task-input"]: jax.ShapeDtypeStruct((2,), jnp.float32)},
     )
     assert executable.graph.nodes["wrapper"].nodes["controller"].nodes[incoming.target_node].scale == 0.5
 
@@ -1514,10 +1514,9 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
     assert requests() == prior
 
 
-# The ids the variant's evaluation had at a9b3bb7d, where the change was stored in the step's payload.
-# The fixture pins requests that bind Task signals by stable Model input ID (8a0009c3).
-_VARIANT_WIRE = "evaluate:4f26103959b7ccd1c1f27ba1acd2f8b53bb8f7446751b8c279f7345bdc3f7a4e"
-_VARIANT_FIELD = "evaluate:86530315779f1c0f14fc177396bae4f98e4f8ceb8a5600d09bd6b21232ba0374"
+# Equivalent stored edits retain these managed requests with key-based external Model ports.
+_VARIANT_WIRE = "evaluate:67b6b7b07886af24685d0bafb6b138bc8d3d8a1d8388c00f15270a9f5fb43c8b"
+_VARIANT_FIELD = "evaluate:fe38d5d871dfa3e929d611f55b4497ebf72f2f9c9a5c844ea77b7999aa303aa9"
 
 
 @pytest.mark.parametrize(("operation", "expected"), [
@@ -2167,8 +2166,8 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     slot = read_method_checkpoint(checkpoint.checkpoint_root, checkpoint.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None
     restored = slot.restore()
-    assert restored.input_shapes == {"reach_target": (2,)}
-    assert slot.input_arrays["reach_target"].dtype == "float32"
+    assert restored.input_shapes == {"task-input": (2,)}
+    assert slot.input_arrays["task-input"].dtype == "float32"
     assert restored.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
     evaluated = finished(evaluation_job)
     assert evaluated["state"] == "succeeded", evaluated.get("outcome")
@@ -2249,6 +2248,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
 
     model = raw["documents"][model_name]["payload"]
     model["ports"]["inputs"]["task-input"]["label"] = "Renamed reach target"
+    model["ports"]["outputs"]["command"]["label"] = "Renamed command"
     _save_project(folders, project, Project.model_validate(raw))
     changed = reopened.read_plan(project, revision=None)
     assert not changed.plan.diagnostics
