@@ -9,6 +9,7 @@ from pydantic import AwareDatetime, Field, FiniteFloat, JsonValue, model_validat
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Document, Project, Sha256, Step, StepKind
+from feedbax.contracts.project import OrderProjectValue as OrderProjectValue
 from feedbax.contracts.project import ProjectValueEdit as ProjectValueEdit
 from feedbax.contracts.project import RemoveProjectValue as RemoveProjectValue
 from feedbax.contracts.project import SetProjectValue as SetProjectValue
