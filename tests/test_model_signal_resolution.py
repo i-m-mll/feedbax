@@ -13,7 +13,7 @@ from feedbax.compiler.resolution import resolve_graph_parameters
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.stored_model import StoredModelDocument
 
 
 def _example():
@@ -24,7 +24,7 @@ def _example():
 
 def _resolve(payload):
     components = ComponentRegistry()
-    model = ModelDocument.model_validate(payload)
+    model = StoredModelDocument.model_validate(payload).lower()
     lowered = lower_model_document(model, components)
     prototypes = {lowered.graph.input_bindings["target_pos"]: jax.ShapeDtypeStruct((2,), np.float32)}
     resolved = resolve_graph_parameters(lowered.graph, prototypes, components, allow_incomplete=True)
@@ -41,7 +41,7 @@ def _component_port(component, direction, port, *, scope=()):
 
 def test_shipped_point_mass_outputs_keep_state_meaning_without_stored_units():
     model = _example()
-    assert next(port["type"] for port in model["ports"]["outputs"] if port["id"] == "effector") == {}
+    assert model["ports"]["outputs"]["effector"]["type"] == {}
     signals, interface = _resolve(model)
     assert not signals.problems
     root = boundary_signal_port((), "outputs", "effector")
@@ -67,17 +67,17 @@ def test_shipped_point_mass_outputs_keep_state_meaning_without_stored_units():
 def test_bad_wire_is_local_and_leaves_other_signals_readable():
     model = _example()
     model["interior"]["components"]["velocity"] = {
-        "kind": "leaf", "name": "Velocity", "type": "feedbax.SelectState", "fields": {"paths": ["vel"]},
+        "kind": "leaf", "label": "Velocity", "type": "feedbax.SelectState", "fields": {"paths": ["vel"]},
     }
     model["interior"]["wires"]["select-velocity"] = {
         "source": {"owner": "component", "component": "plant", "port": "effector"},
         "target": {"owner": "component", "component": "velocity", "port": "state"},
     }
     model["interior"]["components"]["point_receiver"] = {
-        "kind": "composite", "name": "Point receiver",
+        "kind": "composite", "label": "Point receiver",
         "ports": {
-            "inputs": [{"id": "in", "name": "In", "type": {"shape": [2], "space": "point"}}],
-            "outputs": [{"id": "out", "name": "Out", "type": {}}],
+            "inputs": {"in": {"label": "In", "type": {"shape": [2], "space": "point"}}},
+            "outputs": {"out": {"label": "Out", "type": {}}},
         },
         "interior": {"wires": {"pass": {
             "source": {"owner": "inputs", "port": "in"},
