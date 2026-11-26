@@ -1250,7 +1250,7 @@ export interface StudioSweepList {
 export interface StudioSweepRange {
   kind: "range";
   id: string;
-  rule: RangeValues;
+  rule: StudioSweepRangeRule;
   can_list: boolean;
 }
 
@@ -5497,6 +5497,11 @@ export type StudioSetEditRequest = {
   "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | SetFieldWeight | RemoveAxisValue | AddSetEntry | SetEntryTask;
 };
 
+export type StudioSetEntryParts = {
+  "on": WeightPart;
+  "off": WeightPart;
+};
+
 export type StudioSetField = {
   "axis": string;
   "set": string;
@@ -5510,7 +5515,7 @@ export type StudioSetFieldEntry = {
   "combination"?: "cross" | "zip";
   "entry": string | null;
   "label"?: string | null;
-  "weight"?: WeightPart | SetEntryParts | null;
+  "weight": WeightPart | StudioSetEntryParts | null;
   "member_count"?: number | null;
 };
 
@@ -5552,6 +5557,13 @@ export type StudioSubsetToRowsRequest = {
   "step": string;
   "input": string;
   "attempts": Array<string>;
+};
+
+export type StudioSweepRangeRule = {
+  "start": number;
+  "stop": number;
+  "count": number;
+  "scale": "linear" | "log";
 };
 
 export type StudioSynthesizeStep = {
@@ -8676,7 +8688,7 @@ export const StudioSweepRangeSchema: z.ZodType<StudioSweepRange> = z.lazy(() =>
     .object({
       "kind": z.literal("range"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "rule": RangeValuesSchema,
+      "rule": StudioSweepRangeRuleSchema,
       "can_list": z.boolean(),
     })
     .strict()
@@ -14958,6 +14970,13 @@ export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.laz
   }).strict()
 ) as unknown as z.ZodType<StudioSetEditRequest>;
 
+export const StudioSetEntryPartsSchema: z.ZodType<StudioSetEntryParts> = z.lazy(() =>
+  z.object({
+    "on": WeightPartSchema,
+    "off": WeightPartSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioSetEntryParts>;
+
 export const StudioSetFieldSchema: z.ZodType<StudioSetField> = z.lazy(() =>
   z.object({
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -14974,7 +14993,7 @@ export const StudioSetFieldEntrySchema: z.ZodType<StudioSetFieldEntry> = z.lazy(
     "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
     "entry": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "label": z.union([z.string(), z.null()]).optional(),
-    "weight": z.union([WeightPartSchema, SetEntryPartsSchema, z.null()]).optional(),
+    "weight": z.union([WeightPartSchema, StudioSetEntryPartsSchema, z.null()]),
     "member_count": z.union([z.number().int().safe(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSetFieldEntry>;
@@ -15032,6 +15051,15 @@ export const StudioSubsetToRowsRequestSchema: z.ZodType<StudioSubsetToRowsReques
     "attempts": z.array(z.string()).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioSubsetToRowsRequest>;
+
+export const StudioSweepRangeRuleSchema: z.ZodType<StudioSweepRangeRule> = z.lazy(() =>
+  z.object({
+    "start": z.union([z.number().int().safe(), z.number().finite()]),
+    "stop": z.union([z.number().int().safe(), z.number().finite()]),
+    "count": z.number().int().safe().min(1),
+    "scale": z.union([z.literal("linear"), z.literal("log")]),
+  }).strict()
+) as unknown as z.ZodType<StudioSweepRangeRule>;
 
 export const StudioSynthesizeStepSchema: z.ZodType<StudioSynthesizeStep> = z.lazy(() =>
   z.object({
