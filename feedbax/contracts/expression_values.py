@@ -179,11 +179,14 @@ class CallValue(ValueRecord):
 type WeightPart = Annotated[FiniteFloat, Field(ge=0)]
 
 
+type DrawCadence = Literal["run", "trial"]
+
+
 class DrawValue(ValueRecord):
     kind: Literal["draw"] = "draw"
     family: str
     args: tuple[Expression, ...]
-    per: Literal["run", "trial"] = "trial"
+    per: DrawCadence = "trial"
     weights: tuple[WeightPart, ...] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
@@ -209,6 +212,9 @@ class SequenceValue(ValueRecord):
 type Expression = Annotated[
     LiteralValue | NameValue | CallValue | DrawValue | SequenceValue | UnresolvedValue, Field(discriminator="kind")
 ]
+
+
+DrawValue.model_rebuild()
 
 
 class SweepList(ValueRecord):

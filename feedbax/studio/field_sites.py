@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from typing import TypedDict
 
-from feedbax.contracts.expression_site import SiteProjection
+from feedbax.contracts.expression_site import FieldKind, SiteProjection, initial_draw_per
 from feedbax.contracts.studio_field import StudioFieldFunction, StudioFieldName, StudioFieldSite, StudioFieldView
 
 
@@ -46,6 +46,7 @@ class FieldSiteIndex:
                 names=tuple(StudioFieldName.model_validate(name, from_attributes=True) for name in site.names),
                 structural=site.structural, list_count=site.list_count, repeat_count=site.repeat_count,
                 kinds=projection.kinds, functions=functions, parts=projection.parts, name_paths=projection.name_paths,
+                draw_per=initial_draw_per(site.finest) if FieldKind.DRAW in projection.kinds else None,
             )
         return key
 
