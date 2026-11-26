@@ -1,5 +1,5 @@
 import {
-  type ComponentDefinition, type DelayInitialWire, type JsonValue, type ModelAddress, type StoredExpression,
+  type ComponentDefinition, type DelayInitialWire, type JsonValue, type ModelAddress,
   type StoredInterventionAttachment, type StoredModelDocument, type StoredModelSignalSource,
 } from '@/generated/studioContracts';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
@@ -103,9 +103,9 @@ export interface AttachmentSource {
   readonly label: string;
   readonly field: string;
   readonly read: SourceValue;
-  /** The value it holds when it reads nothing; an operand's is the Service's default for its operation. */
-  readonly unlinked?: StoredExpression;
   readonly set?: (value: SourceValue) => ReturnType<RawChange>;
+  /** Stores the source as reading nothing, which the Service reads as its default; none for an operand, which has no such store. */
+  readonly clear?: () => ReturnType<RawChange>;
 }
 
 /** A port's address in `graph`, as a model address names it. */
@@ -122,18 +122,18 @@ function signalEnd(port: ModelAddress | undefined): DelayInitialWire['source'] {
   return end.owner === 'inputs' ? { owner: 'inputs', port: end.port } : null;
 }
 
-/** A stored source as it reads in `graph`; none stored reads `unlinked`. */
-export function readSource(graph: ModelAddress, source: StoredModelSignalSource | undefined, unlinked?: StoredExpression): SourceValue {
-  if (!source) return { kind: 'value', value: unlinked };
+/** A stored source as it reads in `graph`; none stored is the Service's default value, which its projected field shows. */
+export function readSource(graph: ModelAddress, source: StoredModelSignalSource | undefined): SourceValue {
+  if (!source) return { kind: 'value', value: undefined };
   if (source.kind === 'wire') return { kind: 'wire', port: portAddress(graph, source.source) };
   return source.kind === 'task' ? source : { kind: 'value', value: source.value as JsonValue };
 }
 
 /** One source of `item`: its label, the field projected for its own value, and its store as `write` keeps it. */
 function signalSource(id: string, label: string, field: string, graph: ModelAddress, stored: StoredModelSignalSource | undefined,
-  unlinked: StoredExpression | undefined, write?: (source: StoredModelSignalSource) => ReturnType<RawChange>): AttachmentSource {
+  write?: (source: StoredModelSignalSource) => ReturnType<RawChange>): AttachmentSource {
   return {
-    id, label, field, read: readSource(graph, stored, unlinked), unlinked,
+    id, label, field, read: readSource(graph, stored),
     set: write && ((value) => {
       if (value.kind === 'task') return write(value);
       if (value.kind === 'wire') return write({ kind: 'wire', source: signalEnd(value.port) });
@@ -146,12 +146,16 @@ function signalSource(id: string, label: string, field: string, graph: ModelAddr
 /** The sources of an attachment in `graph`, the graph that holds it: an intervention's are the operands it stores. */
 export function attachmentSources(item: Attachment, graph: ModelAddress, change?: AttachmentChange): AttachmentSource[] {
   if (item.kind === 'delay') {
-    return [signalSource('initial', studioName('initial'), 'initial_source.value', graph, item.initial_source, 0,
-      change && ((initial_source) => change({ ...item, initial_source })))];
+    const { initial_source: _, ...unread } = item;
+    return [{
+      ...signalSource('initial', studioName('initial'), 'initial_source.value', graph, item.initial_source,
+        change && ((initial_source) => change({ ...item, initial_source }))),
+      clear: change && (() => change(unread)),
+    }];
   }
   if (item.kind !== 'intervention') return [];
   return Object.entries(item.operands ?? {}).map(([name, stored]) =>
-    signalSource(name, humanizeLabel(name), `operands.${name}.value`, graph, stored, undefined,
+    signalSource(name, humanizeLabel(name), `operands.${name}.value`, graph, stored,
       change && ((source) => change({ ...item, operands: { ...item.operands, [name]: source } }))));
 }
 

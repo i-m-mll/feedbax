@@ -72,12 +72,7 @@ export function reportFigureRole(source: ReportFigureSource) {
 export function createReport(editor: ProjectEditController, revision: string, source: ReportFigureSource, title: string) {
   const schema = 'feedbax.report_document.v1';
   const role = reportFigureRole(source);
-  const payload: ReportDocument = {
-    schema_version: schema,
-    title,
-    blocks: [{ figure: role }],
-    completeness: 'complete',
-  };
+  const payload: ReportDocument = { title, blocks: [{ figure: role }] };
   return createManagedStep(editor, revision, source.key.step, {
     schema,
     payload,

@@ -1556,11 +1556,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       return <AttachmentSourceRow key={JSON.stringify([addressKey(address), source.id, read.kind])} label={source.label} field={field}
         linked={linked} variables={variables} choose={set && ((variable) => void set({ kind: 'task', variable }))}
         pick={set && editTopology ? () => armSource(address, source) : undefined}
-        clear={set && (async () => {
-          const value = source.unlinked !== undefined ? { kind: 'value' as const, value: source.unlinked }
-            : await operandDefault(address, item, source.id);
+        clear={set && (source.clear ?? (async () => {
+          const value = await operandDefault(address, item, source.id);
           if (value) await set(value);
-        })} />;
+        }))} />;
     });
     const consumed = new Set(sources.map(({ field }) => field));
     const ownFields = projectedFields.filter(({ id }) => !consumed.has(id) && !id.startsWith('window.'));

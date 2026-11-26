@@ -37,6 +37,14 @@ describe('attachmentSources', () => {
     expect(attachmentSources(varied, graph)[0].read).toEqual({ kind: 'task', variable: 'amplitude' });
   });
 
+  // Catches: a cleared Initial stored as a literal of Studio's own instead of the Service's default.
+  it("clears a delay's Initial by storing none", () => {
+    let written: Attachment | undefined;
+    const linked: Attachment = { ...delay, initial_source: { kind: 'task', variable: 'amplitude' } };
+    void attachmentSources(linked, graph, (next) => { written = next; })[0].clear!();
+    expect(written).toEqual(delay);
+  });
+
   // Catches: another operation stored with the operands of the one it replaced, which the Service would keep.
   it('stores another operation without operands, so the Service gives its own', async () => {
     let written: Attachment | undefined;
