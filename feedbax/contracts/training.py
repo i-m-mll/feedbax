@@ -81,13 +81,15 @@ class TrialDocuments(StrictModel):
         return self
 
 
-def lower_stored_trial_documents(value: object, *, components: ComponentRegistry | None = None) -> TrialDocuments:
+def lower_stored_trial_documents(
+    value: object, *, components: ComponentRegistry | None = None, first: bool = False,
+) -> TrialDocuments:
     """Lower resolved authored Train slots once, before pairing and request encoding."""
     if not isinstance(value, dict):
         raise ValueError("Choose Model, Task and Objective documents for Train.")
     task = value.get("task")
     return TrialDocuments.model_validate(value | {
         "model": StoredModelDocument.model_validate(value.get("model")).lower(components),
-        "task": StoredTaskDocument.model_validate(task).lower() if task is not None else None,
+        "task": StoredTaskDocument.model_validate(task).lower(first=first) if task is not None else None,
         "objective": StoredObjectiveDocument.model_validate(value.get("objective")).lower(),
     })

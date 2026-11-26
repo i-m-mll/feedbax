@@ -6,7 +6,7 @@ import pytest
 
 from feedbax.compiler.model_document import ResolvedModelInterface
 from feedbax.contracts.expression_registry import FunctionRegistry
-from feedbax.contracts.task_document import StoredTaskDocument, ValidationTrial
+from feedbax.contracts.task_document import StoredTaskDocument, StoredTaskDraftError, ValidationTrial
 from feedbax.expression_builtins import register_builtins
 from feedbax.tasks.document import DocumentTask, TaskParameters, compile_task
 
@@ -74,3 +74,66 @@ def test_validation_values_refuse_draws_and_other_variables(expression):
     problems = _compile(task)
     assert not isinstance(problems, DocumentTask)
     assert any(problem.path[:4] == ("validation_trials", "check", "variables", "assigned") for problem in problems)
+
+
+def test_family_and_listed_trials_lower_and_run_identically_in_generated_order():
+    family = _task({"reach": {
+        "over": {"direction": "0..1", "repeat": "0..1"},
+        "variables": {"assigned": "polar(0.15 m, direction * 90°)"},
+        "epoch_steps": {"prep": "1 + repeat * 2"},
+    }})
+    listed = _task({
+        f"reach-{direction}-{repeat}": {
+            "variables": {"assigned": f"polar(0.15 m, {direction} * 90°)"},
+            "epoch_steps": {"prep": 1 + repeat * 2},
+        }
+        for direction in (0, 1) for repeat in (0, 1)
+    })
+
+    def positions(task):
+        raw = task.model_dump(mode="json")
+        raw["variables"]["assigned"].update(
+            type={"base": "real", "shape": [2], "dimensions": {"length": 1}},
+            value="[0 m, 0 m]",
+        )
+        return StoredTaskDocument.model_validate(raw)
+
+    family, listed = positions(family), positions(listed)
+    expanded = family.lower()
+    together = listed.lower()
+    assert expanded == together
+    assert expanded.condition_ids == ("reach-0-0", "reach-0-1", "reach-1-0", "reach-1-1")
+    assert family.validation_trial_families() == {"reach": expanded.condition_ids}
+    assert family.lower(first=True).condition_ids == ("reach-0-0",)
+
+    programmes = (_compile(expanded), _compile(together))
+    assert all(isinstance(programme, DocumentTask) for programme in programmes), programmes
+    from_family, from_rows = (programme.validation(TaskParameters(), jr.key(3)) for programme in programmes)
+    starts = np.array([[0.15, 0], [0.15, 0], [0, 0.15], [0, 0.15]])
+    np.testing.assert_allclose(from_family.variables["assigned"], starts, rtol=0, atol=1e-7)
+    np.testing.assert_array_equal(from_family.epochs.ends[:, 0], [1, 3, 1, 3])
+    np.testing.assert_array_equal(from_family.variables["assigned"], from_rows.variables["assigned"])
+    np.testing.assert_array_equal(from_family.variables["drawn"], from_rows.variables["drawn"])
+    np.testing.assert_array_equal(from_family.epochs.ends, from_rows.epochs.ends)
+
+
+def test_structural_error_uses_the_authored_member_and_its_failing_combination():
+    task = _task({"check": {"over": {"k": "1..2"}, "epoch_steps": {"prep": "4 % (k - 2)"}}})
+    assert task.lower(first=True).validation_trials[0].epoch_steps == {"prep": 0}
+    with pytest.raises(StoredTaskDraftError, match=r"zero.*k=2") as error:
+        task.lower()
+    assert error.value.path == ("validation_trials", "check", "epoch_steps", "prep")
+
+
+def test_authored_trial_rule_size_only_changes_with_the_count_digits():
+    def authored(count):
+        return _task({"cohort": {
+            "over": {"k": f"linspace(0, 1, {count})"},
+            "variables": {"assigned": "k"},
+        }})
+
+    small, large = authored(10), authored(1000)
+    encoded = large.model_dump_json()
+    assert len(encoded) - len(small.model_dump_json()) == 2
+    assert StoredTaskDocument.model_validate_json(encoded) == large
+    assert large.lower(first=True).condition_ids == ("cohort-0",)

@@ -1,6 +1,6 @@
 """Authored Task documents and their lowering for execution."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from enum import IntEnum
 from functools import partial
 from typing import Annotated, Literal
@@ -8,12 +8,14 @@ from typing import Annotated, Literal
 from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.expression_sequence import structural_integer
 from feedbax.contracts.expression_storage import (
     EXPRESSION_MEMBER_RESERVED_KEYS, StoredExpression, StoredTime, lower_expression, store_expression,
 )
 from feedbax.contracts.expression_values import (
     ANGLE, LENGTH, TIME, Expression, LiteralValue, UnresolvedValue, ValueBase, ValueRecord, ValueType,
 )
+from feedbax.contracts.member_family import ExpandedFamilyMember, FamilyProblem, StoredFamilyMember, expand_members
 from feedbax.contracts.model_address import ModelAddress
 
 from feedbax.contracts.stored_members import (
@@ -301,23 +303,58 @@ class StoredTaskAdditions(StrictModel):
 class ValidationTrial(ValueRecord):
     id: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
     variables: dict[str, Expression] = Field(default_factory=dict)
-    epoch_steps: dict[str, int] = Field(default_factory=dict)
+    epoch_steps: dict[str, Annotated[int, Field(strict=True, ge=0)]] = Field(default_factory=dict)
 
 
-class StoredValidationTrial(ValueRecord):
+class StoredValidationTrial(StoredFamilyMember):
     variables: dict[StoredMemberKey, StoredExpression] = Field(default_factory=dict)
-    epoch_steps: dict[StoredMemberKey, int] = Field(default_factory=dict)
-
-    def lower(self, key: str) -> ValidationTrial:
-        return project_member(self, ValidationTrial, {
-            "variables": lambda values: {name: lower_expression(value) for name, value in values.items()},
-        }, id=key)
+    epoch_steps: dict[StoredMemberKey, StoredExpression] = Field(default_factory=dict)
 
     @classmethod
     def from_lowered(cls, trial: ValidationTrial) -> "StoredValidationTrial":
         return project_member(trial, cls, {
             "variables": lambda values: {name: store_expression(value) for name, value in values.items()},
+            "epoch_steps": lambda steps: {name: LiteralValue(value=count) for name, count in steps.items()},
         })
+
+
+def _validation_rule_error(
+    source: str, path: tuple[str, ...], reason: str, coordinates: Mapping[str, str],
+) -> StoredTaskDraftError:
+    if coordinates:
+        indices = ", ".join(f"{name}={value}" for name, value in coordinates.items())
+        reason = f"{reason} (validation trial {source}: {indices})"
+    return StoredTaskDraftError(("validation_trials", source, *path), "", reason)
+
+
+def _expand_validation_trials(
+    trials: Mapping[str, StoredValidationTrial], *, first: bool,
+) -> Iterator[ExpandedFamilyMember[StoredValidationTrial]]:
+    try:
+        yield from expand_members(trials, first=first)
+    except FamilyProblem as error:
+        raise _validation_rule_error(error.source_key, error.path, str(error), error.coordinates) from error
+
+
+def _lower_validation_trial(member: ExpandedFamilyMember[StoredValidationTrial]) -> ValidationTrial:
+    def epoch_steps(values):
+        checked = {}
+        for epoch, expression in values.items():
+            try:
+                count = structural_integer(expression)
+                if count < 0:
+                    raise ValueError("Validation epoch step count must be non-negative.")
+            except ValueError as error:
+                raise _validation_rule_error(
+                    member.source_key, ("epoch_steps", epoch), str(error), member.coordinates,
+                ) from error
+            checked[epoch] = count
+        return checked
+
+    return project_member(member.value, ValidationTrial, {
+        "variables": lambda values: {name: lower_expression(value) for name, value in values.items()},
+        "epoch_steps": epoch_steps,
+    }, id=member.key)
 
 
 class TaskDocument(ValueRecord):
@@ -392,18 +429,15 @@ def _stored_signal(signal: Signal, scopes: Mapping[str, str] | None) -> StoredSi
     }, label=signal.name, cells=cells)
 
 
-def _stored_validation_trials(
-    trials: tuple[ValidationTrial, ...], keys: tuple[str, ...] | None = None,
-) -> dict[str, StoredValidationTrial]:
+def _stored_validation_trials(trials: tuple[ValidationTrial, ...]) -> dict[str, StoredValidationTrial]:
     if trials == (ValidationTrial(),):
         return {}
-    explicit = tuple(row.id for row in trials if row.id is not None)
-    if len(explicit) != len(trials):
-        raise ValueError("Authored validation trials require member keys.")
-    return keyed_members(
-        (key, StoredValidationTrial.from_lowered(trial))
-        for key, trial in zip(explicit if keys is None else keys, trials, strict=True)
-    )
+    projected = []
+    for trial in trials:
+        if trial.id is None:
+            raise ValueError("Authored validation trials require member keys.")
+        projected.append((trial.id, StoredValidationTrial.from_lowered(trial)))
+    return keyed_members(projected)
 
 
 class StoredTaskDocument(ValueRecord):
@@ -426,7 +460,15 @@ class StoredTaskDocument(ValueRecord):
         _check_expression_keys((*self.variables, *self.signals))
         return self
 
-    def lower(self) -> TaskDocument:
+    def validation_trial_families(self) -> dict[str, tuple[str, ...]]:
+        """Map each authored family key to its generated trial IDs in execution order."""
+        families: dict[str, list[str]] = {}
+        for member in _expand_validation_trials(self.validation_trials, first=False):
+            if member.coordinates:
+                families.setdefault(member.source_key, []).append(member.key)
+        return {key: tuple(ids) for key, ids in families.items()}
+
+    def lower(self, *, first: bool = False) -> TaskDocument:
         return project_member(self, TaskDocument, {
             "variables": _lower_variables,
             "epochs": lambda epochs: tuple(
@@ -438,17 +480,18 @@ class StoredTaskDocument(ValueRecord):
                 project_member(repeat, Repeat, {"count": lower_expression}, id=key) for key, repeat in repeats.items()
             ),
             "links": _lower_links,
-            "validation_trials": lambda trials: tuple(value.lower(key) for key, value in trials.items()) or (ValidationTrial(),),
+            "validation_trials": lambda trials: tuple(
+                _lower_validation_trial(member) for member in _expand_validation_trials(trials, first=first)
+            ) or (ValidationTrial(),),
         })
 
     @classmethod
     def from_lowered(
-        cls, task: TaskDocument, *, trial_keys: Iterable[str] | None = None, scopes: Mapping[str, str] | None = None,
+        cls, task: TaskDocument, *, validation_trials: Mapping[str, StoredValidationTrial] | None = None,
+        scopes: Mapping[str, str] | None = None,
     ) -> "StoredTaskDocument":
-        """Project a producer's Task, retaining supplied validation row keys when available."""
-        overrides = {}
-        if trial_keys is not None:
-            overrides["validation_trials"] = _stored_validation_trials(task.validation_trials, tuple(trial_keys))
+        """Project a Task, retaining supplied authored rules for an expanded cohort."""
+        overrides = {"validation_trials": validation_trials} if validation_trials is not None else {}
         return project_member(task, cls, {
             "variables": partial(_stored_variables, scopes=scopes),
             "epochs": lambda epochs: keyed_members(

@@ -1004,6 +1004,7 @@ def compile_task(
                 row_values[key] = code.code.evaluate_step(
                     literal_inputs, code.code.with_trial(literal_inputs, run)
                 )[0].value
+        row_steps = {}
         for key, value in row.epoch_steps.items():
             epoch_index = indexes.get(key)
             if epoch_index is not None and isinstance(document.epochs[epoch_index].end, Until):
@@ -1024,12 +1025,9 @@ def compile_task(
                     "Validation epoch step count must fit a bounded length.",
                     (*path, "epoch_steps", key),
                 )
-        rows.append(
-            TaskParameters(
-                variables=row_values,
-                epoch_steps={key: jnp.asarray(value) for key, value in row.epoch_steps.items()},
-            )
-        )
+                continue
+            row_steps[key] = jnp.asarray(value)
+        rows.append(TaskParameters(variables=row_values, epoch_steps=row_steps))
     if problems:
         return tuple(problems)
     groups = []
