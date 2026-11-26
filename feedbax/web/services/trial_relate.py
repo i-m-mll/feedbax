@@ -6,7 +6,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.expression_values import CallValue, Expression, LENGTH, LiteralValue, NameValue, ValueBase, ValueType
 from feedbax.contracts.model_address import ComponentElement, ComponentPortAddress, FieldElement, OutputBoundaryEnd, PortElement
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.objective_document import StoredObjectiveTerm
+from feedbax.contracts.objective_document import ObjectiveTermValue
 from feedbax.contracts.studio_trials import StudioRelatePoint, StudioRelatePort, StudioTrialRelate
 from feedbax.contracts.trial_record import TrialAnchorPlace, TrialSignalPlace
 from feedbax.execution.trial_resolution import TrialPair
@@ -15,7 +15,7 @@ from feedbax.execution.trial_resolution import TrialPair
 def related_term(
     change: StudioTrialRelate, model: ModelDocument, pair: TrialPair,
     components: ComponentRegistry,
-) -> StoredObjectiveTerm:
+) -> ObjectiveTermValue:
     outputs = model_measure_scope(model, pair.model.signals).leaves
 
     def output_preference(leaf: ResolvedSignalLeaf) -> tuple[int, int, str]:
@@ -74,7 +74,7 @@ def related_term(
                for kind in (first_type, second_type)):
             raise ValueError("A relation needs two planar points.")
         first = CallValue(function="sub", args=(first, second))
-    return StoredObjectiveTerm(
+    return ObjectiveTermValue(
         measure=CallValue(function="sqnorm", args=(first,)),
         measure_type=ValueType(base=ValueBase.REAL, dimensions=first_type.dimensions.raised(2)),
     )

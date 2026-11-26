@@ -234,9 +234,7 @@ def _conditioned_project(sampling):
     task = raw["documents"]["task"]["payload"]
     task["variables"]["trial-kind"] = {
         "label": "trial_kind", "type": {"base": "integer"},
-        "value": {"kind": "draw", "family": "choice", "args": [
-            {"kind": "literal", "value": kind} for kind in range(3)
-        ]},
+        "value": "choice(0, 1, 2)",
     }
     placements = {}
     for kind, axis in enumerate(("reach", "hold")):
@@ -246,9 +244,7 @@ def _conditioned_project(sampling):
         }}
         placements[axis] = {
             "axis": {"set": bank}, "sampling": sampling,
-            "condition": {"kind": "call", "function": "eq", "args": [
-                {"kind": "name", "reference": "trial-kind"}, {"kind": "literal", "value": kind},
-            ]},
+            "condition": f"'trial-kind' == {kind}",
         }
     raw["steps"]["train"]["set_fields"] = placements
     return authored[0], raw
@@ -288,18 +284,16 @@ def test_trial_set_conditions_select_none_and_preserve_the_eligible_draws(sampli
 
 
 @pytest.mark.parametrize(("sampling", "condition", "reason"), [
-    ({"kind": "listed"}, {"kind": "literal", "value": True}, "Weighted or Co-occurring"),
-    ({"kind": "weighted"}, {"kind": "literal", "value": 2}, "Expected boolean"),
-    ({"kind": "weighted"}, {"kind": "name", "reference": "reach"}, "not in scope"),
-    ({"kind": "weighted"}, {"kind": "name", "reference": "step-flag"}, "at most trial values"),
+    ({"kind": "listed"}, True, "Weighted or Co-occurring"),
+    ({"kind": "weighted"}, 2, "Expected boolean"),
+    ({"kind": "weighted"}, "reach", "not in scope"),
+    ({"kind": "weighted"}, "'step-flag'", "at most trial values"),
 ])
 def test_trial_set_condition_problem_names_the_placement(sampling, condition, reason):
     _, raw = _conditioned_project(sampling)
     raw["documents"]["task"]["payload"]["variables"]["step-flag"] = {
         "label": "step_flag", "type": {"base": "boolean"},
-        "value": {"kind": "call", "function": "gt", "args": [
-            {"kind": "name", "reference": "time"}, {"kind": "literal", "value": 0, "unit": "s"},
-        ]},
+        "value": "time > 0 s",
     }
     raw["steps"]["train"]["set_fields"] = {
         "reach": raw["steps"]["train"]["set_fields"]["reach"] | {"condition": condition},

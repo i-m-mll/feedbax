@@ -7,9 +7,8 @@ variable stays referenced where it was read: the document still compiles to Prob
 import re
 from typing import assert_never
 
-from feedbax.contracts.expression_values import (
-    RESERVED_NAMES, LiteralValue, Problem, ProblemCode, UnresolvedValue, ValueBase, ValueType,
-)
+from feedbax.contracts.expression_storage import EXPRESSION_MEMBER_RESERVED_KEYS
+from feedbax.contracts.expression_values import LiteralValue, Problem, ProblemCode, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.task_document import Cell, Epoch, Length, Link, Repeat, Signal, TaskDocument, Variable
 from feedbax.contracts.task_structure import (
     AddMember, MakeAbsent, MakePresent, MoveMember, RemoveMember, RenameMember, SetLink, SetSpan, SetType,
@@ -106,7 +105,7 @@ def _add(document: TaskDocument, change: AddMember) -> TaskDocument:
     key = re.sub(r"[^A-Za-z0-9_-]+", "-", change.name).strip("-")
     if not key or not (key[0].isalpha() or key[0] == "_"):
         key = f"{change.member}-{key}" if key else change.member
-    id = _fresh(key, {item.id for item in peers} | RESERVED_NAMES)
+    id = _fresh(key, {item.id for item in peers} | EXPRESSION_MEMBER_RESERVED_KEYS)
     value_type = change.type or _NUMBER
     added = {
         "variable": lambda: Variable(id=id, name=change.name, type=value_type, value=zero(value_type.base, value_type.shape)),
@@ -135,7 +134,7 @@ def _edit_member(
             elif change.member == "signal":
                 peers += document.variables
             place = (field, item.id, "name")
-            if change.name in RESERVED_NAMES:
+            if change.name in EXPRESSION_MEMBER_RESERVED_KEYS:
                 return Problem(
                     code=ProblemCode.DUPLICATE_NAME, reason=f"The name {change.name!r} is reserved.", path=place,
                 )

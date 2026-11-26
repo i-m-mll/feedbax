@@ -5902,7 +5902,7 @@ export type TrialDocuments = {
 export type TrialSetField = {
   "axis": SetAxis;
   "sampling": SetTrialSampling;
-  "condition"?: Expression | null;
+  "condition"?: StoredExpression | null;
 };
 
 export type UnresolvedValue = {
@@ -15529,7 +15529,7 @@ export const TrialSetFieldSchema: z.ZodType<TrialSetField> = z.lazy(() =>
   z.object({
     "axis": SetAxisSchema,
     "sampling": SetTrialSamplingSchema,
-    "condition": z.union([ExpressionSchema, z.null()]).optional(),
+    "condition": z.union([StoredExpressionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<TrialSetField>;
 

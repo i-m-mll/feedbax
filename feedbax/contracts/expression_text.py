@@ -176,12 +176,16 @@ def _fail(node: Tree | Token, code: ProblemCode, reason: str, path: NodePath) ->
 
 
 class _Reader:
-    def __init__(self, names: Mapping[str, str] | None, functions: FunctionRegistry | None, *, stored: bool = False):
+    def __init__(
+        self, names: Mapping[str, str] | None, functions: FunctionRegistry | None, *,
+        stored: bool = False, keep_unknown_names: bool = False,
+    ):
         """``names`` maps the names in scope to their references; ``None`` takes every name as its own reference."""
         self.names = names
         self.spans: dict[NodePath, TextSpan] = {}
         self.functions = functions
         self.stored = stored
+        self.keep_unknown_names = keep_unknown_names
 
     def field(self, node: Tree) -> FieldValue:
         self.spans[()] = _span(node)
@@ -273,6 +277,8 @@ class _Reader:
                 if self.names is None:
                     return NameValue(reference=name)
                 if name not in self.names:
+                    if self.keep_unknown_names:
+                        return NameValue(reference=name)
                     code = (
                         ProblemCode.OUT_OF_SCOPE
                         if name in RESERVED_NAMES
@@ -394,12 +400,14 @@ class _Reader:
 
 
 def parse(
-    text: str, site: Site, functions: FunctionRegistry | None = None
+    text: str, site: Site, functions: FunctionRegistry | None = None, *, keep_unknown_names: bool = False,
 ) -> ParsedField[FieldValue] | tuple[Problem, ...]:
     """Parse editable text against the site's current names."""
     if problems := scope_problems(site):
         return problems
-    return _parse_text(text, _Reader({item.name: item.id for item in site.names}, functions))
+    return _parse_text(text, _Reader(
+        {item.name: item.id for item in site.names}, functions, keep_unknown_names=keep_unknown_names,
+    ))
 
 
 def _parse_text(text: str, reader: _Reader) -> ParsedField[FieldValue] | tuple[Problem, ...]:
