@@ -5,8 +5,10 @@ from functools import partial
 
 import pytest
 
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_stored_patch_copy, prepare_stored_patch
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolvedStep, ResolutionCode, compose_document, compose_step
 from feedbax.contracts.project_storage import stored_expression_site, stored_step_expression_site
@@ -122,9 +124,43 @@ def test_malformed_stored_text_is_a_problem_at_the_swept_field():
     assert isinstance(problem, ProjectDiagnostic)
     assert problem.code is ResolutionCode.INVALID_SWEEP
     assert problem.document == "task"
-    assert problem.path == "variables.goal.value.args.1.value"
+    assert problem.path == _STEP_PATH
+    assert problem.document_path == "/variables/goal/value/args/1/value"
     assert "Expected a field expression" in problem.detail
     assert problem.authored_file == "steps/fit.json"
+
+
+@pytest.mark.parametrize("named", [False, True])
+@pytest.mark.parametrize(("member", "reason"), [
+    ("0", "is addressed by its id"), ("absent", "is not an id of this collection"),
+])
+def test_sweep_problem_names_the_keys_of_a_stored_objective(named, member, reason):
+    objective = {"id": "score", "terms": {"effort": {"measure": 1}, "stability": {"measure": 2}}}
+    storage = {"schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "label": "Score", "payload": objective}
+    path = f"trial_documents.objective.terms.{member}.enabled"
+    project = Project.model_validate({
+        "documents": {"score": storage} if named else {},
+        "steps": {"fit": {
+            "label": "Fit", "kind": "train", "base": {"inline": {"trial_documents": {
+                "objective": {"document": "score"} if named else objective,
+            }}},
+            "sweep": {
+                "axes": {"choice": {"values": {"row": {}}}},
+                "exceptions": {"bad": {"where": {"rows": ["choice=row"]}, "patches": {
+                    path: {"op": "replace", "value": True},
+                }}},
+            },
+        }},
+    })
+    template = compose_step(project, "fit", track_sources=True)
+    assert not isinstance(template, ProjectDiagnostic)
+    (row,) = expand_sweep(template.sweep)
+    problem = template.resolve(row, include_sources=True)
+    assert isinstance(problem, ProjectDiagnostic) and problem.code is ResolutionCode.INVALID_SWEEP
+    assert f"{member!r} {reason}; the ids are effort, stability" in problem.detail
+    shown = StudioProjectWindowMapProblem.from_diagnostic(problem, declaration="fixture")
+    assert shown.place.part == "objective"
+    assert shown.document_path == (f"/terms/{member}/enabled" if named else None)
 
 
 def test_authored_evaluate_and_project_variant_paths_change_only_the_literal_number():

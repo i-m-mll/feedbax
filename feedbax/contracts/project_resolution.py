@@ -20,13 +20,14 @@ from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.loaded_model import ImportedModelSource
 from feedbax.contracts.matrix_core import (
-    ExpressionNodePatch, ExpressionSite, apply_stored_patch_in_place, prepare_stored_patch, replay_stored_patch_copy, resolve_segment,
-    validate_stored_patch_path,
+    ExpressionNodePatch, ExpressionSite, KeyedPatchCollection, apply_stored_patch_in_place, prepare_stored_patch,
+    replay_stored_patch_copy, resolve_segment, validate_stored_patch_path,
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
 from feedbax.contracts.project_storage import (
-    apply_document_differences, stored_expression_site, stored_step_expression_site,
+    apply_document_differences, stored_expression_site, stored_keyed_collection, stored_step_expression_site,
+    stored_step_keyed_collection,
 )
 from feedbax.contracts.project import (
     DifferenceNotApplied,
@@ -649,6 +650,7 @@ class _Documents:
             if reference.document not in self.edited:
                 draft = deepcopy(payload)
                 expression_site = partial(stored_expression_site, document.schema_id)
+                keyed_collection = partial(stored_keyed_collection, document.schema_id)
                 expressions = []
                 for item in patches:
                     try:
@@ -656,13 +658,16 @@ class _Documents:
                             raise ValueError("A variant writes into an object payload only")
                         if document.schema_id == TRAINING_DOCUMENT_SCHEMA_ID and item.patch.op == "replace":
                             draft = train_sweep_basis(draft, item.patch.path, self.training_methods)
-                        physical, expression = prepare_stored_patch(draft, item.patch, expression_site=expression_site)
+                        physical, expression = prepare_stored_patch(
+                            draft, item.patch, expression_site=expression_site, keyed_collection=keyed_collection,
+                        )
                         draft = replay_stored_patch_copy(draft, physical)
                         expressions.append(expression)
                     except ValueError as error:
                         problem = _Problem(
-                            ResolutionCode.INVALID_SWEEP, item.patch.path, str(error),
+                            ResolutionCode.INVALID_SWEEP, item.step_path, str(error),
                             step=self.step, document=reference.document,
+                            document_path=pointer(tuple(item.patch.path.split("."))),
                         )
                         if (origin := item.source) is not None:
                             problem.diagnostic = _at_sweep_origin(problem.diagnostic, origin)
@@ -912,6 +917,7 @@ class _Documents:
 @dataclass(frozen=True)
 class _DocumentRowPatch:
     patch: OverridePatch
+    step_path: str
     source: ValueSource | None
     override: Any = None
 
@@ -967,12 +973,15 @@ class _Resolver:
             if override is None else source_shape(payload, source, override)
         )
 
-    def expression_site(self, state: _StepState, kind: StepKind) -> ExpressionSite:
+    def patch_sites(self, state: _StepState, kind: StepKind) -> tuple[ExpressionSite, KeyedPatchCollection]:
         if state.root_document is not None:
             read = self.read_document or self.project.documents.get
             if (document := read(state.root_document)) is not None:
-                return lambda path: stored_expression_site(document.schema_id, (*state.root_pointer, *path))
-        return partial(stored_step_expression_site, kind)
+                return (
+                    lambda path: stored_expression_site(document.schema_id, (*state.root_pointer, *path)),
+                    lambda path: stored_keyed_collection(document.schema_id, (*state.root_pointer, *path)),
+                )
+        return partial(stored_step_expression_site, kind), partial(stored_step_keyed_collection, kind)
 
     def state(self, name: str, active: tuple[str, ...] = ()) -> _StepState:
         if name in active:
@@ -1047,10 +1056,12 @@ class _Resolver:
                 for patch in layer.patches
             ]
             expressions: list[ExpressionNodePatch | None] = []
-            expression_site = self.expression_site(parent, step.kind)
+            expression_site, keyed_collection = self.patch_sites(parent, step.kind)
 
             def apply(owned: dict, patch: OverridePatch) -> None:
-                expressions.append(apply_stored_patch_in_place(owned, patch, expression_site=expression_site))
+                expressions.append(apply_stored_patch_in_place(
+                    owned, patch, expression_site=expression_site, keyed_collection=keyed_collection,
+                ))
 
             try:
                 payload, _, written = apply_composition_deltas(
@@ -1232,7 +1243,7 @@ class _Resolver:
         model_document = None
         fields = []
         document_uses = state.document_uses
-        expression_site = self.expression_site(state, self.project.steps[name].kind)
+        expression_site, keyed_collection = self.patch_sites(state, self.project.steps[name].kind)
         try:
             for path, write in row.patches.items():
                 address = None
@@ -1276,7 +1287,7 @@ class _Resolver:
                         payload = read
                     source, override = self.row_source(row.patch_authors.get(authored, name), row, authored)
                     documents.setdefault(document, []).append(_DocumentRowPatch(
-                        patch.model_copy(update={"path": document_path}), source, override,
+                        patch.model_copy(update={"path": document_path}), authored, source, override,
                     ))
                     continue
                 if not isinstance(payload, dict):
@@ -1295,7 +1306,9 @@ class _Resolver:
                 )
                 if train_setting:
                     payload = train_sweep_basis(payload, patch.path, self.training_methods)
-                physical, expression = prepare_stored_patch(payload, patch, expression_site=expression_site)
+                physical, expression = prepare_stored_patch(
+                    payload, patch, expression_site=expression_site, keyed_collection=keyed_collection,
+                )
                 payload = replay_stored_patch_copy(payload, physical)
                 if origins is not None:
                     author = row.patch_authors.get(authored, name)
