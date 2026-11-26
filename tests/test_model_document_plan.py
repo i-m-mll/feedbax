@@ -2130,11 +2130,15 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
             {"op": "remove", "address": _attachment_address(owner, "train-extra")},
         ):
             snapshot = folders.read(project)
-            applied = folders.edit_model(project, ModelEditRequest.model_validate({
+            request = ModelEditRequest.model_validate({
                 "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
-                "document": "reach-model", "step": "baseline", "rows": ["default"],
+                "document": "reach-model", "step": "baseline",
                 "command": {"operation": {"op": "set_attachment", "difference": difference}},
-            }), registry.components)
+            })
+            applied = folders.edit_model(project, request, registry.components)
+            if applied.result.status == "asked":
+                choice = next(item for item in applied.result.store_choices if item.kind == "selected_readers")
+                applied = folders.edit_model(project, request.model_copy(update={"store_choice": choice.id}), registry.components)
             assert applied.result.status == "applied", applied.result
         raw = folders.read(project).project.model_dump(mode="json", by_alias=True, exclude_unset=True)
         plan = folders.read_plan(project, revision=None)

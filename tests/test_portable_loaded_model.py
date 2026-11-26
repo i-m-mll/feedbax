@@ -40,8 +40,8 @@ def _seed(folders, name):
     payload["training_config"] = {"n_batches": 1, "batch_size": 2, "replicates": 2}
     task = raw["documents"]["simple-reaches-task"]["payload"]
     task["fixed_steps"] = 8
-    task["epochs"][0]["end"]["length"]["value"] = 8
-    task["validation_trials"] = task["validation_trials"][:1]
+    task["epochs"]["move"]["end"]["length"]["value"] = 8
+    task["validation_trials"] = dict(list(task["validation_trials"].items())[:1])
     evaluate = managed_evaluation_step("unused")
     evaluate["inputs"] = {
         "subject": subject,
