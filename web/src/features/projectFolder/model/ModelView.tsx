@@ -55,6 +55,7 @@ import {
   holds, modelRegistry, portId, portTypeLabel, shortName, storedAttachment, wireEnd, withRemoved, chainItems,
   type Attachment, type Component, type LibraryEntry, type PhysicalInterior, type Port,
 } from './modelGraph';
+import { compactLayoutKey, modelLayout } from './modelLayout';
 import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
@@ -155,10 +156,6 @@ function verdictOn(verdicts: ReadonlyMap<string, ModelConnectionVerdict> | undef
 }
 
 type Placing = { document: string; graph: string; id: string; component: Component; position: ModelPosition; flipped: boolean };
-
-function positionsOf(saved: StudioProjectSnapshot, document: string) {
-  return saved.presentation?.documents?.[document]?.positions;
-}
 
 /** The port an empty boundary handle stands for until a wire to it adds the port. */
 const newPort = '__new_port__';
@@ -275,6 +272,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const [held, setHeld] = useState<ReadonlyMap<string, ModelPosition>>();
   /** Components whose add is pending, drawn where they were placed under the id the add gives them. */
   const [placing, setPlacing] = useState<readonly Placing[]>([]);
+  /** Where and how each component this view added was placed, by runtime key: its card keeps that until the Service spells it. */
+  const landed = useRef(new Map<string, Pick<Placing, 'position' | 'flipped'>>());
 
   const registryQuery = useQuery({ ...componentsQuery, enabled: active && !!model });
   const registry = useMemo(() => modelRegistry(registryQuery.data ?? []), [registryQuery.data]);
@@ -295,6 +294,18 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     enabled: active && !!projectionBody,
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], projectionBody) ? previous : undefined,
   });
+  const projectedTexts = useRef<{ documents: ReadonlySet<string>; texts: ModelProjection['address_texts'] }>({ documents: new Set(), texts: {} });
+  /**
+   * Every compact text the Service has answered in this view. A text is a function of its address alone, so a text
+   * answered for one run or revision stays good for the next, and the canvas keeps its places while a read is pending.
+   */
+  const addressTexts = useMemo(() => {
+    if (!projection.data || !model) return projectedTexts.current.texts;
+    const { documents, texts } = projectedTexts.current;
+    projectedTexts.current = { documents: new Set([...documents, model.id]), texts: { ...texts, ...projection.data.address_texts } };
+    return projectedTexts.current.texts;
+  }, [projection.data, model?.id]);
+  const projected = !!model && projectedTexts.current.documents.has(model.id);
   const projectedPorts = useMemo(() => new Map<string, Port['type']>([...projection.data?.ports ?? [], ...projection.data?.physical_ports ?? []]
     .map(({ address, type }) => [addressKey(address), type])), [projection.data]);
   /** The numeric fields under each struct-valued port, by port: Add Term on such a port relates one of them. */
@@ -476,8 +487,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const projectedLists = fieldBodies.map((fieldBody, index) => (fieldsData?.[index]?.fields ?? []).map((field) => {
     const evaluateSource = attachments.data?.field_sources?.[addressKey(field.address)] ??
       attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ?? attachments.data?.source ?? undefined;
-    const model = fromFieldView(field, {
-      id: addressKey(field.address), sites: fieldsData![index],
+    const model = fromFieldView(field, fieldsData![index]!, {
+      id: addressKey(field.address),
       planSources: originsNamed && field.sources ? {
         ...sourceNaming, sources: field.sources.filter((source) => !(source.kind === 'document' && shownChain.includes(source.key))),
       } : undefined,
@@ -569,7 +580,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       parameters: (definition.param_schema ?? []).map(({ name }) => name),
     },
   })), [entries]);
-  const persisted = model && positionsOf(saved, model.id);
+  const layoutKey = useMemo(() => compactLayoutKey(addressTexts), [addressTexts]);
+  const layout = modelLayout(model && saved.presentation?.documents?.[model.id], layoutKey);
+  /** An element whose compact text the Service has not answered yet: its card waits, rather than drawing at a default place first. */
+  const awaitingText = (address: ModelAddress) => projection.isFetching && layoutKey(address) === undefined;
   /**
    * Where each component without a saved position was first shown: it stays there, whatever is added or removed. A
    * boundary card's place follows from the components (`outputsAt`), so it is not held.
@@ -577,18 +591,16 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const shownAt = useRef(new Map<string, ModelPosition>());
   function cardPosition(address: ModelAddress, initial: () => ModelPosition) {
     const key = addressKey(address);
-    const stored = held?.get(key) ?? persisted?.[key];
+    const stored = held?.get(key) ?? layout.position(address);
     if (stored) return stored;
     const shown = JSON.stringify([saved.project_id, model?.id, key]);
+    if (awaitingText(address)) return landed.current.get(key)?.position ?? initial();
     if (address.element.kind !== 'component') return initial();
     const first = shownAt.current.get(shown) ?? initial();
     if (interior) shownAt.current.set(shown, first);
     return first;
   }
-  const presentation = model && saved.presentation?.documents?.[model.id];
-  const collapsed = presentation?.collapsed;
-  const flipped = presentation?.flipped;
-  const waypoints = presentation?.waypoints;
+  const collapsed = !!layout.collapsed(graph);
   const objects = Object.entries(interior?.components ?? {});
   /**
    * The Outputs card's place when none is stored: right of the grid columns the components without stored places fill.
@@ -596,7 +608,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
    * not move when a selected value removes a component.
    */
   const gridColumns = Math.max(0, ...Object.keys(drawnInterior?.components ?? {}).map((id, index) =>
-    persisted?.[addressKey(at(graph, { kind: 'component', id }))] ? 0 : index + 1));
+    layout.position(at(graph, { kind: 'component', id })) || awaitingText(at(graph, { kind: 'component', id })) ? 0 : index + 1));
   const outputsAt = { x: 245 + 235 * Math.max(1, Math.min(gridColumns, 4)), y: 38 };
   const placed = model ? placing.filter((item) => item.document === model.id && item.graph === graphId && !interior?.components?.[item.id]) : [];
   const mountKey = JSON.stringify([saved.project_id, model?.id, graphId]);
@@ -847,8 +859,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (!model) return false;
     const item = { document: model.id, graph: graphId, id: modelMemberKey(), component, position, flipped };
     setPlacing((prior) => [...prior, item]);
+    const key = addressKey(at(graph, { kind: 'component', id: item.id }));
+    landed.current.set(key, { position, flipped });
     try {
-      return await adding(item.id);
+      const added = await adding(item.id);
+      if (!added) landed.current.delete(key);
+      return added;
     } finally {
       setPlacing((prior) => prior.filter((other) => other !== item));
     }
@@ -1067,7 +1083,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         const owner = source.owner === 'component' ? outer.interior.components?.[source.component]?.label : undefined;
         const card = at(outerGraph, source.owner === 'component' ? { kind: 'component', id: source.component } : { kind: 'inputs' });
         return [{
-          key: `${depth}:${endKey(source)}`, source, outerPath, position: positionsOf(saved, model.id)?.[addressKey(card)],
+          key: `${depth}:${endKey(source)}`, source, outerPath, position: layout.position(card),
           label: [...modelPath(model.value, outerPath).entries.map(({ name }) => name),
             [owner, port.name].filter(Boolean).join('.')].join(' › '),
         }];
@@ -1143,10 +1159,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       position: cardPosition(address, () => ghost && wasAt ? wasAt : definition ? positionAt(index)
         : id === inputCard ? { x: 18, y: 38 } : outputsAt),
       selected: !!definition && selectedIds.has(key),
+      hidden: !!definition && awaitingText(address) && !landed.current.has(key),
       draggable: !ghost && editTopology && !locked && !pick,
       selectable: !!definition && !pick,
       data: {
-        address, name, headline, ports, collapsed: !!definition && !!collapsed?.[graphId], flipped: flipped?.[key],
+        address, name, headline, ports, collapsed: !!definition && collapsed, flipped: awaitingText(address) ? landed.current.get(key)?.flipped : layout.flipped(address),
         locked: ghost || locked || !editTopology, physicalConnections: !!physical, stacked: definition?.kind === 'composite',
         ghost, change: definition && changeMark(address), portChanges: portChanges.get(id),
         selected: !!definition && selectedIds.has(key),
@@ -1261,10 +1278,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       markerEnd: isPhysical ? undefined : { type: MarkerType.Arrow, width: 12, height: 12, color: 'var(--text-muted)' },
       selected: selectedIds.has(key),
       data: {
-        address, selected: selectedIds.has(key), waypoints: waypoints?.[key], problem: ghost ? undefined : addressedProblems.get(key),
+        address, selected: selectedIds.has(key), waypoints: layout.waypoints(address), problem: ghost ? undefined : addressedProblems.get(key),
         ghost: ghost || !!displacedAttachments, change: marked.get(key)?.difference.change === 'rewired' ? undefined : changeMark(address),
         moveWaypoint: !ghost && editTopology && !locked ? (index, point) => {
-          route(address, (waypoints?.[key] ?? []).map((previous, offset) => offset === index ? point : previous), 'Move Waypoint');
+          route(address, (layout.waypoints(address) ?? []).map((previous, offset) => offset === index ? point : previous), 'Move Waypoint');
         } : undefined,
         attachments: ghost ? attached(chainItems(drawnWire?.attachments), true)
           : [...attached(effective.get(key) ?? [], false), ...attached(removedAttachments(address), true)],
@@ -1287,7 +1304,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     group.sort((a, b) => depths.get(b.id)! - depths.get(a.id)!).forEach((edge, rank) => { edge.data!.rank = rank; });
   }
   const edges = connections.flatMap((edge) => {
-    if (!collapsed?.[graphId] || edge.source === edge.target || edge.source.startsWith('@') || edge.target.startsWith('@')) return [edge];
+    if (!collapsed || edge.source === edge.target || edge.source.startsWith('@') || edge.target.startsWith('@')) return [edge];
     const endpoints = edge.type === 'physical' ? [edge.source, edge.target].sort() : [edge.source, edge.target];
     const key = JSON.stringify([edge.type, ...endpoints]);
     const representative = bundled.get(key);
@@ -1377,10 +1394,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const ungrouping = component?.kind === 'composite' && selection
     ? projection.data?.ungroup?.find(({ address }) => addressKey(address) === addressKey(selection))?.reason : undefined;
   const viewportCommands = canvasViewportCommands(() => viewport.current, !!model);
-  const isCollapsed = !!collapsed?.[graphId];
   const collapse = bindStudioCommand('collapseAll', () => {
-    void apply(studioName(isCollapsed ? 'expandAll' : 'collapseAll'), { op: 'collapse_graph', graph, collapsed: !isCollapsed }, false);
-  }, { name: isCollapsed ? 'expandAll' : 'collapseAll', enabled: editTopology });
+    void apply(studioName(collapsed ? 'expandAll' : 'collapseAll'), { op: 'collapse_graph', graph, collapsed: !collapsed }, false);
+  }, { name: collapsed ? 'expandAll' : 'collapseAll', enabled: editTopology });
   const lock = bindStudioCommand('lock', () => setLocked((current) => !current), {
     name: locked ? 'unlock' : 'lock', enabled: editTopology,
   });
@@ -1395,7 +1411,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       ...(interior?.components?.[targetElement.id]?.kind === 'composite' ? [enterComposite(targetElement.id)] : []),
     ];
     if (targetElement.kind !== 'wire') return [];
-    const routePoints = waypoints?.[addressKey(address)] ?? [];
+    const routePoints = layout.waypoints(address) ?? [];
     return [
       bindStudioCommand('addWaypoint', () => {
         if (point) {
@@ -1695,12 +1711,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       {evaluate && !refused && <StudioRegion state={studioReadState(
         'model', attachments.data, attachments.error, () => { void attachments.refetch(); },
       )} />}
-      {!evaluate && projection.error && <StudioRegion state={studioReadState(
+      {(!projected || !evaluate && projection.error) && <StudioRegion state={studioReadState(
         'model', projection.data, projection.error, () => { void projection.refetch(); },
       )} />}
-      <div ref={canvasArea} className="min-h-0 flex-1">
+      {projected && <div ref={canvasArea} className="min-h-0 flex-1">
         <ModelCanvas key={mountKey} nodes={nodes} edges={edges} physical={!!physical} locked={locked} canEdit={editTopology}
-          collapsed={isCollapsed} viewportRef={viewport} collapse={collapse} lock={lock} viewportCommands={viewportCommands}
+          collapsed={collapsed} viewportRef={viewport} collapse={collapse} lock={lock} viewportCommands={viewportCommands}
           onCanvasPoint={(point) => { cursor.current = point; }}
           onSearch={openSearch} onNode={(node, extend) => {
             if (!pick && node.data.address.element.kind === 'component') select(node.data.address, extend);
@@ -1756,7 +1772,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             void apply(studioName('moveAttachment'), { op: 'move_wire_attachment', address, destination, after })
               .then((ok) => { if (ok) select(attachmentAddress(destination, id)); });
           }} />
-      </div>
+      </div>}
     </div> : null,
     drawer: model && <Drawer>
       {editTopology && <LibraryList sections={sections} section="model.library" name={studioName('library')} searchName="searchLibrary"

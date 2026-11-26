@@ -55,7 +55,7 @@ import {
 } from '@/features/projectWindow/projectWindowState';
 import { pinnableViews, stepModelSource, usePinnedSubject } from './pinnedSlot';
 import {
-  ModelAddressSchema, StepReferenceSchema, StudioProjectRenameSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
+  StepReferenceSchema, StudioProjectRenameSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type FigureLayoutMeta, type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type LoadedModelReference, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StepReference, type SubsetTerms,
   type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type StudioPlanReviewSource, type StudioProjectWindowMapException, type ModelAddress, type PatchValue,
@@ -140,26 +140,19 @@ function valueText(value: JsonValue) {
 }
 
 /**
- * The label of the field a sweep exception patches: a Train field's label from the server, or a model field's name.
- * A path no field of the step has (the exception outlived its field) is drawn by its last segment.
+ * The label of the field a sweep exception patches, as the Service names it for the patch's path. A Train path the
+ * Service does not name (the exception outlived its field) is drawn by its last segment; a Model target as written.
  */
-function exceptionFieldLabel(path: string, trainLabels: ReadonlyMap<string, string>) {
-  if (!path.startsWith('{')) return trainLabels.get(path) ?? humanizeLabel(path.split('.').at(-1)!);
-  try {
-    const address = ModelAddressSchema.safeParse(JSON.parse(path));
-    const field = address.success && address.data.element.kind === 'field' ? address.data.element.path.at(-1) : undefined;
-    return field == null ? path : humanizeLabel(String(field));
-  } catch {
-    return path;
-  }
+function exceptionFieldLabel(path: string, labels: Readonly<Record<string, string>>, trainLabels: ReadonlyMap<string, string>) {
+  return labels[path] ?? trainLabels.get(path) ?? (path.startsWith('{') ? path : humanizeLabel(path.split('.').at(-1)!));
 }
 /**
  * What an exception's patches change, one text each. A class chosen for the runs reads by the field and the class's
  * label (`Optimizer AdamW`); the parameters choosing it wrote are the class's and are not listed.
  */
 function exceptionPatchTexts(
-  patches: Readonly<Record<string, PatchValue | null>>, trainLabels: ReadonlyMap<string, string>,
-  classes: readonly StudioClassField[],
+  patches: Readonly<Record<string, PatchValue | null>>, labels: Readonly<Record<string, string>>,
+  trainLabels: ReadonlyMap<string, string>, classes: readonly StudioClassField[],
 ): string[] {
   const entries = Object.entries(patches);
   const chosen = classes.flatMap((field) => {
@@ -175,7 +168,7 @@ function exceptionPatchTexts(
     const pick = chosen.find((entry) => path === entry.tag);
     if (pick) return [pick.text];
     if (!patch || chosen.some((entry) => path.startsWith(entry.path + '.'))) return [];
-    return [`${exceptionFieldLabel(path, trainLabels)} ${'value' in patch ? valueText(patch.value) : studioName('remove')}`];
+    return [`${exceptionFieldLabel(path, labels, trainLabels)} ${'value' in patch ? valueText(patch.value) : studioName('remove')}`];
   });
 }
 
@@ -2192,7 +2185,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               const where = exception.rule.where;
               const editable = !where?.rows && shown && variant;
               return { id: exception.id, text: [
-                ...exceptionPatchTexts(exception.rule.patches ?? {}, trainLabels, trainClasses),
+                ...exceptionPatchTexts(exception.rule.patches ?? {}, exception.field_labels ?? {}, trainLabels, trainClasses),
                 ...editable ? [] : [exceptionRuns(step, exception)],
               ].join(' · '), rule: editable && <SelectionRule scope={{ project: saved.project_id, revision: shown.revision, variant }}
                 source={step} terms={{ rule: where?.rule ?? '' }} ranked={false} picking={elements}

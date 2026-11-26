@@ -1,11 +1,10 @@
 import { expect, test } from './fixtures/studio';
-import type { StudioLoadedModelImportResult, StudioProjectDocument } from '../../src/generated/studioContracts';
+import { loadedModelDocumentSchemaId, type StudioLoadedModelImportResult, type StudioProjectDocument } from '../../src/generated/studioContracts';
 import { runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const digest = (character: string) => character.repeat(64);
-const object = (sha256: string, size_bytes: number) => ({ object_id: `content-object://sha256/${sha256}`, sha256, size_bytes });
 
 // Catches a model file that does not fit refused with only its first problem, or away from the Model it was loaded
 // against; a model file that fits imported but not listed under its Model, or not shown once loaded; and a loaded
@@ -28,13 +27,10 @@ test('Load reports every problem of a model file at the Model picker, and shows 
     }
     const name = url.searchParams.get('name')!;
     const created = await request.post(`${projectPath}/files`, { data: { revision: url.searchParams.get('revision'), file: {
-      kind: 'document', id: name, document: { schema: 'feedbax.spec.loaded_model', label: 'Reach baseline', payload: {
-        schema_version: 'feedbax.spec.loaded_model.v1', model: { document: url.searchParams.get('model') },
-        source: {
-          kind: 'imported', model: object(digest('a'), 1200),
-          weights: { tree_id: `content-tree://sha256/${digest('b')}`, descriptor: object(digest('b'), 800) },
-          encoding: { descriptor_sha256: digest('c') },
-        },
+      kind: 'document', id: name, document: { schema: loadedModelDocumentSchemaId, label: 'Reach baseline', payload: {
+        model: { document: url.searchParams.get('model') },
+        model_revision: { sha256: digest('a'), size_bytes: 1200 }, weights: { sha256: digest('b'), size_bytes: 800 },
+        encoding_sha256: digest('c'),
       } },
     } } });
     expect(created.status(), await created.text()).toBe(201);
