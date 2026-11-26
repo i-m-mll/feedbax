@@ -151,7 +151,7 @@ class RolloutParameters(RolloutSettings):
 
 
 def rollout_objective_sha256(objective: ObjectiveDocument) -> str:
-    return sha256_bytes(canonical_json_v2_bytes(objective.model_dump(mode="json")))
+    return sha256_bytes(canonical_json_v2_bytes(objective.for_execution().model_dump(mode="json")))
 
 
 class ResolvedRolloutMember(StrictModel):
@@ -187,7 +187,7 @@ def rollout_semantics(
     from feedbax.contracts.task_document import TaskDocument
 
     if isinstance(task_source, TaskDocument):
-        task_source = task_source.without_markers()
+        task_source = task_source.for_execution()
     model = sha256_bytes(canonical_json_v2_bytes({
         "graph": graph.model_dump(mode="json"),
         "key_schedule": schedule.model_dump(mode="json"),
