@@ -190,10 +190,10 @@ def _objective_readers(objective: ObjectiveDocument | None, signals: ModelSignal
 
 def evaluate_projection(folders, project_id, body, bundle):
     from feedbax.web.services.evaluate_sources import read_evaluate_model
-    from feedbax.web.services.trial_authoring import _pairing
+    from feedbax.web.services.trial_authoring import _pairing, read_trial_view_plan
 
     key = RunKey(body.run.variant, body.run.step, body.run.row)
-    plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+    plan = read_trial_view_plan(folders, project_id, body.revision, key).plan
     reading = read_evaluate_model(
         folders, project_id, EvaluateModelRequest(
             revision=body.revision, run=body.run, scope=body.evaluate_scope or StepRuns(kind="step"),

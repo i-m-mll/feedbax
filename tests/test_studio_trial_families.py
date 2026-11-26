@@ -113,7 +113,16 @@ def test_set_entry_family_variable_edits_the_authored_value(tmp_path, placement)
             "run": {"variant": "default", "step": "train", "row": "default" if placement == "trial" else "pulse=pulse-1"}}
     with TestClient(app) as client:
         view = _post(client, body)
-        owned = next(variable for variable in view["variables"] if variable.get("set_entry", {}).get("entry") == "pulse")
+        if placement == "trial":
+            owned = next(variable for variable in view["variables"] if variable.get("set_entry", {}).get("entry") == "pulse")
+            assert owned["set_entry"]["axis"] == view["set_fields"][0]["axis"]
+        else:
+            owned = next(variable for variable in view["variables"] if variable["id"] == "amount")
+            assert owned["set_entry"]["entry"] == "pulse"
+            assert view["set_fields"] == []
+        assert owned["name"] == "Amount"
+        assert owned["set_entry"]["label"] == "Pulse {k}"
+        assert owned["set_entry"]["member_count"] == 2
         path = f"/task/variables/{owned['id']}/value"
         field = _field(view, path)
         assert field["text"] == "1 + k"
@@ -320,7 +329,7 @@ def test_task_view_fields_track_authored_set_entries(tmp_path):
     raw["steps"]["train"]["set_fields"] = {"pulse": {"axis": {"set": "bank"}, "sampling": {"kind": "listed"}}}
     app = create_app(projects_dir=tmp_path)
     folders = app.state.project_folders
-    field_counts = []
+    replies = []
     with TestClient(app) as client:
         for count in (2, 12, 24):
             entry["over"] = {"k": f"0..{count - 1}"}
@@ -343,6 +352,8 @@ def test_task_view_fields_track_authored_set_entries(tmp_path):
             assert {path.split("/")[3] for path in paths if path.startswith("/task/variables/")} == variables
             assert {path.split("/")[3] for path in paths if path.startswith("/task/signals/")} == task["signals"].keys()
             assert _field(view, f"/task/variables/{representative['id']}/value")["text"] == "1 + k"
-            field_counts.append(len(paths))
+            replies.append((len(response.content), len(paths)))
 
-    assert len(set(field_counts)) == 1, field_counts
+    assert len({count for _, count in replies}) == 1, replies
+    lengths = [size for size, _ in replies]
+    assert max(lengths) - min(lengths) <= 64, replies
