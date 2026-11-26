@@ -11,7 +11,7 @@ from feedbax.contracts.figure_document import ContinuousPalette, OrdinalPalette,
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.operation import DatasetPort, OperationDefinition
 from feedbax.contracts.project import DocumentEdit, Pointer, Sha256
-from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.stored_members import StoredMemberKey
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 
@@ -69,8 +69,9 @@ class StudioAnalyzeRequest(StrictModel):
     chosen_steps: list[ProjectName] = Field(default_factory=list)
 
 
-class StudioFigureSpanValues(StrictModel):
-    fill_alpha: float
+class StudioFigureLayerValues(StrictModel):
+    name: NonemptyText
+    fill_alpha: float | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioFigureColorScaleValues(StrictModel):
@@ -79,7 +80,7 @@ class StudioFigureColorScaleValues(StrictModel):
 
 
 class StudioAnalyzeFigureValues(StrictModel):
-    layers: dict[StoredMemberKey, StudioFigureSpanValues]
+    layers: dict[StoredMemberKey, StudioFigureLayerValues]
     color_scales: dict[Name, StudioFigureColorScaleValues]
 
 
@@ -100,7 +101,7 @@ class StudioAnalyzeAuthoring(StrictModel):
     """Display names for the dataset field IDs offered in ``variables``."""
     figure: StoredFigureDocument
     figure_values: dict[ProjectName, StudioAnalyzeFigureValues]
-    """Effective span styles and color scales of the Analysis document's inline views."""
+    """Layer names, span styles, and color scales of the Analysis document's inline views."""
     created_layer: StoredMemberKey | None = Field(default=None, exclude_if=lambda key: key is None)
     changed: list[Pointer] = Field(default_factory=list)
     """The pointers at which the document's composed content differs from its base's."""
