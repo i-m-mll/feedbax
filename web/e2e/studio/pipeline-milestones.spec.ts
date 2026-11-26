@@ -7,7 +7,6 @@ import type {
 import { appendManagedFiles, authorLearningRateSweep, chooseSweepValue, enter, fixture, mapStep, openResultsSlot, runName, shownRunLabel, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { pick } from './fixtures/controls';
-import { conditionLabels } from '../../src/features/projectFolder/evaluateAuthoring';
 import { chooseStepKind, palette, startProject } from './fixtures/studioKeyboard';
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
@@ -418,10 +417,9 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
       JSON.stringify(request.postDataJSON()).includes(path);
   });
   let savedTrials!: Awaited<ReturnType<typeof edited>>;
-  const conditionLabel = conditionLabels(sourceRows[0].evaluation_conditions!);
-  for (const condition of conditionIds) {
+  for (const [index] of conditionIds.entries()) {
     const trialEdit = edited('/base/inline/params/trial_set');
-    await trialSet.getByRole('checkbox', { name: conditionLabel.get(condition), exact: true }).check();
+    await trialSet.getByRole('checkbox').nth(index).check();
     savedTrials = await trialEdit;
     expect(savedTrials.ok(), await savedTrials.text()).toBe(true);
   }

@@ -1,3 +1,4 @@
+import { holdsMissing, Shown, type ShownText } from '@/components/ui/ShownText';
 import { useId, useRef, type ReactNode } from 'react';
 import { useDraft } from '@/hooks/useDraft';
 import { studioAccessibleName, studioName, studioReason } from '@/components/activity/studioVocabulary';
@@ -21,7 +22,7 @@ import type { ShownDocuments } from './memberLabels';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import '@/components/values/valueField.css';
 
-type Choice = { id: string; label: string };
+type Choice = { id: string; label: ShownText };
 
 /** The inspector fields of a step an edit can be refused on: its input, a selection's Checkpoint or Runs by index, and Trials. */
 export type StepField = 'input' | 'checkpoint' | `subset.${number}` | 'trials' | 'method';
@@ -134,7 +135,8 @@ function Checkboxes({ options, selected, disabled, onToggle }: {
   onToggle(id: string, checked: boolean): void;
 }) {
   return <ScrollFade className="grid max-h-40">
-    {options.map(({ id, label }) => <Checkbox key={id} label={label} checked={selected.includes(id)} disabled={disabled}
+    {options.map(({ id, label }) => <Checkbox key={id} label={<Shown text={label} />} checked={selected.includes(id)} disabled={disabled}
+      aria-invalid={holdsMissing(label) || undefined}
       onCheckedChange={(checked) => onToggle(id, checked)} />)}
   </ScrollFade>;
 }
@@ -147,8 +149,10 @@ function toggle(ids: readonly string[], id: string, checked: boolean) {
  * Which trials the Evaluate runs: every condition, chosen conditions, or a number sampled from the task. A choice
  * saves once it names some trials. A saved sample's number is `count`, the step's own field, which takes a sweep.
  */
-export function TrialsEditor({ initial, domain, disabled, refusal, count: savedCount, onSave }: {
+export function TrialsEditor({ initial, domain, variables, disabled, refusal, count: savedCount, onSave }: {
   initial: TrialSet; domain: TrialDomain; disabled: boolean; refusal?: string; count?: ReactNode; onSave(rule: TrialSet): void;
+  /** The Task variables that name the domain's conditions. */
+  variables: readonly { readonly id: string; readonly name: string }[];
 }) {
   const [rule, setRule] = useDraft(initial);
   const count = useId();
@@ -185,7 +189,7 @@ export function TrialsEditor({ initial, domain, disabled, refusal, count: savedC
         }} />
     </>}>
     {rule.kind === 'conditions' && domain.kind === 'fixed' && <fieldset disabled={disabled}>
-      <Checkboxes options={[...conditionLabels(domain.conditions)].map(([id, label]) => ({ id, label }))} selected={rule.ids} disabled={disabled}
+      <Checkboxes options={[...conditionLabels(domain.conditions, variables)].map(([id, label]) => ({ id, label }))} selected={rule.ids} disabled={disabled}
         onToggle={(id, checked) => commit({ kind: 'conditions', ids: toggle(rule.ids, id, checked) })} />
     </fieldset>}
     {sampling && (initial.kind === 'sample' && savedCount || <FieldRow label={studioName('count')} htmlFor={count}>

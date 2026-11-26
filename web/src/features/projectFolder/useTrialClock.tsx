@@ -163,7 +163,7 @@ export function useTrialClock({
   shelfView, elements, playhead,
 }: TrialClockInputs) {
   const clock = windowState.clock ?? defaultTrialClock;
-  const recorded = recordedTrials(evaluation);
+  const recorded = recordedTrials(evaluation, view?.variables);
   const period = view?.period_seconds;
   const task = view && taskDocumentOf(view);
   const offer: TrialOffer = {

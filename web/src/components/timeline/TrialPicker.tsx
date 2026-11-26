@@ -20,7 +20,7 @@ export interface TrialPickerProps {
   readonly clock: TrialClock;
   readonly shown: TrialPick;
   /** A recorded trial's condition, by its index, drawn after its entry. */
-  readonly recordedLabels?: readonly string[];
+  readonly recordedLabels?: readonly ShownText[];
   /** Whether the recorded trials are a result an edit put out of date, which their entries and the shown text mark. */
   readonly recordedOutOfDate?: boolean;
   /** Mean's By options, once the Service has answered a Mean. */
@@ -105,7 +105,7 @@ export function TrialPicker({ offer, clock, shown, recordedLabels, recordedOutOf
       return <Entry key={text(one)} role="radio" checked={samePick(one, shown)} onClick={() => { pick(one); setOpen(false); }}>
         <span className={clsx(primaryText, 'flex-none')}>{text(one)}</span>
         {recordedOutOfDate && one.trials === 'recorded' && <StatusMark status="stale" label={studioRunStatus('stale')} />}
-        {one.trials === 'recorded' && recordedLabels?.[at] && <span className={secondaryText}>{recordedLabels[at]}</span>}
+        {one.trials === 'recorded' && recordedLabels?.[at] && <span className={secondaryText}><Shown text={recordedLabels[at]} /></span>}
       </Entry>;
     })}
   </div>))

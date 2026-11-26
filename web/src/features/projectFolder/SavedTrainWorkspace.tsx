@@ -2223,8 +2223,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                     {inputEditor}
                     {subjectDocuments && <SubjectDocuments subject={subjectDocuments} project={saved.project} documents={namedDocuments}
                       onChoose={applies && wholeStep ? onCurrentPlan('chooseSubjectDocument') : undefined} />}
-                    {evaluationEditor && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
-                      domain={evaluationEditor.domain} disabled={!applies} refusal={refusedAt('trials')}
+                    {evaluationEditor && trial.view && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
+                      domain={evaluationEditor.domain} variables={trial.view.variables} disabled={!applies} refusal={refusedAt('trials')}
                       count={ownFieldProps && <StudioStepField {...ownFieldProps} anchor={trialCount} label={studioName('count')} />}
                       onSave={(rule) => onCurrentPlan('editEvaluation')('trials', studioName('trials'),
                         { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
