@@ -38,7 +38,9 @@ from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import (
+    STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, authored_model_payload,
+)
 from feedbax.contracts.project import (
     BasedDocument, Document, LoadedModelDocument, OrderProjectValue, Project, RootDocument, Sha256,
     apply_document_edit, diff, json_pointer_parts, member_name,
@@ -145,7 +147,8 @@ _MODEL_LAYOUT_FIELDS = ("positions", "flipped", "collapsed", "waypoints")
 
 
 def _model_sweep_changes(
-    project: Project, document: str, before, after, moves: dict[str, ModelAddress], *, functions, read_plan,
+    project: Project, document: str, before, after, moves: dict[str, ModelAddress],
+    *, before_payload: dict[str, JsonValue], after_payload: dict[str, JsonValue], functions, read_plan,
 ) -> tuple[list[StudioProjectFilePatch], list[StudioProjectWindowMapProblem]]:
     """Track moved fields and report removed targets on their authored sweep patches."""
     from feedbax.contracts.project import base_chain
@@ -191,7 +194,7 @@ def _model_sweep_changes(
             return path
         old = ModelAddress.at_stored_path(parts[3:])
         new = old.relocated(moves)
-        if _model_path_present(before.document, parts[3:]) and not _model_path_present(after.document, new.stored_path()):
+        if _model_path_present(before_payload, parts[3:]) and not _model_path_present(after_payload, new.stored_path()):
             mark_missing(old, at, step)
             return path
         return ".".join((*parts[:3], *new.stored_path())) if new != old else path
@@ -273,7 +276,7 @@ def model_edit_source(
         raise ProjectFolderNotFound(document)
     if isinstance(source, ProjectDiagnostic):
         raise ProjectFolderInvalid(source.detail)
-    if source.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+    if source.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
         raise ProjectFolderNotFound(document)
     if snapshot.presentation is None:
         raise ProjectFolderInvalid("The project presentation document is unreadable")
@@ -311,7 +314,7 @@ def _apply_file_edits(entry: dict, file: StudioProjectFilePatch, *, model_operat
     order_only = all(isinstance(patch, OrderProjectValue) for patch in file.patches)
 
     def check_model() -> None:
-        if file.address.kind == "document" and not model_operation and entry.get("schema") == MODEL_DOCUMENT_SCHEMA_ID:
+        if file.address.kind == "document" and not model_operation and entry.get("schema") == STORED_MODEL_DOCUMENT_SCHEMA_ID:
             raise ProjectFolderInvalid("Model documents are edited through addressed operations")
 
     if not order_only:
@@ -360,13 +363,13 @@ def document_file(
 ) -> StudioProjectFilePatch | None:
     """The document's file holding ``content``: its payload, or its differences from ``base``; none when unchanged."""
     address = AuthoredFileAddress(kind="document", id=name)
-    keyed_collection = partial(stored_keyed_collection, document.schema_id)
+    keyed = partial(stored_keyed_collection, document.schema_id)
     if isinstance(document, RootDocument):
-        if isinstance(document.payload, dict) and not diff(document.payload, content, keyed_collection=keyed_collection):
+        if isinstance(document.payload, dict) and not diff(document.payload, content, keyed_collection=keyed):
             return None
         return StudioProjectFilePatch(address=address, patches=[SetProjectValue(op="replace", path="/payload", value=content)])
     assert base is not None
-    differences = diff(base, content, keyed_collection=keyed_collection)
+    differences = diff(base, content, keyed_collection=keyed)
     if differences == document.differences and tuple(differences) == tuple(document.differences):
         return None
     return StudioProjectFilePatch(address=address, patches=[SetProjectValue(
@@ -1680,7 +1683,7 @@ class ProjectFolder:
         if source is not None:
             payload = source
         state = ModelEditState.model_validate({
-            "document": payload, **layout,
+            "document": StoredModelDocument.model_validate(payload).lower(), **layout,
         })
         authority = ModelRegistryPorts(components)
 
@@ -1691,7 +1694,9 @@ class ProjectFolder:
                 restored = model_edit_source(snapshot, entry.base.document)
             else:
                 return None
-            return ModelEditState.model_validate({"document": restored[0], **restored[1]})
+            return ModelEditState.model_validate({
+                "document": StoredModelDocument.model_validate(restored[0]).lower(), **restored[1],
+            })
 
         result = apply_model_edit(
             state, body.command, ports=authority.port, component_problem=authority.placement_problem,
@@ -1715,7 +1720,7 @@ class ProjectFolder:
         sweep_problems = []
         created: tuple[str, ...] = ()
         if result.state != state or body.files:
-            next_payload = result.state.document.model_dump(mode="json") if result.state.document != state.document else payload
+            next_payload = authored_model_payload(result.state.document) if result.state.document != state.document else payload
             next_layout = layout.copy()
             updated_layout = result.state.model_dump(mode="json", include=set(_MODEL_LAYOUT_FIELDS))
             for key in _MODEL_LAYOUT_FIELDS:
@@ -1751,7 +1756,8 @@ class ProjectFolder:
                 before_draft = ModelEditDraft(state, authority.port)
                 after_draft = ModelEditDraft(result.state, authority.port)
                 moved, sweep_problems = _model_sweep_changes(
-                    candidate, body.document, before_draft, after_draft, result.relocations, functions=self.functions,
+                    candidate, body.document, before_draft, after_draft, result.relocations,
+                    before_payload=payload, after_payload=next_payload, functions=self.functions,
                     read_plan=lambda: self.read_plan(project_id, revision=body.revision).plan,
                 )
                 files = merged_files([*files, *moved])

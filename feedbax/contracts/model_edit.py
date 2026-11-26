@@ -11,12 +11,14 @@ from feedbax.contracts.model_address import ModelAddress, ModelElementId, Signal
 from feedbax.contracts.model_attachment import ModelAttachmentDifference, SetField as SetField
 from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
-    ModelDocument, ModelWire, PhysicalPort, PhysicalPortType, SignalInput, SignalOutput, SignalType, WireAttachment,
+    ModelDocument, ModelWire, PhysicalPort, PhysicalPortType, SignalInput, SignalOutput, SignalType,
 )
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
-from feedbax.contracts.stored_model import StoredModelDocument
+from feedbax.contracts.stored_model import (
+    StoredModelComponent, StoredModelDocument, StoredModelWire, StoredWireAttachment,
+)
 from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
@@ -33,7 +35,7 @@ class RegisteredComponent(StrictModel):
     definition: Name
 
 
-type ComponentToPlace = LeafComponent | CompositeComponent | RegisteredComponent
+type ComponentToPlace = StoredModelComponent | RegisteredComponent
 
 
 class AddComponent(StrictModel):
@@ -155,7 +157,7 @@ class InsertComponentOnWire(StrictModel):
 class InsertComponentOnPhysicalConnection(StrictModel):
     op: Literal["insert_physical_component"]
     address: ModelAddress
-    component: LeafComponent | CompositeComponent
+    component: StoredModelComponent
     a_port: ModelElementId
     b_port: ModelElementId
     position: ModelPosition
@@ -333,9 +335,9 @@ class ModelRemovedElement(StrictModel):
 
     change: Literal["removed"]
     address: ModelAddress
-    definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | WireAttachment
+    definition: StoredModelComponent | StoredModelWire | ModelPhysicalConnection | StoredWireAttachment
     position: ModelPosition | None = None
-    wires: dict[ModelElementId, ModelWire] = Field(default_factory=dict)
+    wires: dict[ModelElementId, StoredModelWire] = Field(default_factory=dict)
     connections: dict[ModelElementId, ModelPhysicalConnection] = Field(default_factory=dict)
 
 
@@ -344,7 +346,7 @@ class ModelRewiredElement(StrictModel):
 
     change: Literal["rewired"]
     address: ModelAddress
-    previous: ModelWire | ModelPhysicalConnection
+    previous: StoredModelWire | ModelPhysicalConnection
 
 
 ModelStructuralDifference = Annotated[

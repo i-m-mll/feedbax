@@ -10,7 +10,8 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from feedbax.application.task_signals import model_task_signals
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import ScopedValue
-from feedbax.contracts.model_document import ModelDocument, SignalType
+from feedbax.contracts.model_document import SignalType
+from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.model_edit import ModelProjectionRequest, ModelTaskSignal
 from feedbax.contracts.objective_document import StoredObjectiveDocument
 from feedbax.planner.project_plan import RunKey, SelectedRunDefinition
@@ -90,7 +91,7 @@ def selected_model_and_task(
         source = None
     objective = managed.get("objective")
     return (
-        _trial_document(f"{prefix}model", model, ModelDocument), model_task_signals(source, folders.python_tasks),
+        _trial_document(f"{prefix}model", model, StoredModelDocument).lower(), model_task_signals(source, folders.python_tasks),
         _trial_document(f"{prefix}objective", objective, StoredObjectiveDocument).lower() if objective is not None else None,
         managed.get("input_bindings", {}), source,
     )
