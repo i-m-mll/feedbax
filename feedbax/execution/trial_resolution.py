@@ -126,10 +126,15 @@ def pair_trial_source(
     task_sites: dict[tuple[str | int, ...], Site] | None = None,
     reset_fields: list[ModelResetField] | None = None,
     nominal: bool = False,
+    keyed_root_ports: bool = False,
 ) -> TrialPair | tuple[Problem, ...]:
     """The Model and Task paired for execution, or the Problems that refuse them. ``task_sites`` receives the Task's
     field sites, and ``reset_fields`` the Model fields a trial starts from, once the Model resolves."""
     authored = input_bindings or {}
+    input_labels = None
+    if keyed_root_ports:
+        input_labels = {port.id: port.name for port in model.ports.inputs}
+        model = model.with_keyed_root_ports()
     if isinstance(task, PythonTaskSelection):
         resolved = resolve_python_task_instance(task, python_tasks)
         if isinstance(resolved, tuple):
@@ -221,7 +226,7 @@ def pair_trial_source(
             code=ProblemCode.STRUCTURE, path=("python_task", "type"),
             reason="The prepared Task's conditions differ from its registry declaration.",
         ),)
-    bindings, problems = bind_task_inputs(interface, compiled.interface.signals, authored)
+    bindings, problems = bind_task_inputs(interface, compiled.interface.signals, authored, input_labels=input_labels)
     graph_problems = tuple(Problem(
         code=ProblemCode.TYPE_MISMATCH,
         reason=issue.reason,
@@ -416,17 +421,21 @@ def resolve_trial_execution(
     input_bindings: Mapping[str, str | None] | None = None,
     graph_override: GraphSpec | None = None,
     nominal: bool = False,
+    keyed_root_ports: bool = False,
 ) -> ResolvedTrialExecution | tuple[Problem, ...]:
     """Validate the paired Model, Task and Objective before runtime construction."""
     try:
         pairing = pair_trial_source(
             model, task, components, functions, python_tasks=python_tasks,
             input_bindings=input_bindings, graph_override=graph_override, nominal=nominal,
+            keyed_root_ports=keyed_root_ports,
         )
         if isinstance(pairing, tuple):
             return pairing
         if pairing.problems:
             return pairing.problems
+        if keyed_root_ports:
+            model = model.with_keyed_root_ports()
         if problems := _missing_required_inputs(
             pairing.lowered.graph, model, components, frozenset(port for port, _ in pairing.input_bindings),
         ):

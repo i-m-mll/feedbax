@@ -3032,6 +3032,7 @@ class _Compiler:
             authored.model, authored.task_source,
             components, self.functions or _builtin_expression_registry(),
             python_tasks=self.python_tasks, objective=authored.objective, input_bindings=authored.input_bindings,
+            keyed_root_ports=True,
         )
         result: _TrainPreparation | tuple[Problem, ...]
         if isinstance(paired, tuple):
@@ -3364,7 +3365,7 @@ class _Compiler:
             settings = authored_rollout_settings(raw)
             paired = pair_trial_source(
                 model, task, components, functions,
-                python_tasks=tasks, input_bindings=settings.input_bindings,
+                python_tasks=tasks, input_bindings=settings.input_bindings, keyed_root_ports=True,
             )
             unpaired = paired if isinstance(paired, tuple) else paired.problems
             refusals = _trial_problems(unpaired, model, initial=True)
@@ -3380,6 +3381,7 @@ class _Compiler:
                     paired = pair_trial_source(
                         model, variant.task, components, functions,
                         python_tasks=tasks, input_bindings=settings.input_bindings, graph_override=variant.graph,
+                        keyed_root_ports=True,
                     )
                     conditions = evaluation_conditions(variant.task, tasks)
                     if isinstance(paired, tuple) or paired.problems:
@@ -3668,7 +3670,8 @@ class _Compiler:
             axis, field = next(iter(fields.items()))
             raise SetFieldProblem(axis, field.axis.set, None, "A Set field needs a Task document.")
         attached = lower_evaluate_attachments(
-            source, evaluated, None, self.components or _builtin_model_registry(), differences,
+            source.with_keyed_root_ports(), evaluated.with_keyed_root_ports(), None,
+            self.components or _builtin_model_registry(), differences,
             functions=self.functions or _builtin_expression_registry(),
             trained_task=task if isinstance(task, TaskDocument) else None,
             evaluated_task=chosen_task if isinstance(chosen_task, TaskDocument) else None,

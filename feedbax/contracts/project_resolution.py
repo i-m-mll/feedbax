@@ -506,7 +506,9 @@ def composed_loaded_model_projection(
     if isinstance(document, ProjectDiagnostic) or document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
         return None
     try:
-        return encode_imported_model_document(StoredModelDocument.model_validate(document.payload).lower())
+        return encode_imported_model_document(
+            StoredModelDocument.model_validate(document.payload).lower().with_keyed_root_ports(),
+        )
     except ValueError:
         return None  # The pin may still be readable from the Store or its projection file.
 
