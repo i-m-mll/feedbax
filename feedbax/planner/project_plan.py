@@ -869,13 +869,15 @@ def _identified(
 def _member_label(binding: PlannedInput, group: Mapping[str, SweepCoordinate]) -> str:
     """What a member no row produces reads as.
 
-    A grouped rank, or a rank of a list item, reads as its step, its group's values and its rank
-    (``train, lr=0.1, rank 1``); any other member as its key.
+    Ranks are distinguished by rank before a producer is chosen. Grouped and listed ranks also name their source.
     """
     rank = binding.member.reference
-    if isinstance(rank, BestRank) and (rank.group or binding.member.key != rank.key) and "source" in binding.named:
-        values = (sweep_value_name(group[axis]) for axis in sorted(rank.group))
-        return " · ".join((binding.named["source"].printed, *values, f"Rank {rank.rank}"))
+    if isinstance(rank, BestRank):
+        label = f"Rank {rank.rank}"
+        if (rank.group or binding.member.key != rank.key) and "source" in binding.named:
+            values = (sweep_value_name(group[axis]) for axis in sorted(rank.group))
+            return " · ".join((binding.named["source"].printed, *values, label))
+        return label
     return next((name.printed for name in binding.named.values()), "Input")
 
 

@@ -297,6 +297,8 @@ def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selec
     only = next(row for row in before["window_map"]["rows"] if row["key"]["step"] == "train")
     assert only["label"] is None and only["name"] == "Train"
     assert _duplicate(folders, client, "train") == {"axis": "run", "value": "run-2"}
+    axis = folders.read(PROJECT).project.steps["train"].sweep.axes["run"]
+    assert axis.label is None
     plan, result = read()
     train = next(step for step in result["window_map"]["steps"] if step["step_id"] == "train")
     assert train["label"] == "Train"

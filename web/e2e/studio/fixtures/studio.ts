@@ -314,6 +314,8 @@ async function checkMemberLabels({ context, studio }: { context: BrowserContext;
           const value = node.textContent?.trim();
           const parent = node.parentElement;
           if (!value || !members.has(value) || !parent || parent.closest('[data-member-key], input, textarea, .sr-only')) continue;
+          // The title names the project itself, which can share a name with one of its members.
+          if (parent.closest('.studio-window-bar__project h1')) continue;
           // A figure layer can have the same authored name as a different member's key.
           if (layers.has(value) && parent.closest('[data-node]')?.getAttribute('data-node') === JSON.stringify(['layer', value])) continue;
           if (getComputedStyle(parent).visibility !== 'visible') continue;

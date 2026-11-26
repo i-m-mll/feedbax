@@ -779,18 +779,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
     trialEditable, trialChangeScope, runRemoval.confirm, askStore);
-  const clockView = clockSubject ? clockSubject.trial : trial.view;
-  const clockStep = clockSubject ? clockSubject.step : step;
   /** The runs the shown figure declares its data was read from, whose recorded trials the clock offers for an Analyze. */
   const [figureRuns, declareFigureRuns] = useState<FigureLayoutMeta['runs']>();
   const figureEvaluation = step?.kind === 'analyze' ? declaredEvaluation(shown, figureRuns) : undefined;
+  const figureRun = clockSubject ? undefined : figureEvaluation?.key;
+  const figureTrial = useTrialAuthoring(editor, saved.project_id, saved.revision, figureRun, !!figureRun,
+    false, trialChangeScope, runRemoval.confirm, askStore);
+  const clockView = clockSubject ? clockSubject.trial : trial.view ?? figureTrial.view;
+  const clockStep = clockSubject ? clockSubject.step : step;
   /** With no one run focused, an Evaluate's clock shows the first selected run that recorded trials. */
   const firstEvaluation = step?.kind === 'evaluate' ? sceneRows.find((row) => row.result ?? row.previous) : undefined;
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: clockView,
-    taskDocument: clockView && (clockView.task_document ?? clockStep?.id),
-    objectiveDocument: clockView && (clockView.objective_document ?? clockStep?.id),
-    run: clockSubject ? clockSubject.namedRun : namedRun,
+    taskDocument: clockView && (clockView.task_document ?? figureRun?.step ?? clockStep?.id),
+    objectiveDocument: clockView && (clockView.objective_document ?? figureRun?.step ?? clockStep?.id),
+    run: clockSubject ? clockSubject.namedRun : figureRun ?? namedRun,
     stored: clockSubject ? clockSubject.stored : stored, evaluation: clockSubject ? clockSubject.evaluation : selectedEvaluation ?? firstEvaluation ?? figureEvaluation,
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,

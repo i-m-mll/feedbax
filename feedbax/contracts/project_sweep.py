@@ -1134,6 +1134,8 @@ def authored_sweep_axis_name(axis: Axis, number: int) -> str:
             return "States"
         case InputAxis():
             return f"Input {number}"
+        case NamedAxis(optional=True):
+            return "Run"
         case _:
             return f"Sweep {number}"
 
