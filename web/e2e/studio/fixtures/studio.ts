@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { startFixtureRunner } from './python';
 import {
   analysisDocumentSchemaId, type AnalysisDocument, type StudioActivityJob, type StudioJobSnapshot, type StudioProjectSnapshot,
-  type StudioProjectWindowMap, type StudioSavedTrainRuns,
+  type ComponentListResponse, type StudioProjectWindowMap, type StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 
 export const repo = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -377,8 +377,24 @@ const pickers = (page: Page) => [
  */
 export type MemberLabels = (where?: string) => Promise<void>;
 
+/**
+ * The port names the component types declare, as the Service's component read gives them. A leaf's port is named by
+ * its type, not by a member key, so text that shows one is a name even where it equals some member's key.
+ */
+async function typePortNames(origin: string) {
+  const response = await fetch(`${origin}/api/components`);
+  if (!response.ok) throw new Error(`The component read failed: ${response.status} ${await response.text()}`);
+  const { data } = await response.json() as ComponentListResponse;
+  return new Set(data.components.flatMap(({ input_ports, output_ports, port_types, dynamic_port_policy }) => [
+    ...input_ports ?? [], ...output_ports ?? [],
+    ...Object.keys(port_types?.inputs ?? {}), ...Object.keys(port_types?.outputs ?? {}),
+    ...dynamic_port_policy?.fixed_input_ports ?? [], ...dynamic_port_policy?.fixed_output_ports ?? [],
+  ]));
+}
+
 /** Reads the snapshots and plans the browser already requested, then checks the visible text in each open Studio page. */
 async function checkMemberLabels({ context, studio }: { context: BrowserContext; studio: Studio }, use: (check: MemberLabels) => Promise<void>) {
+  let ports: Promise<Set<string>> | undefined;
   const reads: Promise<void>[] = [];
   const latest = new Map<string, { order: number; members: ReturnType<typeof memberNames> }>();
   const generated = new Map<string, Set<string>>();
@@ -416,11 +432,13 @@ async function checkMemberLabels({ context, studio }: { context: BrowserContext;
       const shown = url.searchParams.get('project');
       const members = url.origin === studio.origin && shown ? latest.get(shown)?.members : undefined;
       if (!members) continue;
-      const keys = new Set(members.keys);
+      ports ??= typePortNames(studio.origin);
+      const declared = await ports;
+      const keys = new Set(members.keys.filter((key) => !declared.has(key)));
       // A generated id that is also an authored key, such as a plain trial's, is held to the key's rule.
       const ids = [...generated.get(shown!) ?? []].filter((id) => !keys.has(id) && !members.labels.has(id));
       if (!keys.size && !ids.length) continue;
-      const names = { keys: members.keys, layerNames: members.layerNames, generated: ids };
+      const names = { keys: [...keys], layerNames: members.layerNames, generated: ids };
       const leaked = new Set(await leakedNames(page, names));
       for (const picker of open ? pickers(page) : []) {
         if (!await picker.isVisible() || !await picker.isEnabled()) continue;

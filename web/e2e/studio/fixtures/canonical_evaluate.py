@@ -346,9 +346,10 @@ def observe(home: str, project: str, revision: str, trial_index: str):
             assert descriptor.schema_id == RAW_STATES_SCHEMA
             assert descriptor.dimensions["state_time"] == 81
             assert descriptor.dimensions["checkpoint"] == len(coordinates)
-            assert dataset.data("trial").tolist() == row.trials
-            assert len(row.trials) == 28
-            label = row.trials[trial]
+            trials = [recorded.id for recorded in row.trials]
+            assert dataset.data("trial").tolist() == trials
+            assert len(trials) == 28
+            label = trials[trial]
             assert np.isfinite(dataset.data("objective/total")).all()
             assert np.all(dataset.data("objective/coverage/effort") == 28)
             reads.clear()

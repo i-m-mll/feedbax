@@ -42,7 +42,7 @@ async function holdCampaign(request: APIRequestContext) {
   const { snapshot: seeded, projectPath } = await seedManagedProject(request, await fixture('hold-campaign-files'));
   const archive = Buffer.from(JSON.parse(await runProjectFixture(module, 'hold-campaign-archive')), 'base64');
   const loaded = await request.post(`${projectPath}/loaded-models/import`, {
-    params: { revision: seeded.revision, name: 'loaded-controllers', model: 'point-mass', label: 'Loaded controllers' },
+    params: { revision: seeded.revision, name: 'loaded-controllers', model: 'campaign-point-mass', label: 'Loaded controllers' },
     headers: { 'content-type': 'application/octet-stream' }, data: archive,
   });
   expect(loaded.status(), await loaded.text()).toBe(201);
