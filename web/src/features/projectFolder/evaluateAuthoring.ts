@@ -186,6 +186,7 @@ export function exactCheckpoint(step: Step | undefined): number | undefined {
     ? checkpoint.at : undefined;
 }
 
+/** The trials every one of `members` offers, from the rows the Service plans for them; none while one is unresolved. */
 export function managedTrialDomain(projection: StudioSavedTrainRuns | undefined, members: readonly PlanRunView[]): TrialDomain | undefined {
   if (!members.length) return undefined;
   const domains = new Map(projection?.window_map?.rows

@@ -643,10 +643,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }) : undefined;
   const mapInputs = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step?.id && id === variant)?.inputs;
   const subject = mapInputs?.find(({ id }) => id === 'subject');
-  const subjectSubset = subject?.subset;
-  const rankGroups = bestRankGroups(subjectSubset);
-  const rankedSubjects = rankGroups.length ? authoredMap?.evaluations?.flatMap(({ key, bound_subject }) =>
-    key.variant === variant && key.step === step?.id && bound_subject ? [bound_subject] : []) ?? [] : [];
   const boundByRank = new Map(authoredMap?.evaluations?.flatMap(({ key, bound_subject }) =>
     key.variant === variant && key.step === step?.id && bound_subject ? [[bound_subject.key, bound_subject]] : []));
   /** The attempts To Rows freezes a measured selection to: one per rank, each group's from one selection. */
@@ -657,16 +653,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       return snapshots.every(Boolean) && new Set(snapshots).size === 1;
     }) ? groups.flatMap(({ ranks }) => ranks.map((key) => boundByRank.get(key)!.consumer_job_id)) : undefined;
   }
-  const subjectIds = subject && rankGroups.length
-    ? new Set(rankedSubjects.map((bound) => savedRunId({ ...bound, step: subject.source_step_id })))
-    : subjectSubset?.members && new Set(subjectSubset.members.map(savedRunId));
   const evaluationEditor = evaluationAuthoring && evaluationSources && evaluationSources.length === evaluationAuthoring.subjects.length
     ? {
       authored: evaluationAuthoring, subjects: evaluationSources,
-      domain: managedTrialDomain(shown, evaluationSources.length === 1
-        ? subjectIds ? evaluationSources[0].source.runs.filter(({ id }) => subjectIds.has(id))
-          : evaluationSources[0].reference.where == null ? evaluationSources[0].source.runs : []
-        : evaluationSources.flatMap(({ source }) => source.runs)) ?? authoredTrialDomain(evaluationAuthoring.trialSet),
+      domain: managedTrialDomain(shown, step?.runs ?? []) ?? authoredTrialDomain(evaluationAuthoring.trialSet),
     } : undefined;
   const checkpointVariant = variant && saved.project.sweep?.rows?.[variant] ? variant : undefined;
   const evaluated = authored?.kind === 'evaluate' && !authored.deltas?.length ? authored : undefined;
