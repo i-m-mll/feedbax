@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
-import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import type { BasedDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { applyTo } from './fixtures/controls';
 import { documentChoice } from './fixtures/members';
@@ -338,7 +338,7 @@ test('a based Training document marks the value it changes inside its field, and
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(batches).toHaveValue(base);
   await expect(batches).not.toHaveAccessibleDescription(/Changed/);
-  await expect.poll(async () => (await documents())['training-2']).toMatchObject({ differences: {} });
+  await expect.poll(async () => ((await documents())['training-2'] as BasedDocument).differences ?? {}).toEqual({});
   expect(await requests()).toEqual(initial);
 });
 
@@ -403,7 +403,7 @@ test('an Evaluate step\'s Task edit marks the value its document changes, and Re
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(target).toHaveValue(base);
   await expect(target).not.toHaveAccessibleDescription('Changed by Check');
-  await expect.poll(async () => (await documents())[created[0]]).toMatchObject({ differences: {} });
+  await expect.poll(async () => ((await documents())[created[0]] as BasedDocument).differences ?? {}).toEqual({});
 });
 
 test('a narrowed edit for two of three readers makes one document, and later edits of the base reach it by the document rule', { tag: '@slow' }, async ({ page, request }) => {

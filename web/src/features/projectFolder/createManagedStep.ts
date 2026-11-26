@@ -2,7 +2,7 @@ import type { PlanRunView, PlanStepView } from '@/features/pipeline/planView';
 import type {
   CreateNamedDocument, CreateNamedStep, ReportDocument, StepReference, StudioProjectWindowMapElement, StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
-import { containsCreatedFile, ProjectEditConflictError, type ProjectEditController } from './projectEditController';
+import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 
 import { blankDocuments, namedDocument, type UnnamedDocument } from './useProjectDocuments';
 import { planVariants, selectedRowTerms, stepSourceRows } from './projectWindowPlan';
@@ -24,8 +24,12 @@ async function createManagedStep(
   const documents = saved.project.documents ?? {};
   const read = (name: string) => Object.values(steps).some(({ base }) => 'document' in base && base.document === name);
   /** A document an earlier attempt created and no step reads, which this attempt takes instead of making another. */
-  const left = Object.keys(documents).find((name) => !read(name) && containsCreatedFile(saved.project,
-    { kind: 'document', id: name, document: { ...document, label: documents[name].label } as CreateNamedDocument['document'] }));
+  const same = (stored: object, intended: object) => {
+    const actual = new Map(Object.entries(stored));
+    const fields = Object.entries(intended);
+    return actual.size === fields.length && fields.every(([key, value]) => JSON.stringify(actual.get(key)) === JSON.stringify(value));
+  };
+  const left = Object.keys(documents).find((name) => !read(name) && same(documents[name], { ...document, label: documents[name].label }));
   const file: CreateNamedDocument = left === undefined
     ? { kind: 'document', ...await namedDocument(editor, document, revision) as Pick<CreateNamedDocument, 'id' | 'document'> }
     : { kind: 'document', id: left, document: documents[left] as CreateNamedDocument['document'] };
