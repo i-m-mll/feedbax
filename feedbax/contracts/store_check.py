@@ -1,6 +1,6 @@
 """Verification of immutable Store content and advice on authored project members."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field
 
@@ -24,6 +24,16 @@ class UnrolledFamilyAdvice(StrictModel):
     detail: str
 
 
+class RestatedDefaultAdvice(StrictModel):
+    code: Literal["restated_default"]
+    address: str
+    path: str
+    detail: str
+
+
+type CheckAdvice = Annotated[UnrolledFamilyAdvice | RestatedDefaultAdvice, Field(discriminator="code")]
+
+
 class StoreCheckResult(StrictModel):
     store: str
     attempt: str | None
@@ -31,4 +41,4 @@ class StoreCheckResult(StrictModel):
     verified_objects: int
     verified_bytes: int
     findings: tuple[StoreCheckFinding, ...]
-    advice: tuple[UnrolledFamilyAdvice, ...] = Field(default=(), exclude_if=lambda value: not value)
+    advice: tuple[CheckAdvice, ...] = Field(default=(), exclude_if=lambda value: not value)

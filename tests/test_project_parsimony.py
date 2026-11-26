@@ -1,6 +1,6 @@
 """A stored key must affect what the project reads, and each write must be stable."""
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from functools import partial, reduce
 import json
@@ -8,9 +8,10 @@ from operator import getitem
 from pathlib import Path
 from typing import get_args
 
-from pydantic import BaseModel, RootModel, ValidationError
+from pydantic import ValidationError
 import pytest
 
+from feedbax.application.project_parsimony import authored_key_paths, project_file_meaning, without_authored_key
 from feedbax.application.project_writer import dump_text_project, stored_defaults_manifest, write_project_file
 from feedbax.application.stored_regions import StoredRegionRegistries, compose_document
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
@@ -19,7 +20,7 @@ from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureDocument
 from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
-    BasedDocument, InlineBase, Project, RootDocument, Step, StepKind, apply_differences, diff, json_pointer_parts,
+    BasedDocument, Project, RootDocument, Step, StepKind, apply_differences, diff, json_pointer_parts,
 )
 from feedbax.contracts.project_io import (
     STUDIO_PRESENTATION_FILENAME,
@@ -31,10 +32,8 @@ from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCo
 from feedbax.contracts.project_storage import (
     stored_document_models, stored_keyed_collection, stored_project_value,
 )
-from feedbax.contracts.project_sweep import AxisValue, NamedAxis, Row, Sweep, SweepException
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.stored_regions import StoredRegion, step_inline_model, typed_region
 from feedbax.contracts.studio_project import PresentationDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
@@ -135,75 +134,8 @@ _PRESENTATION = {
     "visible_groups": ["trial"],
 }
 
-type _Path = tuple[str | int, ...]
 type _Observe = Callable[[Project], object]
-
-
-def _refinement_fields(value: object, path: _Path = ()) -> Iterator[tuple[_Path, tuple[str, ...]]]:
-    if isinstance(value, BaseModel):
-        if isinstance(value, (Sweep, NamedAxis, AxisValue, Row, SweepException)):
-            yield path, tuple(sorted(value.model_fields_set))
-        for field in type(value).model_fields:
-            yield from _refinement_fields(getattr(value, field), (*path, field))
-    elif isinstance(value, dict):
-        for key, child in value.items():
-            yield from _refinement_fields(child, (*path, key))
-    elif isinstance(value, (list, tuple)):
-        for index, child in enumerate(value):
-            yield from _refinement_fields(child, (*path, index))
-
-
-def _effective_payload(value, encoded, registries):
-    """Interpret stored values with registered types and defaults before comparing reads."""
-    if isinstance(value, RootModel):
-        return _effective_payload(value.root, encoded, registries)
-    if isinstance(value, RootDocument):
-        model = stored_document_models()[value.schema_id]
-        assert model is not None, f"{value.schema_id} has no stored payload model"
-        payload = model.model_validate(value.payload)
-        return encoded | {"payload": _effective_payload(payload, payload.model_dump(mode="json", by_alias=True), registries)}
-    if isinstance(value, BaseModel):
-        if not isinstance(encoded, dict):
-            # Stored expression and time aliases encode typed nodes as scalars or text.
-            return value.model_dump(mode="json", by_alias=True)
-
-        def read_field(name, field):
-            key = field.serialization_alias or field.alias or name
-            child = getattr(value, name)
-            if isinstance(value, Step) and isinstance(child, InlineBase):
-                region = StoredRegion(step_inline_model(value.kind, child.inline))
-                return {"inline": read_region(region, child.inline, inline=True)}
-            if isinstance(encoded[key], dict) and (region := registries.region(value, name)) is not None:
-                return read_region(region, encoded[key])
-            return _effective_payload(child, encoded[key], registries)
-
-        def read_region(region, raw, *, inline=False):
-            if region.model is None:
-                return raw
-            context = {
-                key: region.lowered_expressions.get(key, item)
-                for key, item in raw.items() if key in region.contextual
-            }
-            typed, values, _ = typed_region(region, {key: item for key, item in raw.items() if key not in context}, inline=inline)
-            return _effective_payload(typed, values, registries) | context
-
-        for name, field in type(value).model_fields.items():
-            key = field.serialization_alias or field.alias or name
-            if key in encoded:
-                encoded[key] = read_field(name, field)
-        return encoded
-    if isinstance(value, dict) and isinstance(encoded, dict):
-        return {key: _effective_payload(value.get(key), child, registries) for key, child in encoded.items()}
-    if isinstance(value, (tuple, list)) and isinstance(encoded, list):
-        return [_effective_payload(item, child, registries) for item, child in zip(value, encoded, strict=True)]
-    return encoded
-
-
-def _meaning(model: BaseModel) -> tuple[bytes, tuple]:
-    """Read values with defaults filled, retaining which refinement fields the author set."""
-    encoded = model.model_dump(mode="json", by_alias=True)
-    value = _effective_payload(model, encoded, StoredRegionRegistries())
-    return canonical_json_v2_bytes(value), tuple(_refinement_fields(model))
+_meaning = partial(project_file_meaning, registries=StoredRegionRegistries())
 
 
 def _read(files: Mapping[str, bytes], root: Path, observe: _Observe | None):
@@ -218,17 +150,6 @@ def _read(files: Mapping[str, bytes], root: Path, observe: _Observe | None):
         observe(project) if observe is not None else None,
     )
     return text, presentation, meaning
-
-
-def _positions_of_keys(value: object, prefix: _Path = ()) -> Iterator[_Path]:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            path = (*prefix, key)
-            yield path
-            yield from _positions_of_keys(child, path)
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            yield from _positions_of_keys(child, (*prefix, index))
 
 
 def _verify_parsimony(root: Path, project: Project, *, observe: _Observe | None = None) -> dict[str, bytes]:
@@ -254,9 +175,8 @@ def _verify_parsimony(root: Path, project: Project, *, observe: _Observe | None 
 def _verify_essential_keys(files, root, observe, expected):
     for relative, data in files.items():
         original = json.loads(data)
-        for path in _positions_of_keys(original):
-            edited = deepcopy(original)
-            del reduce(getitem, path[:-1], edited)[path[-1]]
+        for path in authored_key_paths(original):
+            edited = without_authored_key(original, path)
             candidate = files | {relative: json.dumps(edited).encode()}
             try:
                 _, _, changed = _read(candidate, root, observe)
@@ -467,6 +387,8 @@ def test_refinement_keeps_the_default_an_author_explicitly_set(tmp_path):
             "child": {"kind": "train", "label": "Child", "base": {"step": "base"}, "sweep": {
                 "axes": {"treatment": {"values": {"one": {"label": None}}, "optional": False}},
             }},
+            "grandchild": {"kind": "train", "label": "Grandchild", "base": {"step": "child"},
+                           "sweep": {"axes": {}}},
         },
         "sweep": {"rows": {"baseline": {"patches": {}}, "check": {"label": "Check"}}},
     })
@@ -474,6 +396,7 @@ def test_refinement_keeps_the_default_an_author_explicitly_set(tmp_path):
     treatment = json.loads(files["steps/child.json"])["sweep"]["axes"]["treatment"]
     assert treatment["optional"] is False
     assert treatment["values"]["one"]["label"] is None
+    assert "sweep" not in json.loads(files["steps/grandchild.json"])
 
 
 def test_a_default_retains_its_presence_when_other_files_observe_it(tmp_path):
