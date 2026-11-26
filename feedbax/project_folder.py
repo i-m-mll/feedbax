@@ -31,6 +31,7 @@ from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.synthesis.methods import SynthesisMethodRegistry
+from feedbax.contracts.authored_arrays import AuthoredArrayBudgetError, check_authored_array_budget
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
@@ -939,7 +940,7 @@ def _read_presentation(root: Path) -> tuple[bytes | None, str]:
 
 
 def _encode_presentation(presentation: PresentationDocument) -> bytes:
-    return write_project_file(presentation)
+    return write_project_file(presentation, source=STUDIO_PRESENTATION_FILENAME)
 
 
 def _decode_presentation(data: bytes | None) -> PresentationDocument:
@@ -1701,6 +1702,14 @@ class ProjectFolder:
 
         snapshot = self.read(project_id, revision=body.revision)
         check_revision("presentation", body.presentation_revision, snapshot.presentation_revision)
+        if isinstance(operation := body.command.operation, SetField):
+            try:
+                check_authored_array_budget(
+                    operation.value, path=("payload", *operation.address.stored_path()),
+                    source=f"documents/{body.document}.json",
+                )
+            except AuthoredArrayBudgetError as error:
+                return ModelEditProblem(address=operation.address, detail=str(error))
         shown = payload, layout = model_edit_source(snapshot, body.document)
         if source is not None:
             payload = source
@@ -1878,8 +1887,10 @@ class ProjectFolder:
                 changes = text_project_changes(text, project, registries=self._stored_regions, only=addresses)
                 if declaration_settings:
                     settings = ProjectConfiguration.model_validate(configuration).settings
-                    before = text_project_settings_edit(text.manifest, text.configuration.settings)
-                    after = text_project_settings_edit(text.manifest, settings)
+                    before = text_project_settings_edit(
+                        text.manifest, text.configuration.settings, declaration=text.declaration,
+                    )
+                    after = text_project_settings_edit(text.manifest, settings, declaration=text.declaration)
                     if before != after:
                         changes[text.declaration] = after
                 if presentation is not None:

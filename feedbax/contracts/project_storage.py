@@ -13,6 +13,7 @@ from pydantic import BaseModel, JsonValue, ValidationError
 from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 
+from feedbax.contracts.authored_arrays import check_authored_array_budget
 from feedbax.contracts.canonical_json import validate_canonical_json_v2
 from feedbax.contracts.expression_values import LiteralValue
 from feedbax.contracts.manifest import OverridePatch
@@ -426,9 +427,10 @@ class _Layout:
 
 def write_project_file(
     model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
-    registries: StoredRegionRegistries | None = None,
+    registries: StoredRegionRegistries | None = None, source: str | None = None,
 ) -> bytes:
     """Encode one typed authored file with canonical numbers and 100-column layout."""
     value, real_tokens = _projected_file(model, exclude, protected, registries=registries)
     validate_canonical_json_v2(value)
+    check_authored_array_budget(value, source=source)
     return ("\n".join(_Layout(real_tokens).lines(value, 0, "", "", ())) + "\n").encode("utf-8")
