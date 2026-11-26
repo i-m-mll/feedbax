@@ -3,32 +3,42 @@
 from io import BytesIO
 import json
 from shutil import rmtree
+from typing import Annotated
 from zipfile import ZipFile
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from pydantic import BaseModel
 
+from feedbax.analysis.operations import DatasetOutput, OperationDeclaration
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.effective_success import BoundMember
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.loaded_model import (
     ImportedModelSource, ModelFitReport, ModelSlotFitProblem, decode_imported_model_document,
 )
 from feedbax.contracts.model_checkpoint import ModelReplicaManifest
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.model_input import InitialModelSource
+from feedbax.contracts.model_input import InitialModelSource, document_input_object, encode_document_input
+from feedbax.contracts.operation import DatasetPort, JaxOperation, ModelPort
 from feedbax.contracts.task_document import TaskDocument
+from feedbax.dataset import Dataset, Variable
 from feedbax.examples import load_shipped_projects
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.host.model_archive import UnreadableModelArchive, export_model_archive, stage_model_archive
-from feedbax.host.model_checkpoint import SemanticModelSlot, SemanticModelWriter
+from feedbax.host.model_checkpoint import ModelCheckpointError, SemanticModelSlot, SemanticModelWriter
 from feedbax.host.model_input import ImportedModelWeights, ReconstructedModel, reconstruct_model
+from feedbax.host.operation_runtime import run_operation
 from feedbax.persistence.array_container import decode_array_container, encode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE
+from feedbax.plugins.declarations import DistributionSource
+from feedbax.runtime.graph import Graph
 
 
 @pytest.fixture(scope="module")
@@ -57,6 +67,121 @@ def _publish_archive(model, task, registry, transaction):
     assert isinstance(archive, bytes), archive
     rmtree(transaction)
     return template, other, archive, checkpoint
+
+
+def _delay_archive(root, *, x64):
+    project = load_shipped_projects()["point-mass-reaching"]
+    raw = project.documents["point-mass"].payload
+    raw["interior"]["wires"]["command"]["attachments"] = [{
+        "kind": "delay", "id": "lag", "delay": {"value": 2, "unit": "st"},
+    }]
+    model = ModelDocument.model_validate(raw)
+    task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
+    registry = new_application_registry_bundle()
+    with jax.enable_x64(x64):
+        return model, registry, *_publish_archive(model, task, registry, root)
+
+
+@pytest.fixture(scope="module")
+def float32_delay_archive(tmp_path_factory):
+    return _delay_archive(tmp_path_factory.mktemp("float32-delay-archive"), x64=False)
+
+
+class _ReadoutSettings(BaseModel):
+    pass
+
+
+def _readout(
+    model: Annotated[Graph, ModelPort()], params: _ReadoutSettings,
+) -> Annotated[Dataset, DatasetOutput("weights", DatasetPort(schema_ids=("test.readout.v1",)))]:
+    assert model.input_arrays["target_pos"] == ((2,), "float64")
+    assert any((wire.recurrent_initializer or {}).get("dtype") == "float64" for wire in model.wires)
+    return Dataset.from_arrays({
+        "kernel": Variable(np.asarray(model.nodes["readout"].layer.weight), ("output", "hidden")),
+    }, schema_id="test.readout.v1")
+
+
+def test_float32_archive_restores_exactly_in_an_x64_model_operation(float32_delay_archive, tmp_path):
+    model, registry, first, second, raw, checkpoint = float32_delay_archive
+    store = ImmutableArtifactBlobProvider(tmp_path / "loaded")
+    assert first.input_arrays["target_pos"] == ((2,), "float32")
+    graph = GraphSpec.model_validate_json(_read_files(raw)["graph.json"])
+    assert any((wire.recurrent_initializer or {}).get("dtype") == "float32" for wire in graph.wires)
+    registry.operations.register_declaration(
+        _readout, OperationDeclaration(
+            settings_model=_ReadoutSettings, numerical=JaxOperation(backend="cpu", floating_point_bits=64),
+        ), key="test.readout", source=DistributionSource("test", "test", "1"),
+    )
+    with jax.enable_x64(True), stage_model_archive(raw, model, store, components=registry.components) as imported:
+        assert isinstance(imported, ImportedModelSource), imported
+        assert (imported.weights, imported.encoding) == (checkpoint.tree, checkpoint.encoding)
+        content, reference = encode_document_input(imported)
+        store.store_object(reference, expected=document_input_object(content))
+        result = run_operation(
+            registry.operations.resolve("test.readout"), _ReadoutSettings(),
+            {"model": (BoundMember(key="model", content=content),)}, {}, registry=registry, artifacts=store,
+        )
+        expected = np.stack([first.nodes["readout"].layer.weight, second.nodes["readout"].layer.weight])
+        assert expected.dtype == np.float32
+        assert result.data("kernel").dtype == np.float64
+        np.testing.assert_array_equal(result.data("kernel"), expected.astype(np.float64))
+        assert export_model_archive(store, imported.weights, imported.encoding) == raw
+
+        native = reconstruct_model(InitialModelSource(document=model), registry=registry, artifacts=store)
+        assert isinstance(native, ReconstructedModel), native
+        slot = SemanticModelSlot.open_store(store, imported.weights, imported.encoding, components=registry.components)
+        with pytest.raises(ModelCheckpointError, match="dtype float64, found .* dtype float32"):
+            slot.restore(native.graph)
+
+
+@pytest.mark.parametrize("mismatch", ["topology", "slot-shape", "input-shape"])
+def test_x64_import_validates_the_original_float32_archive(float32_delay_archive, tmp_path, mismatch):
+    model, registry, _, _, raw, _ = float32_delay_archive
+    files = _read_files(raw)
+    manifest = ModelReplicaManifest.model_validate_json(files["model.json"])
+    address = "/v1/model/value/readout/kernel"
+    if mismatch == "topology":
+        graph = GraphSpec.model_validate_json(files["graph.json"])
+        graph.output_bindings["command"] = graph.output_bindings["activity"]
+        files["graph.json"] = canonical_json_v2_bytes(graph.model_dump(mode="json"))
+        address = "/graph/output_bindings/command"
+    elif mismatch == "slot-shape":
+        first = manifest.replicas[0]
+        path = "replicas/0.safetensors"
+        decoded = decode_array_container(files[path], expected_descriptor_sha256=first.array_descriptor_sha256)
+        encoded = encode_array_container(
+            dict(decoded.tensors) | {address: decoded.tensors[address].flatten()}, metadata=decoded.descriptor.metadata,
+        )
+        files[path] = encoded.data
+        files["model.json"] = canonical_json_v2_bytes(manifest.model_copy(update={"replicas": (
+            first.model_copy(update={"array_descriptor_sha256": encoded.descriptor_sha256}), manifest.replicas[1],
+        )}).model_dump(mode="json"))
+    else:
+        input_arrays = dict(manifest.input_arrays)
+        input_arrays["target_pos"] = input_arrays["target_pos"].model_copy(update={"shape": (9,)})
+        files["model.json"] = canonical_json_v2_bytes(manifest.model_copy(update={
+            "input_arrays": input_arrays,
+        }).model_dump(mode="json"))
+        address = "/model/input_arrays/target_pos"
+    store = ImmutableArtifactBlobProvider(tmp_path / "rejected")
+    with jax.enable_x64(True), stage_model_archive(
+        _as_archive(files), model, store, components=registry.components,
+    ) as rejected:
+        assert isinstance(rejected, ModelFitReport), rejected
+        assert any(problem.address == address for problem in rejected.problems), rejected
+    assert not store.root.exists()
+
+
+def test_float64_archive_cannot_narrow_to_float32(tmp_path):
+    model, registry, _, _, raw, _ = _delay_archive(tmp_path / "float64-delay-archive", x64=True)
+    store = ImmutableArtifactBlobProvider(tmp_path / "rejected")
+    with jax.enable_x64(False), stage_model_archive(raw, model, store, components=registry.components) as rejected:
+        assert isinstance(rejected, ModelFitReport), rejected
+        assert any(
+            problem.kind == "mismatched_slot" and "dtype float32" in problem.detail and "dtype float64" in problem.detail
+            for problem in rejected.problems
+        ), rejected
+    assert not store.root.exists()
 
 
 def _read_files(raw):
