@@ -456,9 +456,14 @@ class EvaluateModelRequest(StrictModel):
     scope: SelectedRuns
 
 
+class StudioStepNameReference(StrictModel):
+    kind: Literal["step"]
+    key: ProjectName
+
+
 class StudioEvaluateValueSource(StrictModel):
     kind: Literal["trained", "evaluate"]
-    step: ProjectName
+    reference: StudioStepNameReference
 
 
 class EvaluateModelState(StrictModel):

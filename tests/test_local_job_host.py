@@ -990,7 +990,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
                                 "file": {
                                     "kind": "step",
                                     "id": "observe",
-                                    "step": {"kind": "train", "base": {"inline": {}}},
+                                    "step": {"label": "Step", "kind": "train", "base": {"inline": {}}},
                                 },
                             },
                         )

@@ -83,6 +83,7 @@ def _model(count: int) -> dict:
 def scene_files():
     return [
         {"kind": "document", "id": name, "document": {
+            "label": "Document",
             "schema": MODEL_DOCUMENT_SCHEMA_ID, "payload": _model(count),
         }}
         for name, count in (("single", 1), ("chain", 3))

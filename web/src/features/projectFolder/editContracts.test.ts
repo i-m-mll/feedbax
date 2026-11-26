@@ -12,9 +12,9 @@ const base = { inline: {
   params: { trial_set: { kind: 'every_condition' }, seed: 0, trial_policy: 'paired', variation: [] },
 } };
 const subjectAxis = { subject: { input: 'subject' } };
-const train: Step = { kind: 'train', base: { inline: {} } } as unknown as Step;
+const train: Step = { kind: 'train', label: 'Train', base: { inline: {} } } as unknown as Step;
 const evaluate = (inputs: Step['inputs'], sweep?: Step['sweep']): Step =>
-  ({ kind: 'evaluate', base, inputs, ...sweep && { sweep } }) as Step;
+  ({ kind: 'evaluate', label: 'Evaluate', base, inputs, ...sweep && { sweep } }) as Step;
 
 /** The shapes an Evaluate step's subject can have. */
 const shapes: Record<string, Step> = {

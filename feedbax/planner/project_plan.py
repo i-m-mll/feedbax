@@ -43,7 +43,7 @@ from feedbax.contracts.studio_place import StudioTaskStart, path_parts, task_sta
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, DocumentReference, InlineBase, LoadedModelDocument, Payload, Project, RootDocument, Step,
     StepBase, StepKind,
-    apply_differences, base_chain, diff, json_pointer_parts, member_display_name, member_name, nearest_shared_base,
+    apply_differences, base_chain, diff, json_pointer_parts, member_name, nearest_shared_base,
 )
 from feedbax.contracts.run_rule import RuleRefusal, bind_metric_conditions
 from feedbax.contracts.expression_text import RuleBest
@@ -100,6 +100,7 @@ from feedbax.contracts.project_sweep import (
     CheckpointRuleAxis,
     DEFAULT_SWEEP_ROW,
     ExpandedRow,
+    GeneratedAxis,
     InputAxis,
     NamedAxis,
     SetAxis,
@@ -112,7 +113,7 @@ from feedbax.contracts.project_sweep import (
     axis_coordinates,
     checkpoint_rule_write,
     checkpoint_sweep_refusal,
-    sweep_row_name,
+    numbered_run_name, sweep_row_name,
     sweep_value_name,
     expand_sweep,
     model_field_target,
@@ -154,7 +155,7 @@ from feedbax.contracts.request_specs import (
 )
 from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, TaskAdditions, TaskDocument, add_to_task
-from feedbax.contracts.train_settings import normalize_train_method
+from feedbax.contracts.train_settings import normalize_train_method, setting_field_title
 
 if TYPE_CHECKING:
     from feedbax.compiler.model_attachment import LoweredEvaluateAttachments
@@ -250,7 +251,9 @@ class LabelName:
 
     @property
     def printed(self) -> str:
-        return member_display_name(self.key, self.label)
+        return self.label or {
+            "step": "Step", "row": "Run", "run": "Recorded run", "document": "Document", "element": "Element",
+        }[self.kind]
 
 
 type LabelNames = Mapping[str, Mapping[str, LabelName]]
@@ -423,11 +426,12 @@ class PlannedRow:
     """Optional axes for which this row is the unvalued member."""
 
     step_name: str | None = field(default=None, kw_only=True)
+    number: int = field(default=1, kw_only=True)
     """The display name of the step when this is its only row."""
 
     @property
     def name(self) -> str:
-        return member_display_name(self.key.row, self.label or self.step_name)
+        return self.step_name or self.label or numbered_run_name(self.number)
 
     @property
     def selection_coordinates(self) -> dict[str, SweepCoordinate]:
@@ -575,8 +579,9 @@ class PlannedStep:
     authored_inputs: Mapping[str, InputBinding | None]
     inputs: Mapping[str, InputBinding] | None = None
     sweep: Sweep | None = field(default=None, compare=False)
-    label: str | None = None
+    label: str = field(kw_only=True)
     can_sweep_checkpoint: bool = False
+    unexpanded_axis_titles: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -870,9 +875,9 @@ def _member_label(binding: PlannedInput, group: Mapping[str, SweepCoordinate]) -
     """
     rank = binding.member.reference
     if isinstance(rank, BestRank) and (rank.group or binding.member.key != rank.key) and "source" in binding.named:
-        values = (sweep_value_name(axis, group[axis]) for axis in sorted(rank.group))
+        values = (sweep_value_name(group[axis]) for axis in sorted(rank.group))
         return " · ".join((binding.named["source"].printed, *values, f"Rank {rank.rank}"))
-    return member_display_name(binding.member.key)
+    return next((name.printed for name in binding.named.values()), "Input")
 
 
 def _labelled(role: _Role, members: _Members) -> bool:
@@ -1207,22 +1212,27 @@ def _sweep_problem(
     )
 
 
+def _model_parameter(model: ModelDocument, address: ModelAddress):
+    from feedbax.contracts.model_document import CompositeComponent
+
+    element = address.element
+    if not isinstance(element, FieldElement) or not isinstance(element.parent, ComponentElement):
+        return None, ()
+    graph = model
+    for name in address.composites:
+        component = graph.interior.components.get(name)
+        if not isinstance(component, CompositeComponent):
+            return None, ()
+        graph = component
+    return graph.interior.components.get(element.parent.id), element.path
+
+
 def _integer_model_site(
     model: ModelDocument, address: ModelAddress, components: ComponentRegistry,
 ) -> bool:
     from feedbax.contracts.model_document import CompositeComponent, LeafComponent
 
-    element = address.element
-    if not isinstance(element, FieldElement) or not isinstance(element.parent, ComponentElement):
-        return False
-    graph = model
-    for name in address.composites:
-        component = graph.interior.components.get(name)
-        if not isinstance(component, CompositeComponent):
-            return False
-        graph = component
-    component = graph.interior.components.get(element.parent.id)
-    path = element.path
+    component, path = _model_parameter(model, address)
     if isinstance(component, CompositeComponent):
         return path == ("substeps",)
     if not isinstance(component, LeafComponent) or len(path) != 2 or path[0] != "fields":
@@ -1231,6 +1241,25 @@ def _integer_model_site(
     return declaration is not None and any(
         parameter.name == path[1] and parameter.type == "int" for parameter in declaration.params.param_schema
     )
+
+
+def _model_field_title(model: ModelDocument, address: ModelAddress, components: ComponentRegistry) -> str | None:
+    from feedbax.contracts.model_document import CompositeComponent, LeafComponent
+
+    element = address.element
+    match element:
+        case FieldElement(parent=AttachmentElement(), path=("operands", str(operand), "value")):
+            return {"low": "Low", "high": "High", "initial": "Initial"}.get(operand)
+        case FieldElement(parent=AttachmentElement(), path=("delay",)):
+            return "Delay"
+    component, path = _model_parameter(model, address)
+    if isinstance(component, CompositeComponent) and path == ("substeps",):
+        return "Substeps"
+    if isinstance(component, LeafComponent) and len(path) == 2 and path[0] == "fields":
+        declaration = components.get(component.type)
+        if declaration is not None and path[1] in declaration.params.model.model_fields:
+            return declaration.params.field_title(path[1])
+    return None
 
 
 def _integer_train_site(
@@ -1770,7 +1799,9 @@ class _PlanWork:
         tuple[str, str, bool], _WorkEntry[StepComposition | ProjectDiagnostic]
     ] = field(default_factory=dict)
     sweeps: dict[
-        tuple[str, str], _WorkEntry[tuple[tuple[ExpandedRow, ...] | ProjectDiagnostic, dict[str, tuple[str, ...]]]]
+        tuple[str, str], _WorkEntry[
+            tuple[tuple[ExpandedRow, ...] | ProjectDiagnostic, dict[str, tuple[str, ...]], dict[str, str]]
+        ]
     ] = field(default_factory=dict)
     rows: dict[RunKey, _WorkEntry[_LoweredRow]] = field(default_factory=dict)
     definitions: dict[RunKey, _WorkEntry[SelectedRunDefinition | None]] = field(default_factory=dict)
@@ -2066,10 +2097,13 @@ class _Compiler:
                 self.step(variant, name, ())
         self.diagnostics.extend(self.shared_key_diagnostics())
         counts = Counter((key.variant, key.step) for key in self.rows)
+        numbered: Counter[tuple[str, str]] = Counter()
         for key, row in self.rows.items():
             at = key.variant, key.step
-            if not row.label and counts[at] == 1:
-                self.rows[key] = replace(row, step_name=member_display_name(key.step, self.steps[at].label))
+            numbered[at] += 1
+            self.rows[key] = replace(
+                row, number=numbered[at], step_name=self.steps[at].label if counts[at] == 1 else None,
+            )
         return ProjectPlan(
             self.variant_order,
             MappingProxyType(self.steps),
@@ -2179,6 +2213,14 @@ class _Compiler:
             compose,
         )
 
+    def run_name(self, row: PlannedRow) -> str:
+        rows = self.step_rows(row.key.variant, row.key.step)
+        step = self.variants[row.key.variant].steps[row.key.step]
+        if len(rows) == 1:
+            return replace(row, step_name=step.label).name
+        number = next(i for i, candidate in enumerate(rows, 1) if candidate.key == row.key)
+        return replace(row, number=number).name
+
     def expand_rows(
         self,
         variant: str,
@@ -2195,13 +2237,7 @@ class _Compiler:
             horizon = producer.train.target_total \
                 if checkpoint_axis and role == "subject" and producer is not None and producer.train is not None else None
             if producer is not None and item.producer is not None:
-                names = self.variants[producer.key.variant].steps
-                shown = producer.label or (
-                    member_name(names, producer.key.step)
-                    if len(self.step_rows(producer.key.variant, producer.key.step)) == 1
-                    else member_display_name(producer.key.row)
-                )
-                return SweepInputMember(item.member.key, item.coordinates, shown, horizon)
+                return SweepInputMember(item.member.key, item.coordinates, self.run_name(producer), horizon)
             group = {
                 axis: producer.coordinates[axis] for axis in item.member.reference.group
             } if producer is not None and isinstance(item.member.reference, BestRank) else {}
@@ -2304,18 +2340,61 @@ class _Compiler:
                 return tuple(ModelEditDraft(ModelEditState(document=model), lambda _: {}) for _, model in model_sites())
 
             @cache
-            def field_presentation(path: str) -> tuple[str | None, str | None]:
+            def field_title(path: str) -> str | None:
                 target = model_field_target(path)
                 if target is None:
-                    return None, None
-                label = None
-                match target.address.element:
-                    case FieldElement(parent=AttachmentElement(), path=("operands", str(operand), "value")):
-                        label = member_display_name(operand)
-                options = {
+                    parts = tuple(path.split("."))
+                    if kind == "train" and parts == ("seed",):
+                        return "Seed"
+                    if kind == "train" and parts[0] == "training_config":
+                        return setting_field_title(DocumentTrainingConfig.model_json_schema(), parts[1:], None)
+                    if kind == "train" and parts[0] == "settings" and self.training_methods is not None:
+                        resolved = resolved_definition()
+                        method = resolved.payload.get("method") if isinstance(resolved, ResolvedStep) else None
+                        if isinstance(method, str):
+                            try:
+                                schema = self.training_methods.resolve(method).settings_model.model_json_schema()
+                            except KeyError:
+                                return None
+                            return setting_field_title(schema, parts[1:], resolved.payload.get("settings"))
+                    return None
+                labels = {
+                    _model_field_title(model, target.address, self.components or _builtin_model_registry())
+                    for _, model in model_sites()
+                }
+                return labels.pop() if len(labels) == 1 else None
+
+            @cache
+            def field_unit(path: str) -> str | None:
+                target = model_field_target(path)
+                if target is None:
+                    return None
+                units = {
                     draft.field_unit(target.address, functions=self.functions) for draft in model_drafts()
                 }
-                return label, options.pop() if len(options) == 1 else None
+                return units.pop() if len(units) == 1 else None
+
+            def unexpanded_titles(rows: tuple[ExpandedRow, ...]) -> dict[str, str]:
+                if sweep is None:
+                    return {}
+                pending = {key for key, axis in sweep.axes.items()
+                           if isinstance(axis, GeneratedAxis | NamedAxis) and axis.label is None}
+                for row in rows:
+                    pending.difference_update(row.coordinates)
+                    if not pending:
+                        return {}
+                titles = {}
+                for key in pending:
+                    axis = sweep.axes[key]
+                    if isinstance(axis, GeneratedAxis):
+                        paths = {axis.path}
+                    else:
+                        assert isinstance(axis, NamedAxis)
+                        paths = {path for value in axis.values.values() if value is not None
+                                 for path, patch in value.patches.items() if patch is not None}
+                    if len(paths) == 1 and (title := field_title(paths.pop())) is not None:
+                        titles[key] = title
+                return titles
 
             def with_field_presentation(row: ExpandedRow) -> ExpandedRow:
                 styles: dict[str, set[tuple[str | None, str | None]]] = {}
@@ -2325,7 +2404,7 @@ class _Compiler:
                     axis = origin[1]
                     coordinate = row.coordinates.get(axis)
                     if coordinate is not None and type(coordinate.value) in (int, float):
-                        style = field_presentation(path)
+                        style = field_title(path), field_unit(path)
                         if style != (None, None):
                             styles.setdefault(axis, set()).add(style)
                 if not styles:
@@ -2334,11 +2413,14 @@ class _Compiler:
                 for axis, choices in styles.items():
                     if len(choices) == 1:
                         (label, unit), = choices
-                        coordinates[axis] = replace(coordinates[axis], axis_label=label, unit=unit)
+                        coordinate = coordinates[axis]
+                        authored = sweep.axes[axis] if sweep is not None else None
+                        name = authored.label if authored is not None else None
+                        coordinates[axis] = replace(coordinate, axis_label=name or label or coordinate.axis_label, unit=unit)
                 choices = axis_coordinates(coordinates, row.input_axes, row.kept_axes)
                 assert sweep is not None
                 label = sweep_row_name(
-                    (axis, choices[axis]) for axis in sweep.axes
+                    choices[axis] for axis in sweep.axes
                     if axis in choices and (axis in row.axis_value_ids or axis in row.kept_axes)
                 )
                 return replace(row, coordinates=coordinates, label=label)
@@ -2393,15 +2475,15 @@ class _Compiler:
                     }, sites, sets)
                     if source.inputs or source.integer_sites or source.sets:
                         self.source_sweeps[variant, name] = source
-                return rows, exception_matches
+                return rows, exception_matches, unexpanded_titles(rows)
             except SweepExpansionError as error:
                 document = site_documents.get(error.target) if error.target is not None else None
-                return _sweep_problem(error, step=name, variant=variant, document=document), {}
+                return _sweep_problem(error, step=name, variant=variant, document=document), {}, unexpanded_titles(())
 
         if self.previous is None:
-            rows, matches = expand()
+            rows, matches, titles = expand()
         else:
-            rows, matches = _work(
+            rows, matches, titles = _work(
                 self.previous.sweeps,
                 self.work.sweeps,
                 (variant, name),
@@ -2422,6 +2504,9 @@ class _Compiler:
             )
         if matches:
             self.exception_matches[variant, name] = MappingProxyType(matches)
+        if titles:
+            at = variant, name
+            self.steps[at] = replace(self.steps[at], unexpanded_axis_titles=MappingProxyType(titles))
         return rows
 
     def resolve_row(
@@ -4315,9 +4400,9 @@ class _Compiler:
             and reference.media_type == IMPORTED_MODEL_MEDIA_TYPE
             and (document := run.document_ids.get("inputs.subject")) is not None
         ):
-            return None, LabelName(document, kind="document")
+            return None, LabelName(document, self.variants[run.key.variant].documents[document].label, kind="document")
         if (document := run.document_ids.get(EVALUATION_MODEL)) is not None:
-            return None, LabelName(document, kind="document")
+            return None, LabelName(document, self.variants[run.key.variant].documents[document].label, kind="document")
         return None
 
     def member_coordinates(self, run: PlannedRow) -> dict[str, SweepCoordinate]:
@@ -4509,7 +4594,7 @@ class _Compiler:
         if reference.unresolved:
             target = reference.element or reference.step
             return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, path, f"Unresolved target {member_display_name(target)}.",
+                ResolutionCode.BAD_REFERENCE, path, "The input reference is unresolved.",
                 name, missing_subject=target,
             )
         synthesis_dataset = role.operation_outputs and reference.element is None and reference.product is not None
@@ -4546,7 +4631,7 @@ class _Compiler:
             subset_document = terms.subset
             if terms.unresolved:
                 return ProjectDiagnostic(
-                    ResolutionCode.MISSING_DOCUMENT, f"{path}.where", member_display_name(subset_document),
+                    ResolutionCode.MISSING_DOCUMENT, f"{path}.where", subset_document,
                     name, document=subset_document, missing_subject=subset_document,
                 )
             document = compose_document(self.variants[variant].documents.get, subset_document)

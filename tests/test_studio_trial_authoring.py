@@ -37,6 +37,7 @@ def _python_project():
     model = raw["documents"]["reach-model"]["payload"]
     raw["documents"]["reach-model"]["payload"] = {"step_seconds": model["step_seconds"], "ports": {}, "interior": {}}
     raw["documents"]["task"] = {
+        "label": "Task",
         "schema": "feedbax.spec.python_task",
         "payload": {"type": REACHING_TASK, "params": {}},
     }
@@ -259,6 +260,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         project = "trial-authoring"
         raw = _python_project()
         raw["documents"]["test-task"] = {
+            "label": "Test task",
             "schema": "feedbax.spec.python_task",
             "payload": {"type": REACHING_TASK, "params": {"n_steps": 12, "x": 0.31}},
         }
@@ -268,10 +270,10 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         task["signals"][0]["cells"][0].update(
             first_epoch="probe", last_epoch="probe", value={"kind": "name", "reference": "probe_target"},
         )
-        raw["documents"]["probe-task"] = {"schema": "feedbax.spec.task_document", "payload": task}
+        raw["documents"]["probe-task"] = {"label": "Probe task", "schema": "feedbax.spec.task_document", "payload": task}
         invalid_task = deepcopy(task)
         invalid_task["signals"] = []
-        raw["documents"]["unbound-task"] = {"schema": "feedbax.spec.task_document", "payload": invalid_task}
+        raw["documents"]["unbound-task"] = {"label": "Unbound task", "schema": "feedbax.spec.task_document", "payload": invalid_task}
         raw["steps"]["baseline"]["base"]["inline"]["params"]["variation"] = {}
         raw["steps"]["baseline"]["sweep"] = {"axes": {"seed": {"values": {
             "control": {"patches": {"params.seed": {"value": 1}}},
@@ -967,7 +969,7 @@ def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()
     raw["steps"].pop("baseline")
-    raw["steps"]["other"] = {"kind": "train", "base": {"step": "train"}}
+    raw["steps"]["other"] = {"label": "Other", "kind": "train", "base": {"step": "train"}}
     raw["documents"]["objective"]["label"] = "Simple reaches Objective"
     raw["documents"]["objective"]["payload"]["terms"] = [
         {"id": "base", "name": "Before", "measure": {"kind": "literal", "value": 1}},
@@ -1062,7 +1064,7 @@ def test_scoped_rename_asks_before_changing_an_unselected_inheritor(tmp_path):
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()
     raw["steps"].pop("baseline")
-    raw["steps"]["other"] = {"kind": "train", "base": {"step": "train"}}
+    raw["steps"]["other"] = {"label": "Other", "kind": "train", "base": {"step": "train"}}
     raw["documents"]["objective"]["payload"]["terms"] = [
         {"id": "base", "name": "Base", "measure": {"kind": "literal", "value": 1}},
     ]
@@ -1094,6 +1096,7 @@ def test_scoped_rename_asks_before_changing_an_unselected_inheritor(tmp_path):
 def test_an_evaluate_task_choice_in_a_variant_is_its_row_s_task_reference(tmp_path):
     raw = _python_project()
     raw["documents"]["test-task"] = {
+        "label": "Test task",
         "schema": "feedbax.spec.python_task", "payload": {"type": REACHING_TASK, "params": {"n_steps": 12, "x": 0.31}},
     }
     raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
@@ -1131,7 +1134,7 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
     from web.e2e.studio.fixtures.evaluate_authoring import _train_definition
 
     raw = _train_definition()
-    raw["steps"]["check"] = {"kind": "evaluate", "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
+    raw["steps"]["check"] = {"label": "Check", "kind": "evaluate", "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
         "seed": 731, "trial_policy": "paired", "variation": [], "trial_set": {"kind": "every_condition"},
     }}}, "inputs": {"subject": {"step": "train", "checkpoint": "last"}}}
     if variant != "default":
@@ -1178,6 +1181,7 @@ def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):
     raw = document_project(authored_documents())
     raw["steps"] = {
         "evaluate": {
+            "label": "Evaluate",
             "kind": "evaluate",
             "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
                 "seed": 0, "trial_policy": "paired", "variation": [],

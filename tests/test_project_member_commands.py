@@ -95,11 +95,38 @@ def _replay(client, before, after):
     })
 
 
+def test_service_names_a_new_step_against_its_reviewed_revision(studio):
+    client, _ = studio
+    root = "/api/projects/names"
+    created = client.post("/api/projects", json={"name": "names"})
+    assert created.status_code == 201, created.text
+    revision = created.json()["snapshot"]["revision"]
+    member = {"kind": "step", "step": "train"}
+    first = client.post(f"{root}/members/name", json={"revision": revision, "member": member})
+    assert first.status_code == 200, first.text
+    assert first.json() == {"id": "train", "label": "Train"}
+    saved = client.post(f"{root}/files", json={
+        "revision": revision,
+        "file": {"kind": "step", "id": first.json()["id"], "step": {
+            "kind": "train", "label": first.json()["label"], "base": {"inline": {}},
+        }},
+    })
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["snapshot"]["project"]["steps"]["train"]["label"] == "Train"
+    second = client.post(f"{root}/members/name", json={
+        "revision": saved.json()["snapshot"]["revision"], "member": member,
+    })
+    assert second.status_code == 200, second.text
+    assert second.json() == {"id": "train-2", "label": "Train 2"}
+    assert client.post(f"{root}/members/name", json={"revision": revision, "member": member}).status_code == 409
+
+
 def test_change_key_preserves_document_bytes_and_requests_through_undo(studio):
     client, folders = studio
     raw = _snapshot(client)["project"]
     # A document whose content mentions another document's name is not a reference to it.
     raw["documents"]["notes"] = {
+        "label": "Notes",
         "schema": "application/json",
         "payload": {"document": "reach-model", "label": "documents.reach-model.payload.name"},
     }
@@ -316,7 +343,8 @@ def test_a_step_duplicate_shares_its_sources_requests_until_it_differs(evaluated
     after = result["snapshot"]
     assert result["member"] == "train-2"
     steps = after["project"]["steps"]
-    assert steps["train-2"] == steps["train"] == before["project"]["steps"]["train"]
+    assert steps["train"] == before["project"]["steps"]["train"]
+    assert steps["train-2"] == steps["train"] | {"label": "Train 2"}
     assert set(after["project"]["documents"]) == set(before["project"]["documents"])
     assert after["presentation"]["steps"]["train-2"] == before["presentation"]["steps"]["train"]
     duplicated = _step_requests(folders, after["revision"])
@@ -327,7 +355,7 @@ def test_a_step_duplicate_shares_its_sources_requests_until_it_differs(evaluated
         assert duplicated[variant, step, row] == request
         if step == "train":
             assert duplicated[variant, "train-2", row] == request
-    assert _files(folders)["steps/train-2.json"] == files["steps/train.json"]
+    assert json.loads(_files(folders)["steps/train-2.json"]) == json.loads(files["steps/train.json"]) | {"label": "Train 2"}
 
     # One Undo removes the step.
     response = _replay(client, before, after)
@@ -372,6 +400,7 @@ def based(tmp_path):
         folders = app.state.project_folders
         raw = document_project(authored_documents())
         raw["documents"]["model-2"] = {
+            "label": "Model 2",
             "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
             "differences": {MASS_POINTER: {"value": 3.0}},
         }
@@ -440,7 +469,7 @@ def test_change_key_of_a_base_rewrites_the_documents_based_on_it(based):
     assert _requests(folders, after["revision"]) == requests
     _command(client, after, {"kind": "change_key", "family": "documents", "member": "objective", "key": "reach-model"})
     raw = _snapshot(client)["project"]
-    raw["documents"]["orphan"] = {"schema": raw["documents"]["arm"]["schema"], "base": {"document": "gone"}}
+    raw["documents"]["orphan"] = {"label": "Orphan", "schema": raw["documents"]["arm"]["schema"], "base": {"document": "gone"}}
     _save_project(folders, PROJECT, Project.model_validate(raw))
     _command(client, _snapshot(client), {"kind": "change_key", "family": "documents", "member": "arm", "key": "gone"})
     reopened = _snapshot(client)
@@ -459,7 +488,7 @@ def test_a_document_label_changes_no_key_reference_or_request(based):
     assert labelled["member"] == "reach-model"
     assert after["project"]["documents"]["reach-model"]["label"] == "Arm"
     assert after["project"]["documents"]["model-2"]["base"] == {"document": "reach-model"}
-    assert "label" not in after["project"]["documents"]["model-2"]
+    assert after["project"]["documents"]["model-2"]["label"] == "Model 2"
     assert _requests(folders, after["revision"]) == requests
     assert {name for name, data in _files(folders).items() if files.get(name) != data} == {"documents/reach-model.json"}
 
@@ -468,9 +497,9 @@ def test_a_document_label_changes_no_key_reference_or_request(based):
     assert detached["project"]["documents"]["model-2"]["label"] == "Heavy"
     keyed = _command(client, detached, {"kind": "change_key", "family": "documents", "member": "reach-model", "key": "arm"})
     assert keyed["snapshot"]["project"]["documents"]["arm"]["label"] == "Arm"
-    cleared = _command(client, keyed["snapshot"], {"kind": "rename", "family": "documents", "member": "arm", "label": None})
-    assert "label" not in cleared["snapshot"]["project"]["documents"]["arm"]
-    assert _requests(folders, cleared["snapshot"]["revision"]) == requests
+    _command(client, keyed["snapshot"], {"kind": "rename", "family": "documents", "member": "arm", "label": None}, 422)
+    assert _snapshot(client)["project"]["documents"]["arm"]["label"] == "Arm"
+    assert _requests(folders, keyed["snapshot"]["revision"]) == requests
 
 
 def test_detach_stores_a_problem_for_the_evaluation_that_loses_its_model_base(based):

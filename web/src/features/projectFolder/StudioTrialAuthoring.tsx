@@ -6,7 +6,7 @@ import {
 } from '@/api/studioAuthoring';
 import { shownError } from '@/api/shownErrors';
 import {
-  studioAccessibleName, studioCountOf, studioDefinitionStatus, studioEvaluateValueSource, studioName,
+  studioAccessibleName, studioCountOf, studioDefinitionStatus, studioEvaluateValueSource, studioName, evaluateOrigin, type EvaluateOrigin,
 } from '@/components/activity/studioVocabulary';
 import { ChangeMark as ChangedMark } from '@/components/ui/ChangeMark';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -29,12 +29,12 @@ import { changeTip, FieldChange, ValueField } from '@/components/values/ValueFie
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { isRecord, rawField } from '@/components/values/adapters/raw';
 import { fromFieldView, type FieldViewOptions } from '@/components/values/adapters/fieldView';
-import { nameOf } from './memberNames';
+import { labelOf } from './memberLabels';
 import { partMenuKey } from '@/components/values/partMenu';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
   FieldKind, JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
-  StudioTrialField, TrialTermAggregate,
+  StudioEvaluateValueSource, StudioTrialField, TrialTermAggregate,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { addressKey } from './model/modelGraph';
@@ -61,6 +61,8 @@ export type Commit = (name: string, change: Change, removes?: boolean) => Promis
 /** A step's Trial authoring, with what the changed values of its Task and Objective documents differ from. */
 export type TrialView = StudioTrialAuthoring & {
   readonly changedFrom: { readonly task?: ChangeSource; readonly objective?: ChangeSource };
+  /** Where an Evaluate step's value comes from, `source`, with its step named. */
+  origin(source: StudioEvaluateValueSource | null | undefined): EvaluateOrigin | undefined;
   /** The menus of the parts of the expression at a field's path, which the service sends as each opens. */
   menus(field: string): PartMenus;
 };
@@ -114,15 +116,15 @@ export function useTrialAuthoring(
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === project &&
       JSON.stringify(previousQuery.queryKey[3]) === JSON.stringify(run) ? previous : undefined,
   });
-  const { project: authored, names } = useSyncExternalStore(editor.subscribe, editor.getSnapshot).saved;
+  const { project: authored } = useSyncExternalStore(editor.subscribe, editor.getSnapshot).saved;
   const data = query.data;
   /** An Evaluate step's documents change the values it reads; another step's differ from their documents' bases. */
   const view: TrialView | undefined = useMemo(() => {
     if (!data || !run) return undefined;
     const from = (document: string | null): ChangeSource | undefined => {
-      if (authored.steps?.[run.step]?.kind === 'evaluate') return { kind: 'evaluate', name: nameOf(names.steps, run.step) };
+      if (authored.steps?.[run.step]?.kind === 'evaluate') return { kind: 'evaluate', name: labelOf(authored.steps, run.step) };
       const base = baseOf(authored.documents, document);
-      return base === undefined ? undefined : { kind: 'base', name: nameOf(names.documents, base) };
+      return base === undefined ? undefined : { kind: 'base', name: labelOf(authored.documents, base) };
     };
     const menuKey = (context: string, field: string) => [project, context, field];
     /** Reads a menu of this view; once the service no longer holds it, reads the view again and asks that one. */
@@ -144,7 +146,9 @@ export function useTrialAuthoring(
         }
       },
     });
-    return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) }, menus };
+    const origin = (source: StudioEvaluateValueSource | null | undefined) =>
+      source ? evaluateOrigin(source, (step) => labelOf(authored.steps, step)) : undefined;
+    return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) }, menus, origin };
   }, [data, authored, run, project, queryClient]);
   /** Stores a change, answering with what the service made of it, or why the write was refused. */
   const send = editable && run && query.data ? (name: string, change: Change, removes?: boolean) => {
@@ -197,7 +201,8 @@ export function TrialTaskForm({ view, commit }: { view: TrialView; commit?: Comm
   const params = task?.params ?? {};
   const type = view.task_types.find((item) => item.type === task?.type);
   const packages = new Map(catalogEntries(catalog.data, 'python_tasks').map((entry) => [entry.key, entry.package]));
-  const source = view.task_source && <span className="text-xs text-shell-muted">{studioEvaluateValueSource(view.task_source)}</span>;
+  const taskOrigin = view.origin(view.task_source);
+  const source = taskOrigin && <span className="text-xs text-shell-muted">{studioEvaluateValueSource(taskOrigin)}</span>;
   const edit = (name: string, edits: ProjectValueEdit[]) => commit && commit(studioAccessibleName('set', name), { kind: 'task', edits });
   return <div className="grid max-w-2xl gap-4 text-sm">
     {!task && source}
@@ -214,12 +219,12 @@ export function TrialTaskForm({ view, commit }: { view: TrialView; commit?: Comm
       </FieldRow>
       {type && <SettingsForm schema={type.parameter_schema} value={params}
         origin={(path) => {
-          const origin = view.task_field_sources?.[path[0]] ?? view.task_source;
+          const origin = view.origin(view.task_field_sources?.[path[0]] ?? view.task_source);
           return origin?.kind === 'trained' && !changedAt(view, 'task', authoredPointer(['params', ...path]))
             ? studioEvaluateValueSource(origin) : undefined;
         }}
         changed={(path) => changedAt(view, 'task', authoredPointer(['params', ...path]), commit) ??
-          (path.length === 1 ? evaluateChange(view.task_field_sources?.[path[0]] ?? view.task_source ?? undefined) : undefined)}
+          (path.length === 1 ? evaluateChange(view.origin(view.task_field_sources?.[path[0]] ?? view.task_source)) : undefined)}
         write={commit && (async (path, value) => {
           const [key, ...rest] = path;
           const property = type.parameter_schema.properties;

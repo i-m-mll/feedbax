@@ -2,13 +2,12 @@ import { expect, it } from 'vitest';
 import { mapAxes, mapRunCells, orderedMapSweeps } from '@/components/pipeline/pipelineMapLayout';
 import { runColumns } from '@/components/pipeline/StudioRunTable';
 import type { Project, StudioProjectWindowMapRow, StudioSavedTrainRuns } from '@/generated/studioContracts';
-import type { ProjectNames } from './memberNames';
+import type { VariantNames } from './memberLabels';
 import { projectWindowPlan } from './projectWindowPlan';
 
-/** The names a snapshot gives the steps `ids`, as authored and in the base variant. */
-function named(ids: readonly string[]): ProjectNames {
-  const names = { documents: {}, steps: Object.fromEntries(ids.map((id) => [id, id])), elements: {} };
-  return { names, variant_names: { base: names } };
+/** The labels the base variant gives the steps `ids`. */
+function named(ids: readonly string[]): VariantNames {
+  return { base: { documents: {}, steps: Object.fromEntries(ids.map((id) => [id, id])), elements: {} } };
 }
 
 type Row = StudioProjectWindowMapRow;
@@ -31,7 +30,7 @@ function axes(rows: readonly Row[]) {
     }
   }
   return [...values].map(([id, entries]) => ({
-    id, label: id, values: [...entries].map(([value, label]) => ({ id: value, label, value_label: label, rule: value })),
+    id, name: id, values: [...entries].map(([value, label]) => ({ id: value, name: label, value_label: label, rule: value })),
   }));
 }
 
@@ -41,8 +40,8 @@ function evaluateStep(
 ) {
   const mapRows = [...trains.flatMap((id) => trainRows(id, [0, 1, 2])), ...rows];
   const project: Project = { steps: {
-    ...Object.fromEntries(trains.map((id) => [id, { kind: 'train', base: { inline: {} } }])),
-    evaluate: { kind: 'evaluate', base: { inline: {} }, sweep: { axes: { subject: { input: 'subject' } } } },
+    ...Object.fromEntries(trains.map((id) => [id, { kind: 'train', label: id, base: { inline: {} } }])),
+    evaluate: { kind: 'evaluate', label: 'evaluate', base: { inline: {} }, sweep: { axes: { subject: { input: 'subject' } } } },
   } };
   const saved: StudioSavedTrainRuns = {
     revision: '0'.repeat(64), rows: [],
@@ -105,8 +104,8 @@ it('draws the seeds of an Evaluate reading two Train steps once each, in order, 
     from_key: { variant: 'base', step: to.key.row.slice(0, 7), row: `seed=${to.coordinates.seed.value}` }, to_key: to.key,
   }));
   const step = evaluateStep(['train-a', 'train-b'], readings, edges, [
-    { id: 'seed', label: 'Seed', values: [0, 1, 2, 3].map((value) => ({ id: gathered[value], label: `Seed ${value}`, value_label: String(value), rule: String(value) })) },
-    { id: 'subject', label: 'Subject', values: readings.map(({ input_axes }) => ({ id: input_axes!.subject.axis_value, label: '', value_label: '', rule: '' })) },
+    { id: 'seed', name: 'Seed', values: [0, 1, 2, 3].map((value) => ({ id: gathered[value], name: `Seed ${value}`, value_label: String(value), rule: String(value) })) },
+    { id: 'subject', name: 'Subject', values: readings.map(({ input_axes }) => ({ id: input_axes!.subject.axis_value, name: '', value_label: '', rule: '' })) },
   ]);
   const seed = step.sweeps.find(({ id }) => id === 'seed')!;
   expect(seed.values.map(({ valueLabel }) => valueLabel)).toEqual(['0', '1', '2', '3']);
@@ -119,7 +118,7 @@ it('draws the seeds of an Evaluate reading two Train steps once each, in order, 
 // Catches: the step drawer reordering while a revision's plan is read, because the plan and the project list steps differently.
 it('lists steps in one order whether or not the plan has been read', () => {
   const project: Project = { steps: Object.fromEntries(['train-2', 'analyze', 'train-10'].map((id) =>
-    [id, { kind: 'train', base: { inline: {} } }])) };
+    [id, { kind: 'train', label: id, base: { inline: {} } }])) };
   const saved: StudioSavedTrainRuns = {
     revision: '0'.repeat(64), rows: [],
     window_map: {

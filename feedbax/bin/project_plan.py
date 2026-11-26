@@ -357,12 +357,8 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
                     request_id=(scoped.entries.get(key) or before.entries[key]).request_id,
                     state=change.state, path=change.path,
                     upstream=plan_request_address(change.upstream) if change.upstream else None,
-                    before_source=StudioPlanReviewSource.model_validate(
-                        change.before_source, from_attributes=True,
-                    ) if change.before_source else None,
-                    after_source=StudioPlanReviewSource.model_validate(
-                        change.after_source, from_attributes=True,
-                    ) if change.after_source else None,
+                    before_source=StudioPlanReviewSource.from_source(change.before_source) if change.before_source else None,
+                    after_source=StudioPlanReviewSource.from_source(change.after_source) if change.after_source else None,
                 )
                 for key, change in changes.items()
             ]

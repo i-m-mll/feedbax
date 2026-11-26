@@ -14,8 +14,10 @@ from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 
 from feedbax.contracts.canonical_json import validate_canonical_json_v2
+from feedbax.contracts.expression_values import LiteralValue
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.project import RootDocument, same_json
+from feedbax.contracts.objective_document import ObjectiveTerm
+from feedbax.contracts.project import RootDocument
 from feedbax.contracts.project_sweep import AxisValue, NamedAxis, Sweep, SweepException
 
 
@@ -155,10 +157,27 @@ def _payload_model(document: RootDocument) -> BaseModel | None:
         raise
 
 
-def stored_project_value(
-    model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
-) -> JsonValue:
-    """Project the typed stored fields, retaining any authored key a strict operation observes."""
+def _same_stored_value(left: JsonValue, right: JsonValue, *, real_site: bool) -> bool:
+    if isinstance(left, dict):
+        if not isinstance(right, dict) or left.keys() != right.keys():
+            return False
+        if left.get("kind") == right.get("kind") == "literal" and not real_site:
+            if type(left.get("value")) is not type(right.get("value")):
+                return False
+        return all(_same_stored_value(value, right[key], real_site=real_site) for key, value in left.items())
+    if isinstance(left, list):
+        return isinstance(right, list) and len(left) == len(right) and all(
+            _same_stored_value(a, b, real_site=real_site) for a, b in zip(left, right)
+        )
+    if type(left) in (int, float) and type(right) in (int, float):
+        return left == right
+    return type(left) is type(right) and left == right
+
+
+def _projected_file(
+    model: BaseModel, exclude: set[str] | None, protected: Iterable[StoredPath],
+) -> tuple[JsonValue, set[StoredPath]]:
+    real_literals: set[StoredPath] = set()
     prefixes = {path[:end] for path in protected for end in range(1, len(path) + 1)}
     _, tags = _schema_inventory()
 
@@ -186,7 +205,9 @@ def stored_project_value(
                 else:
                     continue
                 if not (required or observed) and (
-                    isinstance(value, _REFINEMENTS) or same_json(child, _field_default(cls, name))
+                    isinstance(value, _REFINEMENTS) or _same_stored_value(
+                        child, _field_default(cls, name), real_site=isinstance(value, ObjectiveTerm) and name == "weight",
+                    )
                 ):
                     continue
                 if isinstance(value, RootDocument) and name == "payload":
@@ -194,6 +215,8 @@ def stored_project_value(
                     if typed is not None:
                         raw = typed
                         child = typed.model_dump(mode="json", by_alias=True)
+                if isinstance(value, LiteralValue) and name == "value" and type(child) is float:
+                    real_literals.add(child_path)
                 result[key] = project(raw, child, child_path)
             return result
         if isinstance(value, (tuple, list)) and isinstance(encoded, list):
@@ -202,92 +225,106 @@ def stored_project_value(
             return {key: project(value.get(key), child, (*path, key)) for key, child in encoded.items()}
         return encoded
 
-    return project(model, model.model_dump(mode="json", by_alias=True), ())
+    return project(model, model.model_dump(mode="json", by_alias=True), ()), real_literals
 
 
-def _scalar(value: JsonValue) -> str:
+def stored_project_value(
+    model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
+) -> JsonValue:
+    """Project typed stored fields, retaining authored keys that a strict operation observes."""
+    return _projected_file(model, exclude, protected)[0]
+
+
+def _scalar(value: JsonValue, *, keep_real: bool = False) -> str:
     text = rfc8785.dumps(value).decode("utf-8")
-    if type(value) is float and abs(value) >= 2**53 and "e" not in text and "." not in text:
-        return repr(value)
+    if type(value) is float and "e" not in text and "." not in text:
+        if abs(value) >= 2**53:
+            return repr(value)
+        if keep_real:
+            return text + ".0"
     return text
 
 
-def _tokens(value: JsonValue) -> Iterator[str]:
-    if isinstance(value, dict):
-        yield "{"
-        for index, (key, child) in enumerate(value.items()):
-            if index:
-                yield ", "
-            yield _scalar(key)
-            yield ": "
-            yield from _tokens(child)
-        yield "}"
-    elif isinstance(value, list):
-        yield "["
-        for index, child in enumerate(value):
-            if index:
-                yield ", "
-            yield from _tokens(child)
-        yield "]"
-    else:
-        yield _scalar(value)
+class _Layout:
+    def __init__(self, real_literals: set[StoredPath]):
+        self.real_literals = real_literals
 
+    def scalar(self, value: JsonValue, path: StoredPath) -> str:
+        return _scalar(value, keep_real=path in self.real_literals)
 
-def _flat(value: JsonValue, width: int) -> str | None:
-    parts = []
-    for part in _tokens(value):
-        width -= len(part)
-        if width < 0:
-            return None
-        parts.append(part)
-    return "".join(parts)
-
-
-def _filled(values: list[JsonValue], indent: str) -> Iterator[str]:
-    line = indent
-    for index, value in enumerate(values):
-        item = _scalar(value) + ("," if index + 1 < len(values) else "")
-        if len(line) > len(indent):
-            if len(line) + 1 + len(item) <= _WIDTH:
-                line += " "
-            else:
-                yield line
-                line = indent
-        line += item
-    if values:
-        yield line
-
-
-def _lines(value: JsonValue, level: int, key: str, suffix: str) -> Iterator[str]:
-    head = " " * level + key
-    if not isinstance(value, (dict, list)):
-        yield head + _scalar(value) + suffix
-        return
-    flat = _flat(value, _WIDTH - len(head) - len(suffix)) if level or not value else None
-    if flat is not None:
-        yield head + flat + suffix
-        return
-    if isinstance(value, dict):
-        yield head + "{"
-        for index, (name, child) in enumerate(value.items()):
-            comma = "," if index + 1 < len(value) else ""
-            yield from _lines(child, level + 2, _scalar(name) + ": ", comma)
-        yield " " * level + "}" + suffix
-    else:
-        yield head + "["
-        if all(not isinstance(item, (dict, list)) for item in value):
-            yield from _filled(value, " " * (level + 2))
-        else:
+    def tokens(self, value: JsonValue, path: StoredPath) -> Iterator[str]:
+        if isinstance(value, dict):
+            yield "{"
+            for index, (key, child) in enumerate(value.items()):
+                if index:
+                    yield ", "
+                yield _scalar(key)
+                yield ": "
+                yield from self.tokens(child, (*path, key))
+            yield "}"
+        elif isinstance(value, list):
+            yield "["
             for index, child in enumerate(value):
+                if index:
+                    yield ", "
+                yield from self.tokens(child, (*path, str(index)))
+            yield "]"
+        else:
+            yield self.scalar(value, path)
+
+    def flat(self, value: JsonValue, width: int, path: StoredPath) -> str | None:
+        parts = []
+        for part in self.tokens(value, path):
+            width -= len(part)
+            if width < 0:
+                return None
+            parts.append(part)
+        return "".join(parts)
+
+    def filled(self, values: list[JsonValue], indent: str, path: StoredPath) -> Iterator[str]:
+        line = indent
+        for index, value in enumerate(values):
+            item = self.scalar(value, (*path, str(index))) + ("," if index + 1 < len(values) else "")
+            if len(line) > len(indent):
+                if len(line) + 1 + len(item) <= _WIDTH:
+                    line += " "
+                else:
+                    yield line
+                    line = indent
+            line += item
+        if values:
+            yield line
+
+    def lines(self, value: JsonValue, level: int, key: str, suffix: str, path: StoredPath) -> Iterator[str]:
+        head = " " * level + key
+        if not isinstance(value, (dict, list)):
+            yield head + self.scalar(value, path) + suffix
+            return
+        flat = self.flat(value, _WIDTH - len(head) - len(suffix), path) if level or not value else None
+        if flat is not None:
+            yield head + flat + suffix
+            return
+        if isinstance(value, dict):
+            yield head + "{"
+            for index, (name, child) in enumerate(value.items()):
                 comma = "," if index + 1 < len(value) else ""
-                yield from _lines(child, level + 2, "", comma)
-        yield " " * level + "]" + suffix
+                yield from self.lines(child, level + 2, _scalar(name) + ": ", comma, (*path, name))
+            yield " " * level + "}" + suffix
+        else:
+            yield head + "["
+            if all(not isinstance(item, (dict, list)) for item in value):
+                yield from self.filled(value, " " * (level + 2), path)
+            else:
+                for index, child in enumerate(value):
+                    comma = "," if index + 1 < len(value) else ""
+                    yield from self.lines(child, level + 2, "", comma, (*path, str(index)))
+            yield " " * level + "]" + suffix
 
 
 def write_project_file(
     model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
 ) -> bytes:
     """Encode one typed authored file with canonical numbers and 100-column layout."""
-    value = stored_project_value(model, exclude=exclude, protected=protected)
+    value, real_literals = _projected_file(model, exclude, protected)
     validate_canonical_json_v2(value)
-    return ("\n".join(_lines(value, 0, "", "")) + "\n").encode("utf-8")
+    return ("\n".join(_Layout(real_literals).lines(value, 0, "", "", ())) + "\n").encode("utf-8")

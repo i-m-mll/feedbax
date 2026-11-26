@@ -35,10 +35,12 @@ def test_final_metric_condition_excludes_one_replicated_candidate(host, tmp_path
     rule = "train_loss < seed"
     raw["steps"]["baseline"]["inputs"]["subject"]["where"] = {"rule": rule}
     raw["steps"]["speed"] = {
+        "label": "Speed",
         "kind": "analyze",
         "base": {"inline": {
             "inputs": {"states": {"kind": "dataset"}},
             "operations": {"speed": {
+                "label": "Speed",
                 "operation": "feedbax.trial_speed",
                 "params": {"velocity": "/v1/model/state/plant/effector~1velocity"},
                 "inputs": {"states": {"input": "states"}},

@@ -68,7 +68,7 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
             "patches": {"settings.grad_clip": {"value": 0.5}},
         }},
     }
-    steps["child"] = {"kind": "train", "base": {"step": "train"}}
+    steps["child"] = {"label": "Child", "kind": "train", "base": {"step": "train"}}
     steps["evaluate"] = managed_evaluation_step("child")
     steps["evaluate"]["inputs"]["subject"]["where"] = {
         "clauses": [{"seed": [{"id": "a", "label": "a"}]}],
@@ -86,8 +86,8 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
 
-    def source(kind, name, path, **coordinates):
-        return {"kind": kind, "name": name, "path": path, **coordinates}
+    def source(kind, key, path, **coordinates):
+        return {"kind": kind, "key": key, "path": path, **coordinates}
 
     mass = ("documents", "point-mass", "payload", "interior", "components", "plant", "fields", "mass")
     batch_size = ("steps", "train", "base", "inline", "training_config", "batch_size")
@@ -186,12 +186,12 @@ def test_cli_review_locates_derived_trials_and_addressed_model_field(tmp_path, c
     train = review["train"]
     assert train["path"].endswith(".plant.fields.mass")
     assert train["before_source"] == train["after_source"] == {
-        "kind": "document", "name": changed, "path": "/interior/components/plant/fields/mass",
+        "kind": "document", "key": changed, "path": "/interior/components/plant/fields/mass",
     }
     evaluation = review["evaluate"]
     assert evaluation["path"] == "payload.params.trials.0"
     assert evaluation["before_source"] == evaluation["after_source"] == {
-        "kind": "step", "name": "evaluate", "step": "evaluate", "path": "/base/inline/params/trial_set/ids/0",
+        "kind": "step", "key": "evaluate", "step": "evaluate", "path": "/base/inline/params/trial_set/ids/0",
     }
 
 
@@ -221,9 +221,9 @@ def test_cli_review_uses_saved_pinned_source_without_reopening_it(tmp_path, caps
     reviews = json.loads(capsys.readouterr().out)["review"]
     review = next(item for item in reviews if item.get("element") == "profile")
     assert review["before_source"] == {
-        "kind": "document", "name": "../shared-figure.json", "path": "/payload/theme",
+        "kind": "document", "key": "../shared-figure.json", "path": "/payload/theme",
     }
-    assert review["after_source"] == {"kind": "document", "name": "velocity-figure", "path": "/theme"}
+    assert review["after_source"] == {"kind": "document", "key": "velocity-figure", "path": "/theme"}
     truncated = json.loads(baseline.read_bytes())
     truncated["sources"]["externals"].clear()
     baseline.write_text(json.dumps(truncated))
@@ -453,6 +453,7 @@ def test_review_attributes_opaque_parameter_edits(before, after):
             "steps": {
                 "train": authored.steps["train"],
                 "evaluate": {
+                    "label": "Evaluate",
                     "kind": "evaluate",
                     "base": {"inline": {"evaluation_type": "custom", "params": params}},
                     "inputs": {"subject": {"step": "train", "checkpoint": "last"}},

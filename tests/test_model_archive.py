@@ -291,6 +291,7 @@ def test_a_loaded_models_replicas_are_planned_rendered_and_retained(native_archi
     raw["steps"] = {
         "analyze": raw["steps"]["analyze"],
         "baseline": {
+            "label": "Baseline",
             "kind": "evaluate",
             "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
                 "seed": 17, "trial_policy": "paired", "variation": [],

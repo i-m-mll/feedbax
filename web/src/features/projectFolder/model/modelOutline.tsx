@@ -1,6 +1,7 @@
 import { Box, Boxes, CircleDot, Paperclip, Spline } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { TreeNode } from '@/components/ui/Tree';
+import { joinText, referentName, type ShownText } from '@/components/ui/ShownText';
 import { studioName } from '@/components/activity/studioVocabulary';
 import type { ModelAddress, ModelDocument, ModelPortAttachments, ModelWire } from '@/generated/studioContracts';
 import type { Attachment } from './ModelInspector';
@@ -26,20 +27,20 @@ export interface OutlineInput {
 }
 
 /** The Model's elements as a tree: a composite holds its interior, a wire or port holds its attachments. */
-function endName(owner: GraphOwner, end: ModelWire['source'] | ModelWire['target'], registry: Registry) {
+function endName(owner: GraphOwner, end: ModelWire['source'] | ModelWire['target'], registry: Registry): ShownText {
   if (end.owner !== 'component') {
     const port = boundaryPorts(owner.ports).find((item) => item.end.owner === end.owner && item.end.port === end.port);
-    return `${studioName(end.owner === 'outputs' ? 'outputs' : 'inputs')}.${port?.name ?? end.port}`;
+    return joinText([studioName(end.owner === 'outputs' ? 'outputs' : 'inputs'), [referentName(port, end.port)]], '.');
   }
   const component = owner.interior.components?.[end.component];
   const port = component && componentPorts(end.component, component, registry).find((item) => item.end.port === end.port);
-  return `${component?.name ?? end.component}.${port?.name ?? end.port}`;
+  return joinText([[referentName(component, end.component)], [referentName(port, end.port)]], '.');
 }
 
 export function modelOutline({ model, effective, registry, attachmentName, trailing, removed }: OutlineInput): ModelOutline {
   const addresses = new Map<string, ModelAddress>();
   const parents = new Set<string>();
-  const row = (address: ModelAddress, name: string, glyph: ReactNode, children: TreeNode[] = [], renamable = false): TreeNode => {
+  const row = (address: ModelAddress, name: ShownText, glyph: ReactNode, children: TreeNode[] = [], renamable = false): TreeNode => {
     const id = addressKey(address);
     addresses.set(id, address);
     if (children.length) parents.add(id);
@@ -71,7 +72,7 @@ export function modelOutline({ model, effective, registry, attachmentName, trail
     });
     const wires = Object.entries(owner.interior.wires ?? {}).map(([id, wire]) => {
       const address = at(graph, { kind: 'wire', id });
-      return row(address, `${endName(owner, wire.source, registry)} → ${endName(owner, wire.target, registry)}`, <Spline />, attached(address, applied.wires?.[id]?.attachments));
+      return row(address, joinText([endName(owner, wire.source, registry), endName(owner, wire.target, registry)], ' → '), <Spline />, attached(address, applied.wires?.[id]?.attachments));
     });
     return [...portRows(graph, boundaryPorts(owner.ports), applied.attachments), ...components, ...wires];
   };

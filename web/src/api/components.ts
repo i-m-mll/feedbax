@@ -10,3 +10,6 @@ export async function fetchComponents() {
     throw asApiRequestError(error, path);
   }
 }
+
+/** The registered component types, read once per five minutes by every view that names their ports. */
+export const componentsQuery = { queryKey: ['components'], queryFn: fetchComponents, staleTime: 300_000 } as const;

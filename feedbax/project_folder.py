@@ -43,6 +43,7 @@ from feedbax.contracts.project import (
     BasedDocument, Document, LoadedModelDocument, Project, RootDocument, Sha256, diff, json_pointer_parts, member_name, same_json,
 )
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_storage import write_project_file
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     ProjectReadError,
@@ -72,7 +73,7 @@ from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic,
 from feedbax.plugins.declarations import declaration_package
 from feedbax.project_environment import PackageAvailability
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
-from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
+from feedbax.contracts.result_address import ANALYSIS_SCHEMA, analysis_elements, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.project_model_assets import (
     ModelAssetError, model_archive_path, portable_model_reader, publish_project_model, write_model_assets,
@@ -80,9 +81,11 @@ from feedbax.project_model_assets import (
 from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
     change_member_key, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
-    label_member, merge_cards, preserve_dangling_member, regroup_refused, split_card,
+    allocate_member_name, label_member, merge_cards, new_document_name, new_step_name,
+    preserve_dangling_member, regroup_refused, split_card,
 )
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.examples import ShippedExample
 from feedbax.studio.selection import StoredEdit, merged_files
 from feedbax.contracts.studio_project import (
     DECLARATION_ADDRESS,
@@ -101,6 +104,10 @@ from feedbax.contracts.studio_project import (
     StudioAuthoredFileRevision,
     StudioMemberCommand,
     StudioMemberCommandResult,
+    StudioMemberName,
+    StudioMemberNameRequest,
+    StudioNewDocumentName,
+    StudioNewStepName,
     StudioPresentationWrite,
     StudioProjectDocument,
     StudioProjectList,
@@ -903,7 +910,7 @@ def _read_presentation(root: Path) -> tuple[bytes | None, str]:
 
 
 def _encode_presentation(presentation: PresentationDocument) -> bytes:
-    return (presentation.model_dump_json(indent=2, exclude_unset=True) + "\n").encode()
+    return write_project_file(presentation)
 
 
 def _decode_presentation(data: bytes | None) -> PresentationDocument:
@@ -974,7 +981,7 @@ class ProjectFolder:
         local_folder: ProjectFolderLocation | None = None,
         training_methods: TrainingMethodRegistry | None = None,
         synthesis_methods: SynthesisMethodRegistry | None = None,
-        load_examples: Callable[[], Mapping[str, Project]] = dict,
+        load_examples: Callable[[], Mapping[str, ShippedExample]] = dict,
         packages: PackageAvailability | None = None,
     ) -> None:
         self.root = root.resolve()
@@ -1080,7 +1087,6 @@ class ProjectFolder:
         )
         return StudioProjectSnapshot(
             project_id=location.project_id,
-            names=names,
             variant_names={
                 key: names if project is text.project else StudioProjectMemberNames.from_project(project)
                 for key, project in variants.items()
@@ -1227,7 +1233,7 @@ class ProjectFolder:
             folder.check()
             yield plan
 
-    def project_examples(self) -> Mapping[str, Project]:
+    def project_examples(self) -> Mapping[str, ShippedExample]:
         return self._load_examples()
 
     def new(self, name: str, *, example: str | None = None) -> StudioProjectDocument:
@@ -1236,9 +1242,10 @@ class ProjectFolder:
         configuration = ProjectConfiguration(project=name, store="results")
         project = Project()
         if example is not None:
-            project = self.project_examples().get(example)
-            if project is None:
+            shipped = self.project_examples().get(example)
+            if shipped is None:
                 raise ProjectFolderNotFound(example)
+            project = shipped.project
         self.root.mkdir(parents=True, exist_ok=True)
         destination = self.root / name
         try:
@@ -1326,7 +1333,7 @@ class ProjectFolder:
 
     def publish_loaded_model(
         self, project_id: str, *, revision: str, name: str, model: LoadedModelDocument,
-        staging: ImmutableArtifactBlobProvider, raw_archive: bytes,
+        staging: ImmutableArtifactBlobProvider, raw_archive: bytes, label: str | None = None,
     ) -> StudioProjectSnapshot:
         """Commit one checked Load after its exact project assets and Store root are durable."""
         with self._locked_folder(project_id) as folder:
@@ -1365,6 +1372,7 @@ class ProjectFolder:
                 return self._snapshot(folder.location, text)
             file = CreateNamedDocument(kind="document", id=name, document=RootDocument(
                 schema=LOADED_MODEL_SCHEMA_ID, payload=model.model_dump(mode="json"),
+                label=label or new_document_name(text.project.documents, LOADED_MODEL_SCHEMA_ID).label,
             ))
             return self._create_files(folder, text, [file], before_create=publish).snapshot
 
@@ -1446,6 +1454,36 @@ class ProjectFolder:
                 text = self._load(root)
             return self._snapshot(folder.location, text)
 
+    def member_name(self, project_id: str, body: StudioMemberNameRequest) -> StudioMemberName:
+        """Allocate an authored name against the same revision as its eventual write."""
+        project = self.read_authored_snapshot(project_id, revision=body.revision).project
+        member = body.member
+        if isinstance(member, StudioNewDocumentName):
+            return new_document_name(project.documents, member.schema_id, member.label)
+        if isinstance(member, StudioNewStepName):
+            return new_step_name(project.steps, member.step)
+        if member.document not in project.documents:
+            raise ProjectFolderNotFound(f"documents/{member.document}.json")
+        entry = compose_document(project.documents.get, member.document)
+        if isinstance(entry, ProjectDiagnostic):
+            raise ProjectFolderInvalid(entry.detail)
+        if entry.schema_id != ANALYSIS_SCHEMA or not isinstance(entry.payload, dict):
+            raise ProjectFolderInvalid("Choose an Analysis document.")
+        keys = {"states", *entry.payload.get("inputs", {})}
+        labels = set()
+        for name, document in project.documents.items():
+            if document.schema_id != ANALYSIS_SCHEMA:
+                continue
+            composed = compose_document(project.documents.get, name)
+            if isinstance(composed, ProjectDiagnostic):
+                continue
+            elements = analysis_elements(composed.payload)
+            keys.update(elements)
+            labels.update(element["label"] for element in elements.values()
+                          if isinstance(element, dict) and isinstance(element.get("label"), str))
+        fallback = "operation" if member.family == "operations" else "figure"
+        return allocate_member_name(member.label, labels, keys.__contains__, fallback)
+
     def member_command(self, project_id: str, body: StudioMemberCommand) -> StudioMemberCommandResult:
         """Label a member, change its key, duplicate or detach it, or split or merge
         Analyze cards, in one write.
@@ -1470,8 +1508,7 @@ class ProjectFolder:
                 document = compose_document(text.project.documents.get, name)
                 if isinstance(document, ProjectDiagnostic):
                     raise ProjectFolderInvalid(f"{member_name(text.project.documents, name)} cannot be composed: {document.detail}")
-                label = text.project.documents[name].label
-                return document.model_dump(mode="json", by_alias=True) | ({"label": label} if label else {})
+                return document.model_dump(mode="json", by_alias=True)
 
             def element_keys() -> set[str]:
                 return {
@@ -1498,12 +1535,17 @@ class ProjectFolder:
                 raise ProjectFolderNotFound(f"steps/{member}.json")
 
             if command.kind == "split":
-                name = _free_member_name(source, "steps", member)
-                document = _free_member_name(source, "documents", source["steps"][member]["base"].get("document", member))
+                card = new_step_name(text.project.steps, "analyze", text.project.steps[member].label)
+                name = card.id
+                original = source["steps"][member]["base"].get("document")
+                document = new_document_name(
+                    text.project.documents, ANALYSIS_SCHEMA,
+                    text.project.documents[original].label if original in text.project.documents else None, copy=True,
+                )
                 try:
                     source = preserve_dangling_member(source, "steps", name)
-                    source = preserve_dangling_member(source, "documents", document)
-                    project, shown = split_card(source, shown, member, set(command.elements), document, name)
+                    source = preserve_dangling_member(source, "documents", document.id)
+                    project, shown = split_card(source, shown, member, set(command.elements), document, card)
                 except ValueError as error:
                     raise ProjectFolderInvalid(str(error)) from error
             elif command.kind == "merge":
@@ -1536,7 +1578,9 @@ class ProjectFolder:
                 elif family == "documents":
                     name, copy_label = duplicate_document_name(text.project.documents, member, command.name)
                 else:
-                    name = command.name or _free_member_name(source, family, member)
+                    step = text.project.steps[member]
+                    copy = new_step_name(text.project.steps, step.kind, step.label)
+                    name, copy_label = command.name or copy.id, copy.label
                 if name in members:
                     raise ProjectFileExists(f"{family}/{name}.json")
                 if command.kind == "change_key":
@@ -1544,7 +1588,8 @@ class ProjectFolder:
                 else:
                     source = preserve_dangling_member(source, family, name)
                     if family == "steps":
-                        project, shown = duplicate_step(source, shown, member, name)
+                        assert copy_label is not None
+                        project, shown = duplicate_step(source, shown, member, name, copy_label)
                     else:
                         copy = composed(member)
                         copy["label"] = copy_label
@@ -1560,10 +1605,6 @@ class ProjectFolder:
                 raise ProjectFolderInvalid(str(error)) from error
             original = dump_text_project(text.project, text.configuration)
             encoded = dump_text_project(validated, text.configuration)
-            if command.kind == "duplicate":
-                copied, source_file = f"{command.family}/{name}.json", f"{command.family}/{member}.json"
-                if encoded[copied] == original[source_file]:
-                    encoded[copied] = text.files[source_file]
             pending = []
             for relative in sorted(original.keys() | encoded.keys()):
                 if original.get(relative) == encoded.get(relative):

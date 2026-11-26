@@ -61,6 +61,7 @@ def _with_push(payload):
 
 def _based(data, name, content, base="model"):
     data["documents"][name] = {
+        "label": "Document",
         "schema": data["documents"][base]["schema"], "base": {"document": base},
         "differences": {
             path: value.model_dump(mode="json") for path, value in diff(_model(data, base), content).items()

@@ -166,21 +166,20 @@ def test_change_key_and_rename_recompute_no_operation_and_redraw_the_figures_tha
     plan, before = _request_ids(base)
     operations = {name for name, request in before.items() if request.startswith("analyze:")}
     assert operations == {"align", "summarize"}
-    cases = (
-        ("train", "Train x", {"profile", "models"}),
-        ("conditions", "Conditions x", {"profile"}),
-    )
-    for step, rekeyed_name, printing in cases:
+    for step, coordinate, printing in (
+        ("train", "model", {"profile", "models"}),
+        ("conditions", "source", {"profile"}),
+    ):
+        rekeyed, _ = change_key(deepcopy(base), {}, "steps", step, f"{step}_x")
+        _, after_rekey = _request_ids(rekeyed)
+        assert after_rekey == before
         renamed = deepcopy(base)
         renamed["steps"][step]["label"] = "Renamed"
-        rekeyed, _ = change_key(deepcopy(base), {}, "steps", step, f"{step}_x")
-        for edited, printed in ((renamed, "Renamed"), (rekeyed, rekeyed_name)):
-            plan, after = _request_ids(edited)
-            assert {name for name in before if before[name] != after[name]} == printing
-            label = "model" if step == "train" else "source"
-            (profile,) = (element for element in plan.elements.values() if element.key.name == "profile")
-            spec = decode_request(plan.requests[profile.request_id], plan.documents.__getitem__).spec
-            assert printed in spec.names[label].values()
+        plan, after_rename = _request_ids(renamed)
+        assert {name for name in before if before[name] != after_rename[name]} == printing
+        (profile,) = (element for element in plan.elements.values() if element.key.name == "profile")
+        spec = decode_request(plan.requests[profile.request_id], plan.documents.__getitem__).spec
+        assert "Renamed" in spec.names[coordinate].values()
 
 
 def test_a_key_two_selections_share_is_qualified_by_its_step_and_kept_across_their_edits():

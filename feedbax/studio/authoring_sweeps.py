@@ -305,6 +305,7 @@ class FieldSweeps:
 
     def write_axis(self, axis: Axis) -> list[SetProjectValue]:
         if self.can_sweep:
+            axis = axis.model_copy(update={"label": axis.label or self.label})
             if self.selected is not None:
                 axis = axis.model_copy(update={"where": self.selected.condition})
             name = self._fresh_id(self.name, self.axes)
@@ -323,7 +324,7 @@ class FieldSweeps:
                 isinstance(previous, GeneratedAxis) and self._can_list(previous)
             )
             if editable:
-                return [self._axis_write(name, axis.model_copy(update={"where": _where(previous)}))]
+                return [self._axis_write(name, axis.model_copy(update={"where": _where(previous), "label": previous.label or self.label}))]
         raise ValueError(f"{self.label} has no supported sweep edit")
 
     def edit(self, command: StudioAuthoringSweepChange, validate_number: Callable[[int | float], int | float]) -> list[SetProjectValue]:

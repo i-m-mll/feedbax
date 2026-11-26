@@ -150,7 +150,7 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
     const value: FieldModel = projection ? {
       ...trialField(view, projection, studioName('value'), runs, {
         id: `value:${variable.id}`, kind: expressionKind(variable.value),
-        changed: changedAt(view, 'task', `/variables/${index}/value`, commit), source: view.task_source ?? undefined,
+        changed: changedAt(view, 'task', `/variables/${index}/value`, commit), source: view.origin(view.task_source),
         commit: commit && ((edit) => commit(studioAccessibleName('set', variable.name), { kind: 'expression', path, edit })),
         selectedMembers: sweep ? runs?.values(sweep) : undefined,
         chooseMember: sweep && runs?.choose ? (member, extend) => runs.choose!(sweep, member, extend) : undefined,

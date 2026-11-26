@@ -44,10 +44,12 @@ def seed_labels(home: str, project_id: str):
     analysis = project.documents["velocity-analysis"].payload
     project.documents["other-analysis"] = RootDocument.model_validate({
         "schema": "feedbax.analysis_document.v1",
-        "payload": {**analysis, "operations": {"held": analysis["operations"]["align"]}, "views": {}},
+        "label": "Other analysis",
+        "payload": {**analysis, "operations": {"held": {**analysis["operations"]["align"], "label": "Held"}}, "views": {}},
     })
     project.documents["velocity-report"] = RootDocument.model_validate({
         "schema": "feedbax.report_document.v1",
+        "label": "Velocity report",
         "payload": json.loads((_FIXTURES / "velocity-summary.report.json").read_bytes()),
     })
     project.steps["report"] = Step.model_validate(json.loads((_FIXTURES / "velocity-report-step.json").read_bytes()))

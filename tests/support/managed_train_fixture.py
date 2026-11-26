@@ -16,6 +16,7 @@ COMMAND_ADDRESS = ModelAddress.model_validate({
 def managed_train_project(*, batches: int = 2, scenario: str = "simple-reaches") -> Project:
     example = load_shipped_projects()["point-mass-reaching"]
     step = example.steps[scenario]
+    step.label = "Train"
     assert isinstance(step.base, InlineBase)
     payload = step.base.inline
     payload["training_config"]["n_batches"] = batches
@@ -61,6 +62,7 @@ def managed_train_payload(*, batches: int = 2, scenario: str = "simple-reaches")
 
 def managed_evaluation_step(subject: str) -> dict:
     return {
+        "label": "Evaluate",
         "kind": "evaluate",
         "base": {"inline": {
             "evaluation_type": ROLLOUT_TYPE,

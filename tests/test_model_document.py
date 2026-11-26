@@ -35,7 +35,7 @@ def _three_levels() -> dict:
 
 def test_text_project_preserves_one_recursive_model(tmp_path: Path) -> None:
     payload = _three_levels()
-    document = RootDocument(schema=MODEL_DOCUMENT_SCHEMA_ID, payload=payload)
+    document = RootDocument(label="Document", schema=MODEL_DOCUMENT_SCHEMA_ID, payload=payload)
     project = Project(documents={"model": document})
     for name, data in dump_text_project(project, ProjectConfiguration(project="model", store="store")).items():
         path = tmp_path / name
@@ -44,7 +44,7 @@ def test_text_project_preserves_one_recursive_model(tmp_path: Path) -> None:
     assert load_text_project(tmp_path).project.documents["model"].payload == payload
     del payload["interior"]["components"]["outer"]["interior"]
     with pytest.raises(ValidationError, match="interior"):
-        RootDocument(schema=MODEL_DOCUMENT_SCHEMA_ID, payload=payload)
+        RootDocument(label="Document", schema=MODEL_DOCUMENT_SCHEMA_ID, payload=payload)
 
 
 def test_physical_ports_and_connections_are_confined_to_physical_interiors() -> None:

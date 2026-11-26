@@ -79,7 +79,7 @@ def test_a_narrowed_parameter_edit_makes_a_based_document_for_the_lit_step():
     assert reports["other-report"].inputs["velocity_summary"].element == ElementKey(_TWO, "profile")
     assert reports["report"].request_id != reports["other-report"].request_id
 
-    added = {"operation": "feedbax.summarize_velocity", "params": {"ddof": 0, "bounds_scale": 1.0},
+    added = {"label": "Operation", "operation": "feedbax.summarize_velocity", "params": {"ddof": 0, "bounds_scale": 1.0},
              "inputs": {"velocity": {"element": "align", "product": "velocity"}}}
     grown, stored = _store(
         edited, _TWO, "velocity-analysis", _edit("/operations/extra", added), {"analyze", "other"}, operations,

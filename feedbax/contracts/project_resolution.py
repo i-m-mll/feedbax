@@ -39,7 +39,6 @@ from feedbax.contracts.project import (
     StepBase,
     StepKind,
     json_pointer_parts,
-    member_display_name,
     member_name,
 )
 from feedbax.contracts.project_inputs import (
@@ -474,7 +473,7 @@ def compose_document(read_document: Callable[[str], Document | None], name: str)
     document = read_document(name)
     if document is None:
         return ProjectDiagnostic(
-            ResolutionCode.MISSING_DOCUMENT, "document", member_display_name(name), document=name, missing_subject=name,
+            ResolutionCode.MISSING_DOCUMENT, "document", name, document=name, missing_subject=name,
         )
     if isinstance(document, RootDocument):
         return document
@@ -482,7 +481,7 @@ def compose_document(read_document: Callable[[str], Document | None], name: str)
         payload = _Documents(Project(), read_document=read_document).payload(name, document, "document")
     except _Problem as error:
         return error.diagnostic
-    return RootDocument.model_construct(schema_id=document.schema_id, payload=payload)
+    return RootDocument.model_construct(schema_id=document.schema_id, label=document.label, payload=payload)
 
 
 def composed_loaded_model_projection(
@@ -530,7 +529,7 @@ class _Documents:
 
     def display_name(self, name: str) -> str:
         document = self.read_document(name)
-        return member_display_name(name, document.label if document is not None else None)
+        return document.label if document is not None else f"missing document {name!r}"
 
     def payload(self, name: str, document: Document, path: str, active: tuple[str, ...] = ()) -> JsonValue:
         """The document's payload composed with its base chain."""
@@ -551,7 +550,7 @@ class _Documents:
         base_name = document.base.document
         if document.base.unresolved:
             raise problem(
-                ResolutionCode.MISSING_DOCUMENT, "base.document", member_display_name(base_name), missing_subject=base_name,
+                ResolutionCode.MISSING_DOCUMENT, "base.document", base_name, missing_subject=base_name,
             )
         if base_name in (*active, name):
             chain = " -> ".join(self.display_name(item) for item in (*active, name, base_name))
@@ -559,9 +558,9 @@ class _Documents:
         base = self.read_document(base_name)
         if base is None:
             raise problem(
-                ResolutionCode.MISSING_DOCUMENT, "base.document", member_display_name(base_name), missing_subject=base_name,
+                ResolutionCode.MISSING_DOCUMENT, "base.document", base_name, missing_subject=base_name,
             )
-        label = member_display_name(base_name, base.label)
+        label = base.label
         if base.schema_id != document.schema_id:
             raise problem(
                 ResolutionCode.INVALID_DOCUMENT, "schema",
@@ -610,7 +609,7 @@ class _Documents:
             raise _Problem(
                 ResolutionCode.MISSING_DOCUMENT,
                 path,
-                member_display_name(reference.document),
+                reference.document,
                 step=self.step,
                 document=reference.document,
                 missing_subject=reference.document,
@@ -927,14 +926,14 @@ class _Resolver:
         step = self.project.steps.get(name)
         if step is None:
             raise _Problem(
-                ResolutionCode.MISSING_STEP, "base.step", member_display_name(name),
+                ResolutionCode.MISSING_STEP, "base.step", name,
                 step=active[-1] if active else name, missing_subject=name,
             )
         base = step.base
         if isinstance(base, StepBase):
             if base.unresolved:
                 raise _Problem(
-                    ResolutionCode.MISSING_STEP, "base.step", member_display_name(base.step),
+                    ResolutionCode.MISSING_STEP, "base.step", base.step,
                     step=name, missing_subject=base.step,
                 )
             parent = self.state(base.step, (*active, name))
@@ -1306,7 +1305,7 @@ class _Resolver:
             try:
                 selected = documents.select(reference, path)
                 document = self.project.documents[reference.document]
-                input_documents[role] = RootDocument.model_validate({"schema": document.schema_id, "payload": selected})
+                input_documents[role] = RootDocument(schema=document.schema_id, label=document.label, payload=selected)
             except _Problem as error:
                 if not partial_figures:
                     raise

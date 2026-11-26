@@ -19,12 +19,10 @@ import re
 
 from pydantic import JsonValue
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA as ANALYSIS_SCHEMA, ELEMENT_FAMILIES as ELEMENT_FAMILIES
 from feedbax.contracts.project import Document, Project, base_chain
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document, compose_step
 from feedbax.contracts.project_sweep import SweepCoordinate, coordinate_text
-
-ANALYSIS_SCHEMA = "feedbax.analysis_document.v1"
-ELEMENT_FAMILIES = ("operations", "views")
 
 _KEY = r"[A-Za-z0-9_][A-Za-z0-9_-]*"
 _ROW = r"[A-Za-z0-9_][A-Za-z0-9_=-]*"

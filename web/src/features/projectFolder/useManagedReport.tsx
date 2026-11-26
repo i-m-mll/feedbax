@@ -14,7 +14,8 @@ import {
 } from '@/generated/studioContracts';
 import { isReportFigureSource, reportFigureRole, type ReportFigureSource } from './createManagedStep';
 import type { ProjectEditController, ProjectEditSnapshot } from './projectEditController';
-import { memberNames, nameOf, type ProjectNames } from './memberNames';
+import { labelOf, nameIn, variantNames, type VariantNames } from './memberLabels';
+import { elementLabel } from './analysisElements';
 import { savedRunId } from './projectWindowPlan';
 import { SavedReportResult } from './SavedLightProducts';
 import type { GestureFailures } from './refusals';
@@ -23,16 +24,16 @@ type Block = ReportDocument['blocks'][number];
 type BlockAction = Extract<StudioCommandId, 'moveEarlier' | 'moveLater' | 'remove'>;
 
 /**
- * A figure a Report can take, named by the plan's revision: its step (unless `withStep` is false), its own name, and
- * its run when the step has several.
+ * A figure a Report can take, named as the plan's revision labels its variant, `names`: its step (unless `withStep` is
+ * false), its own label, and its run when the step has several.
  */
-export function figureName(names: ProjectNames, plan: PlanView, { key, name }: ReportFigureSource, withStep = true) {
-  const named = memberNames(names, key.variant);
+export function figureName(names: VariantNames, plan: PlanView, { key, name }: ReportFigureSource, withStep = true) {
+  const named = variantNames(names, key.variant);
   const step = plan.steps.find(({ id }) => id === key.step);
   if (!step) throw new Error(`The plan has no step ${key.step}.`);
   const run = step.runs.length > 1 ? step.runs.find(({ id }) => id === savedRunId(key)) : undefined;
   if (step.runs.length > 1 && !run) throw new Error(`The plan has no run ${savedRunId(key)}.`);
-  return outputName(...withStep ? [nameOf(named.steps, key.step)] : [], nameOf(named.elements[key.step], name),
+  return outputName(...withStep ? [nameIn(named.steps, key.step)] : [], nameIn(named.elements[key.step], name),
     ...run ? [run.label] : []);
 }
 
@@ -69,8 +70,8 @@ export function useManagedReport({
   failures: GestureFailures;
   snapshot: ProjectEditSnapshot;
   plan: PlanView;
-  /** The names of the members of the shown plan's revision. */
-  names: ProjectNames;
+  /** The labels the shown plan's revision gives the members of each variant. */
+  names: VariantNames;
   projection?: StudioSavedTrainRuns;
   variant: string | null;
   stepId?: string;
@@ -102,7 +103,7 @@ export function useManagedReport({
   const selected = selection?.scope === scope ? selection.index : undefined;
   /** A figure input's source; an unresolved one names no member, and reads by its spelling. */
   const referenceName = (step: string, element: string, unresolved?: true | null) => unresolved ? outputName(step, element)
-    : outputName(nameOf(saved.names.steps, step), nameOf(saved.names.elements[step], element));
+    : outputName(labelOf(draft.steps, step), elementLabel(draft, saved.composed, step, element));
 
   function save(name: string, at: Place, patches: StudioProjectFilePatch['patches'], nextInputs?: typeof inputs) {
     if (!editable || !stepId || !document) return false;

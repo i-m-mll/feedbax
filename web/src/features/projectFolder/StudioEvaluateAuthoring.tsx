@@ -17,7 +17,7 @@ import {
 } from './evaluateAuthoring';
 import type { AuthoredProject } from './authoredEdits';
 import { chosenDocument, documentChoice, documentGroup } from './referenceChoices';
-import type { DocumentNames } from './memberNames';
+import type { ShownDocuments } from './memberLabels';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import '@/components/values/valueField.css';
 
@@ -200,16 +200,16 @@ export function TrialsEditor({ initial, domain, disabled, refusal, count: savedC
 }
 
 /** The Task and Objective an initial Model subject declares; a checkpoint subject reads them from its Train step. */
-export function SubjectDocuments({ subject, project, documentNames, onChoose }: {
+export function SubjectDocuments({ subject, project, documents, onChoose }: {
   subject: { task?: string; objective?: string };
   project: AuthoredProject;
-  documentNames: DocumentNames;
+  documents: ShownDocuments;
   onChoose?: (kind: 'task' | 'objective', document: string) => void;
 }) {
   const labels = useId();
   return <>{(['task', 'objective'] as const).map((kind) => <FieldRow key={kind} label={studioName(kind)} labelId={`${labels}-${kind}`}>
-    <ReferenceField label={studioName(kind)} aria-labelledby={`${labels}-${kind}`} groups={[documentGroup(project, documentNames, kind)]}
-      value={subject[kind] === undefined ? null : documentChoice(documentNames, kind, subject[kind]!)}
+    <ReferenceField label={studioName(kind)} aria-labelledby={`${labels}-${kind}`} groups={[documentGroup(project, kind)]}
+      value={subject[kind] === undefined ? null : documentChoice(documents, kind, subject[kind]!)}
       onChoose={onChoose && ((choice) => { const document = chosenDocument(choice); if (document) onChoose(kind, document); })} />
   </FieldRow>)}</>;
 }

@@ -1,5 +1,6 @@
 {
   "kind": "train",
+  "label": "Simple reaches",
   "base": {
     "inline": {
       "method": "feedbax.supervised_gradient",

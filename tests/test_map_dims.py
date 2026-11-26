@@ -15,6 +15,7 @@ from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
+from feedbax.contracts.studio_project import StudioMemberName
 from feedbax.project_members import merge_cards, split_card
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support import map_probe
@@ -140,7 +141,7 @@ def _two_cards():
     documents, steps = definition["documents"], definition["steps"]
     analysis = documents["velocity-analysis"]["payload"]
     align = analysis["operations"].pop("align")
-    documents["pair-analysis"] = {"schema": documents["velocity-analysis"]["schema"], "payload": {
+    documents["pair-analysis"] = {"label": "Pair analysis", "schema": documents["velocity-analysis"]["schema"], "payload": {
         "schema_version": analysis["schema_version"],
         "inputs": {"left": {"kind": "dataset"}, "right": {"kind": "dataset"}},
         "operations": {
@@ -148,7 +149,7 @@ def _two_cards():
             for side, role in (("a", "left"), ("b", "right"))
         },
     }}
-    steps["pair"] = {"kind": "analyze", "base": {"document": "pair-analysis"}, "inputs": {
+    steps["pair"] = {"label": "Pair", "kind": "analyze", "base": {"document": "pair-analysis"}, "inputs": {
         "left": {"step": "conditions"}, "right": {"step": "conditions_b"},
     }}
     analysis["operations"]["summarize"]["inputs"]["velocity"] = {"input": "states"}
@@ -173,7 +174,11 @@ def test_outputs_of_two_cards_listed_on_a_role_stack_flat_and_split_and_merge_ch
     labels, requests = _listed(definition)
     assert labels == {"source": {"conditions", "conditions_b"}, "element": {"align_a", "align_b"}}
 
-    split, presentation = split_card(definition, {}, "pair", {"align_b"}, "pair-b-analysis", "pair_b")
+    split, presentation = split_card(
+        definition, {}, "pair", {"align_b"},
+        StudioMemberName(id="pair-b-analysis", label="Pair analysis 2"),
+        StudioMemberName(id="pair_b", label="Pair 2"),
+    )
     assert split["steps"]["analyze"]["inputs"]["states"][1]["step"] == "pair_b"
     assert _listed(split) == (labels, requests)
     merged, _ = merge_cards(split, presentation, "pair", ["pair_b"])
@@ -192,7 +197,7 @@ def test_listing_outputs_that_already_stack_listed_outputs_is_refused():
     documents["again-analysis"]["payload"]["operations"]["summarize_again"] = deepcopy(
         documents["velocity-analysis"]["payload"]["operations"]["summarize"]
     ) | {"operation": "map_probe.summarize_each"}
-    steps["again"] = {"kind": "analyze", "base": {"document": "again-analysis"}, "inputs": {"states": [
+    steps["again"] = {"label": "Again", "kind": "analyze", "base": {"document": "again-analysis"}, "inputs": {"states": [
         {"step": card, "element": "summarize", "product": "summary"} for card in ("analyze", "copy")
     ]}}
     problems = [problem for problem in _compile(definition).diagnostics if problem.step == "again"]

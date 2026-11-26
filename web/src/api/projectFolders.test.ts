@@ -10,7 +10,7 @@ const presentationRevision = 'b'.repeat(64);
 
 function snapshot(): StudioProjectSnapshot {
   return {
-    names: { documents: {}, steps: {}, elements: {} }, variant_names: {},
+    variant_names: {},
     project_id: 'reaches',
     revision,
     presentation_revision: presentationRevision,
@@ -22,12 +22,14 @@ function snapshot(): StudioProjectSnapshot {
       documents: {
         model: {
           schema: 'feedbax.spec.graph',
+          label: 'Model',
           payload: JSON.parse('{"__proto__":{"named":1},"parameters":{"width":4}}'),
         },
       },
       steps: {
         train: {
           kind: 'train',
+          label: 'Train',
           base: { document: 'model' },
           sweep: {
             axes: { rate: { path: 'training.rate', values: [0.001, 0.002] } },

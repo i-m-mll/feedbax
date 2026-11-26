@@ -29,7 +29,7 @@ from tests.support.managed_train_fixture import managed_train_project
 
 def successor_file():
     return {"kind": "step", "id": "successor", "step": {
-        "kind": "train", "base": {"step": "train"},
+        "kind": "train", "label": "Successor", "base": {"step": "train"},
         "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
         "deltas": [{
             "layer_id": "initialize",
@@ -222,6 +222,7 @@ def history_files():
     *documents, train = ordinary_files("2")
     sibling = deepcopy(train)
     sibling["id"] = "sibling"
+    sibling["step"]["label"] = "Sibling"
     sibling["step"]["base"]["inline"]["seed"] = 91
     return [*documents, train, sibling]
 

@@ -54,7 +54,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
     await document.getByRole('button', { name: 'Add Figure', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Add Figure', exact: true });
     // The picker names a figure by its step and its own name, as the snapshot names them.
-    const { names } = await snapshot();
+    const [names] = Object.values((await snapshot()).variant_names);
     await pick(dialog.getByRole('combobox', { name: 'Figures' }), `${names.steps.analyze} · ${names.elements.analyze[name]}`);
     return edit(() => dialog.getByRole('button', { name: 'Add Figure', exact: true }).click());
   }

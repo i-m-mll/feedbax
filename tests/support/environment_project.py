@@ -24,6 +24,7 @@ def rollout_project(*operations: str) -> Project:
     raw["steps"] = {
         "rollout": {
             "kind": "evaluate",
+            "label": "Rollout",
             "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
                 "seed": 17, "trial_policy": "paired", "variation": [], "trial_set": {"kind": "every_condition"},
             }}},
@@ -32,16 +33,18 @@ def rollout_project(*operations: str) -> Project:
                 "task": {"kind": "task", "source": {"document": "simple-reaches-task"}},
             },
         },
-    } | {f"analysis-{index}": analysis_step(operation, "rollout") for index, operation in enumerate(operations)}
+    } | {f"analysis-{index}": analysis_step(operation, "rollout", f"Analysis {index + 1}") for index, operation in enumerate(operations)}
     return Project.model_validate(raw)
 
 
-def analysis_step(operation: str, source: str) -> dict:
+def analysis_step(operation: str, source: str, label: str = "Analysis") -> dict:
     return {
         "kind": "analyze",
+        "label": label,
         "base": {"inline": {
             "inputs": {"states": {"kind": "dataset"}},
             "operations": {"speed": {
+                "label": "Speed",
                 "operation": operation, "params": {"velocity": "/v1/model/state/plant/effector~1velocity"},
                 "inputs": {"states": {"input": "states"}},
             }},

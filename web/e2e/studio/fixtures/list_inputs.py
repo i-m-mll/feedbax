@@ -14,12 +14,13 @@ def seed(home: str, project_id: str):
     steps = raw["steps"]
     for name in ("baseline", "report"):
         steps.pop(name, None)
-    steps["train_b"] = deepcopy(steps["train"]) | {"sweep": {"axes": {"rate": {
-        "path": "settings.optimizer.learning_rate.value", "values": [0.001, 0.003],
-    }}}}
+    steps["train_b"] = deepcopy(steps["train"]) | {
+        "label": "Train b",
+        "sweep": {"axes": {"rate": {"path": "settings.optimizer.learning_rate.value", "values": [0.001, 0.003]}}},
+    }
     conditions = steps["conditions"]
     conditions["inputs"]["subject"] = {"step": "train", "checkpoint": "last"}
-    steps["conditions_b"] = deepcopy(conditions)
+    steps["conditions_b"] = deepcopy(conditions) | {"label": "Conditions b"}
     masses = steps["conditions_b"]["sweep"]["axes"]["mass"]["values"]
     for old, (new, mass) in {"nominal": ("light", 0.5), "heavy": ("heavier", 3)}.items():
         value = masses.pop(old)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from copy import deepcopy
+from itertools import count
 import json
 import re
 from typing import Any, Literal
@@ -11,15 +12,20 @@ import unicodedata
 
 from pydantic import JsonValue
 
-from feedbax.contracts.project import Document, Project, diff, json_pointer_parts, member_display_name, member_name
+from feedbax.contracts.project import Document, Project, Step, diff, json_pointer_parts, member_name
 from feedbax.contracts.project_inputs import DocumentReference, NamedSubset, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.result_address import (
     ANALYSIS_SCHEMA, ELEMENT_FAMILIES, ElementHolders, family_documents, payload_elements, project_holders,
 )
-from feedbax.contracts.studio_project import KeyedFamily, MemberFamily
+from feedbax.contracts.studio_project import KeyedFamily, MemberFamily, StudioMemberName
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 
 type _Json = Any
 type _Rename = Callable[[str], str]
@@ -27,8 +33,6 @@ type _Rename = Callable[[str], str]
 
 def generated_name(base: str, taken: Callable[[str], bool], separator: str = "-") -> str:
     """The name Studio gives a member it creates: ``base`` while it is free, then the first free numbered name.
-
-    The rule of the interface's ``generatedName`` (``web/src/features/projectFolder/generatedName.ts``).
     """
     name, number = base, 2
     while taken(name):
@@ -36,28 +40,63 @@ def generated_name(base: str, taken: Callable[[str], bool], separator: str = "-"
     return name
 
 
-def numbered_document_label(documents: Mapping[str, Document], schema: str, base: str) -> str:
-    """Number a document display name within its picker family."""
+_DOCUMENT_NAMES = {
+    MODEL_DOCUMENT_SCHEMA_ID: ("model", "Model"),
+    LOADED_MODEL_SCHEMA_ID: ("loaded-model", "Loaded Model"),
+    TASK_DOCUMENT_SCHEMA_ID: ("task", "Task"),
+    PYTHON_TASK_SCHEMA_ID: ("task", "Task"),
+    OBJECTIVE_DOCUMENT_SCHEMA_ID: ("objective", "Objective"),
+    TRAINING_DOCUMENT_SCHEMA_ID: ("training", "Training"),
+    ANALYSIS_SCHEMA: ("analysis", "Analysis"),
+    "feedbax.report_document.v1": ("report", "Report"),
+    SET_DOCUMENT_SCHEMA_ID: ("set", "Set"),
+}
+
+
+def allocate_member_name(
+    base: str, labels: set[str], taken: Callable[[str], bool], fallback: str,
+    *, copy: bool = False, key_base: str | None = None,
+) -> StudioMemberName:
+    """Allocate a presentation label and a distinct key for a member being authored."""
+    stem, _, suffix = base.rpartition(" ")
+    if copy and stem and len(suffix) < 10 and suffix.isascii() and suffix.isdigit() and int(suffix) >= 2:
+        label = next(name for number in count(int(suffix) + 1) if (name := f"{stem} {number}") not in labels)
+    else:
+        label = generated_name(base, lambda name: name in labels or copy and name == base, " ")
+    decomposed = unicodedata.normalize("NFKD", label)
+    normalized = re.sub(r"[^a-z0-9_]+", "-", "".join(
+        symbol for symbol in decomposed if not unicodedata.category(symbol).startswith("M")
+    ).lower()).strip("-")
+    return StudioMemberName(id=generated_name(key_base or normalized or fallback, taken), label=label)
+
+
+def new_document_name(
+    documents: Mapping[str, Document], schema: str, base: str | None = None, *, copy: bool = False,
+) -> StudioMemberName:
+    """Allocate within the picker family, with a key available across all documents."""
+    fallback, default = _DOCUMENT_NAMES.get(schema, ("document", "Document"))
     task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
     family = task_schemas if schema in task_schemas else {schema}
-    shown = {
-        member_display_name(name, document.label)
-        for name, document in documents.items() if document.schema_id in family
-    }
-    return generated_name(base, lambda name: name == base or name in shown, " ")
+    labels = {document.label for document in documents.values() if document.schema_id in family}
+    return allocate_member_name(base or default, labels, documents.__contains__, fallback, copy=copy)
+
+
+def numbered_document_label(documents: Mapping[str, Document], schema: str, base: str) -> str:
+    return new_document_name(documents, schema, base, copy=True).label
 
 
 def duplicate_document_name(documents: Mapping[str, Document], member: str, key: str | None) -> tuple[str, str]:
-    """Number the source's display name and derive the new key as Studio does for a named document."""
     source = documents[member]
-    stem = re.sub(r"-[0-9]+$", "", member)
-    label = numbered_document_label(documents, source.schema_id, member_display_name(stem, source.label))
-    normalized = "".join(
-        symbol for symbol in unicodedata.normalize("NFKD", label)
-        if not unicodedata.category(symbol).startswith("M")
+    name = new_document_name(documents, source.schema_id, source.label, copy=True)
+    return key or name.id, name.label
+
+
+def new_step_name(steps: Mapping[str, Step], kind: str, base: str | None = None) -> StudioMemberName:
+    """Allocate within the kinds of step that can use the same default label."""
+    labels = {step.label for step in steps.values() if step.kind == kind}
+    return allocate_member_name(
+        base or kind.capitalize(), labels, steps.__contains__, kind, copy=base is not None, key_base=kind,
     )
-    normalized = re.sub(r"[^a-z0-9_]+", "-", normalized.lower()).strip("-")
-    return key or generated_name(normalized or stem, documents.__contains__), label
 
 
 def _renamed_prefix(family: str, old: str, new: str) -> _Rename:
@@ -397,17 +436,17 @@ def change_member_key(
 
 
 def label_member(
-    project: dict[str, JsonValue], family: Literal["documents", "steps", "elements"], member: str, label: str | None,
+    project: dict[str, JsonValue], family: Literal["documents", "steps", "elements"], member: str, label: str,
     *, document: str | None = None,
 ) -> dict[str, JsonValue]:
-    """Return the project with the document's, step's, or ``document``'s operation's or figure's, label set or cleared.
+    """Return the project with the document's, step's, or ``document``'s operation's or figure's, label set.
 
     A based document holds an element's label as a difference from its base, and holds none when the base has the
     same label. A document's own label is not composed from its base.
     """
     if family in ("documents", "steps"):
-        entry = {key: value for key, value in project[family][member].items() if key != "label"}
-        return {**project, family: {**project[family], member: entry | ({"label": label} if label else {})}}
+        entry = project[family][member] | {"label": label}
+        return {**project, family: {**project[family], member: entry}}
     assert document is not None
     typed = Project.model_validate(project)
     composed = compose_document(typed.documents.get, document)
@@ -417,8 +456,7 @@ def label_member(
     section = next((name for name in ELEMENT_FAMILIES if member in payload.get(name, {})), None)
     if section is None:
         raise KeyError(member)
-    element = {key: value for key, value in payload[section][member].items() if key != "label"}
-    payload[section][member] = element | ({"label": label} if label else {})
+    payload[section][member]["label"] = label
     entry = project["documents"][document]
     if "payload" in entry:
         entry = {**entry, "payload": payload}
@@ -442,7 +480,7 @@ def fresh_element_keys(payload: dict[str, JsonValue], taken: set[str]) -> dict[s
 
 
 def duplicate_step(
-    project: dict[str, JsonValue], presentation: dict[str, JsonValue], old: str, new: str,
+    project: dict[str, JsonValue], presentation: dict[str, JsonValue], old: str, new: str, label: str,
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
     """Return the project and presentation with step ``old`` copied as ``new``, reading the same documents and inputs.
 
@@ -451,7 +489,7 @@ def duplicate_step(
     compiles to the same requests as its source; a project sweep axis whose path addresses
     ``old`` is one path and stays on ``old``.
     """
-    copied = {**project, "steps": {**project["steps"], new: project["steps"][old]}}
+    copied = {**project, "steps": {**project["steps"], new: {**project["steps"][old], "label": label}}}
     if "sweep" in project:
         retarget = _renamed_prefix("steps", old, new)
         copied["sweep"] = _mapped_sweep(project["sweep"], lambda item: _copied_patch_targets(item, retarget), lambda path: path)
@@ -553,7 +591,7 @@ def _moved_presentation(entry: dict[str, _Json], moved: set[str]) -> tuple[dict[
 
 def split_card(
     project: dict[str, JsonValue], presentation: dict[str, JsonValue], step: str, elements: set[str],
-    document: str, card: str,
+    document: StudioMemberName, card: StudioMemberName,
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
     """Return the project and presentation with ``elements`` of Analyze card ``step`` moved to ``document``, read by
     the new card ``card``.
@@ -611,7 +649,7 @@ def split_card(
         return {family: members for family, members in sections.items() if members}, roles, bound, read
 
     moved, moved_roles, moved_bound, moved_reads = side(elements, step)
-    kept, kept_roles, kept_bound, kept_reads = side(held - elements, card)
+    kept, kept_roles, kept_bound, kept_reads = side(held - elements, card.id)
     # A role no element reads stays where it is.
     unread = {
         role: declaration for role, declaration in declarations.items()
@@ -630,20 +668,20 @@ def split_card(
     documents = {
         **project["documents"],
         source: {**project["documents"][source], "payload": old},
-        document: {"schema": ANALYSIS_SCHEMA, "payload": new},
+        document.id: {"schema": ANALYSIS_SCHEMA, "label": document.label, "payload": new},
     }
     original = project["steps"][step]
-    steps = _references_retargeted(project, elements, {step}, card)
+    steps = _references_retargeted(project, elements, {step}, card.id)
     steps[step] = {**steps[step], "inputs": kept_bound}
-    steps[card] = {
-        "kind": "analyze", "base": {"document": document}, "inputs": moved_bound,
+    steps[card.id] = {
+        "kind": "analyze", "label": card.label, "base": {"document": document.id}, "inputs": moved_bound,
         **({"group": original["group"]} if "group" in original else {}),
     }
     split = {**project, "documents": documents, "steps": steps}
     shown = dict(presentation)
     if source in shown.get("documents", {}):
         stays, moves = _moved_presentation(shown["documents"][source], elements)
-        shown["documents"] = {**shown["documents"], source: stays, document: moves}
+        shown["documents"] = {**shown["documents"], source: stays, document.id: moves}
     return split, shown
 
 
@@ -661,7 +699,7 @@ def merge_cards(
         raise ValueError("Choose two or more distinct Analyze cards.")
     for name in cards:
         if (refusal := regroup_refusal(project, name)) is not None:
-            raise ValueError(f"{member_display_name(name, project['steps'].get(name, {}).get('label'))}: {refusal}")
+            raise ValueError(f"{project['steps'][name]['label'] if name in project['steps'] else name}: {refusal}")
     holders = project_holders(Project.model_validate(project))
     joined = set(cards)
     target = project["steps"][card]["base"]["document"]
@@ -722,7 +760,7 @@ def merge_cards(
         for family in ELEMENT_FAMILIES:
             for element, value in own.get(family, {}).items():
                 if any(element in members for members in sections.values()):
-                    raise ValueError(f"The joined cards both contain {member_display_name(element, value.get('label'))}.")
+                    raise ValueError(f"The joined cards both contain {value['label']}.")
                 sections[family][element] = _wired(value, wire)
                 if name != card:
                     moved.add(element)

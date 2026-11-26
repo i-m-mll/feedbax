@@ -138,11 +138,11 @@ def _task_binding(document):
 
 
 def _operation(name, **inputs):
-    return {"operation": f"{witness.PACKAGE}.{name}", "inputs": inputs}
+    return {"label": "Operation", "operation": f"{witness.PACKAGE}.{name}", "inputs": inputs}
 
 
 def _analyze(document, **inputs):
-    return {"kind": "analyze", "base": {"document": document}, "inputs": inputs}
+    return {"label": "Analyze", "kind": "analyze", "base": {"document": document}, "inputs": inputs}
 
 
 def _project():
@@ -168,7 +168,7 @@ def _project():
     }
     return Project.model_validate({
         "documents": {
-            name: {"schema": schema, "payload": payload}
+            name: {"label": "Document", "schema": schema, "payload": payload}
             for name, schema, payload in (
                 ("fixed-model", MODEL_DOCUMENT_SCHEMA_ID, _fixed_point_model()),
                 ("feedback-model", MODEL_DOCUMENT_SCHEMA_ID, _feedback_model()),
@@ -180,6 +180,7 @@ def _project():
         },
         "steps": {
             "rollout": {
+                "label": "Rollout",
                 "kind": "evaluate",
                 "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
                     "seed": 17, "trial_policy": "paired", "variation": {},
