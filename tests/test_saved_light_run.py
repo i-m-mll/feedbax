@@ -350,7 +350,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         figure_url = figure["products"]["figure"]
         figure_response = expect(client.get(figure_url))
         assert [trace["name"] for trace in figure_response.json()["data"] if trace.get("showlegend", True)] == [
-            "Baseline",
+            definition["steps"]["baseline"]["label"],
         ]
         report_url = report["light"]["result"]["products"]["report"]
         rendered = expect(client.get(report_url))
@@ -380,12 +380,14 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         assert stable_align | {"products": old_align["products"]} == old_align
         assert expect(client.get(stable_align["products"]["velocity"])).json() == aligned_descriptor
         assert {stale[name]["status"] for name in ("summarize", "profile")} == {stale_report["status"]} == {"stale"}
+        analysis = definition["documents"]["velocity-analysis"]["payload"]
         assert stale["summarize"]["changed"]["place"] == {
-            "part": "analysis", "element": "summarize", "name": "summarize", "field": "/params/bounds_scale",
+            "part": "analysis", "element": "summarize", "name": analysis["operations"]["summarize"]["label"],
+            "field": "/params/bounds_scale",
         }
         assert "bounds_scale" in stale["summarize"]["changed"]["path"]
         assert stale["profile"]["changed"]["place"] == {
-            "part": "analysis", "element": "profile", "name": "profile", "field": "/inputs/summary",
+            "part": "analysis", "element": "profile", "name": analysis["views"]["profile"]["label"], "field": "/inputs/summary",
         }
         assert "inputs.summary" in stale["profile"]["changed"]["path"]
         assert stale_report["light"]["changed"]["place"] == {"part": "input", "role": "velocity_summary"}

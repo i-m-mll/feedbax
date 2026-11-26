@@ -34,7 +34,9 @@ def _axis_fields(
     ids = [coordinate.value_id if coordinate is not None else None for coordinate in coordinates]
     labels = [coordinate.label if coordinate is not None else None for coordinate in coordinates]
     values = [coordinate.value if coordinate is not None else None for coordinate in coordinates]
-    fields = {name: Variable(_host_values(ids), (dim,))}
+    axis_labels = {coordinate.axis_label for coordinate in coordinates if coordinate is not None}
+    axis = axis_labels.pop() if len(axis_labels) == 1 else None
+    fields = {name: Variable(_host_values(ids), (dim,), label=axis)}
     if any(label is not None for label in labels):
         fields[f"{name}.label"] = Variable(_host_values(labels), (dim,))
     if any(value is not None for value in values):
@@ -47,7 +49,7 @@ def _axis_fields(
             numeric = np.asarray(values)
         if numeric is None or numeric.dtype.kind not in "biuf" or numeric.tolist() != values:
             numeric = _host_values(values)
-        fields[f"{name}.value"] = Variable(numeric, (dim,))
+        fields[f"{name}.value"] = Variable(numeric, (dim,), label=axis)
     return fields
 
 
@@ -63,11 +65,11 @@ def _label_coords(layout: StackLayout) -> dict[str, Variable]:
         else:
             coords.update(_axis_fields(name, MEMBER, [member.coordinates.get(name) for member in layout.members]))
     for name, coordinate in layout.constant.items():
-        coords[name] = Variable(_scalar(coordinate.value_id), ())
+        coords[name] = Variable(_scalar(coordinate.value_id), (), label=coordinate.axis_label)
         if coordinate.label is not None:
             coords[f"{name}.label"] = Variable(_scalar(coordinate.label), ())
         if coordinate.value is not None:
-            coords[f"{name}.value"] = Variable(_scalar(coordinate.value), ())
+            coords[f"{name}.value"] = Variable(_scalar(coordinate.value), (), label=coordinate.axis_label)
     return coords
 
 
@@ -262,6 +264,7 @@ def dataset_entries(
                 str(value(name)),
                 cast(str | None, value(f"{name}.label")) if f"{name}.label" in labels else None,
                 value(f"{name}.value") if f"{name}.value" in labels else None,
+                axis_label=fields[name].label,
             )
             for name in labels if name != MEMBER and "." not in name and value(name) is not None
         }

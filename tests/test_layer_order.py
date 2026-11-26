@@ -52,6 +52,7 @@ LAYERS: tuple[tuple[str, ...], ...] = (
     ("feedbax.objectives",),
     ("feedbax.synthesis",),
     ("feedbax.execution",),
+    ("feedbax.linear",),
     ("feedbax.training",),
     ("feedbax.analysis", "feedbax.pca"),
     ("feedbax.plot",),
