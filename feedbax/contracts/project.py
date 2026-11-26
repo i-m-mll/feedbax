@@ -129,7 +129,7 @@ class RootDocument(StrictModel):
     """A document whose file holds its whole payload. ``label`` is only what Studio shows, and enters no request."""
 
     schema_id: NonemptyText = Field(alias="schema")
-    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
+    label: NonemptyText
     payload: JsonValue
 
     @model_validator(mode="after")
@@ -171,7 +171,7 @@ class BasedDocument(StrictModel):
     """
 
     schema_id: NonemptyText = Field(alias="schema")
-    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
+    label: NonemptyText
     base: DocumentBase
     differences: Differences = Field(default_factory=dict)
 
@@ -310,7 +310,7 @@ class Step(StrictModel):
     ``label`` is only what Studio and the CLI show, and enters no request, run key or reference."""
 
     kind: StepKind
-    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
+    label: NonemptyText
     base: Base
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
     sweep: Sweep | None = None

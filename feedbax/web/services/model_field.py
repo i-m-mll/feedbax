@@ -475,7 +475,7 @@ def model_fields(
             scoped=bool(body.rows or body.axes),
             address=field.address, problems=_held_problems(field, functions, period)
             or (_held_problems(resolved, functions, period) if resolved is not None else []),
-            sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
+            sources=[StudioPlanReviewSource.from_source(source) for source in sources],
             changed=changed,
         )
         if field.window_offset or field.address.element.path[0] == "operands" and isinstance(field.address.element.parent, AttachmentElement):

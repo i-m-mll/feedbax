@@ -1051,7 +1051,6 @@ class ProjectFolder:
         )
         return StudioProjectSnapshot(
             project_id=location.project_id,
-            names=names,
             variant_names={
                 key: names if project is text.project else StudioProjectMemberNames.from_project(project)
                 for key, project in variants.items()

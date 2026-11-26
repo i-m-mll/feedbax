@@ -1,5 +1,6 @@
 {
   "kind": "train",
+  "label": "Stabilization",
   "base": {
     "inline": {
       "method": "feedbax.supervised_gradient",

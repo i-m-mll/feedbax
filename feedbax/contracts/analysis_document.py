@@ -46,7 +46,7 @@ class OperationElement(StrictModel):
     """An operation; its key is held by one family of Analysis documents, and ``label`` is only shown."""
 
     operation: NonemptyText
-    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
+    label: NonemptyText
     inputs: dict[ProjectName, DatasetSource]
     params: dict[str, JsonValue] = Field(default_factory=dict)
 
@@ -58,7 +58,7 @@ class FigureElement(StrictModel, Generic[_Figure]):
     """A view's figure source and its dataset wiring; ``label`` is only shown."""
 
     figure: _Figure
-    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
+    label: NonemptyText
     inputs: dict[ProjectName, DatasetSource]
 
 

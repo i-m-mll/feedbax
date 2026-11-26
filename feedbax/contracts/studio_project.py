@@ -7,9 +7,8 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, Field, FiniteFloat, JsonValue, model_validator
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
-from feedbax.contracts.project import Document, Project, Sha256, Step
+from feedbax.contracts.project import Document, Project, Sha256, Step, StepKind
 from feedbax.contracts.project import ProjectValueEdit as ProjectValueEdit
 from feedbax.contracts.project import RemoveProjectValue as RemoveProjectValue
 from feedbax.contracts.project import SetProjectValue as SetProjectValue
@@ -88,22 +87,20 @@ class StudioProjectMemberNames(StrictModel):
     def from_project(cls, project: Project) -> StudioProjectMemberNames:
         elements = {}
         for card in analyze_cards(project):
-            names = {}
-            for key, member in analysis_elements(authored_analysis_payload(project, card)).items():
-                label = member.get("label") if isinstance(member, dict) else None
-                names[key] = member_display_name(key, label if isinstance(label, str) else None)
-            elements[card] = names
+            elements[card] = {
+                key: member["label"]
+                for key, member in analysis_elements(authored_analysis_payload(project, card)).items()
+                if isinstance(member, dict) and isinstance(member.get("label"), str)
+            }
         return cls(
-            documents={key: member_display_name(key, document.label) for key, document in project.documents.items()},
-            steps={key: member_display_name(key, step.label) for key, step in project.steps.items()},
+            documents={key: document.label for key, document in project.documents.items()},
+            steps={key: step.label for key, step in project.steps.items()},
             elements=elements,
         )
 
 
 class StudioProjectSnapshot(StudioProjectRevision):
     project: Project
-    names: StudioProjectMemberNames
-    """The authored document and step names used by project-wide pickers and before selecting a variant."""
     variant_names: dict[str, StudioProjectMemberNames]
     """Effective names keyed by expanded project variant."""
     semantic_root: Sha256
@@ -224,10 +221,10 @@ class _KeyedMember(StrictModel):
 
 
 class RenameMember(_KeyedMember):
-    """Set or clear the label of a document, step, operation or figure; no key, reference, run or request changes."""
+    """Set the label of a document, step, operation or figure; no key, reference, run or request changes."""
 
     kind: Literal["rename"]
-    label: NonemptyText | None
+    label: NonemptyText
 
 
 class ChangeKey(_KeyedMember):
@@ -311,6 +308,37 @@ class StudioAnalyzeStep(Step):
 
 class StudioReportStep(Step):
     kind: Literal["report"]
+
+
+class StudioNewDocumentName(StrictModel):
+    kind: Literal["document"]
+    schema_id: NonemptyText
+    label: NonemptyText | None = None
+
+
+class StudioNewStepName(StrictModel):
+    kind: Literal["step"]
+    step: StepKind
+
+
+class StudioNewElementName(StrictModel):
+    kind: Literal["element"]
+    document: ProjectName
+    family: Literal["operations", "views"]
+    label: NonemptyText
+
+
+class StudioMemberNameRequest(StrictModel):
+    revision: Sha256
+    member: Annotated[
+        StudioNewDocumentName | StudioNewStepName | StudioNewElementName,
+        Field(discriminator="kind"),
+    ]
+
+
+class StudioMemberName(StrictModel):
+    id: ProjectName
+    label: NonemptyText
 
 
 class CreateNamedDocument(StrictModel):

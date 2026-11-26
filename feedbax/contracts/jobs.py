@@ -11,7 +11,6 @@ from pydantic import ConfigDict, Field, FiniteFloat, JsonValue
 from feedbax.contracts.artifact_custody import StoreTransferProgress
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.code_validity import AttemptProvenance
-from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, OpeningObservation, OpeningStep, TargetId
 from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.loaded_model import ImportedModelProvenance
@@ -21,7 +20,7 @@ from feedbax.contracts.request_refs import RequestKind
 from feedbax.contracts.model_origin import ModelOrigin, ModelProductKey
 from feedbax.contracts.project_inputs import SelectedAxisValueProblem, StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
-from feedbax.contracts.project_sources import SourceKind
+from feedbax.contracts.project_sources import SourceKind, ValueSource
 from feedbax.contracts.project_sweep import SweepException
 from feedbax.contracts.studio_place import StudioPlace, definition_place, path_parts
 from feedbax.contracts.trial_clock import TrialMeanSelection
@@ -364,7 +363,7 @@ class StudioProjectWindowMapAxisValue(StrictModel):
     and the value, which no stored key can be."""
 
     id: str
-    label: str
+    name: str
     value_label: str
     """The label under the axis heading, including the value's unit when present."""
     rule: str
@@ -375,7 +374,7 @@ class StudioProjectWindowMapAxis(StrictModel):
     """An axis a step's runs carry, with its values in order: numbers by number, other values as the runs give them."""
 
     id: str
-    label: str
+    name: str
     values: list[StudioProjectWindowMapAxisValue]
 
 
@@ -409,8 +408,8 @@ class StudioProjectWindowMapProblem(StrictModel):
     step: str | None
     row: str | None
     place: StudioPlace | None
-    subject_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
-    """The display name of a reference target that does not exist."""
+    missing_subject: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The key of a reference target that does not exist."""
     document_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     address: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -432,7 +431,7 @@ class StudioProjectWindowMapProblem(StrictModel):
                 element=diagnostic.element, element_name=diagnostic.element_name, member=diagnostic.model_address,
                 variation=lambda _name: diagnostic.variation_target,
             ) if diagnostic.step else None,
-            subject_name=member_display_name(diagnostic.missing_subject) if diagnostic.missing_subject is not None else None,
+            missing_subject=diagnostic.missing_subject,
             document_path=diagnostic.document_path, address=diagnostic.authored_file or source,
             layer=diagnostic.layer, authored_path=diagnostic.authored_path,
             span=diagnostic.span, selection_value=diagnostic.selection_value,
@@ -454,13 +453,21 @@ class StudioPlanRequest(StudioPlanRequestAddress):
 
 class StudioPlanReviewSource(StrictModel):
     kind: SourceKind
-    name: str
+    key: str
     path: str
     step: str | None = Field(default=None, exclude_if=lambda value: value is None)
     axis: str | None = Field(default=None, exclude_if=lambda value: value is None)
     value: str | None = Field(default=None, exclude_if=lambda value: value is None)
     variant: str | None = Field(default=None, exclude_if=lambda value: value is None)
     row: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+    @classmethod
+    def from_source(cls, source: ValueSource) -> StudioPlanReviewSource:
+        return cls(
+            kind=source.kind, key=source.name, path=source.path, step=source.step,
+            axis=source.axis, value=source.value, variant=source.variant, row=source.row,
+        )
 
 
 class StudioPlanReviewEntry(StudioPlanRequest):
