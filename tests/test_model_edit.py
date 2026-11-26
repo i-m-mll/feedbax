@@ -91,7 +91,7 @@ def test_boundary_growth_reviews_and_stores_a_port(scope, grow_source):
     wire = next(wire for wire in wires if wire[side]["owner"] == empty["owner"])
     port = next(port for port in saved["ports"][empty["owner"]] if port["id"] == wire[side]["port"])
     assert port["id"] != empty["port"]
-    assert port["name"] == ("in" if grow_source else "out")
+    assert port["name"] == ("in" if grow_source else "Output")
     expected = SCALAR.type if grow_source else SignalType()
     assert port["type"] == expected.model_dump(mode="json")
 

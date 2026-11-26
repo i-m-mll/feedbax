@@ -103,6 +103,32 @@ def _two_readers(data):
     return data
 
 
+def test_wiring_new_outputs_assigns_names_used_by_objective_authoring(tmp_path):
+    project = _Project(tmp_path, _data())
+    graph = {"composites": [], "element": {"kind": "graph"}}
+    operation = {
+        "op": "connect", "graph": graph,
+        "source": {"owner": "component", "component": "readout", "port": "output"},
+        "target": {"owner": "outputs", "port": "__new_port__"},
+        "grow_target": True,
+    }
+    with project.client:
+        project.edit(operation)
+        project.edit(operation)
+        ports = project.composed("model")["ports"]["outputs"]
+        added = list(ports)[-2:]
+        assert [ports[key]["label"] for key in added] == ["Output", "Output 2"]
+        assert all(key != ports[key]["label"] for key in added)
+
+        response = project.client.post(f"{_URL}/authoring/trials", json={
+            "revision": project.snapshot()["revision"], "run": project.run("fee"),
+        })
+        assert response.status_code == 200, response.text
+        names = {item["value"]["name"] for item in response.json()["outputs"]}
+        assert {"Output", "Output 2"} <= names
+        assert not names.intersection(added)
+
+
 def test_studio_authorizes_attachment_defaults_from_the_source_shape(tmp_path):
     shapes = {"scalar": [], "single": [1], "vector": [3]}
     inputs = {name: {"label": name.title(), "type": {"base": "real", "shape": shape}}

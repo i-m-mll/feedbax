@@ -1995,8 +1995,10 @@ def trial_authoring(
         reads_model=compiled.reads_model if compiled else False,
         tasks=tasks, task_problems=task_problems,
         input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
-        outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
-                 for value in paired.model.outputs] if paired else [],
+        outputs=[StudioTrialOutput(
+            address=ModelAddress.from_text(value.id),
+            value=value.model_copy(update={"name": ".".join(output_paths.get(value.id, (value.name,)))}),
+        ) for value in paired.model.outputs] if paired else [],
         resets=resets, unresolved_links=unresolved_links,
         fields=fields, **sites.tables(fields), problems=[
             *(_authored_trial_problem(problem) for problem in (*projected.problems, *field_problems)), *refused,
