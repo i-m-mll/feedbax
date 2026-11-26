@@ -645,7 +645,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   expect(child).toMatchObject({
     base: { step: 'train' }, inputs: { checkpoint: { step: 'train', checkpoint: 'last' } },
   });
-  expect(child?.deltas?.at(-1)?.patches).toEqual([
+  expect(child?.deltas?.at(-1)?.patches?.map(({ op = 'replace', ...patch }) => ({ op, ...patch }))).toEqual([
     { op: 'replace', path: 'training_config.n_batches', value: 4 },
   ]);
   expect(edited.project.steps?.train).toEqual(initial.project.steps?.train);
