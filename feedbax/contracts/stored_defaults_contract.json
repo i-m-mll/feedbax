@@ -1641,6 +1641,10 @@
     }
   },
   "feedbax.contracts.stored_model.StoredDelayAttachment": {
+    "delay": {
+      "value": 1.0,
+      "unit": "st"
+    },
     "initial_source": {
       "kind": "value",
       "value": 0
@@ -1802,7 +1806,13 @@
   "feedbax.contracts.window.StoredWindowPosition": {
     "offset": null
   },
-  "feedbax.contracts.window.StoredWindowRelativePosition": {},
+  "feedbax.contracts.window.StoredWindowRelativePosition": {
+    "offset": {
+      "kind": "literal",
+      "value": 1,
+      "unit": "st"
+    }
+  },
   "feedbax.contracts.window.WindowEpoch": {
     "occurrence": null
   },
