@@ -16,6 +16,8 @@ from feedbax.contracts.project import (
     OrderDocumentMembers,
     RemoveDocumentValue,
     SetDocumentValue,
+    SetProjectValue,
+    apply_document_edit,
     apply_differences,
     diff,
 )
@@ -144,10 +146,45 @@ def test_stored_sweeps_write_keyed_members_while_lowered_variation_can_use_ids()
     assert stored == {"members": {"first": {"value": 1}}}
 
     lowered = {"members": [{"id": "first", "value": 1}]}
-    with pytest.raises(ValueError, match="cannot traverse missing segment"):
+    with pytest.raises(ValueError, match="cannot traverse an array"):
         apply_stored_patch_in_place(lowered, patch)
     apply_override_patch_in_place(lowered, patch)
     assert lowered == {"members": [{"id": "first", "value": 2}]}
+
+
+def test_only_expression_arguments_accept_stored_array_indices():
+    payload = {
+        "variable": {"kind": "call", "function": "vector", "args": [{"kind": "literal", "value": 1}]},
+        "weights": [1],
+    }
+    expression_write = OverridePatch(path="variable.args.0.value", value=2)
+    apply_stored_patch_in_place(payload, expression_write)
+    assert payload["variable"]["args"][0]["value"] == 2
+
+    with pytest.raises(ValueError, match="cannot traverse an array"):
+        apply_stored_patch_copy(payload, OverridePatch(path="weights.0", value=2))
+    with pytest.raises(ValueError, match="non-negative decimal index"):
+        apply_stored_patch_copy(payload, OverridePatch(path="variable.args.00.value", value=2))
+
+    apply_document_edit(payload, SetProjectValue(op="add", path="/weights/0", value=2), 2)
+    assert payload["weights"] == [2, 1]
+
+
+def test_link_members_require_pointers_and_link_named_variables_are_addressable():
+    payload = {
+        "links": {"inputs.load": "old-variable"},
+        "task_links": {},
+        "variables": {"links": {"label": "link values", "type": {"base": "real"}, "value": 1}},
+    }
+    with pytest.raises(ValueError, match="Link members require a JSON pointer"):
+        apply_stored_patch_copy(payload, OverridePatch(path="links.inputs.load", value="new-variable"))
+    with pytest.raises(ValueError, match="Link members require a JSON pointer"):
+        apply_stored_patch_in_place(payload, OverridePatch(op="remove", path="task_links.old"))
+
+    derived = apply_differences(payload, {"/links/inputs.load": SetDocumentValue(value="new-variable")})
+    assert derived["links"] == {"inputs.load": "new-variable"}
+    apply_stored_patch_in_place(payload, OverridePatch(path="variables.links.value", value=2))
+    assert payload["variables"]["links"]["value"] == 2
 
 
 def test_a_set_entry_cannot_store_a_collection_order():
