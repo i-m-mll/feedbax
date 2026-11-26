@@ -50,14 +50,18 @@ def trial_document_slots(payload: Mapping) -> tuple[Mapping, str]:
 _TRIAL_TASK = TypeAdapter(StoredTaskDocument | PythonTaskSelection)
 
 
-def trial_task_slot(value: object, *, path: str = "task") -> TaskDocument | PythonTaskSelection:
+def stored_trial_task_slot(value: object, *, path: str = "task") -> StoredTaskDocument | PythonTaskSelection:
     from feedbax.project_folder import ProjectFolderInvalid
 
     try:
-        task = _TRIAL_TASK.validate_python(value)
-        return task.lower() if isinstance(task, StoredTaskDocument) else task
+        return _TRIAL_TASK.validate_python(value)
     except ValidationError as error:
         raise ProjectFolderInvalid(f"{path} does not contain a Task or Python task selection.") from error
+
+
+def trial_task_slot(value: object, *, path: str = "task") -> TaskDocument | PythonTaskSelection:
+    task = stored_trial_task_slot(value, path=path)
+    return task.lower() if isinstance(task, StoredTaskDocument) else task
 
 
 def _trial_document[Document: BaseModel](path: str, value: object, schema: type[Document]) -> Document:

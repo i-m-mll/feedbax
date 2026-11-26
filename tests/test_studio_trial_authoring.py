@@ -13,7 +13,8 @@ from feedbax.execution.trial_resolution import evaluation_conditions
 from feedbax.contracts.expression_values import LENGTH, CallValue, LiteralValue, NameValue, UnresolvedValue
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.stored_model import StoredModelDocument
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID, StoredTaskDocument
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
@@ -56,6 +57,11 @@ def _python_project():
     documents.update(task=None, python_task={"document": "task"})
     raw["steps"]["baseline"]["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": 1}
     return raw
+
+
+def _install_python_model(raw):
+    raw["documents"]["reach-model"]["payload"] = _stored_model_payload()
+    raw["steps"]["train"]["base"]["inline"]["trial_documents"]["input_bindings"] = {"task-input": "reach_target"}
 
 
 @pytest.mark.parametrize("competing_label", [False, True])
@@ -560,8 +566,7 @@ def test_task_saves_unresolved_text_and_binds_it_when_a_variable_appears(tmp_pat
 
 def test_python_task_integer_sweep_uses_registered_site():
     raw = _python_project()
-    model = _stored_model_payload()
-    raw["documents"]["reach-model"]["payload"] = model
+    _install_python_model(raw)
     raw["documents"]["task"]["payload"]["params"]["n_steps"] = 11
     raw["steps"].pop("baseline")
     raw["steps"]["train"]["sweep"] = {"axes": {"length": {
@@ -579,7 +584,7 @@ def test_python_task_integer_sweep_uses_registered_site():
 
 def test_memoized_plan_uses_supplied_python_tasks():
     raw = _python_project()
-    raw["documents"]["reach-model"]["payload"] = _stored_model_payload()
+    _install_python_model(raw)
     raw["steps"].pop("baseline")
     reaching = application_python_tasks().declaration_record(REACHING_TASK)
     registry = PythonTaskRegistry()
@@ -625,7 +630,7 @@ def test_saved_window_applies_current_registry_to_canonical_python_selection(tmp
 
     compiler_tasks, window_tasks = registry("compiler"), registry("window")
     raw = _python_project()
-    raw["documents"]["reach-model"]["payload"] = _stored_model_payload()
+    _install_python_model(raw)
     raw["steps"].pop("baseline")
     raw["documents"]["objective"]["payload"]["terms"] = {
         "command": {"measure": {"kind": "literal", "value": 1}},
@@ -654,7 +659,7 @@ def test_saved_window_applies_current_registry_to_canonical_python_selection(tmp
 
 def test_window_gives_unadmitted_train_runs_their_task_conditions(tmp_path):
     raw = _python_project()
-    raw["documents"]["reach-model"]["payload"] = _stored_model_payload()
+    _install_python_model(raw)
     raw["steps"].pop("baseline")
     tasks = application_python_tasks()
     folders = ProjectFolderService(tmp_path, python_tasks=tasks)
@@ -677,7 +682,7 @@ def test_window_gives_unadmitted_train_runs_their_task_conditions(tmp_path):
 @pytest.mark.parametrize("kind", ["step", "axis_value", "rows", "variant"])
 def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
     raw = _python_project()
-    raw["documents"]["reach-model"]["payload"] = _stored_model_payload()
+    _install_python_model(raw)
     raw["steps"].pop("baseline")
     selected, other = RunKey("default", "train", "default"), RunKey("default", "other", "default")
     scope = {"kind": "step" if kind == "variant" else kind}
@@ -974,14 +979,15 @@ def test_objective_offsets_project_paired_editable_fields(tmp_path):
         assert field(cleared, start)["text"] == ""
 
         edit(end, "linspace(3 st, 5 st, 3)")
-        runs = folders.read_plan("window", revision=body["revision"]).plan.runs
-        assert len(runs) == 3 and all(run.admission_problem is None for run in runs)
+        plan = folders.read_plan("window", revision=body["revision"]).plan
+        runs = plan.runs
+        assert len(runs) == 3 and all(run.admission_problem is None for run in runs), plan.diagnostics
         assert len({run.request_id for run in runs}) == 3
 
 
 def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader(tmp_path):
     raw = _python_project()
-    raw["documents"]["reach-model"]["payload"] = _stored_model_payload()
+    _install_python_model(raw)
     raw["steps"].pop("baseline")
     raw["steps"]["other"] = {"label": "Other", "kind": "train", "base": {"step": "train"}}
     raw["documents"]["objective"]["label"] = "Simple reaches Objective"
@@ -1076,7 +1082,7 @@ def test_whole_step_weight_sweep_writes_without_asking_about_its_new_rows(tmp_pa
 
 def test_scoped_rename_asks_before_changing_an_unselected_inheritor(tmp_path):
     raw = _python_project()
-    raw["documents"]["reach-model"]["payload"] = _stored_model_payload()
+    _install_python_model(raw)
     raw["steps"].pop("baseline")
     raw["steps"]["other"] = {"label": "Other", "kind": "train", "base": {"step": "train"}}
     raw["documents"]["objective"]["payload"]["terms"] = {
@@ -1145,9 +1151,11 @@ def test_an_evaluate_task_choice_in_a_variant_is_its_row_s_task_reference(tmp_pa
 @pytest.mark.parametrize("variant", ["default", "treated"])
 def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path, variant):
     from feedbax.contracts.rollout import ROLLOUT_TYPE
-    from web.e2e.studio.fixtures.evaluate_authoring import _train_definition
 
-    raw = _train_definition()
+    raw = document_project(authored_documents())
+    raw["documents"]["task"]["payload"]["variables"]["target"]["value"] = CallValue(
+        function="vector", args=(LiteralValue(value=0.18, unit="m"), LiteralValue(value=0.05, unit="m")),
+    ).model_dump(mode="json")
     raw["steps"]["check"] = {"label": "Check", "kind": "evaluate", "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
         "seed": 731, "trial_policy": "paired", "variation": [], "trial_set": {"kind": "every_condition"},
     }}}, "inputs": {"subject": {"step": "train", "checkpoint": "last"}}}
@@ -1434,9 +1442,40 @@ def test_expression_menu_reuses_the_exact_projected_pairing(tmp_path, monkeypatc
         assert stale.status_code == 409 and stale.json()["detail"]["current"] == revision
 
 
+def _stored_editor_project():
+    literal = {"kind": "literal", "value": 1}
+    return {
+        "documents": {
+            "model": {
+                "label": "Model", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID,
+                "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}},
+            },
+            "task": {
+                "label": "Task", "schema": STORED_TASK_DOCUMENT_SCHEMA_ID,
+                "payload": {"id": "task", "variables": {}, "signals": {}, "epochs": {
+                    "move": {"label": "Move", "end": {"kind": "length", "length": literal | {"unit": "st"}}},
+                }},
+            },
+            "objective": {
+                "label": "Objective", "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID,
+                "payload": {"id": "objective", "terms": {"effort": {"measure": literal}}},
+            },
+        },
+        "steps": {
+            "train": {"label": "Train", "kind": "train", "base": {"inline": {
+                "method": "feedbax.supervised_gradient",
+                "settings": {"optimizer": {
+                    "type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.001},
+                }},
+                "training_config": {"n_batches": 2, "batch_size": 2},
+                "trial_documents": {role: {"document": role} for role in ("model", "task", "objective")},
+            }}},
+        },
+    }
+
+
 def test_objective_add_allocates_across_based_documents_and_order_keeps_local_values(tmp_path):
-    raw = _python_project()
-    raw["steps"].pop("baseline")
+    raw = _stored_editor_project()
     objective = raw["documents"]["objective"]
     effort = {"measure": {"kind": "literal", "value": 1}}
     objective["payload"]["terms"] = {"effort": effort}
@@ -1485,7 +1524,7 @@ def test_objective_add_allocates_across_based_documents_and_order_keeps_local_va
 
 
 def test_task_structure_allocates_a_valid_key_without_changing_the_label(tmp_path):
-    raw = document_project(authored_documents())
+    raw = _stored_editor_project()
     signals = raw["documents"]["task"]["payload"]["signals"]
     signals["variable-1-rate"] = {"label": "Rate signal", "type": {"base": "real"}, "cells": {}}
     name = "keyed-task-add"

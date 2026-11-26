@@ -212,6 +212,7 @@ def _same_stored_value(left: JsonValue, right: JsonValue, *, real_site: bool) ->
 
 def _projected_file(
     model: BaseModel, exclude: set[str] | None, protected: Iterable[StoredPath],
+    *, keep_explicit: bool = False,
 ) -> tuple[JsonValue, set[StoredPath]]:
     real_tokens: set[StoredPath] = set()
     prefixes = {path[:end] for path in protected for end in range(1, len(path) + 1)}
@@ -250,6 +251,7 @@ def _projected_file(
                 observed = explicit and (
                     child_path in prefixes or isinstance(value, _REFINEMENTS)
                     or isinstance(value, OverridePatch) and name == "value"
+                    or keep_explicit and key in encoded
                 )
                 raw = getattr(value, name)
                 if key in encoded:
@@ -289,9 +291,10 @@ def _projected_file(
 
 def stored_project_value(
     model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
+    keep_explicit: bool = False,
 ) -> JsonValue:
-    """Project typed stored fields, retaining authored keys that a strict operation observes."""
-    return _projected_file(model, exclude, protected)[0]
+    """Project typed stored fields, retaining explicit defaults when a patch view needs their presence."""
+    return _projected_file(model, exclude, protected, keep_explicit=keep_explicit)[0]
 
 
 def _scalar(value: JsonValue, *, keep_real: bool = False) -> str:
