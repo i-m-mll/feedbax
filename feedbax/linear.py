@@ -252,7 +252,7 @@ def _state_samples(graph: Graph, state, carry):
 
 def _state_layout(model, graph, state, carry):
     raw = bind_raw_state(graph, model.executable.resolved.graph)
-    values = tuple(item for item in raw.values if not item.configuration)
+    values = tuple(item for item in raw.values if not item.field.configuration)
 
     # Distinct leaf objects identify storage slots without depending on private
     # Equinox State keys or a second declaration of component/Delay layouts.
@@ -266,9 +266,9 @@ def _state_layout(model, graph, state, carry):
         if not jnp.issubdtype(value.dtype, jnp.floating):
             continue
         if id(value) not in locations:
-            raise _Refused(f"State {item.key!r} is not a stored coordinate.")
+            raise _Refused(f"State {item.field.key!r} is not a stored coordinate.")
         width = value.size
-        parts.append(StateCoordinates(item.key, value.shape, size, size + width))
+        parts.append(StateCoordinates(item.field.key, value.shape, size, size + width))
         indexes.append((item, locations[id(value)]))
         size += width
 
@@ -333,7 +333,7 @@ def linearize(
     except SignalScheduleError as error:
         return (_Refused(str(error), model.lowered.source_address(error.authored_path)).problem(),)
     except StateLayoutError as error:
-        return (Problem(code=ProblemCode.STRUCTURE, reason=error.reason, path=tuple(error.path.strip("/").split("/"))),)
+        return (Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=tuple(error.path.strip("/").split("/"))),)
 
 
 def _linearize(model, task, inputs, outputs, openings, about):
