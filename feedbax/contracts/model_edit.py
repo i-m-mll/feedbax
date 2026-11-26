@@ -16,6 +16,7 @@ from feedbax.contracts.model_document import (
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
+from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
@@ -361,7 +362,7 @@ class ModelProjection(StrictModel):
     task_signals: tuple[ModelTaskSignal, ...] = ()
     task_inputs: tuple[ModelTaskInput, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
-    resolved_model: ModelDocument | None = None
+    resolved_model: StoredModelDocument | None = None
     base_differences: tuple[ModelStructuralDifference, ...] = ()
     value_differences: tuple[ModelStructuralDifference, ...] = ()
     ungroup: tuple[ModelUngroupEligibility, ...] = ()
@@ -470,7 +471,7 @@ class EvaluateModelState(StrictModel):
     revision: Sha256
     editable: bool
     effective: tuple[ModelAttachmentDifference, ...]
-    resolved_model: ModelDocument | None = None
+    resolved_model: StoredModelDocument | None = None
     source: StudioEvaluateValueSource | None = None
     field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
     changed_from: ProjectName | None = None
