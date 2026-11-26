@@ -6,10 +6,10 @@ from collections.abc import Mapping
 from feedbax.compiler.model_document import ModelCompilationProblem
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import (
-    CompositeComponent, ModelDocument, ModelPortAttachments, ModelWire, ProbeAttachment, WireAttachment,
+    CompositeComponent, ModelDocument, ModelPortAttachments, ModelPorts, ModelWire, ProbeAttachment, WireAttachment,
 )
 from feedbax.contracts.stored_model import (
-    StoredCompositeComponent, StoredModelDocument, StoredModelPortAttachments, StoredModelWire,
+    StoredCompositeComponent, StoredModelDocument, StoredModelPortAttachments, StoredModelPorts, StoredModelWire,
     StoredProbeAttachment, StoredWireAttachment,
 )
 
@@ -58,19 +58,24 @@ def _ends(wire: ModelWire | StoredModelWire) -> tuple[str, str]:
     return wire.source.model_dump_json(), wire.target.model_dump_json()
 
 
+def pinned_port_labels(pinned: ModelPorts, authored: StoredModelPorts, path: tuple[str, ...] = ()) -> ModelPorts:
+    """Copy fitted port labels while retaining the pinned port types and addresses."""
+    return pinned.model_copy(update={
+        direction: tuple(
+            port.model_copy(update={"name": _matched(
+                getattr(authored, direction), (*path, "ports", direction, port.id), "port",
+            ).label})
+            for port in getattr(pinned, direction)
+        )
+        for direction in ("inputs", "outputs", "physical")
+    })
+
+
 def pinned_model_labels[T: (ModelDocument, CompositeComponent)](
     pinned: T, authored: StoredModelDocument | StoredCompositeComponent, path: tuple[str, ...] = (),
 ) -> T:
     """Copy presentation labels across fitted members while retaining pinned structure and addresses."""
-    ports = pinned.ports.model_copy(update={
-        direction: tuple(
-            port.model_copy(update={"name": _matched(
-                getattr(authored.ports, direction), (*path, "ports", direction, port.id), "port",
-            ).label})
-            for port in getattr(pinned.ports, direction)
-        )
-        for direction in ("inputs", "outputs", "physical")
-    })
+    ports = pinned_port_labels(pinned.ports, authored.ports, path)
     interior = (*path, "interior")
     components = {}
     for key, component in pinned.interior.components.items():

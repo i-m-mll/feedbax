@@ -110,13 +110,8 @@ def read_evaluate_model(
         else:
             shared, changes = changed
             try:
-                if authored is None:
-                    document = compose_document(project.documents.get, read)
-                    if isinstance(document, ProjectDiagnostic) or document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
-                        raise ValueError("The Loaded Model's authored Model cannot be read.")
-                    authored = document.payload
                 pinned = _read_changed_model(authored_model_payload(definition.pinned_model, components), changes, components)
-                pinned = pinned_model_labels(pinned, StoredModelDocument.model_validate(authored))
+                pinned = pinned_model_labels(pinned, authored_pinned_model(project, read, authored))
                 resolved = resolve_effective_model(
                     pinned, components, lower_model_difference_values(pinned, components, differences),
                     functions=folders.functions,
@@ -182,6 +177,16 @@ def read_evaluate_model(
             for problem in problems
         ],
     ), changes, shared, resolved)
+
+
+def authored_pinned_model(project: Project, name: str, selected: object = None) -> StoredModelDocument:
+    """Read the authored Model paired with a pinned revision, including the run's selected Model when present."""
+    if selected is None:
+        document = compose_document(project.documents.get, name)
+        if isinstance(document, ProjectDiagnostic) or document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
+            raise ValueError("The Loaded Model's authored Model cannot be read.")
+        selected = document.payload
+    return StoredModelDocument.model_validate(selected)
 
 
 def _read_changed_model(payload, changes: Differences, components=None) -> ModelDocument:

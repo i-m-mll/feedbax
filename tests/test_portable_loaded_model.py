@@ -132,6 +132,7 @@ def test_loaded_evaluate_model_view_uses_current_authored_labels(tmp_path):
         revised = folders.read(project).project.model_copy(deep=True)
         model = revised.documents[model_key].payload
         model["ports"]["inputs"]["target_pos"]["label"] = "Desired position"
+        model["ports"]["outputs"]["command"]["label"] = "Motor output"
         model["interior"]["components"]["cell"]["label"] = "Feedback controller"
         wires = model["interior"]["wires"]
         wires["sensed-target"] = wires.pop("target")
@@ -150,6 +151,13 @@ def test_loaded_evaluate_model_view_uses_current_authored_labels(tmp_path):
         wire = view["interior"]["wires"]["target"]
         assert view["ports"]["inputs"][wire["source"]["port"]]["label"] == "Desired position"
         assert view["interior"]["components"][wire["target"]["component"]]["label"] == "Feedback controller"
+
+        task_view = _expect(client.post(f"{path}/authoring/trials", json={"revision": revision, "run": run}))
+        assert {port["id"]: port["name"] for port in task_view["inputs"]} == {"target_pos": "Desired position"}
+        assert any(
+            output["address"]["element"].get("end") == {"owner": "outputs", "port": "command"}
+            and output["value"]["name"] == "Motor output" for output in task_view["outputs"]
+        )
 
         del wires["sensed-target"]
         _save_project(folders, project, revised)

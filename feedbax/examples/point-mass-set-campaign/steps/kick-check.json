@@ -7,6 +7,5 @@
       "params": {"seed": 1, "trial_set": {"kind": "every_condition"}}
     }
   },
-  "set_fields": {"kick-bank": {"axis": {"set": "command-kicks"}, "sampling": {"kind": "listed"}}},
   "inputs": {"subject": {"step": "train", "checkpoint": "last"}}
 }

@@ -10,7 +10,7 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_resolution import compose_document
 from feedbax.web.app import create_app
 from tests.test_canonical_evaluate_admission import _save_project
-from web.e2e.studio.fixtures.canonical_train import hold_campaign_files
+from web.e2e.studio.fixtures.canonical_train import hold_campaign_files, successor_file
 
 
 @pytest.fixture
@@ -96,9 +96,7 @@ def test_task_and_model_project_the_authored_model_members(campaign, step):
 
 @pytest.mark.parametrize(("step", "row", "local_axis", "origins", "campaign"), [
     ("train", "default", "kicks", {"kicks": ("train", ("drift", "pulse"))}, None),
-    ("kick-check", "default", "kick-bank", {
-        "kicks": ("train", ("drift", "pulse")), "kick-bank": ("kick-check", ("drift", "pulse")),
-    }, None),
+    ("kick-check", "default", None, {"kicks": ("train", ("drift", "pulse"))}, None),
     ("swept", "kicks=pulse-x-minus", None, {"kicks": ("swept", ("pulse",))}, "swept"),
 ], indirect=["campaign"])
 def test_set_variables_carry_the_label_of_their_authored_entry(campaign, step, row, local_axis, origins):
@@ -160,3 +158,32 @@ def test_editing_an_inherited_set_variable_writes_the_set_entry(campaign):
     expected = deepcopy(entries)
     expected["pulse"]["task_variables"]["kick"]["value"] = "0.7 * sign * axis"
     assert saved["entries"] == expected
+
+
+@pytest.mark.parametrize("continued", [False, True], ids=["direct", "through-train-checkpoint"])
+def test_evaluate_refuses_own_trial_set_when_subject_train_placed_one(tmp_path, continued):
+    files = hold_campaign_files()
+    documents = {file["id"]: file["document"] for file in files if file["kind"] == "document"}
+    steps = {file["id"]: file["step"] for file in files if file["kind"] == "step"}
+    evaluate = steps["kick-check"]
+    evaluate["set_fields"] = {"kick-bank": {"axis": {"set": "command-kicks"}, "sampling": {"kind": "listed"}}}
+    if continued:
+        file = successor_file()
+        steps[file["id"]] = file["step"]
+        evaluate["inputs"]["subject"]["step"] = file["id"]
+
+    app = create_app(projects_dir=tmp_path)
+    folders = app.state.project_folders
+    _save_project(folders, "hold-campaign", Project.model_validate({"documents": documents, "steps": steps}))
+    settled = folders.read_plan("hold-campaign", revision=None)
+    assert {row.key.step for row in settled.plan.runs} == ({"train", "successor"} if continued else {"train"})
+    url = "/api/projects/hold-campaign/train-runs"
+    with TestClient(app) as client:
+        response = client.get(url, params={"revision": settled.revision, "window_map": True})
+        assert response.status_code == 200, response.text
+        window = response.json()["window_map"]
+        [problem] = [item for item in window["problems"] if item["step"] == "kick-check"]
+        assert problem["path"] == "/set_fields"
+        assert problem["detail"] == "Kicked training places Command kicks on its trials, so Kick check cannot place a Set of its own."
+        [row] = [item for item in window["rows"] if item["key"]["step"] == "kick-check"]
+        assert row["status"] == "cannot_run"

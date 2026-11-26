@@ -43,9 +43,11 @@ from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_step, resolve_step
 from feedbax.contracts.project_sweep import SetAxis
 from feedbax.contracts.set_document import SetEntry, read_set
-from feedbax.planner.project_plan import EVALUATION_TASK, PlannedRow, PlannedRun, RunKey, compile_project, resolve_authored_evaluation_task
+from feedbax.planner.project_plan import (
+    EVALUATION_MODEL, EVALUATION_TASK, PlannedRow, PlannedRun, RunKey, compile_project, resolve_authored_evaluation_task,
+)
 from feedbax.project_members import generated_name
-from feedbax.project_model_selection import stored_trial_task_slot, trial_document_slots
+from feedbax.project_model_selection import selected_model, stored_trial_task_slot, trial_document_slots
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, EvaluationRequestSpec, SynthesisRequestSpec
 from feedbax.contracts.request_refs import BestRank
@@ -89,7 +91,10 @@ from feedbax.studio.value_structure import value_structure
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective, epoch_outcome_references
 from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.authored_scope import edited_authored_rows
-from feedbax.web.services.evaluate_sources import _document_changes, _read_changed_model, evaluate_subject, evaluate_value_source
+from feedbax.web.services.evaluate_sources import (
+    _document_changes, _read_changed_model, authored_pinned_model, evaluate_subject, evaluate_value_source,
+)
+from feedbax.web.services.pinned_model_labels import pinned_port_labels
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.set_authoring import prepare_set_entry_task, set_entry_member_count, trial_set_fields
 from feedbax.web.services.trial_expression_menus import TrialExpressionField
@@ -777,12 +782,19 @@ def _evaluation_task_path(definition):
     return f"payload.params.variation.{entry}.value" if entry is not None else EVALUATION_TASK
 
 
-def _initial_trial_documents(definition, bundle, *, first: bool, objective=None) -> _InitialTrialDocuments:
+def _initial_trial_documents(plan, key, definition, bundle, *, first: bool, objective=None) -> _InitialTrialDocuments:
     subject = definition.input_documents["subject"]
     if subject.schema_id == LOADED_MODEL_SCHEMA_ID:
         model = definition.pinned_model
         if model is None:
             raise ProjectFolderInvalid("The selected Loaded Model is unavailable.")
+        if first:
+            navigation = LoadedModelDocument.model_validate(subject.payload).model
+            project = plan.variant_projects[key.variant]
+            name = definition.document_ids.get(EVALUATION_MODEL, navigation.document)
+            if name in project.documents and not navigation.unresolved and navigation.pointer is None:
+                authored = authored_pinned_model(project, name, selected_model(definition, name))
+                model = model.model_copy(update={"ports": pinned_port_labels(model.ports, authored.ports)})
     else:
         model = StoredModelDocument.model_validate(subject.payload).lower(bundle.components)
     task = definition.input_documents["task"]
@@ -824,7 +836,7 @@ def _evaluate_documents(plan, key, definition, bundle, *, first: bool, objective
             authored = subject.train
             documents = documents.model_copy(update={"task": authored.task, "input_bindings": authored.input_bindings})
     elif "subject" in definition.input_documents:
-        documents = _initial_trial_documents(definition, bundle, first=first, objective=objective)
+        documents = _initial_trial_documents(plan, key, definition, bundle, first=first, objective=objective)
     else:
         raise ProjectFolderInvalid("The selected Evaluate has no authored trial pairing.")
     stored_source = None
@@ -1068,7 +1080,7 @@ def read_trial_view_plan(folders, project_id, revision, key):
 def _authored_evaluate_documents(plan, key, definition, bundle, objective):
     upstream = evaluate_subject(definition)
     if upstream is None:
-        documents = _initial_trial_documents(definition, bundle, first=True, objective=objective)
+        documents = _initial_trial_documents(plan, key, definition, bundle, first=True, objective=objective)
         stored_task = stored_trial_task_slot(definition.input_documents["task"].payload)
     else:
         producer = upstream[0]
