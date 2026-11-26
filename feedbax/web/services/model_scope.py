@@ -12,6 +12,7 @@ from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.result_address import family_documents
 from feedbax.contracts.set_document import read_set
 from feedbax.contracts.studio_scope import StoreKind
+from feedbax.contracts.stored_model import model_member_order
 from feedbax.planner.project_plan import ProjectPlan
 from feedbax.studio.selection import StoredEdit
 from feedbax.web.services.authored_scope import choose_authored_store, edited_authored_rows, preview_plan
@@ -125,7 +126,13 @@ def model_edit_store(
         and (binding := run.inputs.get("subject")) is not None and binding.producer is not None
     )
     tracked = folders.read_plan(project_id, revision=body.revision, source_runs=observed).plan
-    values = {key: _observed_model(tracked, project, key, body.document) for key in observed}
+
+    def observation(plan: ProjectPlan, project: Project, key: RunKey) -> tuple[object, list]:
+        value = _observed_model(plan, project, key, body.document)
+        payload = value[0] if isinstance(value, tuple) and value else value
+        return value, sorted(model_member_order(payload))
+
+    values = {key: observation(tracked, project, key) for key in observed}
 
     def reach(stored: StoredEdit) -> frozenset[RunKey]:
         if not (stored.files or stored.created):
@@ -135,7 +142,7 @@ def model_edit_store(
         authored = edited_authored_rows(tracked, projection)
         return frozenset(
             key for key, value in values.items()
-            if key in authored and value != _observed_model(projection, candidate, key, body.document)
+            if key in authored and value != observation(projection, candidate, key)
         )
 
     def only_readers(steps: Collection[str]) -> ModelEditRequest:

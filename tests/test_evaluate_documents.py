@@ -55,7 +55,9 @@ def _with_mass(payload, mass):
 
 
 def _with_push(payload):
-    payload["interior"]["wires"]["drive"]["attachments"] = [deepcopy(PUSH)]
+    payload["interior"]["wires"]["drive"]["attachments"] = {
+        PUSH["id"]: {key: deepcopy(value) for key, value in PUSH.items() if key != "id"},
+    }
     return payload
 
 
@@ -150,8 +152,8 @@ def test_evaluate_ungroup_eligibility_reads_the_selected_axis_model(tmp_path):
     data = _data()
     wrapper = "idle-wrapper"
     data["documents"]["model"]["payload"]["interior"]["components"][wrapper] = {
-        "kind": "composite", "name": "Idle wrapper",
-        "ports": {"inputs": [{"id": "in", "name": "In", "type": {}}]}, "interior": {},
+        "kind": "composite", "label": "Idle wrapper",
+        "ports": {"inputs": {"in": {"label": "In", "type": {}}}}, "interior": {},
     }
     _reads(data, "check", "model", "model")
     default = f"trial_documents.model.interior.components.{wrapper}.ports.inputs.in.default"

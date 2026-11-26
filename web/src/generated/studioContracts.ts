@@ -899,16 +899,16 @@ export interface VariantRuns {
 }
 
 export interface AddModelAttachment {
+  address: ModelAddress;
   op: "add";
-  owner: ModelAddress;
-  attachment: DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
+  attachment: StoredDelayAttachment | StoredHoldAttachment | StoredInterventionAttachment | StoredProbeAttachment;
   after: string | null;
 }
 
 export interface ChangeModelAttachment {
   address: ModelAddress;
   op: "change";
-  attachment: DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
+  attachment: StoredDelayAttachment | StoredHoldAttachment | StoredInterventionAttachment | StoredProbeAttachment;
   after?: string | null;
 }
 
@@ -5313,7 +5313,7 @@ export type StudioSynthesizeStep = {
 };
 
 export type StudioTaskCatalog = {
-  "blank": TaskDocument;
+  "blank": StoredTaskDocument;
   "documents": Array<StudioLibraryDocument>;
   "value_types": Array<StudioNamedValueType>;
 };
@@ -8066,20 +8066,20 @@ export const VariantRunsSchema: z.ZodType<VariantRuns> = z.lazy(() =>
 export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(() =>
   z
     .object({
+      "address": ModelAddressSchema,
       "op": z.literal("add"),
-      "owner": ModelAddressSchema,
-      "attachment": z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "attachment": z.union([StoredDelayAttachmentSchema, StoredHoldAttachmentSchema, StoredInterventionAttachmentSchema, StoredProbeAttachmentSchema]),
       "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable(),
     })
     .strict()
     .superRefine((value, ctx) => {
-      if (value.owner.element.kind !== "wire" && value.owner.element.kind !== "port") {
+      if (value.address.element.kind !== "attachment") {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Expected a wire or port owner",
+          message: "Expected an attachment address",
         });
       }
-      if (value.attachment.kind === "hold" && value.owner.element.kind !== "wire") {
+      if (value.attachment.kind === "hold" && value.address.element.kind === "attachment" && value.address.element.parent.kind !== "wire") {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "A Hold requires a wire",
@@ -8093,7 +8093,7 @@ export const ChangeModelAttachmentSchema: z.ZodType<ChangeModelAttachment> = z.l
     .object({
       "address": ModelAddressSchema,
       "op": z.literal("change"),
-      "attachment": z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "attachment": z.union([StoredDelayAttachmentSchema, StoredHoldAttachmentSchema, StoredInterventionAttachmentSchema, StoredProbeAttachmentSchema]),
       "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
     })
     .strict()
@@ -8102,12 +8102,6 @@ export const ChangeModelAttachmentSchema: z.ZodType<ChangeModelAttachment> = z.l
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "Expected an attachment address",
-        });
-      }
-      if (value.address.element.kind === "attachment" && value.attachment.id !== value.address.element.id) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "A replacement must retain the addressed attachment ID",
         });
       }
     })
@@ -14699,7 +14693,7 @@ export const StudioSynthesizeStepSchema: z.ZodType<StudioSynthesizeStep> = z.laz
 
 export const StudioTaskCatalogSchema: z.ZodType<StudioTaskCatalog> = z.lazy(() =>
   z.object({
-    "blank": TaskDocumentSchema,
+    "blank": StoredTaskDocumentSchema,
     "documents": z.array(StudioLibraryDocumentSchema),
     "value_types": z.array(StudioNamedValueTypeSchema),
   }).strict()

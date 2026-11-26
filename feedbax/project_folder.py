@@ -43,7 +43,7 @@ from feedbax.contracts.stored_model import (
 )
 from feedbax.contracts.project import (
     BasedDocument, Document, LoadedModelDocument, OrderProjectValue, Project, RootDocument, Sha256,
-    apply_document_edit, diff, json_pointer_parts, member_name,
+    apply_differences, apply_document_edit, diff, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_storage import stored_keyed_collection, write_project_file
@@ -370,8 +370,10 @@ def document_file(
         return StudioProjectFilePatch(address=address, patches=[SetProjectValue(op="replace", path="/payload", value=content)])
     assert base is not None
     differences = diff(base, content, keyed_collection=keyed)
-    if differences == document.differences and tuple(differences) == tuple(document.differences):
-        return None
+    if differences == document.differences:
+        previous = apply_differences(base, document.differences, keyed_collection=keyed)
+        if not diff(previous, content, keyed_collection=keyed):
+            return None
     return StudioProjectFilePatch(address=address, patches=[SetProjectValue(
         op="replace" if "differences" in document.model_fields_set else "add", path="/differences",
         value={path: value.model_dump(mode="json") for path, value in differences.items()},

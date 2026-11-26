@@ -174,6 +174,7 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     folders, client = studio
     train_before = _runs(folders, "train")
     (original,) = _runs(folders, "baseline").values()
+    authored_model = folders.read(PROJECT).project.documents["reach-model"]
 
     assert _duplicate(folders, client, "baseline") == {"axis": "run", "value": "run-2"}
     assert _duplicate(folders, client, "baseline", ["run=run-2"], {"run": ["run-2"]}) == {"axis": "run", "value": "run-3"}
@@ -185,7 +186,7 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     edited = _runs(folders, "baseline")
     assert {row for row in edited if edited[row] != copies[row]} == {"run=run-2"}
     assert _runs(folders, "train") == train_before
-    assert folders.read(PROJECT).project.documents["reach-model"] == Project.model_validate(_raw()).documents["reach-model"]
+    assert folders.read(PROJECT).project.documents["reach-model"] == authored_model
 
     created = _set_edit(folders, client, {"kind": "save_set", "step": "baseline", "axis": "run"})["created"]
     assert [item["id"] for item in created] == ["set"]
