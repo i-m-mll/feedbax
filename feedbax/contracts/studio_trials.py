@@ -12,7 +12,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
     AxisValueRuns, ListedRuns, StudioEvaluateValueSource,
 )
-from feedbax.contracts.objective_document import StoredObjectiveDocument
+from feedbax.contracts.objective_document import StoredObjectiveDocument, StoredObjectiveTerm
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
@@ -67,6 +67,13 @@ class StudioTrialReset(StrictModel):
 class StudioTrialDocumentEdit(StrictModel):
     kind: Literal["task", "objective"]
     edits: list[ProjectValueEdit] = Field(min_length=1)
+
+
+class StudioTrialObjectiveTermAdd(StrictModel):
+    """Add an Objective term under a key allocated by the Service."""
+
+    kind: Literal["add_objective_term"]
+    term: StoredObjectiveTerm
 
 
 class StudioTrialDocumentReset(StrictModel):
@@ -136,7 +143,7 @@ class StudioTrialAuthoringRequest(StrictModel):
     run: StudioSavedTrainKey
     change: Annotated[
         StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument
-        | StudioTrialExpressionEdit | StudioTrialStructureEdit | StudioTrialRelate,
+        | StudioTrialExpressionEdit | StudioTrialStructureEdit | StudioTrialRelate | StudioTrialObjectiveTermAdd,
         Field(discriminator="kind"),
     ] | None = None
     store_choice: Sha256 | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -239,7 +246,7 @@ class StudioTrialAuthoring(StrictModel):
     fields: list[StudioTrialField]
     """Expression parts are returned by the menu route on request."""
     problems: list[Problem]
-    related_term: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    created_term: str | None = Field(default=None, exclude_if=lambda value: value is None)
     files: list[StudioProjectFilePatch]
     created: list[CreateNamedDocument] = Field(default_factory=list)
     """Documents the edit creates, written before ``files``, which may name them."""
