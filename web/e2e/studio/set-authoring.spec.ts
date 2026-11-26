@@ -15,7 +15,6 @@ async function fromMenu(target: Locator, command: string) {
 }
 
 test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inline Set', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(240_000);
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.set_authoring', 'seed', studio.home, 'sets'));
   const path = '/api/projects/' + project;
   const runPath = path + '/train-runs';
@@ -201,7 +200,7 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   expect(await evaluations('pair')).toEqual(edited);
 });
 
-test('a required Set keeps its axis when its last entry is removed, marked until an entry is added', async ({ page, request, studio }) => {
+test('a required Set keeps its axis when its last entry is removed, marked until an entry is added', { tag: '@slow' }, async ({ page, request, studio }) => {
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.set_authoring', 'seed_entries', studio.home, 'entries'));
   const card = page.locator('[data-map-step="train"]');
   const marks = card.locator('.studio-map-run-mark');

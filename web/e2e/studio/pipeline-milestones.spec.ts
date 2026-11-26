@@ -1,4 +1,4 @@
-import { expect, firstJobTimeout, test } from './fixtures/studio';
+import { expect, jobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Page } from '@playwright/test';
 import type {
   ModelFieldResponse, StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
@@ -57,7 +57,6 @@ async function launchRows(page: Page, projectPath: string, keys: StudioSavedTrai
 
 test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from Activity', { tag: '@round' },
   async ({ page, request }) => {
-    test.setTimeout(50_000);
     let creates = 0;
     page.on('request', (request) => {
       if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/projects') creates += 1;
@@ -74,7 +73,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     await runs(page).getByRole('button').first().click();
     await openResultsSlot(page);
     const plot = page.getByRole('img', { name: 'Metric train_loss', exact: true });
-    await expect(plot.locator('line title').filter({ hasText: /samples?/ }).first()).toBeAttached({ timeout: 14_000 });
+    await expect(plot.locator('line title').filter({ hasText: /samples?/ }).first()).toBeAttached({ timeout: jobTimeout });
 
     await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
@@ -83,7 +82,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     await attempt.getByRole('button', { name: 'Stop', exact: true }).click();
     expect((await stopping).status()).toBe(202);
     const resume = attempt.getByRole('button', { name: 'Resume', exact: true });
-    await expect(resume).toBeEnabled({ timeout: 10_000 });
+    await expect(resume).toBeEnabled({ timeout: jobTimeout });
     const stopped = await request.get('/api/jobs', { params: { project: id } });
     expect(stopped.ok()).toBe(true);
     const snapshotOfJobs = await stopped.json() as StudioJobSnapshot;
@@ -110,12 +109,11 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     expect(replay.ok(), await replay.text()).toBe(true);
     const history = await replay.json() as StudioJobEventHistory;
     expect(history.events.some((event) => event.job_id === jobId && event.kind === 'progress')).toBe(true);
-    await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 16_000 });
+    await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   },
 );
 
 test('Activity names the CLI client of a saved Train request, and no client for Studio', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const project = snapshot.project_id;
   const label = 'Batch review';
@@ -130,7 +128,7 @@ test('Activity names the CLI client of a saved Train request, and no client for 
     ['run-saved-cli', studio.home, configuration.project, label]);
   const cli = entries.filter({ has: page.getByText('CLI', { exact: true }) });
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
-  await expect(cli.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  await expect(cli.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   await expect(runs(page).getByText('Done', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const studioJob = await admit(page, projectPath);
@@ -141,7 +139,7 @@ test('Activity names the CLI client of a saved Train request, and no client for 
   await expect(studioEntry.getByText('Client', { exact: true })).toHaveCount(0);
   await expect(studioEntry.getByText('Label', { exact: true })).toHaveCount(0);
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
-  await expect(studioEntry.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  await expect(studioEntry.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
 
   const response = await request.get('/api/jobs', { params: { project } });
   expect(response.ok(), await response.text()).toBe(true);
@@ -166,7 +164,7 @@ test('M1 runs only the selected row of a sweep authored in Studio', { tag: '@rou
   const picked = runs(page).getByRole('row').filter({ hasText: '0.002' }).getByRole('button');
   await picked.click();
   const submitted = await admit(page, projectPath);
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(1, { timeout: firstJobTimeout });
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(1, { timeout: jobTimeout });
   await expect(runs(page).getByText('Not run', { exact: true })).toHaveCount(2);
   const response = await request.get('/api/jobs', { params: { project: snapshot.project_id } });
   expect(response.ok()).toBe(true);
@@ -198,7 +196,6 @@ test('M1 runs only the selected row of a sweep authored in Studio', { tag: '@rou
 });
 
 for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${grouped ? 'grouped' : 'measured'} Evaluate subset in Runs`, { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(59_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
   const metricName = 'train_loss';
@@ -286,7 +283,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const source = waiting.rows.filter(({ key }) => key.step === 'train');
   expect(source).toHaveLength(grouped ? 4 : 3);
   await launchRows(page, projectPath, source.map(({ key }) => key));
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(source.length, { timeout: 24_000 });
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(source.length, { timeout: jobTimeout });
   const finishedPlan = await readPlan();
   const finished = finishedPlan.rows.filter(({ key }) => key.step === 'train');
   const attempts = finished.map(({ result }) => result!.job_id);
@@ -310,14 +307,14 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     await firstGroup.nth(0).click();
     await firstGroup.nth(1).click({ modifiers: ['Shift'] });
     await launchRows(page, projectPath, ranked.slice(0, 2).map(({ key }) => key));
-    await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 18_000 });
+    await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: jobTimeout });
     await select(page, 'evaluate');
     await expect(groupedLists[0]).toHaveText(expected.slice(0, 2).map(({ label }, index) => `Rank ${index + 1} · ${label}`));
     await expect(groupedLists[1]).toHaveText(['Rank 1', 'Rank 2']);
     await unfrozen();
   }
   await launchRows(page, projectPath, (grouped ? ranked.slice(2) : ranked).map(({ key }) => key));
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(ranked.length, { timeout: 18_000 });
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(ranked.length, { timeout: jobTimeout });
   const completed = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
   for (const [index, producer] of expected.entries()) {
     expect(completed[index].bound_subject?.key).toBe(keys[index]);
@@ -363,7 +360,6 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
 });
 
 test('M2 authors and widens a saved Evaluate subset without resubmitting completed rows', { tag: '@round' }, async ({ page, request }) => {
-  test.setTimeout(58_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
   const files = JSON.parse(await runProjectFixture(evaluation, 'walkthrough-files'));
@@ -390,7 +386,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const conditionIds = sourceRows[0].evaluation_conditions!.slice(0, 2);
   expect(conditionIds).toHaveLength(2);
   await launchRows(page, projectPath, sourceRows.map(({ key }) => key));
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: 22_000 });
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: jobTimeout });
 
   await chooseSweepValue(train, 'Learning rate', '0.001');
   await chooseSweepValue(train, 'Learning rate', '0.002', true);
@@ -430,7 +426,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const keys = (await readPlan()).window_map!.evaluations!.map(({ key }) => key);
   expect(keys).toHaveLength(2);
   await launchRows(page, projectPath, keys);
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 16_000 });
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: jobTimeout });
   const before = (await readPlan()).window_map!.evaluations!;
   await expect(runButton(page)).toBeDisabled();
 
@@ -459,7 +455,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   expect(widened.slice(0, 2)).toEqual(before);
   expect(widened).toHaveLength(3);
   await launchRows(page, projectPath, [widened[2].key]);
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: 16_000 });
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: jobTimeout });
 
   await page.reload();
   await select(page, 'evaluate');
@@ -507,7 +503,6 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
 });
 
 test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag: '@round' }, async ({ page, request }) => {
-  test.setTimeout(75_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'task-pivot-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -544,7 +539,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
 
   await select(page, 'train');
   await launchRows(page, projectPath, train.map(({ key }) => key));
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(6, { timeout: 26_000 });
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(6, { timeout: jobTimeout });
   const trainDone = (await read()).rows;
   await select(page, 'evaluate');
   await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'Task');
@@ -553,7 +548,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   await sampled.click();
   await expect(sampled).toHaveAttribute('aria-pressed', 'true');
   await launchRows(page, projectPath, [target]);
-  await expect(cell('Fast', 'Long Task', 'Done')).toBeVisible({ timeout: 18_000 });
+  await expect(cell('Fast', 'Long Task', 'Done')).toBeVisible({ timeout: jobTimeout });
   await expect(pivot.getByRole('button', { name: /Not run$/ })).toHaveCount(3);
   const lineage = page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('listitem')
     .filter({ has: page.getByRole('button', { name: /^Select Made From / }) });

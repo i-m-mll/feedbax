@@ -14,7 +14,7 @@ async function addIntervention(page: Page, projectPath: string, selection: { row
   const button = page.getByRole('menuitem', { name: 'Add Intervention', exact: true });
   const [edited] = await Promise.all([
     page.waitForResponse((response) => response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === `${projectPath}/model/edit`, { timeout: 8_000 }),
+      new URL(response.url()).pathname === `${projectPath}/model/edit`),
     button.click(),
   ]);
   const body = edited.request().postDataJSON();
@@ -24,8 +24,7 @@ async function addIntervention(page: Page, projectPath: string, selection: { row
   expect(result.status, result.status === 'refused' ? result.problem.detail : '').toBe('applied');
 }
 
-test('authors and reopens an addressed Model through the project history', async ({ page, request }) => {
-  test.setTimeout(50_000);
+test('authors and reopens an addressed Model through the project history', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
@@ -185,8 +184,7 @@ test('authors and reopens an addressed Model through the project history', async
   expect(initial.project.documents?.model.schema).toBe('feedbax.spec.model');
 });
 
-test('an Evaluate attachment for the step is stored in a document based on the subject\'s, and reopens', async ({ page, request, studio }, info) => {
-  test.setTimeout(45_000);
+test('an Evaluate attachment for the step is stored in a document based on the subject\'s, and reopens', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const seeded = await seedManagedProject(request, []);
   const { projectPath } = seeded;
   await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, seeded.configuration.project, 'sweep');
@@ -243,7 +241,7 @@ test('an Evaluate attachment for the step is stored in a document based on the s
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toHaveCount(2);
 });
 
-test('persists an attachment in the selected project variant', async ({ page, request, studio }, info) => {
+test('persists an attachment in the selected project variant', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'variant');
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);

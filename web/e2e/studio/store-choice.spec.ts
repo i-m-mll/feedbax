@@ -5,7 +5,6 @@ import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain'
 test.use({ viewport: { width: 1440, height: 900 } });
 
 test('renaming a term two Trains read asks at its cell where the name applies, and Escape leaves the cell as it was', async ({ page, request }) => {
-  test.setTimeout(45_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
   /** The first term's name in the Objective each Train reads. */
   const names = async () => {

@@ -15,7 +15,7 @@ function components(saved: StudioProjectSnapshot, document: string) {
   return Object.entries((rootPayload(saved.project.documents?.[document]) as unknown as ModelDocument).interior.components ?? {});
 }
 
-test('the Model inspector frames the document, one component and two', async ({ page, request }) => {
+test('the Model inspector frames the document, one component and two', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('managed-files'));
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').press('Enter');
