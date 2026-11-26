@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from functools import cache
 import json
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model_validator
 from pydantic_core import to_jsonable_python
@@ -16,6 +16,7 @@ from feedbax.contracts.expression_storage import StoredExpression, StoredTime, s
 from feedbax.contracts.expression_text import print_stored_expression
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import TIME, CallValue, Expression, LiteralValue, UnresolvedValue
+from feedbax.contracts.graph import parameter_schema_from_model
 from feedbax.contracts.model_address import FieldElement, ModelAddress, ModelElementId, SignalSource, SignalTarget
 from feedbax.contracts.model_document import (
     ComponentPortCount, ComponentRevision, CompositeComponent, DelayAttachment, DelayInitialTask,
@@ -31,8 +32,10 @@ from feedbax.contracts.studio_refinements import validate_cross_field_refinement
 from feedbax.contracts.time_units import TimeValue, literal_time
 from feedbax.contracts.window import StoredWindow, WindowOffset, lower_window_offset, stored_window_offset
 
-if TYPE_CHECKING:
-    from feedbax.component_registry import ComponentRegistry
+class ModelParameterModels(Protocol):
+    """Resolve an installed parameter model for one authored leaf declaration."""
+
+    def parameter_model(self, type_id: str, revision: int | None) -> type[BaseModel] | None: ...
 
 
 STORED_MODEL_DOCUMENT_SCHEMA_ID = "feedbax.spec.model.v2"
@@ -49,7 +52,7 @@ def model_keyed_collection(path: tuple[str, ...]) -> bool:
     return stored_keyed_collection(STORED_MODEL_DOCUMENT_SCHEMA_ID, path)
 
 
-def authored_model_payload(model: ModelDocument, components: ComponentRegistry | None = None) -> dict[str, JsonValue]:
+def authored_model_payload(model: ModelDocument, components: ModelParameterModels | None = None) -> dict[str, JsonValue]:
     """Project a typed Model into a complete keyed payload for authored comparisons."""
     return StoredModelDocument.from_lowered(model, components).model_dump(mode="json")
 
@@ -172,25 +175,18 @@ def stored_model_numeric_field(value: JsonValue) -> JsonValue:
 
 @cache
 def _numeric_params(model: type[BaseModel]) -> dict[str, Literal["int", "float"]]:
-    from feedbax.component_registry.declarations import parameter_schema_from_model
-
     return {schema.name: schema.type for schema in parameter_schema_from_model(model) if schema.type in ("int", "float")}
 
 
 def _numeric_fields(
-    component: StoredLeafComponent | LeafComponent, components: ComponentRegistry | None,
+    component: StoredLeafComponent | LeafComponent, components: ModelParameterModels | None,
 ) -> dict[str, Literal["int", "float"]]:
-    if components is None:
-        return {}
-    try:
-        declaration = components.declaration_record(component.type).value
-    except KeyError:
-        return {}
-    return _numeric_params(declaration.params.model) if component.revision in (None, declaration.revision) else {}
+    parameter_model = components.parameter_model(component.type, component.revision) if components is not None else None
+    return _numeric_params(parameter_model) if parameter_model is not None else {}
 
 
 def model_leaf_expression_values(
-    component: StoredLeafComponent, components: ComponentRegistry,
+    component: StoredLeafComponent, components: ModelParameterModels,
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
     """Return the lowered values and canonical authored spellings of declared expressions."""
     lowered, authored = {}, {}
@@ -203,7 +199,7 @@ def model_leaf_expression_values(
 
 
 def _leaf_fields(
-    component: StoredLeafComponent | LeafComponent, components: ComponentRegistry | None, *, storing: bool,
+    component: StoredLeafComponent | LeafComponent, components: ModelParameterModels | None, *, storing: bool,
 ) -> dict[str, JsonValue]:
     if not component.fields:
         return component.fields
@@ -218,7 +214,7 @@ def _leaf_fields(
 
 
 def lower_model_field_value(
-    model: ModelDocument, address: ModelAddress, value: JsonValue, components: ComponentRegistry | None = None,
+    model: ModelDocument, address: ModelAddress, value: JsonValue, components: ModelParameterModels | None = None,
 ) -> JsonValue:
     """Lower a persisted addressed write. Numeric sweep coordinates retain the destination's unit."""
     element = address.element
@@ -425,7 +421,7 @@ class StoredModelDocument(StrictModel):
         validate_cross_field_refinements("StoredModelDocument", self)
         return self
 
-    def lower(self, components: ComponentRegistry | None = None) -> ModelDocument:
+    def lower(self, components: ModelParameterModels | None = None) -> ModelDocument:
         """Restore the runtime Model with the same port addresses and attachment sequence."""
         interior = _lower_interior(self.interior, components)
         assert isinstance(interior, GraphInterior)
@@ -434,7 +430,7 @@ class StoredModelDocument(StrictModel):
         )
 
     @classmethod
-    def from_lowered(cls, model: ModelDocument, components: ComponentRegistry | None = None) -> StoredModelDocument:
+    def from_lowered(cls, model: ModelDocument, components: ModelParameterModels | None = None) -> StoredModelDocument:
         """Project a producer's typed Model into the authored form."""
         interior = _store_interior(model.interior, components)
         assert isinstance(interior, StoredGraphInterior)
@@ -510,7 +506,7 @@ def _store_port_attachments(ports: ModelPortAttachments) -> StoredModelPortAttac
 
 
 def lower_model_component(
-    component: StoredModelComponent, components: ComponentRegistry | None = None,
+    component: StoredModelComponent, components: ModelParameterModels | None = None,
 ) -> ModelComponent:
     attachments = _lower_port_attachments(component.attachments)
     if isinstance(component, StoredLeafComponent):
@@ -525,7 +521,7 @@ def lower_model_component(
 
 
 def stored_model_component(
-    component: ModelComponent, components: ComponentRegistry | None = None,
+    component: ModelComponent, components: ModelParameterModels | None = None,
 ) -> StoredModelComponent:
     attachments = _store_port_attachments(component.attachments)
     if isinstance(component, LeafComponent):
@@ -547,7 +543,7 @@ def lower_model_wire(wire: StoredModelWire) -> ModelWire:
 
 
 def _lower_interior(
-    interior: StoredGraphInterior | StoredPhysicalInterior, components: ComponentRegistry | None,
+    interior: StoredGraphInterior | StoredPhysicalInterior, components: ModelParameterModels | None,
 ) -> GraphInterior | PhysicalInterior:
     target = GraphInterior if isinstance(interior, StoredGraphInterior) else PhysicalInterior
     return project_member(
@@ -559,7 +555,7 @@ def _lower_interior(
 
 
 def _store_interior(
-    interior: GraphInterior | PhysicalInterior, components: ComponentRegistry | None,
+    interior: GraphInterior | PhysicalInterior, components: ModelParameterModels | None,
 ) -> StoredGraphInterior | StoredPhysicalInterior:
     target = StoredGraphInterior if isinstance(interior, GraphInterior) else StoredPhysicalInterior
     return project_member(
