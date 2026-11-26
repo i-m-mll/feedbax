@@ -194,6 +194,17 @@ export interface StudioJobEventHistory {
   events: StudioJobEvent[];
 }
 
+export interface TrainMetricUpdate {
+  update: number;
+  metrics: Record<string, JsonValue>;
+}
+
+export interface StudioTrainMetricHistory {
+  job_id: string;
+  start_exclusive: number;
+  updates: TrainMetricUpdate[];
+}
+
 export interface StudioJobResumeRequest {
   token: string;
 }
@@ -6609,6 +6620,25 @@ export const StudioJobEventHistorySchema: z.ZodType<StudioJobEventHistory> = z.l
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobEventHistory>;
+
+export const TrainMetricUpdateSchema: z.ZodType<TrainMetricUpdate> = z.lazy(() =>
+  z
+    .object({
+      "update": z.number().int().safe().gt(0),
+      "metrics": z.record(z.string(), jsonValueSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainMetricUpdate>;
+
+export const StudioTrainMetricHistorySchema: z.ZodType<StudioTrainMetricHistory> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "start_exclusive": z.number().int().safe().gte(0),
+      "updates": z.array(TrainMetricUpdateSchema).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioTrainMetricHistory>;
 
 export const StudioJobResumeRequestSchema: z.ZodType<StudioJobResumeRequest> = z.lazy(() =>
   z
@@ -14756,6 +14786,8 @@ export const contractSchemas = {
   StudioEventWatermark: StudioEventWatermarkSchema,
   StudioJobEvent: StudioJobEventSchema,
   StudioJobEventHistory: StudioJobEventHistorySchema,
+  TrainMetricUpdate: TrainMetricUpdateSchema,
+  StudioTrainMetricHistory: StudioTrainMetricHistorySchema,
   StudioJobResumeRequest: StudioJobResumeRequestSchema,
   StudioJobSnapshot: StudioJobSnapshotSchema,
   StudioUnreadableJob: StudioUnreadableJobSchema,
@@ -14947,6 +14979,8 @@ export interface ContractTypeMap {
   StudioEventWatermark: StudioEventWatermark;
   StudioJobEvent: StudioJobEvent;
   StudioJobEventHistory: StudioJobEventHistory;
+  TrainMetricUpdate: TrainMetricUpdate;
+  StudioTrainMetricHistory: StudioTrainMetricHistory;
   StudioJobResumeRequest: StudioJobResumeRequest;
   StudioJobSnapshot: StudioJobSnapshot;
   StudioUnreadableJob: StudioUnreadableJob;

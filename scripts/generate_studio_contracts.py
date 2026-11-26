@@ -169,6 +169,7 @@ from feedbax.contracts.studio_api import (
     TrainingTrajectoryPayload,
 )
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.method_checkpoint import TrainMetricUpdate
 from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
 from feedbax.contracts.jobs import (
     JobError,
@@ -180,6 +181,7 @@ from feedbax.contracts.jobs import (
     StudioEventWatermark,
     StudioJobEvent,
     StudioJobEventHistory,
+    StudioTrainMetricHistory,
     StudioJobResumeRequest,
     StudioJobSnapshot,
     StudioUnreadableJob,
@@ -479,6 +481,8 @@ JOB_MODELS = (
     StudioEventWatermark,
     StudioJobEvent,
     StudioJobEventHistory,
+    TrainMetricUpdate,
+    StudioTrainMetricHistory,
     StudioJobResumeRequest,
     StudioJobSnapshot,
     StudioUnreadableJob,
