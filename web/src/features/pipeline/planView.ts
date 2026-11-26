@@ -79,7 +79,7 @@ export interface PlanInputView {
 export interface PlanStepView {
   /** The step's key. */
   readonly id: string;
-  /** The step's shown name, `shownName` of its key. */
+  /** The step's name, as the project snapshot names it. */
   readonly label: string;
   readonly kind: StepKind;
   /** The label of the method a Synthesize step determines its model by. */
@@ -106,12 +106,7 @@ export interface PlanView {
   readonly edges: readonly PlanRunEdge[];
 }
 
-/** What Studio calls a document, step, operation or figure: its label, or its key when it has none. */
-export function shownName(key: string, labelled?: { readonly label?: string | null } | null) {
-  return labelled?.label ?? key;
-}
-
-/** An output's name: its card (when another card's), its operation's shown name, and its product. */
+/** An output's name: its card (when another card's), its operation's name, and its product. */
 export function outputName(...parts: readonly string[]) {
   return parts.join(' · ');
 }

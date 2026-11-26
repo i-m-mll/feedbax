@@ -16,6 +16,7 @@ import {
 import {
   chosenDocument, documentChoice, documentGroup, documentKind, stepChoice, stepChoiceId, stepGroup, type DocumentKind,
 } from './referenceChoices';
+import type { DocumentNames } from './memberNames';
 import { savedRunId } from './projectWindowPlan';
 import { changedSelections, stepSelections, type SelectionProblems } from './selectionEdits';
 import { CheckpointEditor } from './StudioEvaluateAuthoring';
@@ -71,10 +72,13 @@ function BlockedMark({ blockedBy, steps, onReveal }: {
 }) {
   const [first] = blockedBy;
   const source = steps.find(({ id }) => id === first.step);
-  const step = source?.label ?? first.step;
-  const label = blockedBy.length === 1
-    ? studioFormat('stepRun', { step, run: source?.runs.find(({ id }) => id === savedRunId(first))?.label ?? first.row })
-    : step;
+  if (!source) throw new Error(`The plan has no step ${first.step}.`);
+  const run = () => {
+    const row = source.runs.find(({ id }) => id === savedRunId(first));
+    if (!row) throw new Error(`The plan has no run ${savedRunId(first)} of ${first.step}.`);
+    return row.label;
+  };
+  const label = blockedBy.length === 1 ? studioFormat('stepRun', { step: source.label, run: run() }) : source.label;
   return <span className="inline-flex shrink-0 items-center gap-1.5">
     <StatusMark status="cannot_run" label={studioRunStatus('cannot_run')} />
     {onReveal ? <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
@@ -97,7 +101,7 @@ function unresolvedChoice(spelling: string): ReferenceChoice {
  * selections; a row per selection with its picker; under each its Runs and, for a checkpoint product, its
  * Checkpoint. Add makes an empty row, and nothing is written until its step is chosen.
  */
-export function InputEditor({ label, role, binding, self, steps, project, outputs = [], absent, picking, refusal, selection,
+export function InputEditor({ label, role, binding, self, steps, project, documentNames, outputs = [], absent, picking, refusal, selection,
   checkpoint, onReveal, onChange }: {
   label: string;
   role: InputRole;
@@ -106,6 +110,7 @@ export function InputEditor({ label, role, binding, self, steps, project, output
   self: string;
   steps: readonly PlanStepView[];
   project: AuthoredProject;
+  documentNames: DocumentNames;
   /** Other Analyze cards' operation outputs, which an input that takes them can read. */
   outputs?: readonly CardOutput[];
   /** What the step reads when the input is unbound, offered as the choice that unbinds it. */
@@ -129,7 +134,7 @@ export function InputEditor({ label, role, binding, self, steps, project, output
     ...role.producers.length ? [stepGroup(producers)] : [],
     ...offered.length ? [{ label: studioName('operations'), choices: offered.map(outputChoice) }] : [],
   ];
-  const documentGroups = role.documents.length ? [documentGroup(project, role.documents)] : [];
+  const documentGroups = role.documents.length ? [documentGroup(project, documentNames, role.documents)] : [];
   const selections = stepSelections(binding);
   const document = documentOf(binding);
   const reads = (choice: ReferenceChoice): Pick<StepReference, 'step' | 'element' | 'product'> | undefined => {
@@ -184,7 +189,7 @@ export function InputEditor({ label, role, binding, self, steps, project, output
     ? selections.map((reference) => ({ value: shown(reference), reference }))
     : role.gathers && !document ? []
       : [{ value: document !== undefined
-        ? documentChoice(project, documentKind(project, document, role.documents) ?? role.documents[0] ?? 'model', document)
+        ? documentChoice(documentNames, documentKind(project, document, role.documents) ?? role.documents[0] ?? 'model', document)
         : absent ?? null }];
   const parts = rows.map(({ reference }, index) => reference ? selection?.(index, reference) : undefined);
   function checkpointEditor({ rule, selections: covered }: SelectionCheckpoint, step?: string) {

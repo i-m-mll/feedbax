@@ -17,7 +17,6 @@ import {
 } from '@/components/pipeline/StudioPipelineMap';
 import { keyUnavailable } from './projectMemberName';
 import { KeyField } from '@/components/ui/KeyField';
-import { stepElementName } from './analysisElements';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { useStepInsertMenu, type StepInsertion } from '@/components/pipeline/StepInsertMenu';
 import { InspectorRow, StudioRunControls, StudioRuns, StudioStepInspector, type RunMention } from '@/components/pipeline/StudioRuns';
@@ -37,7 +36,8 @@ import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
-import { shownName, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
+import { type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
+import { documentNames, memberNames, nameOf, type ProjectNames } from './memberNames';
 import {
   emptyPipelineSelection, selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState,
 } from '@/features/pipeline/selection';
@@ -255,6 +255,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const selectedElements = useStore(elements, (current) => current.selection);
   const mapViewport = useRef<CanvasViewport>(null);
   const plans = useSavedPlan(editor);
+  const namedDocuments = documentNames(snapshot, plans.names.names.documents);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null, plans.inTurn);
   /** The failure of the last gesture that has no object of its own to land on. */
   const [commandError, setCommandError] = useState<unknown>();
@@ -330,7 +331,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const primaryVariant = variant !== null && variant === variants[0];
   /** Whether a command of the primary variant applies: until a plan names the variants it may, and a gesture waits. */
   const variantApplies = shown ? primaryVariant : true;
-  const plan = useMemo(() => withMethodLabels(projectWindowPlan(plans.project, shown, variant, validity.checking),
+  const plan = useMemo(() => withMethodLabels(projectWindowPlan(plans.project, plans.names, shown, variant, validity.checking),
     plans.project, authoringCatalog), [plans.project, shown, variant, validity.checking, authoringCatalog]);
   const shownPlan = useMemo(() => planWithRefusal(planWithRefusal(plan, readRefusal), refusal), [plan, readRefusal, refusal]);
   const activityResultState = useMemo<ActivityResultState>(() => {
@@ -363,7 +364,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const runRemoval = useRunRemovalDialog(plans.read);
   const choiceMenu = useChoiceMenu();
   const sets = setAuthoring({
-    editor, project: saved.project, applies: !outside && reachable && variantApplies,
+    editor, project: saved.project, documentNames: namedDocuments, applies: !outside && reachable && variantApplies,
     perform, state: () => latestState.current, select: (next) => selection.select(next), confirmRemoval: runRemoval.confirm,
     ask: (anchor, choices) => askStore(anchor, choices),
   });
@@ -678,7 +679,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const listedCheckpoints = wholeStep && !saved.project.sweep && listedSubject && subjectReferences &&
     !Object.values(evaluated?.sweep?.axes ?? {}).some((axis) => axis && 'checkpoint_rule' in axis)
     ? selectionCheckpoints(subjectReferences) : undefined;
-  const stepLabel = (id: string) => plan.steps.find((item) => item.id === id)?.label ?? id;
+  const stepLabel = (id: string) => {
+    const planned = plan.steps.find((item) => item.id === id);
+    if (!planned) throw new Error(`The plan has no step ${id}.`);
+    return planned.label;
+  };
   /** The rows of its producer that selection `index` of the step's input `role` reads. */
   function selectionRows(role: string, index: number) {
     const binding = authored?.inputs?.[role];
@@ -736,7 +741,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const trialChangeScope: TrialChangeScope = () => trialEditScope;
   const askStore = askStoreWith(choiceMenu.ask, {
     step: stepLabel,
-    run: (key) => shown?.window_map?.rows.find((row) => savedRunId(row.key) === savedRunId(key))?.label ?? key.row,
+    run: (key) => {
+      const row = shown?.window_map?.rows.find((planned) => savedRunId(planned.key) === savedRunId(key));
+      if (!row) throw new Error(`The plan has no run ${savedRunId(key)}.`);
+      return row.name;
+    },
   });
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
@@ -763,7 +772,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     windowState.mode !== 'map' && [primaryView, secondaryView].includes('objective'));
   const documentBase = authored && stepDocument(authored.base);
   const pickDocument = useProjectDocuments({
-    editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
+    editor, documentNames: namedDocuments, stepId: step?.id, run: namedRun, scope: trialEditScope,
     editable: documentEditable,
     selectable: new Set<DocumentRole>([
       ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective', 'training'] as const
@@ -1277,8 +1286,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** An input's drafts belong to the runs they were made on, so its editor is remade for another selection. */
   const inputEditorKey = JSON.stringify([variant, selection.pipeline]);
   const inputEditor = step && (trainStart && startRole ? <InputEditor key={inputEditorKey} label={studioName('start')} role={startRole}
-    binding={authored?.inputs?.checkpoint} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
-    absent={documentChoice(saved.project, 'model', trainStart)} refusal={refusedAt('input')}
+    binding={authored?.inputs?.checkpoint} self={step.id} steps={plan.steps} project={saved.project} documentNames={namedDocuments} picking={elements}
+    absent={documentChoice(namedDocuments, 'model', trainStart)} refusal={refusedAt('input')}
     onReveal={(source) => selection.select(selectStep(state, source))}
     selection={(index, reference) => ({
       problems: inputProblems('checkpoint', index),
@@ -1292,7 +1301,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }}
     onChange={applies ? onCurrentPlan('changeTrainStart') : undefined} />
     : evaluateInputs && subjectRole ? <InputEditor key={inputEditorKey} label={studioName('subject')} role={subjectRole}
-      binding={evaluateInputs.inputs?.subject} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
+      binding={evaluateInputs.inputs?.subject} self={step.id} steps={plan.steps} project={saved.project} documentNames={namedDocuments} picking={elements}
       refusal={refusedAt('input')} onReveal={(source) => selection.select(selectStep(state, source))}
       selection={(index, reference) => {
         const inputId = Array.isArray(evaluateInputs.inputs?.subject) ? `subject.${index}` : 'subject';
@@ -1905,7 +1914,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   ].filter((command): command is StudioCommand => !!command);
 
   const projectSettings = <ProjectSettingRows settings={configuration.settings ?? {}} defaultDays={saved.default_keep_superseded_days}
-    steps={Object.entries(saved.project.steps ?? {}).map(([id, step]) => ({ id, label: shownName(id, step) }))}
+    steps={Object.keys(saved.project.steps ?? {}).map((id) => ({ id, label: nameOf(saved.names.steps, id) }))}
     change={(name, setting, value) => editor.edit(declarationAddress, name, [{ op: 'add', path: `/settings/${setting}`, value }])} />;
 
   return (
@@ -1980,7 +1989,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             {reportChoices.figures.map((figure) => <Button variant="ghost" align="start"
               key={JSON.stringify([figure.key, figure.name])}
               onClick={() => chooseReportFigure(reportChoices.revision, figure)}>
-              {stepElementName(saved.project, saved.composed, figure.key.step, figure.name)}{reportFigureRun(figure.key) && ' · ' + reportFigureRun(figure.key)}
+              {nameOf(saved.names.elements[figure.key.step], figure.name)}{reportFigureRun(figure.key) && ' · ' + reportFigureRun(figure.key)}
             </Button>)}
           </Dialog>}
           {insertMenu.menu}
@@ -2004,7 +2013,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             }
           }}>
           <ProblemList entries={problemEntries(shownProblems)} refusal={refusal?.kind === 'problem' ? refusal : undefined} canReveal={(problem) => !!addressedStep(problem)}
-            onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} stepName={stepLabel} />
+            onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} stepName={stepLabel}
+            documentName={(problem, id) => problemDocumentName(plans.names, problem, variant, id)} />
         </StudioProblems>}
         activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
           onToggle={activity.invoke}
@@ -2134,7 +2144,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 shown={trialClock.trial} />
             </FocusedFields>
               : view === 'model' && loaded
-                ? <><LoadedModelFacts project={saved.project} document={loaded.document} />{details[view].inspector}</>
+                ? <><LoadedModelFacts project={saved.project} documentNames={namedDocuments} document={loaded.document} />{details[view].inspector}</>
                 : details[view].inspector;
             return { ...details[view], inspector, picker: shows && { ...shows, refusal: shows.refusal ?? details[view].refusal },
               header: details[view].path, body: withProblem(details[view].body) };
@@ -2194,7 +2204,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                     {authored?.kind === 'synthesize' && <SynthesisForm key={step.id} step={authored} refusal={refusedAt('method')}
                       onEdit={applies && wholeStep ? onCurrentPlan('editSynthesis') : undefined} />}
                     {inputEditor}
-                    {subjectDocuments && <SubjectDocuments subject={subjectDocuments} project={saved.project}
+                    {subjectDocuments && <SubjectDocuments subject={subjectDocuments} project={saved.project} documentNames={namedDocuments}
                       onChoose={applies && wholeStep ? onCurrentPlan('chooseSubjectDocument') : undefined} />}
                     {evaluationEditor && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
                       domain={evaluationEditor.domain} disabled={!applies} refusal={refusedAt('trials')}
@@ -2279,6 +2289,16 @@ function ProblemDestination({ reveal, action, children }: { reveal: Reveal; acti
   </div>;
 }
 
+/**
+ * The name of document `id` that `problem` is placed in: the snapshot's for the problem's variant, or the problem's own
+ * when it is about a reference to a document the project lacks.
+ */
+function problemDocumentName(names: ProjectNames, problem: StudioProjectWindowMapProblem, variant: string | null, id: string) {
+  const named = memberNames(names, problem.variant ?? variant).documents[id] ?? problem.subject_name;
+  if (named == null) throw new Error(`Neither the snapshot nor its problem names document ${id}.`);
+  return named;
+}
+
 /** The document a problem's place is in, or else its step: what the Problems panel groups it under. */
 function problemHolder(problem: StudioProjectWindowMapProblem): { kind: 'document' | 'step'; id: string } | null {
   const place = problem.place;
@@ -2292,7 +2312,7 @@ function namedByHolder(problem: StudioProjectWindowMapProblem, holder: string | 
   return !!place && 'document' in place && place.document === holder && studioPlaceIsDocument(place) && !problem.document_path;
 }
 
-function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVariant, stepName }: {
+function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVariant, stepName, documentName }: {
   entries: readonly ProblemEntry[];
   /** The problem whose repair was refused, and why. */
   refusal?: { problem: string; reason: string };
@@ -2301,6 +2321,8 @@ function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVarian
   showVariant: boolean;
   /** A step's name, by the Service's naming rule. */
   stepName(id: string): string;
+  /** The name of document `id`, which `problem`'s place is in, by the Service's naming rule. */
+  documentName(problem: StudioProjectWindowMapProblem, id: string): string;
 }) {
   const groups = new Map<string | null, { holder: ReturnType<typeof problemHolder>; entries: ProblemEntry[] }>();
   for (const entry of listed) {
@@ -2311,7 +2333,7 @@ function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVarian
   }
   return <div className="space-y-2">{[...groups].map(([key, { holder, entries }]) => {
     const first = entries.find(({ problem }) => canReveal(problem))?.problem;
-    const name = holder && (holder.kind === 'step' ? stepName(holder.id) : holder.id);
+    const name = holder && (holder.kind === 'step' ? stepName(holder.id) : documentName(entries[0].problem, holder.id));
     return <section key={key ?? ''}>
       {name && <h2 className="font-medium">{first
         ? <Button variant="ghost" size="content" className="rounded-control px-control-inline text-left font-medium"

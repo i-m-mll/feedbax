@@ -144,10 +144,10 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   await expect(page.locator('[aria-description="The axis holds no values."]')).toHaveCount(1);
   await page.unroute(sets);
 
-  // Save Set: the axis reads the new set `set`.
+  // Save Set: the axis reads the new set `set`, named Set.
   await sweepLabel(card('pair'), 'Run').click();
   await page.getByRole('menuitem', { name: 'Save Set', exact: true }).click();
-  await expect(sweepLabel(card('pair'), 'set')).toBeVisible();
+  await expect(sweepLabel(card('pair'), 'Set')).toBeVisible();
   await saved();
   const stored = (await snapshot()).project;
   expect(stored.steps!.pair.sweep!.axes!.run).toEqual({ set: 'set', optional: true });
@@ -158,13 +158,13 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   // A Train card's Add Sweep offers the set, and has one run per entry.
   await mapStep(page, 'other').click();
   await card('other').getByRole('button', { name: 'Add Sweep Other', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'set', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Set', exact: true }).click();
   await expect(marks('other')).toHaveCount(3);
   await saved();
   expect(await rows('other')).toEqual(['set=run-2', 'set=run-3', 'set=run-4']);
 
   // An entry edited from the Train card with the Evaluate card taken out makes a set based on `set`.
-  await chooseSweepValue(card('other'), 'set', 'Run 4');
+  await chooseSweepValue(card('other'), 'Set', 'Run 4');
   await tab(page, 'Model').click();
   await mapStep(page, 'pair').click({ modifiers: ['Shift'] });
   await outlineRow(page, 'Plant').click();
@@ -186,14 +186,14 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   expect(narrowed.documents!['set-2']).toMatchObject({ base: { document: 'set' } });
   expect(narrowed.steps!.other.sweep!.axes!.set).toEqual({ set: 'set-2' });
   expect(narrowed.steps!.pair.sweep!.axes!.run).toEqual({ set: 'set', optional: true });
-  await sweepLabel(card('other'), 'set-2').click();
+  await sweepLabel(card('other'), 'set 2').click();
   const listed = page.getByRole('menuitemradio');
-  await expect(listed).toHaveText(['set', 'set 2']);
+  await expect(listed).toHaveText(['Set', 'set 2']);
   await expect(page.getByRole('menuitemradio', { name: 'set 2', exact: true })).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Escape');
 
   // Inline Set returns the Evaluate card to an inline axis, and no run is out of date.
-  await sweepLabel(card('pair'), 'set').click();
+  await sweepLabel(card('pair'), 'Set').click();
   await page.getByRole('menuitem', { name: 'Inline Set', exact: true }).click();
   await expect(sweepLabel(card('pair'), 'Run')).toBeVisible();
   await saved();
@@ -205,7 +205,7 @@ test('a required Set keeps its axis when its last entry is removed, marked until
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.set_authoring', 'seed_entries', studio.home, 'entries'));
   const card = page.locator('[data-map-step="train"]');
   const marks = card.locator('.studio-map-run-mark');
-  const label = () => sweepLabel(card, 'set');
+  const label = () => sweepLabel(card, 'Set');
   // The label's own description, not its accessible one, which a hover tip it showed last can still supply.
   const empty = 'A required Set has no entries.';
   async function entries() {

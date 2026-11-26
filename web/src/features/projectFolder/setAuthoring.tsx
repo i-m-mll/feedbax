@@ -5,7 +5,7 @@ import { studioAccessibleName, studioName } from '@/components/activity/studioVo
 import type { BarControl } from '@/components/ui/CommandBar';
 import { MenuGroup, MenuGroupLabel, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator } from '@/components/ui/Menu';
 import { Select } from '@/components/ui/Select';
-import { shownName, type PlanRunView, type PlanStepView } from '@/features/pipeline/planView';
+import type { PlanRunView, PlanStepView } from '@/features/pipeline/planView';
 import { selectSweepValue, selectedRuns, type PipelineSelectionState } from '@/features/pipeline/selection';
 import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
 import { bindStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
@@ -19,6 +19,7 @@ import { sendWithStore, type AskStore } from './storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import type { EntryTask, TaskSetVariable, WeightEdit } from './task/taskModel';
+import { nameOf, type DocumentNames } from './memberNames';
 import { documentTreeOf } from './useProjectDocuments';
 
 export const setSchema = 'feedbax.set_document.v1';
@@ -29,6 +30,7 @@ type Perform = (work: () => Promise<void>, refuse?: (reason: string) => Refusal 
 export interface SetAuthoringInputs {
   readonly editor: ProjectEditController;
   readonly project: Project;
+  readonly documentNames: DocumentNames;
   /** Whether its commands and controls apply; an edit made while the workspace saves waits for it. */
   readonly applies: boolean;
   readonly perform: Perform;
@@ -50,7 +52,7 @@ function runKey(run: PlanRunView) {
   return { variant, step, row };
 }
 
-export function setAuthoring({ editor, project, applies, perform, state, select, confirmRemoval, ask }: SetAuthoringInputs) {
+export function setAuthoring({ editor, project, documentNames, applies, perform, state, select, confirmRemoval, ask }: SetAuthoringInputs) {
   const refuseStep = (step: string) => (reason: string): Refusal => ({ kind: 'step', step, reason });
 
   /** Stores the edit `command` makes; one that removes runs first asks when some of them cost a confirmation. */
@@ -202,8 +204,8 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
       patches: [{ op: 'replace', path: authoredPointer(['sweep', 'axes', axis, 'set']), value: next }],
     }], { reviewedRevision: editor.getSnapshot().saved.revision, dependencies: [{ kind: 'document', id: next }] });
     return {
-      label: 'setDocument', document, name: shownName(document, project.documents?.[document]),
-      documents: documentTreeOf(project, [setSchema]),
+      label: 'setDocument', document, name: nameOf(documentNames, document),
+      documents: documentTreeOf(project, documentNames, [setSchema]),
       choose: applies ? (next) => {
         void perform(async () => {
           const stored = await point(next);
@@ -302,6 +304,6 @@ export function OfferedSets({ editor, step, choose }: {
   if (!offered.data?.length) return null;
   return <>
     <MenuSeparator />
-    {offered.data.map((set) => <MenuItem key={set} onClick={() => choose(set)}>{set}</MenuItem>)}
+    {offered.data.map((set) => <MenuItem key={set} onClick={() => choose(set)}>{nameOf(saved.names.documents, set)}</MenuItem>)}
   </>;
 }

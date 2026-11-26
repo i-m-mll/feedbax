@@ -18,7 +18,8 @@ it('counts a step\'s chosen runs only, so a step whose chosen runs all succeeded
       problems: [],
     },
   };
-  const [step] = projectWindowPlan(project, saved, 'base').steps;
+  const names = { documents: {}, steps: { evaluate: 'Evaluate' }, elements: {} };
+  const [step] = projectWindowPlan(project, { names, variant_names: { base: names } }, saved, 'base').steps;
   expect(step.runs.map(({ state }) => state)).toEqual(['succeeded', 'not_chosen', 'succeeded']);
   expect(step.statusCounts).toEqual({ succeeded: 2 });
 });

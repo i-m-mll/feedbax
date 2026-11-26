@@ -1,8 +1,9 @@
 import { studioName, studioStep } from '@/components/activity/studioVocabulary';
 import type { ReferenceChoice, ReferenceGroup } from '@/components/values/ReferenceField';
-import { shownName, type PlanStepView } from '@/features/pipeline/planView';
+import type { PlanStepView } from '@/features/pipeline/planView';
 import { viewGlyphs } from '@/features/projectWindow/ProjectWindow';
 import { Package } from 'lucide-react';
+import { nameOf, type DocumentNames } from './memberNames';
 import { documentsOfRole, roleOf, type DocumentRole } from './useProjectDocuments';
 
 /** The roles of the documents an input reads. */
@@ -21,10 +22,10 @@ export function chosenDocument(choice: ReferenceChoice): string | undefined {
 }
 export const stepChoiceId = (step: string) => JSON.stringify(['step', step]);
 
-/** The project's document `document`, by its shown name. */
-export function documentChoice(project: Project, kind: DocumentKind, document: string): ReferenceChoice {
+/** Document `document`, by the name `names` gives it. */
+export function documentChoice(names: DocumentNames, kind: DocumentKind, document: string): ReferenceChoice {
   const Glyph = documentGlyphs[kind];
-  return { id: documentChoiceId(document), label: shownName(document, project.documents?.[document]), glyph: <Glyph /> };
+  return { id: documentChoiceId(document), label: nameOf(names, document), glyph: <Glyph /> };
 }
 
 export function stepChoice(step: Pick<PlanStepView, 'id' | 'label' | 'kind'>): ReferenceChoice {
@@ -34,10 +35,10 @@ export function stepChoice(step: Pick<PlanStepView, 'id' | 'label' | 'kind'>): R
 
 type Project = Parameters<typeof documentsOfRole>[0];
 
-/** The project's documents of the kinds, as the Documents group of a reference field. */
-export function documentGroup(project: Project, kinds: DocumentKind | readonly DocumentKind[]): ReferenceGroup {
+/** The project's documents of the kinds, named by `names`, as the Documents group of a reference field. */
+export function documentGroup(project: Project, names: DocumentNames, kinds: DocumentKind | readonly DocumentKind[]): ReferenceGroup {
   return { label: studioName('documents'), choices: [kinds].flat().flatMap((kind) =>
-    documentsOfRole(project, kind).map((id) => documentChoice(project, kind, id))) };
+    documentsOfRole(project, kind).map((id) => documentChoice(names, kind, id))) };
 }
 
 /** The kind among `kinds` of the project's document `document`. */

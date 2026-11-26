@@ -118,7 +118,7 @@ test('binds lists of selections to an Evaluate subject and an Analyze dataset ro
   await activate(page, mapStep(page, 'analyze'));
   await openView(page, 'figures');
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
-  await activate(page, figures.getByRole('button', { name: 'profile', exact: true }));
+  await activate(page, figures.getByRole('button', { name: 'Profile', exact: true }));
   const legend = figures.locator('svg.main-svg text.legendtext');
   await expect(legend.filter({ hasText: /^Conditions (?!b )/ }).first()).toBeVisible({ timeout: 20_000 });
   await expect(legend.filter({ hasText: /^Conditions b / }).first()).toBeVisible();

@@ -9,7 +9,7 @@ import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { baseChain, baseOf, documentPayload } from '../documentPayload';
-import { shownName } from '@/features/pipeline/planView';
+import { nameOf } from '../memberNames';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { Box, House, Search, TriangleAlert } from 'lucide-react';
 import clsx from 'clsx';
@@ -1628,7 +1628,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     : component && selection ? componentInspector(selection, component)
     : attachment && selection ? attachmentInspector(selection, attachment)
     : ownerAddress ? ownerInspector(ownerAddress)
-    : <Inspector name={currentPath.length ? owner && 'name' in owner ? String(owner.name) : model.id : shownName(model.id, saved.project.documents?.[model.id])}
+    : <Inspector name={currentPath.length ? owner && 'name' in owner ? String(owner.name) : model.id : nameOf(saved.names.documents, model.id)}
       type={currentPath.length ? undefined : studioName('model')}>
       {fieldRegion}
       {fields(projectedFields.length ? [] : modelFields(model.value,
