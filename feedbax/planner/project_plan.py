@@ -730,6 +730,33 @@ def resolve_authored_evaluation_task(
     return task
 
 
+def _lower_evaluation_task_edits(
+    raw: dict, source: TaskDocument | PythonTaskSelection,
+    stored_source: StoredTaskDocument | None,
+) -> dict:
+    settings = authored_rollout_settings(raw)
+    edits = tuple(authored_variation(settings.variation))
+    task_edits = tuple((origin, edit) for origin, edit in edits if edit.path.partition(".")[0] == "task")
+    if not task_edits:
+        return raw
+    if stored_source is None and isinstance(source, TaskDocument):
+        for origin, edit in task_edits:
+            if edit.path == "task" and edit.op == "replace":
+                break
+            if edit.path.startswith("task.validation_trials."):
+                raise CannotRun(origin, "Name a Task document to edit its authored validation trial keys.")
+    authored = stored_source if stored_source is not None else (
+        StoredTaskDocument.from_lowered(source) if isinstance(source, TaskDocument) else source
+    )
+    selected = resolve_authored_evaluation_task(authored, settings.variation)
+    lowered = selected.lower().without_markers() if isinstance(selected, StoredTaskDocument) else selected
+    graph_edits = [edit.model_dump(mode="json", exclude_unset=True) for _, edit in edits
+                   if edit.path.partition(".")[0] != "task"]
+    return raw | {"variation": [
+        {"op": "replace", "path": "task", "value": lowered.model_dump(mode="json")}, *graph_edits,
+    ]}
+
+
 @dataclass(frozen=True)
 class ProjectPlan:
     """Named runs and deduplicated objects encoded by the shared request codec."""
@@ -1068,13 +1095,16 @@ class _ModelSource:
     """The Train's Model, Task and Objective do not pair, so nothing evaluates what it would train."""
     authored_model: ModelDocument | None = None
     trial: TrainFacts | None = None
+    stored_task: StoredTaskDocument | None = None
 
     @cached_property
     def evaluation_stamp(self) -> tuple[str, str | None]:
         trial = self.trial
         return self.stamp, sha256_bytes(to_json((
-            trial.task.model_dump(mode="json") if trial.task is not None else None, trial.input_bindings,
-        ))) if trial is not None else None
+            trial.task.model_dump(mode="json") if trial is not None and trial.task is not None else None,
+            trial.input_bindings if trial is not None else None,
+            self.stored_task.model_dump(mode="json", exclude_unset=True) if self.stored_task is not None else None,
+        )))
 
 
 @dataclass(frozen=True)
@@ -1645,7 +1675,11 @@ def _encode_row(
     elif kind == "train":
         from feedbax.tasks.registry import resolve_python_task_instance
         try:
-            authored = lower_stored_trial_documents(payload.get("trial_documents"))
+            stored_trial = payload.get("trial_documents")
+            authored = lower_stored_trial_documents(stored_trial)
+            if model_source is not None and authored.task is not None:
+                assert isinstance(stored_trial, dict)
+                model_source = replace(model_source, stored_task=StoredTaskDocument.model_validate(stored_trial["task"]))
             if authored.python_task is not None:
                 resolved = resolve_python_task_instance(authored.python_task, python_tasks)
                 if not isinstance(resolved, tuple):
@@ -1717,6 +1751,7 @@ def _encode_row(
                 evaluation_problem=evaluation if isinstance(evaluation, ProjectDiagnostic) else None,
                 evaluation_graph=compiled_model if isinstance(evaluation, GraphSpec) else None,
                 unpaired=isinstance(prepared, tuple),
+                stored_task=(StoredTaskDocument.model_validate(payload["task"]) if documents.task is not None else None),
             )
             if isinstance(prepared, tuple):
                 pairing_problems = _trial_problems(prepared, documents.model, synthesis=True)
@@ -2873,9 +2908,10 @@ class _Compiler:
                     )
                     payload = _with_producer_model(payload, authored_model, document_ids, document_pointers)
                     trial = payload if flat else payload["trial_documents"]
+                    previous_keys = stored_task.validation_trials
                     trial["task"] = StoredTaskDocument.from_lowered(
-                        task, trial_keys=stored_task.validation_trials or None,
-                    ).model_dump(mode="json", exclude_unset=True)
+                        task, trial_keys=previous_keys if len(previous_keys) == len(task.validation_trials) else None,
+                    ).model_dump(mode="json")
                     if not flat:
                         train = _train_facts(payload, self.python_tasks)
             elif kind == "evaluate":
@@ -3062,8 +3098,6 @@ class _Compiler:
         subject's task. The Model slot becomes the differences of its content from the nearest document it
         shares with the subject run's Model document.
         """
-        if "trial_documents" not in payload and not task_additions:
-            return payload, None, False
         slots = payload.get("trial_documents", {})
         payload = {name: value for name, value in payload.items() if name != "trial_documents"}
 
@@ -3077,6 +3111,8 @@ class _Compiler:
             return problem("payload.trial_documents", "An Evaluate reads a Model and a Task document.")
         documents_read = self.evaluation_source_documents(reference) if isinstance(reference, ProductRef) else None
         if documents_read is None or model_source is None:
+            if not slots and not task_additions:
+                return payload, None, False
             path = EVALUATION_MODEL if "model" in slots else EVALUATION_TASK
             return problem(path, "Requires a step that produced a Model.")
         model = None
@@ -3100,37 +3136,44 @@ class _Compiler:
             assert isinstance(base.payload, dict)
             if differences := diff(base.payload, content, keyed_collection=_MODEL_COLLECTION):
                 model = _EvaluationModel(name, differences)
-        task = False
-        if "task" in slots or task_additions:
-            params = payload.get("params")
-            if not isinstance(params, dict):
+        params = payload.get("params")
+        has_task_slot = "task" in slots or bool(task_additions)
+        if payload.get("evaluation_type") != ROLLOUT_TYPE or not isinstance(params, dict):
+            if has_task_slot:
                 return problem("payload.params", "Declare rollout parameters.")
-            authored = model_source.trial.task if model_source.trial is not None else None
-            inherited = authored or documents_read.task_source
-            selected = slots.get("task")
-            if "task" not in slots:
-                if not isinstance(inherited, TaskDocument):
+            return payload, model, False
+        authored = model_source.trial.task if model_source.trial is not None else None
+        inherited = authored or documents_read.task_source
+        stored_task = model_source.stored_task
+        try:
+            if "task" in slots:
+                selected = _AUTHORED_EVALUATION_TASK.validate_python(slots["task"])
+            else:
+                selected = stored_task
+            if task_additions:
+                task = selected.lower() if isinstance(selected, StoredTaskDocument) else inherited
+                if not isinstance(task, TaskDocument) or isinstance(selected, PythonTaskSelection):
                     return problem(EVALUATION_TASK, "A Set entry's Task variables and links need a Task document.")
-                try:
-                    selected = add_to_task(inherited, task_additions).model_dump(mode="json")
-                except ValueError as error:
-                    return problem(EVALUATION_TASK, str(error))
-            try:
-                if isinstance(inherited, TaskDocument):
-                    inherited = inherited.without_markers()
-                if isinstance(selected, dict) and isinstance(selected.get("variables"), list) and any(
-                    isinstance(variable, dict) and "marker" in variable for variable in selected["variables"]
-                ):
-                    selected = TaskDocument.model_validate(selected).without_markers().model_dump(
-                        mode="json", exclude_unset=True,
-                    )
-                variation = own_task_variation(inherited, selected, params.get("variation", []))
-            except ValueError as error:
-                return problem("payload.params.variation", str(error))
-            if variation is not None:
-                payload = payload | {"params": params | {"variation": variation}}
-                task = True
-        return payload, model, task
+                trial_keys = selected.validation_trials if isinstance(selected, StoredTaskDocument) else None
+                selected = StoredTaskDocument.from_lowered(add_to_task(task, task_additions), trial_keys=trial_keys or None)
+            if has_task_slot and selected is not None:
+                stored_content = selected.model_dump(mode="json")
+                chosen = selected.lower() if isinstance(selected, StoredTaskDocument) else selected
+                if chosen != inherited:
+                    variation = params.get("variation", [])
+                    values = tuple(variation[name] for name in sorted(variation)) if isinstance(variation, dict) else variation
+                    params = params | {"variation": [{"op": "replace", "path": "task", "value": stored_content}, *values]}
+                else:
+                    has_task_slot = False
+                stored_task = selected if isinstance(selected, StoredTaskDocument) else None
+            lowered = _lower_evaluation_task_edits(params, inherited, stored_task)
+        except CannotRun as error:
+            return replace(problem(error.path, error.reason), variation_target=variation_targets(payload.get("params"))(
+                path_parts(error.path)[-1],
+            ))
+        except (TypeError, ValueError) as error:
+            return problem(EVALUATION_TASK if has_task_slot else "payload.params.variation", str(error))
+        return payload | {"params": lowered}, model, has_task_slot
 
     def _lower_evaluate_payload(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
@@ -3269,6 +3312,11 @@ class _Compiler:
                 raise ValueError("Declare a trial-set rule for managed Evaluate")
             if problem := _authored_graph_variation_problem(key, payload):
                 return _LoweredRow(None, (problem,)), {}
+            stored_task = (
+                StoredTaskDocument.model_validate(task_document.payload) if isinstance(task, TaskDocument) else None
+            )
+            raw = _lower_evaluation_task_edits(raw, task, stored_task)
+            payload = payload | {"params": raw}
             condition_origins = {}
             if fields or differences or effective_model != model:
                 payload, attached = self.evaluate_model_variation(
@@ -3497,12 +3545,12 @@ class _Compiler:
                 # Evaluate's Task can change implicit assignments. Send those differences to the worker, whose
                 # Train admission fixes the original pairing by ID.
                 resolved = documents.resolved_signal_bindings(
-                    {signal.name: signal.id for signal in signals}, settings.input_bindings,
+                    {signal.id for signal in signals}, settings.input_bindings,
                 )
                 runtime_task = resolve_evaluation_task(source_documents.task_source, settings.variation)
                 runtime_signals = runtime_task.signals if isinstance(runtime_task, TaskDocument) else signals
                 runtime = source_documents.resolved_signal_bindings({
-                    signal.name: signal.id for signal in runtime_signals
+                    signal.id for signal in runtime_signals
                 })
                 overrides = {key: value for key, value in resolved.items() if key not in runtime or runtime[key] != value}
                 if overrides:
