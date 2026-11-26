@@ -1185,6 +1185,8 @@ export interface ModelFieldRequest {
 }
 
 export interface ModelFieldResponse {
+  sites?: Record<string, StudioFieldSite>;
+  function_lists?: Record<string, StudioFieldFunction[]>;
   fields?: ModelFieldView[];
   files?: StudioProjectFilePatch[];
   created?: CreateNamedDocument[];
@@ -1256,7 +1258,7 @@ export interface StudioFieldView {
   mixed?: boolean;
   unit?: string | null;
   conversion?: TimeValue | null;
-  site: SiteProjection;
+  site: string;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
   can_sweep?: boolean;
@@ -1273,7 +1275,7 @@ export interface ModelFieldView {
   mixed?: boolean;
   unit?: string | null;
   conversion?: TimeValue | null;
-  site: SiteProjection;
+  site: string;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
   can_sweep?: boolean;
@@ -1293,7 +1295,7 @@ export interface TrainFieldView {
   mixed?: boolean;
   unit?: string | null;
   conversion?: TimeValue | null;
-  site: SiteProjection;
+  site: string;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
   can_sweep?: boolean;
@@ -1315,6 +1317,8 @@ export interface TrainFieldRequest {
 }
 
 export interface TrainFieldResponse {
+  sites?: Record<string, StudioFieldSite>;
+  function_lists?: Record<string, StudioFieldFunction[]>;
   fields?: TrainFieldView[];
   files?: StudioProjectFilePatch[];
   created?: CreateNamedDocument[];
@@ -4737,6 +4741,44 @@ export type StudioEvaluationPointProgress = {
   "status": "scored" | "failed";
 };
 
+export type StudioFieldFunction = {
+  "id": string;
+  "signature": string;
+  "label"?: string | null;
+  "parameters"?: Array<FunctionParameter>;
+  "display_class": FunctionClass;
+  "min_args": number;
+  "max_args": number | null;
+  "keywords"?: Array<string>;
+};
+
+export type StudioFieldName = {
+  "id": string;
+  "name": string;
+  "type": StudioFieldNameType;
+  "list_count"?: number | null;
+  "set_entry"?: SetVariableOrigin | null;
+};
+
+export type StudioFieldNameType = {
+  "base": ValueBase;
+  "shape"?: Array<number>;
+  "space"?: SignalSpace | null;
+};
+
+export type StudioFieldSite = {
+  "expected": ValueType;
+  "finest": Level;
+  "names"?: Array<StudioFieldName>;
+  "structural"?: boolean;
+  "list_count"?: number | null;
+  "repeat_count"?: number | null;
+  "kinds": Array<FieldKind>;
+  "functions": string;
+  "parts": Array<ExpressionPartSite>;
+  "name_paths"?: Record<string, Array<string>>;
+};
+
 export type StudioInputPlace = {
   "part": "input";
   "role": string;
@@ -5308,7 +5350,7 @@ export type StudioTaskCatalog = {
 
 export type StudioTaskChoice = {
   "document": string;
-  "problems": Array<Problem>;
+  "problem_indices": Array<number>;
 };
 
 export type StudioTaskPlace = {
@@ -5390,6 +5432,8 @@ export type StudioTrainingPlace = {
 };
 
 export type StudioTrialAuthoring = {
+  "sites"?: Record<string, StudioFieldSite>;
+  "function_lists"?: Record<string, Array<StudioFieldFunction>>;
   "revision": Sha256;
   "run": StudioSavedTrainKey;
   "expression_context": string;
@@ -5406,6 +5450,7 @@ export type StudioTrialAuthoring = {
   "set_fields"?: Array<StudioSetField>;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
+  "task_problems": Array<Problem>;
   "variables": Array<ScopedValue>;
   "signals": Array<ScopedValue>;
   "epochs": Array<StudioTrialEpoch>;
@@ -5486,7 +5531,7 @@ export type StudioTrialField = {
   "mixed"?: boolean;
   "unit"?: string | null;
   "conversion"?: TimeValue | null;
-  "site": SiteProjection;
+  "site": string;
   "sweep"?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   "selected_value"?: string | null;
   "can_sweep"?: boolean;
@@ -8549,6 +8594,8 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
 export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(() =>
   z
     .object({
+      "sites": z.record(z.string(), StudioFieldSiteSchema).optional(),
+      "function_lists": z.record(z.string(), z.array(StudioFieldFunctionSchema)).optional(),
       "fields": z.array(ModelFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "created": z.array(CreateNamedDocumentSchema).optional(),
@@ -8660,7 +8707,7 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
       "conversion": TimeValueSchema.nullable().optional(),
-      "site": SiteProjectionSchema,
+      "site": z.string(),
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "can_sweep": z.boolean().optional(),
@@ -8681,7 +8728,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
       "conversion": TimeValueSchema.nullable().optional(),
-      "site": SiteProjectionSchema,
+      "site": z.string(),
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "can_sweep": z.boolean().optional(),
@@ -8705,7 +8752,7 @@ export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
       "conversion": TimeValueSchema.nullable().optional(),
-      "site": SiteProjectionSchema,
+      "site": z.string(),
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "can_sweep": z.boolean().optional(),
@@ -8735,6 +8782,8 @@ export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =
 export const TrainFieldResponseSchema: z.ZodType<TrainFieldResponse> = z.lazy(() =>
   z
     .object({
+      "sites": z.record(z.string(), StudioFieldSiteSchema).optional(),
+      "function_lists": z.record(z.string(), z.array(StudioFieldFunctionSchema)).optional(),
       "fields": z.array(TrainFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "created": z.array(CreateNamedDocumentSchema).optional(),
@@ -13940,6 +13989,52 @@ export const StudioEvaluationPointProgressSchema: z.ZodType<StudioEvaluationPoin
   }).strict()
 ) as unknown as z.ZodType<StudioEvaluationPointProgress>;
 
+export const StudioFieldFunctionSchema: z.ZodType<StudioFieldFunction> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "signature": z.string(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "parameters": z.array(FunctionParameterSchema).optional(),
+    "display_class": FunctionClassSchema,
+    "min_args": z.number().int().safe(),
+    "max_args": z.union([z.number().int().safe(), z.null()]),
+    "keywords": z.array(z.string()).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFieldFunction>;
+
+export const StudioFieldNameSchema: z.ZodType<StudioFieldName> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "type": StudioFieldNameTypeSchema,
+    "list_count": z.union([z.number().int().safe(), z.null()]).optional(),
+    "set_entry": z.union([SetVariableOriginSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFieldName>;
+
+export const StudioFieldNameTypeSchema: z.ZodType<StudioFieldNameType> = z.lazy(() =>
+  z.object({
+    "base": ValueBaseSchema,
+    "shape": z.array(z.number().int().safe()).optional(),
+    "space": z.union([SignalSpaceSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFieldNameType>;
+
+export const StudioFieldSiteSchema: z.ZodType<StudioFieldSite> = z.lazy(() =>
+  z.object({
+    "expected": ValueTypeSchema,
+    "finest": LevelSchema,
+    "names": z.array(StudioFieldNameSchema).optional(),
+    "structural": z.boolean().optional(),
+    "list_count": z.union([z.number().int().safe(), z.null()]).optional(),
+    "repeat_count": z.union([z.number().int().safe(), z.null()]).optional(),
+    "kinds": z.array(FieldKindSchema),
+    "functions": z.string(),
+    "parts": z.array(ExpressionPartSiteSchema),
+    "name_paths": z.record(z.string(), z.array(z.string())).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFieldSite>;
+
 export const StudioInputPlaceSchema: z.ZodType<StudioInputPlace> = z.lazy(() =>
   z.object({
     "part": z.literal("input"),
@@ -14676,7 +14771,7 @@ export const StudioTaskCatalogSchema: z.ZodType<StudioTaskCatalog> = z.lazy(() =
 export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "problems": z.array(ProblemSchema),
+    "problem_indices": z.array(z.number().int().safe().min(0)),
   }).strict()
 ) as unknown as z.ZodType<StudioTaskChoice>;
 
@@ -14778,6 +14873,8 @@ export const StudioTrainingPlaceSchema: z.ZodType<StudioTrainingPlace> = z.lazy(
 
 export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.lazy(() =>
   z.object({
+    "sites": z.record(z.string(), StudioFieldSiteSchema).optional(),
+    "function_lists": z.record(z.string(), z.array(StudioFieldFunctionSchema)).optional(),
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
     "expression_context": z.string(),
@@ -14794,6 +14891,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "set_fields": z.array(StudioSetFieldSchema).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),
+    "task_problems": z.array(ProblemSchema),
     "variables": z.array(ScopedValueSchema),
     "signals": z.array(ScopedValueSchema),
     "epochs": z.array(StudioTrialEpochSchema),
@@ -14892,7 +14990,7 @@ export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
     "mixed": z.boolean().optional(),
     "unit": z.union([z.string(), z.null()]).optional(),
     "conversion": z.union([TimeValueSchema, z.null()]).optional(),
-    "site": SiteProjectionSchema,
+    "site": z.string(),
     "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
     "selected_value": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "can_sweep": z.boolean().optional(),

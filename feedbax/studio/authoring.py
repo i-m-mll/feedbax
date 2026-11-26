@@ -72,6 +72,7 @@ from feedbax.application.bundle import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.studio.authoring_sweeps import SelectedValues, SweepTarget, FieldSweeps
 from feedbax.studio.class_fields import ClassField, edit_class_sweep
+from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import StoredEdit, TrainSelection
 from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
@@ -996,6 +997,7 @@ def project_numeric_fields(
         if selection.values is not None and selection.current is not None else None
     )
     fields = []
+    sites = FieldSiteIndex()
     targets = {}
     for field_id, field in definition.fields.items():
         view = field.view
@@ -1027,14 +1029,14 @@ def project_numeric_fields(
         values = [json.loads(value) for value in dict.fromkeys(json.dumps(_get(payload, path)) for payload in effective)]
         fields.append(project_numeric_field(
             TrainFieldView, numeric, axis, functions, selection.row,
-            values[0] if len(values) == 1 else None, held=values,
+            values[0] if len(values) == 1 else None, sites=sites, held=values,
             scoped=selection.scoped, id=field_id,
         ))
         targets[field_id] = field, numeric, axis, default_path
     changed = changed_fields(project, step_id, [view.id for view in fields])
     fields = [view.model_copy(update={"changed": view.id in changed}) for view in fields]
     if body.edit is None:
-        return TrainFieldResponse(fields=fields)
+        return TrainFieldResponse(fields=fields, **sites.tables(fields))
     if body.field not in targets:
         raise ValueError(f"Step {step_id!r} has no number field {body.field!r}")
     field, numeric, axis, default_path = targets[body.field]
