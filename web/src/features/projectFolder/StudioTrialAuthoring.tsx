@@ -424,6 +424,23 @@ function termFields(view: TrialView, key: string, term: StoredObjectiveTerm, com
   };
 }
 
+/**
+ * The index rules of a term family, each as the field the service projects at the term's `over`, labelled by the index
+ * name the term's expressions use. A term that is not a family has none.
+ */
+function termIndices(view: TrialView, key: string, term: StoredObjectiveTerm, commit?: Commit, runs?: TrialRuns): FieldModel[] {
+  return Object.keys(term.over ?? {}).map((index) => {
+    const path = authoredPointer(['objective', 'terms', key, 'over', index]);
+    const projection = view.fields.find((field) => field.path === path);
+    if (!projection) throw new Error(`The Objective's index ${index} of term ${key} has no field`);
+    return trialField(view, projection, index, runs, {
+      id: `${key}:over:${index}`,
+      changed: changedAt(view, 'objective', termPath(key, 'over', index), commit),
+      commit: commit && ((edit) => commit(studioAccessibleName('set', index), { kind: 'expression', path, edit })),
+    });
+  });
+}
+
 /** The epochs a window can name, each with the occurrences the nominal trial has of it. */
 export function windowEpochs(view: StudioTrialAuthoring): WindowEpochChoice[] {
   return view.epochs.map(({ id, name }) => ({
@@ -617,6 +634,7 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
   const term = key === undefined ? undefined : terms[key];
   if (!key || !term) return null;
   const fields = termFields(view, key, term, commit, runs, shown);
+  const indices = termIndices(view, key, term, commit, runs);
   const windowHost = termWindow(view, key, term, commit, runs);
   const order: (TermField | 'window')[] = ['name', 'measure', 'window', 'weight', 'enabled', 'reduction'];
   const name = termName(term, Object.keys(terms).indexOf(key));
@@ -624,6 +642,9 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
   return <Inspector name={name} type={term.label ? studioName('term') : undefined}>
     {shown && period != null && <section aria-label={studioName('plot')} className="grid gap-1 empty:hidden">
       <TermTrace label={name} term={key} shown={shown} stepSeconds={period} />
+    </section>}
+    {indices.length > 0 && <section aria-label={studioName('over')} className="grid gap-1">
+      {indices.map((index) => <ValueField key={index.id + JSON.stringify(index.value ?? index.text)} model={index} />)}
     </section>}
     {order.map((field) => field === 'window'
       ? <FieldRow key="window" label={studioName('window')} labelId={windowLabel} actions={windowHost.changed && <ChangedMark

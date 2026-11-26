@@ -93,7 +93,11 @@ export interface TaskSetVariable {
   readonly axis: string;
   readonly name: string;
   /** Each entry, then None where a trial may receive no entry, with its weight in parts when the trials are drawn. */
-  readonly entries: readonly { readonly id: string | null; readonly label: string; readonly weight?: SetEntryWeight }[];
+  readonly entries: readonly {
+    readonly id: string | null; readonly label: string; readonly weight?: SetEntryWeight;
+    /** How many entries a family entry stands for, as the service counts them; absent for an entry that is not a family. */
+    readonly members?: number;
+  }[];
   /** Sets one part of an entry's weight (`side` where entries co-occur). */
   readonly weigh?: (entry: string | null, side: WeightSide | undefined, weight: number) => Promise<WeightEdit>;
   /** The condition on Task variables a trial meets to receive an entry; a trial that fails it receives None. */

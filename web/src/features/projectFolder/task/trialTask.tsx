@@ -245,8 +245,9 @@ function setVariables(view: TrialView, setName: (set: string) => string, weigh?:
         commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('condition')), { kind: 'expression', path, edit })),
       }),
       entries: [...entries.filter(({ entry }) => entry !== null), ...entries.filter(({ entry }) => entry === null)]
-        .map(({ entry, label, weight }) => ({
+        .map(({ entry, label, weight, member_count }) => ({
           id: entry, label: entry === null ? studioName('none') : label || entry, weight: entryWeight(weight),
+          ...member_count != null && { members: member_count },
         })),
     };
   });

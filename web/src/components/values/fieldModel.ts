@@ -182,7 +182,7 @@ const literalVector = (value: FieldValue): boolean => value.kind === 'literal' |
 /** The kind a value reads as: a call is a Shape when its function is one, and a vector of numbers is a Value. */
 export function valueKind(value: FieldValue, functions: readonly StudioFieldFunction[]): FieldKind {
   switch (value.kind) {
-    case 'list': case 'range': case 'sample': return 'sweep';
+    case 'list': case 'sequence': case 'sample': return 'sweep';
     case 'draw': return 'draw';
     case 'name': return 'link';
     case 'unresolved': return 'formula';

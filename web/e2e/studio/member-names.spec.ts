@@ -1,6 +1,6 @@
 import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Page } from '@playwright/test';
-import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { analysisDocumentSchemaId, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { activityJob, documentPicker, problemGroup } from './fixtures/members';
 
@@ -112,7 +112,7 @@ test('renaming a Task signal updates its readers and keeps the Train request', {
     inputs: { subject: { step: train.id, checkpoint: 'last' } },
   } };
   const analysis = { kind: 'document', id: 'alignment-analysis', document: {
-    schema: 'feedbax.analysis_document.v1', label: 'Alignment', payload: {
+    schema: analysisDocumentSchemaId, label: 'Alignment', payload: {
       inputs: { states: { kind: 'dataset' } },
       operations: { align: {
         label: 'Align', operation: 'feedbax.aligned_velocity',

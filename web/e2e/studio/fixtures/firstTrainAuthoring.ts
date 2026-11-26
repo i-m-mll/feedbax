@@ -1,7 +1,7 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import {
   firstTrainTask, type StoredModelDocument as ModelDocument, type StoredObjectiveDocument, type StudioProjectSnapshot, type StudioSavedTrainRuns,
-  type StudioTrialAuthoring, type TaskDocument,
+  type StoredTaskDocument, type StudioTrialAuthoring, type TaskDocument,
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
 import { pick } from './controls';
@@ -145,7 +145,7 @@ export async function authorFirstTrain(
   await setNumber(batchSize, 4, (project) => config(project)?.batch_size);
 
   // Simple reaches starts nothing until `start` is chosen to initialize this Model's point mass.
-  const shipped = rootPayload(firstTrainTask) as unknown as TaskDocument;
+  const shipped = rootPayload(firstTrainTask) as unknown as StoredTaskDocument;
   const plantLink = JSON.stringify({ composites: [], element: {
     kind: 'field', parent: { id: plantId, kind: 'component' }, path: ['state', 'effector/position'],
   } });
@@ -173,10 +173,10 @@ export async function authorFirstTrain(
   await page.keyboard.press('Meta+1');
   // A comparison of forces reads one reach: simple reaches' others point every way, and their mean along the reach is
   // flat. The Task view does not edit validation trials yet.
-  const [reach] = shipped.validation_trials!;
+  const [[reachKey, reach]] = Object.entries(shipped.validation_trials!);
   if (forceComparison) {
     const narrowed = await request.patch(projectPath, { data: { revision: (await savedProject()).revision, files: [
-      { address: { kind: 'document', id: taskDocument }, patches: [{ op: 'replace', path: '/payload/validation_trials', value: [reach] }] },
+      { address: { kind: 'document', id: taskDocument }, patches: [{ op: 'replace', path: '/payload/validation_trials', value: { [reachKey]: reach } }] },
     ] } });
     expect(narrowed.ok(), await narrowed.text()).toBe(true);
   }
@@ -221,7 +221,7 @@ export async function authorFirstTrain(
   ]));
   expect(rootPayload(saved.project.documents?.[taskDocument])).toEqual({
     ...shipped, links: [{ model_field: plantLink, variable: 'start' }],
-    ...(forceComparison && { validation_trials: [reach] }),
+    ...(forceComparison && { validation_trials: { [reachKey]: reach } }),
   });
   const [term] = terms(saved.project);
   expect(terms(saved.project)).toHaveLength(1);
