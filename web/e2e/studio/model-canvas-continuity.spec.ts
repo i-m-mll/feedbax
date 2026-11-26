@@ -1,10 +1,9 @@
 import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
-import type { StoredModelDocument as ModelDocument } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
-import { palette, readSaved, startProject } from './fixtures/studioKeyboard';
-import { rootPayload } from './fixtures/rootPayload';
+import { palette, startProject } from './fixtures/studioKeyboard';
 import { hold } from './fixtures/heldRequest';
+import { modelField } from './fixtures/serviceViews';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -272,12 +271,7 @@ test('a Model field edited while a card move saves stays editable and saves afte
   await expect(hidden).toBeEditable();
   const original = await hidden.inputValue();
   const next = original === '17' ? '19' : '17';
-  const cell = async () => {
-    const saved = await readSaved(request, projectPath);
-    const document = rootPayload(saved.project.documents?.['point-mass']) as unknown as ModelDocument;
-    const component = document.interior.components?.cell;
-    return component?.kind === 'leaf' ? component.fields?.hidden_size : undefined;
-  };
+  const cell = async () => Number((await modelField(request, projectPath, 'point-mass', 'cell', 'Hidden size')).text);
   const stored = await cell();
 
   const header = (await card.locator('header').boundingBox())!;

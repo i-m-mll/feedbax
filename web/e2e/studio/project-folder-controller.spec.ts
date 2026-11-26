@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { openProjectEditor } from '../../src/features/projectFolder/openProjectEditor';
 import type { StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture } from './fixtures/canonicalTrain';
+import { storedProject } from './fixtures/serviceViews';
 
 test.use({ studioFrontend: 'dev' });
 // Every test here needs a Studio of its own kind, which is why each is in the round tier; they share one worker.
@@ -322,6 +323,7 @@ test('M2 managed commands preserve edits, identity and names across Rename and r
 test('M2 managed New authors a Train with named trial documents', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const [model, task, objective, definedTrain] = await fixture('ordinary-files', '8');
   const train = { ...definedTrain, step: { ...definedTrain.step, base: { inline: {} } } };
+  const stored = await storedProject(request, [model, task, objective, definedTrain]);
   await page.goto('/');
   const { id, folderName } = await page.evaluate(async (file) => {
     const entry = '/src/features/projectFolder/openProjectEditor.ts';
@@ -347,7 +349,7 @@ test('M2 managed New authors a Train with named trial documents', { tag: '@slow'
     return null;
   }, model);
   expect(refusal).toBe(409);
-  expect(JSON.parse(await readFile(join(root, 'documents', `${task.id}.json`), 'utf8'))).toEqual(task.document);
+  expect(JSON.parse(await readFile(join(root, 'documents', `${task.id}.json`), 'utf8'))).toEqual(stored.documents?.[task.id]);
   await expect(readFile(join(root, 'documents', 'point-mass.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   await page.unroute(routePath);
 
@@ -391,10 +393,8 @@ test('M2 managed New authors a Train with named trial documents', { tag: '@slow'
   }, objective);
   expect(requests).toBe(1);
   expect(saved).toMatchObject({ outside: null, pending: 0, undoName: 'Bind Trial Documents' });
-  expect(saved.saved.project.documents).toEqual({
-    [model.id]: model.document, [task.id]: task.document, [objective.id]: objective.document,
-  });
-  expect(saved.saved.project.steps!).toEqual({ train: definedTrain.step });
+  expect(saved.saved.project.documents).toEqual(stored.documents);
+  expect(saved.saved.project.steps).toEqual(stored.steps);
   const response = await request.get(`/api/projects/${id}/train-runs?revision=${saved.saved.revision}&window_map=true`);
   expect(response.ok(), await response.text()).toBe(true);
   const plan = await response.json() as StudioSavedTrainRuns;

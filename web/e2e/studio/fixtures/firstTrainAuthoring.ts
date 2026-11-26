@@ -9,6 +9,7 @@ import { activate, activateMenuItem, number, palette, post, readSaved, startProj
 import { rootPayload } from './rootPayload';
 import { keyLabelled } from './members';
 import { stateLinkKey, trialView } from './trialFields';
+import { trainSettings } from './serviceViews';
 
 /** The Task document a first Train creates: simple reaches, named by its label. */
 const taskDocument = 'simple-reaches';
@@ -183,9 +184,10 @@ export async function authorFirstTrain(
     training_config: { document: 'training', pointer: '/training_config' },
   } });
   expect(rootPayload(saved.project.documents?.training)).toMatchObject({
-    method: 'feedbax.supervised_gradient',
-    settings: { optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } } },
-    training_config: { n_batches: totalUpdates, batch_size: 4 },
+    method: 'feedbax.supervised_gradient', training_config: { n_batches: totalUpdates, batch_size: 4 },
+  });
+  expect(await trainSettings(request, projectPath)).toMatchObject({
+    optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } },
   });
   const savedModel = rootPayload(saved.project.documents?.model) as unknown as ModelDocument;
   expect(savedModel.interior.components).toMatchObject({

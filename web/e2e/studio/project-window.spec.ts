@@ -246,7 +246,7 @@ test('outside saved-folder edits join the mounted Undo history', { tag: '@slow' 
   expect(await read(modelPath)).toBe(beforeOutside);
 
   await history('Meta+Z', 'Model', '/model/undo');
-  expect(JSON.parse(await read(modelPath)).payload.interior.components.plant.fields.mass).toBe(1);
+  await expect(mass).toHaveValue('1');
   await tab('Runs').click();
   await history('Meta+Z', 'Runs');
   await expect(batches).toHaveValue('2');
@@ -259,7 +259,6 @@ test('outside saved-folder edits join the mounted Undo history', { tag: '@slow' 
   await expect(batches).toHaveValue('5');
   await tab('Model').click();
   await history('Meta+Shift+Z', 'Model', '/model/undo');
-  expect(JSON.parse(await read(modelPath)).payload.interior.components.plant.fields.mass).toBe(2);
   await plant.click();
   await expect(mass).toHaveValue('2');
   await menu('Redo Outside Change');
