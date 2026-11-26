@@ -15,6 +15,7 @@ from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
+from feedbax.contracts.studio_project import StudioMemberName
 from feedbax.project_members import merge_cards, split_card
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support import map_probe
@@ -173,7 +174,11 @@ def test_outputs_of_two_cards_listed_on_a_role_stack_flat_and_split_and_merge_ch
     labels, requests = _listed(definition)
     assert labels == {"source": {"conditions", "conditions_b"}, "element": {"align_a", "align_b"}}
 
-    split, presentation = split_card(definition, {}, "pair", {"align_b"}, "pair-b-analysis", "pair_b")
+    split, presentation = split_card(
+        definition, {}, "pair", {"align_b"},
+        StudioMemberName(id="pair-b-analysis", label="Pair analysis 2"),
+        StudioMemberName(id="pair_b", label="Pair 2"),
+    )
     assert split["steps"]["analyze"]["inputs"]["states"][1]["step"] == "pair_b"
     assert _listed(split) == (labels, requests)
     merged, _ = merge_cards(split, presentation, "pair", ["pair_b"])

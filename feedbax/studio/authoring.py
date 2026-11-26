@@ -14,6 +14,7 @@ from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
 from feedbax.compiler.model_templates import with_model_placement_reason
+from feedbax.contracts.train_settings import setting_schema_node
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.task_document import BLANK_TASK, TASK_DOCUMENT_SCHEMA_ID, VALUE_TYPES, TaskDocument
@@ -661,7 +662,7 @@ class _StepFields:
                 present = name in values
                 leaf = values[name] if present else held.get(name, declared.get("default"))
                 record = held.get(name, leaf)
-                props = _schema_node(schema, declared, record)
+                props = setting_schema_node(schema, declared, record)
                 inner = anchor if present or anchor is not None else (site, leaf)
                 if isinstance(record, dict):
                     # A chosen class's parameter is named by the field holding the class, and by its own
@@ -673,7 +674,7 @@ class _StepFields:
                         self.class_field(site, _title(declared, name), tag, leaf if present else None)
                         shared = set(props.get("properties", {})).intersection(*(
                             node.get("properties", {}) for payload in self.selected
-                            if (node := _schema_node(schema, declared, _get(payload, site) or record))
+                            if (node := setting_schema_node(schema, declared, _get(payload, site) or record))
                         ))
                     fields(
                         site, leaf if present and isinstance(leaf, dict) else {}, record, props, inner,
@@ -719,21 +720,6 @@ class _StepFields:
 
 def _title(node: dict, name: str) -> str:
     return node.get("title", name.replace("_", " ").title())
-
-
-def _schema_node(schema: dict, node: dict, value: JsonValue) -> dict:
-    """The schema that governs ``value``: references followed, an optional's value member, a tagged union's chosen class."""
-    while "$ref" in node:
-        node = schema["$defs"][node["$ref"].rsplit("/", 1)[-1]] | {k: v for k, v in node.items() if k != "$ref"}
-    if "anyOf" in node:
-        members = [member for member in node["anyOf"] if member.get("type") != "null"]
-        rest = {k: v for k, v in node.items() if k != "anyOf"}
-        return _schema_node(schema, rest | members[0], value) if len(members) == 1 else rest
-    if "discriminator" in node:
-        tag = node["discriminator"]["propertyName"]
-        chosen = node["discriminator"]["mapping"].get(value.get(tag)) if isinstance(value, dict) else None
-        return _schema_node(schema, {"$ref": chosen}, value) if isinstance(chosen, str) else {}
-    return node
 
 
 def _classes(annotation: Any) -> list[type[BaseModel]]:

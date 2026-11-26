@@ -200,7 +200,7 @@ def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp
     spec = decode_request(plan.requests[rollout.request_id], plan.documents.__getitem__).spec
     condition = RolloutParameters.model_validate(spec.params).condition_id()
     figure = _decode(plan, "profile")
-    assert figure.spec.names["condition"] == {condition: "Baseline"}
+    assert figure.spec.names["condition"] == {condition: "plant.mass=2"}
     assert figure.inputs["speed"][0].reference == ProductRef(request_id=_decode(plan, "speed").id, role="speed")
     project.documents["velocity-analysis"].label = "Movement analysis"
     root = tmp_path / "reach"

@@ -29,7 +29,7 @@ def listed_best():
     """One Evaluate over the best two runs of each of two Train steps, and a named subset of the first."""
     raw = authored_best()
     steps = raw["steps"]
-    steps["train_b"] = deepcopy(steps["train"]) | {"sweep": _rates({"d": 0.004, "e": 0.0005, "f": 0.0015})}
+    steps["train_b"] = deepcopy(steps["train"]) | {"label": "Train b", "sweep": _rates({"d": 0.004, "e": 0.0005, "f": 0.0015})}
     best = {"rule": "lowest 2 train_loss"}
     raw["documents"]["chosen"] = {"label": "Chosen", "schema": "subset", "payload": {"clauses": [{"rate": [{"id": "b", "label": "b"}]}]}}
     steps["baseline"]["inputs"]["subject"] = [
@@ -158,7 +158,8 @@ def test_grouped_ranks_of_listed_steps_are_named_and_selected_by_key():
         name: {"value": seed, "patches": {"seed": {"value": seed}}} for name, seed in (("one", 1), ("two", 2))
     }}
     del steps["train"]["sweep"]["axes"]["rate"]["values"]["c"]
-    steps["train_b"] = deepcopy(steps["train"])
+    steps["train"]["sweep"]["axes"]["rate"]["label"] = "Rate"
+    steps["train_b"] = deepcopy(steps["train"]) | {"label": "Train b"}
     best = {"rule": "lowest 1 train_loss per rate"}
     steps["baseline"]["inputs"]["subject"] = [
         {"step": "train", "checkpoint": "last", "where": deepcopy(best)},

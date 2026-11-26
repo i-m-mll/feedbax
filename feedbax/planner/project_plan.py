@@ -153,7 +153,7 @@ from feedbax.contracts.request_specs import (
 )
 from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, TaskAdditions, TaskDocument, add_to_task
-from feedbax.contracts.train_settings import normalize_train_method
+from feedbax.contracts.train_settings import normalize_train_method, setting_field_title
 
 if TYPE_CHECKING:
     from feedbax.compiler.model_attachment import LoweredEvaluateAttachments
@@ -872,7 +872,7 @@ def _member_label(binding: PlannedInput, group: Mapping[str, SweepCoordinate]) -
     """
     rank = binding.member.reference
     if isinstance(rank, BestRank) and (rank.group or binding.member.key != rank.key) and "source" in binding.named:
-        values = (sweep_value_name(axis, group[axis]) for axis in sorted(rank.group))
+        values = (sweep_value_name(group[axis]) for axis in sorted(rank.group))
         return " · ".join((binding.named["source"].printed, *values, f"Rank {rank.rank}"))
     return next((name.printed for name in binding.named.values()), "Input")
 
@@ -2296,6 +2296,20 @@ class _Compiler:
             def field_presentation(path: str) -> tuple[str | None, str | None]:
                 target = model_field_target(path)
                 if target is None:
+                    parts = tuple(path.split("."))
+                    if kind == "train" and parts == ("seed",):
+                        return "Seed", None
+                    if kind == "train" and parts[0] == "training_config":
+                        return setting_field_title(DocumentTrainingConfig.model_json_schema(), parts[1:], None), None
+                    if kind == "train" and parts[0] == "settings" and self.training_methods is not None:
+                        resolved = resolved_definition()
+                        method = resolved.payload.get("method") if isinstance(resolved, ResolvedStep) else None
+                        if isinstance(method, str):
+                            try:
+                                schema = self.training_methods.resolve(method).settings_model.model_json_schema()
+                            except KeyError:
+                                return None, None
+                            return setting_field_title(schema, parts[1:], resolved.payload.get("settings")), None
                     return None, None
                 labels = {
                     _model_field_title(model, target.address, self.components or _builtin_model_registry())
@@ -2324,11 +2338,13 @@ class _Compiler:
                     if len(choices) == 1:
                         (label, unit), = choices
                         coordinate = coordinates[axis]
-                        coordinates[axis] = replace(coordinate, axis_label=label or coordinate.axis_label, unit=unit)
+                        authored = sweep.axes[axis] if sweep is not None else None
+                        name = authored.label if authored is not None else None
+                        coordinates[axis] = replace(coordinate, axis_label=name or label or coordinate.axis_label, unit=unit)
                 choices = axis_coordinates(coordinates, row.input_axes, row.kept_axes)
                 assert sweep is not None
                 label = sweep_row_name(
-                    (axis, choices[axis]) for axis in sweep.axes
+                    choices[axis] for axis in sweep.axes
                     if axis in choices and (axis in row.axis_value_ids or axis in row.kept_axes)
                 )
                 return replace(row, coordinates=coordinates, label=label)
@@ -4124,7 +4140,7 @@ class _Compiler:
                 else:
                     ports = {"states": row.dataset_port} if row.dataset_port is not None else {}
                 datasets[source.producer] = DatasetStepSource(
-                    spec, LabelName(row.key.row, self.run_name(row), kind="row"), ports,
+                    spec, LabelName(row.key.row, row.label, kind="row"), ports,
                     member_name(self.variants[row.key.variant].steps, row.key.step),
                 )
         elements, encoded, problems, figures, dataset_inputs, dataset_outputs = lower_analyze(

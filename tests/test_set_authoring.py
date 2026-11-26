@@ -208,7 +208,7 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     project = folders.read(PROJECT).project
     assert project.documents["set-2"].base.document == "set"
     assert project.documents["set-2"].label == "Set 2"
-    assert result["snapshot"]["names"]["documents"]["set-2"] == "Set 2"
+    assert result["snapshot"]["project"]["documents"]["set-2"]["label"] == "Set 2"
     assert project.steps["other"].sweep.axes["set"].set == "set-2"
     assert project.steps["baseline"].sweep.axes["run"].set == "set"
     assert _runs(folders, "baseline") == edited
@@ -276,10 +276,10 @@ def test_window_map_serves_axis_and_value_names(private_host, tmp_path, monkeypa
     window = response.json()["window_map"]
     (step,) = window["steps"]
     (row,) = window["rows"]
-    assert row["label"] == "Learning rate 0.001"
+    assert row["label"] == "Learning Rate 0.001"
     assert step["axes"] == [{
-        "id": "learning-rate", "label": "Learning rate",
-        "values": [{"id": "slow", "label": "Learning rate 0.001", "value_label": "0.001", "rule": "0.001"}],
+        "id": "learning-rate", "name": "Learning Rate",
+        "values": [{"id": "slow", "name": "Learning Rate 0.001", "value_label": "0.001", "rule": "0.001"}],
     }]
 
 
@@ -299,8 +299,8 @@ def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selec
     plan, result = read()
     train = next(step for step in result["window_map"]["steps"] if step["step_id"] == "train")
     assert train["label"] == "Train"
-    assert train["axes"][0]["label"] == "Run"
-    assert [(value["id"], value["label"], value["value_label"]) for value in train["axes"][0]["values"]] == [
+    assert train["axes"][0]["name"] == "Run"
+    assert [(value["id"], value["name"], value["value_label"]) for value in train["axes"][0]["values"]] == [
         ("", "Run 1", "Run 1"), ("run-2", "Run 2", "Run 2"),
     ]
     rows = [row for row in result["window_map"]["rows"] if row["key"]["step"] == "train"]

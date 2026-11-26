@@ -169,7 +169,7 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
     address: Callable[[Row], tuple[str, str]],
     member_key: Callable[[Row], str],
     coordinates: Callable[[Row], Mapping[str, Coordinate]],
-    coordinate_label: Callable[[str, Coordinate], str],
+    coordinate_label: Callable[[Coordinate], str],
     missing: Callable[[SelectedAxisValueRefusal], None],
     producer: str,
     final_metrics: Callable[[tuple[Row, ...]], frozenset[str]] | None = None,
@@ -197,7 +197,7 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
                 if absent:
                     broken = True
                     remaining = [
-                        SelectedAxisValue(id=option.value_id, label=coordinate_label(axis, option))
+                        SelectedAxisValue(id=option.value_id, label=coordinate_label(option))
                         for option, _ in options.values()
                     ]
                     for index, value in absent:
