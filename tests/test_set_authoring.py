@@ -370,7 +370,11 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
         assert response.status_code == 200, response.text
 
     field = folders.read(PROJECT).project.steps["other"].sweep.axes["run"]
-    origin = {"step": "other", "axis": "run", "set": field.set, "entry": entry, "variable": "onset"}
+    saved_entry = folders.read(PROJECT).project.documents[field.set].payload["entries"][entry]
+    origin = {
+        "step": "other", "axis": "run", "set": field.set, "entry": entry, "variable": "onset",
+        "label": saved_entry["label"], "member_count": None,
+    }
     for row in _rows(folders, "other"):
         read = selected(row)
         on_entry = row == f"run={entry}"
@@ -383,11 +387,10 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
     assert selected(f"run={entry}")["task"]["variables"]["onset"]["value"] == "0.04 s"
     _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
     read = selected("default")
-    assert len([item for item in read["variables"] if item["name"] == f"{entry} · Onset"]) == 1
-    projected = next(item for item in read["variables"] if item["name"] == f"{entry} · Onset")
+    (projected,) = [item for item in read["variables"] if item["name"] == "Onset"]
     assert projected["set_entry"] == origin
     scoped = projected["id"]
-    assert read["task"]["variables"][scoped]["label"] == f"{entry} · Onset"
+    assert read["task"]["variables"][scoped]["label"] == "Onset"
     set_expression("default", scoped, "0.07 s")
     field = folders.read(PROJECT).project.steps["other"].set_fields["run"]
     project = folders.read(PROJECT).project
@@ -425,13 +428,18 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         body = {"revision": reviewed.revision, "run": {"variant": "default", "step": "train", "row": "default"}}
         response = client.post(f"{BASE}/authoring/trials", json=body)
         assert response.status_code == 200, response.text
-        variables = {item["name"]: item for item in response.json()["variables"] if item.get("set_entry")}
-        assert set(variables) == {"reach · shift · Amount", "hold · shift · Amount", "shift · Other"}
-        reach, hold = (variables[f"{axis} · shift · Amount"] for axis in ("reach", "hold"))
+        variables = {
+            (origin["axis"], origin["variable"]): item
+            for item in response.json()["variables"] if (origin := item.get("set_entry")) is not None
+        }
+        assert set(variables) == {("reach", "amount"), ("hold", "amount"), ("reach", "other")}
+        reach, hold = (variables[axis, "amount"] for axis in ("reach", "hold"))
         assert reach["id"] != hold["id"]
         for axis, item in (("reach", reach), ("hold", hold)):
+            assert item["name"] == "Amount"
             assert item["set_entry"] == {
                 "step": "train", "axis": axis, "set": f"{axis}-bank", "entry": "shift", "variable": "amount",
+                "label": "Shift", "member_count": None,
             }
         response = client.post(f"{BASE}/authoring/trials", json=body | {"change": {
             "kind": "expression", "path": f"/task/variables/{hold['id']}/value", "edit": {"kind": "text", "text": "4"},
@@ -448,23 +456,28 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         revision = written.json()["revision"]
         weight = client.post(f"{BASE}/authoring/trials", json=body | {"revision": revision, "change": {
             "kind": "expression", "path": "/objective/terms/effort/weight",
-            "edit": {"kind": "text", "text": "'hold · shift · Amount'"},
+            "edit": {"kind": "text", "text": "set.hold.shift.amount"},
         }})
         assert weight.status_code == 200, weight.text
         shown = weight.json()
         assert not shown["problems"] and shown["files"], shown
         field = next(field for field in shown["fields"] if field["path"] == "/objective/terms/effort/weight")
         hints = shown["sites"][field["site"]]["names"]
-        assert next(name["set_entry"] for name in hints if name["id"] == hold["id"]) == hold["set_entry"]
+        hint = next(name for name in hints if name["id"] == hold["id"])
+        assert hint["set_entry"] == {key: hold["set_entry"][key] for key in (
+            "step", "axis", "set", "entry", "variable",
+        )}
+        assert hint["name"] == "set.hold.shift.amount"
         saved = client.patch(BASE, json={"revision": revision, "files": shown["files"]})
         assert saved.status_code == 200, saved.text
         objective = folders.read(PROJECT).project.documents["objective"].payload
         assert objective["terms"]["effort"]["weight"] == "set.hold.shift.amount"
-        other = variables["shift · Other"]
+        other = variables["reach", "other"]
+        assert other["name"] == "Other"
         revision = saved.json()["revision"]
         own = client.post(f"{BASE}/authoring/trials", json=body | {"revision": revision, "change": {
             "kind": "expression", "path": f"/task/variables/{other['id']}/value",
-            "edit": {"kind": "text", "text": "'reach · shift · Amount' + 4"},
+            "edit": {"kind": "text", "text": "Amount + 4"},
         }})
         assert own.status_code == 200, own.text
         shown = own.json()
