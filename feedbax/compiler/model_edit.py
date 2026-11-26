@@ -9,7 +9,7 @@ from functools import cache
 from typing import TYPE_CHECKING, Any, Literal, get_args
 from uuid import uuid4
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from feedbax.contracts import model_edit as edits
 from feedbax.contracts.acausal import EquationsDomain
@@ -26,10 +26,11 @@ from feedbax.contracts.model_document import (
     SignalInput,
     SignalOutput,
     SignalType,
+    WireAttachment,
 )
 from feedbax.contracts.stored_model import (
     StoredModelWire, StoredCompositeComponent, StoredLeafComponent, authored_model_payload,
-    lower_model_attachment, lower_model_component, lower_model_wire,
+    lower_model_attachment, lower_model_component, lower_model_wire, stored_model_attachment,
 )
 from feedbax.compiler.model_differences import structural_differences
 
@@ -468,14 +469,15 @@ class ModelEditDraft:
                 definition = lower_model_component(definition)
             elif isinstance(definition, StoredModelWire):
                 definition = lower_model_wire(definition)
-            graph.setdefault(collection, {})[element.id] = definition.model_dump(mode="json")
+            _, base_graph = ModelEditDraft(reference, self.leaf_ports, self.component_problem).context(address)
+            self.restore_member(graph, base_graph, collection, element.id, definition.model_dump(mode="json"))
             restored = {address.to_text()}
             for edges, kind in ((difference.wires, "wires"), (difference.connections, "connections")):
                 for key, edge in edges.items():
                     record = (lower_model_wire(edge) if isinstance(edge, StoredModelWire) else edge).model_dump(mode="json")
                     if all(end["component"] in graph["components"] for end in record.values()
                            if isinstance(end, dict) and end.get("owner") == "component"):
-                        graph.setdefault(kind, {})[key] = record
+                        self.restore_member(graph, base_graph, kind, key, record)
                         restored.add(_address(
                             address.composites, "wire" if kind == "wires" else "physical_connection", id=key,
                         ).to_text())
@@ -489,6 +491,19 @@ class ModelEditDraft:
                     if key in restored or (element.kind == "component" and placed.composites[:len(inside)] == inside):
                         entries[key] = value
         self.changed.append(address)
+
+    @staticmethod
+    def restore_member(graph: Record, base: Record, collection: str, key: str, record: Record) -> None:
+        members = graph.setdefault(collection, {})
+        if key in members:
+            members[key] = record
+            return
+        siblings = tuple(base[collection])
+        following = next((name for name in siblings[siblings.index(key) + 1:] if name in members), None)
+        position = tuple(members).index(following) if following is not None else len(members)
+        ordered = list(members.items())
+        ordered.insert(position, (key, record))
+        graph[collection] = dict(ordered)
 
     @staticmethod
     def remove_endpoints(graph: Record, matches: Callable[[Record], bool]) -> None:
@@ -593,7 +608,7 @@ class ModelEditDraft:
                 if after is None:
                     raise _Refusal(address, "The preceding attachment does not exist")
                 position = after + 1
-            chain.insert(position, difference.attachment.model_dump(mode="json"))
+            chain.insert(position, lower_model_attachment(element.id, difference.attachment).model_dump(mode="json"))
         self.changed.append(address)
 
     def move_wire_attachment(self, command: edits.MoveWireAttachment) -> None:
@@ -607,14 +622,14 @@ class ModelEditDraft:
         item = next((item for item in source_chain if item["id"] == element.id), None)
         if item is None:
             raise _Refusal(address, "Attachment does not exist")
+        attachment = stored_model_attachment(TypeAdapter(WireAttachment).validate_python(item))
         if destination.element == element.parent:
-            self.set_attachment(ChangeModelAttachment(op="change", address=address, attachment=item, after=command.after))
+            self.set_attachment(ChangeModelAttachment(op="change", address=address, attachment=attachment, after=command.after))
             return
+        moved = address.model_copy(update={"element": element.model_copy(update={"parent": destination.element})})
         self.remove(address)
-        self.set_attachment(AddModelAttachment(op="add", owner=destination, attachment=item, after=command.after))
-        self.relocations[address.to_text()] = address.model_copy(update={
-            "element": element.model_copy(update={"parent": destination.element}),
-        })
+        self.set_attachment(AddModelAttachment(op="add", address=moved, attachment=attachment, after=command.after))
+        self.relocations[address.to_text()] = moved
 
     def insert_component(self, command: edits.InsertComponentOnWire, component: ModelComponent) -> None:
         address = command.address
