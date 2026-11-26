@@ -147,6 +147,7 @@ class SelectedValues:
 
     condition: AxisCondition
     current: Mapping[str, JsonValue]
+    authored_additions: frozenset[str]
 
     def holds(self, path: str) -> bool:
         node: object = self.current
@@ -218,7 +219,9 @@ class FieldSweeps:
         return [
             OverridePatch(op="remove", path=path)
             for path, patch in self.target.entry(self.target.value).patches.items()
-            if isinstance(patch, SetValue) and patch.op == "add" and self.selected.holds(path)
+            if isinstance(patch, SetValue) and (
+                path in self.selected.authored_additions or patch.op == "add" and self.selected.holds(path)
+            )
         ]
 
     def to_list(self, axis: ListedAxis | GeneratedAxis) -> NamedAxis:

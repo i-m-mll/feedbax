@@ -993,7 +993,7 @@ def project_numeric_fields(
     effective = [definition.effective(payload) for payload in selection.payloads]
     defaulted = definition.effective(definition.payload)
     selected = (
-        SelectedValues(selection.values, selection.current)
+        SelectedValues(selection.values, selection.current, selection.authored_additions)
         if selection.values is not None and selection.current is not None else None
     )
     fields = []
@@ -1052,7 +1052,7 @@ def project_numeric_fields(
             retained
             for write in prepared.keep
             for retained in (
-                field.number_write(write.value) if write.path == default_path else [write]
+                field.number_write(write.value) if write.path == default_path and write.op != "remove" else [write]
             )
         ]
         stored = (selection.store(keep) if keep else StoredEdit([])).then(
