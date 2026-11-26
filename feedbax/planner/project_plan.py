@@ -3093,6 +3093,34 @@ class _Compiler:
             for problem in problems
         )
 
+    def trial_set_conflict(self, key: RunKey, subject: PlannedInput) -> RunProblem | None:
+        evaluate = self.variants[key.variant].steps[key.step]
+        if not evaluate.set_fields:
+            return None
+        pending = list(subject.sources)
+        seen = set()
+        while pending:
+            source = pending.pop()
+            if source in seen:
+                continue
+            seen.add(source)
+            row = self.rows.get(source)
+            if row is None or row.kind != "train":
+                continue
+            project = self.variants[source.variant]
+            train = project.steps[source.step]
+            if train.set_fields:
+                names = dict.fromkeys(member_name(project.documents, field.axis.set) for field in train.set_fields.values())
+                return RunProblem(
+                    "/set_fields", f"{train.label} places {', '.join(names)} on its trials, "
+                    f"so {evaluate.label} cannot place a Set of its own.",
+                )
+            if isinstance(row, PlannedRun) and (checkpoint := row.inputs.get("checkpoint")) is not None:
+                pending.extend(checkpoint.sources)
+            elif isinstance(row, BlockedRow):
+                pending.extend(parent for item in row.inputs.get("checkpoint", ()) for parent in item.sources)
+        return None
+
     def lower_row(
         self,
         composition: StepComposition,
@@ -3103,6 +3131,7 @@ class _Compiler:
         basis: str | None,
         definition: SelectedRunDefinition | None,
         train_rows: _TrainRows | None = None,
+        *, trial_set_conflict: RunProblem | None = None,
     ) -> _LoweredRow:
         fields = self.variants[key.variant].steps[key.step].set_fields
         member = to_json(tuple(
@@ -3161,6 +3190,10 @@ class _Compiler:
                 document_pointers = definition.document_pointers
             if fields:
                 document_uses = document_uses | frozenset(field.axis.set for field in fields.values())
+            if trial_set_conflict is not None:
+                return _LoweredRow(
+                    None, (), problems=(trial_set_conflict,), document_ids=document_ids, document_uses=document_uses,
+                )
             authored_model = None
             prepared_train = None
             remember_train = None
@@ -3334,7 +3367,7 @@ class _Compiler:
             key,
             (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items())), source_stamp,
              to_json(tuple(entry.model_dump(mode="json") for entry in row.task_additions)),
-             to_json({name: value.model_dump(mode="json") for name, value in fields.items()})),
+             to_json({name: value.model_dump(mode="json") for name, value in fields.items()}), trial_set_conflict),
             self.authored_inputs[key.variant],
             lower,
         )
@@ -4309,7 +4342,8 @@ class _Compiler:
                 continue
             if chosen is None and members:
                 chosen = members[0][0]
-            if chosen is not None and self.block_row(run_key, template, row, {role.name: (chosen,)}):
+            conflict = self.trial_set_conflict(run_key, chosen) if kind == "evaluate" and chosen is not None else None
+            if conflict is None and chosen is not None and self.block_row(run_key, template, row, {role.name: (chosen,)}):
                 if kind == "evaluate" and isinstance(
                     problem := self.checkpoint_selector(variant, name, row, chosen, subject, has_checkpoint_axis),
                     ProjectDiagnostic,
@@ -4317,7 +4351,7 @@ class _Compiler:
                     self.diagnostics.append(problem)
                 continue
             if (
-                chosen is not None and isinstance(chosen.member.reference, BestRank)
+                conflict is None and chosen is not None and isinstance(chosen.member.reference, BestRank)
                 and CHECKPOINT_RULE_TARGET in row.patches
             ):
                 self.diagnostics.append(ProjectDiagnostic(
@@ -4326,8 +4360,9 @@ class _Compiler:
                     name, row=row.id, variant=variant,
                 ))
                 continue
-            if kind == "evaluate" and chosen is not None and isinstance(chosen.member.reference, ProductRef) and (
-                chosen.member.reference.role == "checkpoint"
+            if (
+                conflict is None and kind == "evaluate" and chosen is not None
+                and isinstance(chosen.member.reference, ProductRef) and chosen.member.reference.role == "checkpoint"
             ):
                 reference = chosen.member.reference
                 selector = self.checkpoint_selector(variant, name, row, chosen, subject, has_checkpoint_axis)
@@ -4341,7 +4376,7 @@ class _Compiler:
             definition_inputs = {role: (binding,) for role, binding in inputs.items()}
             definition = self.select_definition(template, run_key, row, definition_inputs)
             lowered = self.lower_row(
-                template, run_key, row, kind, inputs, basis, definition, train_rows,
+                template, run_key, row, kind, inputs, basis, definition, train_rows, trial_set_conflict=conflict,
             )
             if len(lowered.diagnostics) == 1 and lowered.diagnostics[0].code == ResolutionCode.AUTHORED_GRAPH_VARIATION:
                 (problem,) = lowered.diagnostics
