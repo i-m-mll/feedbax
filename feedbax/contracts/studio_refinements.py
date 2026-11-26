@@ -90,6 +90,14 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
             'value.profile === "local"',
         ),
     ),
+    "StudioSetFieldEntry": (
+        CrossFieldRefinement(
+            "studio-set.entry-label",
+            "A Set entry row must have its label and the none row has no label.",
+            lambda value: (value.entry is None) != (value.label is None),
+            "(value.entry == null) !== (value.label == null)",
+        ),
+    ),
     "TaskTrialSampleRequest": (_ONE_TRIAL_SOURCE,),
     "TrialDocuments": (_ONE_TRIAL_SOURCE,),
     "ExistingModelAttachment": (
@@ -512,6 +520,7 @@ CROSS_FIELD_REFINEMENTS.update(
 
 
 REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
+    "StudioSetFieldEntry": frozenset({"_entry_label"}),
     "SessionTargetProfile": frozenset({"_remote_id"}),
     "SessionTarget": frozenset({"_remote_id"}),
     "AddModelAttachment": frozenset({"_attachment", "_wire_hold"}),
