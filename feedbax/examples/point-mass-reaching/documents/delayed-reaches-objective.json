@@ -1,11 +1,10 @@
 {
-  "schema": "feedbax.spec.objective_document",
+  "schema": "feedbax.spec.objective_document.v2",
   "label": "Delayed reaches",
   "payload": {
     "id": "delayed-reaches",
-    "terms": [
-      {
-        "id": "effector_fixation",
+    "terms": {
+      "effector_fixation": {
         "measure": {
           "kind": "call",
           "function": "mul",
@@ -22,30 +21,18 @@
                       "kind": "name",
                       "reference": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"end\":{\"owner\":\"outputs\",\"port\":\"effector\"},\"kind\":\"port\"},\"path\":[\"pos\"]}}"
                     },
-                    {
-                      "kind": "name",
-                      "reference": "goal"
-                    }
+                    {"kind": "name", "reference": "goal"}
                   ]
                 }
               ]
             },
-            {
-              "kind": "name",
-              "reference": "fixation"
-            }
+            {"kind": "name", "reference": "fixation"}
           ]
         },
-        "measure_type": {
-          "base": "real",
-          "dimensions": {
-            "length": 2
-          }
-        },
+        "measure_type": {"base": "real", "dimensions": {"length": 2}},
         "reduction": "sum"
       },
-      {
-        "id": "effector_position",
+      "effector_position": {
         "measure": {
           "kind": "call",
           "function": "sqnorm",
@@ -58,24 +45,15 @@
                   "kind": "name",
                   "reference": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"end\":{\"owner\":\"outputs\",\"port\":\"effector\"},\"kind\":\"port\"},\"path\":[\"pos\"]}}"
                 },
-                {
-                  "kind": "name",
-                  "reference": "goal"
-                }
+                {"kind": "name", "reference": "goal"}
               ]
             }
           ]
         },
-        "measure_type": {
-          "base": "real",
-          "dimensions": {
-            "length": 2
-          }
-        },
+        "measure_type": {"base": "real", "dimensions": {"length": 2}},
         "reduction": "sum"
       },
-      {
-        "id": "effector_final_velocity",
+      "effector_final_velocity": {
         "measure": {
           "kind": "call",
           "function": "sqnorm",
@@ -86,31 +64,15 @@
             }
           ]
         },
-        "measure_type": {
-          "base": "real",
-          "dimensions": {
-            "length": 2,
-            "time": -2
-          }
-        },
+        "measure_type": {"base": "real", "dimensions": {"length": 2, "time": -2}},
+        "reduction": "last",
         "window": {
           "spans": [
-            {
-              "kind": "moment",
-              "at": {
-                "anchor": {
-                  "kind": "epoch",
-                  "epoch": "move",
-                  "edge": "end"
-                }
-              }
-            }
+            {"kind": "moment", "at": {"anchor": {"kind": "epoch", "epoch": "move", "edge": "end"}}}
           ]
-        },
-        "reduction": "last"
+        }
       },
-      {
-        "id": "nn_output",
+      "nn_output": {
         "measure": {
           "kind": "call",
           "function": "sqnorm",
@@ -121,14 +83,10 @@
             }
           ]
         },
-        "weight": {
-          "kind": "literal",
-          "value": 0.0001
-        },
+        "weight": {"kind": "literal", "value": 0.0001},
         "reduction": "sum"
       },
-      {
-        "id": "nn_hidden",
+      "nn_hidden": {
         "measure": {
           "kind": "call",
           "function": "sqnorm",
@@ -139,12 +97,9 @@
             }
           ]
         },
-        "weight": {
-          "kind": "literal",
-          "value": 1e-05
-        },
+        "weight": {"kind": "literal", "value": 0.00001},
         "reduction": "sum"
       }
-    ]
+    }
   }
 }

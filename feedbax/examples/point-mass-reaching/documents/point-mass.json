@@ -1,13 +1,12 @@
 {
-  "schema": "feedbax.spec.model",
+  "schema": "feedbax.spec.model.v2",
   "label": "Point mass",
   "payload": {
     "step_seconds": 0.01,
     "ports": {
-      "inputs": [
-        {
-          "id": "target_pos",
-          "name": "target_pos",
+      "inputs": {
+        "target_pos": {
+          "label": "target_pos",
           "type": {
             "shape": [
               2
@@ -16,38 +15,35 @@
             "space": "point"
           }
         }
-      ],
-      "outputs": [
-        {
-          "id": "effector",
-          "name": "effector",
+      },
+      "outputs": {
+        "effector": {
+          "label": "effector",
           "type": {}
         },
-        {
-          "id": "command",
-          "name": "command",
+        "command": {
+          "label": "command",
           "type": {
             "shape": [
               2
             ]
           }
         },
-        {
-          "id": "activity",
-          "name": "activity",
+        "activity": {
+          "label": "activity",
           "type": {
             "shape": [
               4
             ]
           }
         }
-      ]
+      }
     },
     "interior": {
       "components": {
         "plant": {
           "kind": "leaf",
-          "name": "Point mass",
+          "label": "Point mass",
           "type": "feedbax.PointMass",
           "fields": {
             "mass": 1.0
@@ -55,7 +51,7 @@
         },
         "hand-feedback": {
           "kind": "leaf",
-          "name": "Hand feedback",
+          "label": "Hand feedback",
           "type": "feedbax.SelectState",
           "fields": {
             "paths": [
@@ -66,7 +62,7 @@
         },
         "feedback": {
           "kind": "leaf",
-          "name": "Feedback inputs",
+          "label": "Feedback inputs",
           "type": "feedbax.Concatenate",
           "fields": {
             "n_inputs": 2
@@ -74,7 +70,7 @@
         },
         "cell": {
           "kind": "leaf",
-          "name": "Recurrent controller",
+          "label": "Recurrent controller",
           "type": "feedbax.GRU",
           "fields": {
             "hidden_size": 4
@@ -82,7 +78,7 @@
         },
         "readout": {
           "kind": "leaf",
-          "name": "Motor command",
+          "label": "Motor command",
           "type": "feedbax.Linear",
           "fields": {
             "output_size": 2
