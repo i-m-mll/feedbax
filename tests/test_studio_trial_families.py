@@ -257,3 +257,46 @@ def test_validation_trial_draft_problem_starts_at_the_section(tmp_path):
         view = _post(client, body)
     assert any(problem["path"] == ["validation_trials", "cohort", "epoch_steps", "hold"] for problem in view["problems"])
     assert all(problem["path"][:2] != ["task", "validation_trials"] for problem in view["problems"])
+
+
+def test_task_view_size_tracks_authored_validation_and_objective_families(tmp_path):
+    raw = document_project(authored_documents())
+    task = raw["documents"]["task"]["payload"]
+    term = raw["documents"]["objective"]["payload"]["terms"]["effort"]
+    app = create_app(projects_dir=tmp_path)
+    folders = app.state.project_folders
+    validation = "/task/validation_trials/"
+    objective = "/objective/terms/effort"
+    replies = []
+
+    with TestClient(app) as client:
+        for count in (4, 32, 96):
+            rule = f"0..{count - 1}"
+            task["validation_trials"] = {
+                "reference": {"label": "Reference", "variables": {"catch": False}},
+                "grid": {"label": "Trial {k}", "over": {"k": rule}, "variables": {"catch": "k > 0"}},
+            }
+            term.update(over={"k": rule}, weight="1 + k")
+            _save_project(folders, "families", Project.model_validate(raw))
+            response = client.post("/api/projects/families/authoring/trials", json={
+                "revision": folders.read("families").revision,
+                "run": {"variant": "default", "step": "train", "row": "default"},
+            })
+            assert response.status_code == 200, response.text
+            view = response.json()
+            assert not view["problems"], view["problems"]
+            assert view["families"][validation + "grid"]["member_count"] == count
+            assert view["families"][objective]["member_count"] == count
+            paths = [field["path"] for field in view["fields"]]
+            assert [path for path in paths if path.startswith(validation)] == [
+                validation + "reference/variables/catch",
+                validation + "grid/over/k",
+                validation + "grid/variables/catch",
+            ]
+            assert all(path.startswith(objective + "/") for path in paths if path.startswith("/objective/terms/"))
+            replies.append((len(response.content), len(paths)))
+
+    assert len({fields for _, fields in replies}) == 1, replies
+    lengths = [size for size, _ in replies]
+    # Only the written range texts and count digits grow here.
+    assert max(lengths) - min(lengths) <= 64, replies
