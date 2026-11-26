@@ -15,7 +15,7 @@ from feedbax.contracts.expression_storage import (
     StoredExpression, StoredTime, lower_expression, stored_expression_value, stored_reference, stored_set_reference,
 )
 from feedbax.contracts.expression_values import (
-    TIME, Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, TextSpan,
+    TIME, Level, LiteralValue, Problem, ProblemCode, ScopedValue, SequenceValue, Site, SweepList, SweepSample, TextSpan,
     UnresolvedValue, SetVariableOrigin, ValueBase, ValueType,
 )
 from feedbax.tasks.document import TrialSource, zero
@@ -417,7 +417,7 @@ def _one_expression_problem(path):
 def _one_expression(text, site, functions, path):
     parsed = parse(text, site, functions, keep_unknown_names=True)
     value = UnresolvedValue(text=text) if isinstance(parsed, tuple) else parsed.value
-    return _one_expression_problem(path) if isinstance(value, SweepList | SweepRange | SweepSample) else value
+    return _one_expression_problem(path) if isinstance(value, SweepList | SequenceValue | SweepSample) else value
 
 
 _STORED_EXPRESSION = TypeAdapter(StoredExpression)

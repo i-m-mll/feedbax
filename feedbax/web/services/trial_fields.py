@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
-    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, Site, SweepList, SweepRange,
+    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, SequenceValue, Site, SweepList,
     SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.expression_site import read_field
@@ -207,7 +207,7 @@ def routes_to_sweep(
     if edit.kind != "text" or edit.value_id is not None or swept.axis.covering:
         return True
     parsed = read_field(edit.text, site, functions)
-    return isinstance(parsed, ParsedField) and isinstance(parsed.value, SweepList | SweepRange | SweepSample)
+    return isinstance(parsed, ParsedField) and isinstance(parsed.value, SweepList | SequenceValue | SweepSample)
 
 
 def trial_field_sweep_edit(

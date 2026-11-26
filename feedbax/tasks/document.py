@@ -46,6 +46,7 @@ from feedbax.contracts.task_document import (
     Variable as Variable,
 )
 from feedbax.contracts.expression_check import Checked, check, dependency_order, references
+from feedbax.contracts.expression_sequence import structural_integer
 from feedbax.contracts.expression_text import resolve_expression
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
@@ -671,15 +672,16 @@ def compile_task(
             problems.extend(item.model_copy(update={"path": (*path, *item.path)}) for item in parsed)
             return None
         tree = parsed.value
-        if isinstance(tree, LiteralValue) and type(tree.value) is int and tree.unit is None:
-            count = tree.value
-        elif isinstance(tree, NameValue) and tree.reference in fixed_values and any(
+        if isinstance(tree, NameValue) and tree.reference in fixed_values and any(
             item.id == tree.reference for item in count_scope
         ):
             count = int(fixed_values[tree.reference])
         else:
-            problem(ProblemCode.LIST_COUNT, "Count needs an integer or a fixed Integer variable.", path)
-            return None
+            try:
+                count = structural_integer(tree)
+            except ValueError as error:
+                problem(ProblemCode.LIST_COUNT, f"Count needs an integer expression or a fixed Integer variable. {error}", path)
+                return None
         if not 0 < count < 2**31:
             problem(ProblemCode.LIST_COUNT, "Count must be a positive integer.", path)
             return None
