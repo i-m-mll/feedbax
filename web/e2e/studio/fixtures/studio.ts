@@ -237,6 +237,7 @@ const snapshotRoute = /^\/api\/projects(?:\/[^/]+(?:\/(?:open|rename|files|histo
 function memberNames(snapshot: StudioProjectSnapshot) {
   const keys = new Set<string>();
   const labels = new Set<string>();
+  const layerNames = new Set<string>();
   function collect(members: Record<string, { label: string }> | undefined) {
     for (const [key, { label }] of Object.entries(members ?? {})) {
       keys.add(key);
@@ -247,6 +248,9 @@ function memberNames(snapshot: StudioProjectSnapshot) {
     const { operations, views } = payload as AnalysisDocument;
     collect(operations);
     collect(views);
+    for (const { figure } of Object.values(views ?? {})) {
+      if ('layers' in figure) for (const { name } of figure.layers) layerNames.add(name);
+    }
   }
 
   collect(snapshot.project.documents);
@@ -268,13 +272,13 @@ function memberNames(snapshot: StudioProjectSnapshot) {
       }
     }
   }
-  return [...keys].filter((key) => !labels.has(key));
+  return { keys: [...keys].filter((key) => !labels.has(key)), layerNames: [...layerNames] };
 }
 
 /** Reads snapshots the browser already requested, then checks the visible text in each open Studio page. */
 async function checkMemberLabels({ context, studio }: { context: BrowserContext; studio: Studio }, use: () => Promise<void>) {
   const reads: Promise<void>[] = [];
-  const latest = new Map<string, { order: number; keys: string[] }>();
+  const latest = new Map<string, { order: number; members: ReturnType<typeof memberNames> }>();
   const read = (response: Response) => {
     const { origin, pathname } = new URL(response.url());
     if (origin !== studio.origin || !response.ok() || !snapshotRoute.test(pathname)) return;
@@ -284,7 +288,7 @@ async function checkMemberLabels({ context, studio }: { context: BrowserContext;
       const snapshot = (body?.snapshot ?? body) as StudioProjectSnapshot | undefined;
       if (!snapshot?.project || !snapshot.variant_names) return;
       if ((latest.get(snapshot.project_id)?.order ?? -1) < order) {
-        latest.set(snapshot.project_id, { order, keys: memberNames(snapshot) });
+        latest.set(snapshot.project_id, { order, members: memberNames(snapshot) });
       }
     }));
   };
@@ -297,10 +301,11 @@ async function checkMemberLabels({ context, studio }: { context: BrowserContext;
     for (const page of context.pages()) {
       const url = new URL(page.url());
       const shown = url.searchParams.get('project');
-      const members = url.origin === studio.origin && shown ? latest.get(shown) : undefined;
+      const members = url.origin === studio.origin && shown ? latest.get(shown)?.members : undefined;
       if (!members?.keys.length) continue;
-      const leaked = await page.evaluate((keys) => {
+      const leaked = await page.evaluate(({ keys, layerNames }) => {
         const members = new Set(keys);
+        const layers = new Set(layerNames);
         const nodes = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
         const range = document.createRange();
         const found = new Set<string>();
@@ -309,6 +314,8 @@ async function checkMemberLabels({ context, studio }: { context: BrowserContext;
           const value = node.textContent?.trim();
           const parent = node.parentElement;
           if (!value || !members.has(value) || !parent || parent.closest('[data-member-key], input, textarea, .sr-only')) continue;
+          // A figure layer can have the same authored name as a different member's key.
+          if (layers.has(value) && parent.closest('[data-node]')?.getAttribute('data-node') === JSON.stringify(['layer', value])) continue;
           if (getComputedStyle(parent).visibility !== 'visible') continue;
           range.selectNodeContents(node);
           if (Array.from(range.getClientRects()).some(({ width, height }) => width > 0 && height > 0)) {
@@ -317,7 +324,7 @@ async function checkMemberLabels({ context, studio }: { context: BrowserContext;
           }
         }
         return [...found];
-      }, members.keys);
+      }, members);
       expect(leaked, 'Studio shows member names outside Change Key').toEqual([]);
     }
   }

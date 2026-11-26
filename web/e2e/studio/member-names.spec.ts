@@ -11,9 +11,11 @@ async function runStep(page: Page, step: string, runsPath: string) {
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   await runs.getByRole('table', { name: 'Runs' }).getByRole('button').first().click();
+  const run = runs.getByRole('button', { name: 'Run', exact: true });
+  await expect(run).toBeEnabled();
   const admission = page.waitForResponse((response) =>
     response.request().method() === 'POST' && new URL(response.url()).pathname === runsPath);
-  await runs.getByRole('button', { name: 'Run', exact: true }).click();
+  await run.click();
   const response = await admission;
   expect(response.status(), await response.text()).toBe(202);
   const [item] = (await response.json() as StudioJobSubmission).items;
@@ -105,7 +107,7 @@ test('renaming a Task signal updates its readers and keeps the Train request', {
   const evaluate = { kind: 'step', id: 'evaluate', step: {
     kind: 'evaluate', label: 'Evaluation', base: { inline: {
       evaluation_type: 'feedbax.rollout',
-      params: { seed: 731, trial_set: { kind: 'every_condition' }, trial_policy: 'paired' },
+      params: { seed: 731, trial_set: { kind: 'every_condition' }, trial_policy: 'paired', variation: [] },
     } },
     inputs: { subject: { step: train.id, checkpoint: 'last' } },
   } };
