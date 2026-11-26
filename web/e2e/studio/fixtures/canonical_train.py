@@ -73,6 +73,105 @@ def ordinary_files(batches: str, *rates: str, scenario: str = "simple-reaches"):
     return files
 
 
+def hold_campaign_files():
+    """The delayed-reaches files in the shape of a hold campaign, with no runs, and every key differing from its label.
+
+    A trial Set holds a plain entry and a family over two indices, each with a Task variable and an attachment
+    difference. A Train step samples it with a condition and trains a based Model whose authored input ``level`` only
+    one of the two Tasks feeds; an Evaluate step lists the Set as an axis. The Task's validation trials are one family and its
+    target draws a ``choice``; the Objective's one term is a family.
+    """
+    model, task, objective, train = ordinary_files("2", scenario="delayed-reaches")
+    model_ports = model["document"]["payload"]["ports"]
+    model_ports["inputs"]["target_pos"]["label"] = "Target position"
+    model_ports["outputs"]["command"]["label"] = "Command"
+    payload = task["document"]["payload"]
+    for collection in ("variables", "epochs", "signals"):
+        for member in payload[collection].values():
+            member["label"] = member["label"].capitalize()
+    payload["variables"]["target"]["value"] = "start + polar(0.2 m, choice(0°, 90°, 180°, 270°))"
+    payload["validation_trials"] = {"reach": {
+        "label": "Reach {direction}, draw {repeat}",
+        "over": {"direction": "0..3", "repeat": "0..1"},
+        "variables": {"start": "[0, 0]", "target": "polar(0.2 m, direction * 90°)", "catch": False},
+        "epoch_steps": {"hold": "7 + repeat", "cue": 10},
+    }}
+    level_task = {"kind": "document", "id": "level-task", "document": {
+        "schema": "feedbax.spec.task_document.v2", "label": "Level task", "base": {"document": task["id"]},
+        "differences": {"/signals/level": {"value": {
+            "label": "Level", "type": {"base": "real", "shape": [1]},
+            "cells": {"all": {"first_epoch": "hold", "last_epoch": "move", "value": "[1]"}},
+        }}},
+    }}
+    objective["document"]["payload"]["terms"] = {"effort": {
+        "label": "Command effort", "over": {"k": "0..2"},
+        "measure": "sqnorm(outputs.command)", "weight": "(k + 1) / 6", "reduction": "last",
+    }}
+    heavy = {"kind": "document", "id": "heavy-point-mass", "document": {
+        "schema": "feedbax.spec.model.v2", "label": "Heavy point mass", "base": {"document": model["id"]},
+        "differences": {
+            "/interior/components/plant/fields/mass": {"value": 2},
+            "/ports/inputs/level": {"value": {"label": "Level", "type": {"shape": [1]}}},
+            "/ports/outputs/level-out": {"value": {"label": "Level out", "type": {"shape": [1]}}},
+            "/interior/components/level-gain": {"value": {
+                "kind": "leaf", "label": "Level gain", "type": "feedbax.Gain", "fields": {"gain": 1},
+            }},
+            "/interior/wires/level-in": {"value": {
+                "source": {"owner": "inputs", "port": "level"},
+                "target": {"owner": "component", "component": "level-gain", "port": "input"},
+            }},
+            "/interior/wires/level-echo": {"value": {
+                "source": {"owner": "component", "component": "level-gain", "port": "output"},
+                "target": {"owner": "outputs", "port": "level-out"},
+            }},
+        },
+    }}
+
+    def kick(variable: str, label: str, value: str, onset: str):
+        return {
+            "task_variables": {variable: {"label": label, "type": {"base": "real", "shape": [2]}, "value": value}},
+            "differences": {f"/interior/wires/drive/attachments/{variable}-pulse": {"value": {
+                "kind": "intervention", "operation": "add",
+                "operands": {"value": {"kind": "task", "variable": variable}},
+                "window": {"spans": [{
+                    "kind": "interval", "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": onset},
+                    "end": {"offset": "5 st"},
+                }]},
+            }}},
+        }
+
+    kicks = {"kind": "document", "id": "command-kicks", "document": {
+        "schema": "feedbax.set_document.v2", "label": "Command kicks", "payload": {"entries": {
+            "drift": {"label": "Drift", **kick("bias", "Bias", "[0.1, 0]", "5 st")},
+            "pulse": {
+                "label": "Command pulse {axis} {sign}",
+                "over": {
+                    "axis": {"x": "[1, 0]", "y": "[0, 1]"},
+                    "sign": {"minus": {"value": -1, "label": "Minus"}, "plus": {"value": 1, "label": "Plus"}},
+                },
+                **kick("kick", "Kick", "0.5 * sign * axis", "10 st"),
+            },
+        }},
+    }}
+    train["step"]["label"] = "Kicked training"
+    train["step"]["base"]["inline"]["trial_documents"].update(
+        model={"document": heavy["id"]}, task={"document": level_task["id"]},
+    )
+    train["step"]["set_fields"] = {"kicks": {
+        "axis": {"set": kicks["id"]}, "sampling": {"kind": "weighted"}, "condition": "not catch",
+    }}
+    check = {"kind": "step", "id": "kick-check", "step": {
+        "kind": "evaluate", "label": "Kick check",
+        "base": {"inline": {
+            "evaluation_type": "feedbax.rollout",
+            "params": {"seed": 1, "trial_set": {"kind": "every_condition"}},
+        }},
+        "set_fields": {"kick-bank": {"axis": {"set": kicks["id"]}, "sampling": {"kind": "listed"}}},
+        "inputs": {"subject": {"step": "train", "checkpoint": "last"}},
+    }}
+    return [model, heavy, task, level_task, objective, kicks, train, check]
+
+
 def _field(component: str, *path: str) -> ModelAddress:
     return ModelAddress.model_validate({
         "composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": component}, "path": list(path)},
@@ -344,6 +443,7 @@ ACTIONS = {
     "managed-files": FileSeed(lambda: [*ordinary_files("2"), successor_file()]),
     "ordinary-files": FileSeed(ordinary_files, cases=(("2",), ("2", "0.001", "0.01"))),
     "delayed-reaches-files": FileSeed(lambda: ordinary_files("2", scenario="delayed-reaches")),
+    "hold-campaign-files": FileSeed(hold_campaign_files),
     "mass-range-files": FileSeed(mass_range_files, cases=(("1.000123456789", "2.000987654321", "3"),)),
     "task-link-files": FileSeed(task_link_files, cases=(
         ("delayed-reaches", "start", "plant", "reset", "effector", "elsewhere"),
