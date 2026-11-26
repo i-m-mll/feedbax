@@ -105,7 +105,8 @@ A collection whose members have identity is stored as a JSON object from member 
 | Document | Keyed collection | Label |
 |---|---|---|
 | Task | `variables`, `epochs`, `signals` | required |
-| Task | `repeats`, each signal's `cells`, `validation_trials` (section 7) | none |
+| Task | `repeats`, each signal's `cells` | none |
+| Task | `validation_trials` (section 7) | required |
 | Task | `links`: Model address text → variable key | none |
 | Objective | `terms` | optional |
 | Model | `ports.inputs`, `ports.outputs`, `ports.physical`, `components` | required |
@@ -335,6 +336,7 @@ A difference or a path addresses the stored member, so a family is addressed as 
 ```json
 "validation_trials": {
   "reach": {
+    "label": "Reach {direction}, repeat {repeat}",
     "over": {"direction": "0..3", "repeat": "0..63"},
     "variables": {"hold_trial": false, "catch_trial": false, "goal": "polar(0.15 m, direction * 90°)"},
     "epoch_steps": {"prep": "10 + repeat % 21"}
@@ -342,7 +344,7 @@ A difference or a path addresses the stored member, so a family is addressed as 
 }
 ```
 
-- A trial member has `variables` (variable key → value) and `epoch_steps` (epoch key → steps), both optional, and may be a family.
+- A trial member has a required `label`, optional `variables` (variable key → value) and optional `epoch_steps` (epoch key → steps), and may be a family. A family label accepts index placeholders as in section 6.3. Generated labels are unique within the trial collection and stay out of request identity.
 - A value in `variables` is an expression field checked against the variable's type. It may name the member's indices and nothing else, and holds no draw. It replaces the variable's own expression for the trial, as a row value does today.
 - A value in `epoch_steps` is a structural argument (6.3) that gives a non-negative integer.
 - A member with no `over` is one trial. This is the listed row, for a cohort whose rows are the information.

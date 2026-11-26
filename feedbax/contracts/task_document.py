@@ -310,15 +310,16 @@ ValidationTrial = ValidationTrialV2
 
 
 class StoredValidationTrial(StoredFamilyMember):
+    label: str = Field(min_length=1)
     variables: dict[StoredMemberKey, StoredExpression] = Field(default_factory=dict)
     epoch_steps: dict[StoredMemberKey, StoredExpression] = Field(default_factory=dict)
 
     @classmethod
-    def from_lowered(cls, trial: ValidationTrial) -> "StoredValidationTrial":
+    def from_lowered(cls, trial: ValidationTrial, *, label: str) -> "StoredValidationTrial":
         return project_member(trial, cls, {
             "variables": lambda values: {name: store_expression(value) for name, value in values.items()},
             "epoch_steps": lambda steps: {name: LiteralValue(value=count) for name, count in steps.items()},
-        })
+        }, label=label)
 
 
 def _validation_rule_error(
@@ -333,8 +334,15 @@ def _validation_rule_error(
 def _expand_validation_trials(
     trials: Mapping[str, StoredValidationTrial], *, first: bool,
 ) -> Iterator[ExpandedFamilyMember[StoredValidationTrial]]:
+    names = set()
     try:
-        yield from expand_members(trials, first=first)
+        for member in expand_members(trials, first=first):
+            label = member.value.label
+            if label in names:
+                raise FamilyProblem(member.source_key, ("label",), f"Several validation trials have the label {label!r}.",
+                                    member.coordinates)
+            names.add(label)
+            yield member
     except FamilyProblem as error:
         raise _validation_rule_error(error.source_key, error.path, str(error), error.coordinates) from error
 
@@ -436,10 +444,10 @@ def _stored_validation_trials(trials: tuple[ValidationTrial, ...]) -> dict[str, 
     if trials == (ValidationTrial(),):
         return {}
     projected = []
-    for trial in trials:
+    for number, trial in enumerate(trials, 1):
         if trial.id is None:
             raise ValueError("Authored validation trials require member keys.")
-        projected.append((trial.id, StoredValidationTrial.from_lowered(trial)))
+        projected.append((trial.id, StoredValidationTrial.from_lowered(trial, label=f"Trial {number}")))
     return keyed_members(projected)
 
 

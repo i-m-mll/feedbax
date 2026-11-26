@@ -4601,6 +4601,7 @@ export type StoredUntil = {
 export type StoredValidationTrial = {
   "over"?: Record<string, IndexRule> | null;
   "combination"?: "cross" | "zip";
+  "label": string;
   "variables"?: Record<string, StoredExpression>;
   "epoch_steps"?: Record<string, StoredExpression>;
 };
@@ -4934,6 +4935,21 @@ export type StudioEvaluationPointProgress = {
   "publication_cursor": number;
   "transaction_root_sha256": string;
   "status": "scored" | "failed";
+};
+
+export type StudioFamily = {
+  "member_count": number | null;
+  "indices": Record<string, StudioFamilyIndex>;
+};
+
+export type StudioFamilyIndex = {
+  "count": number | null;
+  "values"?: Array<StudioFamilyValue> | null;
+};
+
+export type StudioFamilyValue = {
+  "key": IndexName;
+  "name": string;
 };
 
 export type StudioFieldFunction = {
@@ -5674,6 +5690,7 @@ export type StudioTrialAuthoring = {
   "resets": Array<StudioTrialReset>;
   "unresolved_links": Array<StudioTrialUnresolvedLink>;
   "fields": Array<StudioTrialField>;
+  "families"?: Record<string, StudioFamily> | null;
   "problems": Array<Problem>;
   "created_term"?: string | null;
   "files": Array<StudioProjectFilePatch>;
@@ -6341,168 +6358,196 @@ export const firstTrainTask: Document = {
     "fixed_steps": 80,
     "validation_trials": {
       "trial-1": {
+        "label": "Trial 1",
         "variables": {
           "start": "[-0.10000002384185791, -0.050000011920928955]",
           "target": "[0.3999999761581421, -0.050000011920928955]"
         }
       },
       "trial-2": {
+        "label": "Trial 2",
         "variables": {
           "start": "[-0.10000002384185791, -0.050000011920928955]",
           "target": "[0.2117448770875089, 0.34091572931308595]"
         }
       },
       "trial-3": {
+        "label": "Trial 3",
         "variables": {
           "start": "[-0.10000002384185791, -0.050000011920928955]",
           "target": "[-0.21126049082001508, 0.43746394416998285]"
         }
       },
       "trial-4": {
+        "label": "Trial 4",
         "variables": {
           "start": "[-0.10000002384185791, -0.050000011920928955]",
           "target": "[-0.5504844577930674, 0.16694185763785016]"
         }
       },
       "trial-5": {
+        "label": "Trial 5",
         "variables": {
           "start": "[-0.10000002384185791, -0.050000011920928955]",
           "target": "[-0.5504844577930674, -0.266941881479708]"
         }
       },
       "trial-6": {
+        "label": "Trial 6",
         "variables": {
           "start": "[-0.10000002384185791, -0.050000011920928955]",
           "target": "[-0.2112604908200152, -0.5374639680118407]"
         }
       },
       "trial-7": {
+        "label": "Trial 7",
         "variables": {
           "start": "[-0.10000002384185791, -0.050000011920928955]",
           "target": "[0.21174487708750878, -0.4409157531549439]"
         }
       },
       "trial-8": {
+        "label": "Trial 8",
         "variables": {
           "start": "[0.19999995827674866, -0.050000011920928955]",
           "target": "[0.6999999582767487, -0.050000011920928955]"
         }
       },
       "trial-9": {
+        "label": "Trial 9",
         "variables": {
           "start": "[0.19999995827674866, -0.050000011920928955]",
           "target": "[0.5117448592061155, 0.34091572931308595]"
         }
       },
       "trial-10": {
+        "label": "Trial 10",
         "variables": {
           "start": "[0.19999995827674866, -0.050000011920928955]",
           "target": "[0.08873949129859149, 0.43746394416998285]"
         }
       },
       "trial-11": {
+        "label": "Trial 11",
         "variables": {
           "start": "[0.19999995827674866, -0.050000011920928955]",
           "target": "[-0.25048447567446086, 0.16694185763785016]"
         }
       },
       "trial-12": {
+        "label": "Trial 12",
         "variables": {
           "start": "[0.19999995827674866, -0.050000011920928955]",
           "target": "[-0.2504844756744609, -0.266941881479708]"
         }
       },
       "trial-13": {
+        "label": "Trial 13",
         "variables": {
           "start": "[0.19999995827674866, -0.050000011920928955]",
           "target": "[0.08873949129859136, -0.5374639680118407]"
         }
       },
       "trial-14": {
+        "label": "Trial 14",
         "variables": {
           "start": "[0.19999995827674866, -0.050000011920928955]",
           "target": "[0.5117448592061153, -0.4409157531549439]"
         }
       },
       "trial-15": {
+        "label": "Trial 15",
         "variables": {
           "start": "[-0.10000002384185791, 0.19999998807907104]",
           "target": "[0.3999999761581421, 0.19999998807907104]"
         }
       },
       "trial-16": {
+        "label": "Trial 16",
         "variables": {
           "start": "[-0.10000002384185791, 0.19999998807907104]",
           "target": "[0.2117448770875089, 0.590915729313086]"
         }
       },
       "trial-17": {
+        "label": "Trial 17",
         "variables": {
           "start": "[-0.10000002384185791, 0.19999998807907104]",
           "target": "[-0.21126049082001508, 0.6874639441699828]"
         }
       },
       "trial-18": {
+        "label": "Trial 18",
         "variables": {
           "start": "[-0.10000002384185791, 0.19999998807907104]",
           "target": "[-0.5504844577930674, 0.4169418576378502]"
         }
       },
       "trial-19": {
+        "label": "Trial 19",
         "variables": {
           "start": "[-0.10000002384185791, 0.19999998807907104]",
           "target": "[-0.5504844577930674, -0.01694188147970796]"
         }
       },
       "trial-20": {
+        "label": "Trial 20",
         "variables": {
           "start": "[-0.10000002384185791, 0.19999998807907104]",
           "target": "[-0.2112604908200152, -0.28746396801184076]"
         }
       },
       "trial-21": {
+        "label": "Trial 21",
         "variables": {
           "start": "[-0.10000002384185791, 0.19999998807907104]",
           "target": "[0.21174487708750878, -0.1909157531549439]"
         }
       },
       "trial-22": {
+        "label": "Trial 22",
         "variables": {
           "start": "[0.19999995827674866, 0.19999998807907104]",
           "target": "[0.6999999582767487, 0.19999998807907104]"
         }
       },
       "trial-23": {
+        "label": "Trial 23",
         "variables": {
           "start": "[0.19999995827674866, 0.19999998807907104]",
           "target": "[0.5117448592061155, 0.590915729313086]"
         }
       },
       "trial-24": {
+        "label": "Trial 24",
         "variables": {
           "start": "[0.19999995827674866, 0.19999998807907104]",
           "target": "[0.08873949129859149, 0.6874639441699828]"
         }
       },
       "trial-25": {
+        "label": "Trial 25",
         "variables": {
           "start": "[0.19999995827674866, 0.19999998807907104]",
           "target": "[-0.25048447567446086, 0.4169418576378502]"
         }
       },
       "trial-26": {
+        "label": "Trial 26",
         "variables": {
           "start": "[0.19999995827674866, 0.19999998807907104]",
           "target": "[-0.2504844756744609, -0.01694188147970796]"
         }
       },
       "trial-27": {
+        "label": "Trial 27",
         "variables": {
           "start": "[0.19999995827674866, 0.19999998807907104]",
           "target": "[0.08873949129859136, -0.28746396801184076]"
         }
       },
       "trial-28": {
+        "label": "Trial 28",
         "variables": {
           "start": "[0.19999995827674866, 0.19999998807907104]",
           "target": "[0.5117448592061153, -0.1909157531549439]"
@@ -13758,6 +13803,7 @@ export const StoredValidationTrialSchema: z.ZodType<StoredValidationTrial> = z.l
   z.object({
     "over": z.union([z.record(IndexNameSchema, IndexRuleSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }), z.null()]).optional(),
     "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
+    "label": z.string().min(1),
     "variables": z.record(StoredMemberKeySchema, StoredExpressionSchema).optional(),
     "epoch_steps": z.record(StoredMemberKeySchema, StoredExpressionSchema).optional(),
   }).strict()
@@ -14193,6 +14239,27 @@ export const StudioEvaluationPointProgressSchema: z.ZodType<StudioEvaluationPoin
     "status": z.union([z.literal("scored"), z.literal("failed")]),
   }).strict()
 ) as unknown as z.ZodType<StudioEvaluationPointProgress>;
+
+export const StudioFamilySchema: z.ZodType<StudioFamily> = z.lazy(() =>
+  z.object({
+    "member_count": z.union([z.number().int().safe(), z.null()]),
+    "indices": z.record(IndexNameSchema, StudioFamilyIndexSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioFamily>;
+
+export const StudioFamilyIndexSchema: z.ZodType<StudioFamilyIndex> = z.lazy(() =>
+  z.object({
+    "count": z.union([z.number().int().safe(), z.null()]),
+    "values": z.union([z.array(StudioFamilyValueSchema), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFamilyIndex>;
+
+export const StudioFamilyValueSchema: z.ZodType<StudioFamilyValue> = z.lazy(() =>
+  z.object({
+    "key": IndexNameSchema,
+    "name": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioFamilyValue>;
 
 export const StudioFieldFunctionSchema: z.ZodType<StudioFieldFunction> = z.lazy(() =>
   z.object({
@@ -15127,6 +15194,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "resets": z.array(StudioTrialResetSchema),
     "unresolved_links": z.array(StudioTrialUnresolvedLinkSchema),
     "fields": z.array(StudioTrialFieldSchema),
+    "families": z.union([z.record(z.string(), StudioFamilySchema), z.null()]).optional(),
     "problems": z.array(ProblemSchema),
     "created_term": z.union([z.string(), z.null()]).optional(),
     "files": z.array(StudioProjectFilePatchSchema),
