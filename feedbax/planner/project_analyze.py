@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import JsonValue, ValidationError
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.contracts.analysis_document import (
     AnalysisDocument,
     AnalyzeDatasetInput,
@@ -49,7 +50,7 @@ from feedbax.planner.project_plan import (
     PlannedInput,
     RunKey,
 )
-from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
 from feedbax.contracts.request_identity import EncodedRequest, encode_request
 from feedbax.contracts.project_sweep import SweepInputMember, sweep_value_name
 from feedbax.contracts.request_refs import InputMember, MemberLabel, ProductRef

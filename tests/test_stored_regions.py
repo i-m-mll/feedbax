@@ -11,10 +11,12 @@ from feedbax.application.project_writer import dump_text_project, write_project_
 from feedbax.application.stored_regions import StoredRegionRegistries
 from feedbax.contracts.project import RootDocument, Step
 from feedbax.contracts.project_io import ProjectConfiguration, parse_text_project_files
+from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import PlanRequests, RunKey, compile_project
 from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.web.app import create_app
@@ -287,3 +289,112 @@ def test_studio_sweeps_a_train_setting_omitted_at_its_default(tmp_path):
         for row in plan.rows:
             source = reviewed.source_index.source(row.key, tuple(rate[1:].split("/")))
             assert source == selected.selected_definitions[row.key].sources[rate]
+
+
+def test_studio_plans_and_resets_a_based_optimizer_whose_adam_default_is_omitted(tmp_path):
+    root = tmp_path / "fixture"
+    project = managed_train_project()
+    inline = project.steps["train"].base.inline
+    inline["settings"] = {}
+    training = {key: inline[key] for key in TRAINING_DOCUMENT_KEYS}
+    _save_fixture(root, project)
+    route = "/api/projects/fixture"
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+        baseline = folders.read_plan("fixture", revision=None).plan
+        (original,) = baseline.runs
+        snapshot = client.get(route).json()
+
+        def create(name, document):
+            reply = client.post(f"{route}/files", json={"revision": snapshot["revision"], "file": {
+                "kind": "document", "id": name,
+                "document": {"schema": TRAINING_DOCUMENT_SCHEMA_ID, "label": name, **document},
+            }})
+            assert reply.status_code == 201, reply.text
+            return reply.json()["snapshot"]
+
+        snapshot = create("training", {"payload": training})
+        base_file = root / "documents/training.json"
+        base_bytes = base_file.read_bytes()
+        assert json.loads(base_bytes)["payload"]["settings"] == {}
+        difference = {"/settings/optimizer/type": {"value": "adabelief"}}
+        snapshot = create("training-2", {"base": {"document": "training"}, "differences": difference})
+        assert snapshot["composed"]["training-2"]["settings"] == {"optimizer": {"type": "adabelief"}}
+        pointed = client.patch(route, json={"revision": snapshot["revision"], "files": [{
+            "address": {"kind": "step", "id": "train"}, "patches": [
+                {"op": "replace", "path": f"/base/inline/{key}",
+                 "value": {"document": "training-2", "pointer": f"/{key}"}} for key in TRAINING_DOCUMENT_KEYS
+            ],
+        }]})
+        assert pointed.status_code == 200, pointed.text
+        revision = pointed.json()["revision"]
+        changed = folders.read_plan("fixture", revision=revision, source_runs=(original.key,)).plan
+        assert not changed.diagnostics, changed.diagnostics
+        (run,) = changed.runs
+        assert run.request_id != original.request_id
+        request = decode_request(changed.requests[run.request_id], changed.documents.__getitem__)
+        assert request.spec.settings["optimizer"]["type"] == "adabelief"
+        source = changed.sources[run.key]["/payload/settings/optimizer/type"]
+        assert (source.kind, source.name, source.path) == ("document", "training-2", "/settings/optimizer/type")
+        derived_file = root / "documents/training-2.json"
+        assert json.loads(derived_file.read_bytes())["differences"] == difference
+
+        reset = client.post(f"{route}/authoring/train/train", json={
+            "revision": revision, "reset": "/settings/optimizer/type",
+        })
+        assert reset.status_code == 200, reset.text
+        assert reset.json()["files"]
+        saved = client.patch(route, json={"revision": revision, "files": reset.json()["files"]})
+        assert saved.status_code == 200, saved.text
+        assert not json.loads(derived_file.read_bytes()).get("differences")
+        restored = folders.read_plan("fixture", revision=saved.json()["revision"]).plan
+        assert not restored.diagnostics, restored.diagnostics
+        assert restored.runs[0].request_id == original.request_id
+        assert base_file.read_bytes() == base_bytes
+
+        def patch(revision, files):
+            reply = client.patch(route, json={"revision": revision, "files": files})
+            assert reply.status_code == 200, reply.text
+            return reply.json()["revision"]
+
+        revision = saved.json()["revision"]
+        learning_rate = client.post(f"{route}/authoring/train/train/fields", json={
+            "revision": revision, "field": "/settings/optimizer/learning_rate/value",
+            "edit": {"kind": "text", "text": "0.002"},
+        })
+        assert learning_rate.status_code == 200, learning_rate.text
+        assert not learning_rate.json().get("problems") and learning_rate.json()["files"]
+        revision = patch(revision, learning_rate.json()["files"])
+        rated = folders.read_plan("fixture", revision=revision).plan
+        assert not rated.diagnostics and rated.runs[0].request_id != original.request_id
+        spec = decode_request(rated.requests[rated.runs[0].request_id], rated.documents.__getitem__).spec
+        assert spec.settings["optimizer"]["type"] == "adam"
+        assert spec.settings["optimizer"]["learning_rate"] == {"type": "constant_schedule", "value": 0.002}
+        assert base_file.read_bytes() == base_bytes
+        revision = patch(revision, [{
+            "address": {"kind": "document", "id": "training-2"},
+            "patches": [{"op": "remove", "path": "/differences"}],
+        }])
+
+        pin = {"/settings/optimizer/type": {"value": "adam"}}
+        revision = patch(revision, [{
+            "address": {"kind": "document", "id": "training-2"},
+            "patches": [{"op": "add", "path": "/differences", "value": pin}],
+        }])
+        batch_count = training["training_config"]["n_batches"] + 1
+        edited = client.post(f"{route}/authoring/train/train", json={
+            "revision": revision, "change": {"field": "/training_config/n_batches", "value": batch_count},
+        })
+        assert edited.status_code == 200, edited.text
+        revision = patch(revision, edited.json()["files"])
+        batches = {"/training_config/n_batches": {"value": batch_count}}
+        assert json.loads(derived_file.read_bytes())["differences"] == pin | batches
+        prior = folders.read_plan("fixture", revision=revision).plan
+
+        reset_pin = client.post(f"{route}/authoring/train/train", json={
+            "revision": revision, "reset": "/settings/optimizer/type",
+        })
+        assert reset_pin.status_code == 200, reset_pin.text
+        revision = patch(revision, reset_pin.json()["files"])
+        assert json.loads(derived_file.read_bytes())["differences"] == batches
+        assert folders.read_plan("fixture", revision=revision).plan.runs[0].request_id == prior.runs[0].request_id

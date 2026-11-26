@@ -12,14 +12,14 @@ from pydantic import BaseModel, RootModel, ValidationError
 import pytest
 
 from feedbax.application.project_writer import dump_text_project, stored_defaults_manifest, write_project_file
-from feedbax.application.stored_regions import StoredRegionRegistries
+from feedbax.application.stored_regions import StoredRegionRegistries, compose_document
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.canonical_json import CanonicalJsonError, canonical_json_v2_bytes
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureDocument
 from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
-    BasedDocument, InlineBase, Project, RootDocument, Step, StepKind, apply_differences, diff,
+    BasedDocument, InlineBase, Project, RootDocument, Step, StepKind, apply_differences, diff, json_pointer_parts,
 )
 from feedbax.contracts.project_io import (
     STUDIO_PRESENTATION_FILENAME,
@@ -27,7 +27,7 @@ from feedbax.contracts.project_io import (
     parse_text_project_files,
     TextProjectManifest,
 )
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
 from feedbax.contracts.project_storage import (
     stored_document_models, stored_keyed_collection, stored_project_value,
 )
@@ -570,3 +570,131 @@ def test_project_layout_counts_code_points_and_keeps_long_strings_intact():
     assert inline_start - filled_start == 4
     assert len(lines[inline_start].encode()) > 100 >= len(lines[inline_start])
     assert [line.split('"')[1] for line in lines if len(line) > 100] == ["long"]
+
+
+@pytest.mark.usefixtures("reaching_python_task")
+@pytest.mark.parametrize(("schema", "path", "value"), [
+    (STORED_MODEL_DOCUMENT_SCHEMA_ID, "/ports/outputs/aux", {"label": "Aux", "type": {}}),
+    (STORED_TASK_DOCUMENT_SCHEMA_ID, "/validation_trials/first", {"label": "First"}),
+    ("feedbax.spec.python_task", "/params/x", 0.3),
+    (STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "/terms/effort/weight", 3),
+    ("feedbax.spec.training_document", "/settings/optimizer/type", "adabelief"),
+    (LOADED_MODEL_SCHEMA_ID, "/weights/size_bytes", 55),
+    ("feedbax.set_document.v2", "/entries/nominal/task_variables/gain", {"label": "Gain", "type": {"base": "real"}, "value": 1}),
+    (ANALYSIS_SCHEMA, "/operations/summary/params/bounds_scale", 2),
+    (STORED_FIGURE_DOCUMENT_SCHEMA_ID, "/layers/mean/style/opacity", 0.5),
+    ("feedbax.report_document.v1", "/completeness", "allow_omissions"),
+    ("subset", "/rule", "loss < 1"),
+])
+def test_each_registered_based_document_reads_defaults_without_rewriting_its_base(tmp_path, schema, path, value):
+    base_payload = deepcopy(_DOCUMENT_FIXTURES[schema])
+    if schema == "feedbax.spec.training_document":
+        base_payload["settings"] = {}
+    if schema == ANALYSIS_SCHEMA:
+        base_payload["operations"]["summary"]["params"] = {}
+    base = RootDocument(schema=schema, label="Base", payload=base_payload)
+    configuration = ProjectConfiguration(project="fixture", store="results")
+    before = dump_text_project(Project(documents={"base": base}), configuration)
+    canonical = parse_text_project_files(tmp_path, before).project
+    canonical.documents["derived"] = BasedDocument(
+        schema=schema, label="Derived", base={"document": "base"}, differences={path: {"value": value}},
+    )
+    files = dump_text_project(canonical, configuration)
+    assert files["documents/base.json"] == before["documents/base.json"]
+    assert json.loads(files["documents/derived.json"])["differences"] == {path: {"value": value}}
+    saved = parse_text_project_files(tmp_path, files).project
+    document = compose_document(saved.documents.get, "derived")
+    assert isinstance(document, RootDocument), document
+    assert reduce(getitem, json_pointer_parts(path), document.payload) == value
+
+
+@pytest.mark.parametrize(("schema", "path"), [
+    (STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "/terms/missing/weight"),
+    (LOADED_MODEL_SCHEMA_ID, "/archive/path"),
+    ("feedbax.report_document.v1", "/blocks/0/markdown"),
+    ("subset", "/clauses/0/noise"),
+])
+def test_based_defaults_do_not_create_missing_members_or_descend_into_atomic_arrays(schema, path):
+    documents = {
+        "base": RootDocument(schema=schema, label="Base", payload=_DOCUMENT_FIXTURES[schema]),
+        "derived": BasedDocument(
+            schema=schema, label="Derived", base={"document": "base"}, differences={path: {"value": {}}},
+        ),
+    }
+    problem = compose_document(documents.get, "derived")
+    assert isinstance(problem, ProjectDiagnostic)
+    assert problem.code == ResolutionCode.INVALID_DELTA
+
+
+def test_based_default_objects_preserve_authored_overrides_through_a_chain():
+    schema = "feedbax.spec.training_document"
+    root = RootDocument(schema=schema, label="Base", payload={
+        "method": _METHOD, "settings": {"optimizer": {"type": "adam", "b1": 0.8}}, "training_config": {},
+    })
+    first = BasedDocument(
+        schema=schema, label="Rate", base={"document": "base"},
+        differences={"/settings/optimizer/learning_rate/value": {"value": 0.003}},
+    )
+    second = BasedDocument(
+        schema=schema, label="Momentum", base={"document": "rate"},
+        differences={"/settings/optimizer/b2": {"value": 0.98}},
+    )
+    assert root.payload["settings"]["optimizer"] == {"type": "adam", "b1": 0.8}
+    result = compose_document({"base": root, "rate": first, "momentum": second}.get, "momentum")
+    assert isinstance(result, RootDocument), result
+    assert result.payload["settings"]["optimizer"] == {
+        "type": "adam", "b1": 0.8, "b2": 0.98, "learning_rate": {"type": "constant_schedule", "value": 0.003},
+    }
+
+
+def test_known_analysis_defaults_do_not_resolve_opaque_operation_shapes():
+    base = deepcopy(_ANALYSIS)
+    operations = base["operations"]
+    operations["summary"].pop("params")
+    operations["unavailable"] = operations["summary"] | {"operation": "example.missing", "params": {"raw": 42}}
+    documents = {
+        "base": RootDocument(schema=ANALYSIS_SCHEMA, label="Base", payload=base),
+        "known": BasedDocument(
+            schema=ANALYSIS_SCHEMA, label="Known", base={"document": "base"},
+            differences={"/operations/summary/params/bounds_scale": {"value": 2}},
+        ),
+        "unknown": BasedDocument(
+            schema=ANALYSIS_SCHEMA, label="Unknown", base={"document": "base"},
+            differences={"/operations/unavailable/params/filter/value": {"value": 2}},
+        ),
+    }
+    composed = compose_document(documents.get, "known")
+    assert isinstance(composed, RootDocument), composed
+    assert composed.payload["operations"]["summary"]["params"] == {"bounds_scale": 2}
+    assert composed.payload["operations"]["unavailable"] == operations["unavailable"]
+    problem = compose_document(documents.get, "unknown")
+    assert isinstance(problem, ProjectDiagnostic)
+    assert problem.code == ResolutionCode.INVALID_DELTA
+
+
+def test_a_based_type_switch_with_new_shape_replaces_the_typed_object():
+    schema = "feedbax.spec.training_document"
+    base = RootDocument(schema=schema, label="Base", payload={
+        "method": _METHOD, "settings": {"optimizer": {"type": "adadelta"}}, "training_config": {},
+    })
+    optimizer = {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.002}}
+    documents = {
+        "base": base,
+        "sibling-edits": BasedDocument(
+            schema=schema, label="Sibling edits", base={"document": "base"}, differences={
+                "/settings/optimizer/type": {"value": "adam"},
+                "/settings/optimizer/learning_rate/value": {"value": 0.002},
+            },
+        ),
+        "replacement": BasedDocument(
+            schema=schema, label="Replacement", base={"document": "base"},
+            differences={"/settings/optimizer": {"value": optimizer}},
+        ),
+    }
+    problem = compose_document(documents.get, "sibling-edits")
+    assert isinstance(problem, ProjectDiagnostic)
+    assert problem.code == ResolutionCode.INVALID_DELTA
+    assert problem.document_path == "differences./settings/optimizer/learning_rate/value"
+    result = compose_document(documents.get, "replacement")
+    assert isinstance(result, RootDocument), result
+    assert result.payload["settings"]["optimizer"] == optimizer

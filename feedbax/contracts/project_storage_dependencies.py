@@ -13,6 +13,7 @@ from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import BasedDocument, InlineBase, OrderDocumentMembers, Project, RootDocument, StepBase
 from feedbax.contracts.project import base_chain, json_pointer_parts
 from feedbax.contracts.project_inputs import DocumentReference
+from feedbax.contracts.stored_regions import StoredRegionResolver
 from feedbax.contracts.project_resolution import compose_document, document_write_target
 from feedbax.contracts.project_storage import StoredPath
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep
@@ -66,7 +67,9 @@ def _sweep_paths(sweep: Sweep | None) -> Iterator[str]:
             yield from (path for path, patch in source.patches.items() if patch is not None)
 
 
-def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPath]]:
+def protected_project_fields(
+    project: Project, *, registries: StoredRegionResolver | None = None,
+) -> dict[FileAddress, set[StoredPath]]:
     """Find exact authored paths to retain before serializing the project.
 
     This only reads authored rules and document chains. A path with no statically
@@ -111,7 +114,7 @@ def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPa
 
     @cache
     def composed(name: str) -> JsonValue:
-        entry = compose_document(project.documents.get, name)
+        entry = compose_document(project.documents.get, name, regions=registries)
         return entry.payload if isinstance(entry, RootDocument) else None
 
     @cache

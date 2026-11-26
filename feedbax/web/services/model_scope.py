@@ -5,9 +5,10 @@ from dataclasses import replace
 
 from pydantic import JsonValue
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.contracts.model_edit import ListedRuns, ModelEditAsked, ModelEditRequest, SetField
 from feedbax.contracts.project import Project, SetDocumentValue
-from feedbax.contracts.project_resolution import ProjectDiagnostic, RunKey, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic, RunKey
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.result_address import family_documents
 from feedbax.contracts.set_document import read_set

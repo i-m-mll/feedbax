@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
 from feedbax.component_registry import ComponentRegistry
@@ -26,7 +27,7 @@ from feedbax.contracts.project import (
 )
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_inputs import StepReference
-from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_storage import stored_project_value
 from feedbax.contracts.semantic_values import model_state_address

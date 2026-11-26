@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 from pydantic import JsonValue
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
 from feedbax.compiler.model_anchors import geometry_address, portable_model_anchors
 from feedbax.compiler.model_document import lower_planar_scene_interior
@@ -22,7 +23,7 @@ from feedbax.contracts.model_document import (
 )
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.studio_scene import (
     SceneAnchorGeometry,
     SceneLinkGeometry,

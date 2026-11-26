@@ -21,8 +21,9 @@ from pydantic import JsonValue
 
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA as ANALYSIS_SCHEMA, ELEMENT_FAMILIES as ELEMENT_FAMILIES
 from feedbax.contracts.project import Document, Project, base_chain
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document, compose_step
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document, compose_step
 from feedbax.contracts.project_sweep import SweepCoordinate, coordinate_text
+from feedbax.contracts.stored_regions import StoredRegionResolver
 
 _KEY = r"[A-Za-z0-9_][A-Za-z0-9_-]*"
 _ROW = r"[A-Za-z0-9_][A-Za-z0-9_=-]*"
@@ -134,8 +135,10 @@ def payload_elements(payload: JsonValue) -> frozenset[str]:
     return frozenset(analysis_elements(payload))
 
 
-def authored_analysis_payload(project: Project, card: str) -> JsonValue:
-    template = compose_step(project, card)
+def authored_analysis_payload(
+    project: Project, card: str, *, regions: StoredRegionResolver | None = None,
+) -> JsonValue:
+    template = compose_step(project, card, readers=BaseReaders(stored_regions=regions))
     if isinstance(template, ProjectDiagnostic):
         return None
     try:
@@ -181,9 +184,11 @@ class ElementHolders:
         return card if isinstance(card, AddressProblem) else ResultTarget(card, address.name, address.row, address.labels)
 
 
-def project_holders(project: Project) -> ElementHolders:
+def project_holders(project: Project, *, regions: StoredRegionResolver | None = None) -> ElementHolders:
     """The element holders of ``project``'s Analyze cards, composed without external readers."""
-    return ElementHolders(analyze_cards(project), lambda card: payload_elements(authored_analysis_payload(project, card)))
+    return ElementHolders(
+        analyze_cards(project), lambda card: payload_elements(authored_analysis_payload(project, card, regions=regions)),
+    )
 
 
 def analyze_cards(project: Project) -> tuple[str, ...]:
@@ -200,13 +205,13 @@ class SharedKey:
     holder: str
 
 
-def shared_element_keys(project: Project) -> tuple[SharedKey, ...]:
+def shared_element_keys(project: Project, *, regions: StoredRegionResolver | None = None) -> tuple[SharedKey, ...]:
     """Each Analysis document holding a key that an unrelated family holds first, families taken by root name."""
     families: dict[str, list[tuple[str, dict[str, str]]]] = {}
     for name in sorted(project.documents):
         if project.documents[name].schema_id != ANALYSIS_SCHEMA:
             continue
-        document = compose_document(project.documents.get, name)
+        document = compose_document(project.documents.get, name, regions=regions)
         if isinstance(document, ProjectDiagnostic) or not isinstance(payload := document.payload, dict):
             continue
         keys = {

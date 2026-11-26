@@ -13,6 +13,7 @@ import optax
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
+from feedbax.application.stored_regions import StoredRegionRegistries, compose_document
 from feedbax.compiler.model_templates import with_model_placement_reason
 from feedbax.contracts.train_settings import setting_schema_node
 from feedbax.contracts.migrations import default_spec_registry
@@ -34,9 +35,10 @@ from feedbax.contracts.project_sweep import SweepCoordinate
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.planner.project_plan import ProjectPlan, RunKey, analyze_input_roles, step_input_roles
 from feedbax.contracts.project_resolution import (
-    ProjectDiagnostic, ResolvedStep, StepTemplate, compose_document, compose_step, document_write_target,
+    BaseReaders, ProjectDiagnostic, ResolvedStep, StepTemplate, compose_step, document_write_target,
 )
 from feedbax.contracts.project_sources import ValueSource, pointer
+from feedbax.contracts.project_storage import document_difference_basis
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import REQUEST_KINDS, decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, TrainContinuation
@@ -835,7 +837,7 @@ def project_train_fields(
         made = _class_sweep_edit(definition, class_sweep, selection)
         stored, removed = made.stored, made.removed
     if reset is not None:
-        stored = selection.store(reset_writes(project, step_id, reset))
+        stored = selection.store(reset_writes(project, step_id, reset, registry))
     if change is not None:
         field = definition.fields.get(change.field)
         patches: _Edit = []
@@ -892,7 +894,7 @@ def _changed_definition(project: Project, step_id: str, definition: _StepFields,
     changed = changed_fields(project, step_id, [
         *definition.fields, *definition.classes, *tags,
         *(f"/settings{pointer}" for pointer in _pointers(settings)),
-    ])
+    ], definition.registry)
     return changed | {tags[at] for at in changed & tags.keys()}
 
 
@@ -1047,7 +1049,7 @@ def project_numeric_fields(
             scoped=selection.scoped, id=field_id,
         ))
         targets[field_id] = field, numeric, axis, default_path
-    changed = changed_fields(project, step_id, [view.id for view in fields])
+    changed = changed_fields(project, step_id, [view.id for view in fields], registry)
     fields = [view.model_copy(update={"changed": view.id in changed}) for view in fields]
     if body.edit is None:
         return TrainFieldResponse(fields=fields, **sites.tables(fields))
@@ -1055,7 +1057,7 @@ def project_numeric_fields(
         raise ValueError(f"Step {step_id!r} has no number field {body.field!r}")
     field, numeric, axis, default_path = targets[body.field]
     if isinstance(body.edit, FieldResetEdit):
-        stored = selection.store(reset_writes(project, step_id, body.field))
+        stored = selection.store(reset_writes(project, step_id, body.field, registry))
         return TrainFieldResponse(files=stored.files, created=list(stored.created), dependencies=list(field.documents))
     prepared = prepare_numeric_field(numeric, axis, body.edit, functions, scoped=selection.scoped)
     result = prepared.result
@@ -1086,10 +1088,13 @@ def project_numeric_fields(
     )
 
 
-def changed_fields(project: Project, step_id: str, fields: Iterable[str]) -> set[str]:
+def changed_fields(
+    project: Project, step_id: str, fields: Iterable[str], registry: TrainingMethodRegistry,
+) -> set[str]:
     """Those of ``fields``, pointers in the Train definition, whose value is a difference of the document based on
     another that they are read from."""
-    template = compose_step(project, step_id)
+    regions = StoredRegionRegistries(training_methods=registry)
+    template = compose_step(project, step_id, readers=BaseReaders(stored_regions=regions))
     if isinstance(template, ProjectDiagnostic):
         return set()
     payload = template.authored_payload()
@@ -1105,10 +1110,13 @@ def changed_fields(project: Project, step_id: str, fields: Iterable[str]) -> set
     return changed
 
 
-def reset_writes(project: Project, step_id: str, field: str) -> list[OverridePatch]:
+def reset_writes(
+    project: Project, step_id: str, field: str, registry: TrainingMethodRegistry,
+) -> list[OverridePatch]:
     """The write that gives ``field``, a pointer in the Train definition, the value of the base of the document it
     passes through."""
-    template = compose_step(project, step_id)
+    regions = StoredRegionRegistries(training_methods=registry)
+    template = compose_step(project, step_id, readers=BaseReaders(stored_regions=regions))
     if isinstance(template, ProjectDiagnostic):
         raise ValueError(template.detail)
     parts = json_pointer_parts(field)
@@ -1116,11 +1124,12 @@ def reset_writes(project: Project, step_id: str, field: str) -> list[OverridePat
     document = project.documents.get(target[0]) if target is not None else None
     if not isinstance(document, BasedDocument):
         raise ValueError(f"{field} is not read from a document based on another.")
-    base = compose_document(project.documents.get, document.base.document)
+    base = compose_document(project.documents.get, document.base.document, regions=regions)
     if isinstance(base, ProjectDiagnostic):
         raise ValueError(base.detail)
-    value: Any = base.payload
-    for part in target[1].split("."):
+    path = tuple(target[1].split("."))
+    value: Any = document_difference_basis(base.schema_id, base.payload, (path[:-1],), registries=regions)
+    for part in path:
         if not isinstance(value, dict) or part not in value:
             return [OverridePatch(op="remove", path=".".join(parts))]
         value = value[part]
@@ -1131,7 +1140,9 @@ def training_document_choice(
     project: Project, step_id: str, registry: TrainingMethodRegistry, document: str,
 ) -> list[OverridePatch]:
     """The writes that point the Train step at the Training document ``document``."""
-    entry = compose_document(project.documents.get, document)
+    entry = compose_document(
+        project.documents.get, document, regions=StoredRegionRegistries(training_methods=registry),
+    )
     if (
         isinstance(entry, ProjectDiagnostic) or entry.schema_id != TRAINING_DOCUMENT_SCHEMA_ID
         or not isinstance(entry.payload, dict)

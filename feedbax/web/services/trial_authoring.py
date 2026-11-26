@@ -9,6 +9,7 @@ from functools import cache, partial
 from pydantic import TypeAdapter
 from pydantic_core import to_json
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.contracts.base import sha256_bytes
 from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_storage import (
@@ -38,7 +39,7 @@ from feedbax.contracts.project import (
     OrderDocumentMembers, OrderProjectValue, base_chain, json_pointer_parts, member_name,
 )
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
-from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, compose_step, resolve_step
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_step, resolve_step
 from feedbax.contracts.project_sweep import SetAxis
 from feedbax.contracts.set_document import SetEntry, read_set
 from feedbax.planner.project_plan import EVALUATION_TASK, PlannedRow, PlannedRun, RunKey, compile_project, resolve_authored_evaluation_task
