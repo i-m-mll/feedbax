@@ -1519,6 +1519,9 @@ def _trial_problems(
     placed = []
     for problem in problems:
         role, parts = _trial_place(problem)
+        if role == "task" and len(parts) >= 2 and parts[0] == "links":
+            field = ModelAddress.from_text(parts[1]).to_authored_text()
+            parts = ("links", field, *parts[2:])
         if initial:
             slot = ("inputs", "subject" if role == "model" else "task" if role == "python_task" else role)
         elif synthesis:
