@@ -476,10 +476,14 @@ class StudioPlanReviewSource(StrictModel):
 
 
     @classmethod
-    def from_source(cls, source: ValueSource) -> StudioPlanReviewSource:
+    def from_source(
+        cls, source: ValueSource, *, name: str, kind: SourceKind | None = None,
+        axis_name: str | None = None, member_count: int | None = None,
+    ) -> StudioPlanReviewSource:
         return cls(
-            kind=source.kind, key=source.name, path=source.path, step=source.step,
+            kind=kind or source.kind, key=source.name, name=name, path=source.path, step=source.step,
             axis=source.axis, value=source.value, variant=source.variant, row=source.row,
+            axis_name=axis_name, member_count=member_count,
         )
 
 
