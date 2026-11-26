@@ -1159,6 +1159,21 @@ export interface ModelProjectionRequest {
   evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
 }
 
+export interface ModelAttachmentDefaults {
+  operands: Record<string, StoredDelayInitialValue | DelayInitialTask | DelayInitialWire>;
+}
+
+export interface ModelAttachmentDefaultsRequest {
+  revision: string;
+  run?: StudioSavedTrainKey | null;
+  document: string;
+  rows?: string[];
+  axes?: Record<string, string[]>;
+  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
+  owner: ModelAddress;
+  operation: "add" | "scale" | "clamp";
+}
+
 export interface ModelTaskInput {
   composites: string[];
   element: GraphElement | InputsElement | OutputsElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
@@ -4291,7 +4306,7 @@ export type StoredCompositeComponent = {
 
 export type StoredDelayAttachment = {
   "kind": "delay";
-  "delay": StoredTime;
+  "delay"?: StoredTime;
   "initial_source"?: StoredModelSignalSource;
 };
 
@@ -4589,7 +4604,7 @@ export type StoredWindowPosition = {
 };
 
 export type StoredWindowRelativePosition = {
-  "offset": StoredExpression;
+  "offset"?: StoredExpression;
 };
 
 export type StudioAddClassMember = {
@@ -8617,6 +8632,29 @@ export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjectionRequest>;
+
+export const ModelAttachmentDefaultsSchema: z.ZodType<ModelAttachmentDefaults> = z.lazy(() =>
+  z
+    .object({
+      "operands": z.record(z.string(), z.union([StoredDelayInitialValueSchema, DelayInitialTaskSchema, DelayInitialWireSchema])),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelAttachmentDefaults>;
+
+export const ModelAttachmentDefaultsRequestSchema: z.ZodType<ModelAttachmentDefaultsRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
+      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
+      "owner": ModelAddressSchema,
+      "operation": z.union([z.literal("add"), z.literal("scale"), z.literal("clamp")]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelAttachmentDefaultsRequest>;
 
 export const ModelTaskInputSchema: z.ZodType<ModelTaskInput> = z.lazy(() =>
   z
@@ -13436,7 +13474,7 @@ export const StoredCompositeComponentSchema: z.ZodType<StoredCompositeComponent>
 export const StoredDelayAttachmentSchema: z.ZodType<StoredDelayAttachment> = z.lazy(() =>
   z.object({
     "kind": z.literal("delay"),
-    "delay": StoredTimeSchema,
+    "delay": StoredTimeSchema.optional(),
     "initial_source": StoredModelSignalSourceSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredDelayAttachment>;
@@ -13866,7 +13904,7 @@ export const StoredWindowPositionSchema: z.ZodType<StoredWindowPosition> = z.laz
 
 export const StoredWindowRelativePositionSchema: z.ZodType<StoredWindowRelativePosition> = z.lazy(() =>
   z.object({
-    "offset": StoredExpressionSchema,
+    "offset": StoredExpressionSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredWindowRelativePosition>;
 
@@ -15844,6 +15882,8 @@ export const contractSchemas = {
   ModelConnectionReview: ModelConnectionReviewSchema,
   ModelProjectionRequest: ModelProjectionRequestSchema,
   ModelProjection: ModelProjectionSchema,
+  ModelAttachmentDefaultsRequest: ModelAttachmentDefaultsRequestSchema,
+  ModelAttachmentDefaults: ModelAttachmentDefaultsSchema,
   ModelFieldRequest: ModelFieldRequestSchema,
   ModelFieldResponse: ModelFieldResponseSchema,
   TrainFieldRequest: TrainFieldRequestSchema,
@@ -16044,6 +16084,8 @@ export interface ContractTypeMap {
   ModelConnectionReview: ModelConnectionReview;
   ModelProjectionRequest: ModelProjectionRequest;
   ModelProjection: ModelProjection;
+  ModelAttachmentDefaultsRequest: ModelAttachmentDefaultsRequest;
+  ModelAttachmentDefaults: ModelAttachmentDefaults;
   ModelFieldRequest: ModelFieldRequest;
   ModelFieldResponse: ModelFieldResponse;
   TrainFieldRequest: TrainFieldRequest;

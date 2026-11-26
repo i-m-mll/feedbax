@@ -320,7 +320,7 @@ _RUNTIME_SIGNAL_SOURCE = TypeAdapter(ModelSignalSource)
 
 class StoredDelayAttachment(StrictModel):
     kind: Literal["delay"]
-    delay: StoredTime
+    delay: StoredTime = TimeValue(value=1, unit="st")
     initial_source: StoredModelSignalSource = Field(default_factory=lambda: StoredDelayInitialValue(
         kind="value", value=LiteralValue(value=0),
     ))
@@ -463,8 +463,8 @@ def lower_model_attachment(key: str, item: StoredWireAttachment) -> WireAttachme
     match item:
         case StoredDelayAttachment():
             return project_member(item, DelayAttachment, {
-                "delay": _lower_delay, "initial_source": _lower_signal_source,
-            }, id=key)
+                "initial_source": _lower_signal_source,
+            }, id=key, delay=_lower_delay(item.delay))
         case StoredHoldAttachment():
             return HoldAttachment(kind="hold", id=key)
         case StoredInterventionAttachment():

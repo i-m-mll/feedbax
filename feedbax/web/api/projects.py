@@ -12,6 +12,7 @@ from feedbax.contracts.canonical_json import CanonicalJsonError
 from feedbax.contracts.expression_site import ExpressionPartSite
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, EvaluateModelState,
+    ModelAttachmentDefaults, ModelAttachmentDefaultsRequest,
     ModelConnectionReview, ModelConnectionReviewRequest,
     ModelProjection, ModelProjectionRequest,
     ModelEditRequest, ModelEditResponse, ModelUndoRequest,
@@ -406,6 +407,18 @@ def edit_model(
     return _project_response(
         response, lambda: request.app.state.project_folders.edit_model(project_id, body, components)
     )
+
+
+@router.post("/{project_id}/model/attachment-defaults")
+def read_model_attachment_defaults(
+    project_id: ProjectName, body: ModelAttachmentDefaultsRequest, request: Request, response: Response,
+) -> ModelAttachmentDefaults:
+    from feedbax.web.services.model_projection import model_attachment_defaults
+
+    bundle = request.app.state.bootstrap_state.bundle
+    return _project_response(response, lambda: model_attachment_defaults(
+        request.app.state.project_folders, project_id, body, bundle,
+    ))
 
 
 @router.post("/{project_id}/model/fields")
