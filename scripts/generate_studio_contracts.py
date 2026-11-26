@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, ImportedModelProvenance, ModelFitReport
 from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_inputs import LoadedModelReference
+from feedbax.contracts.project_storage import stored_project_value
 from feedbax.studio.library import first_train_task
 from feedbax.contracts.component import (
     ComponentDefinition,
@@ -1520,9 +1521,9 @@ def generate() -> str:
         f"{authored_types}\n\n"
         f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
         f"export const blankTask = {json.dumps(BLANK_TASK.model_dump(mode='json'), indent=2)};\n"
-        f"export const blankStoredModel = {json.dumps(blank_stored_model.model_dump(mode='json', exclude_unset=True), indent=2)};\n"
-        f"export const blankStoredTask = {json.dumps(BLANK_STORED_TASK.model_dump(mode='json', exclude_unset=True), indent=2)};\n"
-        f"export const blankStoredObjective = {json.dumps(blank_stored_objective.model_dump(mode='json', exclude_unset=True), indent=2)};\n\n"
+        f"export const blankStoredModel = {json.dumps(stored_project_value(blank_stored_model), indent=2)};\n"
+        f"export const blankStoredTask = {json.dumps(stored_project_value(BLANK_STORED_TASK), indent=2)};\n"
+        f"export const blankStoredObjective = {json.dumps(stored_project_value(blank_stored_objective), indent=2)};\n\n"
         f"export const modelDocumentSchemaId = {json.dumps(STORED_MODEL_DOCUMENT_SCHEMA_ID)};\n"
         f"export const taskDocumentSchemaId = {json.dumps(STORED_TASK_DOCUMENT_SCHEMA_ID)};\n"
         f"export const objectiveDocumentSchemaId = {json.dumps(STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID)};\n"
