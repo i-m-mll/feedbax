@@ -498,6 +498,8 @@ class StudioProjectWindowMapElement(StrictModel):
 
 class StudioProjectWindowMap(StrictModel):
     variants: list[str]
+    document_names: dict[str, dict[str, str]]
+    """Display names by variant and document ID."""
     steps: list[StudioProjectWindowMapStep]
     rows: list[StudioProjectWindowMapRow]
     edges: list[StudioProjectWindowMapEdge]

@@ -9,7 +9,6 @@ from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.dataset import Dataset
-from feedbax.dataset_replicates import REPLICATE_DIM
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -54,14 +53,6 @@ def verify_dataset(
         if [dim for dim in stacking if dim in dims] != list(dims):
             raise ValueError(f"Dataset coordinate {name!r} is stacked on {dims}, outside {stacking}.")
     return stacking
-
-
-def uses_replicate_axis(port: DatasetPort) -> bool:
-    return any(
-        REPLICATE_DIM in field.dims
-        for fields in (port.variables, port.coordinates, port.selected_variables)
-        for field in fields.values()
-    )
 
 
 def require_task_source(role: str, task: DocumentInput, key: str | None) -> TaskInputSource:

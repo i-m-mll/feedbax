@@ -23,9 +23,9 @@ from feedbax.contracts.loaded_model import (
 )
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import LoadedModelDocument, ProjectModelArchive
-from feedbax.contracts.project_resolution import LoadedModelRead
+from feedbax.contracts.project_resolution import LoadedModelRead, ResolvedImportedModel
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.project_subject import read_imported_model
+from feedbax.persistence.project_subject import resolve_imported_model
 from feedbax.persistence.store_damage import KnownDamage, inspect_without_recording, read_damage
 
 if TYPE_CHECKING:
@@ -235,15 +235,15 @@ def read_pinned_project_model(
 
 def portable_model_reader(
     root: Path, store_path: Path, components: ComponentRegistry,
-) -> Callable[[LoadedModelRead], ModelDocument]:
+) -> Callable[[LoadedModelRead], ResolvedImportedModel]:
     """Read a compiled Loaded document, recovering only absent Store bytes."""
     store = ImmutableArtifactBlobProvider(store_path)
 
-    def read(request: LoadedModelRead) -> ModelDocument:
+    def read(request: LoadedModelRead) -> ResolvedImportedModel:
         loaded = LoadedModelDocument.model_validate_json(request.authored)
         source = loaded.source
-        if (result := _read_available(store, lambda: read_imported_model(store, source))) is not None:
-            return result[0]
+        if (result := _read_available(store, lambda: resolve_imported_model(store, source))) is not None:
+            return result
         archive = model_archive_path(request.document, loaded)
         projection = _projection_path(source)
         try:
@@ -264,7 +264,8 @@ def portable_model_reader(
                 raise ModelAssetError(f"{archive} does not fit the Loaded Model's pinned Model revision.")
             if candidate != source:
                 raise ModelAssetError(f"{archive} differs from the Loaded Model's pinned weights or encoding.")
+            resolved = resolve_imported_model(staging, source)
             publish_project_model(store_path, staging, source)
-        return model
+        return resolved
 
     return read
