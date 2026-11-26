@@ -140,13 +140,14 @@ def check_document_schema(schema_id: str) -> None:
 
 
 def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
+    from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID
     from feedbax.contracts.project_storage import stored_document_models
     from feedbax.contracts.report_document import ReportDocument
 
     check_document_schema(schema_id)
     if schema_id == ANALYSIS_SCHEMA:
         check_analysis_labels(payload)
-    elif schema_id not in ("subset", ReportDocument.model_fields["schema_version"].default):
+    elif schema_id not in ("subset", STORED_FIGURE_DOCUMENT_SCHEMA_ID, ReportDocument.model_fields["schema_version"].default):
         if (model := stored_document_models()[schema_id]) is not None:
             model.model_validate(payload)
 

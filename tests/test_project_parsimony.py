@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Iterator, Mapping
 from copy import deepcopy
-from functools import reduce
+from functools import partial, reduce
 import json
 from operator import getitem
 from pathlib import Path
@@ -10,15 +10,19 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 import pytest
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.canonical_json import CanonicalJsonError, canonical_json_v2_bytes
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureDocument
 from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project import Project, RootDocument
+from feedbax.contracts.project import BasedDocument, Project, RootDocument, apply_differences, diff
 from feedbax.contracts.project_io import (
     STUDIO_PRESENTATION_FILENAME, ProjectConfiguration, ProjectReadError, dump_text_project, parse_text_project_files,
     TextProjectManifest,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
-from feedbax.contracts.project_storage import stored_defaults_manifest, stored_document_models, write_project_file
+from feedbax.contracts.project_storage import (
+    stored_defaults_manifest, stored_document_models, stored_keyed_collection, stored_project_value, write_project_file,
+)
 from feedbax.contracts.project_sweep import AxisValue, NamedAxis, Row, Sweep, SweepException
 from feedbax.contracts.studio_project import PresentationDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
@@ -30,6 +34,18 @@ _OBJECT = {"object_id": f"content-object://sha256/{_SHA}", "sha256": _SHA, "size
 _TASK = {
     "id": "task", "variables": {}, "signals": {}, "fixed_steps": None,
     "epochs": {"trial": {"label": "Trial", "end": {"kind": "length", "length": {"kind": "literal", "value": 1}}}},
+}
+_FIGURE = {
+    "data": ["summary"], "theme": "plotly_white",
+    "layout": {"velocity": {"row": 1, "col": 1}, "markers": {"row": 1, "col": 2}},
+    "layers": {
+        "mean": {"mark": "line", "role": "summary", "panel": "velocity", "encode": {"x": "time", "y": "mean"}},
+        "bounds": {
+            "mark": "band", "role": "summary", "panel": "velocity", "style": {"band_alpha": 0.2},
+            "encode": {"x": "time", "y": "mean", "lower": "lower", "upper": "upper"},
+        },
+        "zero": {"mark": "rule", "role": "summary", "panel": "markers", "encode": {"axis": "x", "at": 0.0}},
+    },
 }
 _DOCUMENT_FIXTURES = {
     STORED_MODEL_DOCUMENT_SCHEMA_ID: {"step_seconds": 0.01, "ports": {}, "interior": {}},
@@ -50,17 +66,14 @@ _DOCUMENT_FIXTURES = {
                    "encoding": {"descriptor_sha256": _SHA}},
     },
     "feedbax.set_document.v2": {"entries": {"nominal": {"label": "Nominal", "differences": {}}}},
-    "feedbax.analysis_document.v1": {
+    ANALYSIS_SCHEMA: {
         "inputs": {"states": {"kind": "dataset", "cardinality": "many"}},
         "operations": {"align": {
             "label": "Align", "operation": "feedbax.aligned_velocity", "params": {}, "inputs": {"states": {"input": "states"}},
         }},
+        "views": {"profile": {"label": "Profile", "figure": _FIGURE, "inputs": {"summary": {"input": "states"}}}},
     },
-    "feedbax.figure_document.v1": {
-        "data": ["summary"], "theme": "plotly_white", "layout": [{"name": "velocity", "row": 1, "col": 1}],
-        "layers": [{"name": "bounds", "mark": "band", "role": "summary", "panel": "velocity",
-                    "encode": {"x": "time", "y": "mean", "lower": "lower", "upper": "upper"}}],
-    },
+    STORED_FIGURE_DOCUMENT_SCHEMA_ID: _FIGURE,
     "feedbax.report_document.v1": {
         "title": "Report", "blocks": [{"markdown": "## Summary"}, {"figure": "velocity", "caption": None}],
         "completeness": "complete",
@@ -162,6 +175,66 @@ def test_each_registered_document_has_a_parsimonious_file(tmp_path, schema):
 def test_stored_defaults_have_a_pinned_schema_contract():
     path = Path(__file__).resolve().parents[1] / "feedbax/contracts/stored_defaults_contract.json"
     assert canonical_json_v2_bytes(stored_defaults_manifest()) == canonical_json_v2_bytes(json.loads(path.read_bytes()))
+
+
+def test_a_based_figure_writes_one_layer_edit_and_keeps_member_order(tmp_path):
+    schema = STORED_FIGURE_DOCUMENT_SCHEMA_ID
+    keyed = partial(stored_keyed_collection, schema)
+    base = stored_project_value(StoredFigureDocument.model_validate(_FIGURE))
+    assert isinstance(base, dict)
+    target = deepcopy(base)
+    target["layers"]["bounds"]["encode"]["upper"] = "upper95"
+    changes = diff(base, target, keyed_collection=keyed)
+    assert list(changes) == ["/layers/bounds/encode/upper"]
+    assert changes["/layers/bounds/encode/upper"].value == "upper95"
+    reordered = base | {"layers": dict(reversed(list(base["layers"].items())))}
+    ordering = diff(base, reordered, keyed_collection=keyed)
+    assert list(ordering) == ["/layers"]
+    assert ordering["/layers"].order == ["zero", "bounds", "mean"]
+
+    later = deepcopy(base)
+    later["layout"]["markers"]["title"] = "Crossings"
+    later["layers"]["mean"]["encode"]["y"] = "average"
+    for index in range(20):
+        later["layers"][f"marker-{index}"] = deepcopy(later["layers"]["zero"])
+    widened = deepcopy(later)
+    widened["layers"]["bounds"]["encode"]["upper"] = "upper95"
+    assert diff(later, widened, keyed_collection=keyed) == changes
+    ordered = apply_differences(later, ordering, keyed_collection=keyed)
+    assert list(ordered["layers"]) == ["zero", "bounds", "mean", *(f"marker-{index}" for index in range(20))]
+
+    project = Project(documents={
+        "reach-velocity": RootDocument(schema=schema, label="Reach velocity", payload=later | {"theme": "plotly_white"}),
+        "with-bounds": BasedDocument(schema=schema, label="With bounds", base={"document": "reach-velocity"},
+                                    differences=changes),
+    })
+
+    def observe(project):
+        composed = compose_document(project.documents.get, "with-bounds")
+        if isinstance(composed, ProjectDiagnostic):
+            return composed
+        return StoredFigureDocument.model_validate(composed.payload).lower()
+
+    files = _verify_parsimony(tmp_path, project, observe=observe)
+    assert "theme" not in json.loads(files["documents/reach-velocity.json"])["payload"]
+    assert json.loads(files["documents/with-bounds.json"])["differences"] == {
+        "/layers/bounds/encode/upper": {"value": "upper95"},
+    }
+    figure = observe(project)
+    assert [panel.name for panel in figure.layout] == ["velocity", "markers"]
+    assert [layer.name for layer in figure.layers] == [*later["layers"]]
+    assert figure.layout[1].title == "Crossings"
+    assert figure.layers[0].encode.y == "average"
+    assert figure.layers[1].encode.upper == "upper95"
+
+
+@pytest.mark.parametrize(("old", "current"), [
+    ("feedbax.figure_document.v1", STORED_FIGURE_DOCUMENT_SCHEMA_ID),
+    ("feedbax.analysis_document.v1", ANALYSIS_SCHEMA),
+])
+def test_rejects_obsolete_authored_figure_and_analysis_versions(old, current):
+    with pytest.raises(ValidationError, match=f"Expected {current!r}"):
+        RootDocument(schema=old, label="Obsolete", payload={})
 
 
 def test_refinement_keeps_the_default_an_author_explicitly_set(tmp_path):

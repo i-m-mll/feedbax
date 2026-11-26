@@ -354,7 +354,7 @@ class FigureTemplateRef(StrictModel):
     settings: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-FigureSource = FigureDocument | FigureTemplateRef
+StoredFigureSource = StoredFigureDocument | FigureTemplateRef
 
 
 PLOTLY_FIGURE_ROLE = "figure"
@@ -432,8 +432,8 @@ def validate_figure_bindings(
     missing = set(figure.data) - schemas.keys()
     if missing:
         raise FigureBindingError("data", f"Missing figure data roles: {sorted(missing)}")
-    for index, layer in enumerate(figure.layers):
-        path = f"layers.{index}"
+    for layer in figure.layers:
+        path = f"layers.{layer.name}"
         schema = schemas[layer.role]
         coords = schema.coords if isinstance(schema, DatasetDescriptor) else schema.coordinates
         sizes = schema.dimensions if isinstance(schema, DatasetDescriptor) else {}

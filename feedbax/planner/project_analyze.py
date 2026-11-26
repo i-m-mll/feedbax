@@ -22,9 +22,10 @@ from feedbax.contracts.analysis_document import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.figure_document import (
-    FIGURE_DOCUMENT_SCHEMA,
+    STORED_FIGURE_DOCUMENT_SCHEMA_ID,
     PLOTLY_FIGURE_ROLE,
     FigureBindingError,
+    StoredFigureDocument,
     FigureDocument,
     FigureTemplateRef,
     PlotlyFigurePort,
@@ -279,7 +280,7 @@ class _Lowerer:
             authored = compose_document(self.documents.get, name)
             document_path = (
                 "payload.path" if not isinstance(authored, ProjectDiagnostic)
-                and authored.schema_id == FIGURE_DOCUMENT_SCHEMA and is_figure_document_pin(authored.payload)
+                and authored.schema_id == STORED_FIGURE_DOCUMENT_SCHEMA_ID and is_figure_document_pin(authored.payload)
                 else ".".join(("payload", *json_pointer_parts(self.document_pointers.get(doc_path)))) + path[len(doc_path):]
             )
         self.problems.append(
@@ -694,9 +695,9 @@ class _Lowerer:
         document = self.document_ids.get(figure_path)
         if document is not None:
             schema = self.documents[document].schema_id
-            if schema != FIGURE_DOCUMENT_SCHEMA:
+            if schema != STORED_FIGURE_DOCUMENT_SCHEMA_ID:
                 self.problem(
-                    figure_path, f"Expected {FIGURE_DOCUMENT_SCHEMA!r}, found {schema!r}.", name,
+                    figure_path, f"Expected {STORED_FIGURE_DOCUMENT_SCHEMA_ID!r}, found {schema!r}.", name,
                     code=ResolutionCode.INVALID_DOCUMENT, document_path="schema",
                 )
                 return
@@ -720,11 +721,13 @@ class _Lowerer:
                 validation_path = figure_path
                 figure = registration.function(settings)
             else:
-                figure = FigureDocument.model_validate(element.figure)
+                figure = StoredFigureDocument.model_validate(element.figure).lower()
         except ValidationError as error:
             for item in error.errors(include_url=False, include_input=False):
                 location = item["loc"]
-                if location[:1] == ("layers",) and location[2:3] in {("line",), ("band",)}:
+                if location[:1] == ("layers",) and location[2:3] in {
+                    ("line",), ("band",), ("trajectory",), ("points",), ("rule",), ("span",),
+                }:
                     location = (*location[:2], *location[3:])
                 self.problem(
                     ".".join(map(str, (validation_path, *location))), item["msg"], name,

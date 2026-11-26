@@ -9,16 +9,17 @@ from types import MappingProxyType, UnionType
 from typing import Annotated, Any, TypeAliasType, Union, get_args, get_origin
 
 import rfc8785
-from pydantic import BaseModel, JsonValue, ValidationError
+from pydantic import BaseModel, JsonValue, RootModel, ValidationError
 from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 
 from feedbax.contracts.canonical_json import validate_canonical_json_v2
 from feedbax.contracts.expression_values import LiteralValue
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureSource
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.objective_document import ObjectiveTerm, StoredObjectiveTerm
-from feedbax.contracts.project import InlineBase, RootDocument, SetDocumentValue, Step
+from feedbax.contracts.project import ExternalBase, InlineBase, RootDocument, SetDocumentValue, Step
 from feedbax.contracts.project_sweep import AxisValue, NamedAxis, SetValue, Sweep, SweepException
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.stored_members import StoredAddressedMembers, StoredMembers
@@ -31,11 +32,14 @@ _REAL_TOKEN_VALUES = (SetDocumentValue, OverridePatch, SetValue, SetField, Liter
 _WIDTH = 100
 
 
+class StoredFigurePayload(RootModel[StoredFigureSource | ExternalBase]):
+    """The authored Figure, template selection, or external pin in a Figure document."""
+
+
 @cache
 def stored_document_models() -> Mapping[str, type[BaseModel] | None]:
-    """The payload models used by the authored writer, including the opaque Figure kind."""
-    from feedbax.contracts.analysis_document import AnalysisPayload
-    from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA
+    """The payload models used by the authored writer."""
+    from feedbax.contracts.analysis_document import StoredAnalysisPayload
     from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
     from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
     from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, StoredObjectiveDocument
@@ -57,8 +61,8 @@ def stored_document_models() -> Mapping[str, type[BaseModel] | None]:
         PYTHON_TASK_SCHEMA_ID: PythonTaskSelection,
         LOADED_MODEL_SCHEMA_ID: LoadedModelDocument,
         SET_DOCUMENT_SCHEMA_ID: SetDocument,
-        ANALYSIS_SCHEMA: AnalysisPayload[JsonValue],
-        FIGURE_DOCUMENT_SCHEMA: None,
+        ANALYSIS_SCHEMA: StoredAnalysisPayload,
+        STORED_FIGURE_DOCUMENT_SCHEMA_ID: StoredFigurePayload,
         ReportDocument.model_fields["schema_version"].default: ReportDocument,
         "subset": SubsetTerms,
     })
@@ -86,6 +90,8 @@ def _keyed_collection_at(annotation: Any, path: StoredPath) -> bool:
         return any(_keyed_collection_at(member, path) for member in arguments)
     if isinstance(annotation, TypeAliasType):
         return _keyed_collection_at(annotation.__value__, path)
+    if isinstance(annotation, type) and issubclass(annotation, RootModel):
+        return _keyed_collection_at(annotation.model_fields["root"].annotation, path)
     if path and isinstance(annotation, type) and issubclass(annotation, BaseModel):
         annotation.model_rebuild()
         for name, field in annotation.model_fields.items():
@@ -184,11 +190,14 @@ def _payload_model(document: RootDocument) -> BaseModel | None:
     try:
         return model.model_validate(document.payload)
     except ValidationError:
-        # Analysis, Report and Subset payloads can be saved in Studio with planner Problems.
+        # These payloads can be saved in Studio with planner Problems.
         from feedbax.contracts.result_address import ANALYSIS_SCHEMA
         from feedbax.contracts.report_document import ReportDocument
 
-        if document.schema_id in (ANALYSIS_SCHEMA, ReportDocument.model_fields["schema_version"].default, "subset"):
+        if document.schema_id in (
+            ANALYSIS_SCHEMA, STORED_FIGURE_DOCUMENT_SCHEMA_ID, ReportDocument.model_fields["schema_version"].default,
+            "subset",
+        ):
             return None
         raise
 
@@ -237,6 +246,8 @@ def _projected_file(
                 remember_reals(edit["value"], (*path, "params", "variation", str(key), "value"))
 
     def project(value: Any, encoded: JsonValue, path: StoredPath) -> JsonValue:
+        if isinstance(value, RootModel):
+            return project(value.root, encoded, path)
         if isinstance(value, BaseModel) and isinstance(encoded, dict):
             result = {}
             cls = type(value)

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project import Project
@@ -129,7 +130,7 @@ def seed_mean_conditions(home: str, project_id: str):
 def seed_mean_figure(home: str, project_id: str):
     """The two-condition project with an Analyze of the baseline that draws Speed by trial."""
     raw = _mean_conditions_project()
-    raw["documents"]["analysis"] = {"schema": "feedbax.analysis_document.v1", "label": "Analysis", "payload": {
+    raw["documents"]["analysis"] = {"schema": ANALYSIS_SCHEMA, "label": "Analysis", "payload": {
         "inputs": {"states": {"kind": "dataset"}},
         "operations": {"speed": {
             "label": "Speed",

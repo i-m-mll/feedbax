@@ -3,6 +3,7 @@
 import os
 import shutil
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
@@ -107,7 +108,7 @@ def read_weight(model: Annotated[Graph, ModelPort()], params: Settings) -> Annot
 
     (trained,) = run(save(), "train")
     assert trained["state"] == "succeeded", trained["outcome"]
-    raw["documents"]["read-model"] = {"label": "Read model", "schema": "feedbax.analysis_document.v1", "payload": {
+    raw["documents"]["read-model"] = {"label": "Read model", "schema": ANALYSIS_SCHEMA, "payload": {
         "inputs": {"model": {"kind": "model"}},
         "operations": {"read": {
             "label": "Read",
