@@ -1159,6 +1159,21 @@ export interface ModelProjectionRequest {
   evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
 }
 
+export interface ModelAttachmentDefaults {
+  operands: Record<string, StoredDelayInitialValue | DelayInitialTask | DelayInitialWire>;
+}
+
+export interface ModelAttachmentDefaultsRequest {
+  revision: string;
+  run?: StudioSavedTrainKey | null;
+  document: string;
+  rows?: string[];
+  axes?: Record<string, string[]>;
+  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
+  owner: ModelAddress;
+  operation: "add" | "scale" | "clamp";
+}
+
 export interface ModelTaskInput {
   composites: string[];
   element: GraphElement | InputsElement | OutputsElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
@@ -2850,6 +2865,8 @@ export type AttemptProvenance = {
   "ended_at": string;
 };
 
+export type AuthoredCheckpointRule = string | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule;
+
 export type AuthoredExpressionText = string;
 
 export type AuthoredExpressionValue = Scalar | AuthoredExpressionText;
@@ -2975,7 +2992,7 @@ export type CheckpointCadence = {
   "through": number;
 };
 
-export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule | UnresolvedValue;
+export type CheckpointRule = ValidCheckpointRule | UnresolvedValue;
 
 export type CheckpointRuleAxis = {
   "label"?: string | null;
@@ -3249,7 +3266,7 @@ export type FieldTextResult = {
   "spans": Array<LocatedSpan>;
 };
 
-export type FieldValue = Expression | SweepList | SweepRange | SweepSample;
+export type FieldValue = Expression | SweepList | SweepSample;
 
 export type FigureDocument = {
   "data": Array<Name>;
@@ -3636,6 +3653,7 @@ export type ObjectiveTerm = {
   "window"?: Window | null;
   "enabled"?: boolean;
   "name"?: string | null;
+  "family"?: string | null;
 };
 
 export type OmittedReference = {
@@ -4023,6 +4041,8 @@ export type SetDocumentValue = {
 };
 
 export type SetEntry = {
+  "over"?: Record<string, IndexRule> | null;
+  "combination"?: "cross" | "zip";
   "task_variables"?: StoredMembers_StoredVariable_;
   "task_links"?: StoredAddressedMembers_StoredMemberKey_;
   "label": string;
@@ -4054,7 +4074,7 @@ export type SetFieldWeight = {
 
 export type SetLink = {
   "op": "link";
-  "model_field": string;
+  "address_text": string;
   "variable": string | null;
 };
 
@@ -4260,7 +4280,7 @@ export type StepReference = {
   "step": string;
   "where"?: SubsetTerms | NamedSubset | null;
   "variants"?: "all" | Array<string> | null;
-  "checkpoint"?: CheckpointRule | null;
+  "checkpoint"?: StoredCheckpointRule | null;
   "element"?: string | null;
   "product"?: string | null;
   "unresolved"?: true | null;
@@ -4293,6 +4313,8 @@ export type StoredCell = {
   "value": StoredExpression;
 };
 
+export type StoredCheckpointRule = AuthoredCheckpointRule;
+
 export type StoredCompositeComponent = {
   "kind": "composite";
   "label": string;
@@ -4304,7 +4326,7 @@ export type StoredCompositeComponent = {
 
 export type StoredDelayAttachment = {
   "kind": "delay";
-  "delay": StoredTime;
+  "delay"?: StoredTime;
   "initial_source"?: StoredModelSignalSource;
 };
 
@@ -4460,6 +4482,8 @@ export type StoredObjectiveDocument = {
 };
 
 export type StoredObjectiveTerm = {
+  "over"?: Record<string, IndexRule> | null;
+  "combination"?: "cross" | "zip";
   "measure": StoredExpression;
   "measure_type"?: ValueType;
   "weight"?: StoredExpression;
@@ -4609,7 +4633,7 @@ export type StoredWindowPosition = {
 };
 
 export type StoredWindowRelativePosition = {
-  "offset": StoredExpression;
+  "offset"?: StoredExpression;
 };
 
 export type StudioAddClassMember = {
@@ -5240,6 +5264,7 @@ export type StudioProjectWindowMapException = {
   "id": string;
   "count": number;
   "rule": SweepException;
+  "field_labels"?: Record<string, string>;
 };
 
 export type StudioProjectWindowMapFigure = {
@@ -5463,9 +5488,12 @@ export type StudioSetField = {
 };
 
 export type StudioSetFieldEntry = {
+  "over"?: Record<string, IndexRule> | null;
+  "combination"?: "cross" | "zip";
   "entry": string | null;
   "label"?: string | null;
   "weight"?: WeightPart | SetEntryParts | null;
+  "member_count"?: number | null;
 };
 
 export type StudioSetsOffered = {
@@ -5642,6 +5670,7 @@ export type StudioTrialAuthoring = {
   "inputs": Array<StudioTrialInput>;
   "outputs": Array<StudioTrialOutput>;
   "resets": Array<StudioTrialReset>;
+  "unresolved_links": Array<StudioTrialUnresolvedLink>;
   "fields": Array<StudioTrialField>;
   "problems": Array<Problem>;
   "created_term"?: string | null;
@@ -5754,6 +5783,7 @@ export type StudioTrialRelate = {
 
 export type StudioTrialReset = {
   "address": ModelAddress;
+  "address_text": string;
   "path": Array<string>;
   "type": ValueType;
   "finest": Level;
@@ -5774,6 +5804,11 @@ export type StudioTrialStepScope = {
 export type StudioTrialStructureEdit = {
   "kind": "structure";
   "changes": Array<TaskStructureChange>;
+};
+
+export type StudioTrialUnresolvedLink = {
+  "key": string;
+  "path": Array<string>;
 };
 
 export type StudioValueStructure = {
@@ -5810,14 +5845,6 @@ export type SweepExceptionTerms = {
 export type SweepList = {
   "kind"?: "list";
   "members": Array<Expression>;
-};
-
-export type SweepRange = {
-  "kind"?: "range";
-  "first": Expression;
-  "last": Expression;
-  "count": number;
-  "spacing": "linear" | "log";
 };
 
 export type SweepSample = {
@@ -5951,6 +5978,8 @@ export type UpdateCheckpoint = {
 };
 
 export type UpdateRule = UpdateCadence | Array<UpdateCheckpoint>;
+
+export type ValidCheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule;
 
 export type ValidationPlacement = {
   "location": "live" | "ordinary";
@@ -7050,7 +7079,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "subject_rank_key": z.string().nullable().optional(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
       "checkpoint_attempt": StudioEvaluationCheckpointAttemptSchema.nullable().optional(),
-      "checkpoint_rule": z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)]), UnresolvedValueSchema]).nullable().optional(),
+      "checkpoint_rule": z.union([z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)])]), UnresolvedValueSchema]).nullable().optional(),
       "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),
     })
     .strict()
@@ -8458,6 +8487,29 @@ export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjectionRequest>;
+
+export const ModelAttachmentDefaultsSchema: z.ZodType<ModelAttachmentDefaults> = z.lazy(() =>
+  z
+    .object({
+      "operands": z.record(z.string(), z.union([StoredDelayInitialValueSchema, DelayInitialTaskSchema, DelayInitialWireSchema])),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelAttachmentDefaults>;
+
+export const ModelAttachmentDefaultsRequestSchema: z.ZodType<ModelAttachmentDefaultsRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
+      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
+      "owner": ModelAddressSchema,
+      "operation": z.union([z.literal("add"), z.literal("scale"), z.literal("clamp")]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelAttachmentDefaultsRequest>;
 
 export const ModelTaskInputSchema: z.ZodType<ModelTaskInput> = z.lazy(() =>
   z
@@ -11325,6 +11377,10 @@ export const AttemptProvenanceSchema: z.ZodType<AttemptProvenance> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<AttemptProvenance>;
 
+export const AuthoredCheckpointRuleSchema: z.ZodType<AuthoredCheckpointRule> = z.lazy(() =>
+  z.union([z.string(), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema])
+) as unknown as z.ZodType<AuthoredCheckpointRule>;
+
 export const AuthoredExpressionTextSchema: z.ZodType<AuthoredExpressionText> = z.lazy(() =>
   z.string().max(8192)
 ) as unknown as z.ZodType<AuthoredExpressionText>;
@@ -11499,7 +11555,7 @@ export const CheckpointCadenceSchema: z.ZodType<CheckpointCadence> = z.lazy(() =
 ) as unknown as z.ZodType<CheckpointCadence>;
 
 export const CheckpointRuleSchema: z.ZodType<CheckpointRule> = z.lazy(() =>
-  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema, UnresolvedValueSchema])
+  z.union([ValidCheckpointRuleSchema, UnresolvedValueSchema])
 ) as unknown as z.ZodType<CheckpointRule>;
 
 export const CheckpointRuleAxisSchema: z.ZodType<CheckpointRuleAxis> = z.lazy(() =>
@@ -11877,7 +11933,7 @@ export const FieldTextResultSchema: z.ZodType<FieldTextResult> = z.lazy(() =>
 ) as unknown as z.ZodType<FieldTextResult>;
 
 export const FieldValueSchema: z.ZodType<FieldValue> = z.lazy(() =>
-  z.union([ExpressionSchema, SweepListSchema, SweepRangeSchema, SweepSampleSchema])
+  z.union([ExpressionSchema, SweepListSchema, SweepSampleSchema])
 ) as unknown as z.ZodType<FieldValue>;
 
 export const FigureDocumentSchema: z.ZodType<FigureDocument> = z.lazy(() =>
@@ -12402,6 +12458,7 @@ export const ObjectiveTermSchema: z.ZodType<ObjectiveTerm> = z.lazy(() =>
     "window": z.union([WindowSchema, z.null()]).optional(),
     "enabled": z.boolean().optional(),
     "name": z.union([z.string().min(1), z.null()]).optional(),
+    "family": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<ObjectiveTerm>;
 
@@ -12925,6 +12982,8 @@ export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
 
 export const SetEntrySchema: z.ZodType<SetEntry> = z.lazy(() =>
   z.object({
+    "over": z.union([z.record(IndexNameSchema, IndexRuleSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }), z.null()]).optional(),
+    "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
     "task_variables": StoredMembers_StoredVariable_Schema.optional(),
     "task_links": StoredAddressedMembers_StoredMemberKey_Schema.optional(),
     "label": z.string().min(1),
@@ -12964,7 +13023,7 @@ export const SetFieldWeightSchema: z.ZodType<SetFieldWeight> = z.lazy(() =>
 export const SetLinkSchema: z.ZodType<SetLink> = z.lazy(() =>
   z.object({
     "op": z.literal("link"),
-    "model_field": z.string(),
+    "address_text": z.string(),
     "variable": z.union([z.string(), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<SetLink>;
@@ -13236,7 +13295,7 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "where": z.union([SubsetTermsSchema, NamedSubsetSchema, z.null()]).optional(),
     "variants": z.union([z.literal("all"), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))), z.null()]).optional(),
-    "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
+    "checkpoint": z.union([StoredCheckpointRuleSchema, z.null()]).optional(),
     "element": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "product": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "unresolved": z.union([z.literal(true), z.null()]).optional(),
@@ -13280,6 +13339,10 @@ export const StoredCellSchema: z.ZodType<StoredCell> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StoredCell>;
 
+export const StoredCheckpointRuleSchema: z.ZodType<StoredCheckpointRule> = z.lazy(() =>
+  AuthoredCheckpointRuleSchema
+) as unknown as z.ZodType<StoredCheckpointRule>;
+
 export const StoredCompositeComponentSchema: z.ZodType<StoredCompositeComponent> = z.lazy(() =>
   z.object({
     "kind": z.literal("composite"),
@@ -13294,7 +13357,7 @@ export const StoredCompositeComponentSchema: z.ZodType<StoredCompositeComponent>
 export const StoredDelayAttachmentSchema: z.ZodType<StoredDelayAttachment> = z.lazy(() =>
   z.object({
     "kind": z.literal("delay"),
-    "delay": StoredTimeSchema,
+    "delay": StoredTimeSchema.optional(),
     "initial_source": StoredModelSignalSourceSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredDelayAttachment>;
@@ -13538,6 +13601,8 @@ export const StoredObjectiveDocumentSchema: z.ZodType<StoredObjectiveDocument> =
 
 export const StoredObjectiveTermSchema: z.ZodType<StoredObjectiveTerm> = z.lazy(() =>
   z.object({
+    "over": z.union([z.record(IndexNameSchema, IndexRuleSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }), z.null()]).optional(),
+    "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
     "measure": StoredExpressionSchema,
     "measure_type": ValueTypeSchema.optional(),
     "weight": StoredExpressionSchema.optional(),
@@ -13733,7 +13798,7 @@ export const StoredWindowPositionSchema: z.ZodType<StoredWindowPosition> = z.laz
 
 export const StoredWindowRelativePositionSchema: z.ZodType<StoredWindowRelativePosition> = z.lazy(() =>
   z.object({
-    "offset": StoredExpressionSchema,
+    "offset": StoredExpressionSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredWindowRelativePosition>;
 
@@ -14554,6 +14619,7 @@ export const StudioProjectWindowMapExceptionSchema: z.ZodType<StudioProjectWindo
     "id": z.string(),
     "count": z.number().int().safe(),
     "rule": SweepExceptionSchema,
+    "field_labels": z.record(z.string(), z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapException>;
 
@@ -14831,9 +14897,12 @@ export const StudioSetFieldSchema: z.ZodType<StudioSetField> = z.lazy(() =>
 
 export const StudioSetFieldEntrySchema: z.ZodType<StudioSetFieldEntry> = z.lazy(() =>
   z.object({
+    "over": z.union([z.record(IndexNameSchema, IndexRuleSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }), z.null()]).optional(),
+    "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
     "entry": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "label": z.union([z.string(), z.null()]).optional(),
     "weight": z.union([WeightPartSchema, SetEntryPartsSchema, z.null()]).optional(),
+    "member_count": z.union([z.number().int().safe(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSetFieldEntry>;
 
@@ -15050,6 +15119,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "inputs": z.array(StudioTrialInputSchema),
     "outputs": z.array(StudioTrialOutputSchema),
     "resets": z.array(StudioTrialResetSchema),
+    "unresolved_links": z.array(StudioTrialUnresolvedLinkSchema),
     "fields": z.array(StudioTrialFieldSchema),
     "problems": z.array(ProblemSchema),
     "created_term": z.union([z.string(), z.null()]).optional(),
@@ -15192,6 +15262,7 @@ export const StudioTrialRelateSchema: z.ZodType<StudioTrialRelate> = z.lazy(() =
 export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
   z.object({
     "address": ModelAddressSchema,
+    "address_text": z.string(),
     "path": z.array(z.string()),
     "type": ValueTypeSchema,
     "finest": LevelSchema,
@@ -15220,6 +15291,13 @@ export const StudioTrialStructureEditSchema: z.ZodType<StudioTrialStructureEdit>
     "changes": z.array(TaskStructureChangeSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialStructureEdit>;
+
+export const StudioTrialUnresolvedLinkSchema: z.ZodType<StudioTrialUnresolvedLink> = z.lazy(() =>
+  z.object({
+    "key": z.string(),
+    "path": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialUnresolvedLink>;
 
 export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.lazy(() =>
   z.object({
@@ -15268,16 +15346,6 @@ export const SweepListSchema: z.ZodType<SweepList> = z.lazy(() =>
     "members": z.array(ExpressionSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<SweepList>;
-
-export const SweepRangeSchema: z.ZodType<SweepRange> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("range").optional(),
-    "first": ExpressionSchema,
-    "last": ExpressionSchema,
-    "count": z.number().int().safe().gt(0),
-    "spacing": z.union([z.literal("linear"), z.literal("log")]),
-  }).strict()
-) as unknown as z.ZodType<SweepRange>;
 
 export const SweepSampleSchema: z.ZodType<SweepSample> = z.lazy(() =>
   z.object({
@@ -15454,6 +15522,10 @@ export const UpdateCheckpointSchema: z.ZodType<UpdateCheckpoint> = z.lazy(() =>
 export const UpdateRuleSchema: z.ZodType<UpdateRule> = z.lazy(() =>
   z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)])
 ) as unknown as z.ZodType<UpdateRule>;
+
+export const ValidCheckpointRuleSchema: z.ZodType<ValidCheckpointRule> = z.lazy(() =>
+  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema])
+) as unknown as z.ZodType<ValidCheckpointRule>;
 
 export const ValidationPlacementSchema: z.ZodType<ValidationPlacement> = z.lazy(() =>
   z.object({
@@ -15694,6 +15766,8 @@ export const contractSchemas = {
   ModelConnectionReview: ModelConnectionReviewSchema,
   ModelProjectionRequest: ModelProjectionRequestSchema,
   ModelProjection: ModelProjectionSchema,
+  ModelAttachmentDefaultsRequest: ModelAttachmentDefaultsRequestSchema,
+  ModelAttachmentDefaults: ModelAttachmentDefaultsSchema,
   ModelFieldRequest: ModelFieldRequestSchema,
   ModelFieldResponse: ModelFieldResponseSchema,
   TrainFieldRequest: TrainFieldRequestSchema,
@@ -15894,6 +15968,8 @@ export interface ContractTypeMap {
   ModelConnectionReview: ModelConnectionReview;
   ModelProjectionRequest: ModelProjectionRequest;
   ModelProjection: ModelProjection;
+  ModelAttachmentDefaultsRequest: ModelAttachmentDefaultsRequest;
+  ModelAttachmentDefaults: ModelAttachmentDefaults;
   ModelFieldRequest: ModelFieldRequest;
   ModelFieldResponse: ModelFieldResponse;
   TrainFieldRequest: TrainFieldRequest;

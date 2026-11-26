@@ -176,11 +176,14 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   await activate(page, sourceRow(0));
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
   // The inspector is titled by the run's step and its sweep values.
-  expect(prefix[0].label).toBe('Learning rate 0.001');
-  await expect(inspector.getByRole('heading', { name: 'Train · Learning rate 0.001', exact: true })).toBeVisible();
-  for (const [step, kind, count] of [[pairedStep, 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
-    await expect(used.filter({ hasText: step })).toHaveCount(1);
-    await expect(outline.getByRole('treeitem', { name: new RegExp(`^${step}\\b`, 'i') })).toHaveAccessibleDescription(count);
+  expect(prefix[0].label).toBe('Learning Rate 0.001');
+  await expect(inspector.getByRole('heading', { name: 'Train · Learning Rate 0.001', exact: true })).toBeVisible();
+  for (const [step, count] of [[pairedStep, '2 of 2'], ['analyze', '1 of 1'], ['report', '1 of 1']]) {
+    const name = await mapName(page, step);
+    await expect(used.filter({ hasText: name })).toHaveCount(1);
+    const row = outline.getByRole('treeitem').and(outline.locator(`[data-node="${step}"]`));
+    await expect(row).toContainText(name);
+    await expect(row).toHaveAccessibleDescription(count);
     await expect(mapStep(page, step)).toHaveAccessibleDescription(new RegExp(count));
   }
 
@@ -204,7 +207,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
   await rule.click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
-  for (const value of ['0.001', '0.002', '0.003']) await chooseSweepValue(mapCard(page, 'train'), 'Learning rate', value);
+  for (const value of ['0.001', '0.002', '0.003']) await chooseSweepValue(mapCard(page, 'train'), 'Learning Rate', value);
   await expect(ruleRow).toContainText('3/3');
   const edited = mutation(context, 'PATCH');
   await page.keyboard.press('Enter');
@@ -235,7 +238,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const carried = await saveWholeStep();
   expect(carried.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
   const carriedChild = (await carried.json() as StudioProjectSnapshot).project.steps?.[child];
-  expect(carriedChild?.deltas?.at(-1)?.patches).toEqual([{
+  expect(carriedChild?.deltas?.at(-1)?.patches?.map(({ op = 'replace', ...patch }) => ({ op, ...patch }))).toEqual([{
     op: 'replace', path: 'checkpoint_initialization', value: {
       mode: 'continue_from', source_completed_updates: sourceUpdates,
       state: 'preserve', schedule: 'continue', rng: 'carry',

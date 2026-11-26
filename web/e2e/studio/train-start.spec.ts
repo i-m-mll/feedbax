@@ -51,7 +51,7 @@ test('a continuation started from its Model keeps its definition and continues a
   await expect(inspector.getByRole('textbox', { name: 'Batches', exact: true })).toHaveValue('2');
 
   const { snapshot: based } = await appendManagedFiles(request, await saved(), [
-    { kind: 'step', id: 'row-based', step: { kind: 'train', base: { step: 'train', row: 'slow' } } },
+    { kind: 'step', id: 'row-based', step: { kind: 'train', label: 'Row based', base: { step: 'train', row: 'slow' } } },
   ]);
   await page.reload();
   await mapStep(page, 'row-based').click();

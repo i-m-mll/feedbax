@@ -7,12 +7,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.project_sweep import model_field_path, model_field_target
-from feedbax.contracts.stored_model import StoredModelDocument
+from feedbax.contracts.model_document import ModelTime
 from feedbax.contracts.project import BasedDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
-from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.project_resolution import compose_document
+from feedbax.contracts.project_sweep import model_field_path, model_field_target
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+from feedbax.contracts.time_units import TimeValue
+from feedbax.planner.project_plan import compile_project
 from feedbax.web.app import create_app
 from feedbax.web.services.project_plan import row_problems
 from tests.support.managed_train_fixture import managed_evaluation_step
@@ -97,6 +99,67 @@ def _two_readers(data):
     data["steps"]["other"] = deepcopy(data["steps"]["fee"])
     data["steps"]["other"]["base"]["inline"]["seed"] = 1
     return data
+
+
+def test_studio_authorizes_attachment_defaults_from_the_source_shape(tmp_path):
+    shapes = {"scalar": [], "single": [1], "vector": [3]}
+    inputs = {name: {"label": name.title(), "type": {"base": "real", "shape": shape}}
+              for name, shape in shapes.items()}
+    outputs = {f"out-{name}": port for name, port in inputs.items()}
+    project = _Project(tmp_path, {"documents": {"model": {
+        "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "label": "Model",
+        "payload": {"step_seconds": "0.01 s", "ports": {"inputs": inputs, "outputs": outputs}, "interior": {
+            "wires": {name: {"source": {"owner": "inputs", "port": name},
+                             "target": {"owner": "outputs", "port": f"out-{name}"}} for name in shapes},
+        }},
+    }}})
+
+    def wire(name):
+        return {"composites": [], "element": {"kind": "wire", "id": name}}
+
+    def defaults(owner, operation, *, status=200):
+        response = project.client.post(f"{_URL}/model/attachment-defaults", json={
+            "revision": project.snapshot()["revision"], "document": "model", "owner": owner, "operation": operation,
+        })
+        assert response.status_code == status, response.text
+        return response.json()
+
+    def attachment(name, key, value, *, op="add", **position):
+        address = {"composites": [], "element": {"kind": "attachment", "parent": wire(name)["element"], "id": key}}
+        return {"op": "set_attachment", "difference": {"op": op, "address": address, "attachment": value, **position}}
+
+    with project.client:
+        for name, expected in (("scalar", 0), ("single", "[0]"), ("vector", "[0, 0, 0]")):
+            assert defaults(wire(name), "add") == {"operands": {"value": {"kind": "value", "value": expected}}}
+        source_port = {"composites": [], "element": {"kind": "port", "end": {"owner": "inputs", "port": "vector"}}}
+        assert defaults(source_port, "scale")["operands"] == {"factor": {"kind": "value", "value": 1}}
+        bounds = {"low": {"kind": "value", "value": -1}, "high": {"kind": "value", "value": 1}}
+        assert defaults(wire("scalar"), "clamp")["operands"] == bounds
+        assert "wire 'missing' does not exist" in defaults(wire("missing"), "add", status=422)["detail"]
+
+        project.edit(attachment("vector", "delay", {"kind": "delay"}, after=None))
+        add = {"kind": "intervention", "operation": "add"}
+        project.edit(attachment("vector", "shift", add, after="delay"))
+        saved = project.composed("model")
+        chain = saved["interior"]["wires"]["vector"]["attachments"]
+        assert chain["delay"] == {"kind": "delay"}
+        assert chain["shift"]["operands"] == {"value": {"kind": "value", "value": "[0, 0, 0]"}}
+
+        draft = {"value": {"kind": "wire"}}
+        project.edit(attachment("vector", "shift", add | {"operands": draft}, op="change"))
+        window = {"spans": [{"kind": "interval", "start": {"anchor": {"kind": "trial", "edge": "start"}}, "end": {}}]}
+        project.edit(attachment("vector", "shift", add | {"window": window}, op="change"))
+        saved = project.composed("model")
+        assert saved["interior"]["wires"]["vector"]["attachments"]["shift"] == add | {"operands": draft, "window": window}
+        delay, intervention = StoredModelDocument.model_validate(saved).lower().interior.wires["vector"].attachments
+        assert delay.delay == ModelTime(value=1, unit="st")
+        interval, = intervention.window.spans
+        assert interval.start.offset is None
+        assert interval.end.offset == TimeValue(value=1, unit="st")
+
+        project.edit(attachment("vector", "shift", {"kind": "intervention", "operation": "clamp"}, op="change"))
+        chain = project.composed("model")["interior"]["wires"]["vector"]["attachments"]
+        assert chain["shift"]["operands"] == bounds
 
 
 def test_editing_the_base_for_its_remaining_reader_preserves_an_unselected_copy(tmp_path):

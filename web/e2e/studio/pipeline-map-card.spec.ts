@@ -29,7 +29,7 @@ test('the map card draws one sweep in a line, its head as glyph and name, and th
   expect(new Set(tops).size).toBe(1);
 
   await expect(card.locator('.studio-card__head')).toHaveText('Train');
-  await chooseSweepValue(card, 'Batch size', '4');
+  await chooseSweepValue(card, 'Batch Size', '4');
   await expect(card.locator('[id$="-status"]')).toHaveCount(0);
   await expect(card.getByText(/\d+ of \d+/)).toHaveCount(0);
 
@@ -66,7 +66,7 @@ test('the map card draws one sweep in a line, its head as glyph and name, and th
 
 test('the map drawer keeps New Step in view, aligned with its rows, while its list scrolls', async ({ page, request }, info) => {
   const [model, task, objective, train, successor] = await fixture('managed-files');
-  const extra = Array.from({ length: 12 }, (_, index) => ({ ...structuredClone(train), id: `other-${index}` }));
+  const extra = Array.from({ length: 12 }, (_, index) => ({ ...train, id: `other-${index}`, step: { ...train.step, label: `Continuation ${index + 1}` } }));
   const { snapshot } = await seedManagedProject(request, [model, task, objective, train, successor, ...extra]);
   await page.setViewportSize({ width: 1440, height: 640 });
   await page.goto(`/?project=${snapshot.project_id}`);
@@ -112,7 +112,7 @@ test('choosing one value of a sweep selects and boxes only its row or column', a
       return [boxed, await mark.getAttribute('aria-pressed') === 'true'];
     }));
   };
-  for (const [sweep, middle] of [['N batches', '20'], ['Batch size', '4']]) {
+  for (const [sweep, middle] of [['Batches', '20'], ['Batch Size', '4']]) {
     await chooseSweepValue(card, sweep, middle);
     const cells = await boxedAndPressed();
     expect(cells.filter(([boxed]) => boxed)).toHaveLength(3);

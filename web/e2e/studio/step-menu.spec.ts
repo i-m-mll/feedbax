@@ -2,6 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { stepRow } from './fixtures/members';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -22,13 +23,13 @@ test('a step\'s context menu opens on its card, its drawer row and its name in R
     return (await response.json() as StudioProjectSnapshot).project.steps ?? {};
   }
   /** Duplicate Step from the open menu copies `source`. */
-  async function duplicates(source: string) {
+  async function duplicates(source: string, label: string) {
     const before = await steps();
     await choose('Duplicate Step');
     await expect.poll(async () => Object.keys(await steps()).length).toBe(Object.keys(before).length + 1);
     const after = await steps();
     const copy = Object.keys(after).find((id) => !(id in before))!;
-    expect(after[copy]).toEqual(before[source]);
+    expect(after[copy]).toEqual({ ...before[source], label });
   }
   async function choose(item: string) {
     await menu(page).getByRole('menuitem', { name: item }).click();
@@ -61,10 +62,10 @@ test('a step\'s context menu opens on its card, its drawer row and its name in R
   await mapStep(page, 'baseline').focus();
   await page.keyboard.press('Shift+F10');
   await expectStepMenu(page);
-  await duplicates('baseline');
+  await duplicates('baseline', 'Baseline 2');
 
   const drawer = page.getByRole('navigation', { name: 'Steps', exact: true });
-  const row = drawer.getByRole('treeitem', { name: /^Train\b/ });
+  const row = stepRow(drawer, 'train');
   if (!await row.isVisible()) {
     await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
     await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Show Steps\b/ }).click();
@@ -76,7 +77,7 @@ test('a step\'s context menu opens on its card, its drawer row and its name in R
   await row.focus();
   await page.keyboard.press('ContextMenu');
   await expectStepMenu(page);
-  await duplicates('train');
+  await duplicates('train', 'Train 2');
 
   await mapStep(page, 'train').click();
   await page.getByRole('tablist', { name: 'Details' }).getByRole('tab', { name: 'Runs', exact: true }).click();
@@ -87,5 +88,5 @@ test('a step\'s context menu opens on its card, its drawer row and its name in R
   await renames(cardRename, mapStep(page, 'train'));
   await title.locator('..').focus();
   await page.keyboard.press('Shift+F10');
-  await duplicates('train');
+  await duplicates('train', 'Train 3');
 });

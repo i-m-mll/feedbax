@@ -1,7 +1,6 @@
 """Seed the shipped point-mass project with its simple-reaches Train step alone."""
 
-import json
-import sys
+from tests.support.browser_seed_actions import HomeSeed, print_action
 
 from web.e2e.studio.fixtures.canonical_evaluate import _seed
 
@@ -15,6 +14,8 @@ def seed(home: str, project_id: str):
     return _seed(home, project_id, raw)
 
 
+ACTIONS = {"seed": HomeSeed(seed)}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed}[action](*args)))
+    print_action(ACTIONS)

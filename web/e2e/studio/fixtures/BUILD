@@ -1,4 +1,5 @@
 python_sources()
+resources(name="seed_json", sources=["**/*.json"])
 resources(name="velocity_analysis", sources=["velocity-analysis.json"])
 resources(name="velocity_summary_report", sources=["velocity-summary.report.json"])
 resources(name="velocity_report_step", sources=["velocity-report-step.json"])

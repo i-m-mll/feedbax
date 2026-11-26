@@ -1176,6 +1176,9 @@
       "enabled": {
         "absent": true
       },
+      "family": {
+        "absent": null
+      },
       "id": {},
       "measure": {
         "families": [

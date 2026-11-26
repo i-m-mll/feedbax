@@ -1,7 +1,6 @@
 """Seed the ordinary Train step swept over a set whose `drop` entry removes the Point mass, in two variants."""
 
-import json
-import sys
+from tests.support.browser_seed_actions import HomeSeed, print_action
 
 from feedbax.contracts.project import Project
 from web.e2e.studio.fixtures.canonical_train import ordinary_files, write_project
@@ -22,6 +21,8 @@ def seed(home: str, project_id: str):
     return write_project(home, project_id, project)
 
 
+ACTIONS = {"seed": HomeSeed(seed)}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed}[action](*args)))
+    print_action(ACTIONS)

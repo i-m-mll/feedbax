@@ -7,6 +7,7 @@ import sys
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from tests.support.browser_seed_actions import FileSeed, FolderSeed
 
 
 _LINKS = ("upper", "forearm", "hand")
@@ -83,10 +84,10 @@ def _model(count: int) -> dict:
 def scene_files():
     return [
         {"kind": "document", "id": name, "document": {
-            "label": "Document",
+            "label": label,
             "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": _model(count),
         }}
-        for name, count in (("single", 1), ("chain", 3))
+        for name, label, count in (("single", "Single", 1), ("chain", "Chain", 3))
     ]
 
 
@@ -104,12 +105,17 @@ def seed_scene_project(root: Path, files: list[dict] | None = None) -> None:
         path.write_bytes(content)
 
 
+ACTIONS = {
+    "files": FileSeed(scene_files),
+    "seed": FolderSeed(seed_scene_project),
+}
+
+
 if __name__ == "__main__":
     action, *paths = sys.argv[1:]
-    if action == "files":
-        print(json.dumps(scene_files()))
-    elif action == "seed":
-        [path] = paths
-        seed_scene_project(Path(path))
+    selected = ACTIONS[action]
+    if isinstance(selected, FileSeed):
+        print(json.dumps(selected.command(*paths)))
     else:
-        raise ValueError(f"Unknown Scene fixture action {action!r}")
+        [path] = paths
+        selected.command(Path(path))

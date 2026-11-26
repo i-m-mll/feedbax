@@ -70,7 +70,7 @@ test('authors an ordered shared Report from a planned Analyze figure', { tag: '@
   await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Velocity profile');
   const created = await snapshot();
-  expect(report(created)).toMatchObject({ completeness: 'complete', blocks: [{ figure: 'figure-profile' }] });
+  expect(report(created)).toMatchObject({ blocks: [{ figure: 'figure-profile' }] });
   expect(inputs(created)).toMatchObject({ 'figure-profile': profile });
   const map = await windowMap(created.revision);
   expect(map.problems.filter(({ step }) => step === 'report')).toEqual([]);

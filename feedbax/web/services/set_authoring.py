@@ -332,7 +332,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
             return _optional_value_added(project, address, raw, name, axis, selected)
     name = generated_name("run", axes.__contains__)
     value = generated_name(name, name.__eq__)
-    axis: dict[str, Any] = {"label": "Run", "values": {value: {"label": numbered_run_name(2)}}, "optional": True}
+    axis: dict[str, Any] = {"values": {value: {"label": numbered_run_name(2)}}, "optional": True}
     if isinstance(scope, SweepValuesRuns):
         axis["where"] = {"rule": scope.rule}
         values = axis_values(rows)

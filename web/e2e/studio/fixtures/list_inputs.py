@@ -1,7 +1,6 @@
 """Seed two Train steps, two Evaluate steps that read the first, and an Analyze step over one of them."""
 
-import json
-import sys
+from tests.support.browser_seed_actions import HomeSeed, print_action
 from copy import deepcopy
 
 from web.e2e.studio.fixtures.canonical_evaluate import _seed
@@ -19,6 +18,7 @@ def seed(home: str, project_id: str):
         "sweep": {"axes": {"rate": {"path": "settings.optimizer.learning_rate.value", "values": [0.001, 0.003]}}},
     }
     conditions = steps["conditions"]
+    conditions["label"] = "Conditions"
     conditions["inputs"]["subject"] = {"step": "train", "checkpoint": "last"}
     steps["conditions_b"] = deepcopy(conditions) | {"label": "Conditions b"}
     masses = steps["conditions_b"]["sweep"]["axes"]["mass"]["values"]
@@ -35,6 +35,8 @@ def seed(home: str, project_id: str):
     return _seed(home, project_id, raw)
 
 
+ACTIONS = {"seed": HomeSeed(seed)}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed}[action](*args)))
+    print_action(ACTIONS)

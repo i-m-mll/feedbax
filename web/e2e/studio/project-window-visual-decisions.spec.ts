@@ -11,9 +11,9 @@ test('Studio visual decisions use shell roles and keep the narrow window usable'
   await runProjectFixture('tests.fixtures.scene_geometry', 'seed', folder);
   const steps = join(folder, 'steps');
   await mkdir(steps, { recursive: true });
-  const kinds = ['train', 'evaluate', 'analyze', 'report'] as const;
-  await Promise.all(kinds.map((kind) => writeFile(join(steps, `${kind}.json`), JSON.stringify({
-    kind, base: { inline: kind === 'train' ? { trial_documents: { model: { document: 'chain' } } } : {} },
+  const kinds = { train: 'Train', evaluate: 'Evaluate', analyze: 'Analyze', report: 'Report' };
+  await Promise.all(Object.entries(kinds).map(([kind, label]) => writeFile(join(steps, `${kind}.json`), JSON.stringify({
+    kind, label, base: { inline: kind === 'train' ? { trial_documents: { model: { document: 'chain' } } } : {} },
   }))));
   await page.goto(`/?project=${id}`);
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');

@@ -158,7 +158,7 @@ export async function authorFirstTrain(
     return (await response.json() as StudioTrialAuthoring).problems;
   };
   const links = async () => (rootPayload((await savedProject()).project.documents?.[taskDocument]) as unknown as TaskDocument).links;
-  expect(await links()).toEqual([]);
+  expect((await links()) ?? []).toEqual([]);
   await page.keyboard.press('Meta+3');
   const initializes = task.getByRole('combobox', { name: 'Initializes start', exact: true });
   const toggle = async (component: string) => {

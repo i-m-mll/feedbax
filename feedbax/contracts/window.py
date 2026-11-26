@@ -65,7 +65,7 @@ class WindowRelativePosition(_WindowRelativePosition[WindowOffset]):
 
 
 class StoredWindowRelativePosition(_WindowRelativePosition[StoredExpression]):
-    pass
+    offset: StoredExpression = LiteralValue(value=1, unit="st")
 
 
 class _WindowInterval[PositionT, RelativeT](StrictModel):
@@ -144,7 +144,7 @@ def _lower_position(position: StoredWindowPosition) -> WindowPosition:
 def _lower_span(span: StoredWindowSpan) -> WindowSpan:
     if isinstance(span, StoredWindowInterval):
         end = _lower_position(span.end) if isinstance(span.end, StoredWindowPosition) else project_member(
-            span.end, WindowRelativePosition, {"offset": lower_window_offset},
+            span.end, WindowRelativePosition, offset=lower_window_offset(span.end.offset),
         )
         return project_member(span, WindowInterval, start=_lower_position(span.start), end=end)
     if isinstance(span, StoredWindowMoment):

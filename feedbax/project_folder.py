@@ -1733,6 +1733,7 @@ class ProjectFolder:
         from feedbax.compiler.model_document import inspect_model_signals
         from feedbax.compiler.model_edit import ModelEditDraft, apply_model_edit
         from feedbax.compiler.model_ports import ModelRegistryPorts
+        from feedbax.compiler.model_signals import intervention_operand_defaults
         from feedbax.compiler.model_templates import instantiate_model_template
         from feedbax.project_model_selection import selected_task_signal
 
@@ -1765,9 +1766,28 @@ class ProjectFolder:
                 "document": StoredModelDocument.model_validate(restored[0]).lower(components), **restored[1],
             })
 
+        def attachment_defaults(owner: ModelAddress, operation: str):
+            from feedbax.application.task_signals import matched_task_inputs
+            from feedbax.contracts.jobs import StudioSavedTrainKey
+            from feedbax.contracts.task_document import TaskDocument
+            from feedbax.project_model_selection import selected_model_and_task
+
+            supplied, task = {}, None
+            model = state.document
+            if operation.lower() == "add" and body.rows and body.step is not None:
+                variant = self.read_plan(project_id, revision=body.revision).plan.variants[0]
+                run = StudioSavedTrainKey(variant=variant, step=body.step, row=body.rows[0])
+                selection = ModelProjectionRequest(revision=body.revision, document=body.document, run=run)
+                if selected := selected_model_and_task(self, project_id, selection):
+                    _, signals, _, bindings, task = selected
+                    supplied = {port.name: signal.type for port, signal in matched_task_inputs(model, signals, bindings)}
+            table = inspect_model_signals(model, components, supplied, task=task if isinstance(task, TaskDocument) else None)
+            return intervention_operand_defaults(model, table, owner, operation)
+
         result = apply_model_edit(
             state, body.command, ports=authority.port, component_problem=authority.placement_problem,
             next_input=authority.next_input, functions=self.functions, reference=reference, components=components,
+            attachment_defaults=attachment_defaults,
             instantiate_template=lambda name: instantiate_model_template(name, components, state.document.step_seconds),
             task_signal=lambda command: selected_task_signal(self, project_id, ModelProjectionRequest(
                 revision=body.revision, run=command.run, document=body.document,

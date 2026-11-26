@@ -30,6 +30,7 @@ from feedbax.contracts.effective_success import (
 )
 from feedbax.contracts.expression_values import Expression
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
+from feedbax.contracts.model_address import FieldElement
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     StudioActivityJob,
@@ -90,7 +91,7 @@ from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import (
-    CheckpointRuleAxis, SetAxis, authored_sweep_axis_name, axis_coordinates, sweep_value_name,
+    CheckpointRuleAxis, SetAxis, authored_sweep_axis_name, axis_coordinates, model_field_target, sweep_value_name,
 )
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.run_rule import (
@@ -399,14 +400,29 @@ class ProjectPlanRead:
 
         def exceptions(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapException]:
             at = variant, step_id
-            sweep = plan.steps[at].sweep
+            step = plan.steps[at]
+            sweep = step.sweep
             if sweep is None and (project := plan.variant_projects.get(variant)) is not None:
                 sweep = project.steps[step_id].sweep
             if sweep is not None:
                 matches = plan.exception_matches.get(at, {})
                 for name, rule in sweep.exceptions.items():
-                    if rule is not None:
-                        yield StudioProjectWindowMapException(id=name, count=len(matches.get(name, ())), rule=rule)
+                    if rule is None:
+                        continue
+                    field_labels = {}
+                    for path, patch in rule.patches.items():
+                        if patch is None:
+                            continue
+                        if label := step.exception_field_labels.get(path):
+                            field_labels[path] = label
+                        elif (target := model_field_target(path)) is not None and isinstance(
+                            target.address.element, FieldElement,
+                        ):
+                            field = str(target.address.element.path[-1]).replace("_", " ")
+                            field_labels[path] = field[:1].upper() + field[1:]
+                    yield StudioProjectWindowMapException(
+                        id=name, count=len(matches.get(name, ())), rule=rule, field_labels=field_labels,
+                    )
 
         def includes(variant: str | None) -> bool:
             return variants is None or variant is None or variant in variants

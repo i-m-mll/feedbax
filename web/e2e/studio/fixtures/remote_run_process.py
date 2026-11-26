@@ -10,6 +10,7 @@ from time import monotonic, sleep
 from uuid import UUID
 
 from feedbax.host.process import verify
+from tests.support.browser_seed_actions import NonSeed
 
 
 def interrupt(home: Path, session_id: UUID, attempt: str) -> None:
@@ -33,5 +34,8 @@ def interrupt(home: Path, session_id: UUID, attempt: str) -> None:
             sleep(.05)
 
 
+ACTIONS = {"interrupt": NonSeed(interrupt, "interrupts an already running venue attempt")}
+
+
 if __name__ == "__main__":
-    interrupt(Path(sys.argv[1]), UUID(sys.argv[2]), sys.argv[3])
+    ACTIONS["interrupt"].command(Path(sys.argv[1]), UUID(sys.argv[2]), sys.argv[3])

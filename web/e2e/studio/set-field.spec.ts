@@ -25,7 +25,7 @@ test('To Field moves a Set into the run as a variable of the Task, its weights a
   const marks = card.locator('.studio-map-run-mark');
   const primary = page.locator('[data-slot="primary"]');
   const row = primary.getByRole('table', { name: 'Variables', exact: true }).getByRole('row')
-    .filter({ has: page.getByRole('list', { name: 'Values loads', exact: true }) });
+    .filter({ has: page.getByRole('list', { name: 'Values Loads', exact: true }) });
   const step = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project.steps!.train;
 
   await page.goto(`/?project=${snapshot.project_id}`);
@@ -41,7 +41,7 @@ test('To Field moves a Set into the run as a variable of the Task, its weights a
   const weights = () => row.getByRole('textbox', { name: /^Weight / }).evaluateAll((fields) => fields.map((field) => (field as HTMLInputElement).value));
   await expect.poll(weights).toEqual(['1', '1', '1', '1']);
   // Each entry is whole within its cell, on the row's one line, once the list alone is scrolled to it.
-  expect(await row.getByRole('list', { name: 'Values loads', exact: true }).evaluate((list) => {
+  expect(await row.getByRole('list', { name: 'Values Loads', exact: true }).evaluate((list) => {
     const cell = list.closest('td')!;
     return [...list.children].map((item) => {
       list.scrollLeft += item.getBoundingClientRect().left - list.getBoundingClientRect().left;
@@ -61,7 +61,7 @@ test('To Field moves a Set into the run as a variable of the Task, its weights a
   await expect.poll(weights).toEqual(['1', '1', '3', '0']);
 
   await row.hover();
-  await row.getByRole('button', { name: 'Variable loads', exact: true }).click();
+  await row.getByRole('button', { name: 'Variable Loads', exact: true }).click();
   await page.getByRole('menuitem', { name: 'To Sweep', exact: true }).click();
   await expect(marks).toHaveCount(3);
   await expect(row).toHaveCount(0);

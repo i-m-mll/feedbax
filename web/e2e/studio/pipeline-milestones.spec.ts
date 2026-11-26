@@ -375,7 +375,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await page.goto(mounted);
   await select(page, 'train');
   await authorLearningRateSweep(inspector.getByRole('region', { name: 'Learning Rate field', exact: true }));
-  await expect(train.getByRole('button', { name: 'Sweep Learning rate 3', exact: true })).toBeVisible();
+  await expect(train.getByRole('button', { name: 'Sweep Learning Rate 3', exact: true })).toBeVisible();
   const definition = await readPlan();
   const sourceRows = definition.window_map!.rows.filter(({ key }) => key.step === 'train');
   expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
@@ -388,8 +388,8 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await launchRows(page, projectPath, sourceRows.map(({ key }) => key));
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: jobTimeout });
 
-  await chooseSweepValue(train, 'Learning rate', '0.001');
-  await chooseSweepValue(train, 'Learning rate', '0.002', true);
+  await chooseSweepValue(train, 'Learning Rate', '0.001');
+  await chooseSweepValue(train, 'Learning Rate', '0.002', true);
   const created = responseFor(page, projectPath + '/files');
   await train.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
@@ -444,7 +444,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await select(page, 'evaluate');
   await rule.click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
-  for (const rate of rates) await chooseSweepValue(train, 'Learning rate', rate.label);
+  for (const rate of rates) await chooseSweepValue(train, 'Learning Rate', rate.label);
   const subsetEdit = edited('/inputs/subject/where');
   await rule.press('Enter');
   const savedSubset = await subsetEdit;
@@ -522,18 +522,18 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   ]);
   const evaluation = initial.window_map!.evaluations!;
   expect(evaluation.map(({ trials }) => trials.length)).toEqual([2, 3, 2, 3]);
-  expect(evaluation.map(({ status, reason }) => [status, reason])).toEqual(Array(4).fill(['waiting', 'Waiting for train.']));
+  expect(evaluation.map(({ status, reason }) => [status, reason])).toEqual(Array(4).fill(['waiting', 'Waiting for Train.']));
 
   const pivot = primary(page).getByRole('table', { name: 'Pivot', exact: true });
   // The subject is told apart by the learning-rate its runs carry, and the one seed they share tells nothing apart.
-  await expect(pivot.getByRole('columnheader')).toHaveText(['Learning rate', 'Short Task', 'Long Task']);
+  await expect(pivot.getByRole('columnheader')).toHaveText(['Learning Rate', 'Short Task', 'Long Task']);
   await expect(primary(page).getByRole('combobox', { name: 'Columns', exact: true })).toHaveText('Task');
-  await pick(primary(page).getByRole('combobox', { name: 'Rows', exact: true }), 'Learning rate');
+  await pick(primary(page).getByRole('combobox', { name: 'Rows', exact: true }), 'Learning Rate');
   await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'Task');
   const cell = (model: string, task: string, status: string) => pivot.getByRole('button', {
     name: `Select ${model} · ${task} · ${status}`, exact: true,
   });
-  await expect(pivot.getByRole('columnheader')).toHaveText(['Learning rate', 'Short Task', 'Long Task']);
+  await expect(pivot.getByRole('columnheader')).toHaveText(['Learning Rate', 'Short Task', 'Long Task']);
   await expect(pivot.getByRole('rowheader')).toHaveText(['Slow', 'Fast']);
   await expect(pivot.getByRole('button', { name: /Waiting$/ })).toHaveCount(4);
 
@@ -574,13 +574,13 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const mass = page.getByRole('textbox', { name: 'Mass', exact: true });
   // The value comes from the inspected document itself, so the field names no source.
   await expect(mass).toHaveAccessibleDescription('');
-  await chooseSweepValue(mapCard(page, 'train'), 'Learning rate', 'Fast');
+  await chooseSweepValue(mapCard(page, 'train'), 'Learning Rate', 'Fast');
   await model.focus();
   await expect(mass).toBeEditable();
   await enter(mass, '2');
   await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(2);
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(4);
-  await expect(mass).toHaveAccessibleDescription('learning-rate · Fast');
+  await expect(mass).toHaveAccessibleDescription('Learning Rate · Fast');
   const group = await read();
   const groupStale = group.rows.filter(({ status }) => status === 'stale');
   expect(groupStale.map(({ key }) => key.row)).toEqual(['learning-rate=Fast--seed=one', 'learning-rate=Fast--seed=two']);
@@ -595,12 +595,12 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   await enter(mass, '3');
   await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(4);
   // The source reads the runs the exception picks, as its row in Exceptions does, and reveals that row.
-  await expect(mass).toHaveAccessibleDescription('Exception · Learning rate Slow · 2 runs');
+  await expect(mass).toHaveAccessibleDescription('Exception · Learning Rate Slow · 2 runs');
   await expect(page.locator('body')).not.toContainText(/trial-rows|values-/);
-  await page.getByRole('button', { name: 'Exception · Learning rate Slow · 2 runs', exact: true }).click();
+  await page.getByRole('button', { name: 'Exception · Learning Rate Slow · 2 runs', exact: true }).click();
   const revealedException = page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('list', { name: 'Exceptions', exact: true }).getByRole('listitem');
-  await expect(revealedException).toHaveText([/ · Learning rate Slow · 2 runs$/]);
+  await expect(revealedException).toHaveText([/ · Learning Rate Slow · 2 runs$/]);
   await expect(revealedException).toHaveAttribute('aria-current', 'true');
   const scoped = await read();
   const sweep = scoped.window_map!.steps.find(({ step_id }) => step_id === 'train')!;
@@ -632,11 +632,11 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
     return (await result.json() as ModelFieldResponse).fields!.find(({ label }) => label === 'Mass')!.sources;
   };
   expect(await sourceFor(newRows[2].key)).toMatchObject([{ kind: 'sweep_value', axis: 'learning-rate', value: 'Fast' }]);
-  expect(await sourceFor(newRows[0].key)).toMatchObject([{ kind: 'document', name: 'reach-model' }]);
+  expect(await sourceFor(newRows[0].key)).toMatchObject([{ kind: 'document', key: 'reach-model' }]);
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const exception = inspector.getByRole('list', { name: 'Exceptions', exact: true })
     .getByRole('listitem').filter({ hasText: 'Mass' });
-  await expect(exception).toContainText('Learning rate Slow · Seed one, two · 2 runs');
+  await expect(exception).toContainText('Learning Rate Slow · Seed one, two · 2 runs');
   await exception.getByRole('button', { name: 'Remove Exception', exact: true }).click();
   await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(2);
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(4);
