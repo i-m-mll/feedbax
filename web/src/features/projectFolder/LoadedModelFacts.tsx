@@ -16,10 +16,10 @@ export function LoadedModelFacts({ project, documents, document }: {
   const stored = project.documents?.[document];
   const parsed = stored && 'payload' in stored ? LoadedModelDocumentSchema.safeParse(stored.payload) : undefined;
   if (!parsed?.success) return null;
-  const { model, source } = parsed.data;
+  const { model, model_revision, weights } = parsed.data;
   return <Inspector name={labelOf(documents, document)} type={studioName('loaded_model')}>
     <FieldRow label={studioName('model')}>{labelOf(documents, model.document)}</FieldRow>
-    <FieldRow label={studioName('modelRevision')}>{digest(source.model.sha256)}</FieldRow>
-    <FieldRow label={studioName('weights')}>{digest(source.weights.descriptor.sha256)}</FieldRow>
+    <FieldRow label={studioName('modelRevision')}>{digest(model_revision.sha256)}</FieldRow>
+    <FieldRow label={studioName('weights')}>{digest(weights.sha256)}</FieldRow>
   </Inspector>;
 }

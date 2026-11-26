@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { Locator } from '@playwright/test';
-import type { StudioProjectDocument, StudioProjectSnapshot } from '../../src/generated/studioContracts';
+import { analysisDocumentSchemaId, type StudioProjectDocument, type StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { appendManagedFiles, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
@@ -63,7 +63,7 @@ test('keeps every Analysis card clear of the others and every wire clear of the 
   expect(opened.ok(), await opened.text()).toBe(true);
   const { snapshot } = await opened.json() as StudioProjectDocument;
   await appendManagedFiles(request, snapshot, [
-    { kind: 'document', id: 'analysis', document: { schema: 'feedbax.analysis_document.v1', label: 'Analysis', payload: {
+    { kind: 'document', id: 'analysis', document: { schema: analysisDocumentSchemaId, label: 'Analysis', payload: {
       inputs: { states: { kind: 'dataset' } },
       operations: {
         align: {

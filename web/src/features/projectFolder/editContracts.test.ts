@@ -108,8 +108,7 @@ function written(file: Record<string, unknown>, patches: readonly ProjectValueEd
     const [key, ...rest] = patch.path.slice(1).split('/');
     if (rest.length) throw new Error('A top-level member edit was expected.');
     if (patch.op === 'remove') entries.delete(key);
-    else if (patch.op === 'add') entries.set(key, patch.value);
-    else entries.set(key, patch.value);
+    else if (patch.op !== 'order') entries.set(key, patch.value);
   }
   return [...entries.keys()];
 }
@@ -132,5 +131,19 @@ describe('an authored edit keeps the order of the file it writes', () => {
       [{ op: 'replace', path: '/epochs', value: { 2: { length: 6 }, 10: { length: 7 } } }]);
     expect(edits).toEqual([{ op: 'replace', path: '/epochs/2', value: { length: 6 } }]);
     expect(applyAuthoredEdits(project, address, inverse).project).toEqual(content(task));
+  });
+  // Catches a move among keyed members writing the whole collection, or Undo of a move leaving the new order.
+  it('moves a keyed member with one order edit, and Undo puts it back with another', () => {
+    const terms = { reach: { weight: 1 }, hold: { weight: 2 }, rest: { weight: 3 } };
+    const objective = { id: 'objective', terms };
+    const order: ProjectValueEdit = { op: 'order', path: '/terms', order: ['rest', 'reach'] };
+    const { project, edits, inverse } = applyAuthoredEdits(content(objective), address, [order]);
+    const moved = (project as unknown as { documents: { task: typeof objective } }).documents.task.terms;
+    expect(Object.keys(moved)).toEqual(['rest', 'reach', 'hold']);
+    expect(moved).toEqual(terms);
+    expect(edits).toEqual([order]);
+    expect(inverse).toEqual([{ op: 'order', path: '/terms', order: ['reach', 'hold', 'rest'] }]);
+    const undone = applyAuthoredEdits(project, address, inverse).project as unknown as { documents: { task: typeof objective } };
+    expect(Object.keys(undone.documents.task.terms)).toEqual(['reach', 'hold', 'rest']);
   });
 });

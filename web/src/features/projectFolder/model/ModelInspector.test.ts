@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DelayAttachmentSchema, InterventionAttachmentSchema, type ModelAddress } from '@/generated/studioContracts';
-import { attachmentSources, type Attachment, type SourceValue } from './ModelInspector';
+import { StoredDelayAttachmentSchema, StoredInterventionAttachmentSchema, type ModelAddress } from '@/generated/studioContracts';
+import { attachmentSources, type SourceValue } from './ModelInspector';
+import { storedAttachment, type Attachment } from './modelGraph';
 
 const graph: ModelAddress = { composites: ['core'], element: { kind: 'graph' } };
 const output: ModelAddress = { composites: ['core'], element: { kind: 'port', end: { owner: 'component', component: 'enc', port: 'out', direction: 'output' } } };
@@ -14,15 +15,16 @@ function stored(item: Attachment, value: SourceValue, index = 0) {
 }
 
 describe('attachmentSources', () => {
-  const delay: Attachment = { kind: 'delay', id: 'd', delay: { value: 1, unit: 'st' } };
-  const add: Attachment = { kind: 'intervention', id: 'i', operation: 'add', operands: { value: { kind: 'value', value: [0, 0] } } };
+  const delay: Attachment = { kind: 'delay', id: 'd', delay: '1 st' };
+  const add: Attachment = { kind: 'intervention', id: 'i', operation: 'add', operands: { value: { kind: 'value', value: '[0, 0]' } } };
 
   // Catches: an Initial or an operand picked from a component output or an Input stored as another end, or one the Service refuses.
   it("stores a delay's Initial and an intervention's operand from a wire as the end it reads, and reads it back as the same port", () => {
     for (const item of [delay, add]) {
       for (const port of [output, input]) {
         const written = stored(item, { kind: 'wire', port });
-        expect((item.kind === 'delay' ? DelayAttachmentSchema : InterventionAttachmentSchema).parse(written)).toEqual(written);
+        const kept = storedAttachment(written);
+        expect((item.kind === 'delay' ? StoredDelayAttachmentSchema : StoredInterventionAttachmentSchema).parse(kept)).toEqual(kept);
         const [read] = attachmentSources(written, graph).map((source) => source.read);
         expect(read).toEqual({ kind: 'wire', port });
       }
@@ -34,6 +36,6 @@ describe('attachmentSources', () => {
     const varied = stored(add, { kind: 'task', variable: 'amplitude' });
     expect(attachmentSources(varied, graph)[0].read).toEqual({ kind: 'task', variable: 'amplitude' });
     const source = attachmentSources(varied, graph)[0];
-    expect(stored(varied, { kind: 'value', value: source.unlinked })).toMatchObject({ operands: { value: { kind: 'value', value: [0] } } });
+    expect(stored(varied, { kind: 'value', value: source.unlinked })).toMatchObject({ operands: { value: { kind: 'value', value: '[0]' } } });
   });
 });

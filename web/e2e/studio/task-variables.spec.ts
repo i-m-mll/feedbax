@@ -1,6 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { trialField } from './fixtures/trialFields';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -29,9 +30,9 @@ test('the Variables table names, types and values a new task\'s variables, and s
   const task = async () => {
     const project = await saved();
     const entry = Object.entries(project.documents ?? {}).find(([name]) => /^task(-\d+)?$/.test(name));
-    return entry?.[1] as { payload: { epochs: unknown[] } } | undefined;
+    return entry?.[1] as { payload: { epochs: object } } | undefined;
   };
-  await expect.poll(async () => (await task())?.payload.epochs.length).toBe(1);
+  await expect.poll(async () => Object.keys((await task())?.payload.epochs ?? {}).length).toBe(1);
   await expect(variables).toHaveCount(0);
 
   const add = async (name: string, type: string, text: string) => {
@@ -123,9 +124,13 @@ test('the Variables table names, types and values a new task\'s variables, and s
   held = new Promise<void>((resolve) => { release = resolve; });
   holding = 'read';
   releaseSave();
-  const stored = async (name: string) => JSON.stringify(((await task())?.payload as unknown as { variables: { name: string; value: unknown }[] })
-    .variables.find((variable) => variable.name === name)?.value);
-  await expect.poll(() => stored('offset')).toContain('"value":0.1,');
+  /** The value the Service reads back for the variable labelled `name`, as Studio shows it. */
+  const stored = async (name: string) => {
+    const variables = ((await task())?.payload as unknown as { variables: Record<string, { label: string }> }).variables;
+    const key = Object.entries(variables).find(([, variable]) => variable.label === name)?.[0];
+    return key && (await trialField(request, snapshot.project_id, ['task', 'variables', key, 'value']))?.text;
+  };
+  await expect.poll(() => stored('offset')).toBe('[0.1 m, 0 m]');
   await expect(value('offset')).toHaveValue('[0.1 m, 0 m]');
   holding = undefined;
   release();

@@ -14,7 +14,8 @@ const pythonTaskSchema = 'feedbax.spec.python_task';
 /** Feedbax's simple reaches without its links, which name the fields of the shipped Model that a new step does not read. */
 const seededTask: UnnamedDocument = (() => {
   if (!('payload' in firstTrainTask)) throw new Error('The shipped simple reaches is not a root document');
-  return { ...firstTrainTask, payload: { ...firstTrainTask.payload as Record<string, JsonValue>, links: [] } };
+  const { links: _links, ...payload } = firstTrainTask.payload as Record<string, JsonValue>;
+  return { ...firstTrainTask, payload };
 })();
 
 /** Binds a new step to the project's first document of each schema, adding to `files` the documents that are missing. */

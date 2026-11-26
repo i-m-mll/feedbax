@@ -1,6 +1,6 @@
 import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Page } from '@playwright/test';
-import type { StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { analysisDocumentSchemaId, modelDocumentSchemaId, taskDocumentSchemaId, type StudioProjectDocument, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
@@ -40,9 +40,8 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'reference-field'));
   const initial = await open(page, project);
   const analysis = {
-    schema: 'feedbax.analysis_document.v1', label: 'Analysis',
+    schema: analysisDocumentSchemaId, label: 'Analysis',
     payload: {
-      schema_version: 'feedbax.analysis_document.v1',
       inputs: { states: { kind: 'dataset' }, policy: { kind: 'model' }, protocol: { kind: 'task' } },
       operations: {}, views: {},
     },
@@ -52,10 +51,10 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
     { kind: 'step', id: 'analyze', step: { kind: 'analyze', label: 'Analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
   ]);
   // A document is offered by the name the snapshot gives it, as the Model and Task views do.
-  const models = Object.entries(initial.project.documents ?? {}).filter(([, { schema }]) => schema === 'feedbax.spec.model')
+  const models = Object.entries(initial.project.documents ?? {}).filter(([, { schema }]) => schema === modelDocumentSchemaId)
     .map(([id, { label }]) => ({ id, name: label }));
   const tasks = Object.entries(initial.project.documents ?? {})
-    .filter(([, { schema }]) => schema === 'feedbax.spec.python_task' || schema === 'feedbax.spec.task_document')
+    .filter(([, { schema }]) => schema === 'feedbax.spec.python_task' || schema === taskDocumentSchemaId)
     .map(([, { label }]) => label);
   expect(models.length).toBeGreaterThan(0);
 

@@ -1,6 +1,6 @@
 import { expect, test, jobTimeout } from './fixtures/studio';
 import type { APIRequestContext, Locator, Page } from '@playwright/test';
-import type { StudioJobSubmission, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { analysisDocumentSchemaId, type StudioJobSubmission, type StudioProjectDocument, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pickRecordedTrial, showTrials, trialPicker } from './fixtures/controls';
 
@@ -23,7 +23,7 @@ async function speedFigure(page: Page, request: APIRequestContext, home: string,
   const { snapshot } = await opened.json() as StudioProjectDocument;
   const { snapshot: seeded } = await appendManagedFiles(request, snapshot, [
     { kind: 'document', id: 'analysis', document: {
-      schema: 'feedbax.analysis_document.v1', label: 'Analysis', payload: {
+      schema: analysisDocumentSchemaId, label: 'Analysis', payload: {
         inputs: { states: { kind: 'dataset' } },
         operations: { speed: {
           label: 'Speed', operation: 'feedbax.trial_speed', params: { velocity }, inputs: { states: { input: 'states' } },

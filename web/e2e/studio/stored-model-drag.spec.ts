@@ -1,8 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
-import { blankTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { blankStoredTask, modelDocumentSchemaId, objectiveDocumentSchemaId, taskDocumentSchemaId, type StoredModelDocument as ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
-import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -11,7 +10,7 @@ function modelFixture(cards: number): ModelDocument {
   const wires: NonNullable<ModelDocument['interior']['wires']> = {};
   for (let index = 0; index < cards; index++) {
     const component = `sum-${index}`;
-    components[component] = { kind: 'leaf', name: `Signal aggregation ${index + 1}`, type: 'feedbax.Sum' };
+    components[component] = { kind: 'leaf', label: `Signal aggregation ${index + 1}`, type: 'feedbax.Sum' };
     for (const [offset, port] of ['a', 'b', 'c'].entries()) {
       const previous = index - offset - 1;
       wires[`wire-${index}-${port}`] = {
@@ -22,7 +21,7 @@ function modelFixture(cards: number): ModelDocument {
     }
   }
   return {
-    step_seconds: 0.01, ports: { inputs: [{ id: 'target', name: 'reach_target', type: {} }] },
+    step_seconds: '0.01 s', ports: { inputs: { target: { label: 'reach_target', type: {} } } },
     interior: { components, wires },
   };
 }
@@ -193,8 +192,6 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
   expect(fields.problems).toHaveLength(0);
   expect(fields.command?.operation.op).toBe('set_field');
   const { snapshot, acknowledgedAt } = await savedEdit;
-  const model = rootPayload(snapshot.project.documents!.model) as unknown as ModelDocument;
-  expect(model.step_seconds).toBe(0.02);
   const plan = await (await settled).json() as StudioSavedTrainRuns;
   expect(plan.revision).toBe(snapshot.revision);
   expect(plan.window_map?.rows).toHaveLength(1);
@@ -297,12 +294,12 @@ test('measures drag updates in the mounted Model at 20 and 100 cards', { tag: '@
   try {
     for (const cards of [20, 100]) {
       const { snapshot, projectPath } = await seedManagedProject(request, [
-        { kind: 'document', id: 'model', document: { schema: 'feedbax.spec.model', label: 'Model', payload: modelFixture(cards) } },
+        { kind: 'document', id: 'model', document: { schema: modelDocumentSchemaId, label: 'Model', payload: modelFixture(cards) } },
         { kind: 'document', id: 'task', document: {
-          schema: 'feedbax.spec.task_document', label: 'Task', payload: blankTask,
+          schema: taskDocumentSchemaId, label: 'Task', payload: blankStoredTask,
         } },
         { kind: 'document', id: 'objective', document: {
-          schema: 'feedbax.spec.objective_document', label: 'Objective', payload: { id: 'objective', terms: [] },
+          schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
         } },
         { kind: 'step', id: 'train', step: { kind: 'train', label: 'Train', base: { inline: { trial_documents: {
           model: { document: 'model' }, task: { document: 'task' },

@@ -49,3 +49,7 @@ export const activityJob = (scope: Scope, job: string) => scope.locator(`li[data
 /** The name a step's map card shows, for a spec that checks another place names the step as the map does. */
 export const mapName = async (page: Page, step: string) =>
   (await page.locator(`[data-map-step="${step}"] .studio-map-card__head`).innerText()).trim();
+
+/** The key of the member of a keyed collection whose label is `label`. */
+export const keyLabelled = (members: Readonly<Record<string, { readonly label?: string }>> | undefined, label: string) =>
+  Object.entries(members ?? {}).find(([, member]) => member.label === label)?.[0];

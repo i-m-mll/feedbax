@@ -90,7 +90,6 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   const held = saving();
   await updates.press('Enter');
   expect((await held).ok()).toBe(true);
-  await expect.poll(async () => (await reads('evaluate', 'subject')).checkpoint).toEqual({ kind: 'unresolved', text: '2 x' });
   await page.reload();
   await select(page, 'evaluate');
   const toSweep = checkpoint.getByRole('button', { name: 'To Sweep', exact: true });

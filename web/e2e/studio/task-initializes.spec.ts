@@ -1,13 +1,12 @@
 import { expect, test } from './fixtures/studio';
-import type { StudioProjectSnapshot, StudioTrialAuthoring, TaskDocument } from '../../src/generated/studioContracts';
+import type { StudioProjectSnapshot, StudioTrialAuthoring, StoredTaskDocument as TaskDocument } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-const position = JSON.stringify({ composites: [], element: {
-  kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['state', 'effector/position'],
-} });
+/** The stored link key of the plant's effector position: the Service's compact address text. */
+const position = 'component.plant.state."effector/position"';
 
 // Catches a Model start the Model needs that no row shows or marks, a row for a start nothing needs, a row whose choice
 // of variable does not write the link, and an Initializes choice that does not bring the row back when it is undone.
@@ -17,15 +16,15 @@ test('a start the Model needs and no variable initializes is a row with its prob
     const payload = file.document?.payload;
     if (payload?.interior) payload.interior.components.plant.type = 'reaching_task.AnchoredPointMass';
     if (payload?.variables) {
-      payload.links = [];
-      payload.variables.find(({ id }: { id: string }) => id === 'start').name = 'origin';
+      payload.links = {};
+      payload.variables.start.label = 'origin';
     }
   }
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const links = async () => {
     const { project } = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
     const [, task] = Object.entries(project.documents ?? {}).find(([name]) => name.endsWith('-task'))!;
-    return (task as unknown as { payload: TaskDocument }).payload.links ?? [];
+    return (task as unknown as { payload: TaskDocument }).payload.links ?? {};
   };
   const table = page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('table', { name: 'Variables', exact: true });
   const positionName = 'Point mass · effector position';
@@ -47,7 +46,7 @@ test('a start the Model needs and no variable initializes is a row with its prob
   await mapStep(page, 'train').click();
 
   await pick(picker(positionName), 'origin');
-  await expect.poll(links).toEqual([{ model_field: position, variable: 'start' }]);
+  await expect.poll(links).toEqual({ [position]: 'start' });
   await expect(picker(positionName)).toHaveCount(0);
   const initializes = table.getByRole('combobox', { name: 'Initializes origin', exact: true });
   await expect(initializes).toHaveAttribute('placeholder', positionName);
@@ -55,7 +54,7 @@ test('a start the Model needs and no variable initializes is a row with its prob
   await initializes.click();
   await page.keyboard.type('effector position');
   await page.getByRole('option', { name: 'Point mass · effector · position', exact: true }).click();
-  await expect.poll(links).toEqual([]);
+  await expect.poll(links).toEqual({});
   await page.keyboard.press('Escape');
   await expect(row(positionName).locator('[data-field-problem]')).toHaveAttribute('data-app-tip', /start of each trial/);
 });
@@ -97,12 +96,10 @@ test('Initializes opens on the Model\'s components and descends to the states a 
 // whole instead of the cell of the variable whose link it is.
 test('a link to a field the Model lacks is named and revealed at its variable\'s Initializes', async ({ page, request }) => {
   const files = await fixture('ordinary-files', '2') as { kind: string; id: string; document?: { payload: Record<string, any> } }[];
-  const nowhere = JSON.stringify({ composites: [], element: {
-    kind: 'field', parent: { id: 'nowhere', kind: 'component' }, path: ['state', 'effector/position'],
-  } });
+  const nowhere = 'component.nowhere.state."effector/position"';
   for (const file of files) {
     const payload = file.document?.payload;
-    if (payload?.variables) payload.links = [{ model_field: nowhere, variable: 'start' }];
+    if (payload?.variables) payload.links = { [nowhere]: 'start' };
   }
   const { snapshot } = await seedManagedProject(request, files);
   await page.goto(`/?project=${snapshot.project_id}`);
@@ -147,7 +144,7 @@ test('a link to a variable the Task lacks is marked and named at the Model value
   for (const file of files) {
     const payload = file.document?.payload;
     if (payload?.interior) payload.interior.components.plant.type = 'reaching_task.AnchoredPointMass';
-    if (payload?.variables) payload.links = [{ model_field: position, variable: 'ghost' }];
+    if (payload?.variables) payload.links = { [position]: 'ghost' };
   }
   const { snapshot } = await seedManagedProject(request, files);
   const positionName = 'Point mass · effector position';

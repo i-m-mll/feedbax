@@ -1,12 +1,14 @@
 import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Locator, type Page } from '@playwright/test';
 import {
-  type ModelDocument, type StudioJobSubmission, type StudioSavedTrainRuns,
-  type TaskDocument,
+  type StoredModelDocument as ModelDocument, type StudioJobSubmission, type StudioSavedTrainRuns,
+  type StoredTaskDocument,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep } from './fixtures/canonicalTrain';
 import { post, readSaved, startProject } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
+import { keyLabelled } from './fixtures/members';
+import { stateLinkKey } from './fixtures/trialFields';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -128,35 +130,32 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   joining = edit();
   await drag(page, inputs.locator('[data-handleid="output:@task:target_pos"]'), handle(cell, 'input:input'));
   stored = await applied(joining);
-  const target = stored.ports.inputs?.find(({ name }) => name === 'target position');
+  const target = keyLabelled(stored.ports.inputs, 'target position');
   expect(target).toBeDefined();
   await expect(inputs.getByRole('img', { name: 'Task', exact: true })).toHaveCount(1);
 
-  // Wiring to the empty handle of `outputs` adds a port named after the wire's source, and an Objective term on it marks it.
+  // Wiring to the empty handle of `outputs` adds a port the Service names Output, and an Objective term on it marks it.
   joining = edit();
   await drag(page, handle(readout, 'output:output'), outputs.locator('[data-handleid="input:__new_port__"]'));
   stored = await applied(joining);
-  const command = stored.ports.outputs?.find(({ name }) => name === 'output');
+  const command = keyLabelled(stored.ports.outputs, 'Output');
   expect(command).toBeDefined();
   expect(Object.values(stored.interior.wires ?? {})).toContainEqual(expect.objectContaining({
-    source: readoutOutput, target: { owner: 'outputs', port: command!.id },
+    source: readoutOutput, target: { owner: 'outputs', port: command },
   }));
   await tab('Objective').click();
   await objective.getByRole('button', { name: 'Add Term', exact: true }).click();
   await page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Output', exact: true }).click();
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Output)');
   await tab('Model').click();
   await expect(outputs.getByRole('img', { name: 'Objective', exact: true })).toHaveCount(1);
 
   // Simple reaches starts nothing until `start` is chosen to initialize this Model's point mass.
-  const plantLink = JSON.stringify({ composites: [], element: {
-    kind: 'field', parent: { id: plant, kind: 'component' }, path: ['state', 'effector/position'],
-  } });
   const links = async () => {
     const { project } = await saved();
     const { document } = (project.steps?.train?.base as { inline: { trial_documents: { task: { document: string } } } })
       .inline.trial_documents.task;
-    return (rootPayload(project.documents?.[document]) as unknown as TaskDocument).links;
+    return (rootPayload(project.documents?.[document]) as unknown as StoredTaskDocument).links ?? {};
   };
   await tab('Task').click();
   const initializes = task.getByRole('combobox', { name: 'Initializes start', exact: true });
@@ -164,7 +163,7 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   await page.keyboard.type('effector position');
   await page.getByRole('option', { name: 'PointMass · effector · position', exact: true }).click();
   await page.keyboard.press('Escape');
-  await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
+  await expect.poll(links).toEqual({ [await stateLinkKey(request, snapshot.project_id, plant, 'effector/position')]: 'start' });
 
   await tab('Runs').click();
   await enter(inspector.getByRole('textbox', { name: 'Batches', exact: true }), '2');
@@ -176,11 +175,11 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   const authored = await saved();
   const authoredModel = rootPayload(authored.project.documents?.model) as unknown as ModelDocument;
   expect(Object.values(authoredModel.interior.wires ?? {})).toEqual(expect.arrayContaining([
-    expect.objectContaining({ source: { owner: 'inputs', port: target!.id }, target: { owner: 'component', component: cell, port: 'input' } }),
+    expect.objectContaining({ source: { owner: 'inputs', port: target }, target: { owner: 'component', component: cell, port: 'input' } }),
     expect.objectContaining({ source: { owner: 'component', component: cell, port: 'output' },
       target: { owner: 'component', component: readout, port: 'input' } }),
     expect.objectContaining({ source: readoutOutput, target: { owner: 'component', component: plant, port: 'force' } }),
-    expect.objectContaining({ source: readoutOutput, target: { owner: 'outputs', port: command!.id } }),
+    expect.objectContaining({ source: readoutOutput, target: { owner: 'outputs', port: command } }),
   ]));
   const reviewed = async () => {
     const response = await request.get(runsPath, { params: { revision: authored.revision, window_map: 'true' } });

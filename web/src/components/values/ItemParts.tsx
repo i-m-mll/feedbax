@@ -1,5 +1,5 @@
 import { studioName } from '@/components/activity/studioVocabulary';
-import type { ScopedValue } from '@/generated/studioContracts';
+import type { StudioFieldName } from '@/generated/studioContracts';
 import type { FieldEdit, FieldModel } from './fieldModel';
 import { ValueField } from './ValueField';
 
@@ -11,7 +11,7 @@ export type ListItem = 'each' | number | undefined;
 
 /** A value that reads a list: the list, and the item it reads. */
 export interface ListRead {
-  readonly list: ScopedValue;
+  readonly list: StudioFieldName;
   readonly item: ListItem;
 }
 

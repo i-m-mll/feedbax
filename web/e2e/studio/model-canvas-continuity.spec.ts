@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
-import type { ModelDocument } from '../../src/generated/studioContracts';
+import type { StoredModelDocument as ModelDocument } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { palette, readSaved, startProject } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
@@ -196,13 +196,55 @@ test('Model cards added from the Library overlap no other card and stay put acro
   expect(await flow()).toEqual(shown);
 });
 
-/** A card whose data changes while its name is edited stays shown, and the edit keeps the focus. */
-test('a Model card renamed while its ports load keeps the name field focused', async ({ page, request }) => {
+/**
+ * A Model card is drawn only once the Service has answered where it is stored, so it appears at its stored place and
+ * not first at a default one; a move stores the card under its compact address, and the card is there after a reload.
+ */
+test('a moved Model card is stored under its compact address and is drawn there after a reload', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const projection = await hold(page, `${projectPath}/model/projection`, () => true);
   const model = await openModel(page, snapshot.project_id);
   const card = model.locator('.react-flow__node[data-id="cell"]');
-  await expect(card).toBeVisible();
+  await projection.sent;
+  await animationFrames(page, 10);
+  await expect(card).toHaveCount(0);
+  projection.release();
+  await projected(model);
+
+  const header = (await card.locator('header').boundingBox())!;
+  const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/model/edit` &&
+    response.request().postDataJSON()?.command?.operation?.op === 'move_cards');
+  await page.mouse.move(header.x + 20, header.y + header.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(header.x + 100, header.y + header.height / 2 + 70, { steps: 8 });
+  await page.mouse.up();
+  const { result } = await (await saved).json() as { result: { status: string; snapshot: typeof snapshot } };
+  expect(result.status).toBe('applied');
+  const positions = result.snapshot.presentation?.documents?.['point-mass']?.positions ?? {};
+  expect(Object.keys(positions).length).toBeGreaterThan(0);
+  for (const key of Object.keys(positions)) expect(key).not.toMatch(/[{"]/);
+  const moved = await card.evaluate((node) => (node as HTMLElement).style.transform);
+
+  await page.reload();
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await projected(model);
+  expect(await card.evaluate((node) => (node as HTMLElement).style.transform)).toBe(moved);
+});
+
+/** A card whose data lands from a later projection while its name is edited stays shown, and the edit keeps the focus. */
+test('a Model card renamed while a later projection loads keeps the name field focused', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const model = await openModel(page, snapshot.project_id);
+  await projected(model);
+  const projection = await hold(page, `${projectPath}/model/projection`, (body) =>
+    (body as { revision?: string }).revision !== snapshot.revision);
+  const card = model.locator('.react-flow__node[data-id="cell"]');
+  await card.locator('header').click();
+  const hidden = page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('textbox', { name: 'Hidden size', exact: true });
+  await expect(hidden).toBeEditable();
+  await enter(hidden, (await hidden.inputValue()) === '17' ? '19' : '17');
   await projection.sent;
   await card.locator('header').click();
   await page.keyboard.press('F2');
@@ -230,6 +272,13 @@ test('a Model field edited while a card move saves stays editable and saves afte
   await expect(hidden).toBeEditable();
   const original = await hidden.inputValue();
   const next = original === '17' ? '19' : '17';
+  const cell = async () => {
+    const saved = await readSaved(request, projectPath);
+    const document = rootPayload(saved.project.documents?.['point-mass']) as unknown as ModelDocument;
+    const component = document.interior.components?.cell;
+    return component?.kind === 'leaf' ? component.fields?.hidden_size : undefined;
+  };
+  const stored = await cell();
 
   const header = (await card.locator('header').boundingBox())!;
   await page.mouse.move(header.x + 20, header.y + header.height / 2);
@@ -239,13 +288,7 @@ test('a Model field edited while a card move saves stays editable and saves afte
   await move.sent;
   await expect(hidden).toBeEditable();
   await enter(hidden, next);
-  const cell = async () => {
-    const saved = await readSaved(request, projectPath);
-    const document = rootPayload(saved.project.documents?.['point-mass']) as unknown as ModelDocument;
-    const component = document.interior.components?.cell;
-    return component?.kind === 'leaf' ? component.fields?.hidden_size : undefined;
-  };
-  expect(String(await cell())).toBe(original);
+  expect(await cell()).toEqual(stored);
 
   move.release();
   await expect.poll(cell).toBe(Number(next));

@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { Page } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ModelDocument, StudioProjectSnapshot } from '../../src/generated/studioContracts';
+import type { StoredModelDocument as ModelDocument, StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { readSaved } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
@@ -31,7 +31,7 @@ test('the Model inspector frames the document, one component and two', { tag: '@
   await card('Motor command').locator('header').click();
   await expect(title).toHaveText('Motor commandLinear');
   await expect(panel.locator('strong')).toHaveCount(0);
-  const [id] = components(snapshot, 'point-mass').find(([, item]) => item.name === 'Motor command')!;
+  const [id] = components(snapshot, 'point-mass').find(([, item]) => item.label === 'Motor command')!;
   await expect(panel).not.toContainText(id);
   await expect(panel).not.toContainText('output');
   const add = panel.getByRole('button', { name: 'Add Attachment', exact: true });
@@ -43,7 +43,7 @@ test('the Model inspector frames the document, one component and two', { tag: '@
   await page.keyboard.press('Meta+D');
   let copyId = '';
   await expect.poll(async () => {
-    const motors = components(await readSaved(request, projectPath), 'point-mass').filter(([, item]) => item.name === 'Motor command');
+    const motors = components(await readSaved(request, projectPath), 'point-mass').filter(([, item]) => item.label === 'Motor command');
     copyId = motors.find(([key]) => key !== id)?.[0] ?? '';
     return motors.length;
   }).toBe(2);

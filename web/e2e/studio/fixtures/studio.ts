@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFixtureRunner } from './python';
-import type { AnalysisDocument, StudioActivityJob, StudioJobSnapshot, StudioProjectSnapshot } from '../../../src/generated/studioContracts';
+import { analysisDocumentSchemaId, type AnalysisDocument, type StudioActivityJob, type StudioJobSnapshot, type StudioProjectSnapshot } from '../../../src/generated/studioContracts';
 
 export const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 
@@ -249,14 +249,14 @@ function memberNames(snapshot: StudioProjectSnapshot) {
     collect(operations);
     collect(views);
     for (const { figure } of Object.values(views ?? {})) {
-      if ('layers' in figure) for (const { name } of figure.layers) layerNames.add(name);
+      if ('layers' in figure) for (const key of Object.keys(figure.layers)) layerNames.add(key);
     }
   }
 
   collect(snapshot.project.documents);
   collect(snapshot.project.steps);
   for (const [key, document] of Object.entries(snapshot.project.documents ?? {})) {
-    if (document.schema !== 'feedbax.analysis_document.v1') continue;
+    if (document.schema !== analysisDocumentSchemaId) continue;
     const payload = 'payload' in document ? document.payload : snapshot.composed?.[key];
     if (payload && typeof payload === 'object') analysis(payload);
   }

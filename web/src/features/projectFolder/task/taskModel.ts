@@ -1,5 +1,5 @@
 import type { ChangeMark, FieldModel } from '@/components/values/fieldModel';
-import type { Link, ValueType, Variable } from '@/generated/studioContracts';
+import type { StoredVariable, ValueType } from '@/generated/studioContracts';
 
 /**
  * How often a variable's value is read again: once per trial, or every step when it reads `time` or the model. A
@@ -70,10 +70,12 @@ export interface EntryTask {
   /** Which entry of which axis of which step, one key per entry. */
   readonly key: string;
   readonly label: string;
-  readonly variables: readonly Variable[];
-  readonly links: readonly Link[];
+  /** The entry's variables, by key. */
+  readonly variables: Readonly<Record<string, StoredVariable>>;
+  /** The entry's links: each Model address text with the key of the variable that initializes it. */
+  readonly links: Readonly<Record<string, string>>;
   /** Stores the entry's variables or links, each kept as authored where omitted; resolves to a refusal's reason. */
-  readonly write?: (name: string, change: { task_variables?: Variable[]; task_links?: Link[] }) => Promise<string | undefined>;
+  readonly write?: (name: string, change: { task_variables?: Record<string, StoredVariable>; task_links?: Record<string, string> }) => Promise<string | undefined>;
 }
 
 /** Which part of a co-occurring entry's weight: of trials that receive it, or of those that do not. */
@@ -91,7 +93,11 @@ export interface TaskSetVariable {
   readonly axis: string;
   readonly name: string;
   /** Each entry, then None where a trial may receive no entry, with its weight in parts when the trials are drawn. */
-  readonly entries: readonly { readonly id: string | null; readonly label: string; readonly weight?: SetEntryWeight }[];
+  readonly entries: readonly {
+    readonly id: string | null; readonly label: string; readonly weight?: SetEntryWeight;
+    /** How many entries a family entry stands for, as the service counts them; absent for an entry that is not a family. */
+    readonly members?: number;
+  }[];
   /** Sets one part of an entry's weight (`side` where entries co-occur). */
   readonly weigh?: (entry: string | null, side: WeightSide | undefined, weight: number) => Promise<WeightEdit>;
   /** The condition on Task variables a trial meets to receive an entry; a trial that fails it receives None. */

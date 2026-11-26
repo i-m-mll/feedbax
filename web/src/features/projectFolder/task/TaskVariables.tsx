@@ -2,6 +2,7 @@ import { appTip } from '@window-shell/browser/tooltip';
 import { Activity, Layers } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { studioAccessibleName, studioName, studioReason, studioValueType } from '@/components/activity/studioVocabulary';
+import { FamilyCount } from '../FamilyOver';
 import { ChangeMark } from '@/components/ui/ChangeMark';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -170,10 +171,11 @@ function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: St
     <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
     <TableCell>
       <ul aria-label={studioAccessibleName('values', set.name)} className="flex h-full min-w-0 items-center gap-x-3 overflow-x-auto">
-        {set.entries.map(({ id, label, weight }) => {
+        {set.entries.map(({ id, label, weight, members }) => {
           const part = (side?: WeightSide) => weigh && ((value: number) => weigh(id, side, value));
           return <li key={id ?? ''} className="flex h-full shrink-0 items-center gap-1">
             <span>{label}</span>
+            <FamilyCount count={members} />
             {typeof weight === 'number' && <WeightField weight={weight} entry={label} weigh={part()} />}
             {typeof weight === 'object' && <>
               <WeightField weight={weight.on} entry={label} side="on" weigh={part('on')} />

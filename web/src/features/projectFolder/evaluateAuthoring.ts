@@ -5,7 +5,7 @@ import type { PlanRunView, PlanView } from '@/features/pipeline/planView';
 import {
   BatchCheckpointSchema, StepReferenceSchema, UnresolvedValueSchema, UpdateRuleSchema,
   type Axis, type BatchCheckpoint, type CheckpointRule, type JsonValue, type ProjectValueEdit, type Step, type StepReference,
-  type StudioSavedTrainRuns,
+  type StoredCheckpointRule, type StudioSavedTrainRuns,
   type SubsetTerms, type UnresolvedValue, type UpdateRule,
 } from '@/generated/studioContracts';
 import { modelSourceSubset } from './createCheckpointTrain';
@@ -19,14 +19,20 @@ export const checkpointLabel = (update: number) => studioFormat('checkpointAtUpd
 /** A checkpoint rule the Evaluate inspector edits, or the text of one written that does not say a rule. */
 export type EditableCheckpointRule = 'last' | BatchCheckpoint | UpdateRule | UnresolvedValue;
 
-export function editableCheckpointRule(rule: CheckpointRule | null | undefined): EditableCheckpointRule | undefined {
+export function editableCheckpointRule(rule: StoredCheckpointRule | CheckpointRule | null | undefined): EditableCheckpointRule | undefined {
   if (rule === 'last') return rule;
+  if (typeof rule === 'string') return { kind: 'unresolved', text: rule };
   const point = BatchCheckpointSchema.safeParse(rule);
   if (point.success) return point.data;
   const series = UpdateRuleSchema.safeParse(rule);
   if (series.success) return series.data;
   const held = UnresolvedValueSchema.safeParse(rule);
   return held.success ? held.data : undefined;
+}
+
+/** A rule as a step stores it: a draft that says no rule is stored as its exact text. */
+export function storedCheckpointRule(rule: EditableCheckpointRule): StoredCheckpointRule {
+  return typeof rule === 'object' && !Array.isArray(rule) && 'text' in rule ? rule.text : rule;
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -125,6 +131,7 @@ export function checkpointDraftRule(draft: CheckpointDraft, range?: CheckpointRa
     case 'list': {
       const text = draft.updates.trim();
       if (!text) return {};
+      if (text === 'last') return { rule: 'last' };
       const held = { rule: { kind: 'unresolved', text } as const };
       if (!/^\d+(?:\s*,\s*\d+)*$/.test(text)) {
         return { ...held, problem: { field: 'updates', reason: studioReason('invalidCheckpointRule', text) } };
@@ -274,7 +281,7 @@ export function ordinaryEvaluation(step: Step): { subjects: EvaluationSubject[];
       sweep?.rows || sweep?.combination) return undefined;
   const { evaluation_type, params } = step.base.inline;
   if (evaluation_type !== rollout || !params || typeof params !== 'object' || Array.isArray(params) ||
-      !Array.isArray(params.variation) || params.variation.length || 'trials' in params) return undefined;
+      (params.variation !== undefined && (!Array.isArray(params.variation) || params.variation.length)) || 'trials' in params) return undefined;
   const rule = params.trial_set;
   if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return undefined;
   let trialSet: TrialSet;
@@ -368,7 +375,7 @@ export function evaluateSubjectEdits(step: Step, next: EvaluateSubject): Project
   const set = (path: string, present: boolean, value: JsonValue): ProjectValueEdit =>
     ({ op: present ? 'replace' : 'add', path, value });
   if (next.kind === 'step') {
-    const read = (checkpoint: CheckpointRule | null | undefined): JsonValue =>
+    const read = (checkpoint: StoredCheckpointRule | null | undefined): JsonValue =>
       next.reads === 'checkpoint' ? { step: next.step, checkpoint: checkpoint ?? 'last' } : { step: next.step };
     if (current?.kind === 'steps') {
       const [first] = current.selections;

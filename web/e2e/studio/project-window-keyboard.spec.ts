@@ -1,6 +1,6 @@
 import { expect, jobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { firstTrainTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioActivityJob, type StudioJobSubmission, type StudioProjectDocument, type StudioProjectSnapshot, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StudioTrialReplayResponse } from '../../src/generated/studioContracts';
+import { modelDocumentSchemaId, objectiveDocumentSchemaId, firstTrainTask, type StoredModelDocument as ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioActivityJob, type StudioJobSubmission, type StudioProjectDocument, type StudioProjectSnapshot, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StudioTrialReplayResponse, type StoredTaskDocument } from '../../src/generated/studioContracts';
 import { drawnRunLabel, enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject, sweepLabel, mapCard } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
@@ -8,6 +8,12 @@ import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, p
 import { expectVisibleFocus, scanStudio } from './fixtures/studioAccessibility';
 import { outlineRow } from './fixtures/controls';
 import { rootPayload } from './fixtures/rootPayload';
+
+/** A Task payload without its links, as a new step seeds it. */
+const unlinked = (payload: unknown) => {
+  const { links: _links, ...rest } = payload as Record<string, unknown>;
+  return rest;
+};
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -51,13 +57,12 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
       objective: { document: 'objective' },
     } } },
   });
-  const { links: _templateLinks, ...unlinked } = rootPayload(firstTrainTask) as { links?: unknown };
   expect(saved.project.documents).toMatchObject({
-    model: { schema: 'feedbax.spec.model', payload: { ports: {}, interior: {} } },
-    'simple-reaches': { ...firstTrainTask, payload: unlinked },
-    objective: { schema: 'feedbax.spec.objective_document' },
+    model: { schema: modelDocumentSchemaId, payload: { ports: {}, interior: {} } },
+    'simple-reaches': { ...firstTrainTask, payload: unlinked(rootPayload(firstTrainTask)) },
+    objective: { schema: objectiveDocumentSchemaId },
   });
-  expect((rootPayload(saved.project.documents!['simple-reaches']) as { links?: unknown[] }).links ?? []).toEqual([]);
+  expect((rootPayload(saved.project.documents!['simple-reaches']) as StoredTaskDocument).links ?? {}).toEqual({});
 
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await expect(chooser).toBeHidden();
@@ -254,7 +259,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   });
   const [trial] = result.trials;
   expect(trial).toBeTruthy();
-  expect(result.trials).toHaveLength((rootPayload(firstTrainTask) as { validation_trials: unknown[] }).validation_trials.length);
+  expect(result.trials).toHaveLength(Object.keys((rootPayload(firstTrainTask) as { validation_trials: object }).validation_trials).length);
 
   const replaying = post(page, projectPath + '/evaluate-replay');
   await page.reload();
