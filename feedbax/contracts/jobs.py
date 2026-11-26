@@ -15,6 +15,7 @@ from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, OpeningObservation, OpeningStep, TargetId
 from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.loaded_model import ImportedModelProvenance
+from feedbax.contracts.method_checkpoint import TrainMetricUpdate
 from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.request_refs import RequestKind
@@ -709,6 +710,15 @@ class StudioJobEventHistory(StrictModel):
     cursor: int = Field(ge=0)
     oldest_cursor: int = Field(ge=0)
     events: list[StudioJobEvent]
+
+
+class StudioTrainMetricHistory(StrictModel):
+    """The retained, per-update metrics of a successful Train attempt."""
+
+    job_id: str
+    start_exclusive: int = Field(ge=0)
+    """The update before the first retained row, including any resumed prefix."""
+    updates: list[TrainMetricUpdate] = Field(min_length=1)
 
 
 class StudioEventWatermark(StrictModel):
