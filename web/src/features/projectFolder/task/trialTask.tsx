@@ -3,7 +3,7 @@ import { studioAccessibleName, studioFormat, studioName, studioValueType } from 
 import { reasonOf, type FieldModel } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
 import {
-  ModelAddressSchema, type StudioNamedValueType, type SetVariableOrigin, type StoredTaskDocument, type StoredVariable, type StudioTrialReset,
+  type StudioNamedValueType, type SetVariableOrigin, type StoredTaskDocument, type StoredVariable, type StudioTrialReset,
   type ValueType,
 } from '@/generated/studioContracts';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
@@ -65,22 +65,21 @@ const updated = (entry: EntryTask, key: string, update: (variable: StoredVariabl
 function startOf(reset: StudioTrialReset): ModelStart {
   const components = (reset.address.composites?.length ?? 0) + 1;
   const name = [...reset.path.slice(0, components), reset.path.slice(components).join(' ')].join(' · ');
-  return { id: addressKey(reset.address), name, path: reset.path };
+  return { id: reset.address_text, name, path: reset.path };
 }
 
-/** A linked Model field the paired Model does not have: its component's id and its path. */
-function missingStart(id: string): ModelStart {
-  const { element } = ModelAddressSchema.parse(JSON.parse(id));
-  if (element.kind !== 'field' || element.parent.kind !== 'component') return { id, name: id, path: [id] };
-  const [kind, ...members] = element.path;
-  const segments = kind === 'state' ? String(members[0]).split('/') : members.map(String);
-  return { id, name: `${element.parent.id} · ${segments.join(' ')}`, path: [element.parent.id, ...segments] };
+/** A linked Model field the paired Model does not have, by the path the Service names it with. */
+function missingStart(view: TrialView, id: string): ModelStart {
+  const path = view.unresolved_links.find(({ key }) => key === id)?.path;
+  if (!path) throw new Error(`The Task view links ${id}, which it neither resolves nor names as unresolved`);
+  const [component, ...segments] = path;
+  return { id, name: [component, segments.join(' ')].filter(Boolean).join(' · '), path };
 }
 
 /** The Model values the variable `key` initializes, the choice of those its type fits, and its links' problem and change. */
 function initializes(view: TrialView, task: StoredTaskDocument, key: string, variable: StoredVariable,
   commit?: Commit, owner?: Owner): VariableInitializes {
-  const starts = new Map(view.resets.map((reset) => [addressKey(reset.address), reset]));
+  const starts = new Map(view.resets.map((reset) => [reset.address_text, reset]));
   const fields = new Set(Object.entries(task.links ?? {}).flatMap(([field, linked]) => linked === key ? [field] : []));
   const reason = view.problems.find(({ path = [] }) => path[0] === 'links' && fields.has(String(path[1])))?.reason;
   const from = view.changedFrom.task;
@@ -88,7 +87,7 @@ function initializes(view: TrialView, task: StoredTaskDocument, key: string, var
   const differs = from && view.task_changed?.some((path) => path === '/links' || pointers.includes(path));
   return {
     anchor: initializesAnchor(key),
-    chosen: [...fields].map((field) => { const reset = starts.get(field); return reset ? startOf(reset) : missingStart(field); }),
+    chosen: [...fields].map((field) => { const reset = starts.get(field); return reset ? startOf(reset) : missingStart(view, field); }),
     options: view.resets.filter((reset) => fits(reset.type, variable.type)).map(startOf),
     reason,
     changed: differs ? {
@@ -100,7 +99,7 @@ function initializes(view: TrialView, task: StoredTaskDocument, key: string, var
         ...fields.has(field) ? [] : [[field, owner.variable]],
       ]),
     })) : commit && (async (field) => reasonOf(await commit(studioAccessibleName('set', studioName('initializes')), {
-      kind: 'structure', changes: [{ op: 'link', model_field: field, variable: fields.has(field) ? null : key }],
+      kind: 'structure', changes: [{ op: 'link', address_text: field, variable: fields.has(field) ? null : key }],
     }))),
   };
 }
@@ -109,15 +108,15 @@ function initializes(view: TrialView, task: StoredTaskDocument, key: string, var
 function unstarted(view: TrialView, task: StoredTaskDocument, types: readonly StudioNamedValueType[], commit?: Commit): UnstartedValue[] {
   const linked = new Set(Object.entries(task.links ?? {}).flatMap(([field, variable]) => hasMember(task.variables, variable) ? [field] : []));
   return view.resets.flatMap((reset) => {
-    const id = addressKey(reset.address);
+    const id = reset.address_text;
     const reason = view.problems.find(({ path = [] }) => path[0] === 'links' && path[1] === id)?.reason;
     if (linked.has(id) || !reason) return [];
     return [{
-      ...startOf(reset), anchor: startAnchor(id), reason, type: typeName(reset.type, types), valueType: reset.type,
+      ...startOf(reset), anchor: startAnchor(addressKey(reset.address)), reason, type: typeName(reset.type, types), valueType: reset.type,
       variables: Object.entries(task.variables).flatMap(([key, variable]) =>
         fits(reset.type, variable.type) ? [{ id: key, name: variable.label }] : []),
       initialize: commit && (async (variable: string) => reasonOf(await commit(studioAccessibleName('set', studioName('initializes')), {
-        kind: 'structure', changes: [{ op: 'link', model_field: id, variable }],
+        kind: 'structure', changes: [{ op: 'link', address_text: id, variable }],
       }))),
     }];
   });
