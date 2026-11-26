@@ -1363,7 +1363,7 @@ def test_trial_view_resolves_compact_link_keys_and_labels_nested_missing_fields(
         assert view["unresolved_links"] == [{
             "key": missing_key, "path": ["Group", "Reaching arm", "effector", "missing"],
         }]
-        assert [item["path"] for item in view["problems"] if item["path"][0] == "links"] == [["links", missing_key]]
+        assert [item["path"] for item in view["problems"] if item["path"][:1] == ["links"]] == [["links", missing_key]]
 
         change = {"kind": "structure", "changes": [{"op": "link", "address_text": missing_key, "variable": None}]}
         edit = client.post(url + "/authoring/trials", json=body | {"change": change})
@@ -1377,7 +1377,7 @@ def test_trial_view_resolves_compact_link_keys_and_labels_nested_missing_fields(
         assert reopened.json()["unresolved_links"] == []
 
 
-def test_window_map_labels_the_model_fields_in_an_exception(tmp_path):
+def test_window_map_labels_the_model_fields_in_an_exception(tmp_path, monkeypatch):
     raw = _model_project()
     raw["steps"].pop("baseline")
     field = model_field_path(ModelAddress.at_stored_path((
@@ -1392,10 +1392,12 @@ def test_window_map_labels_the_model_fields_in_an_exception(tmp_path):
     }}
     _save_project(ProjectFolderService(tmp_path), "exceptions", Project.model_validate(raw))
     url = "/api/projects/exceptions"
-    with TestClient(create_app(projects_dir=tmp_path)) as client:
+    app = create_app(projects_dir=tmp_path, automatic_run="off")
+    with TestClient(app) as client:
+        monkeypatch.setattr(app.state.job_service.host, "jobs_snapshot", lambda **_: {"cursor": 0, "jobs": []})
         revision = client.get(url).json()["revision"]
         response = client.get(url + "/train-runs", params={"revision": revision, "window_map": True})
-        response.raise_for_status()
+        assert response.status_code == 200, response.text
         (train,) = response.json()["window_map"]["steps"]
         (exception,) = train["exceptions"]
         assert exception["count"] == 1
