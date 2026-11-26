@@ -9,20 +9,24 @@ from pydantic import ValidationError
 from feedbax.compiler.model_document import lower_model_document
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.expression_values import NameValue, UnresolvedValue
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_VERSION
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_VERSION, ModelTime
 from feedbax.contracts.model_input import authored_document_input
 from feedbax.contracts.project import BasedDocument, DocumentBase, Project, RootDocument, SetDocumentValue
 from feedbax.contracts.project_inputs import DocumentReference, InitialModelReference
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
-from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+from feedbax.contracts.stored_model import (
+    STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, lower_model_field_value, stored_model_field_value,
+)
+from feedbax.contracts.time_units import TimeValue
 from feedbax.examples import load_shipped_projects
 from feedbax.web.app import create_app
 
 
 def _stored_model() -> dict:
     return {
-        "step_seconds": 0.02,
+        "step_seconds": "0.02 s",
         "ports": {"inputs": {
             "right": {"label": "Right", "type": {}},
             "left": {"label": "Left", "type": {}},
@@ -55,7 +59,7 @@ def _stored_model() -> dict:
                 "target": {"owner": "component", "component": "second", "port": "input"},
                 "attachments": {
                     "probe": {"kind": "probe", "label": "After drive"},
-                    "delay": {"kind": "delay", "delay": {"value": 1, "unit": "st"}},
+                    "delay": {"kind": "delay", "delay": "1 st"},
                     "hold": {"kind": "hold"},
                 },
             }},
@@ -87,7 +91,65 @@ def test_lowering_restores_member_addresses_and_attachment_order():
     assert projected == stored
 
 
+def test_model_expressions_lower_without_rewriting_opaque_leaf_fields():
+    raw = _stored_model()
+    components = raw["interior"]["components"]
+    components["first"]["substeps"] = 3
+    components["second"] |= {"type": "feedbax.VanillaRNN", "fields": {
+        "hidden_size": "8", "tau": "30 ms", "opaque": {"kind": "literal", "value": 5},
+    }}
+    gain = components["second"]["attachments"]["sources"]["output"]["gain"]
+    gain["operands"] = {"factor": {"kind": "value", "value": "[1, 2]"}}
+    gain["window"] = {"spans": [{
+        "kind": "interval",
+        "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": "2 st"},
+        "end": {"offset": "duration"},
+    }]}
+    delay = raw["interior"]["wires"]["drive"]["attachments"]["delay"]
+    delay["initial_source"] = {"kind": "value", "value": "[3, 4]"}
+    registry = ComponentRegistry()
+    runtime = StoredModelDocument.model_validate(raw).lower(registry)
+    assert runtime.step_seconds == 0.02
+    assert runtime.interior.components["first"].substeps == 3
+    leaf = runtime.interior.components["second"]
+    assert leaf.fields == {
+        "hidden_size": 8, "tau": {"kind": "literal", "value": 0.03, "unit": "s"},
+        "opaque": {"kind": "literal", "value": 5},
+    }
+    intervention = leaf.attachments.sources["output"][1]
+    assert intervention.operands["factor"].value == (1, 2)
+    window = intervention.window.spans[0]
+    assert window.start.offset == TimeValue(value=2, unit="st")
+    assert window.end.offset == NameValue(reference="duration")
+    attachment = runtime.interior.wires["drive"].attachments[1]
+    assert attachment.delay == ModelTime(value=1, unit="st")
+    assert attachment.initial_source.value == (3, 4)
+
+    authored = StoredModelDocument.from_lowered(runtime, registry).model_dump(mode="json")
+    assert authored["step_seconds"] == "0.02 s"
+    assert authored["interior"]["components"]["second"]["fields"]["hidden_size"] == 8
+    assert authored["interior"]["components"]["second"]["fields"]["tau"] == "0.03 s"
+    assert StoredModelDocument.model_validate(authored).lower(registry) == runtime
+
+
+def test_addressed_model_fields_lower_authored_text_and_preserve_sweep_numbers():
+    raw = _stored_model()
+    raw["step_seconds"] = "unknown +"
+    runtime = StoredModelDocument.model_validate(raw).lower()
+    assert runtime.step_seconds == UnresolvedValue(text="unknown +")
+    address = ModelAddress.at_stored_path(("interior", "wires", "drive", "attachments", "delay", "delay"))
+    assert lower_model_field_value(runtime, address, 3) == 3
+    value = lower_model_field_value(runtime, address, "12 ms")
+    assert value == {"value": 0.012, "unit": "s"}
+    assert stored_model_field_value(address, value) == "0.012 s"
+
+
 @pytest.mark.parametrize(("path", "value", "problem"), [
+    (("step_seconds",), 0.02, "authored time must be literal text"),
+    (("interior", "wires", "drive", "attachments", "delay", "delay"), {"value": 1, "unit": "st"},
+     "authored time must be literal text"),
+    (("interior", "components", "first", "substeps"), {"kind": "literal", "value": 2},
+     "authored expression must be a scalar or text"),
     (("ports", "inputs"), [], "dict_type"),
     (("ports", "inputs", "right"), {"name": "Right", "type": {}}, "label"),
     (("ports", "inputs", "right", "id"), "right", "extra_forbidden"),
@@ -147,7 +209,7 @@ def test_based_model_port_order_survives_reopen_and_undo(tmp_path, inherited):
     project = Project(documents={
         "base": RootDocument(
             schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, label="Base",
-            payload={"step_seconds": 0.01, "ports": {"outputs": outputs} if inherited else {}, "interior": {}},
+            payload={"step_seconds": "0.01 s", "ports": {"outputs": outputs} if inherited else {}, "interior": {}},
         ),
         "tuned": BasedDocument(
             schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, label="Tuned", base=DocumentBase(document="base"),

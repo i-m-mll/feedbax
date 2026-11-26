@@ -2,7 +2,7 @@
   "schema": "feedbax.spec.model.v2",
   "label": "Point mass",
   "payload": {
-    "step_seconds": 0.01,
+    "step_seconds": "0.01 s",
     "ports": {
       "inputs": {
         "target_pos": {

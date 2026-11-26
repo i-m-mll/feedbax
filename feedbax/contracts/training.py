@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field, model_validator
 
@@ -14,6 +14,9 @@ from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, StoredTaskDocument, TaskDocument
 from feedbax.contracts.trial_bindings import selected_signal_id
+
+if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
 
 
 class TrialDocuments(StrictModel):
@@ -78,13 +81,13 @@ class TrialDocuments(StrictModel):
         return self
 
 
-def lower_stored_trial_documents(value: object) -> TrialDocuments:
+def lower_stored_trial_documents(value: object, *, components: ComponentRegistry | None = None) -> TrialDocuments:
     """Lower resolved authored Train slots once, before pairing and request encoding."""
     if not isinstance(value, dict):
         raise ValueError("Choose Model, Task and Objective documents for Train.")
     task = value.get("task")
     return TrialDocuments.model_validate(value | {
-        "model": StoredModelDocument.model_validate(value.get("model")).lower(),
+        "model": StoredModelDocument.model_validate(value.get("model")).lower(components),
         "task": StoredTaskDocument.model_validate(task).lower() if task is not None else None,
         "objective": StoredObjectiveDocument.model_validate(value.get("objective")).lower(),
     })

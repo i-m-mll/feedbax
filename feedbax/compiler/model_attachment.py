@@ -19,7 +19,7 @@ from feedbax.contracts.model_edit import ModelEditState
 from feedbax.contracts.project import Document
 from feedbax.contracts.project_sweep import TrialSetField
 from feedbax.contracts.task_document import TaskDocument
-from feedbax.contracts.stored_model import lower_model_attachment, lower_model_component
+from feedbax.contracts.stored_model import lower_model_attachment, lower_model_component, lower_model_field_value
 from feedbax.compiler.model_edit import ModelEditDraft
 from feedbax.compiler.model_ports import ModelRegistryPorts
 
@@ -118,6 +118,22 @@ class _Chain:
         self.original[:] = [self.items[identity] for identity in ordered]
 
 
+def lower_model_difference_values(
+    model: ModelDocument, components: ComponentRegistry | None, differences: tuple[ModelDifference, ...],
+) -> tuple[ModelDifference, ...]:
+    """Lower addressed field values before they reach the typed Model compiler."""
+    lowered = []
+    for item in differences:
+        if isinstance(item, SetField):
+            try:
+                value = lower_model_field_value(model, item.address, item.value, components)
+                item = item.model_copy(update={"value": value})
+            except ValueError as error:
+                raise ModelCompilationProblem(item.address, str(error)) from error
+        lowered.append(item)
+    return tuple(lowered)
+
+
 def resolve_effective_model(
     model: ModelDocument, components: ComponentRegistry,
     differences: tuple[ModelDifference, ...], *, functions=None,
@@ -144,7 +160,9 @@ def resolve_effective_model(
                 _, graph = edit.context(address)
                 if element.id in graph["components"]:
                     raise ValueError("The addressed component already exists")
-                graph["components"][element.id] = lower_model_component(difference.component).model_dump(mode="json")
+                graph["components"][element.id] = lower_model_component(difference.component, components).model_dump(
+                    mode="json",
+                )
                 continue
             if isinstance(difference, ModelWireDifference):
                 _, graph = edit.context(address)
