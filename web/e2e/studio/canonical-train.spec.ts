@@ -597,7 +597,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     await expect(loss.locator('polyline')).toHaveCount(1);
     await expect(loss.locator('polyline')).toHaveCSS('stroke', await loss.evaluate((node) => getComputedStyle(node).color));
     await expect(results.getByRole('list', { name: 'Train steps' }).getByRole('listitem')).toHaveText([
-      'train 1–2', `${childId} 3–6`,
+      `${await mapName(page, 'train')} 1–2`, `${await mapName(page, childId)} 3–6`,
     ]);
     await expect(loss.locator(`line[data-attempt="${producer.job_id}"] title`).last()).toHaveText(/Updates \d+–2 .*Local updates \d+–2/);
     await expect(loss.locator(`line[data-attempt="${attempt.job_id}"] title`).last()).toHaveText(/Updates \d+–6 .*Local updates \d+–4/);
