@@ -52,7 +52,7 @@ import { WindowEditor } from '../WindowEditor';
 import { windowEpochs } from '../StudioTrialAuthoring';
 import {
   addressKey, isTemplate, libraryEntries, newEquations, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
-  holds, modelRegistry, portId, portTypeLabel, sentAttachment, shortName, wireEnd, withRemoved, chainItems,
+  holds, modelRegistry, portId, portTypeLabel, shortName, storedAttachment, wireEnd, withRemoved, chainItems,
   type Attachment, type Component, type LibraryEntry, type PhysicalInterior, type Port,
 } from './modelGraph';
 import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
@@ -1310,7 +1310,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     return fromDifference(address);
   }
   async function updateAttachment(address: ModelAddress, item: Attachment) {
-    const difference = { op: 'change', address, attachment: sentAttachment(item) } as const;
+    const difference = { op: 'change', address, attachment: storedAttachment(item) } as const;
     if (evaluate) return applyEvaluate(attachmentName(item), difference, true);
     return (await attempt(attachmentName(item), { op: 'set_attachment', difference }, false))?.reason;
   }
@@ -1321,7 +1321,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       : kind === 'hold' ? { id, kind }
       : kind === 'intervention' ? { id, kind, operation: 'scale', operands: { factor: { kind: 'value', value: 1 } } }
       : { id, kind, label: port?.name ?? 'Probe' };
-    const difference = { op: 'add', owner: address, after: list.at(-1)?.id ?? null, attachment: sentAttachment(item) } as const;
+    const difference = { op: 'add', address: attachmentAddress(address, id), after: list.at(-1)?.id ?? null, attachment: storedAttachment(item) } as const;
     if (evaluate) void applyEvaluate(studioAccessibleName('add', attachmentName(item)), difference);
     else void apply(studioAccessibleName('add', attachmentName(item)), { op: 'set_attachment', difference });
   }
@@ -1557,7 +1557,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       type: { kind: 'choice', options: [{ value: sourceAttachment, label: studioName('source') },
         ...chain.filter((entry) => entry.id !== item.id).map((entry) => ({ value: entry.id, label: attachmentName(entry) }))] },
       change: (after) => applyEvaluate('Move Attachment',
-        { op: 'change', address, attachment: sentAttachment(item), after: after === sourceAttachment ? null : String(after) }, true),
+        { op: 'change', address, attachment: storedAttachment(item), after: after === sourceAttachment ? null : String(after) }, true),
     })] : [];
     return <Inspector name={attachmentName(item)}>
       {fieldRegion}

@@ -1,6 +1,6 @@
 import { joinText, referentName, type ShownText } from '@/components/ui/ShownText';
 import type {
-  AddComponent, AddModelAttachment, ComponentDefinition, ModelAddress, ModelPhysicalConnection, RegisteredComponent, ModelRemovedElement, PortElement, PortType, SignalType,
+  AddComponent, ComponentDefinition, ModelAddress, ModelPhysicalConnection, RegisteredComponent, ModelRemovedElement, PortElement, PortType, SignalType,
   StoredCompositeComponent, StoredDelayAttachment, StoredGraphInterior, StoredHoldAttachment, StoredInterventionAttachment,
   StoredLeafComponent, StoredModelDocument, StoredModelPorts, StoredModelWire, StoredPhysicalInterior, StoredProbeAttachment,
 } from '@/generated/studioContracts';
@@ -34,13 +34,6 @@ export type Registry = ReadonlyMap<string, ComponentDefinition>;
 /** The attachment `item` as its chain stores it, under its key. */
 export function storedAttachment({ id: _key, ...item }: Attachment): StoredAttachment {
   return item;
-}
-
-/** The attachment `item` as an attachment edit sends it: its key in the body, a probe's label as its name. */
-export function sentAttachment(item: Attachment): AddModelAttachment['attachment'] {
-  if (item.kind !== 'probe') return item;
-  const { label, ...probe } = item;
-  return { ...probe, name: label };
 }
 
 /** The attachments of `chain` in its order, each with its key. */
