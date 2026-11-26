@@ -29,7 +29,7 @@ from feedbax.contracts.stored_members import StoredAddressedMembers, StoredMembe
 
 
 if TYPE_CHECKING:
-    from feedbax.contracts.stored_regions import StoredRegionRegistries
+    from feedbax.contracts.stored_regions import StoredRegionResolver
 
 
 type StoredPath = tuple[str, ...]
@@ -254,13 +254,11 @@ def _key(name: str, field: FieldInfo) -> str:
     return field.serialization_alias or field.alias or name
 
 
-def stored_defaults_manifest() -> dict[str, JsonValue]:
-    """Declare every constant default reachable through a stored model."""
-    from feedbax.contracts.stored_regions import StoredRegionRegistries, inline_models
-    from feedbax.training.optimizers import OptimizerSpec, ScheduleSpec
+def stored_defaults_manifest(installed: Iterable[type[BaseModel]]) -> dict[str, JsonValue]:
+    """Describe constant authored defaults from declared and supplied model roots."""
+    from feedbax.contracts.stored_regions import inline_models
 
-    installed = StoredRegionRegistries().feedbax_models()
-    models, tags = _schema_inventory((OptimizerSpec, ScheduleSpec, *inline_models(), *installed))
+    models, tags = _schema_inventory((*inline_models(), *installed))
     return {
         _model_name(model): {
             _key(name, field): _field_default(model, name)
@@ -310,11 +308,11 @@ def _same_stored_value(left: JsonValue, right: JsonValue, *, real_site: bool) ->
 
 def _projected_file(
     model: BaseModel, exclude: set[str] | None, protected: Iterable[StoredPath],
-    *, keep_explicit: bool = False, registries: StoredRegionRegistries | None = None,
+    *, keep_explicit: bool = False, registries: StoredRegionResolver | None = None,
 ) -> tuple[JsonValue, set[StoredPath]]:
-    from feedbax.contracts.stored_regions import StoredRegion, StoredRegionRegistries, step_inline_model, typed_region
+    from feedbax.contracts.stored_regions import StoredRegion, declared_stored_region, step_inline_model, typed_region
 
-    registries = registries if registries is not None else StoredRegionRegistries()
+    resolve_region = registries.region if registries is not None else declared_stored_region
     real_tokens: set[StoredPath] = set()
     prefixes = {path[:end] for path in protected for end in range(1, len(path) + 1)}
     _, base_tags = _schema_inventory()
@@ -382,7 +380,7 @@ def _projected_file(
                     continue
                 raw = getattr(value, name)
                 child = encoded[key] if key in encoded else to_jsonable_python(raw, by_alias=True)
-                region = registries.region(value, name) if isinstance(child, dict) and (explicit or child) else None
+                region = resolve_region(value, name) if isinstance(child, dict) and (explicit or child) else None
                 if region is not None:
                     if region.model is None:
                         remember_reals(child, child_path)
@@ -428,7 +426,7 @@ def _projected_file(
 
 def stored_project_value(
     model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
-    keep_explicit: bool = False, registries: StoredRegionRegistries | None = None,
+    keep_explicit: bool = False, registries: StoredRegionResolver | None = None,
 ) -> JsonValue:
     """Project typed stored fields, retaining explicit defaults when a patch view needs their presence."""
     return _projected_file(model, exclude, protected, keep_explicit=keep_explicit, registries=registries)[0]
@@ -522,7 +520,7 @@ class _Layout:
 
 def write_project_file(
     model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
-    registries: StoredRegionRegistries | None = None, source: str | None = None,
+    registries: StoredRegionResolver | None = None, source: str | None = None,
 ) -> bytes:
     """Encode one typed authored file with canonical numbers and 100-column layout."""
     value, real_tokens = _projected_file(model, exclude, protected, registries=registries)

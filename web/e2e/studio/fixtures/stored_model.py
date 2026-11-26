@@ -9,7 +9,8 @@ from pydantic import TypeAdapter
 
 from feedbax.contracts.model_document import ModelComponent
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.contracts.stored_model import stored_model_component
 from feedbax.desktop.release import AppPaths
 from tests.support.browser_seed_actions import HomeSeed

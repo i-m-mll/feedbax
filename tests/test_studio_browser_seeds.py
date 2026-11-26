@@ -8,16 +8,20 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.application.project_writer import dump_text_project
+from feedbax.application.stored_regions import StoredRegionRegistries
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import (
-    STUDIO_PRESENTATION_FILENAME, ProjectConfiguration, TextProject, dump_text_project,
-    parse_text_project_files, read_text_project_snapshot,
+    STUDIO_PRESENTATION_FILENAME,
+    ProjectConfiguration,
+    TextProject,
+    parse_text_project_files,
+    read_text_project_snapshot,
 )
 from feedbax.contracts.project_storage import write_project_file
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.contracts.stored_regions import StoredRegionRegistries
 from feedbax.contracts.studio_project import CreateNamedDocument, PresentationDocument, StudioProjectCreateFiles
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient

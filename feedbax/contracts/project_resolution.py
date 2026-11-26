@@ -82,14 +82,13 @@ from feedbax.contracts.project_sweep import (
 from feedbax.contracts.run_matrix import CompositionDeltaError, apply_composition_deltas
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.contracts.train_settings import train_sweep_basis
+from feedbax.contracts.train_settings import TrainMethodSettings, TrainSettingsResolver, train_sweep_basis
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 
 if TYPE_CHECKING:
     from feedbax.contracts.effective_success import TerminalTrainSubject
     from feedbax.contracts.request_refs import RequestId
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-    from feedbax.training.methods import TrainingMethodRegistry
 
 
 class ResolutionCode(StrEnum):
@@ -526,7 +525,7 @@ class _Documents:
         external: Callable[[str], bytes | None] | None = None,
         partial_figures: bool = False,
         row_patches: Mapping[str, tuple[_DocumentRowPatch, ...]] | None = None,
-        training_methods: TrainingMethodRegistry | None = None,
+        training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
     ):
         self.step = step
         self.variant_sources = variant_sources
@@ -935,7 +934,7 @@ class _Resolver:
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
         inline_origin: Callable[[Payload, ValueSource], Any] = source_shape,
-        *, training_methods: TrainingMethodRegistry | None = None,
+        *, training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
     ):
         self.project = project
         self.readers = readers
@@ -1484,7 +1483,7 @@ class StepComposition:
         readers: BaseReaders = BaseReaders(),
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
-        training_methods: TrainingMethodRegistry | None = None,
+        training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
     ) -> StepTemplate:
         return StepTemplate(
             self, _Resolver(
@@ -1568,9 +1567,12 @@ def compose_step(
     variant_sources: Any = None,
     read_document: Callable[[str], Document | None] | None = None,
     inline_origin: Callable[[Payload, ValueSource], Any] = source_shape,
+    training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
 ) -> StepTemplate | ProjectDiagnostic:
     """Compose inherited layers and prepare a step for sweep expansion."""
-    resolver = _Resolver(project, readers, track_sources, variant_sources, read_document, inline_origin)
+    resolver = _Resolver(
+        project, readers, track_sources, variant_sources, read_document, inline_origin, training_methods=training_methods,
+    )
     try:
         state = resolver.state(step)
         return StepTemplate(StepComposition(step, state), resolver)

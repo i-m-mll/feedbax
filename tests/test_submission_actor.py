@@ -8,7 +8,8 @@ from dataclasses import asdict, replace
 
 from fastapi.testclient import TestClient
 
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.jobs import StudioSubmissionActor
 from feedbax.contracts.manifest import canonical_manifest_path

@@ -11,6 +11,8 @@ from typing import get_args
 from pydantic import BaseModel, RootModel, ValidationError
 import pytest
 
+from feedbax.application.project_writer import dump_text_project, stored_defaults_manifest, write_project_file
+from feedbax.application.stored_regions import StoredRegionRegistries
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.canonical_json import CanonicalJsonError, canonical_json_v2_bytes
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
@@ -20,16 +22,18 @@ from feedbax.contracts.project import (
     BasedDocument, InlineBase, Project, RootDocument, Step, StepKind, apply_differences, diff,
 )
 from feedbax.contracts.project_io import (
-    STUDIO_PRESENTATION_FILENAME, ProjectConfiguration, dump_text_project, parse_text_project_files,
+    STUDIO_PRESENTATION_FILENAME,
+    ProjectConfiguration,
+    parse_text_project_files,
     TextProjectManifest,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_storage import (
-    stored_defaults_manifest, stored_document_models, stored_keyed_collection, stored_project_value, write_project_file,
+    stored_document_models, stored_keyed_collection, stored_project_value,
 )
 from feedbax.contracts.project_sweep import AxisValue, NamedAxis, Row, Sweep, SweepException
 from feedbax.contracts.rollout import ROLLOUT_TYPE
-from feedbax.contracts.stored_regions import StoredRegion, StoredRegionRegistries, step_inline_model, typed_region
+from feedbax.contracts.stored_regions import StoredRegion, step_inline_model, typed_region
 from feedbax.contracts.studio_project import PresentationDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID

@@ -6,12 +6,11 @@ from pydantic import BaseModel, ValidationError
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project, RootDocument
+from feedbax.application.project_writer import dump_studio_project, dump_text_project
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     ProjectReadError,
     StudioProjectFile,
-    dump_studio_project,
-    dump_text_project,
     load_text_project,
     parse_studio_project,
 )

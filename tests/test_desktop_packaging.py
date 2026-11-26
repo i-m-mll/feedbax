@@ -108,7 +108,8 @@ def test_bundled_cold_cli_preserves_bundle_contents(desktop_package, tmp_path):
     bundle = os.environ.get("FEEDBAX_TEST_STUDIO_APP")
     if not bundle:
         pytest.skip("Open a private Studio archive and set FEEDBAX_TEST_STUDIO_APP to its app path")
-    from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+    from feedbax.application.project_writer import dump_text_project
+    from feedbax.contracts.project_io import ProjectConfiguration
     from feedbax.host import HostClient
     from tests.support.managed_train_fixture import managed_train_project
     from tests.support.host import wait_until

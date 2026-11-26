@@ -28,7 +28,8 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project_sweep import model_field_path
 from feedbax.contracts.project import InlineBase, Project, StepBase, member_name
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, load_text_project
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.studio_place import definition_place, path_parts
 from feedbax.contracts.project_resolution import ResolutionCode
