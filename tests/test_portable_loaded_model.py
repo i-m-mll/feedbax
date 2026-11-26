@@ -254,13 +254,20 @@ def test_loaded_model_locator_and_request_identity_survive_rekey_and_respell(tmp
         requests = _check_plan(folders, "original").plan.requests
 
         renamed = _clone(tmp_path, "renamed")
+        based = {
+            "label": "Other fit", "schema": imported["snapshot"]["project"]["documents"]["portable"]["schema"],
+            "base": {"document": "portable"},
+        }
+        (renamed / "documents/based-fit.json").write_text(json.dumps(based))
+        (renamed / "models/based-fit.feedbax-model").write_bytes(archive)
         current = _expect(client.get("/api/projects/renamed"))
         changed = _expect(client.post("/api/projects/renamed/members/command", json={
             "revision": current["revision"], "presentation_revision": current["presentation_revision"],
             "command": {"kind": "change_key", "family": "documents", "member": "portable", "key": "different-name"},
         }))
-        saved = changed["snapshot"]["project"]["documents"]["different-name"]["payload"]
-        assert saved["archive"] == asset
+        documents = changed["snapshot"]["project"]["documents"]
+        assert documents["different-name"]["payload"]["archive"] == asset
+        assert documents["based-fit"]["differences"] == {"/archive": {"value": "models/based-fit.feedbax-model"}}
         assert _check_plan(folders, "renamed").plan.requests == requests
         assert (renamed / asset).read_bytes() == archive
 

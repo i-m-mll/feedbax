@@ -85,7 +85,7 @@ from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
     change_member_key, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
     allocate_member_name, label_member, merge_cards, new_document_name, new_step_name,
-    preserve_dangling_member, regroup_refused, split_card,
+    preserve_dangling_member, preserve_loaded_archive_paths, regroup_refused, split_card,
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.examples import ShippedExample
@@ -1609,14 +1609,7 @@ class ProjectFolder:
                 if command.kind == "change_key":
                     project, shown = change_member_key(source, shown, family, member, name)
                     if family == "documents" and members[member].schema_id == LOADED_MODEL_SCHEMA_ID:
-                        loaded = LoadedModelDocument.model_validate(composed(member)["payload"])
-                        if loaded.archive is None:
-                            entry = project["documents"][name]
-                            archive = loaded.archive_path(member)
-                            if "payload" in entry:
-                                entry["payload"]["archive"] = archive
-                            else:
-                                entry.setdefault("differences", {})["/archive"] = {"value": archive}
+                        preserve_loaded_archive_paths(text.project.documents, project["documents"], member, name)
                 else:
                     source = preserve_dangling_member(source, family, name)
                     if family == "steps":

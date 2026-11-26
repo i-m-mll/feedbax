@@ -12,7 +12,9 @@ import unicodedata
 
 from pydantic import JsonValue
 
-from feedbax.contracts.project import Document, Project, Step, diff, json_pointer_parts, member_name
+from feedbax.contracts.project import (
+    DOCUMENT, Document, LoadedModelDocument, Project, RootDocument, Step, base_chain, diff, json_pointer_parts, member_name,
+)
 from feedbax.contracts.project_inputs import DocumentReference, NamedSubset, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import pointer
@@ -208,6 +210,32 @@ def preserve_dangling_member(
 
 def _rekey(mapping: dict[str, _Json], old: str, new: str) -> dict[str, _Json]:
     return {new if key == old else key: item for key, item in mapping.items()}
+
+
+def preserve_loaded_archive_paths(
+    documents: Mapping[str, Document], renamed: dict[str, _Json], old: str, new: str,
+) -> None:
+    """Preserve the effective archive of the rekeyed Load and its based documents."""
+    def read(name: str) -> Document | None:
+        return DOCUMENT.validate_python(renamed[name]) if name in renamed else None
+
+    family = [(name, base_chain(documents, name)) for name, document in documents.items()
+              if document.schema_id == LOADED_MODEL_SCHEMA_ID]
+    for name, chain in sorted(family, key=lambda item: len(item[1])):
+        if old not in chain:
+            continue
+        target = new if name == old else name
+        before, after = compose_document(documents.get, name), compose_document(read, target)
+        if not isinstance(before, RootDocument) or not isinstance(after, RootDocument):
+            continue
+        archive = LoadedModelDocument.model_validate(before.payload).archive_path(name)
+        if archive == LoadedModelDocument.model_validate(after.payload).archive_path(target):
+            continue
+        entry = renamed[target]
+        if "payload" in entry:
+            entry["payload"]["archive"] = archive
+        else:
+            entry.setdefault("differences", {})["/archive"] = {"value": archive}
 
 
 def _rename_document(
