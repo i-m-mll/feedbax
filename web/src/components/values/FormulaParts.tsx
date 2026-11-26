@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { FunctionInfo } from '@/generated/studioContracts';
+import type { StudioFieldFunction } from '@/generated/studioContracts';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { callText, parameterNames, rootFunctions, withFunction, type CallDraft, type FieldEdit, type FieldModel } from './fieldModel';
 import { setPartDraft } from './partDrafts';
@@ -11,7 +11,7 @@ import { ValueField } from './ValueField';
  * Choosing a function keeps the arguments; an edit of a part writes the call's text once every argument is filled.
  */
 export function CallParts({ model, call, offered, kind, menu }: {
-  model: FieldModel; call: CallDraft; offered: readonly FunctionInfo[]; kind: 'formula' | 'shape';
+  model: FieldModel; call: CallDraft; offered: readonly StudioFieldFunction[]; kind: 'formula' | 'shape';
   /** The function's list: told as it opens, and why it could not be read. */
   menu?: Pick<FieldModel, 'listOpen' | 'reason'>;
 }) {
