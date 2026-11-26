@@ -1107,9 +1107,19 @@ class ModelEditDraft:
             moved_wires[id_] = assigned
         self.relocate_layout(inner_scope, scope, ids, moved_wires)
         for wire_id, wire in parent_wires.items():
-            for item in wire["attachments"]:
+            chain = wire["attachments"]
+            reserved_attachments = {item["id"] for item in chain}
+            used_attachments = set()
+            for index, item in enumerate(chain):
+                attachment_id = item["id"]
+                if attachment_id in used_attachments:
+                    while (attachment_id := _new_model_id()) in reserved_attachments:
+                        pass
+                    reserved_attachments.add(attachment_id)
+                    chain[index] = item | {"id": attachment_id}
+                used_attachments.add(attachment_id)
                 if (old := attachment_owners.get(id(item))) is not None:
-                    new = _address(scope, "attachment", parent={"kind": "wire", "id": wire_id}, id=item["id"])
+                    new = _address(scope, "attachment", parent={"kind": "wire", "id": wire_id}, id=attachment_id)
                     if new != old:
                         self.relocations[old.to_text()] = new
         self.changed.append(address)
