@@ -232,6 +232,33 @@ test('a moved Model card is stored under its compact address and is drawn there 
   expect(await card.evaluate((node) => (node as HTMLElement).style.transform)).toBe(moved);
 });
 
+/** A card whose data lands from a later projection while its name is edited stays shown, and the edit keeps the focus. */
+test('a Model card renamed while a later projection loads keeps the name field focused', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const model = await openModel(page, snapshot.project_id);
+  await projected(model);
+  const projection = await hold(page, `${projectPath}/model/projection`, (body) =>
+    (body as { revision?: string }).revision !== snapshot.revision);
+  const card = model.locator('.react-flow__node[data-id="cell"]');
+  await card.locator('header').click();
+  const hidden = page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('textbox', { name: 'Hidden size', exact: true });
+  await expect(hidden).toBeEditable();
+  await enter(hidden, (await hidden.inputValue()) === '17' ? '19' : '17');
+  await projection.sent;
+  await card.locator('header').click();
+  await page.keyboard.press('F2');
+  const name = card.getByRole('textbox', { name: 'Name', exact: true });
+  await expect(name).toBeFocused();
+  await page.keyboard.type('Renamed');
+  const before = await card.evaluate((element) => element.innerHTML);
+
+  projection.release();
+  await expect.poll(() => card.evaluate((element) => element.innerHTML)).not.toBe(before);
+  await expect(name).toBeFocused();
+  await expect(name).toHaveValue(/Renamed$/);
+});
+
 /** A field stays editable while another edit saves, and an edit made in it then lands once that save completes. */
 test('a Model field edited while a card move saves stays editable and saves after it', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
