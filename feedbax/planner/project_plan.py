@@ -99,6 +99,7 @@ from feedbax.contracts.project_sweep import (
     CheckpointRuleAxis,
     DEFAULT_SWEEP_ROW,
     ExpandedRow,
+    GeneratedAxis,
     InputAxis,
     NamedAxis,
     SetAxis,
@@ -579,6 +580,7 @@ class PlannedStep:
     sweep: Sweep | None = field(default=None, compare=False)
     label: str = field(kw_only=True)
     can_sweep_checkpoint: bool = False
+    unexpanded_axis_titles: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1754,7 +1756,9 @@ class _PlanWork:
         tuple[str, str, bool], _WorkEntry[StepComposition | ProjectDiagnostic]
     ] = field(default_factory=dict)
     sweeps: dict[
-        tuple[str, str], _WorkEntry[tuple[tuple[ExpandedRow, ...] | ProjectDiagnostic, dict[str, tuple[str, ...]]]]
+        tuple[str, str], _WorkEntry[
+            tuple[tuple[ExpandedRow, ...] | ProjectDiagnostic, dict[str, tuple[str, ...]], dict[str, str]]
+        ]
     ] = field(default_factory=dict)
     rows: dict[RunKey, _WorkEntry[_LoweredRow]] = field(default_factory=dict)
     definitions: dict[RunKey, _WorkEntry[SelectedRunDefinition | None]] = field(default_factory=dict)
@@ -2293,14 +2297,14 @@ class _Compiler:
                 return tuple(ModelEditDraft(ModelEditState(document=model), lambda _: {}) for _, model in model_sites())
 
             @cache
-            def field_presentation(path: str) -> tuple[str | None, str | None]:
+            def field_title(path: str) -> str | None:
                 target = model_field_target(path)
                 if target is None:
                     parts = tuple(path.split("."))
                     if kind == "train" and parts == ("seed",):
-                        return "Seed", None
+                        return "Seed"
                     if kind == "train" and parts[0] == "training_config":
-                        return setting_field_title(DocumentTrainingConfig.model_json_schema(), parts[1:], None), None
+                        return setting_field_title(DocumentTrainingConfig.model_json_schema(), parts[1:], None)
                     if kind == "train" and parts[0] == "settings" and self.training_methods is not None:
                         resolved = resolved_definition()
                         method = resolved.payload.get("method") if isinstance(resolved, ResolvedStep) else None
@@ -2308,17 +2312,46 @@ class _Compiler:
                             try:
                                 schema = self.training_methods.resolve(method).settings_model.model_json_schema()
                             except KeyError:
-                                return None, None
-                            return setting_field_title(schema, parts[1:], resolved.payload.get("settings")), None
-                    return None, None
+                                return None
+                            return setting_field_title(schema, parts[1:], resolved.payload.get("settings"))
+                    return None
                 labels = {
                     _model_field_title(model, target.address, self.components or _builtin_model_registry())
                     for _, model in model_sites()
                 }
+                return labels.pop() if len(labels) == 1 else None
+
+            @cache
+            def field_unit(path: str) -> str | None:
+                target = model_field_target(path)
+                if target is None:
+                    return None
                 units = {
                     draft.field_unit(target.address, functions=self.functions) for draft in model_drafts()
                 }
-                return labels.pop() if len(labels) == 1 else None, units.pop() if len(units) == 1 else None
+                return units.pop() if len(units) == 1 else None
+
+            def unexpanded_titles(rows: tuple[ExpandedRow, ...]) -> dict[str, str]:
+                if sweep is None:
+                    return {}
+                pending = {key for key, axis in sweep.axes.items()
+                           if isinstance(axis, GeneratedAxis | NamedAxis) and axis.label is None}
+                for row in rows:
+                    pending.difference_update(row.coordinates)
+                    if not pending:
+                        return {}
+                titles = {}
+                for key in pending:
+                    axis = sweep.axes[key]
+                    if isinstance(axis, GeneratedAxis):
+                        paths = {axis.path}
+                    else:
+                        assert isinstance(axis, NamedAxis)
+                        paths = {path for value in axis.values.values() if value is not None
+                                 for path, patch in value.patches.items() if patch is not None}
+                    if len(paths) == 1 and (title := field_title(paths.pop())) is not None:
+                        titles[key] = title
+                return titles
 
             def with_field_presentation(row: ExpandedRow) -> ExpandedRow:
                 styles: dict[str, set[tuple[str | None, str | None]]] = {}
@@ -2328,7 +2361,7 @@ class _Compiler:
                     axis = origin[1]
                     coordinate = row.coordinates.get(axis)
                     if coordinate is not None and type(coordinate.value) in (int, float):
-                        style = field_presentation(path)
+                        style = field_title(path), field_unit(path)
                         if style != (None, None):
                             styles.setdefault(axis, set()).add(style)
                 if not styles:
@@ -2399,15 +2432,15 @@ class _Compiler:
                     }, sites, sets)
                     if source.inputs or source.integer_sites or source.sets:
                         self.source_sweeps[variant, name] = source
-                return rows, exception_matches
+                return rows, exception_matches, unexpanded_titles(rows)
             except SweepExpansionError as error:
                 document = site_documents.get(error.target) if error.target is not None else None
-                return _sweep_problem(error, step=name, variant=variant, document=document), {}
+                return _sweep_problem(error, step=name, variant=variant, document=document), {}, unexpanded_titles(())
 
         if self.previous is None:
-            rows, matches = expand()
+            rows, matches, titles = expand()
         else:
-            rows, matches = _work(
+            rows, matches, titles = _work(
                 self.previous.sweeps,
                 self.work.sweeps,
                 (variant, name),
@@ -2428,6 +2461,9 @@ class _Compiler:
             )
         if matches:
             self.exception_matches[variant, name] = MappingProxyType(matches)
+        if titles:
+            at = variant, name
+            self.steps[at] = replace(self.steps[at], unexpanded_axis_titles=MappingProxyType(titles))
         return rows
 
     def resolve_row(
