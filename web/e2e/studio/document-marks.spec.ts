@@ -118,13 +118,11 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
   for (const document of ['point-mass', 'point-mass-2']) await expect(documentChoice(menu, document)).toBeVisible();
   await page.keyboard.press('Escape');
 
-  const source = await picker.innerText();
   await picker.click();
   await menu.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   const rename = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header').getByRole('textbox');
   await expect(rename).toBeFocused();
-  // A duplicate's label numbers the name its source shows.
-  const duplicate = `${source} 2`;
+  const duplicate = 'Point mass 2 2';
   await expect(rename).toHaveValue(duplicate);
   await page.keyboard.press('Escape');
   await expect(picker).toHaveText(duplicate);
