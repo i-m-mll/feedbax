@@ -218,7 +218,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const selected = useModelSelection(state, model?.id);
   const variables = trial?.variables ?? noVariables;
   const epochs = useMemo(() => trial ? windowEpochs(trial) : [], [trial]);
-  const variableName = (id: string) => plainText(referentName(variables.find((variable) => variable.id === id), id));
+  const variableRef = (id: string) => referentName(variables.find((variable) => variable.id === id), id);
+  const variableName = (id: string) => plainText(variableRef(id));
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
   const viewport = useRef<CanvasViewport>(null);
@@ -1350,15 +1351,6 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
     return 1;
   }
-  function labelOfPort(address: ModelAddress) {
-    if (address.element.kind !== 'port') return '';
-    const end = address.element.end;
-    const candidate = portMap.get(idFor(end))?.find((item) =>
-      addressKey(at(graph, { kind: 'port', end: item.end })) === addressKey(address));
-    const owner = end.owner === 'component' ? interior?.components?.[end.component]?.name
-      : studioName(end.owner === 'outputs' ? 'outputs' : 'inputs');
-    return [owner, candidate?.name].filter(Boolean).join('.');
-  }
   function attachmentCommands(address: ModelAddress) {
     const wire = address.element.kind === 'wire';
     const source = address.element.kind === 'port' &&
@@ -1537,9 +1529,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const sources = attachmentSources(item, graph, change, signalWidth(address));
     const sourceRows = sources.map((source) => {
       const { read } = source;
-      const linked = read.kind === 'task' ? variableName(read.variable)
-        : read.kind === 'wire' ? read.port ? labelOfPort(read.port) || addressKey(read.port) : '' : undefined;
-      const field = linked === undefined ? byId.get(source.field) ?? sourceValueField(source, undefined) : sourceValueField(source, linked);
+      const linked: ShownText | undefined = read.kind === 'task' ? variableRef(read.variable)
+        : read.kind === 'wire' ? read.port?.element.kind === 'port' ? endLabel(read.port.element.end) : '' : undefined;
+      const field = byId.get(source.field) ?? sourceValueField(source);
       const set = source.set;
       return <AttachmentSourceRow key={JSON.stringify([addressKey(address), source.id, read.kind])} label={source.label} field={field}
         linked={linked} variables={variables} choose={set && ((variable) => void set({ kind: 'task', variable }))}

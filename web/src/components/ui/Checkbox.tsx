@@ -13,6 +13,7 @@ export interface CheckboxProps {
   'aria-label'?: string;
   'aria-labelledby'?: string;
   'aria-describedby'?: string;
+  'aria-invalid'?: boolean;
   className?: string;
 }
 

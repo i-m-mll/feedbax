@@ -662,6 +662,7 @@ def test_axis_pin_widens_when_its_source_gains_an_unconstrained_axis():
     after = compile_project(project, operations=operations)
     assert not after.diagnostics
     assert len(_decode(after, "align").inputs["states"]) == 3
+    assert {row.coordinates["seed"].axis_label for row in after.rows if row.key.step == "baseline"} == {"Seed"}
 
 
 def test_missing_axis_value_points_to_the_original_pin_and_names_remaining_values():
@@ -755,6 +756,7 @@ def test_diagonal_axis_clauses_widen_and_keep_their_other_matches():
     opposite = plan([chosen[1], chosen[0], chosen[1]])
     assert not first.diagnostics and not opposite.diagnostics
     assert len(producers(first)) == 2
+    assert {coordinates["seed"].axis_label for coordinates in producers(first)} == {"Seed"}
     assert _decode(first, "align").id == _decode(opposite, "align").id
     assert project.steps["analyze"].inputs["states"].where.model_dump(exclude_unset=True) == {"clauses": chosen}
 

@@ -1,3 +1,4 @@
+import { referentName } from '@/components/ui/ShownText';
 import { useMemo, type Dispatch, type SetStateAction } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { componentsQuery } from '@/api/components';
@@ -162,7 +163,7 @@ export function useTrialClock({
   shelfView, elements, playhead,
 }: TrialClockInputs) {
   const clock = windowState.clock ?? defaultTrialClock;
-  const recorded = recordedTrials(evaluation);
+  const recorded = recordedTrials(evaluation, view?.variables);
   const period = view?.period_seconds;
   const task = view && taskDocumentOf(view);
   const offer: TrialOffer = {
@@ -171,6 +172,10 @@ export function useTrialClock({
   const pick = shownPick(clock, offer);
   const replay = useSavedEvaluationScene(projectId, revision, evaluation,
     pick?.trials === 'recorded' ? pick.showing : undefined, { by: clock.mean.by && [...clock.mean.by], align: clock.mean.align }, playhead);
+  const meanOptions = replay.meanOptions && view && {
+    by: replay.meanOptions.by.map(({ id }) => ({ id, label: referentName(view.variables.find((variable) => variable.id === id), id) })),
+    align: replay.meanOptions.align.map(({ id }) => ({ id, label: referentName(view.epochs.find((epoch) => epoch.id === id), id) })),
+  };
   const averaging = pick?.showing.kind === 'mean';
   const mean = averaging ? replay.mean : undefined;
   const recordedTrial = replay.read.kind === 'read' ? replay.read : undefined;
@@ -248,7 +253,7 @@ export function useTrialClock({
     trial: shown?.kind === 'problems' ? undefined : shown,
     /** The Mean every figure draws, while Mean is picked. */
     mean: meanSelection(clock),
-    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} recordedOutOfDate={recorded.outOfDate} meanOptions={replay.meanOptions} onChange={change}
+    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} recordedOutOfDate={recorded.outOfDate} meanOptions={meanOptions} onChange={change}
       timeline={timeline} time={time} onTimeChange={setTime} axis={axis} shelfOpen={open}
       onShelfChange={(next) => shelfView && change({ ...clock, shelf: { ...clock.shelf, [shelfView]: next } })} />,
     shelf: pick && open && timeline.duration > 0 && (rows

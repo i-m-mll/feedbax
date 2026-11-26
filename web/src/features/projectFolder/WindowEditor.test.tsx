@@ -1,3 +1,4 @@
+import { plainText } from '@/components/ui/ShownText';
 // @vitest-environment jsdom
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -35,7 +36,7 @@ test('a window reads as its spans: epochs by name, intervals half-open, moments 
       end: { anchor: { kind: 'epoch', epoch: 'go', edge: 'start' }, offset: { value: 0.3, unit: 's' } } },
     { kind: 'moment', at: { anchor: { kind: 'epoch', epoch: 'go', edge: 'end' } } },
   ] };
-  expect(windowText(window, host(window, []))).toBe('reach 2, [go + 0.1 s, go + 0.3 s), @go.end');
+  expect(plainText(windowText(window, host(window, [])))).toBe('reach 2, [go + 0.1 s, go + 0.3 s), @go.end');
 });
 
 // Catches: an editor that stores a window the Service refuses, or leaves an empty span list instead of the whole trial.

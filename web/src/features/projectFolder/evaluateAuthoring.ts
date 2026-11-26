@@ -1,3 +1,4 @@
+import { joinText, referentName, type ShownText } from '@/components/ui/ShownText';
 import type { PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import { studioFormat, studioReason } from '@/components/activity/studioVocabulary';
 import type { PlanRunView, PlanView } from '@/features/pipeline/planView';
@@ -193,10 +194,11 @@ export function managedTrialDomain(projection: StudioSavedTrainRuns | undefined,
 }
 
 /**
- * Each condition of a cohort named by the task variables that vary across it, as `name=value`. A condition is
- * identified by the canonical JSON of its variables; an id that is not a JSON object is its own name.
+ * Each condition of a cohort named by the Task variables that vary across it, as `name = value`, each variable by its
+ * name in `variables` and marked missing when the Task lacks it. A condition is identified by the canonical JSON of its
+ * variables, keyed by variable id; an id that is not a JSON object is its own name.
  */
-export function conditionLabels(ids: readonly string[]): ReadonlyMap<string, string> {
+export function conditionLabels(ids: readonly string[], variables: readonly { readonly id: string; readonly name: string }[]): ReadonlyMap<string, ShownText> {
   const parsed = ids.map((id) => {
     try {
       const value: unknown = JSON.parse(id);
@@ -209,11 +211,12 @@ export function conditionLabels(ids: readonly string[]): ReadonlyMap<string, str
   const names = [...new Set(parsed.flatMap((variables) => Object.keys(variables ?? {})))];
   const varying = names.filter((name) => new Set(parsed.map((variables) => text(variables?.[name]))).size > 1);
   const shown = varying.length ? varying : names;
-  return new Map(ids.map((id, index) => {
-    const variables = parsed[index];
-    if (!variables) return [id, id];
-    const terms = shown.filter((name) => name in variables).map((name) => `${name}=${text(variables[name])}`);
-    return [id, terms.join(' ') || id];
+  return new Map(ids.map((id, index): [string, ShownText] => {
+    const values = parsed[index];
+    if (!values) return [id, id];
+    const terms = shown.filter((key) => key in values)
+      .map((key) => joinText([referentName(variables.find((variable) => variable.id === key), key), text(values[key])], ' = '));
+    return [id, terms.length ? joinText(terms, ', ') : id];
   }));
 }
 
