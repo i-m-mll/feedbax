@@ -158,9 +158,13 @@ def test_renaming_keeps_each_delayed_reaches_pairing(tmp_path, rename):
         _, original_baseline = pairing(baseline)
         _, original_optional = pairing(optional)
         assert not np.array_equal(original_train, original_baseline)
+        train_key = RunKey("default", "train", "default")
+        original_request = folders.read_plan("rename", revision=None).plan.row(train_key).request_id
+        assert original_request is not None
 
         if rename == "signal":
             signal_name("target_pos", "goal")
+            assert folders.read_plan("rename", revision=None).plan.row(train_key).request_id == original_request
         else:
             snapshot = folders.read("rename")
             response = client.post(url + "/model/edit", json={
@@ -185,8 +189,8 @@ def test_renaming_keeps_each_delayed_reaches_pairing(tmp_path, rename):
         assert shown_optional.input_bindings["idle-input"] is None
         assert next(row for row in shown_optional.inputs if row.id == "idle-input").signal_id is None
         np.testing.assert_array_equal(optional_inputs, original_optional)
-        diagnostics = folders.read_plan("rename", revision=None).plan.diagnostics
-        assert not diagnostics, [(problem.path, problem.detail) for problem in diagnostics]
+        updated = folders.read_plan("rename", revision=None).plan
+        assert not updated.diagnostics, [(problem.path, problem.detail) for problem in updated.diagnostics]
 
 
 def test_root_rename_keeps_different_bindings_in_the_same_variant(tmp_path):
