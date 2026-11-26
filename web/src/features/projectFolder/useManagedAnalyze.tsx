@@ -23,7 +23,7 @@ import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
   type ParamSchema, type PresentationPosition, type StudioAnalyzeAuthoring, type StudioAnalyzeChange, type StudioProjectSnapshot,
-  type StudioSavedTrainKey, type StudioSavedTrainRuns, type SubsetTerms, type TrialMeanSelection,
+  type StoredFigureDocument, type StudioSavedTrainKey, type StudioSavedTrainRuns, type SubsetTerms, type TrialMeanSelection,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { ManagedDocumentCanvas, type CanvasNode } from './ManagedDocumentCanvas';
@@ -45,7 +45,7 @@ import { savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, placedField, type Reveal } from './projectWindowProblems';
 import { ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
-import { FigureLayers, offeredFields, type RoleFields } from './FigureLayers';
+import { FigureLayers, offeredFields, type FigureMemberEdit, type RoleFields } from './FigureLayers';
 import { holdsProducts, OperationProducts } from './OperationProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import type { GestureFailures } from './refusals';
@@ -254,11 +254,20 @@ export function useManagedAnalyze({
       land(after.basis);
     }
   }
+  const ensured = (path: readonly string[]) => path.map((_, index) => ({
+    op: 'ensure' as const, path: authoredPointer(path.slice(0, index + 1)), collection: 'object' as const,
+  }));
   const set = (path: readonly string[], value: JsonValue): StudioAnalyzeChange => ({ kind: 'edit', edits: [
-    ...path.slice(0, -1).map((_, index) => ({
-      op: 'ensure' as const, path: authoredPointer(path.slice(0, index + 1)), collection: 'object' as const,
-    })),
-    { op: 'replace', path: authoredPointer(path), value },
+    ...ensured(path.slice(0, -1)), { op: 'replace', path: authoredPointer(path), value },
+  ] });
+  /** The member edits of a figure, written under the figure's place in the document. */
+  const atFigure = (place: readonly string[], edits: readonly FigureMemberEdit[]): StudioAnalyzeChange => ({ kind: 'edit', edits: [
+    ...ensured(place),
+    ...edits.map((edit) => {
+      const path = authoredPointer([...place, ...edit.path]);
+      return edit.op === 'order' ? { op: 'order' as const, path, order: [...edit.order] }
+        : edit.op === 'remove' ? { op: 'remove' as const, path } : { op: 'replace' as const, path, value: edit.value };
+    }),
   ] });
   const changedPaths = new Set(catalog?.document === document ? catalog?.changed ?? [] : []);
   function changedAt(path: readonly string[]): ChangeMark | undefined {
@@ -433,11 +442,11 @@ export function useManagedAnalyze({
       : source.product ? catalog?.operation_outputs?.[source.element]?.[source.product] : undefined;
     return port ? offeredFields(port) : {};
   }
-  const authoredFigure = figure && 'data' in figure.figure ? figure.figure : undefined;
+  const authoredFigure = figure && 'data' in figure.figure ? figure.figure as unknown as StoredFigureDocument : undefined;
   const layers = selected && authoredFigure && <FigureLayers key={JSON.stringify([scope, selected])}
     figure={authoredFigure} fields={roleFields} refusal={roleRefusal(selected, layersPlace)}
-    edit={canEdit ? (label, next) => void perform(
-      (current) => save(current, label, set(['views', selected, 'figure'], next as JsonValue)), canEdit, [selected, layersPlace],
+    edit={canEdit ? (label, edits) => void perform(
+      (current) => save(current, label, atFigure(['views', selected, 'figure'], edits)), canEdit, [selected, layersPlace],
     ) : undefined} />;
   const inspector = selected && (operation || figure || selectedInput) && <Inspector name={operation || figure ? shown(selected) : boundName(selected)}
     type={operation ? definition?.label ?? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}

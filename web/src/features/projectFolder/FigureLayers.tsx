@@ -8,11 +8,12 @@ import { rawField } from '@/components/values/adapters/raw';
 import type { FieldModel, FieldOption } from '@/components/values/fieldModel';
 import { ValueField } from '@/components/values/ValueField';
 import type {
-  ColorEncoding, ContinuousColorScale, DatasetPort, FieldDescriptor, FigureDocument, FigurePanel, JsonValue, OrdinalColorScale,
-  PointsLayer, RuleLayer, SpanLayer, TrajectoryLayer, VariableBinding,
+  ColorEncoding, ContinuousColorScale, DatasetPort, FieldDescriptor, JsonValue, OrdinalColorScale, StoredFigureDocument,
+  StoredFigurePanel, StoredPointsLayer, StoredRuleLayer, StoredSpanLayer, StoredTrajectoryLayer, VariableBinding,
 } from '@/generated/studioContracts';
 
-type Layer = FigureDocument['layers'][number];
+type Figure = StoredFigureDocument;
+type Layer = Figure['layers'][string];
 type ColorScale = ContinuousColorScale | OrdinalColorScale;
 type Encoding = string | VariableBinding;
 type Position = Encoding | number;
@@ -38,8 +39,45 @@ const palettes: Record<ColorScale['kind'], readonly string[]> = {
 };
 const member = 'member';
 
-/** A figure's edit: the label of its Undo entry and the figure after it. */
-export type FigureEdit = (label: string, figure: FigureDocument) => void;
+/** An edit of one member of a figure, addressed by its path in the figure. */
+export type FigureMemberEdit =
+  | { readonly op: 'replace'; readonly path: readonly string[]; readonly value: JsonValue }
+  | { readonly op: 'remove'; readonly path: readonly string[] }
+  | { readonly op: 'order'; readonly path: readonly string[]; readonly order: readonly string[] };
+
+/** A figure's edit: the label of its Undo entry and the member edits that make it. */
+export type FigureEdit = (label: string, edits: readonly FigureMemberEdit[]) => void;
+
+/** The figure's fields whose members are keyed, each written member by member. */
+const keyedFields = ['layers', 'layout', 'color_scales'] as const;
+
+/**
+ * The member edits that turn `before` into `after`: a keyed collection's members each replaced or removed, and its order
+ * written when the members both hold come in another order; any other field replaced or removed whole.
+ */
+export function figureEdits(before: Figure, after: Figure): FigureMemberEdit[] {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const fields = [...new Set([...Object.keys(before), ...Object.keys(after)])] as (keyof Figure)[];
+  return fields.flatMap((field): FigureMemberEdit[] => {
+    const was = before[field];
+    const is = after[field];
+    if (same(was, is)) return [];
+    if (is === undefined) return [{ op: 'remove', path: [field] }];
+    if (!(keyedFields as readonly string[]).includes(field) || was === undefined) {
+      return [{ op: 'replace', path: [field], value: is as JsonValue }];
+    }
+    const old = was as Record<string, JsonValue>;
+    const next = is as Record<string, JsonValue>;
+    const kept = Object.keys(next).filter((key) => key in old);
+    const moved = kept.join('\0') !== Object.keys(old).filter((key) => key in next).join('\0');
+    return [
+      ...Object.keys(old).filter((key) => !(key in next)).map((key): FigureMemberEdit => ({ op: 'remove', path: [field, key] })),
+      ...Object.entries(next).filter(([key, value]) => !same(old[key], value))
+        .map(([key, value]): FigureMemberEdit => ({ op: 'replace', path: [field, key], value })),
+      ...moved ? [{ op: 'order' as const, path: [field], order: kept }] : [],
+    ];
+  });
+}
 
 /** What the inspector shows the fields of: a layer, a named colour scale, or a panel. */
 type Part = { kind: 'layer' | 'scale' | 'panel'; name: string };
@@ -85,16 +123,20 @@ function freeKey(base: string, taken: (key: string) => boolean) {
 }
 
 /** A new layer of `mark`, reading what the figure's first layer reads, so it draws before any of its fields is edited. */
-function newLayer(mark: AddedMark, figure: FigureDocument): Layer {
-  const first = figure.layers[0];
-  const name = freeKey(mark, (name) => figure.layers.some((layer) => layer.name === name));
-  const place = { name, role: first?.role ?? figure.data[0], panel: first?.panel ?? figure.layout[0].name };
+function newLayer(mark: AddedMark, figure: Figure): [string, Layer] {
+  const key = freeKey(mark, (key) => key in figure.layers);
+  return [key, layerOf(mark, figure)];
+}
+
+function layerOf(mark: AddedMark, figure: Figure): Layer {
+  const first = Object.values(figure.layers)[0];
+  const place = { role: first?.role ?? figure.data[0], panel: first?.panel ?? Object.keys(figure.layout)[0] };
   if (mark === 'rule') return { ...place, mark, encode: { axis: 'y', at: 0 } };
   if (mark === 'span') return { ...place, mark, encode: { axis: 'x', start: 0, end: 1 } };
   const read = { ...first?.select && { select: first.select }, ...first?.group && { group: first.group } };
   const position = first && 'x' in first.encode ? { x: first.encode.x, y: first.encode.y } : { x: '', y: '' };
   if (mark === 'trajectory') return { ...place, ...read, mark, encode: position };
-  const encode: PointsLayer['encode'] = position;
+  const encode: StoredPointsLayer['encode'] = position;
   if (first?.mark === 'band') encode.error_y = { lower: first.encode.lower, upper: first.encode.upper };
   if (first?.mark === 'points' && first.encode.error_y) encode.error_y = first.encode.error_y;
   return { ...place, ...read, mark, encode };
@@ -106,7 +148,7 @@ function newLayer(mark: AddedMark, figure: FigureDocument): Layer {
  * is bound to.
  */
 export function FigureLayers({ figure, fields, edit, refusal }: {
-  figure: FigureDocument;
+  figure: Figure;
   /** The fields a role's bound data offers, when it is bound to data whose fields are known. */
   fields: (role: string) => RoleFields;
   edit?: FigureEdit;
@@ -115,49 +157,51 @@ export function FigureLayers({ figure, fields, edit, refusal }: {
 }) {
   const [chosen, setChosen] = useState<Part>();
   const scales = figure.color_scales ?? {};
-  const layer = chosen?.kind === 'layer' ? figure.layers.find(({ name }) => name === chosen.name) : undefined;
+  const layer = chosen?.kind === 'layer' ? figure.layers[chosen.name] : undefined;
   const scale = chosen?.kind === 'scale' ? scales[chosen.name] : undefined;
-  const panel = chosen?.kind === 'panel' ? figure.layout.find(({ name }) => name === chosen.name) : undefined;
-  const write = (label: string, layers: Layer[]) => edit?.(label, { ...figure, layers });
+  const panel = chosen?.kind === 'panel' ? figure.layout[chosen.name] : undefined;
+  const change = edit && ((label: string, next: Figure) => edit(label, figureEdits(figure, next)));
   const add = (mark: AddedMark) => {
-    const next = newLayer(mark, figure);
-    write(studioName(mark), [...figure.layers, next]);
-    setChosen({ kind: 'layer', name: next.name });
+    const [key, next] = newLayer(mark, figure);
+    change?.(studioName(mark), { ...figure, layers: { ...figure.layers, [key]: next } });
+    setChosen({ kind: 'layer', name: key });
   };
   const addScale = () => {
     const name = freeKey('scale', (name) => name in scales);
-    edit?.(studioName('colorScale'), { ...figure, color_scales: { ...scales, [name]: { kind: 'continuous' } } });
+    change?.(studioName('colorScale'), { ...figure, color_scales: { ...scales, [name]: { kind: 'continuous' } } });
     setChosen({ kind: 'scale', name });
   };
   const addRole = () => {
     const role = freeKey(`data-${figure.data.length + 1}`, (name) => figure.data.includes(name));
-    edit?.(studioName('dataRole'), { ...figure, data: [...figure.data, role] });
+    change?.(studioName('dataRole'), { ...figure, data: [...figure.data, role] });
   };
   const remove = ({ kind, name }: Part) => {
-    if (kind === 'layer') write(studioName('remove'), figure.layers.filter((item) => item.name !== name));
+    if (kind === 'layer') {
+      const { [name]: _, ...rest } = figure.layers;
+      change?.(studioName('remove'), { ...figure, layers: rest });
+    }
     if (kind === 'scale') {
       const { [name]: _, ...rest } = scales;
-      edit?.(studioName('remove'), { ...figure, color_scales: rest });
+      change?.(studioName('remove'), { ...figure, color_scales: rest });
     }
   };
-  const removable = ({ kind, name }: Part) => kind === 'layer' ? figure.layers.length > 1
-    : kind === 'scale' && !figure.layers.some((item) => colorOf(item)?.scale === name);
-  const change = edit && ((label: string, next: FigureDocument) => edit(label, next));
-  const shownFields = layer ? layerFields(figure, layer, fields(layer.role), change)
+  const removable = ({ kind, name }: Part) => kind === 'layer' ? Object.keys(figure.layers).length > 1
+    : kind === 'scale' && !Object.values(figure.layers).some((item) => colorOf(item)?.scale === name);
+  const shownFields = layer && chosen ? layerFields(figure, chosen.name, layer, fields(layer.role), change)
     : scale && chosen ? scaleFields(figure, chosen.name, scale, change)
-      : panel ? panelFields(figure, panel, change) : [];
+      : panel && chosen ? panelFields(figure, chosen.name, panel, change) : [];
   return <>
     <Tree aria-label={studioName('layers')} selected={chosen && (layer || scale || panel) ? [partId(chosen)] : []}
       nodes={[
-        ...figure.layers.map((item) => ({
-          id: partId({ kind: 'layer', name: item.name }), name: item.name, glyph: markGlyphs[item.mark],
+        ...Object.entries(figure.layers).map(([key, item]) => ({
+          id: partId({ kind: 'layer', name: key }), name: key, glyph: markGlyphs[item.mark],
           trailing: <span>{studioName(item.mark)}</span>,
         })),
         ...Object.keys(scales).map((name) => ({
           id: partId({ kind: 'scale', name }), name, glyph: <Palette />, trailing: <span>{studioName('colorScale')}</span>,
         })),
-        ...figure.layout.map((item) => ({
-          id: partId({ kind: 'panel', name: item.name }), name: item.title || item.name, glyph: <LayoutPanelTop />,
+        ...Object.entries(figure.layout).map(([key, item]) => ({
+          id: partId({ kind: 'panel', name: key }), name: item.title || key, glyph: <LayoutPanelTop />,
           trailing: <span>{studioName('panel')}</span>,
         })),
       ]}
@@ -179,11 +223,11 @@ export function FigureLayers({ figure, fields, edit, refusal }: {
   </>;
 }
 
-type Change = (label: string, figure: FigureDocument) => void;
+type Change = (label: string, figure: Figure) => void;
 
 function fieldMaker(change: Change | undefined) {
   return (id: StudioNameId | { id: string; label: string }, type: FieldModel['type'], value: JsonValue | undefined,
-    next?: (value: JsonValue) => FigureDocument | string) => {
+    next?: (value: JsonValue) => Figure | string) => {
     const { id: key, label } = typeof id === 'string' ? { id, label: studioName(id) } : id;
     return rawField({
       id: key, label, type, value,
@@ -200,18 +244,19 @@ function fieldMaker(change: Change | undefined) {
 const text = (value: JsonValue) => String(value).trim() || null;
 const none = () => studioName('noneChoice');
 
-function layerFields(figure: FigureDocument, layer: Layer, offered: RoleFields, change?: Change): FieldModel[] {
+function layerFields(figure: Figure, key: string, layer: Layer, offered: RoleFields, change?: Change): FieldModel[] {
   const field = fieldMaker(change);
   const names = Object.keys(offered);
-  const replaced = (next: Layer, document: FigureDocument = figure): FigureDocument => labelled(figure, layer, offered,
-    { ...document, layers: document.layers.map((item) => item.name === next.name ? next : item) });
+  const replaced = (next: Layer, document: Figure = figure): Figure => labelled(figure, layer, offered,
+    { ...document, layers: { ...document.layers, [key]: next } });
+  const panels = Object.keys(figure.layout);
   const options = (values: readonly string[], current?: string): FieldOption[] =>
     [...new Set([...values, ...current ? [current] : []])].map((value) => ({ value, label: value }));
   const choice = (values: readonly string[], current?: string) => ({ kind: 'choice' as const, options: options(values, current) });
   const optional = (values: readonly string[], current?: string) =>
     ({ kind: 'choice' as const, options: [{ value: none(), label: none() }, ...options(values, current)] });
   const common: FieldModel[] = [
-    ...figure.layout.length > 1 ? [field('panel', choice(figure.layout.map(({ name }) => name)), layer.panel,
+    ...panels.length > 1 ? [field('panel', choice(panels), layer.panel,
       (panel) => replaced({ ...layer, panel: String(panel) }))] : [],
     ...figure.data.length > 1 ? [field('dataRole', choice(figure.data), layer.role,
       (role) => replaced({ ...layer, role: String(role) }))] : [],
@@ -231,7 +276,7 @@ function layerFields(figure: FigureDocument, layer: Layer, offered: RoleFields, 
       if (names.includes(typed)) return replaced(set(renamed(typeof value === 'number' ? undefined : value, typed)));
       return studioReason('takesNumberOrField', studioName(id));
     });
-  const axis = (encode: RuleLayer['encode'] | SpanLayer['encode']) =>
+  const axis = (encode: StoredRuleLayer['encode'] | StoredSpanLayer['encode']) =>
     field('axis', { kind: 'choice', options: axes }, encode.axis,
       (value) => replaced({ ...layer, encode: { ...encode, axis: value } } as Layer));
   if (layer.mark === 'rule') {
@@ -346,27 +391,27 @@ const spatialAxes = ['x', 'y', 'z'] as const;
  * is labelled by the fields its trajectory reads, a label that is still the label of the encoding it was taken from
  * follows the encoding, and a panel that stops being 3D loses its z axis.
  */
-function labelled(before: FigureDocument, layer: Layer, offered: RoleFields, after: FigureDocument): FigureDocument {
-  const spatialIn = (document: FigureDocument) =>
-    document.layers.find((item) => item.panel === layer.panel && isSpatial(item)) as TrajectoryLayer | undefined;
+function labelled(before: Figure, layer: Layer, offered: RoleFields, after: Figure): Figure {
+  const spatialIn = (document: Figure) => Object.values(document.layers)
+    .find((item) => item.panel === layer.panel && isSpatial(item)) as StoredTrajectoryLayer | undefined;
   const was = spatialIn(before);
   const is = spatialIn(after);
-  const panel = after.layout.find(({ name }) => name === layer.panel);
+  const panel = after.layout[layer.panel];
   if (!panel || (!was && !is)) return after;
   const labels = panel.axes_labels ?? {};
-  const label = (trajectory: TrajectoryLayer, axis: typeof spatialAxes[number]) => {
+  const label = (trajectory: StoredTrajectoryLayer, axis: typeof spatialAxes[number]) => {
     const encoding = trajectory.encode[axis];
     return encoding ? encodingLabel(encoding, offered) : null;
   };
-  const next: FigurePanel = !is ? { ...panel, axes_labels: { ...labels, z: null }, z_axis: null }
+  const next: StoredFigurePanel = !is ? { ...panel, axes_labels: { ...labels, z: null }, z_axis: null }
     : { ...panel, axes_labels: Object.fromEntries(spatialAxes.map((axis) =>
       [axis, !was || labels[axis] == null || labels[axis] === label(was, axis) ? label(is, axis) : labels[axis]])) };
-  return { ...after, layout: after.layout.map((item) => item.name === panel.name ? next : item) };
+  return { ...after, layout: { ...after.layout, [layer.panel]: next } };
 }
 
-function scaleFields(figure: FigureDocument, name: string, scale: ColorScale, change?: Change): FieldModel[] {
+function scaleFields(figure: Figure, name: string, scale: ColorScale, change?: Change): FieldModel[] {
   const field = fieldMaker(change);
-  const set = (next: ColorScale): FigureDocument => ({ ...figure, color_scales: { ...figure.color_scales, [name]: next } });
+  const set = (next: ColorScale): Figure => ({ ...figure, color_scales: { ...figure.color_scales, [name]: next } });
   const choices = (values: readonly string[]) => ({ kind: 'choice' as const, options: values.map((value) => ({ value, label: value })) });
   const domainText = scale.domain?.map(String).join(', ');
   return [
@@ -392,12 +437,11 @@ function scaleFields(figure: FigureDocument, name: string, scale: ColorScale, ch
   ];
 }
 
-function panelFields(figure: FigureDocument, panel: FigurePanel, change?: Change): FieldModel[] {
+function panelFields(figure: Figure, key: string, panel: StoredFigurePanel, change?: Change): FieldModel[] {
   const field = fieldMaker(change);
-  const set = (next: FigurePanel): FigureDocument =>
-    ({ ...figure, layout: figure.layout.map((item) => item.name === panel.name ? next : item) });
+  const set = (next: StoredFigurePanel): Figure => ({ ...figure, layout: { ...figure.layout, [key]: next } });
   const labels = panel.axes_labels ?? {};
-  const spatial = figure.layers.some((item) => item.panel === panel.name && isSpatial(item));
+  const spatial = Object.values(figure.layers).some((item) => item.panel === key && isSpatial(item));
   const axisLabel = (id: 'xAxis' | 'yAxis' | 'zAxis', key: 'x' | 'y' | 'z') =>
     field(id, { kind: 'string' }, labels[key] ?? undefined,
       (value) => set({ ...panel, axes_labels: { ...labels, [key]: text(value) } }));
