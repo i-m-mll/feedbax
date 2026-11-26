@@ -73,6 +73,10 @@ def ordinary_files(batches: str, *rates: str, scenario: str = "simple-reaches"):
     return files
 
 
+HOLD_CAMPAIGN_LOADED = "loaded-controllers"
+"""The name the hold campaign's Loaded Model is loaded under."""
+
+
 def hold_campaign_files():
     """The delayed-reaches files in the shape of a hold campaign, with no runs, and every key differing from its label.
 
@@ -170,6 +174,59 @@ def hold_campaign_files():
         "inputs": {"subject": {"step": "train", "checkpoint": "last"}},
     }}
     return [model, heavy, task, level_task, objective, kicks, train, check]
+
+
+def hold_campaign_archive() -> str:
+    """A two-replicate model archive of the hold campaign's ``point-mass``, base64-encoded for Load."""
+    import base64
+    import tempfile
+
+    from feedbax.compiler.model_document import complete_model_fields
+    from feedbax.contracts.stored_model import StoredModelDocument
+    from feedbax.contracts.task_document import StoredTaskDocument
+    from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
+    from feedbax.host.model_archive import export_model_archive
+    from feedbax.host.model_checkpoint import SemanticModelWriter
+    from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE
+
+    documents = {file["id"]: file["document"] for file in hold_campaign_files() if file["kind"] == "document"}
+    registry = new_application_registry_bundle()
+    # Lowered as Load lowers the Model it fits an archive to, so that its root ports are its keys.
+    model = complete_model_fields(StoredModelDocument.model_validate(documents["point-mass"]["payload"]).lower(
+        registry.components).with_keyed_root_ports(), registry.components)
+    task = StoredTaskDocument.model_validate(documents["delayed-reaches-task"]["payload"]).lower()
+    trial = compile_trial_execution(
+        model, task, registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
+        input_bindings={"target_pos": "target_pos"},
+    )
+    assert isinstance(trial, PreparedTrialExecution), trial
+    graph = trial.executable.graph
+    writer = SemanticModelWriter.for_graph(trial.executable.resolved.graph, None, registry.components)
+    assert writer is not None
+    with tempfile.TemporaryDirectory() as transaction:
+        checkpoint = writer.publish(Path(transaction), (graph, graph), templates=(graph, graph), replica_ids=("a", "b"))
+        archive = export_model_archive(
+            ImmutableArtifactBlobProvider(Path(transaction) / MODEL_CHECKPOINT_STORE), checkpoint.tree, checkpoint.encoding,
+        )
+    assert isinstance(archive, bytes), archive
+    return base64.b64encode(archive).decode()
+
+
+def loaded_check_file(loaded: str = HOLD_CAMPAIGN_LOADED):
+    """An Evaluate step of the hold campaign whose subject is the Loaded Model ``loaded`` and which lists its Set."""
+    return {"kind": "step", "id": "loaded-check", "step": {
+        "kind": "evaluate", "label": "Loaded check",
+        "base": {"inline": {
+            "evaluation_type": "feedbax.rollout",
+            "params": {"seed": 1, "trial_set": {"kind": "every_condition"}},
+        }},
+        "set_fields": {"loaded-bank": {"axis": {"set": "command-kicks"}, "sampling": {"kind": "listed"}}},
+        "inputs": {
+            "subject": {"kind": "loaded_model", "source": {"document": loaded}},
+            "task": {"kind": "task", "source": {"document": "delayed-reaches-task"}},
+            "objective": {"kind": "objective", "source": {"document": "delayed-reaches-objective"}},
+        },
+    }}
 
 
 def _field(component: str, *path: str) -> ModelAddress:
@@ -444,6 +501,8 @@ ACTIONS = {
     "ordinary-files": FileSeed(ordinary_files, cases=(("2",), ("2", "0.001", "0.01"))),
     "delayed-reaches-files": FileSeed(lambda: ordinary_files("2", scenario="delayed-reaches")),
     "hold-campaign-files": FileSeed(hold_campaign_files),
+    "hold-campaign-archive": NonSeed(hold_campaign_archive, "returns a model archive to Load, not authored content"),
+    "loaded-check-files": FileSeed(lambda: [loaded_check_file()]),
     "mass-range-files": FileSeed(mass_range_files, cases=(("1.000123456789", "2.000987654321", "3"),)),
     "task-link-files": FileSeed(task_link_files, cases=(
         ("delayed-reaches", "start", "plant", "reset", "effector", "elsewhere"),
