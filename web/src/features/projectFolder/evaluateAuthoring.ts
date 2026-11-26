@@ -11,7 +11,6 @@ import { modelSourceSubset } from './createCheckpointTrain';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
 import { stepSelections, subjectAxisEdits } from './selectionEdits';
-import { generatedName, holds } from './generatedName';
 
 const rollout = 'feedbax.rollout';
 export const checkpointLabel = (update: number) => studioFormat('checkpointAtUpdate', { update });
@@ -301,11 +300,11 @@ export async function createEvaluation(
   const domain = managedTrialDomain(projection, members);
   if (!domain) throw new Error('Choose managed runs that share a trial-set rule.');
   const trialSet: TrialSet = domain.kind === 'fixed' ? { kind: 'every_condition' } : { kind: 'sample', count: 1 };
-  const id = generatedName('evaluate', holds(saved.project.steps));
+  const { id, label } = await editor.nameMember({ kind: 'step', step: 'evaluate' }, projection.revision);
   await editor.createFile({
     kind: 'step', id,
     step: {
-      kind: 'evaluate',
+      kind: 'evaluate', label,
       base: { inline: {
         evaluation_type: rollout,
         params: { trial_set: trialSet, seed: 0, trial_policy: 'paired', variation: [] },

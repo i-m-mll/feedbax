@@ -4,8 +4,7 @@ import type {
 } from '@/generated/studioContracts';
 import { containsCreatedFile, ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 
-import { blankDocuments, namedDocument } from './useProjectDocuments';
-import { generatedName, holds } from './generatedName';
+import { blankDocuments, namedDocument, type UnnamedDocument } from './useProjectDocuments';
 import { planVariants, selectedRowTerms, stepSourceRows } from './projectWindowPlan';
 import { withSubsetTerms } from './selectionEdits';
 
@@ -15,7 +14,7 @@ async function createManagedStep(
   editor: ProjectEditController,
   revision: string,
   sourceStepId: string,
-  document: CreateNamedDocument['document'],
+  document: UnnamedDocument,
   step: Pick<NamedStep, 'kind' | 'inputs'>,
 ) {
   const { saved } = editor.getSnapshot();
@@ -26,15 +25,15 @@ async function createManagedStep(
   const read = (name: string) => Object.values(steps).some(({ base }) => 'document' in base && base.document === name);
   /** A document an earlier attempt created and no step reads, which this attempt takes instead of making another. */
   const left = Object.keys(documents).find((name) => !read(name) && containsCreatedFile(saved.project,
-    { kind: 'document', id: name, document: { ...document, label: documents[name].label } as typeof document }));
+    { kind: 'document', id: name, document: { ...document, label: documents[name].label } as CreateNamedDocument['document'] }));
   const file: CreateNamedDocument = left === undefined
-    ? { kind: 'document', ...namedDocument(documents, saved.names.documents, document) as Pick<CreateNamedDocument, 'id' | 'document'> }
-    : { kind: 'document', id: left, document: documents[left] as typeof document };
+    ? { kind: 'document', ...await namedDocument(editor, document, revision) as Pick<CreateNamedDocument, 'id' | 'document'> }
+    : { kind: 'document', id: left, document: documents[left] as CreateNamedDocument['document'] };
   const documentId = file.id;
   const acknowledged = left !== undefined ? saved : (await editor.createFile(file, revision)).snapshot;
-  const id = generatedName(step.kind, holds(steps));
+  const { id, label } = await editor.nameMember({ kind: 'step', step: step.kind }, acknowledged.revision);
   await editor.createFile({
-    kind: 'step', id, step: { ...step, base: { document: documentId } },
+    kind: 'step', id, step: { ...step, label, base: { document: documentId } },
   }, acknowledged.revision);
   return id;
 }

@@ -13,7 +13,7 @@ vi.mock('@/api/jobs', () => ({ fetchSavedTrainRuns }));
 
 const hex = (number: number) => number.toString(16).padStart(64, '0');
 const snapshot: StudioProjectSnapshot = {
-  names: { documents: {}, steps: {}, elements: {} }, variant_names: {},
+  variant_names: {},
   project_id: 'reach', revision: hex(1), presentation_revision: hex(2), semantic_root: hex(3), presentation: null,
   declaration: { revision: hex(3), data: btoa('{}'), authored_revision: hex(3) }, file_revisions: [], project: {},
 };

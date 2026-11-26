@@ -31,8 +31,8 @@ import {
   choosePick, useNamedSelection, usePick, type ElementSelectionStore,
 } from '@/features/projectWindow/elementSelection';
 import { outputName, type PlanStepView } from '@/features/pipeline/planView';
-import { heldElements } from './analysisElements';
-import { documentNames, nameOf } from './memberNames';
+import { heldElementKeys } from './analysisElements';
+import { labelOf, shownDocuments } from './memberLabels';
 import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
 import { SelectionRule } from './SelectionRule';
@@ -48,7 +48,6 @@ import { SavedFigureResult } from './SavedLightProducts';
 import { FigureLayers, offeredFields, type RoleFields } from './FigureLayers';
 import { holdsProducts, OperationProducts } from './OperationProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
-import { generatedName, keyOfLabel } from './generatedName';
 import type { GestureFailures } from './refusals';
 
 type Source = OperationElement['inputs'][string];
@@ -164,7 +163,7 @@ export function useManagedAnalyze({
   const roles = selectedFigure ? selectedFigure.data.map((name) => ({ name, kind: 'dataset' as const }))
     : Object.entries(definition?.inputs ?? {}).map(([name, port]) => ({ name, kind: port.kind ?? 'dataset' }));
   const outputs = Object.entries(operations).map(([name, value]) => ({
-    element: name, name: nameOf(key && saved.names.elements[key.step], name, value), products: Object.keys(definitions.get(value.operation)?.outputs ?? {}),
+    element: name, name: value.label, products: Object.keys(definitions.get(value.operation)?.outputs ?? {}),
   }));
   /** The Analysis document a card reads, when it reads one of its own. */
   function cardAnalysis(card: string) {
@@ -177,7 +176,7 @@ export function useManagedAnalyze({
   const cardOutputs = steps.filter((other) => other.kind === 'analyze' && other.id !== key?.step).flatMap((card) =>
     Object.entries(cardAnalysis(card.id)?.operations ?? {}).flatMap(([element, value]) =>
       Object.keys(definitions.get(value.operation)?.outputs ?? {}).map((product) => ({
-        step: card.id, element, product, name: outputName(card.label, nameOf(saved.names.elements[card.id], element, value), product),
+        step: card.id, element, product, name: outputName(card.label, value.label, product),
       }))));
   /** A role bound to another card's operation output is shown by the card and the output. */
   function boundName(role: string) {
@@ -187,7 +186,7 @@ export function useManagedAnalyze({
     if (!source || !product) return role;
     const shownCard = steps.find(({ id }) => id === card);
     if (!shownCard) throw new Error(`The plan has no step ${card}.`);
-    return outputName(shownCard.label, nameOf(saved.names.elements[card], source, cardAnalysis(card)?.operations?.[source]), product);
+    return outputName(shownCard.label, labelOf(cardAnalysis(card)?.operations, source), product);
   }
   const selectedInput = selected ? declarations[selected] : undefined;
   const authoringCatalog = useAuthoringCatalog().data;
@@ -266,18 +265,16 @@ export function useManagedAnalyze({
     const pointer = authoredPointer(path);
     const base = baseOf(saved.project.documents, document);
     if (!changedPaths.has(pointer) || base === undefined) return undefined;
-    return { from: { kind: 'base', name: nameOf(saved.names.documents, base) }, reset: canEdit ? async () => {
+    return { from: { kind: 'base', name: labelOf(saved.project.documents, base) }, reset: canEdit ? async () => {
       try { await editor.command((current) => save(current, studioName('reset'), { kind: 'reset', paths: [pointer] })); return undefined; }
       catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
     } : undefined };
   }
-  /** Places an element named as the Library names what it is made from, numbered while another element shows that name. */
+  /** Places an element named by the Service after what the Library says it is made from. */
   function add(kind: 'operations' | 'views', named: string, value: Readonly<Record<string, JsonValue>>, point?: PresentationPosition) {
     void perform(async (current) => {
-      const held = heldElements(editor.getSnapshot().draft.documents, current.composed, current.names);
-      const label = generatedName(named, (label) => held.names.has(label), ' ');
-      const name = generatedName(keyOfLabel(label) || kind,
-        (name) => name === 'states' || name in declarations || held.keys.has(name));
+      if (!document) throw new ProjectEditConflictError();
+      const { id: name, label } = await editor.nameMember({ kind: 'element', document, family: kind, label: named }, current.revision);
       await save(current, studioName(kind === 'operations' ? 'addOperation' : 'addFigure'), set([kind, name], { ...value, label }));
       setDialog(undefined);
       if (liveScope.current === scope) {
@@ -320,13 +317,12 @@ export function useManagedAnalyze({
     if (selected) void perform((current) => save(current, studioName('modelRemove'), { kind: 'remove', element: selected }));
   }, { enabled: editApplies && !!(operation || figure) });
 
-  const shown = (name: string) => nameOf(key && saved.names.elements[key.step], name, operations[name] ?? figures[name]);
+  const shown = (name: string) => labelOf(name in operations ? operations : figures, name);
   const nameApplies = bindApplies && !!analysis && !!document;
   const canName = nameApplies;
   const namingNow = naming?.scope === scope ? naming : undefined;
-  function renameElement(name: string, text: string) {
-    const label = text === name ? null : text;
-    if (!document || label === ((operations[name] ?? figures[name])?.label ?? null)) return;
+  function renameElement(name: string, label: string) {
+    if (!document || label === shown(name)) return;
     void perform(async () => {
       await editor.memberCommand(studioAccessibleName('rename', shown(name)),
         { kind: 'rename', family: 'elements', document, member: name, label }, editor.getSnapshot().saved);
@@ -349,11 +345,11 @@ export function useManagedAnalyze({
     return bindStudioCommand('split', () => {
       if (!key) return;
       void perform(async () => {
-        await editor.memberCommand(studioAccessibleName('split', key.step),
+        await editor.memberCommand(studioAccessibleName('split', labelOf(draft.steps, key.step)),
           { kind: 'split', member: key.step, elements: [...elements] }, editor.getSnapshot().saved);
         if (liveScope.current === scope) selectElement(null);
       }, canName);
-    }, { subject: key && nameOf(saved.names.steps, key.step, draft.steps?.[key.step]), enabled: nameApplies && !!key && !refused && elements.length > 0 && elements.length < elementKeys.length });
+    }, { subject: key && labelOf(draft.steps, key.step), enabled: nameApplies && !!key && !refused && elements.length > 0 && elements.length < elementKeys.length });
   }
   /** The commands on an operation or figure: its context menu, and the palette's for the selected one. */
   const elementCommands = (name: string) => [
@@ -450,10 +446,10 @@ export function useManagedAnalyze({
       editing={namingNow?.field === 'key' && namingNow.element === selected}
       onEditingChange={(editing) => setNaming(editing ? { scope, element: selected, field: 'key' } : undefined)}
       onCommit={(key) => changeElementKey(selected, key)}
-      unavailable={(key) => keyUnavailable(key, (key) => heldElements(draft.documents, saved.composed, saved.names).keys.has(key))}
+      unavailable={(key) => keyUnavailable(key, (key) => heldElementKeys(draft.documents, saved.composed).has(key))}
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
     {selected && selectedInput && key && inputRole && <InputEditor label={humanizeLabel(selected)} role={inputRole}
-      binding={step?.inputs?.[selected]} self={key.step} project={saved.project} documentNames={documentNames({ saved, draft })} steps={steps} picking={selection}
+      binding={step?.inputs?.[selected]} self={key.step} project={saved.project} documents={shownDocuments(draft)} steps={steps} picking={selection}
       refusal={roleRefusal(selected, selected)} outputs={cardOutputs} onReveal={selectStep}
       selection={(index, reference) => {
         const binding = step?.inputs?.[selected];

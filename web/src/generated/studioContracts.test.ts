@@ -54,7 +54,7 @@ it('validates named execution targets and the exact venue session identity', () 
 
 it('preserves JSON payloads and reports the nested path for invalid values', () => {
   const payload = { sample: [null, false, '', -0, 1.25, { scalar: Number.MAX_VALUE }], empty: {} };
-  const document = { schema: 'example', payload };
+  const document = { schema: 'example', label: 'Example', payload };
   const parsed = RootDocumentSchema.parse(document);
   expect(parsed).toEqual(document);
   expect(Object.is(parsed.payload, payload)).toBe(false);
@@ -63,13 +63,13 @@ it('preserves JSON payloads and reports the nested path for invalid values', () 
   expect(DocumentSchema.safeParse({ schema: 'example' }).success).toBe(false);
 
   for (const invalid of [Infinity, -Infinity, NaN, undefined, 1n, new Date(0), new Map(), new Set()]) {
-    const result = RootDocumentSchema.safeParse({ schema: 'example', payload: { sample: [0, invalid] } });
+    const result = RootDocumentSchema.safeParse({ schema: 'example', label: 'Example', payload: { sample: [0, invalid] } });
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.issues[0].path).toEqual(['payload', 'sample', 1]);
   }
 
   const malformedModel = { step_seconds: 'zero', ports: {}, interior: {} };
-  expect(DocumentSchema.safeParse({ schema: 'feedbax.spec.model', payload: malformedModel }).success).toBe(true);
+  expect(DocumentSchema.safeParse({ schema: 'feedbax.spec.model', label: 'Model', payload: malformedModel }).success).toBe(true);
   expect(ModelDocumentSchema.safeParse(malformedModel).success).toBe(false);
 });
 

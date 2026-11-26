@@ -11,6 +11,8 @@ import type {
   PresentationDocument,
   StudioMemberCommand,
   StudioMemberCommandResult,
+  StudioMemberName,
+  StudioMemberNameRequest,
   ProjectValueEdit,
   StudioProjectCreateFile,
   StudioProjectCreateFiles,
@@ -38,6 +40,7 @@ export interface ProjectEditTransport {
   rename: (id: string, body: StudioProjectRename, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   create: (id: string, body: StudioProjectCreateFile | StudioProjectCreateFiles, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   memberCommand?: (id: string, body: StudioMemberCommand, signal?: AbortSignal) => Promise<StudioMemberCommandResult>;
+  nameMember?: (id: string, body: StudioMemberNameRequest, signal?: AbortSignal) => Promise<StudioMemberName>;
   editModel?: (id: string, body: ModelEditRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
   undoModel?: (id: string, body: ModelUndoRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
 }
@@ -668,6 +671,13 @@ export class ProjectEditController {
     }
     this.signal.throwIfAborted();
     return latest;
+  }
+
+  /** The key and label the Service gives `member`, a member about to be created in the project at `revision`. */
+  nameMember(member: StudioMemberNameRequest['member'], revision = this.saved.revision): Promise<StudioMemberName> {
+    const run = this.transport.nameMember;
+    if (!run) throw new Error('This editor has no Service to name members.');
+    return run(this.saved.project_id, { revision, member }, this.signal);
   }
 
   /**

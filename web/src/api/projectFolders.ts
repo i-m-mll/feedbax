@@ -11,6 +11,7 @@ import {
   type StudioLoadedModelExportRequest,
   type StudioLoadedModelImportQuery,
   type StudioMemberCommand,
+  type StudioMemberNameRequest,
   type StudioPresentationWrite,
   type StudioProjectCreateFile,
   type StudioProjectCreateFiles,
@@ -115,6 +116,18 @@ export async function commandProjectMember(id: string, body: StudioMemberCommand
   }
 }
 
+/** The key and label the Service gives a member Studio is about to create, unique in the project at `body.revision`. */
+export async function nameProjectMember(id: string, body: StudioMemberNameRequest, signal?: AbortSignal) {
+  const path = `${projectPath(id)}/members/name`;
+  try {
+    return parseContract('StudioMemberName', await requestJson(path, {
+      method: 'POST', body: sentBody('StudioMemberNameRequest', body, path), signal, cache: 'no-store',
+    }));
+  } catch (error) {
+    throw asApiRequestError(error, path);
+  }
+}
+
 export async function patchProjectFolder(id: string, body: StudioProjectPatch | StudioProjectPatchBatch, signal?: AbortSignal) {
   const path = projectPath(id);
   const payload = 'files' in body ? sentBody('StudioProjectPatchBatch', body, path, 'PATCH') : sentBody('StudioProjectPatch', body, path, 'PATCH');
@@ -181,7 +194,8 @@ export function readEvaluateModel(id: string, body: EvaluateModelRequest, signal
  * the route reports in its result (the weights do not fit, the archive is unreadable) is an outcome, not an error.
  */
 export async function importLoadedModel(id: string, query: StudioLoadedModelImportQuery, archive: Blob, signal?: AbortSignal) {
-  const path = `${projectPath(id)}/loaded-models/import?${new URLSearchParams(parseContract('StudioLoadedModelImportQuery', query))}`;
+  const fields = Object.entries(parseContract('StudioLoadedModelImportQuery', query)).flatMap(([field, value]) => value == null ? [] : [[field, value]]);
+  const path = `${projectPath(id)}/loaded-models/import?${new URLSearchParams(fields)}`;
   try {
     const response = await requestResponse(path, {
       method: 'POST', body: archive, signal, cache: 'no-store', headers: { 'Content-Type': 'application/octet-stream' },

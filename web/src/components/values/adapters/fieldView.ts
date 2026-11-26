@@ -1,8 +1,9 @@
 import type {
-  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioEvaluateValueSource, StudioFieldView,
-  StudioPlanReviewSource,
+  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView, StudioPlanReviewSource,
 } from '@/generated/studioContracts';
-import { studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason } from '@/components/activity/studioVocabulary';
+import {
+  studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason, type EvaluateOrigin, type SourceNames,
+} from '@/components/activity/studioVocabulary';
 import { evaluateChange, valueKind, withReset, type ChangeMark, type FieldModel, type FieldRefusal } from '../fieldModel';
 
 export type ProjectedEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit;
@@ -15,6 +16,12 @@ export interface ExceptionMention {
 
 export type ExceptionMentions = (source: StudioPlanReviewSource) => ExceptionMention | undefined;
 
+/** How a field names where the plan says its value comes from. */
+export interface SourceNaming {
+  readonly names: SourceNames;
+  readonly exceptions?: ExceptionMentions;
+}
+
 export interface FieldViewOptions {
   id: string;
   commit?: (edit: ProjectedEdit) => Promise<FieldRefusal | undefined>;
@@ -26,22 +33,23 @@ export interface FieldViewOptions {
   multipleRows?: boolean;
   selectedMembers?: ReadonlySet<string>;
   chooseMember?: (id: string, extend: boolean) => void;
-  planSources?: readonly StudioPlanReviewSource[];
-  exceptions?: ExceptionMentions;
-  source?: StudioEvaluateValueSource;
+  /** Where the plan says the value comes from. */
+  planSources?: SourceNaming & { readonly sources: readonly StudioPlanReviewSource[] };
+  source?: EvaluateOrigin;
   /** The changed mark, when the value is a difference of the shown document. The selected runs' other value takes its place. */
   changed?: ChangeMark;
 }
 
-function origin({ planSources, exceptions, source, changed }: FieldViewOptions) {
-  if (!planSources?.length) return { text: source?.kind === 'trained' && !changed ? studioEvaluateValueSource(source) : undefined };
-  const mentions = planSources.map((item) => item.kind === 'exception' ? exceptions?.(item) : undefined);
-  const named = new Map(planSources.flatMap((item, index) => {
+function origin({ planSources, source, changed }: FieldViewOptions) {
+  if (!planSources?.sources.length) return { text: source?.kind === 'trained' && !changed ? studioEvaluateValueSource(source) : undefined };
+  const { sources, names, exceptions } = planSources;
+  const mentions = sources.map((item) => item.kind === 'exception' ? exceptions?.(item) : undefined);
+  const named = new Map(sources.flatMap((item, index) => {
     const mention = mentions[index];
-    return mention ? [[JSON.stringify([item.step, item.variant, item.name]), mention] as const] : [];
+    return mention ? [[JSON.stringify([item.step, item.variant, item.key]), mention] as const] : [];
   }));
   return {
-    text: [...new Set(planSources.map((item, index) => studioPlanValueSource(item, mentions[index]?.runs)))].join(', '),
+    text: [...new Set(sources.map((item, index) => studioPlanValueSource(item, names, mentions[index]?.runs)))].join(', '),
     reveal: named.size === 1 ? [...named.values()][0].reveal : undefined,
   };
 }
