@@ -65,8 +65,8 @@ if __name__ == "__main__":
         raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
     elif scope == "sweep":
         raw["steps"]["baseline"]["sweep"] = {"axes": {"seed": {"values": {
-            "control": {"patches": {"params.seed": {"op": "replace", "value": 2}}},
-            "comparison": {"patches": {"params.seed": {"op": "replace", "value": 3}}},
+            "control": {"label": "Control", "patches": {"params.seed": {"op": "replace", "value": 2}}},
+            "comparison": {"label": "Comparison", "patches": {"params.seed": {"op": "replace", "value": 3}}},
         }}}}
     project = Project.model_validate(raw)
     paths = AppPaths.resolve(instance_root=Path(home))

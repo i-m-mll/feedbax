@@ -304,7 +304,7 @@ test('measures drag updates in the mounted Model at 20 and 100 cards', { tag: '@
         { kind: 'document', id: 'objective', document: {
           schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
         } },
-        { kind: 'step', id: 'train', step: { kind: 'train', base: { inline: { trial_documents: {
+        { kind: 'step', id: 'train', step: { kind: 'train', label: 'Train', base: { inline: { trial_documents: {
           model: { document: 'model' }, task: { document: 'task' },
           objective: { document: 'objective' },
         } } } } },
