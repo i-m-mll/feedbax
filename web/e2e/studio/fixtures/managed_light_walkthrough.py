@@ -15,6 +15,7 @@ from feedbax.host.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
+from tests.support.browser_seed_actions import NonSeed
 
 
 def figure_samples(view: SuccessView, figure: str) -> list[dict]:
@@ -64,5 +65,8 @@ def main(instance: str, project: str, alignment: str, figure: str) -> None:
     }, allow_nan=False))
 
 
+ACTIONS = {"observe": NonSeed(main, "measures the results of an executed pipeline")}
+
+
 if __name__ == "__main__":
-    main(*sys.argv[1:])
+    ACTIONS["observe"].command(*sys.argv[1:])

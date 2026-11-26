@@ -1,8 +1,7 @@
 """Seed a Train step whose Model holds a Linear and a Conv2d without their required parameters, a sound 8000-batch
 Train step, an Evaluate of the first, and an Analyze of the Evaluate."""
 
-import json
-import sys
+from tests.support.browser_seed_actions import HomeSeed, print_action
 from copy import deepcopy
 
 from web.e2e.studio.fixtures.canonical_evaluate import _seed
@@ -31,11 +30,14 @@ def seed(home: str, project_id: str):
     steps["train_b"]["base"]["inline"]["training_config"]["n_batches"] = 8000
     steps["train_b"]["base"]["inline"]["trial_documents"]["model"] = {"document": "sound-model"}
     conditions = steps["conditions"]
+    conditions["label"] = "Conditions"
     conditions["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     conditions["inputs"]["subject"] = {"step": "train", "checkpoint": "last"}
     return _seed(home, project_id, raw)
 
 
+ACTIONS = {"seed": HomeSeed(seed)}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed}[action](*args)))
+    print_action(ACTIONS)

@@ -413,17 +413,16 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
   const modelFile = files.find((file: { document?: { schema: string } }) => file.document?.schema === modelDocumentSchemaId);
   const stepFile = files.find((file: { kind: string }) => file.kind === 'step');
   const trial = stepFile.step.base.inline.trial_documents;
-  delete trial.task;
-  trial.python_task = { document: 'profile-task' };
+  trial.task = { document: 'profile-task' };
   trial.objective = { document: 'profile-objective' };
   modelFile.document.payload = modelFixture(100);
   const { snapshot, projectPath } = await seedManagedProject(request, [
     modelFile,
     { kind: 'document', id: 'profile-task', document: {
-      schema: taskDocumentSchemaId, label: 'Task', payload: blankStoredTask,
+      schema: taskDocumentSchemaId, label: 'Profile Task', payload: blankStoredTask,
     } },
     { kind: 'document', id: 'profile-objective', document: {
-      schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'profile-objective' },
+      schema: objectiveDocumentSchemaId, label: 'Profile Objective', payload: { id: 'profile-objective' },
     } },
     stepFile,
   ]);

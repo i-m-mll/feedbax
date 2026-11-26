@@ -51,14 +51,15 @@ def _save_project(folders, project, authored):
 
 def managed_evaluation_definition():
     from feedbax.contracts.model_address import ModelAddress
+    from feedbax.contracts.project_sweep import model_field_path
     from tests.test_document_train_pair import authored_documents, document_project
 
     raw = document_project(authored_documents(), evaluation=True)
     baseline = raw["steps"]["baseline"]
-    mass = ModelAddress.model_validate({
+    mass = model_field_path(ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
-    }).to_text()
+    }))
     sweep = {"axes": {"mass": {"values": {
         name: {"value": value, "patches": {mass: {"value": value}}}
         for name, value in (("nominal", 1), ("heavy", 2))

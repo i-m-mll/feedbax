@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project_inputs import Pointer
 from feedbax.contracts.project_sources import pointer
@@ -30,15 +30,33 @@ class StudioTaskStart(StrictModel):
 def task_start_path(model: ModelDocument, address: ModelAddress) -> tuple[str, ...]:
     """The names of enclosing Model components followed by the state or parameter path."""
     names, interior = [], model.interior
-    for id in (*address.composites, address.element.parent.id):
-        component = interior.components.get(id)
-        names.append(component.name if component is not None else id)
-        interior = getattr(component, "interior", interior)
-    kind, *members = address.element.path
-    if kind == "state":
-        (symbol,) = members
-        return (*names, *str(symbol).split("/"))
-    return (*names, *map(str, members))
+    for key in address.composites:
+        component = interior.components.get(key) if interior is not None else None
+        names.append(component.name if component is not None else key)
+        interior = getattr(component, "interior", None)
+    match address.element:
+        case FieldElement(parent=ComponentElement(id=key), path=path):
+            component = interior.components.get(key) if interior is not None else None
+            names.append(component.name if component is not None else key)
+            match path:
+                case ("state", str(symbol)):
+                    return (*names, *symbol.split("/"))
+                case ("fields", *members):
+                    return (*names, *map(str, members))
+                case _:
+                    return (*names, *map(str, path))
+        case element:
+            parts = address.stored_path()[3 * len(address.composites):]
+            return (*names, *(parts or (element.kind,)))
+
+
+def authored_task_link_path(path: tuple[str | int, ...]) -> tuple[str | int, ...]:
+    """Name a lowered link in the same way as the stored Task does."""
+    match path:
+        case ("links", str(key), *rest) if key.startswith("{"):
+            return "links", ModelAddress.from_text(key).to_authored_text(), *rest
+        case _:
+            return path
 
 
 def task_start(model: ModelDocument, address: ModelAddress) -> StudioTaskStart:

@@ -4054,7 +4054,7 @@ export type SetFieldWeight = {
 
 export type SetLink = {
   "op": "link";
-  "model_field": string;
+  "address_text": string;
   "variable": string | null;
 };
 
@@ -5235,6 +5235,7 @@ export type StudioProjectWindowMapException = {
   "id": string;
   "count": number;
   "rule": SweepException;
+  "field_labels"?: Record<string, string>;
 };
 
 export type StudioProjectWindowMapFigure = {
@@ -5637,6 +5638,7 @@ export type StudioTrialAuthoring = {
   "inputs": Array<StudioTrialInput>;
   "outputs": Array<StudioTrialOutput>;
   "resets": Array<StudioTrialReset>;
+  "unresolved_links": Array<StudioTrialUnresolvedLink>;
   "fields": Array<StudioTrialField>;
   "problems": Array<Problem>;
   "created_term"?: string | null;
@@ -5749,6 +5751,7 @@ export type StudioTrialRelate = {
 
 export type StudioTrialReset = {
   "address": ModelAddress;
+  "address_text": string;
   "path": Array<string>;
   "type": ValueType;
   "finest": Level;
@@ -5769,6 +5772,11 @@ export type StudioTrialStepScope = {
 export type StudioTrialStructureEdit = {
   "kind": "structure";
   "changes": Array<TaskStructureChange>;
+};
+
+export type StudioTrialUnresolvedLink = {
+  "key": string;
+  "path": Array<string>;
 };
 
 export type StudioValueStructure = {
@@ -13132,7 +13140,7 @@ export const SetFieldWeightSchema: z.ZodType<SetFieldWeight> = z.lazy(() =>
 export const SetLinkSchema: z.ZodType<SetLink> = z.lazy(() =>
   z.object({
     "op": z.literal("link"),
-    "model_field": z.string(),
+    "address_text": z.string(),
     "variable": z.union([z.string(), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<SetLink>;
@@ -14717,6 +14725,7 @@ export const StudioProjectWindowMapExceptionSchema: z.ZodType<StudioProjectWindo
     "id": z.string(),
     "count": z.number().int().safe(),
     "rule": SweepExceptionSchema,
+    "field_labels": z.record(z.string(), z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapException>;
 
@@ -15213,6 +15222,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "inputs": z.array(StudioTrialInputSchema),
     "outputs": z.array(StudioTrialOutputSchema),
     "resets": z.array(StudioTrialResetSchema),
+    "unresolved_links": z.array(StudioTrialUnresolvedLinkSchema),
     "fields": z.array(StudioTrialFieldSchema),
     "problems": z.array(ProblemSchema),
     "created_term": z.union([z.string(), z.null()]).optional(),
@@ -15355,6 +15365,7 @@ export const StudioTrialRelateSchema: z.ZodType<StudioTrialRelate> = z.lazy(() =
 export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
   z.object({
     "address": ModelAddressSchema,
+    "address_text": z.string(),
     "path": z.array(z.string()),
     "type": ValueTypeSchema,
     "finest": LevelSchema,
@@ -15383,6 +15394,13 @@ export const StudioTrialStructureEditSchema: z.ZodType<StudioTrialStructureEdit>
     "changes": z.array(TaskStructureChangeSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialStructureEdit>;
+
+export const StudioTrialUnresolvedLinkSchema: z.ZodType<StudioTrialUnresolvedLink> = z.lazy(() =>
+  z.object({
+    "key": z.string(),
+    "path": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialUnresolvedLink>;
 
 export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.lazy(() =>
   z.object({

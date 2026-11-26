@@ -109,16 +109,16 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     // With runs live, the button's name is what it reads: its name and their count.
     await page.getByRole('button', { name: /^Activity \d+$/ }).click();
     const selected = activity.getByRole('region', { name: configuration.project, exact: true })
-      .getByRole('listitem').filter({ hasText: first.label });
+      .locator(`[data-job="${first.job_id}"]`);
     const stopping = post(page, '/api/jobs/stop');
     await selected.getByRole('button', { name: 'Stop', exact: true }).click();
     expect((await stopping).ok()).toBe(true);
 
     const secondActivity = second.getByRole('region', { name: 'Activity', exact: true });
     await second.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
-    const secondAttempt = (label: string) => secondActivity.getByRole('region', { name: configuration.project, exact: true })
-      .getByRole('listitem').filter({ hasText: label }).first();
-    const resume = secondAttempt(first.label).getByRole('button', { name: 'Resume', exact: true });
+    const secondAttempt = (jobId: string) => secondActivity.getByRole('region', { name: configuration.project, exact: true })
+      .locator(`[data-job="${jobId}"]`);
+    const resume = secondAttempt(first.job_id).getByRole('button', { name: 'Resume', exact: true });
     await expect(resume).toBeEnabled({ timeout: jobTimeout });
     const stopped = (await jobs()).find((job) => job.job_id === first.job_id);
     expect(stopped).toMatchObject({ status: 'stopped', can_resume: true });
@@ -144,7 +144,7 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     await expect.poll(async () => (await runningSibling())?.status, { timeout: jobTimeout }).toBe('running');
     const sibling = (await runningSibling())!;
     const forced = post(second, '/api/jobs/stop');
-    await secondAttempt(sibling.label).getByRole('button', { name: 'Force Stop', exact: true }).click();
+    await secondAttempt(sibling.job_id).getByRole('button', { name: 'Force Stop', exact: true }).click();
     expect((await forced).ok()).toBe(true);
     await expect.poll(async () =>
       (await jobs()).find((job) => job.job_id === sibling.job_id)?.outcome?.outcome,
@@ -172,14 +172,14 @@ raise TimeoutError("No isolated sibling published a checkpoint")
 `, String(jobTimeout / 1000), projectId, first.job_id, sibling.job_id, attempt.job_id);
     const interrupted = (await jobs()).find((job) => job.job_id === interruptedId);
     if (!interrupted) throw new Error('The interrupted sibling disappeared from Jobs');
-    await expect(secondAttempt(interrupted.label).getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
+    await expect(secondAttempt(interrupted.job_id).getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
     await second.reload();
     await mapStep(second, 'train').click();
     await second.getByRole('tab', { name: 'Runs', exact: true }).click();
     await expect(row(second, sibling).getByText('Stopped', { exact: true })).toBeVisible();
     await expect(row(second, interrupted).getByText('Interrupted', { exact: true })).toBeVisible();
     await second.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
-    await expect(secondAttempt(interrupted.label).getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
+    await expect(secondAttempt(interrupted.job_id).getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
     await expect.poll(async () => {
       const current = await jobs();
       return current.find((job) => job.job_id === attempt.job_id)?.progress?.completed_updates ?? 0;

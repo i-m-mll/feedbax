@@ -464,21 +464,21 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
     schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
   } };
   const emptyModel = { ...singleModel, id: 'empty-model', document: {
-    ...singleModel.document, payload: { step_seconds: '0.01 s', ports: {}, interior: {} },
+    ...singleModel.document, label: 'Empty Model', payload: { step_seconds: '0.01 s', ports: {}, interior: {} },
   } };
   const documents = (model: string) => ({
     model: { document: model }, task: { document: task.id }, objective: { document: objective.id },
   });
-  const step = (id: string, model: string) => ({
-    ...template, id, step: { ...template.step, base: { inline: {
+  const step = (id: string, label: string, model: string) => ({
+    ...template, id, step: { ...template.step, label, base: { inline: {
       ...template.step.base.inline, trial_documents: documents(model),
     } } },
   });
   const { snapshot, projectPath } = await seedManagedProject(request, [
     singleModel, chainModel, task, objective, emptyModel,
-    step('train', 'chain'), step('single', 'single'), step('empty', 'empty-model'),
-    { kind: 'step', id: 'broken', step: { kind: 'train', base: { inline: { trial_documents: documents('empty-model') } } } },
-    { kind: 'step', id: 'rowless', step: { kind: 'train', base: { document: 'absent-base' } } },
+    step('train', 'Train', 'chain'), step('single', 'Single', 'single'), step('empty', 'Empty', 'empty-model'),
+    { kind: 'step', id: 'broken', step: { kind: 'train', label: 'Broken', base: { inline: { trial_documents: documents('empty-model') } } } },
+    { kind: 'step', id: 'rowless', step: { kind: 'train', label: 'Rowless', base: { document: 'absent-base' } } },
   ]);
   const host = await request.get('/api/jobs');
   expect(host.ok(), await host.text()).toBe(true);
@@ -600,16 +600,16 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const rowless = mapCard(page, 'rowless');
   await rowless.getByRole('button', { name: "Can't run", exact: true }).click();
   await expect(list.getByRole('listitem')).toHaveCount(1);
-  await list.getByRole('button', { name: 'Base · Absent base', exact: true }).click();
+  await list.getByRole('listitem').getByRole('button').click();
   await expect(mapStep(page, 'rowless')).toHaveAttribute('aria-pressed', 'true');
 
   await problemButton.click();
   // The group heading names the document; the row names the field the problem is about.
-  await list.locator('section').filter({ has: page.getByRole('heading', { name: 'Empty model', exact: true }) })
+  await list.locator('section').filter({ has: page.getByRole('heading', { name: 'Empty Model', exact: true }) })
     .getByRole('button', { name: /^Components · Model has no components\./ }).click();
   const emptyReason = page.getByText('Components · Model has no components.', { exact: true });
   const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
-  await expect(empty.locator(':scope > header')).toContainText('Empty model');
+  await expect(empty.locator(':scope > header')).toContainText('Empty Model');
   await expect(emptyReason).toBeFocused();
   await expect(mapCard(page, 'empty').locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
 
@@ -634,7 +634,7 @@ test('a run whose own exception is refused dims its definition views with the pr
   await page.goto('/?project=' + snapshot.project_id);
   const card = page.locator('[data-map-step="train"]');
   await mapStep(page, 'train').click();
-  await chooseSweepValue(card, 'Rate', '0.001');
+  await chooseSweepValue(card, 'Learning Rate', '0.001');
   for (const name of ['Task', 'Objective', 'Training']) {
     const tab = page.getByRole('tab', { name, exact: true });
     await expect(tab).toHaveAttribute('aria-disabled', 'true');
@@ -644,7 +644,7 @@ test('a run whose own exception is refused dims its definition views with the pr
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
   expect(reads).not.toContain('rate=rate-0');
 
-  await chooseSweepValue(card, 'Rate', '0.01');
+  await chooseSweepValue(card, 'Learning Rate', '0.01');
   for (const name of ['Model', 'Objective']) {
     await expect(page.getByRole('tab', { name, exact: true })).not.toHaveAttribute('aria-disabled', 'true');
   }
@@ -665,15 +665,15 @@ test('a view with nothing to show is dimmed in the rail, and an open one gives w
     schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
   } };
   const flatModel = { ...planarModel, id: 'flat-model', document: {
-    ...planarModel.document, payload: { step_seconds: '0.01 s', ports: {}, interior: {} },
+    ...planarModel.document, label: 'Flat Model', payload: { step_seconds: '0.01 s', ports: {}, interior: {} },
   } };
-  const step = (id: string, model: string) => ({
-    ...template, id, step: { ...template.step, base: { inline: { ...template.step.base.inline, trial_documents: {
+  const step = (id: string, label: string, model: string) => ({
+    ...template, id, step: { ...template.step, label, base: { inline: { ...template.step.base.inline, trial_documents: {
       model: { document: model }, task: { document: task.id }, objective: { document: objective.id },
     } } } },
   });
   const { snapshot } = await seedManagedProject(request, [
-    planarModel, flatModel, task, objective, step('planar', planarModel.id), step('flat', flatModel.id),
+    planarModel, flatModel, task, objective, step('planar', 'Planar', planarModel.id), step('flat', 'Flat', flatModel.id),
   ]);
   await page.goto(`/?project=${snapshot.project_id}`);
   const sceneTab = page.getByRole('tab', { name: 'Scene', exact: true });

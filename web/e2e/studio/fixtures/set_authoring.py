@@ -1,7 +1,6 @@
 """Seed projects whose steps read Sets."""
 
-import json
-import sys
+from tests.support.browser_seed_actions import HomeSeed, print_action
 from copy import deepcopy
 
 from web.e2e.studio.fixtures.canonical_evaluate import _seed
@@ -85,6 +84,12 @@ def seed_window(home: str, project_id: str, *, weighted: bool = False):
     return _seed(home, project_id, raw)
 
 
+ACTIONS = {
+    "seed": HomeSeed(seed),
+    "seed_entries": HomeSeed(seed_entries),
+    "seed_window": HomeSeed(seed_window),
+}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed, "seed_entries": seed_entries, "seed_window": seed_window}[action](*args)))
+    print_action(ACTIONS)

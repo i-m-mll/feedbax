@@ -9,6 +9,7 @@ import time
 
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient, HostError
+from tests.support.browser_seed_actions import NonSeed
 
 
 def read_job(host, project, attempt):
@@ -131,27 +132,24 @@ def result(paths, host, project, attempt, successor, revision, evaluation, trial
     return {"receipt": result.receipt.model_dump(mode="json"), "samples": samples}
 
 
+ACTIONS = {
+    "declare-variants": NonSeed(lambda paths, host, *args: declare_variants(paths, *args),
+                                "edits the already saved project at a checked revision"),
+    "checkpoint": NonSeed(stopped_checkpoint, "reads a stopped Host attempt and its checkpoint"),
+    "restart": NonSeed(restart, "restarts the isolated Host"),
+    "resume": NonSeed(lambda paths, host, *args: resume(host, *args), "resumes an existing Host attempt"),
+    "completed": NonSeed(lambda paths, host, *args: completed_receipt(host, *args), "reads a completed Train receipt"),
+    "result": NonSeed(result, "reads a retained Host result"),
+}
+
+
 def main():
     action, home, project, attempt, *args = sys.argv[1:]
     root = Path(home).resolve(strict=True)
     paths = AppPaths.resolve(instance_root=root)
     paths.configure_studio(desktop=False)
     host = HostClient(paths.host)
-    match action:
-        case "declare-variants":
-            record = declare_variants(paths, project, attempt)
-        case "checkpoint":
-            record = stopped_checkpoint(paths, host, project, attempt)
-        case "restart":
-            record = restart(paths, host, project, attempt)
-        case "resume":
-            record = resume(host, project, attempt, *args)
-        case "completed":
-            record = completed_receipt(host, project, attempt, *args)
-        case "result":
-            record = result(paths, host, project, attempt, *args)
-        case _:
-            raise ValueError(f"Unknown lifecycle observation: {action}")
+    record = ACTIONS[action].command(paths, host, project, attempt, *args)
     print(json.dumps(record, allow_nan=False))
 
 

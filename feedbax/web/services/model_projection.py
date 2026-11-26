@@ -7,7 +7,7 @@ from typing import cast, get_args
 from feedbax.compiler.model_document import inspect_model_signals
 from feedbax.compiler.model_edit import conserving_port_type, model_ungroup_eligibility
 from feedbax.compiler.model_ports import ModelRegistryPorts
-from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf
+from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf, intervention_operand_defaults
 from feedbax.contracts.model_address import (
     AttachmentElement, ComponentElement, ComponentPortAddress, FieldElement, GraphElement, InputsElement,
     ModelAddress, OutputsElement, PhysicalConnectionElement, PortElement, WireElement,
@@ -20,7 +20,8 @@ from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.time_units import length_steps
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_edit import (
-    EvaluateModelRequest, ModelPhysicalPortProjection, ModelPortProjection, ModelProjection, ModelTaskInput, StepRuns,
+    EvaluateModelRequest, ModelAttachmentDefaults, ModelAttachmentDefaultsRequest, ModelPhysicalPortProjection,
+    ModelPortProjection, ModelProjection, ModelTaskInput, StepRuns,
 )
 from feedbax.contracts.expression_check import references
 from feedbax.contracts.project import BasedDocument
@@ -212,12 +213,7 @@ def evaluate_projection(folders, project_id, body, bundle):
     return model, model_task_signals(source, folders.python_tasks), documents.objective, documents.input_bindings, source
 
 
-def model_projection(folders, project_id, body, bundle):
-    snapshot = folders.read(project_id, revision=body.revision)
-    payload, layout = model_edit_source(snapshot, body.document)
-    stored = StoredModelDocument.model_validate(payload)
-    authored = stored.lower(bundle.components)
-    differences = model_differences(folders, project_id, body, snapshot, stored.model_dump(mode="json"), layout)
+def _model_signal_selection(folders, project_id, body, bundle, snapshot, authored):
     selected = None
     step = snapshot.project.steps.get(body.run.step) if body.run is not None else None
     if step is not None and step.kind == "evaluate":
@@ -228,13 +224,35 @@ def model_projection(folders, project_id, body, bundle):
         selected = selected_model_and_task(folders, project_id, body)
     model, task, objective, overrides, source = selected or (authored, (), None, {}, None)
     model = model or authored
-    task_signals = tuple(task_signal(item) for item in task)
     bound = matched_task_inputs(model, task, overrides)
     supplied = {port.name: signal.type for port, signal in bound}
-    authority = ModelRegistryPorts(bundle.components)
     table = inspect_model_signals(
         model, bundle.components, supplied, task=source if isinstance(source, TaskDocument) else None,
     )
+    return model, task, objective, bound, table
+
+
+def model_attachment_defaults(folders, project_id, body: ModelAttachmentDefaultsRequest, bundle) -> ModelAttachmentDefaults:
+    snapshot = folders.read(project_id, revision=body.revision)
+    payload, _ = model_edit_source(snapshot, body.document)
+    try:
+        authored = StoredModelDocument.model_validate(payload).lower(bundle.components)
+        model, _, _, _, table = _model_signal_selection(folders, project_id, body, bundle, snapshot, authored)
+        operands = intervention_operand_defaults(model, table, body.owner, body.operation)
+    except ValueError as error:
+        raise ProjectFolderInvalid(str(error)) from error
+    return ModelAttachmentDefaults(operands=operands)
+
+
+def model_projection(folders, project_id, body, bundle):
+    snapshot = folders.read(project_id, revision=body.revision)
+    payload, layout = model_edit_source(snapshot, body.document)
+    stored = StoredModelDocument.model_validate(payload)
+    authored = stored.lower(bundle.components)
+    differences = model_differences(folders, project_id, body, snapshot, stored.model_dump(mode="json"), layout)
+    model, task, objective, bound, table = _model_signal_selection(folders, project_id, body, bundle, snapshot, authored)
+    task_signals = tuple(task_signal(item) for item in task)
+    authority = ModelRegistryPorts(bundle.components)
     readers = _objective_readers(objective, table)
     ports: list[ModelPortProjection] = []
     physical_ports: list[ModelPhysicalPortProjection] = []

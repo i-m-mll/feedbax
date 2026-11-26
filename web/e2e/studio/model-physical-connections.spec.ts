@@ -30,7 +30,7 @@ function storedConnections(current: StudioProjectDocument['snapshot']) {
   const document = rootPayload(current.project.documents?.['reach-model']) as unknown as ModelDocument;
   const component = document.interior.components?.equations;
   const interior = component?.kind === 'composite' ? component.interior : undefined;
-  if (!interior?.physical_domain) {
+  if (interior?.physical_domain !== 'translational') {
     throw new Error('Expected a stored Equations interior');
   }
   return (interior as StoredPhysicalInterior).connections ?? {};

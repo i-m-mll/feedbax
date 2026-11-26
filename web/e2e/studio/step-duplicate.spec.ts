@@ -43,7 +43,7 @@ test('a duplicated Train step reads its source\'s results until it differs, and 
   await command('Duplicate Step Train');
   await expect.poll(async () => Object.keys((await saved()).project.steps ?? {}).sort()).toEqual(['baseline', 'train', 'train-2']);
   const duplicated = await saved();
-  expect(duplicated.project.steps!['train-2']).toEqual(before.project.steps!.train);
+  expect(duplicated.project.steps!['train-2']).toEqual({ ...before.project.steps!.train, label: 'Train 2' });
   expect(Object.keys(duplicated.project.documents ?? {}).sort()).toEqual(Object.keys(before.project.documents ?? {}).sort());
   const read = await rows();
   expect(read['train-2'].request_id).toBe(read.train.request_id);

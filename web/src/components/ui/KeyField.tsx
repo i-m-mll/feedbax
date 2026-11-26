@@ -17,7 +17,7 @@ export function KeyField({ value, name, editing, onEditingChange, onCommit, unav
 }) {
   if (!editing && !refusal && value === name) return null;
   return <div className="grid min-w-0 gap-0.5">
-    <span className="flex min-w-0 items-center gap-1.5 text-xs text-shell-muted">
+    <span data-member-key className="flex min-w-0 items-center gap-1.5 text-xs text-shell-muted">
       <InlineEdit value={value} editing={editing} onEditingChange={onEditingChange} onCommit={onCommit}
         unavailable={unavailable}
         aria-label={studioAccessibleName('changeKey', name)} className="font-mono" />

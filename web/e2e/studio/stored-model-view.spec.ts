@@ -120,9 +120,8 @@ test('authors and reopens an addressed Model through the project history', { tag
     initial_source: { kind: 'wire', source: { owner: 'component', component: component.id, port: 'hidden' } },
   });
   await model.focus();
-  const undone = await apply(() => page.keyboard.press('Meta+Z'), 'undo');
-  const undoneDelay = firstAttachment(stored(undone.snapshot), wire.id) as { initial_source?: unknown };
-  expect(undoneDelay.initial_source ?? { kind: 'value', value: 0 }).toEqual({ kind: 'value', value: 0 });
+  await apply(() => page.keyboard.press('Meta+Z'), 'undo');
+  await expect(inspector.getByRole('button', { name: 'Initial kind: Value', exact: true })).toBeVisible();
   await model.focus();
   const redone = await apply(() => page.keyboard.press('Meta+Shift+Z'), 'undo');
   expect(firstAttachment(stored(redone.snapshot), wire.id)).toMatchObject({

@@ -9,7 +9,7 @@ from types import MappingProxyType, UnionType
 from typing import Annotated, Any, TYPE_CHECKING, TypeAliasType, Union, get_args, get_origin
 
 import rfc8785
-from pydantic import BaseModel, JsonValue, RootModel, ValidationError
+from pydantic import BaseModel, JsonValue, RootModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 
@@ -244,6 +244,9 @@ def _field_default(model: type[BaseModel], name: str) -> JsonValue:
     if field.default_factory_takes_validated_data:
         raise ValueError(f"{_model_name(model)}.{name} has a data-dependent stored default")
     value = field.get_default(call_default_factory=True)
+    if _expression_site_at(field.annotation, ()) is not None:
+        codec = TypeAdapter(field.rebuild_annotation())
+        return codec.dump_python(codec.validate_python(value), mode="json", by_alias=True)
     return to_jsonable_python(value, by_alias=True)
 
 
