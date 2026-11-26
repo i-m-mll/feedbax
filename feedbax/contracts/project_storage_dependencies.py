@@ -39,9 +39,10 @@ def _walk(value: JsonValue, path: StoredPath = ()) -> Iterator[tuple[StoredPath,
 def _position(value: JsonValue, parts: StoredPath, *, by_id: bool) -> StoredPath:
     """The longest authored prefix of a path, with a named list member located by its index."""
     resolved: list[str] = []
+    path = ".".join(parts)
     for part in parts:
         try:
-            key = resolve_segment(value, part, path=".".join(parts), by_id=by_id)
+            key = resolve_segment(value, part, path=path, by_id=by_id)
         except ValueError:
             break
         if key is None:
@@ -76,14 +77,22 @@ def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPa
     documents = raw.get("documents", {})
     steps = raw.get("steps", {})
 
-    def observe(family: str, name: str, parts: StoredPath, *, by_id: bool = True) -> None:
+    def observe(family: str, name: str, parts: StoredPath, *, by_id: bool = True, subtree: bool = False) -> None:
         root = steps.get(name) if family == "steps" else documents.get(name)
-        if root is not None and (position := _position(root, parts, by_id=by_id)):
-            protected[family, name].add(position)
+        if root is None or not (position := _position(root, parts, by_id=by_id)):
+            return
+        paths = protected[family, name]
+        paths.add(position)
+        if subtree and len(position) == len(parts):
+            value = root
+            for part in position:
+                value = value[int(part)] if isinstance(value, list) else value[part]
+            for suffix, child in _walk(value):
+                paths.update((*position, *suffix, key) for key in child)
 
-    def document(name: str, parts: StoredPath, *, by_id: bool = True) -> None:
+    def document(name: str, parts: StoredPath, *, by_id: bool = True, subtree: bool = False) -> None:
         for ancestor in base_chain(project.documents, name):
-            observe("documents", ancestor, ("payload", *parts), by_id=by_id)
+            observe("documents", ancestor, ("payload", *parts), by_id=by_id, subtree=subtree)
 
     def compatible(schemas: frozenset[str], parts: StoredPath) -> None:
         for name, entry in project.documents.items():
@@ -123,7 +132,7 @@ def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPa
                 reference = DocumentReference.model_validate(value)
             except ValidationError:
                 continue
-            document(key, json_pointer_parts(reference.pointer), by_id=False)
+            document(key, json_pointer_parts(reference.pointer), by_id=False, subtree=True)
 
     for name, entry in project.documents.items():
         if isinstance(entry, BasedDocument) and not entry.base.unresolved:

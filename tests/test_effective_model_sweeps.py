@@ -93,7 +93,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
     _save_project(folders, "addressed", Project.model_validate(raw))
     saved = folders.read("addressed").project
     assert saved.steps["train"].sweep.axes["factor"].path == target
-    assert not _model_controller(saved.model_dump(mode="json", by_alias=True))["wires"]["read"]["attachments"]
+    assert "attachments" not in _model_controller(saved.model_dump(mode="json", by_alias=True))["wires"]["read"]
     snapshot = folders.read_plan("addressed", revision=None)
     plan = snapshot.plan
     assert not plan.diagnostics
