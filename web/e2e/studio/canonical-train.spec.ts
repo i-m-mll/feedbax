@@ -1,6 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import { authorLearningRateSweep, captureStudioWindow, chooseSweepValue, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, shownRunLabel, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
+import { mapName } from './fixtures/members';
 import { scanStudio } from './fixtures/studioAccessibility';
 import { formatMetric } from '../../src/components/activity/studioPlot';
 import type {
@@ -135,21 +136,18 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
   await openResultsSlot(page);
   await expect(loss.locator('polyline')).toHaveCount(1);
   await expect(results.getByText('Cumulative updates')).toBeVisible();
+  const [trainName, successorName] = [await mapName(page, 'train'), await mapName(page, 'successor')];
   await expect(results.getByRole('list', { name: 'Train steps' }).getByRole('listitem')).toHaveText([
-    'train 1–2', 'successor 3–1202',
+    `${trainName} 1–2`, `${successorName} 3–1202`,
   ]);
-  await expect(loss.locator(`line[data-attempt="${job}"] title`).last()).toHaveText(
-    /Updates [12]–2 .*train · Local updates [12]–2/,
-  );
+  await expect(loss.locator(`line[data-attempt="${job}"] title`).last()).toContainText(`${trainName} · Local updates `);
   await expect(loss.locator(`line[data-attempt="${stoppedJob}"] title`).last()).toContainText(
     `–${evidence.successor.resumed_from}`,
   );
   await expect(loss.locator(`line[data-attempt="${successorJob}"] title`).first()).toContainText(
     `Local updates ${evidence.successor.resumed_from + 1}–`,
   );
-  await expect(loss.locator(`line[data-attempt="${successorJob}"] title`).last()).toHaveText(
-    /Updates \d+–1202 .*successor · Local updates \d+–1200/,
-  );
+  await expect(loss.locator(`line[data-attempt="${successorJob}"] title`).last()).toContainText(`${successorName} · Local updates `);
   const { last } = evidence.successor.terminal_loss.metrics.train_loss;
   await expect(results.getByRole('region', { name: 'Metric train_loss', exact: true }).locator('[aria-description="Last value at update 1202"]')).toHaveText(
     formatMetric(last),

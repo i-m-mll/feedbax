@@ -25,7 +25,8 @@ def seed(home: str, project_id: str):
     comparison = deepcopy(figure)
     comparison["caption"] = "Velocity comparison"
     views = project.documents["velocity-analysis"].payload["views"]
-    views["comparison"] = {**views["profile"], "figure": comparison}
+    views["profile"]["label"] = "Velocity profile"
+    views["comparison"] = {**views["profile"], "label": "Velocity comparison", "figure": comparison}
     for name, data in dump_text_project(
         project, ProjectConfiguration(project=project_id, store="results"),
     ).items():

@@ -195,6 +195,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   }
                 }}
                 data-index={item.index}
+                data-run={run.id}
                 selected={lit}
                 related={relatedIds?.has(run.id)}
                 aria-rowindex={item.index + 2}

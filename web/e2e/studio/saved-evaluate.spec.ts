@@ -7,6 +7,7 @@ import type {
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
 import { studioBytes } from '../../src/components/activity/studioVocabulary';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
+import { command, mapName } from './fixtures/members';
 import { captureStudioWindow, chooseSweepValue, drawnRunLabel, drawnStepLabel, enter, mapStep, runName, shownRunLabel, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
@@ -240,13 +241,13 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeDisabled();
   // A card accepts a new step whatever its runs' status.
-  await expect(page.getByRole('button', { name: 'New Step Baseline', exact: true })).toBeEnabled();
+  await expect(command(mapCard(page, 'baseline'), 'newStep')).toBeEnabled();
 
   await chooseStep(page, 'unsupported');
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   // The inspector gives a run's reasons once the run is chosen.
-  await plans(page).getByRole('button', { name: runName('Unsupported') }).click();
+  await plans(page).locator(`[data-run*='"unsupported"']`).getByRole('rowheader').getByRole('button').click();
   await expect(inspector.getByText(/requires a Train checkpoint selected by last/)).toBeVisible();
   await chooseStep(page, 'train');
   const [train] = await submit(page, path);
@@ -455,7 +456,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   await expect(mass).toHaveAccessibleDescription('Trained by train');
   await expect(mass).toHaveValue('1.25');
   await enter(mass, '2');
-  await expect(mass).toHaveAccessibleDescription('Changed by conditions');
+  await expect(mass).toHaveAccessibleDescription(`Changed by ${await mapName(page, 'conditions')}`);
   await expect(mass).toHaveValue('2');
   const changed = await plan();
   expect(changed.rows).toEqual(before.rows);
@@ -516,8 +517,7 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 19_000 });
   const trainRequest = (await plan(snapshot.revision)).rows.find(({ key }) => key.step === 'train')!.request_id;
   const creating = posted(page, projectPath + '/files');
-  await mapCard(page, 'train')
-    .getByRole('button', { name: 'New Step Train', exact: true }).click();
+  await command(mapCard(page, 'train'), 'newStep').click();
   await chooseStepKind(page, 'Evaluate');
   const created = await creating;
   expect(created.status(), await created.text()).toBe(201);
@@ -609,14 +609,15 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
     const curve = await read.json() as StudioEvaluationObjectiveSeries;
     expect(curve.lineage).toEqual([train.job_id]);
     expect(curve.gaps.map(({ update }) => update)).toEqual([3]);
-    const group = page.getByRole('group', { name: 'Objective evaluate · effort', exact: true });
+    const evaluateName = await mapName(page, 'evaluate');
+    const group = page.getByRole('group', { name: `Objective ${evaluateName} · effort`, exact: true });
     const marks = group.locator('circle');
     await expect(marks).toHaveCount(2);
     await expect(group.locator('polyline')).toHaveCount(0);
     const sorted = [...curve.points].sort((left, right) =>
       left.checkpoint.completed_updates - right.checkpoint.completed_updates);
     await expect(marks.locator('title')).toHaveText(sorted.map(({ checkpoint, terms: [term] }) =>
-      `evaluate · effort · Updates ${checkpoint.completed_updates} · ${term.value} · Coverage ${term.coverage}`));
+      `${evaluateName} · effort · Updates ${checkpoint.completed_updates} · ${term.value} · Coverage ${term.coverage}`));
     return curve;
   }
   const curve = await observeObjective();

@@ -1611,7 +1611,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     setReportChoices(undefined);
     if (!primaryVariant || !ready || revision !== saved.revision) return;
     void perform(async () => {
-      const id = await createReport(editor, revision, figure, humanizeLabel(figure.name));
+      const id = await createReport(editor, revision, figure,
+        nameOf(memberNames(saved, figure.key.variant).elements[figure.key.step], figure.name));
       commandScope.selectCreatedStep(id, 'document');
     }, refuseStep(figure.key.step));
   }
@@ -2329,7 +2330,7 @@ function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVarian
   return <div className="space-y-2">{[...groups].map(([key, { holder, entries }]) => {
     const first = entries.find(({ problem }) => canReveal(problem))?.problem;
     const name = holder && (holder.kind === 'step' ? stepName(holder.id) : documentName(entries[0].problem, holder.id));
-    return <section key={key ?? ''}>
+    return <section key={key ?? ''} data-holder={key ?? undefined}>
       {name && <h2 className="font-medium">{first
         ? <Button variant="ghost" size="content" className="rounded-control px-control-inline text-left font-medium"
           onClick={() => onChoose(first)}>{name}</Button>

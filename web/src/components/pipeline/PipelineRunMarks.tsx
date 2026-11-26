@@ -130,7 +130,7 @@ function MapAxisLabel({
       <MenuContent aria-label={studioAccessibleName('sweep', sweep.label)}>
         <ScrollFade axis="y" className="nowheel max-h-60">
           {sweep.values.map((value) => (
-            <MenuItem key={value.id}
+            <MenuItem key={value.id} data-value={value.id}
               glyph={<span className="flex size-[1em] shrink-0 items-center justify-center">{chosen.has(value.id) && <Check />}</span>}
               onKeyDown={(event) => { extendByKey.current = extendsSelection(event); }}
               onClick={(event) => {

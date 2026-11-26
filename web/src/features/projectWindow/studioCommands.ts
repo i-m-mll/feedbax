@@ -131,6 +131,8 @@ export interface StudioCommand {
   readonly reason?: string;
   readonly selectionScoped: boolean;
   readonly shortcut?: Shortcut;
+  /** The object it acts on, such as a step's key, when it acts on one. */
+  readonly instance?: string;
   /** Runs the command, or holds it until the workspace settles and runs it then if it still applies. */
   invoke(): void;
 }
@@ -159,7 +161,7 @@ function studioCommand<Id extends StudioCommandId>(
   const label = studioAccessibleName(name, subject);
   const command: StudioCommand & { readonly id: Id } = {
     id, name, enabled, reason, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
-    title: studioName(name), label, glyph,
+    title: studioName(name), label, glyph, instance: instance || undefined,
     invoke: () => invokeGesture(command),
   };
   const key = bound ? JSON.stringify([id, name, instance || label]) : '';
@@ -200,6 +202,7 @@ export function commandAttributes(command: StudioCommand, placement?: 'bottom' |
   const label = command.reason === undefined ? studioName(command.name) : studioReasonedName(command.name, command.reason);
   return {
     'data-command-id': command.id,
+    'data-command-instance': command.instance,
     'aria-label': command.label,
     'aria-keyshortcuts': command.shortcut && ariaShortcut(command.shortcut),
     'aria-description': command.reason,
