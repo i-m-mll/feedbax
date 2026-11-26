@@ -19,8 +19,8 @@ def seed(home: str, project_id: str):
     documents = raw["documents"]
     documents["sound-model"] = deepcopy(documents["reach-model"]) | {"label": "Sound model"}
     components = documents["reach-model"]["payload"]["interior"]["components"]
-    components["linear"] = {"kind": "leaf", "name": "Linear", "type": "feedbax.equinox.Linear", "fields": {}}
-    components["conv"] = {"kind": "leaf", "name": "Conv", "type": "feedbax.Conv2d", "fields": {}}
+    components["linear"] = {"kind": "leaf", "label": "Linear", "type": "feedbax.equinox.Linear", "fields": {}}
+    components["conv"] = {"kind": "leaf", "label": "Conv", "type": "feedbax.Conv2d", "fields": {}}
     train = steps["train"]
     train["base"]["inline"]["training_config"]["n_batches"] = 10000
     train["sweep"] = {"axes": {"rate": {

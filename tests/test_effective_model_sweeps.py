@@ -93,7 +93,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
     _save_project(folders, "addressed", Project.model_validate(raw))
     saved = folders.read("addressed").project
     assert saved.steps["train"].sweep.axes["factor"].path == target
-    assert "attachments" not in _model_controller(saved.model_dump(mode="json", by_alias=True))["wires"]["read"]
+    assert not _model_controller(saved.model_dump(mode="json", by_alias=True))["wires"]["read"].get("attachments")
     snapshot = folders.read_plan("addressed", revision=None)
     plan = snapshot.plan
     assert not plan.diagnostics
@@ -215,9 +215,9 @@ def test_vector_operand_member_edit_does_not_reset_attachment_anchors(authored):
 def test_document_variant_only_changes_the_addressed_base_model(authored):
     raw = document_project(authored, evaluation=False)
     address = _wire_field("base", "operands", "factor", "value").to_text()
-    _model_controller(raw)["wires"]["read"]["attachments"] = [
-        _add_attachment(_attachment_owner("read"), "base", None, 0.9)["attachment"],
-    ]
+    _model_controller(raw)["wires"]["read"]["attachments"] = {
+        "base": _add_attachment(_attachment_owner("read"), "base", None, 0.9)["attachment"],
+    }
     raw["sweep"] = {"rows": {
         "original": {},
         "variant": {"patches": {f"documents.reach-model.{address}": {"value": 0.6}}},
@@ -230,9 +230,9 @@ def test_document_variant_only_changes_the_addressed_base_model(authored):
         for key in keys
     ] == [0.9, 0.6]
     provenance = "/payload/trial_documents/model/interior/components/wrapper/interior/components/controller"
-    origin = plan.selected_definitions[keys[1]].sources[provenance + "/interior/wires/read/attachments/0/operands/factor/value"]
+    origin = plan.selected_definitions[keys[1]].sources[provenance + "/interior/wires/read/attachments/base/operands/factor/value"]
     assert origin.kind == "variant"
-    assert plan.selected_definitions[keys[1]].sources[provenance + "/name"].kind == "document"
+    assert plan.selected_definitions[keys[1]].sources[provenance + "/label"].kind == "document"
 
 
 def test_integer_range_uses_the_site_and_preserves_whole_request_ids(tmp_path, authored):

@@ -89,7 +89,7 @@ def test_delay_initial_receives_trial_context_and_trains_encoder(initial, nested
     key = jax.random.key(24)
     paired = compile_trial_execution(
         _model(initial, nested=nested), _task(), bundle.components, bundle.expression_functions, python_tasks=bundle.python_tasks,
-        objective=objective, initialization_key=key,
+        objective=objective, input_bindings={"context": "context_input"}, initialization_key=key,
     )
     assert not isinstance(paired, tuple), paired
     graph, execution = paired.executable.graph, paired.execution

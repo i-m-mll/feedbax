@@ -24,9 +24,9 @@ def _train_definition():
     trial = inline["trial_documents"]
     task = documents[trial["task"]["document"]]["payload"]
     task["fixed_steps"] = 12
-    task["epochs"][0]["end"]["length"]["value"] = 12
+    task["epochs"]["move"]["end"]["length"]["value"] = 12
     del task["validation_trials"]
-    (target,) = (variable for variable in task["variables"] if variable["id"] == "target")
+    target = task["variables"]["target"]
     target["value"] = {"kind": "call", "function": "vector", "args": [
         {"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (0.18, 0.05)
     ]}
@@ -93,7 +93,7 @@ def own_sweep_files():
     project = _train_definition()
     train = project["steps"]["train"]
     task = project["documents"][train["base"]["inline"]["trial_documents"]["task"]["document"]]["payload"]
-    task["variables"].append({"id": "gain", "name": "gain", "type": {"base": "real"}, "value": {"kind": "literal", "value": 0.5}})
+    task["variables"]["gain"] = {"label": "gain", "type": {"base": "real"}, "value": {"kind": "literal", "value": 0.5}}
     train["sweep"] = {"axes": {"seed": {"values": {
         f"s{seed}": {"value": seed, "patches": {"seed": {"op": "add", "value": seed}}} for seed in (0, 1)
     }}}}
