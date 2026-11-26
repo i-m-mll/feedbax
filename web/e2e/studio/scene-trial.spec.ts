@@ -1,6 +1,6 @@
 import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
-import type { StudioJobSubmission, StudioTrialReplayResponse, TrialMean } from '../../src/generated/studioContracts';
+import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns, StudioTrialReplayResponse, TrialMean } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { alignMean, pick, showTrials, trialPicker, trialPopup } from './fixtures/controls';
 
@@ -89,6 +89,7 @@ async function doneEvaluationScene(page: Page, home: string, seed: string, scena
   if (after.length) await mapStep(page, 'baseline').click();
   await plans.getByRole('button', { name: /^\d+ Baseline$/ }).click();
   await tab(page, 'Scene').click();
+  return projectId;
 }
 
 // Catches a recorded trial drawn at its initial pose rather than at the playhead's recorded state, a recorded pose
@@ -120,14 +121,23 @@ test('with a Done evaluation the mechanism at the last step is at its path\'s en
 
 // Catches the Scene of a multi-replicate subject never playing (a replay sent without a replicate is refused), and a
 // Scene that plays another replicate than the one picked.
-test('an Evaluate of a two-replicate Train plays in the Scene, and picking replicate 2 draws that replicate', { tag: '@round' }, async ({ page, studio }) => {
+test('an Evaluate of a two-replicate Train plays in the Scene, and picking replicate 2 draws that replicate', { tag: '@round' }, async ({ page, request, studio }) => {
   const replays: { replicate?: number | null; ok: boolean }[] = [];
   page.on('response', (response) => {
     if (response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/evaluate-replay')) {
       replays.push({ replicate: response.request().postDataJSON().replicate, ok: response.ok() });
     }
   });
-  await doneEvaluationScene(page, studio.home, 'seed-two-replicates', 'scene-replicates');
+  const projectId = await doneEvaluationScene(page, studio.home, 'seed-two-replicates', 'scene-replicates');
+  const { revision } = await (await request.get(`/api/projects/${projectId}`)).json() as StudioProjectSnapshot;
+  const plan = await request.get(`/api/projects/${projectId}/train-runs`, { params: { revision, window_map: 'true' } });
+  const recorded = (await plan.json() as StudioSavedTrainRuns).window_map!.evaluations!.find(({ key }) => key.step === 'baseline')!.trials;
+  expect(recorded.length).toBeGreaterThan(0);
+  expect(recorded.every(({ name }) => name)).toBe(true);
+  await trialPicker(page).click();
+  const entries = await trialPopup(page).getByRole('radio').allInnerTexts();
+  await page.keyboard.press('Escape');
+  expect(recorded.filter(({ name }) => !entries.some((text) => text.includes(name!))), 'The picker names every recorded trial').toEqual([]);
   const replicate = footer(page).getByRole('combobox', { name: 'Replicate', exact: true });
   await expect(replicate).toHaveText('replicate 1 of 2');
   const track = scene(page).locator('[data-scene-track]');
