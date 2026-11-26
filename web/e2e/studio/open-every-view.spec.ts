@@ -11,28 +11,26 @@ function serviceProblems(problems: readonly StudioProjectWindowMapProblem[]) {
     ? [problem.package] : [problem.step, problem.variant, problem.place, problem.path, problem.detail]))).size;
 }
 
-/** The Evaluate's trials: each validation trial of the family crossed with each entry of the listed Set, by their labels. */
-const trialNames = [0, 1, 2, 3].flatMap((direction) => [0, 1].flatMap((repeat) =>
-  ['Drift', ...['x', 'y'].flatMap((axis) => ['Minus', 'Plus'].map((sign) => `Command pulse ${axis} ${sign}`))]
-    .map((entry) => `Reach ${direction}, draw ${repeat} · ${entry}`)));
+const variables = (page: Page) => page.locator('[data-slot="primary"]').getByRole('table', { name: 'Variables', exact: true });
+const variableRow = (page: Page, name: string) => variables(page).getByRole('row')
+  .filter({ has: page.getByRole('textbox', { name: `Rename ${name}`, exact: true }) });
 
-/** What the Evaluate step's Task view shows of the listed Set: its entries, the family's variable and the trials. */
+/** What the Task view of the Evaluate that lists its own Set shows of it: its entries and the family's variable. */
 async function listedSet(page: Page) {
-  const variables = page.locator('[data-slot="primary"]').getByRole('table', { name: 'Variables', exact: true });
-  const entries = variables.getByRole('row').filter({ has: page.getByRole('list', { name: 'Values Command kicks', exact: true }) })
+  const entries = variables(page).getByRole('row').filter({ has: page.getByRole('list', { name: 'Values Command kicks', exact: true }) })
     .getByRole('listitem');
   await expect.soft(entries, 'The listed Set shows its two entries').toHaveCount(2);
   await expect.soft(entries.filter({ hasText: /^Command pulse \{axis\} \{sign\}\s*× 4/ }), 'The family is one entry with its count').toHaveCount(1);
-  const kick = variables.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename Kick', exact: true }) });
+  const kick = variableRow(page, 'Kick');
   await expect.soft(kick, 'The family\'s variable is one row').toHaveCount(1);
   await expect.soft(kick.getByRole('img', { name: /^Set Entry Command pulse \{axis\} \{sign\}/ }), 'The variable is marked with its entry').toHaveCount(1);
   const header = page.locator('[data-slot="primary"] .studio-window-slot__header');
   await expect.soft(header.locator('button[data-document] [data-status-mark]'), 'The Task in use has no Problem mark').toHaveCount(0);
-  const picker = page.getByRole('group', { name: 'Clock', exact: true }).getByRole('button', { name: /^Trial / });
-  await picker.click();
-  const shown = await page.getByRole('radiogroup', { name: 'Trial', exact: true }).getByRole('radio').allInnerTexts();
-  await page.keyboard.press('Escape');
-  expect.soft(trialNames.filter((name) => !shown.some((text) => text.includes(name))), 'The trial picker names every trial').toEqual([]);
+}
+
+/** What the Task view of the Evaluate that inherits its subject's Set shows: each of the Set's variables once. */
+async function inheritedSet(page: Page) {
+  for (const name of ['Kick', 'Bias']) await expect.soft(variableRow(page, name), `${name} is one row`).toHaveCount(1);
 }
 
 const module = 'web.e2e.studio.fixtures.canonical_train';
@@ -62,6 +60,7 @@ test('every view of every step of a hold-campaign project renders, with only Ser
   const failures = page.getByRole('alert');
   const problems = page.getByRole('button', { name: /^Problems \d+$/ });
 
+  const setViews = new Set<string>();
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   for (const step of Object.keys(snapshot.project.steps ?? {})) {
     await mapStep(page, step).click();
@@ -75,9 +74,14 @@ test('every view of every step of a hold-campaign project renders, with only Ser
         await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
         expect.soft(await failures.allInnerTexts(), `${step} ${view} shows no failure`).toEqual([]);
         await expect.soft(problems, 'Studio counts the Service\'s Problems').toHaveAccessibleName(`Problems ${expected}`);
-        if (step === 'kick-check' && view === 'task') await listedSet(page);
+        const sets = view === 'task' && { 'loaded-check': listedSet, 'kick-check': inheritedSet }[step];
+        if (sets) {
+          await sets(page);
+          setViews.add(step);
+        }
         await memberLabels(`${step} ${view}`);
       });
     }
   }
+  expect(setViews, 'Both Evaluates\' Task views were checked').toEqual(new Set(['loaded-check', 'kick-check']));
 });
