@@ -133,6 +133,7 @@ class ProjectDiagnostic:
     span: TextSpan | None = None
     selection_value: SelectedAxisValueProblem | None = None
     element_name: str | None = None
+    missing_subject: str | None = None
 
 
 @dataclass(frozen=True)
@@ -280,9 +281,11 @@ class _Problem(Exception):
         document: str | None = None,
         document_path: str | None = None,
         model_address: ModelAddress | None = None,
+        missing_subject: str | None = None,
     ):
         self.diagnostic = ProjectDiagnostic(
             code, path, detail, step, layer, document, document_path=document_path, model_address=model_address,
+            missing_subject=missing_subject,
         )
         super().__init__(detail)
 
@@ -462,7 +465,9 @@ def compose_document(read_document: Callable[[str], Document | None], name: str)
     """The document ``name`` as a root document holding its composed payload."""
     document = read_document(name)
     if document is None:
-        return ProjectDiagnostic(ResolutionCode.MISSING_DOCUMENT, "document", member_display_name(name), document=name)
+        return ProjectDiagnostic(
+            ResolutionCode.MISSING_DOCUMENT, "document", member_display_name(name), document=name, missing_subject=name,
+        )
     if isinstance(document, RootDocument):
         return document
     try:
@@ -527,18 +532,27 @@ class _Documents:
         if name in self.composed:
             return self.composed[name]
 
-        def problem(code: ResolutionCode, document_path: str, detail: str) -> _Problem:
-            return _Problem(code, path, detail, step=self.step, document=name, document_path=document_path)
+        def problem(
+            code: ResolutionCode, document_path: str, detail: str, *, missing_subject: str | None = None,
+        ) -> _Problem:
+            return _Problem(
+                code, path, detail, step=self.step, document=name, document_path=document_path,
+                missing_subject=missing_subject,
+            )
 
         base_name = document.base.document
         if document.base.unresolved:
-            raise problem(ResolutionCode.MISSING_DOCUMENT, "base.document", member_display_name(base_name))
+            raise problem(
+                ResolutionCode.MISSING_DOCUMENT, "base.document", member_display_name(base_name), missing_subject=base_name,
+            )
         if base_name in (*active, name):
             chain = " -> ".join(self.display_name(item) for item in (*active, name, base_name))
             raise problem(ResolutionCode.DOCUMENT_CYCLE, "base.document", chain)
         base = self.read_document(base_name)
         if base is None:
-            raise problem(ResolutionCode.MISSING_DOCUMENT, "base.document", member_display_name(base_name))
+            raise problem(
+                ResolutionCode.MISSING_DOCUMENT, "base.document", member_display_name(base_name), missing_subject=base_name,
+            )
         label = member_display_name(base_name, base.label)
         if base.schema_id != document.schema_id:
             raise problem(
@@ -591,6 +605,7 @@ class _Documents:
                 member_display_name(reference.document),
                 step=self.step,
                 document=reference.document,
+                missing_subject=reference.document,
             )
         self.used.add(reference.document)
         payload = self.payload(reference.document, document, path)
@@ -904,12 +919,16 @@ class _Resolver:
         step = self.project.steps.get(name)
         if step is None:
             raise _Problem(
-                ResolutionCode.MISSING_STEP, "base.step", member_display_name(name), step=active[-1] if active else name
+                ResolutionCode.MISSING_STEP, "base.step", member_display_name(name),
+                step=active[-1] if active else name, missing_subject=name,
             )
         base = step.base
         if isinstance(base, StepBase):
             if base.unresolved:
-                raise _Problem(ResolutionCode.MISSING_STEP, "base.step", member_display_name(base.step), step=name)
+                raise _Problem(
+                    ResolutionCode.MISSING_STEP, "base.step", member_display_name(base.step),
+                    step=name, missing_subject=base.step,
+                )
             parent = self.state(base.step, (*active, name))
             if base.row is not None:
                 parent = self.select_row(name, base, parent)
@@ -1030,7 +1049,7 @@ class _Resolver:
                     ResolutionCode.INVALID_SWEEP, error.path, error.detail, step=base.step
                 ) from error
             if row is None:
-                raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child)
+                raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child, missing_subject=base.row)
             state = self.apply_row(base.step, parent, row)
         elif self.readers.row is not None:
             parent_step = self.finish(base.step, parent, check_requires=False)
@@ -1041,7 +1060,7 @@ class _Resolver:
                     ResolutionCode.MISSING_AUTHORITY, "base.row", str(error), step=child
                 ) from error
             if generated is None:
-                raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child)
+                raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child, missing_subject=base.row)
             state = _StepState(
                 generated.payload,
                 inputs=generated.inputs,
@@ -1050,7 +1069,7 @@ class _Resolver:
                 root_document=parent.root_document,
             )
         else:
-            raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child)
+            raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child, missing_subject=base.row)
         documents = self.row_documents(base.step, state)
         selected = self.finish(base.step, state, documents=documents)
         origins = (

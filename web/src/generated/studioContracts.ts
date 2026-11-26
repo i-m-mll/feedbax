@@ -369,6 +369,7 @@ export interface StudioSavedTrainResult {
 
 export interface StudioSavedTrainRow {
   key: StudioSavedTrainKey;
+  name: string;
   label: string | null;
   request_id: string;
   attempts: StudioSavedTrainAttempt[];
@@ -4657,6 +4658,12 @@ export type StudioProjectListEntry = {
   "step_count": number;
 };
 
+export type StudioProjectMemberNames = {
+  "documents": Record<string, string>;
+  "steps": Record<string, string>;
+  "elements": Record<string, Record<string, string>>;
+};
+
 export type StudioProjectNew = {
   "name": string;
   "example"?: string | null;
@@ -4702,6 +4709,8 @@ export type StudioProjectSnapshot = {
   "revision": Sha256;
   "presentation_revision": Sha256;
   "project": Project;
+  "names": StudioProjectMemberNames;
+  "variant_names": Record<string, StudioProjectMemberNames>;
   "semantic_root": Sha256;
   "presentation": PresentationDocument | null;
   "presentation_error"?: "unreadable_presentation" | null;
@@ -4715,7 +4724,6 @@ export type StudioProjectSnapshot = {
 
 export type StudioProjectWindowMap = {
   "variants": Array<string>;
-  "document_names": Record<string, Record<string, string>>;
   "steps": Array<StudioProjectWindowMapStep>;
   "rows": Array<StudioProjectWindowMapRow>;
   "edges": Array<StudioProjectWindowMapEdge>;
@@ -4800,6 +4808,7 @@ export type StudioProjectWindowMapProblem = {
   "step": string | null;
   "row": string | null;
   "place": StudioModelPlace | StudioTaskPlace | StudioObjectivePlace | StudioTrainingPlace | StudioMethodPlace | StudioAnalysisPlace | StudioInputPlace | StudioStepPlace | null;
+  "subject_name"?: string | null;
   "document_path"?: string | null;
   "address"?: string | null;
   "layer"?: string | null;
@@ -4821,6 +4830,7 @@ export type StudioProjectWindowMapRequest = {
 
 export type StudioProjectWindowMapRow = {
   "key": StudioSavedTrainKey;
+  "name": string;
   "label": string | null;
   "coordinates": Record<string, StudioProjectWindowMapCoordinate>;
   "input_axes"?: Record<string, StudioProjectWindowMapInputAxis>;
@@ -6857,6 +6867,7 @@ export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(
   z
     .object({
       "key": StudioSavedTrainKeySchema,
+      "name": z.string(),
       "label": z.string().nullable(),
       "request_id": z.string(),
       "attempts": z.array(StudioSavedTrainAttemptSchema),
@@ -13521,6 +13532,14 @@ export const StudioProjectListEntrySchema: z.ZodType<StudioProjectListEntry> = z
   }).strict()
 ) as unknown as z.ZodType<StudioProjectListEntry>;
 
+export const StudioProjectMemberNamesSchema: z.ZodType<StudioProjectMemberNames> = z.lazy(() =>
+  z.object({
+    "documents": z.record(z.string(), z.string()),
+    "steps": z.record(z.string(), z.string()),
+    "elements": z.record(z.string(), z.record(z.string(), z.string())),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectMemberNames>;
+
 export const StudioProjectNewSchema: z.ZodType<StudioProjectNew> = z.lazy(() =>
   z.object({
     "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -13581,6 +13600,8 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "revision": Sha256Schema,
     "presentation_revision": Sha256Schema,
     "project": ProjectSchema,
+    "names": StudioProjectMemberNamesSchema,
+    "variant_names": z.record(z.string(), StudioProjectMemberNamesSchema),
     "semantic_root": Sha256Schema,
     "presentation": z.union([PresentationDocumentSchema, z.null()]),
     "presentation_error": z.union([z.literal("unreadable_presentation"), z.null()]).optional(),
@@ -13596,7 +13617,6 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
 export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z.lazy(() =>
   z.object({
     "variants": z.array(z.string()),
-    "document_names": z.record(z.string(), z.record(z.string(), z.string())),
     "steps": z.array(StudioProjectWindowMapStepSchema),
     "rows": z.array(StudioProjectWindowMapRowSchema),
     "edges": z.array(StudioProjectWindowMapEdgeSchema),
@@ -13701,6 +13721,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "step": z.union([z.string(), z.null()]),
     "row": z.union([z.string(), z.null()]),
     "place": z.union([z.union([StudioModelPlaceSchema, StudioTaskPlaceSchema, StudioObjectivePlaceSchema, StudioTrainingPlaceSchema, StudioMethodPlaceSchema, StudioAnalysisPlaceSchema, StudioInputPlaceSchema, StudioStepPlaceSchema]), z.null()]),
+    "subject_name": z.union([z.string(), z.null()]).optional(),
     "document_path": z.union([z.string(), z.null()]).optional(),
     "address": z.union([z.string(), z.null()]).optional(),
     "layer": z.union([z.string(), z.null()]).optional(),
@@ -13726,6 +13747,7 @@ export const StudioProjectWindowMapRequestSchema: z.ZodType<StudioProjectWindowM
 export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRow> = z.lazy(() =>
   z.object({
     "key": StudioSavedTrainKeySchema,
+    "name": z.string(),
     "label": z.union([z.string(), z.null()]),
     "coordinates": z.record(z.string(), StudioProjectWindowMapCoordinateSchema),
     "input_axes": z.record(z.string(), StudioProjectWindowMapInputAxisSchema).optional(),

@@ -14,6 +14,7 @@ const hex = (number: number) => number.toString(16).padStart(64, '0');
 const encoded = (value: unknown) => btoa(JSON.stringify(value));
 const value = (number: number): ProjectValueEdit => ({ op: 'replace', path: '/payload/value', value: number });
 const initial: StudioProjectSnapshot = {
+  names: { documents: {}, steps: {}, elements: {} }, variant_names: {},
   project_id: 'reach',
   revision: hex(1),
   presentation_revision: hex(2),
@@ -329,7 +330,7 @@ it('does not widen a selected Train row to an unselected variant', async () => {
   const variants = ['baseline', 'compare'];
   const rows = variants.map((variant) => ({
     key: { variant, step: 'train', row: 'seed=a' },
-    label: 'Replicate A', request_id: variant,
+    name: 'Replicate A', label: 'Replicate A', request_id: variant,
     attempts: [], status: 'not_run' as const,
     reason: null, result: null, previous: null, change: null,
   }));
@@ -337,14 +338,13 @@ it('does not widen a selected Train row to an unselected variant', async () => {
     revision: initial.revision,
     rows,
     window_map: {
-      document_names: {},
       variants,
       steps: variants.map((variant) => ({
         variant, step_id: 'train', label: 'Train', kind: 'train', group: null, inputs: [],
         document_ids: {}, status_counts: { not_run: 1 },
       })),
-      rows: rows.map(({ key, label, status }) => ({
-        key, label, status, coordinates: { seed: { value_id: 'a', label: 'Replicate A', value: 1, axis_value: 'a' } },
+      rows: rows.map(({ key, name, label, status }) => ({
+        key, name, label, status, coordinates: { seed: { value_id: 'a', label: 'Replicate A', value: 1, axis_value: 'a' } },
       })),
       edges: [],
       problems: [],
