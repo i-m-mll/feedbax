@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.project import BasedDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.planner.project_plan import compile_project
@@ -580,7 +581,7 @@ def test_place_registered_template_as_an_editable_composite(tmp_path, name, hidd
         })
         assert project.snapshot()["presentation"]["documents"]["model"]["positions"][address.to_text()] == position
 
-    model = ModelDocument.model_validate(project.composed("model"))
+    model = StoredModelDocument.model_validate(project.composed("model")).lower()
     component = model.interior.components["controller"]
     assert isinstance(component, CompositeComponent)
     assert component.name == name
@@ -667,8 +668,8 @@ def test_insert_registered_template_routes_the_wire_through_its_composite_ports(
     data["documents"]["model"]["payload"] = {
         "step_seconds": 0.01,
         "ports": {
-            "inputs": [{"id": "in", "name": "Input", "type": {}}],
-            "outputs": [{"id": "out", "name": "Output", "type": {}}],
+            "inputs": {"in": {"label": "Input", "type": {}}},
+            "outputs": {"out": {"label": "Output", "type": {}}},
         },
         "interior": {"wires": {"straight": {"source": source, "target": target}}},
     }
@@ -707,10 +708,9 @@ def test_equations_edits_store_and_run_like_a_direct_document(
     from feedbax.compiler import GraphDocument, compile_graph
     from feedbax.compiler.model_document import lower_model_document
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.contracts.model_document import ModelDocument
 
     def leaf(type_, **fields):
-        return {"kind": "leaf", "name": type_, "type": f"feedbax.{type_}", "fields": fields}
+        return {"kind": "leaf", "label": type_, "type": f"feedbax.{type_}", "fields": fields}
 
     def end(component, port="flange"):
         return {"owner": "component", "component": component, "port": port}
@@ -730,16 +730,16 @@ def test_equations_edits_store_and_run_like_a_direct_document(
     model = {
         "step_seconds": 0.01,
         "ports": {
-            "inputs": [{"id": "drive", "name": "drive", "type": {"shape": []}}],
-            "outputs": [{"id": "read", "name": "read", "type": {"shape": []}}],
+            "inputs": {"drive": {"label": "drive", "type": {"shape": []}}},
+            "outputs": {"read": {"label": "read", "type": {"shape": []}}},
         },
         "interior": {},
     }
     shell = {
-        "kind": "composite", "name": "Equations",
+        "kind": "composite", "label": "Equations",
         "ports": {
-            "inputs": [{"id": "in", "name": "Input", "type": {"shape": []}}],
-            "outputs": [{"id": "out", "name": "Output", "type": {"shape": []}}],
+            "inputs": {"in": {"label": "Input", "type": {"shape": []}}},
+            "outputs": {"out": {"label": "Output", "type": {"shape": []}}},
         },
         "interior": {"physical_domain": domain},
     }
@@ -839,7 +839,7 @@ def test_equations_edits_store_and_run_like_a_direct_document(
     assert edited["connections"][straight["element"]["id"]] == routed
     assert added_edge in edited["connections"].values()
     direct = model | {"interior": {"wires": root_wires, "components": {"equations": shell | {
-        "ports": shell["ports"] | {"physical": [free]},
+        "ports": shell["ports"] | {"physical": {"free": {"label": free["name"], "type": domain}}},
         "interior": shell["interior"] | {
             "components": leaves, "wires": inner_wires,
             "connections": physical | {"spring-free": added_edge, "spring-body": routed, "spring-wall": spring_ground},
@@ -848,7 +848,7 @@ def test_equations_edits_store_and_run_like_a_direct_document(
 
     def rollout(document):
         registry = ComponentRegistry()
-        lowered = lower_model_document(ModelDocument.model_validate(document), registry)
+        lowered = lower_model_document(StoredModelDocument.model_validate(document).lower(), registry)
         graph = compile_graph(GraphDocument(graph=lowered.graph), registry, {
             lowered.graph.input_bindings["drive"]: jax.ShapeDtypeStruct((), jnp.float32),
         }).graph

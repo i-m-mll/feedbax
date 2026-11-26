@@ -195,7 +195,7 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
             "revision": revision, "run": key("perturbed") | {"row": "loads=pulse"}, "scope": {"kind": "step"},
         }))
         assert scoped["editable"] and not scoped["problems"], scoped["problems"]
-        assert [item["id"] for item in scoped["resolved_model"]["interior"]["wires"]["plant-wire"]["attachments"]] == ["pulse"]
+        assert list(scoped["resolved_model"]["interior"]["wires"]["plant-wire"]["attachments"]) == ["pulse"]
         set_edit({"kind": "set_to_field", "step": "perturbed", "axis": "loads"})
         set_edit({"kind": "set_field_weight", "step": "perturbed", "axis": "loads", "entry": None, "weight": 0})
         pairing = expect(client.post(f"{path}/authoring/trials", json={
