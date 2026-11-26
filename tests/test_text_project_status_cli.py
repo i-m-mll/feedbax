@@ -2,21 +2,26 @@
 
 import json
 
+from fastapi.testclient import TestClient
+
 from feedbax.cli import main
-from feedbax.contracts.jobs import JobStatus
+from feedbax.contracts.jobs import JobStatus, StudioJobSubmission
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.project_io import read_text_project_snapshot
 from feedbax.planner.project_plan import RunKey
+from feedbax.planner.project_plan_io import load_plan_requests
 from feedbax.contracts.studio_place import StudioAnalysisPlace, StudioStepPlace
 from feedbax.host import HostClient
 from feedbax.host.plan_history import plan_ref_key
 from feedbax.jobs import JobService, plan_attempt_key
 from feedbax.application.bundle import new_application_registry_bundle
+from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.host import job_row, token, wait_until
+from tests.test_portable_loaded_model import _check_plan, _expect, _load, _loaded, _seed, archive_bundle as archive_bundle
 from tests.test_text_project_plan_cli import _edit, _files, _write_walkthrough
 
 
@@ -47,6 +52,53 @@ def _retain_train(host, folders, reviewed, registries, key):
         project=reviewed.project_id, start_host=False, record_keys=(plan_key,), include_launch=True,
     )
     return snapshot, plan_key, manifest
+
+
+def test_cli_reads_and_plans_a_portable_loaded_model(tmp_path, monkeypatch, capsys, archive_bundle):
+    _, _, _, _, archive, _ = archive_bundle
+    host_root = tmp_path / "host"
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host_root))
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+        _seed(folders, "loaded")
+        loaded = _loaded(_expect(_load(client, "loaded", archive), 201))
+        expected = _check_plan(folders, "loaded")
+    root = tmp_path / "loaded"
+    before = _files(root)
+
+    def jobs_snapshot(self, *, project, start_host, checkpoint_progress_root, **options):
+        assert project == expected.project_id and not start_host
+        assert checkpoint_progress_root == str(expected.store_path)
+        return {"jobs": [], "cursor": 0}
+
+    monkeypatch.setattr(HostClient, "jobs_snapshot", jobs_snapshot)
+    assert main(["status", str(root / "steps")]) == 0
+    status = capsys.readouterr()
+    assert not status.err
+    assert {name: state for name, (_, state, _) in _status_table(status.out).items()} == {
+        "evaluate": "not_run", "train": "not_run",
+    }
+
+    review = tmp_path / "review.json"
+    assert main(["plan", str(root), "--out", str(review)]) == 0
+    assert not capsys.readouterr().err
+    exported, _ = load_plan_requests(review.read_bytes())
+    assert exported.requests == expected.plan.requests
+    asset = root / loaded.archive_path("portable")
+    assert main(["plan", str(root), "--out", str(asset)]) == 2
+    assert "overlaps an authored project file" in capsys.readouterr().err
+
+    def review_admission(self, folders, reviewed, *, run_keys, token, actor, **options):
+        assert reviewed.store_path == expected.store_path
+        assert reviewed.plan.requests == expected.plan.requests
+        assert run_keys == (RunKey("default", "evaluate", "default"),)
+        return StudioJobSubmission(id="checked", token=token, project_id=reviewed.project_id, items=[])
+
+    monkeypatch.setattr(JobService, "admit_plan", review_admission)
+    assert main(["run", str(root), "evaluate", "--json"]) == 0
+    submitted = capsys.readouterr()
+    assert not submitted.err and StudioJobSubmission.model_validate_json(submitted.out).id == "checked"
+    assert _files(root) == before and not host_root.exists()
 
 
 def test_cli_and_studio_verify_saved_status_and_authored_history(host, tmp_path, monkeypatch, capsys):

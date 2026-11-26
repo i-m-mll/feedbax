@@ -31,6 +31,7 @@ from feedbax.contracts.task_document import StoredTaskDocument
 from feedbax.dataset import Dataset, Variable
 from feedbax.examples import load_shipped_projects
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
+from feedbax.host import model_archive
 from feedbax.host.model_archive import UnreadableModelArchive, export_model_archive, stage_model_archive
 from feedbax.host.model_checkpoint import ModelCheckpointError, SemanticModelSlot, SemanticModelWriter
 from feedbax.host.model_input import ImportedModelWeights, ReconstructedModel, reconstruct_model
@@ -218,6 +219,19 @@ def test_native_archive_preserves_replicas_in_a_new_store(native_archive, tmp_pa
     first, second = slot.restore_all((template, template))
     assert eqx.tree_equal(first, template) and eqx.tree_equal(second, other)
     assert export_model_archive(store, result.weights, result.encoding) == raw
+
+
+def test_causal_archive_fit_does_not_realize_an_executable(native_archive, tmp_path, monkeypatch):
+    model, components, _, _, raw, checkpoint = native_archive
+
+    def refuse(*args, **kwargs):
+        pytest.fail("Fitting a causal archive should only trace the graph's layout")
+
+    monkeypatch.setattr(model_archive, "realize_graph", refuse)
+    store = ImmutableArtifactBlobProvider(tmp_path / "loaded")
+    with stage_model_archive(raw, model, store, components=components) as result:
+        assert isinstance(result, ImportedModelSource), result
+        assert (result.weights, result.encoding) == (checkpoint.tree, checkpoint.encoding)
 
 
 def test_archive_fits_changed_noise_without_changing_learned_weights(tmp_path):
