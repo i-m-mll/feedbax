@@ -1097,7 +1097,9 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
             "range": {"start": 1e-4, "stop": 1e-2, "count": 5, "scale": "log"},
         }
         fields = client.post(endpoint, json={"revision": reopened["revision"]}).json()["fields"]
-        assert next(field["text"] for field in fields if field["id"] == field_path) == "geomspace(0.0001, 0.01, 5)"
+        rate, = [field for field in fields if field["id"] == field_path]
+        assert rate["text"] == "geomspace(0.0001, 0.01, 5)"
+        assert rate["sweep"]["rule"]["scale"] == "log"
         folders = ProjectFolderService(tmp_path)
         plan = folders.read_plan("managed-rate", revision=reopened["revision"]).plan
         keys = tuple(row.key for row in plan.rows)
@@ -1124,6 +1126,29 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
         reduced = client.get(url + "/open").json()["snapshot"]
         assert not any(((reduced["project"]["steps"]["train"].get("sweep") or {}).get("axes") or {}).values())
         assert len(folders.read_plan("managed-rate", revision=reduced["revision"]).plan.rows) == 1
+
+
+def test_managed_rate_field_projects_the_omitted_linear_range_scale(tmp_path):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    field_path = "/settings/optimizer/learning_rate/value"
+    rule = {"start": 1e-4, "stop": 1e-2, "count": 5}
+    raw["steps"]["train"]["sweep"] = {"axes": {
+        "learning-rate": {"path": field_path[1:].replace("/", "."), "range": rule},
+    }}
+    _save_project(ProjectFolderService(tmp_path), "managed-rate", Project.model_validate(raw))
+    path = tmp_path / "managed-rate" / "steps" / "train.json"
+    before = path.read_bytes()
+    assert json.loads(before)["sweep"]["axes"]["learning-rate"]["range"] == rule
+
+    url = "/api/projects/managed-rate"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        revision = client.get(url).json()["revision"]
+        reply = client.post(url + "/authoring/train/train/fields", json={"revision": revision})
+        assert reply.status_code == 200, reply.text
+        rate, = [field for field in reply.json()["fields"] if field["id"] == field_path]
+        assert rate["sweep"]["kind"] == "range" and rate["sweep"]["rule"] == rule | {"scale": "linear"}
+    assert path.read_bytes() == before
 
 
 def _group_reaching_pipeline(raw, registry):

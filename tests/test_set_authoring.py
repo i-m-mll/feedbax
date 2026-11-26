@@ -627,8 +627,10 @@ def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, sub
         projected = reply.json()
         (field,) = projected["set_fields"]
         assert field["sampling"]["kind"] == sampling and not projected["problems"], projected["problems"]
+        effective = {item["entry"]: item["weight"] for item in field["entries"]}
+        assert effective == ({None: 0, "pulse": 1} if sampling == "weighted" else {"pulse": None})
         if sampling == "weighted":
-            assert field["entries"][0]["entry"] is None and field["entries"][0]["weight"] == 0
+            assert field["entries"][0]["entry"] is None
             change = {"kind": "expression", "path": "/set_fields/loads/condition",
                       "edit": {"kind": "text", "text": "catch"}}
             edit = client.post(f"{BASE}/authoring/trials", json={"revision": revision, "run": key, "change": change})
@@ -718,7 +720,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
 
 @pytest.mark.parametrize(("sampling", "edits", "weights", "variants"), [
     (
-        {"kind": "weighted", "weights": {"nominal": 3}, "none": 4},
+        {"kind": "weighted", "weights": {"nominal": 3}},
         [{"entry": "heavy", "weight": 2}, {"entry": None, "weight": 0}],
         {None: 0, "heavy": 2, "nominal": 3},
         True,
@@ -745,6 +747,18 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
     before = folders.read(PROJECT)
     train, other = (_runs(folders, step) for step in ("train", "other"))
     with TestClient(create_app(projects_dir=tmp_path)) as client:
+        run = {"variant": "base" if variants else "default", "step": "train", "row": "default"}
+        original = client.post(f"{BASE}/authoring/trials", json={"revision": before.revision, "run": run})
+        assert original.status_code == 200, original.text
+        (field,) = original.json()["set_fields"]
+        effective = {item["entry"]: item["weight"] for item in field["entries"]}
+        if sampling["kind"] == "weighted":
+            assert effective == {None: 1, "heavy": 1, "nominal": 3}
+        else:
+            assert effective == {"heavy": {"on": 1, "off": 3}, "nominal": {"on": 4, "off": 1}}
+        stored = json.loads((tmp_path / PROJECT / "steps" / "train.json").read_bytes())
+        assert stored["set_fields"]["load"]["sampling"] == sampling
+
         for edit in edits:
             result = _set_edit(folders, client, {
                 "kind": "set_field_weight", "step": "train", "axis": "load", **edit,
@@ -752,8 +766,7 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
             assert [file["address"] for file in result["files"]] == [{"kind": "step", "id": "train"}]
         saved = folders.read(PROJECT)
         reply = client.post(f"{BASE}/authoring/trials", json={
-            "revision": saved.revision,
-            "run": {"variant": "base" if variants else "default", "step": "train", "row": "default"},
+            "revision": saved.revision, "run": run,
         })
         assert reply.status_code == 200, reply.text
         (field,) = reply.json()["set_fields"]

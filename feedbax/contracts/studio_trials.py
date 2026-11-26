@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, field_serializer
 
-from feedbax.contracts.project_sweep import SetEntryParts, SetTrialSampling
+from feedbax.contracts.project_sweep import SetTrialSampling
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import Expression, Level, NodePath, Problem, ScopedValue, ValueType, WeightPart
 from feedbax.contracts.jobs import StudioSavedTrainKey
@@ -210,10 +210,17 @@ class StudioTrialObjectiveSource(StrictModel):
     step: ProjectName
 
 
+class StudioSetEntryParts(StrictModel):
+    """The effective on and off parts of a cooccurring entry."""
+
+    on: WeightPart
+    off: WeightPart
+
+
 class StudioSetFieldEntry(StoredFamilyMember):
     entry: ProjectName | None
     label: str | None = None
-    weight: WeightPart | SetEntryParts | None = None
+    weight: WeightPart | StudioSetEntryParts | None
     member_count: int | None = None
 
 
