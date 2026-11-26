@@ -86,14 +86,17 @@ def test_managed_plan_resolves_task_owned_trial_ids():
     from feedbax.contracts.task_document import StoredTaskDocument
 
     raw = managed_evaluation_definition()
-    task = StoredTaskDocument.model_validate(raw["documents"]["task"]["payload"]).lower()
-    assert len(task.condition_ids) == 28
+    stored = StoredTaskDocument.model_validate(raw["documents"]["task"]["payload"])
+    task = stored.lower()
+    authored_ids = tuple(stored.validation_trials)
+    assert len(authored_ids) == 28
+    assert task.condition_ids == authored_ids
     points = [tuple(component.value for component in row.variables["start"].args) for row in task.validation_trials]
     assert len(set(points)) == 4
     assert all(points.count(point) == 7 for point in set(points))
-    assert task.model_copy(update={"validation_trials": task.validation_trials[::-1]}).condition_ids == task.condition_ids[::-1]
+    assert task.model_copy(update={"validation_trials": task.validation_trials[::-1]}).condition_ids == authored_ids[::-1]
     params = raw["steps"]["baseline"]["base"]["inline"]["params"]
-    selected = [task.condition_ids[i] for i in (10, 0, 5)]
+    selected = [authored_ids[i] for i in (10, 0, 5)]
     params["trial_set"] = {"kind": "conditions", "ids": selected}
     plan = compile_project(Project.model_validate(raw))
     baseline = next(run for run in plan.runs if run.key.step == "baseline")
@@ -325,13 +328,15 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         np.testing.assert_array_equal(np.asarray(replay.drawn.trials[0].states[replay.position].samples[:3], dtype=first.dtype), first)
     np.testing.assert_allclose(first, reference.history[position][0, :3], atol=1e-7)
     np.testing.assert_allclose(hidden, reference.history[carry][0, :3], atol=1e-7)
+    cohort = {trial.id: trial for trial in documents.task_source.validation_trials}
+    selected_trials = (trial_ids[1], trial_ids[0])
     subset = fresh.execution.evaluate(
         restored, fresh.objective, TaskParameters(), key=jax.random.PRNGKey(731),
-        trial_ids=(trial_ids[1], trial_ids[0]), capture_state=layout.capture,
+        trial_ids=selected_trials, capture_state=layout.capture,
     )
     np.testing.assert_allclose(subset.history[position], np.asarray(reference.history[position])[[1, 0]], atol=1e-7)
-    for index, condition in enumerate((1, 0)):
-        authored = documents.task_source.validation_trials[condition]
+    for index, condition in enumerate(selected_trials):
+        authored = cohort[condition]
         trial_target = [component.value for component in authored.variables["target"].args]
         trial_start = [component.value for component in authored.variables["start"].args]
         np.testing.assert_allclose(subset.trials.inputs["target_pos"][index, -1], trial_target)
