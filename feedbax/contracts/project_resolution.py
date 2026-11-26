@@ -407,13 +407,14 @@ def _variation_name(target: str) -> str:
     return "task-" + sha256_bytes(target.encode())[:16]
 
 
-def subject_task_write(payload: Any, patch: OverridePatch) -> tuple[OverridePatch, bool] | None:
+def subject_task_write(payload: Any, patch: OverridePatch) -> tuple[OverridePatch, int | None] | None:
     """The variation write that lowers an Evaluate's write at ``trial_documents.<task role>.<field>`` of the Task it
     runs from its subject, or ``None`` when the step names its own Task there.
 
     The write becomes the edit ``task.<field>``. It replaces an edit at the same target, and is otherwise added after
     the authored edits. A named variation holds no edit inside another's target, so there the variation becomes the
-    list of its edits in name order followed by this one; the flag says so.
+    list of its edits in name order followed by this one. A list is written as one value, with the
+    returned index identifying the changed member for source tracking.
     """
     parts = patch.path.split(".")
     if len(parts) < 3 or parts[0] != "trial_documents" or parts[1] not in _SUBJECT_TASK_ROLES:
@@ -432,18 +433,20 @@ def subject_task_write(payload: Any, patch: OverridePatch) -> tuple[OverridePatc
     entries = list(variation.items()) if isinstance(variation, dict) else list(enumerate(variation))
     paths = {name: entry.get("path") for name, entry in entries if isinstance(entry, dict)}
     same = next((name for name, path in paths.items() if path == target), None)
-    if same is not None:
-        return OverridePatch(op="replace", path=f"params.variation.{same}", value=edit), False
     if isinstance(variation, list):
-        return OverridePatch(op="add", path=f"params.variation.{len(variation)}", value=edit), False
+        index = same if same is not None else len(variation)
+        ordered = [*variation[:index], edit, *variation[index + 1:]]
+        return OverridePatch(op="replace", path="params.variation", value=ordered), index
+    if same is not None:
+        return OverridePatch(op="replace", path=f"params.variation.{same}", value=edit), None
     if any(isinstance(path, str) and (target.startswith(path + ".") or path.startswith(target + "."))
            for path in paths.values()):
         ordered = [variation[name] for name in sorted(variation)]
-        return OverridePatch(op="replace", path="params.variation", value=[*ordered, edit]), True
+        return OverridePatch(op="replace", path="params.variation", value=[*ordered, edit]), len(ordered)
     name = _variation_name(target)
     while name in variation:
         name += "-field"
-    return OverridePatch(op="add", path=f"params.variation.{name}", value=edit), False
+    return OverridePatch(op="add", path=f"params.variation.{name}", value=edit), None
 
 
 def subject_model_read(project: Project, payload: Any, document: str) -> Any | None:
@@ -1194,11 +1197,11 @@ class _Resolver:
                 validate_stored_patch_path(payload, authored)
                 if authored.split(".")[0] == "inputs" and not (isinstance(payload, dict) and "inputs" in payload):
                     raise ValueError("An input is narrowed by its Runs rule and Checkpoint, not swept")
-                reordered = False
+                variation_index = None
                 if self.project.steps[name].kind == "evaluate" and (
                     lowered := subject_task_write(payload, patch)
                 ) is not None:
-                    patch, reordered = lowered
+                    patch, variation_index = lowered
                 elif (target := document_write_target(payload, patch.path)) is not None:
                     document, document_path = target
                     if self.project.steps[name].kind == "evaluate" and (
@@ -1226,7 +1229,7 @@ class _Resolver:
                     )
                 if patch.op != "remove":
                     patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
-                variation = payload["params"]["variation"] if reordered else None
+                variation = payload["params"]["variation"] if variation_index is not None else None
                 payload = replay_stored_patch_copy(payload, patch)
                 if origins is not None:
                     author = row.patch_authors.get(authored, name)
@@ -1234,16 +1237,17 @@ class _Resolver:
                     if authored == patch.path:
                         shape = source_shape(patch.value, source, override)
                     else:
-                        edit = patch.value[-1] if reordered else patch.value
+                        edit = patch.value[variation_index] if variation_index is not None else patch.value
                         shape = SourceObject(source, {
                             key: source_shape(value, source, override) if key == "value" else source
                             for key, value in edit.items()
                         })
                     if variation is not None:
                         held = source_at(origins, ("params", "variation"))
-                        shape = SourceList(getattr(held, "source", None), iter([
-                            *(source_at(held, (entry,)) for entry in sorted(variation)), shape,
-                        ]), patch.value)
+                        previous_keys = sorted(variation) if isinstance(variation, dict) else map(str, range(len(variation)))
+                        children = [source_at(held, (entry,)) for entry in previous_keys]
+                        children[variation_index:variation_index + 1] = [shape]
+                        shape = SourceList(getattr(held, "source", None), iter(children), patch.value)
                     origins = patch_source(origins, patch, shape)
             if fields:
                 if not isinstance(payload, dict):

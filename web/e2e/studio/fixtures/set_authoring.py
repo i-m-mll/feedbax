@@ -56,20 +56,20 @@ def seed_window(home: str, project_id: str):
             "nominal": {"label": "Nominal"},
             "force": {
                 "label": "Force",
-                "task_variables": [{
-                    "id": "onset", "name": "Onset",
+                "task_variables": {"onset": {
+                    "label": "Onset",
                     "type": {"base": "real", "dimensions": {"time": 1}},
                     "value": {"kind": "literal", "value": 0.1, "unit": "s"},
-                }],
-                "differences": {"/interior/wires/drive/attachments": {"value": [{
-                    "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+                }},
+                "differences": {"/interior/wires/drive/attachments": {"value": {"pulse": {
+                    "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
                     "window": {"spans": [{
                         "kind": "interval",
                         "start": {"anchor": {"kind": "trial", "edge": "start"},
                                   "offset": {"kind": "name", "reference": "onset"}},
                         "end": {"offset": {"value": 5.0, "unit": "st"}},
                     }]},
-                }]}},
+                }}}},
             },
         }},
     }
