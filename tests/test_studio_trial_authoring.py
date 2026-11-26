@@ -395,7 +395,10 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         assert evaluated_task.task.params == {"x": 0.22, "y": 0.0, "n_steps": 12}
         assert [epoch.id for epoch in evaluated_task.epochs] == ["move"]
         scope = {"kind": "rows", "rows": ["seed=test"]}
-        choices = {choice.document: choice.problems for choice in evaluated_task.tasks}
+        choices = {
+            choice.document: [evaluated_task.task_problems[index] for index in choice.problem_indices]
+            for choice in evaluated_task.tasks
+        }
         assert not choices["probe-task"]
         assert any("reach_target" in problem.reason for problem in choices["unbound-task"])
         incompatible = author(revision, {"kind": "select_document", "role": "task", "document": "unbound-task"},
@@ -962,9 +965,11 @@ def test_objective_offsets_project_paired_editable_fields(tmp_path):
         assert field(shown, start)["conversion"] is None
         assert field(shown, end)["conversion"] == {"value": .05, "unit": "s"}
         assert not field(shown, start)["can_sweep"]
-        assert {"value", "formula", "link", "draw"} <= set(field(shown, start)["site"]["kinds"])
-        assert "sweep" not in field(shown, start)["site"]["kinds"]
-        assert "sweep" not in field(shown, end)["site"]["kinds"]
+        start_site = shown["sites"][field(shown, start)["site"]]
+        end_site = shown["sites"][field(shown, end)["site"]]
+        assert {"value", "formula", "link", "draw"} <= set(start_site["kinds"])
+        assert "sweep" not in start_site["kinds"]
+        assert "sweep" not in end_site["kinds"]
 
         edit(start, "-25 ms")
         reopened = author()
@@ -1130,6 +1135,7 @@ def test_an_evaluate_task_choice_in_a_variant_is_its_row_s_task_reference(tmp_pa
     raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "variants", Project.model_validate(raw))
+    saved_steps = folders.read("variants").project.steps
     before = folders.read_plan("variants", revision=None)
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         reply = client.post("/api/projects/variants/authoring/trials", json={
@@ -1142,7 +1148,7 @@ def test_an_evaluate_task_choice_in_a_variant_is_its_row_s_task_reference(tmp_pa
         saved = client.patch("/api/projects/variants", json={"revision": before.revision, "files": view["files"]})
         assert saved.status_code == 200, saved.text
     project = folders.read("variants").project
-    assert project.steps == Project.model_validate(raw).steps
+    assert project.steps == saved_steps
     assert {path: write.model_dump(mode="json") for path, write in project.sweep.rows["treated"].patches.items()} == {
         "steps.baseline.base.inline.trial_documents": {"op": "add", "value": {"task": {"document": "test-task"}}},
     }
@@ -1171,6 +1177,7 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
         raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "check", Project.model_validate(raw))
+    saved_steps = folders.read("check").project.steps
     before = folders.read_plan("check", revision=None)
     run = {"variant": variant, "step": "check", "row": "default"}
     with TestClient(create_app(projects_dir=tmp_path)) as client:
@@ -1200,7 +1207,7 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
         run.key: run.request_id for run in before.plan.runs if run.key.step == "train"
     }
     if variant != "default":
-        assert folders.read("check").project.steps == Project.model_validate(raw).steps
+        assert folders.read("check").project.steps == saved_steps
 
 
 def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):
@@ -1367,8 +1374,9 @@ def test_until_authoring_switches_and_refuses_a_limit_that_rounds_to_zero(tmp_pa
             assert f"{end}/length" in fields
             condition = fields[f"{end}/condition"]
             assert condition.text == ""
-            assert condition.site.site.expected.base == "boolean"
-            assert {value.name for value in condition.site.site.names} >= {"command", "time", "t"}
+            site = result.sites[condition.site]
+            assert site.expected.base == "boolean"
+            assert {value.name for value in site.names} >= {"command", "time", "t"}
 
         assert_empty_condition(author(), "length")
         offered = change("length", "true ≤ 0.3 s")
@@ -1405,12 +1413,21 @@ def test_expression_menu_reuses_the_exact_projected_pairing(tmp_path, monkeypatc
 
     with TestClient(app) as client:
         folders = app.state.project_folders
+        prepared_fields = {}
+        remember = folders.trial_expression_menus.remember
+
+        def record_fields(project, revision, run, fields):
+            token = remember(project, revision, run, fields)
+            prepared_fields[token] = fields[pointer]
+            return token
+
+        monkeypatch.setattr(folders.trial_expression_menus, "remember", record_fields)
         revision = folders.read(project).revision
         request = {"revision": revision, "run": run}
         authored = client.post(url, json=request)
         assert authored.status_code == 200, authored.text
         view = StudioTrialAuthoring.model_validate(authored.json())
-        assert all(not field.site.parts for field in view.fields)
+        assert all(not site.parts for site in view.sites.values())
 
         edit = client.post(url, json=request | {"change": {
             "kind": "expression", "path": pointer, "edit": {"kind": "text", "text": "start"},
@@ -1424,10 +1441,9 @@ def test_expression_menu_reuses_the_exact_projected_pairing(tmp_path, monkeypatc
             pytest.fail("Opening an expression menu attempted to prepare another trial pairing.")
 
         monkeypatch.setattr(folders, "read_plan", forbid_plan)
-        field = next(field for field in view.fields if field.path == pointer)
-        expression = view.task.variables["target"].value
+        field = prepared_fields[view.expression_context]
         functions = app.state.bootstrap_state.bundle.expression_functions
-        expected = project_site(field.site.site, functions, expression).parts
+        expected = project_site(field.site, functions, field.expression).parts
 
         def menu(**updates):
             return client.post(url + "/expression-menu", json=(request | {

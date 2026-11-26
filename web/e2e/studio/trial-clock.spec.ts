@@ -13,7 +13,7 @@ const centre = async (locator: Locator) => {
 // Catches a sample with no transport, a Play that moves the readout but not the shelf's playhead (or the reverse), a
 // scrubber whose track is not the shelf's time axis, a playhead that returns to the start when All is picked, a shelf
 // that does not open in the Task view, and a shelf that the Task view reopens after the user closed it there.
-test('one clock plays every picked trial, its scrubber on the shelf\'s axis, and the shelf is the Task view\'s', async ({ page, request }) => {
+test('one clock plays every picked trial, its scrubber on the shelf\'s axis, and the shelf is the Task view\'s', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
   const footer = page.locator('footer.studio-window-bottom');
   const clock = footer.getByRole('group', { name: 'Clock', exact: true });

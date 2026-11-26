@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type {
   AnalysisDocument, FigureDocument, StudioProjectDocument, StudioProjectSnapshot,
@@ -15,7 +15,6 @@ const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: t
 // Catches trajectories, colour channels, scales or 3D panels that the inspector does not save, that the Service does not
 // draw as authored (no colour bar, no scene), or that a reopened project no longer draws.
 test('authors coloured hand paths and 3D hidden-state trajectories in the figure inspector', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(120_000);
   const project: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.figure_trajectories', 'seed', studio.home, 'figure-trajectories',
   ));
@@ -44,7 +43,7 @@ test('authors coloured hand paths and 3D hidden-state trajectories in the figure
     await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
     expect((await admitted).status()).toBe(202);
     await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Done', { exact: true }).first())
-      .toBeVisible({ timeout: 30_000 });
+      .toBeVisible({ timeout: jobTimeout });
   }
   const row = (name: string) => layers.getByRole('treeitem', { name: new RegExp(`^${name}\\b`) });
   async function removeRow(name: string) {

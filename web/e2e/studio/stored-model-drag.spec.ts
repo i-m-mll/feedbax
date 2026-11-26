@@ -284,7 +284,7 @@ async function paceInputs(count: number, send: (index: number) => Promise<void>)
   return roundTrip;
 }
 
-test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ page, request, browser, browserName }, info) => {
+test('measures drag updates in the mounted Model at 20 and 100 cards', { tag: '@slow' }, async ({ page, request, browser, browserName }, info) => {
   const measureInteractions = process.env.FEEDBAX_STUDIO_TIER === 'release';
   test.setTimeout(measureInteractions ? 100_000 : 55_000);
   const result = [];

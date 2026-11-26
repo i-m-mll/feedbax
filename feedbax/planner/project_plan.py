@@ -86,7 +86,6 @@ from feedbax.contracts.project_resolution import (
     _TrialResolution,
     compose_document,
     compose_step,
-    composed_loaded_model_projection,
     reference_write_target,
     _select,
 )
@@ -152,6 +151,8 @@ from feedbax.contracts.request_refs import (
 from feedbax.contracts.request_specs import (
     DocumentTrainingConfig,
     DocumentTrainingRequestSpec,
+    EvaluationRequestSpec,
+    RenderRequestSpec,
     SynthesisRequestSpec,
     TrainContinuation,
     ReportRequestSpec,
@@ -346,7 +347,14 @@ def plan_document_input(
     return _plan_document_content(authored_document_input(reference, document, python_tasks=python_tasks), objects)
 
 
-def _plan_document_content(value: DocumentInput, objects: MutableMapping[str, bytes]) -> PlannedInput:
+def _plan_document_content(
+    value: DocumentInput, objects: MutableMapping[str, bytes], *, components: ComponentRegistry | None = None,
+) -> PlannedInput:
+    if isinstance(value, InitialModelSource):
+        from feedbax.compiler.model_document import complete_model_fields
+
+        model = complete_model_fields(value.document, components or _builtin_model_registry())
+        value = value.model_copy(update={"document": model})
     content, raw = encode_document_input(value)
     objects[content.sha256] = raw
     return PlannedInput(None, InputMember(key=DEFAULT_SWEEP_ROW, reference=content))
@@ -1802,6 +1810,28 @@ def _encode_row(
                     (".".join(("settings", *map(str, failure["loc"]))), failure["msg"])
                     for failure in error.errors(include_url=False, include_input=False)
                 )) from error
+        if isinstance(spec, EvaluationRequestSpec) and spec.evaluation_type == ROLLOUT_TYPE and "trials" in spec.params:
+            settings = RolloutParameters.model_validate(spec.params)
+
+            def patch_value(edit: OverridePatch) -> Payload:
+                return edit.model_dump(mode="json", exclude={"value"} if edit.op == "remove" else None)
+
+            variation = (
+                {name: patch_value(edit) for name, edit in settings.variation.items()}
+                if isinstance(settings.variation, dict) else [patch_value(edit) for edit in settings.variation]
+            )
+            params = spec.params | {"trial_policy": settings.trial_policy, "variation": variation}
+            if settings.retention == RolloutSettings.model_fields["retention"].default:
+                params.pop("retention", None)
+            if not settings.input_bindings:
+                params.pop("input_bindings", None)
+            spec = spec.model_copy(update={"params": params})
+        if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)):
+            from feedbax.compiler.model_document import complete_model_fields
+
+            documents = spec.trial_documents
+            model = complete_model_fields(documents.model, components or _builtin_model_registry())
+            spec = spec.model_copy(update={"trial_documents": documents.model_copy(update={"model": model})})
         if (
             previous is not None and previous.request is not None
             and previous.lowering_stamp is not None and lowering_stamp is not None
@@ -2648,7 +2678,7 @@ class _Compiler:
             project,
             readers=self.readers,
             variant_sources=self.variant_sources.get(key.variant),
-            read_document=reader,
+            read_document=reader, training_methods=self.training_methods,
         ).resolve(
             row, include_sources=sources, partial_figures=project.steps[key.step].kind == "analyze",
             trial_resolution=trial_resolution,
@@ -3023,6 +3053,7 @@ class _Compiler:
         )
 
     def prepare_train_trial(self, authored: TrialDocuments) -> _TrainPreparation | tuple[Problem, ...]:
+        from feedbax.compiler.model_document import complete_model_fields
         from feedbax.execution.trial_resolution import resolve_trial_execution
 
         identity = to_json(
@@ -3033,7 +3064,7 @@ class _Compiler:
         components = self.components or _builtin_model_registry()
         # The plan needs the resolved graph, source addresses and conditions, never a constructed model.
         paired = resolve_trial_execution(
-            authored.model, authored.task_source,
+            complete_model_fields(authored.model, components), authored.task_source,
             components, self.functions or _builtin_expression_registry(),
             python_tasks=self.python_tasks, objective=authored.objective, input_bindings=authored.input_bindings,
             keyed_root_ports=True,
@@ -3257,7 +3288,7 @@ class _Compiler:
     def lower_initial_evaluate(
         self, template: StepComposition, key: RunKey, row: ExpandedRow,
     ) -> tuple[_LoweredRow, dict[str, PlannedInput]]:
-        from feedbax.compiler.model_document import ModelCompilationProblem
+        from feedbax.compiler.model_document import ModelCompilationProblem, complete_model_fields
         from feedbax.compiler.set_fields import SetFieldProblem
         from feedbax.execution.trial_resolution import evaluation_conditions, model_compilation_problems, pair_trial_source
         from feedbax.contracts.rollout import CannotRun
@@ -3283,7 +3314,7 @@ class _Compiler:
             if isinstance(subject_ref, LoadedModelReference):
                 source = authored_document_input(subject_ref, subject_document)
                 assert isinstance(source, ImportedModelSource)
-                imported = self.read_imported_model(key.variant, subject_ref, subject_document)
+                imported = self.read_imported_model(subject_ref, subject_document, source)
                 model, replica_ids = imported.model, imported.replica_ids
                 navigation = LoadedModelDocument.model_validate(subject_document.payload).model
                 if (
@@ -3367,8 +3398,9 @@ class _Compiler:
                 condition_origins = attached.condition_origins
                 raw = payload["params"]
             settings = authored_rollout_settings(raw)
+            runtime_model = complete_model_fields(model, components).with_keyed_root_ports()
             paired = pair_trial_source(
-                model, task, components, functions,
+                runtime_model, task, components, functions,
                 python_tasks=tasks, input_bindings=settings.input_bindings, keyed_root_ports=True,
             )
             unpaired = paired if isinstance(paired, tuple) else paired.problems
@@ -3383,7 +3415,7 @@ class _Compiler:
                     variant = _restore_evaluation_task_origins(variant, task_origins)
                 if variant.task != task or variant.graph != paired.lowered.graph:
                     paired = pair_trial_source(
-                        model, variant.task, components, functions,
+                        runtime_model, variant.task, components, functions,
                         python_tasks=tasks, input_bindings=settings.input_bindings, graph_override=variant.graph,
                         keyed_root_ports=True,
                     )
@@ -3402,7 +3434,7 @@ class _Compiler:
                 **{name: value for name, value in raw.items() if name != "trial_set"},
                 "trials": list(trials),
             }}
-            inputs = {role: _plan_document_content(value, self.documents) for role, value in sources.items()}
+            inputs = {role: _plan_document_content(value, self.documents, components=self.components) for role, value in sources.items()}
             narrowed = _encode_row(
                 key, "evaluate", payload, inputs, None, self.work.request_documents,
                 self.prepare_train_trial, document_ids, self.python_tasks,
@@ -3444,18 +3476,13 @@ class _Compiler:
             ),), document_ids=document_ids, document_uses=document_uses), {}
 
     def read_imported_model(
-        self, variant: str, reference: LoadedModelReference, document: RootDocument,
+        self, reference: LoadedModelReference, document: RootDocument, source: ImportedModelSource,
     ) -> ResolvedImportedModel:
         if self.readers.imported_model is None:
             raise ValueError("A Loaded Model must resolve from the project Store.")
         loaded = LoadedModelDocument.model_validate(document.payload)
-        legacy_model = (
-            composed_loaded_model_projection(loaded, self.variants[variant].documents.get)
-            if loaded.archive is None else None
-        )
-        return self.readers.imported_model(LoadedModelRead(
-            reference.source.document, loaded.model_dump_json().encode(), legacy_model,
-        ))
+        key = reference.source.document
+        return self.readers.imported_model(LoadedModelRead(key, loaded.archive_path(key), source))
 
     def lower_best_evaluate(
         self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
@@ -4349,10 +4376,13 @@ class _Compiler:
                     )
                     ids = None
                     if isinstance(reference, LoadedModelReference):
-                        ids = self.read_imported_model(variant, reference, resolved.input_documents[role]).replica_ids
+                        assert isinstance(source, ImportedModelSource)
+                        ids = self.read_imported_model(reference, resolved.input_documents[role], source).replica_ids
                     elif isinstance(reference, InitialModelReference):
                         ids = ("0",)
-                    binding = replace(_plan_document_content(source, self.documents), model_replicas=ids)
+                    binding = replace(
+                        _plan_document_content(source, self.documents, components=self.components), model_replicas=ids,
+                    )
                 except (OSError, ValueError) as error:
                     problem(f"inputs.{role}", str(error), row.id)
                     continue
@@ -4747,7 +4777,7 @@ class _Compiler:
             try:
                 source = authored_document_input(reference, document)
                 assert isinstance(source, ImportedModelSource)
-                self.read_imported_model(variant, reference, document)
+                self.read_imported_model(reference, document, source)
             except (OSError, ValueError) as error:
                 return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
             return ((_plan_document_content(source, self.documents), None),), {}, None
@@ -5282,6 +5312,16 @@ def _authored_request_change(
         relative = ("operation",)
     elif new.kind == "render" and relative[:1] == ("document",):
         relative = ("figure", *relative[1:])
+        if len(relative) > 2 and relative[1] in {"layout", "layers"} and relative[2].isdigit():
+            assert isinstance(old.spec, RenderRequestSpec) and isinstance(new.spec, RenderRequestSpec)
+            index = int(relative[2])
+            names = {
+                members[index].name
+                for spec in (old.spec, new.spec)
+                if index < len(members := getattr(spec.document, relative[1]))
+            }
+            # Two different names at one index are a change to the collection's order or membership.
+            relative = (*relative[:2], names.pop(), *relative[3:]) if len(names) == 1 else relative[:2]
     elif new.kind == "report" and relative[:1] == ("document",):
         relative = relative[1:]
     parts = prefix + relative

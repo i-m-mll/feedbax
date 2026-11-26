@@ -75,6 +75,14 @@ test('a dragged Model card keeps its place and shape from release until its move
   await expect(palette.locator('[data-command-id="undo"]')).toHaveAccessibleName(/^Undo Move Card\b/);
 });
 
+/** Waits for the page to draw `count` more frames. */
+function animationFrames(page: Page, count: number) {
+  return page.evaluate((remaining) => new Promise<void>((done) => {
+    const next = () => (--remaining > 0 ? requestAnimationFrame(next) : done());
+    requestAnimationFrame(next);
+  }), count);
+}
+
 type CardFrames = Window & { addFrames?: Record<string, Box | null>[]; droppedAt?: number; stopAddFrames?: () => void };
 
 /**
@@ -114,13 +122,15 @@ test('a Model card added from the Library moves and redraws no other card', asyn
   const drop = { x: Math.round(area.width / 2), y: Math.round(area.height - 160) };
   await drawer.getByRole('option', { name: 'GRU', exact: true }).dragTo(pane, { targetPosition: drop });
   await add.sent;
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
-  const pending = await page.evaluate((shown) => {
+  const markPending = () => page.evaluate((shown) => {
     const nodes = [...document.querySelectorAll<HTMLElement>('[data-slot="primary"] .react-flow__node')];
     const node = nodes.find((item) => !shown.includes(item.dataset.id!));
     if (node) (node as HTMLElement & { droppedCard?: boolean }).droppedCard = true;
     return node?.dataset.id;
   }, before);
+  await expect.poll(markPending).toBeTruthy();
+  await animationFrames(page, 10);
+  const pending = await markPending();
   const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/model/edit`);
   add.release();
   const { result } = await (await saved).json();
@@ -130,7 +140,7 @@ test('a Model card added from the Library moves and redraws no other card', asyn
   const added = model.locator(`.react-flow__node[data-id="${id}"]`);
   await expect(added).toHaveClass(/\bdraggable\b/);
   expect(await added.evaluate((node) => (node as HTMLElement & { droppedCard?: boolean }).droppedCard)).toBe(true);
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  await animationFrames(page, 20);
   const { frames, droppedAt } = await page.evaluate(() => {
     const state = window as CardFrames;
     state.stopAddFrames!();

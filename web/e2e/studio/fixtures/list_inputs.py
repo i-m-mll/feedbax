@@ -29,7 +29,7 @@ def seed(home: str, project_id: str):
             patch["value"] = mass
         masses[new] = value
     steps["analyze"]["inputs"]["states"] = {"step": "conditions"}
-    layer = raw["documents"]["velocity-figure"]["payload"]["layers"][0]
+    layer = raw["documents"]["velocity-figure"]["payload"]["layers"]["bounds"]
     layer["group"] = ["source", "model", "rate", "mass"]
     layer["style"] = {"label": "{source} {model} {rate} {mass}"}
     return _seed(home, project_id, raw)

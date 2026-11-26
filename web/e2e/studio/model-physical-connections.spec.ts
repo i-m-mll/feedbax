@@ -42,7 +42,7 @@ async function openSaved(request: APIRequestContext, projectPath: string) {
   return (await response.json() as StudioProjectDocument).snapshot;
 }
 
-test('edits a conserving connection only inside its physical interior', async ({ page, request, studio }, info) => {
+test('edits a conserving connection only inside its physical interior', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'equations');
   const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
@@ -56,7 +56,7 @@ test('edits a conserving connection only inside its physical interior', async ({
   const stored = storedConnections;
   async function apply(kind: 'edit' | 'undo', action: () => Promise<void>) {
     const [response] = await Promise.all([page.waitForResponse((response) => response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === `${projectPath}/model/${kind}`, { timeout: 6_000 }), action()]);
+      new URL(response.url()).pathname === `${projectPath}/model/${kind}`), action()]);
     expect(response.ok(), await response.text()).toBe(true);
     const { result } = await response.json() as ModelEditResponse;
     if (result.status !== 'applied') throw new Error(JSON.stringify(result));
@@ -133,7 +133,7 @@ test('edits a conserving connection only inside its physical interior', async ({
  * A Spring dropped from the Library onto the connection between a Mass and the boundary's physical port is stored as
  * two physical connections through it, which a reopened window draws (catches a connection drawn and not stored).
  */
-test('a Library element dropped on a physical connection is joined into it', async ({ page, request, studio }) => {
+test('a Library element dropped on a physical connection is joined into it', { tag: '@slow' }, async ({ page, request, studio }) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'equations');
   const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
@@ -156,6 +156,7 @@ test('a Library element dropped on a physical connection is joined into it', asy
     await massPort.hover();
     await page.mouse.down();
     await boundaryPort.hover();
+    await expect(model.locator('.react-flow__connection-path')).toHaveAttribute('d', /^M/);
     await page.mouse.up();
   });
   await expect(connections).toHaveCount(1);

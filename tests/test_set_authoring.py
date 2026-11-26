@@ -647,9 +647,10 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
                 assert written.status_code == 200, written.text
             return payload, next(item for item in payload["fields"] if item["path"] == path)
 
-        _, blank = author("load")
-        assert blank["text"] == "" and blank["site"]["site"]["expected"]["base"] == "boolean"
-        assert "is_catch" in {name["id"] for name in blank["site"]["site"]["names"]}
+        view, blank = author("load")
+        site = view["sites"][blank["site"]]
+        assert blank["text"] == "" and site["expected"]["base"] == "boolean"
+        assert "is_catch" in {name["id"] for name in site["names"]}
         _, listed = author("listed")
         assert "Weighted or Co-occurring" in listed["problems"][0]["reason"]
         assert listed["problems"][0]["span"] == {"start": 0, "end": 4}
@@ -668,7 +669,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
         _, valid = author("load", {"kind": "text", "text": "not is_catch"}, save=True)
         assert not valid["problems"] and valid["text"] == "not is_catch"
         view, field = author("load")
-        assert not field["site"]["parts"]
+        assert not view["sites"][field["site"]]["parts"]
         menu = client.post(f"{BASE}/authoring/trials/expression-menu", json={
             "revision": view["revision"], "run": run, "expression_context": view["expression_context"],
             "field": field["path"], "part": ["args", 0],

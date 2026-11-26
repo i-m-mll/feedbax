@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import { authorLearningRateSweep, captureStudioWindow, chooseSweepValue, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, shownRunLabel, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { mapName } from './fixtures/members';
@@ -35,7 +35,7 @@ test('standalone Activity opens an existing run and hydrates its retained histor
   await expect(announcements).toHaveCount(1);
   const row = page.getByRole('list', { name: 'Runs', exact: true })
     .getByRole('region', { name: snapshot.project_id, exact: true }).getByRole('listitem');
-  await expect(row.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  await expect(row.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   await row.getByRole('button', { name: /^Train / }).click();
   const inspector = page.getByRole('region', { name: 'Run Inspector' });
   await expect(inspector.getByRole('region', { name: 'Log', exact: true })).toBeVisible();
@@ -46,7 +46,6 @@ test('standalone Activity opens an existing run and hydrates its retained histor
 });
 
 test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(48_000);
   const created = await request.post('/api/projects', { data: { name: 'canonical-successor' } });
   expect(created.status()).toBe(201);
   let { snapshot } = await created.json() as StudioProjectDocument;
@@ -77,7 +76,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
     run_key: '["default","train","default"]', disposition: 'admitted', job_id: expect.any(String),
   })]);
   const job = items[0].job_id!;
-  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   await page.reload();
   await mapStep(page, 'train').click();
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
@@ -105,16 +104,16 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
   await expect(runButton).toBeVisible();
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const loss = results.getByRole('img', { name: 'Metric train_loss', exact: true });
-  await expect(loss.locator(`line[data-attempt="${stoppedJob}"] title`).first()).toBeAttached({ timeout: 14_000 });
+  await expect(loss.locator(`line[data-attempt="${stoppedJob}"] title`).first()).toBeAttached({ timeout: jobTimeout });
   const stop = await request.post('/api/jobs/stop', { data: { job_ids: [stoppedJob], mode: 'checkpoint' } });
   expect(stop.status(), await stop.text()).toBe(202);
-  await expect(table.getByText('Stopped', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(table.getByText('Stopped', { exact: true })).toBeVisible({ timeout: jobTimeout });
   const resume = await request.post(`/api/jobs/${stoppedJob}/resume`, { data: { token: 'resume-successor' } });
   expect(resume.ok(), await resume.text()).toBe(true);
   const resumed = await resume.json() as StudioActivityJob;
   expect(resumed.continues).toBe(stoppedJob);
   const successorJob = resumed.job_id;
-  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 16_000 });
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   const replay = await request.post(path, { data: successorAdmission.request().postDataJSON() });
   expect(replay.status(), await replay.text()).toBe(202);
   expect(await replay.json()).toEqual(successorSubmission);
@@ -184,7 +183,6 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
 });
 
 test('Saved Train compares authenticated receipts after a partial run and stopped edit', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(65_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const created = await request.post('/api/projects', { data: { name: 'canonical-resume' } });
   expect(created.status()).toBe(201);
@@ -284,7 +282,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
 
   await page.goto(`/?project=${encodeURIComponent(id)}`);
   const firstJob = await runSelected('train');
-  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   const first = (await trainRow()).result!;
   expect(first.job_id).toBe(firstJob);
   await editNumber('Seed', 7, '0');
@@ -297,7 +295,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   expect(stale.request_id).not.toBe(first.request_id);
 
   await runSelected('sibling');
-  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   expect(await trainRow()).toMatchObject({ status: 'stale', result: null, previous: first, attempts: [] });
 
   await select('train');
@@ -319,7 +317,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
 
   await editNumber('Batches', 2, '10000');
   const changedJob = await runSelected('train');
-  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   const changed = await trainRow();
   expect(changed.result!.job_id).toBe(changedJob);
   expect(changed.previous).toEqual(first);
@@ -367,7 +365,6 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
 });
 
 test('Mounted field sweep continues exactly two Train rows with state', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(47_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   let { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const id = snapshot.project_id;
@@ -414,7 +411,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     });
     const result = await admitted.json() as StudioJobSubmission;
     expect(result.items.map(({ disposition }) => disposition)).toEqual(['admitted', 'admitted']);
-    await expect(table.getByText('Done', { exact: true })).toHaveCount(2, { timeout: 16_000 });
+    await expect(table.getByText('Done', { exact: true })).toHaveCount(2, { timeout: jobTimeout });
     return result.items;
   };
 

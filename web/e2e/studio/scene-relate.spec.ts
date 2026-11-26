@@ -17,8 +17,7 @@ const centre = async (target: Locator) => {
 // that writes a term the Scene then cannot draw: a term whose relation does not end at the hand and
 // the target, a write that adds no row or more than one, a new term that is not selected with its Measure focused and read from its first character,
 // and a second relation of the same two places drawn exactly over the first.
-test('Relate dragged from the hand to the target adds one Objective term and its dashed line', async ({ page, request }) => {
-  test.setTimeout(45_000);
+test('Relate dragged from the hand to the target adds one Objective term and its dashed line', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();

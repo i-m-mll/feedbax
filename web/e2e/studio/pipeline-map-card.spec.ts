@@ -12,7 +12,6 @@ async function box(locator: Locator) {
 }
 
 test('the map card draws one sweep in a line, its head as glyph and name, and the add control outside its border', async ({ page, request }, info) => {
-  test.setTimeout(55_000);
   const [model, task, objective, train, successor] = await fixture('managed-files');
   train.step.sweep = { axes: { 'batch-size': { values: Object.fromEntries([2, 4, 8, 16].map((size) => [
     `b${size}`, { label: String(size), patches: { 'training_config.batch_size': { value: size } } },
@@ -66,7 +65,6 @@ test('the map card draws one sweep in a line, its head as glyph and name, and th
 });
 
 test('the map drawer keeps New Step in view, aligned with its rows, while its list scrolls', async ({ page, request }, info) => {
-  test.setTimeout(55_000);
   const [model, task, objective, train, successor] = await fixture('managed-files');
   const extra = Array.from({ length: 12 }, (_, index) => ({ ...structuredClone(train), id: `other-${index}` }));
   const { snapshot } = await seedManagedProject(request, [model, task, objective, train, successor, ...extra]);

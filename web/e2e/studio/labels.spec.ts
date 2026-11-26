@@ -11,7 +11,6 @@ test.use({ viewport: { width: 1440, height: 900 } });
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
 test('Rename labels a step, an operation and a figure; Change Key rewrites the Report and dims a held key', async ({ page, request, studio }) => {
-  test.setTimeout(60_000);
   const module = 'web.e2e.studio.fixtures.managed_report';
   const project = JSON.parse(await runProjectFixture(module, 'seed_labels', studio.home, 'labels'));
   const path = '/api/projects/' + project;

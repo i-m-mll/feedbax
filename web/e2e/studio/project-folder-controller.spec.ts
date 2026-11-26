@@ -8,6 +8,8 @@ import type { StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture } from './fixtures/canonicalTrain';
 
 test.use({ studioFrontend: 'dev' });
+// Every test here needs a Studio of its own kind, which is why each is in the round tier; they share one worker.
+test.describe.configure({ mode: 'default' });
 
 // Model documents change only through addressed Model operations, and an edit under a list does
 // not survive an outside change, so these file-level edits change the Train step's batch size.
@@ -54,7 +56,7 @@ async function outsideWrite(root: string, batch: number) {
   await rename(replacement, path);
 }
 
-test('File Rename marks invalid names and refuses a stale dialog', async ({ page, request, studio }, info) => {
+test('File Rename marks invalid names and refuses a stale dialog', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const created = await request.post('/api/projects', { data: { name: 'rename-validation' } });
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot, configuration } = await created.json();
@@ -119,7 +121,7 @@ test('File Rename marks invalid names and refuses a stale dialog', async ({ page
   await expect(name).toHaveValue('renamed');
 });
 
-test('M2 folder controller settles, reopens, observes disk changes, and resolves a stale edit', async ({ page, studio }, info) => {
+test('M2 folder controller settles, reopens, observes disk changes, and resolves a stale edit', { tag: '@slow' }, async ({ page, studio }, info) => {
   const alias = 'controller-reach';
   const root = join(studio.home, 'state', 'web', 'projects', alias);
   await folderFixture('seed', root);
@@ -173,7 +175,7 @@ test('M2 folder controller settles, reopens, observes disk changes, and resolves
   await page.evaluate(() => (window as unknown as Probe).folderEditor.close());
 });
 
-test('M2 managed commands preserve edits, identity and names across Rename and reopen', async ({ page, request, studio }, info) => {
+test('M2 managed commands preserve edits, identity and names across Rename and reopen', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const projects = join(studio.home, 'state', 'web', 'projects');
   const alias = 'commands-reach';
   const root = join(projects, alias);
@@ -317,7 +319,7 @@ test('M2 managed commands preserve edits, identity and names across Rename and r
   await page.evaluate(() => (window as unknown as Probe).folderEditor.close());
 });
 
-test('M2 managed New authors a Train with named trial documents', async ({ page, request, studio }, info) => {
+test('M2 managed New authors a Train with named trial documents', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const [model, task, objective, definedTrain] = await fixture('ordinary-files', '8');
   const train = { ...definedTrain, step: { ...definedTrain.step, base: { inline: {} } } };
   await page.goto('/');

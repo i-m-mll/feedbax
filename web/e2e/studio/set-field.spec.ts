@@ -19,8 +19,7 @@ async function files() {
 // Catches a To Field that leaves the axis's runs on the card or shows no variable for the Set in the Task view, a
 // Value that drops an entry or None or cuts one off, a weight typed at its entry that is not stored at that entry, and a To Sweep that
 // does not restore the axis's runs.
-test('To Field moves a Set into the run as a variable of the Task, its weights are edited there, and To Sweep moves it back', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('To Field moves a Set into the run as a variable of the Task, its weights are edited there, and To Sweep moves it back', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await files());
   const card = page.locator('[data-map-step="train"]');
   const marks = card.locator('.studio-map-run-mark');
@@ -72,7 +71,7 @@ test('To Field moves a Set into the run as a variable of the Task, its weights a
 // Catches a Set placed in the trials with no field for its condition, a condition field that does not complete from
 // the Task's variables, a condition that is not stored on the Set field, an unknown name saved without its Problem on
 // the field, and a cleared field that leaves the condition stored.
-test('a Set in the trials takes a condition on Task variables, refuses an unknown name on its field, and clears', async ({ page, request }) => {
+test('a Set in the trials takes a condition on Task variables, refuses an unknown name on its field, and clears', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await files());
   const card = page.locator('[data-map-step="train"]');
   const condition = page.locator('[data-slot="primary"]').getByRole('table', { name: 'Variables', exact: true })

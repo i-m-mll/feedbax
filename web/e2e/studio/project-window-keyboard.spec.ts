@@ -1,4 +1,4 @@
-import { expect, firstJobTimeout, test } from './fixtures/studio';
+import { expect, jobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { modelDocumentSchemaId, objectiveDocumentSchemaId, firstTrainTask, type StoredModelDocument as ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioActivityJob, type StudioJobSubmission, type StudioProjectDocument, type StudioProjectSnapshot, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StudioTrialReplayResponse } from '../../src/generated/studioContracts';
 import { drawnRunLabel, enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject, sweepLabel, mapCard } from './fixtures/canonicalTrain';
@@ -131,7 +131,6 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
 });
 
 test('authors, checkpoint-resumes and evaluates a subset from one fresh managed project', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(100_000);
   const totalUpdates = 2400;
   const home = studio.home;
   const { saved, projectPath, savedProject, plan } = await authorFirstTrain(page, request, totalUpdates);
@@ -178,7 +177,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await expect(runs.getByRole('button', { name: 'Open Run', exact: true })).toBeEnabled();
   await palette(page, 'openRun', 'Open Run');
   const loss = results.getByRole('img', { name: 'Metric train_loss', exact: true });
-  await expect(loss.locator(`line[data-attempt="${initial.job_id}"] title`).first()).toBeAttached({ timeout: 16_000 });
+  await expect(loss.locator(`line[data-attempt="${initial.job_id}"] title`).first()).toBeAttached({ timeout: jobTimeout });
   const stopping = post(page, '/api/jobs/stop');
   await page.keyboard.press('Meta+Period');
   const stop = await stopping;
@@ -189,7 +188,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
     const rows = (await plan(revision)).rows;
     return rows.find(({ key }) => key.step === selected.key.step && key.row === selected.key.row)!;
   }
-  await expect.poll(async () => (await readSelected(swept.revision)).status, { timeout: 12_000 }).toBe('stopped');
+  await expect.poll(async () => (await readSelected(swept.revision)).status, { timeout: jobTimeout }).toBe('stopped');
   const witness = { module: 'web.e2e.studio.fixtures.managed_lifecycle' };
   const witnessArgs = (action: string, ...args: string[]) => [action, home, saved.project_id, initial.job_id!, ...args];
   const observe = async (action: string, ...args: string[]) =>
@@ -215,7 +214,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(continued.job_id).not.toBe(initial.job_id);
   const binding = await observe('resume', continued.job_id);
   expect(binding).toEqual({ host: paused.new_host, checkpoint: paused.checkpoint });
-  await expect.poll(async () => (await readSelected(swept.revision)).status, { timeout: 22_000 }).toBe('succeeded');
+  await expect.poll(async () => (await readSelected(swept.revision)).status, { timeout: jobTimeout }).toBe('succeeded');
   const trained = await readSelected(swept.revision);
   expect(trained.result).toMatchObject({
     job_id: continued.job_id,
@@ -250,7 +249,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(projection.window_map?.evaluations).toHaveLength(1);
   const [evaluation] = await submit([pending.key], evaluated.revision);
   const evaluatedRow = async () => (await plan(evaluated.revision)).window_map!.evaluations![0];
-  await expect.poll(async () => (await evaluatedRow()).status, { timeout: 18_000 }).toBe('succeeded');
+  await expect.poll(async () => (await evaluatedRow()).status, { timeout: jobTimeout }).toBe('succeeded');
   const result = await evaluatedRow();
   expect(result.result).toMatchObject({
     job_id: evaluation.job_id,
@@ -298,7 +297,6 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
 
 test('Model edits follow the lit users of a saved shared document', async ({ page, request }) => {
   test.fixme(true, 'Owned by I1 (element selection and inspector): undo selects the edited field address, which the Inspector does not resolve to its owner.');
-  test.setTimeout(45_000);
   const [model, task, objective, train] = await fixture('managed-files');
   const alpha = { ...train, id: 'alpha' };
   const beta = { ...train, id: 'beta' };
@@ -419,8 +417,7 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   for (const step of ['alpha', 'beta', 'gamma', 'other']) expect(plan[step].request_id).toEqual(afterShared[step].request_id);
 });
 
-test('the window commands, tab rail and selection history work without a pointer', async ({ page, request }, info) => {
-  test.setTimeout(50_000);
+test('the window commands, tab rail and selection history work without a pointer', { tag: '@slow' }, async ({ page, request }, info) => {
   const [model, task, objective, train, successor] = await fixture('managed-files');
   const { snapshot } = await seedManagedProject(request, [
     model, task, objective, train, successor, ...alternateModelFiles([model, task, objective, train], 'third'),
@@ -553,7 +550,6 @@ test('the window commands, tab rail and selection history work without a pointer
 });
 
 test('the keyboard authors, runs and stops a strict checkpoint continuation and follows Results', { tag: '@round' }, async ({ page, request }) => {
-  test.setTimeout(55_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const runsPath = `${projectPath}/train-runs`;
   const card = mapCard(page, 'train');
@@ -592,7 +588,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const sourceKeys = sourceRun.request().postDataJSON().run_keys as StudioSavedTrainRuns['rows'][number]['key'][];
   expect(sourceKeys).toHaveLength(2);
   const producer = (await sourceRun.json() as StudioJobSubmission).items[0].job_id;
-  await expect(card.locator('[data-status-mark="succeeded"]')).toHaveCount(2, { timeout: firstJobTimeout });
+  await expect(card.locator('[data-status-mark="succeeded"]')).toHaveCount(2, { timeout: jobTimeout });
   await expect(card.locator('[data-status-mark="not_run"]')).toHaveCount(1);
 
   await expect(card.getByRole('button', { name: 'New Step Train' })).toHaveAttribute('data-command-id', 'newStep');
@@ -647,14 +643,14 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await palette(page, 'openRun', 'Open Run');
   const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
   await expect(results).toBeFocused();
-  await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator(`line[data-attempt="${job}"] title`).first()).toBeAttached({ timeout: 16_000 });
+  await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator(`line[data-attempt="${job}"] title`).first()).toBeAttached({ timeout: jobTimeout });
   const stopped = post(page, '/api/jobs/stop');
   await page.keyboard.press('Meta+Period');
   const stop = await stopped;
   expect(stop.status(), await stop.text()).toBe(202);
   expect(stop.request().postDataJSON()).toEqual({ job_ids: [job], mode: 'checkpoint' });
   await page.keyboard.press('Meta+1');
-  await expect(table.getByText('Stopped', { exact: true })).toBeVisible({ timeout: 12_000 });
+  await expect(table.getByText('Stopped', { exact: true })).toBeVisible({ timeout: jobTimeout });
   await expect(table.getByRole('row').filter({ hasText: 'Stopped' }).getByText(/^[\d,]+ \/ [\d,]+$/)).toBeVisible();
   await expect(table.getByText('Not run', { exact: true })).toBeVisible();
   await page.keyboard.press('Meta+7');

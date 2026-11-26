@@ -9,8 +9,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 // variables, a value naming what is not yet declared that is refused rather than stored and marked on its term (an
 // edit the user cannot leave half-done), a mark that declaring the name does not clear, Escape during a save or the
 // read after it showing the replaced value, and a table that a reload does not give back.
-test('the Variables table names, types and values a new task\'s variables, and stores a name that does not resolve with its mark', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('the Variables table names, types and values a new task\'s variables, and stores a name that does not resolve with its mark', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const saved = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project;
   const primary = page.locator('[data-slot="primary"]');

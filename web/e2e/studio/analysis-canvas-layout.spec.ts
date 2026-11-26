@@ -54,7 +54,7 @@ async function expectClearCanvas(analysis: Locator) {
 // Catches a dropped card drawn over the card it was dropped on, a laid-out card left behind a placed one once an input
 // is set, a wire to a card behind its source drawn back across the cards rather than around them, and a view that keeps
 // its frame after a drop or after the Inspector narrows it, leaving a card past its edge.
-test('keeps every Analysis card clear of the others and every wire clear of the cards', async ({ page, request, studio }) => {
+test('keeps every Analysis card clear of the others and every wire clear of the cards', { tag: '@slow' }, async ({ page, request, studio }) => {
   const project: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'analysis-layout',
   ));
