@@ -473,5 +473,357 @@
     "offset": null
   },
   "feedbax.contracts.window.WindowRelativePosition": {},
-  "feedbax.contracts.window.WindowTrialAnchor": {}
+  "feedbax.contracts.window.WindowTrialAnchor": {},
+  "feedbax.training.optimizers.Adabelief": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-16,
+    "eps_root": 1e-16,
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.Adadelta": {
+    "learning_rate": null,
+    "rho": 0.9,
+    "eps": 1e-06
+  },
+  "feedbax.training.optimizers.Adafactor": {
+    "learning_rate": null,
+    "min_dim_size_to_factor": 128,
+    "decay_rate": 0.8,
+    "decay_offset": 0,
+    "multiply_by_parameter_scale": true,
+    "clipping_threshold": 1.0,
+    "momentum": null,
+    "weight_decay_rate": null,
+    "eps": 1e-30,
+    "factored": true
+  },
+  "feedbax.training.optimizers.Adagrad": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "initial_accumulator_value": 0.1,
+    "eps": 1e-07
+  },
+  "feedbax.training.optimizers.Adam": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "eps_root": 0.0,
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.Adamax": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08
+  },
+  "feedbax.training.optimizers.Adamaxw": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0001
+    }
+  },
+  "feedbax.training.optimizers.Adamw": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "eps_root": 0.0,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0001
+    },
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.Adan": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.98,
+    "b2": 0.92,
+    "b3": 0.99,
+    "eps": 1e-08,
+    "eps_root": 1e-08,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0
+    }
+  },
+  "feedbax.training.optimizers.Amsgrad": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "eps_root": 0.0,
+    "bias_correction_mu": true,
+    "bias_correction_nu": true
+  },
+  "feedbax.training.optimizers.ConstantSchedule": {
+    "value": 0.001
+  },
+  "feedbax.training.optimizers.CosineDecaySchedule": {
+    "init_value": 0.001,
+    "decay_steps": 1000,
+    "alpha": 0.0,
+    "exponent": 1.0
+  },
+  "feedbax.training.optimizers.CosineOnecycleSchedule": {
+    "transition_steps": 1000,
+    "peak_value": 0.001,
+    "pct_start": 0.3,
+    "div_factor": 25.0,
+    "final_div_factor": 10000.0
+  },
+  "feedbax.training.optimizers.ExponentialDecay": {
+    "init_value": 0.001,
+    "transition_steps": 1000,
+    "decay_rate": 0.5,
+    "transition_begin": 0,
+    "staircase": false,
+    "end_value": null
+  },
+  "feedbax.training.optimizers.Fromage": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "min_norm": 1e-06
+  },
+  "feedbax.training.optimizers.Lamb": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-06,
+    "eps_root": 0.0,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0
+    }
+  },
+  "feedbax.training.optimizers.Lars": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0
+    },
+    "trust_coefficient": 0.001,
+    "eps": 0.0,
+    "momentum": 0.9,
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.LinearOnecycleSchedule": {
+    "transition_steps": 1000,
+    "peak_value": 0.001,
+    "pct_start": 0.3,
+    "pct_final": 0.85,
+    "div_factor": 25.0,
+    "final_div_factor": 10000.0
+  },
+  "feedbax.training.optimizers.LinearSchedule": {
+    "init_value": 0.001,
+    "end_value": 0.0,
+    "transition_steps": 1000,
+    "transition_begin": 0
+  },
+  "feedbax.training.optimizers.Lion": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.99,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.001
+    }
+  },
+  "feedbax.training.optimizers.NoisySgd": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "eta": 0.01,
+    "gamma": 0.55,
+    "seed": null
+  },
+  "feedbax.training.optimizers.Novograd": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.25,
+    "eps": 1e-06,
+    "eps_root": 0.0,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0
+    }
+  },
+  "feedbax.training.optimizers.OptimisticAdamV2": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "alpha": 1.0,
+    "beta": 1.0,
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "eps_root": 0.0,
+    "nesterov": true
+  },
+  "feedbax.training.optimizers.OptimisticGradientDescent": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "alpha": {
+      "type": "constant_schedule",
+      "value": 1.0
+    },
+    "beta": {
+      "type": "constant_schedule",
+      "value": 1.0
+    }
+  },
+  "feedbax.training.optimizers.PiecewiseConstantSchedule": {
+    "init_value": 0.001,
+    "boundaries_and_scales": null
+  },
+  "feedbax.training.optimizers.PiecewiseInterpolateSchedule": {
+    "interpolate_type": "linear",
+    "init_value": 0.001,
+    "boundaries_and_scales": null
+  },
+  "feedbax.training.optimizers.PolynomialSchedule": {
+    "init_value": 0.001,
+    "end_value": 0.0,
+    "power": 1.0,
+    "transition_steps": 1000,
+    "transition_begin": 0
+  },
+  "feedbax.training.optimizers.Radam": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "eps_root": 0.0,
+    "threshold": 5.0,
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.Rmsprop": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "decay": 0.9,
+    "eps": 1e-08,
+    "initial_scale": 0.0,
+    "eps_in_sqrt": true,
+    "centered": false,
+    "momentum": null,
+    "nesterov": false,
+    "bias_correction": false
+  },
+  "feedbax.training.optimizers.Rprop": {
+    "learning_rate": 0.001,
+    "eta_minus": 0.5,
+    "eta_plus": 1.2,
+    "min_step_size": 1e-06,
+    "max_step_size": 50.0
+  },
+  "feedbax.training.optimizers.Sgd": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "momentum": null,
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.SignSgd": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    }
+  },
+  "feedbax.training.optimizers.Signum": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "beta": 0.9
+  },
+  "feedbax.training.optimizers.Sm3": {
+    "learning_rate": 0.001,
+    "momentum": 0.9
+  },
+  "feedbax.training.optimizers.WarmupConstantSchedule": {
+    "init_value": 0.001,
+    "peak_value": 0.001,
+    "warmup_steps": 100
+  },
+  "feedbax.training.optimizers.WarmupCosineDecaySchedule": {
+    "init_value": 0.001,
+    "peak_value": 0.001,
+    "warmup_steps": 100,
+    "decay_steps": 1000,
+    "end_value": 0.0,
+    "exponent": 1.0
+  },
+  "feedbax.training.optimizers.WarmupExponentialDecaySchedule": {
+    "init_value": 0.001,
+    "peak_value": 0.001,
+    "warmup_steps": 100,
+    "transition_steps": 1000,
+    "decay_rate": 0.5,
+    "transition_begin": 0,
+    "staircase": false,
+    "end_value": null
+  },
+  "feedbax.training.optimizers.Yogi": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 0.001
+  }
 }

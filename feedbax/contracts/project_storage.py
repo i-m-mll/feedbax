@@ -95,7 +95,7 @@ def _keyed_collection_at(annotation: Any, path: StoredPath) -> bool:
 
 
 @cache
-def _schema_inventory() -> tuple[tuple[type[BaseModel], ...], dict[type[BaseModel], set[str]]]:
+def _schema_inventory(extra_models: tuple[Any, ...] = ()) -> tuple[tuple[type[BaseModel], ...], dict[type[BaseModel], set[str]]]:
     """Reachable stored models and the tag fields that discriminate their actual unions."""
     from feedbax.contracts.project import BasedDocument, Project, Step
     from feedbax.contracts.project_io import StudioProjectFile, TextProjectManifest
@@ -140,7 +140,7 @@ def _schema_inventory() -> tuple[tuple[type[BaseModel], ...], dict[type[BaseMode
             for item in get_args(annotation):
                 visit(item)
 
-    for model in (*roots, *stored_document_models().values()):
+    for model in (*roots, *stored_document_models().values(), *extra_models):
         if model is not None:
             visit(model)
     return tuple(sorted(models, key=_model_name)), tags
@@ -165,7 +165,9 @@ def _key(name: str, field: FieldInfo) -> str:
 
 def stored_defaults_manifest() -> dict[str, JsonValue]:
     """Declare every constant default reachable through a stored model."""
-    models, tags = _schema_inventory()
+    from feedbax.training.optimizers import OptimizerSpec, ScheduleSpec
+
+    models, tags = _schema_inventory((OptimizerSpec, ScheduleSpec))
     return {
         _model_name(model): {
             _key(name, field): _field_default(model, name)
