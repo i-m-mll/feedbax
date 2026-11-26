@@ -132,17 +132,18 @@ def test_composite_without_input_to_output_path_needs_no_delay():
     {"kind": "wire", "source": _end("same", "out")},
 ])
 def test_delay_initial_modes_are_authored_by_the_attachment_command(initial_source):
-    owner = _address(("outer",), "wire", id="in")
+    parent = {"kind": "wire", "id": "in"}
+    address = _address(("outer",), "attachment", parent=parent, id="lag")
     attachment = {
-        "kind": "delay", "id": "lag", "delay": {"value": 5, "unit": "st"}, "initial_source": initial_source,
+        "kind": "delay", "delay": {"value": 5, "unit": "st"}, "initial_source": initial_source,
     }
     result = _execute(_start(), "set_attachment", difference={
-        "op": "add", "owner": owner, "attachment": attachment, "after": None,
+        "op": "add", "address": address, "attachment": attachment, "after": None,
     })
     assert not isinstance(result, ModelEditProblem), result
     archived = ModelEditState.model_validate_json(result.state.model_dump_json())
     graph = archived.document.interior.components["outer"].interior
-    assert graph.wires["in"].attachments[0].model_dump(mode="json") == attachment
+    assert graph.wires["in"].attachments[0].model_dump(mode="json") == attachment | {"id": "lag"}
 
 
 def _start(deep_name="inner", *, decorated=False, fanout=False, default=False):
