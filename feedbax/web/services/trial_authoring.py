@@ -132,6 +132,8 @@ def _project(
     documents, bundle, *, show_objective=True, graph_override=None,
     objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
 ) -> _Projection:
+    from feedbax.compiler.model_document import complete_model_fields
+
     task = documents.task_source
     fields = {}
     if isinstance(task, PythonTaskSelection):
@@ -155,9 +157,9 @@ def _project(
 
     task_sites = {}
     paired = pair_trial_source(
-        documents.model, task, bundle.components, bundle.expression_functions,
+        complete_model_fields(documents.model, bundle.components), task, bundle.components, bundle.expression_functions,
         python_tasks=bundle.python_tasks, input_bindings=documents.input_bindings,
-        task_sites=task_sites, graph_override=graph_override, reset_fields=resets,
+        task_sites=task_sites, graph_override=graph_override, reset_fields=resets, keyed_root_ports=True,
     )
     partial = None
     if isinstance(paired, tuple):
