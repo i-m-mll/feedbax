@@ -1,4 +1,5 @@
 from copy import deepcopy
+from functools import partial
 
 import pytest
 from hypothesis import given, strategies as st
@@ -10,6 +11,7 @@ from feedbax.contracts.matrix_core import (
     apply_stored_patch_copy,
     apply_stored_patch_in_place,
 )
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
     BasedDocument,
     DifferenceNotApplied,
@@ -21,11 +23,17 @@ from feedbax.contracts.project import (
     apply_differences,
     diff,
 )
+from feedbax.contracts.project_storage import stored_keyed_collection
 from feedbax.contracts.set_document import SetEntry
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 
 
 def _keyed_collection(parts):
     return parts == ("members",) or len(parts) == 3 and parts[0] == "members" and parts[2] == "children"
+
+
+def _term(value):
+    return {"measure": {"kind": "literal", "value": value}}
 
 
 _keys = st.sampled_from(["a", "b", "c", "d", "e", "slash/key", "tilde~key"])
@@ -48,26 +56,27 @@ def test_member_differences_reconstruct_nested_keyed_collections(base_members, t
 
 
 def test_order_runs_after_edits_and_keeps_new_base_members():
-    base = {"members": {"b": 2, "a": 1, "dropped": 3, "future-one": 4, "future-two": 5}}
+    base_values = {"b": 2, "a": 1, "dropped": 3, "future-one": 4, "future-two": 5}
+    base = {"id": "objective", "terms": {key: _term(value) for key, value in base_values.items()}}
     authored = BasedDocument.model_validate({
-        "schema": "example.members",
+        "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID,
         "label": "Reordered",
         "base": {"document": "base"},
         "differences": {
-            "/members": {"order": ["new", "a", "no-longer-in-base", "b"]},
-            "/members/dropped": {"op": "remove"},
-            "/members/new": {"value": 6},
-            "/members/b": {"value": 7},
+            "/terms": {"order": ["new", "a", "no-longer-in-base", "b"]},
+            "/terms/dropped": {"op": "remove"},
+            "/terms/new": {"value": _term(6)},
+            "/terms/b/measure/value": {"value": 7},
         },
     })
-    actual = apply_differences(base, authored.differences, keyed_collection=_keyed_collection)
+    actual = apply_differences(
+        base, authored.differences, keyed_collection=partial(stored_keyed_collection, authored.schema_id),
+    )
 
-    assert list(actual["members"].items()) == [
+    assert [(key, term["measure"]["value"]) for key, term in actual["terms"].items()] == [
         ("new", 6), ("a", 1), ("b", 7), ("future-one", 4), ("future-two", 5),
     ]
-    assert list(base["members"].items()) == [
-        ("b", 2), ("a", 1), ("dropped", 3), ("future-one", 4), ("future-two", 5),
-    ]
+    assert [(key, term["measure"]["value"]) for key, term in base["terms"].items()] == list(base_values.items())
 
 
 def test_diff_emits_member_edits_before_the_collection_order():
@@ -100,23 +109,24 @@ def test_editing_one_member_stays_local_as_the_collection_grows():
 
 
 def test_order_requires_a_typed_collection_and_cannot_look_inside_replaced_value():
-    with pytest.raises(DifferenceNotApplied, match="no keyed collection at /metadata"):
+    keyed = partial(stored_keyed_collection, STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID)
+    with pytest.raises(DifferenceNotApplied, match="no keyed collection at /terms/a"):
         apply_differences(
-            {"metadata": {"a": 1}}, {"/metadata": OrderDocumentMembers(order=["a"])},
-            keyed_collection=_keyed_collection,
+            {"id": "objective", "terms": {"a": _term(1)}},
+            {"/terms/a": OrderDocumentMembers(order=["measure"])}, keyed_collection=keyed,
         )
-    with pytest.raises(DifferenceNotApplied, match="no object at /members"):
-        apply_differences({}, {"/members": OrderDocumentMembers(order=[])}, keyed_collection=_keyed_collection)
+    with pytest.raises(DifferenceNotApplied, match="no object at /terms"):
+        apply_differences({"id": "objective"}, {"/terms": OrderDocumentMembers(order=[])}, keyed_collection=keyed)
 
     with pytest.raises(ValidationError, match="lies under"):
         BasedDocument.model_validate({
-            "schema": "example.members",
+            "schema": STORED_TASK_DOCUMENT_SCHEMA_ID,
             "label": "Replaced",
             "base": {"document": "base"},
             "differences": {
-                "/members": {"order": ["a"]},
-                "/members/a": {"value": {"children": {}}},
-                "/members/a/children": {"order": []},
+                "/signals": {"order": ["a"]},
+                "/signals/a": {"value": {"label": "A", "type": {"base": "boolean"}, "cells": {}}},
+                "/signals/a/cells": {"order": []},
             },
         })
 

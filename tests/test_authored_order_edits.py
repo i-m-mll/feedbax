@@ -7,6 +7,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.web.app import create_app
 
 
@@ -15,6 +16,13 @@ MODEL_LINKS = [
     ModelAddress.at_state((), "body", "position").to_text(),
     ModelAddress.at_state((), "body", "velocity").to_text(),
 ]
+OBJECTIVE_PAYLOAD = {
+    "id": "objective",
+    "terms": {
+        key: {"measure": {"kind": "literal", "value": value}}
+        for key, value in [("first", 1.0), ("second", 2.0), ("last", 3.0)]
+    },
+}
 
 
 @pytest.fixture
@@ -30,22 +38,19 @@ def study(tmp_path):
     })
     write("variants/check.json", {"label": "Check"})
     write("steps/fit.json", {"kind": "train", "label": "Fit", "base": {"inline": {}}})
-    objective = {
-        "id": "objective",
-        "terms": {
-            key: {"measure": {"kind": "literal", "value": value}}
-            for key, value in [("first", 1.0), ("second", 2.0), ("last", 3.0)]
-        },
-    }
     write("documents/loss.json", {
-        "label": "Loss", "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "payload": objective,
+        "label": "Loss", "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "payload": OBJECTIVE_PAYLOAD,
     })
     write("documents/based.json", {
         "label": "Based", "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "base": {"document": "loss"},
         "differences": {"/terms/first/weight": {"value": {"kind": "literal", "value": 4.0}}},
     })
-    write("documents/opaque.json", {
-        "label": "Opaque", "schema": "notes", "payload": objective | {"values": [1, 2]},
+    write("documents/training.json", {
+        "label": "Training", "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": {
+            "method": "feedbax.example_training",
+            "settings": {"schedule": {"weights": [1, 2], "warmup": 0}},
+            "training_config": {},
+        },
     })
     write("documents/model.json", {
         "label": "Model", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": {
@@ -135,9 +140,10 @@ def test_order_can_name_model_ports_and_address_keyed_task_links(study):
     ("document", "model", [_order("/payload/ports/outputs", "missing")]),
     ("document", "based", [_order("/differences", "/terms/first/weight")]),
     ("document", "based", [_order("/payload/terms", "last")]),
-    ("document", "opaque", [_order("/payload/terms", "last")]),
-    ("document", "opaque", [
+    ("document", "training", [_order("/payload/settings/schedule", "warmup")]),
+    ("document", "training", [
         {"op": "replace", "path": "/schema", "value": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID},
+        {"op": "replace", "path": "/payload", "value": OBJECTIVE_PAYLOAD},
         _order("/payload/terms", "last"),
     ]),
     ("step", "fit", [_order("/payload/terms", "last")]),
@@ -153,8 +159,9 @@ def test_order_refuses_invalid_authored_targets_without_writing(study, kind, nam
 
 def test_ordinary_authored_array_insertion_is_still_available(study):
     _, client = study
-    response = _patch(client, _snapshot(client), "document", "opaque", {
-        "op": "add", "path": "/payload/values/0", "value": 0,
+    response = _patch(client, _snapshot(client), "document", "training", {
+        "op": "add", "path": "/payload/settings/schedule/weights/0", "value": 0,
     })
     assert response.status_code == 200, response.text
-    assert response.json()["project"]["documents"]["opaque"]["payload"]["values"] == [0, 1, 2]
+    schedule = response.json()["project"]["documents"]["training"]["payload"]["settings"]["schedule"]
+    assert schedule["weights"] == [0, 1, 2]
