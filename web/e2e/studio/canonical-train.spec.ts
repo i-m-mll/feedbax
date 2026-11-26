@@ -6,12 +6,12 @@ import { scanStudio } from './fixtures/studioAccessibility';
 import { formatMetric } from '../../src/components/activity/studioPlot';
 import type {
   StudioActivityJob,
-  StudioJobEventHistory,
   StudioJobSnapshot,
   StudioJobSubmission,
   StudioProjectDocument,
   StudioProjectSnapshot,
   StudioSavedTrainRuns,
+  StudioTrainMetricHistory,
 } from '../../src/generated/studioContracts';
 import { pick } from './fixtures/controls';
 import { palette } from './fixtures/studioKeyboard';
@@ -232,6 +232,12 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   const loss = results.getByRole('img', { name: 'Metric train_loss', exact: true });
   const observed = () => fixture('observe-history', studio.home, id, snapshot.revision);
   type LossSample = { update: number; value: number };
+  async function retainedLoss(jobId: string): Promise<LossSample[]> {
+    const response = await request.get(`/api/jobs/${jobId}/training-metrics?project=${encodeURIComponent(id)}`);
+    expect(response.ok(), await response.text()).toBe(true);
+    const { updates } = await response.json() as StudioTrainMetricHistory;
+    return updates.map(({ update, metrics }) => ({ update, value: metrics.train_loss as number }));
+  }
   async function expectLoss(jobId: string, expected: LossSample[]) {
     const series = loss.locator(`[data-result-attempt="${jobId}"]`);
     await expect(series.locator('polyline')).toBeAttached();
@@ -306,7 +312,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   await results.getByRole('button', { name: 'Previous Result', exact: true }).click();
   const stopped = await observed();
   expect(stopped).toMatchObject({ current: null, previous: first });
-  await expectLoss(firstJob, stopped.loss.previous);
+  await expectLoss(firstJob, await retainedLoss(firstJob));
   await expect(loss.locator(`[data-result-attempt="${stoppedJob}"]`)).toHaveCount(0);
   await expect(loss.locator('polyline')).toHaveCount(1);
   await results.getByRole('button', { name: 'Close Slot', exact: true }).click();
@@ -326,8 +332,8 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
     await expect(results.getByRole('region', { name: 'Compare Results', exact: true })).toContainText(changed.change!.path);
     await expect(results.getByRole('region', { name: 'Compare Results', exact: true })).toContainText(/0\s*→\s*7/);
     await expect(loss.locator('polyline')).toHaveCount(2);
-    await expectLoss(changedJob, evidence.loss.current);
-    await expectLoss(firstJob, evidence.loss.previous);
+    await expectLoss(changedJob, await retainedLoss(changedJob));
+    await expectLoss(firstJob, await retainedLoss(firstJob));
     await expect(loss.locator(`[data-result-attempt="${changedJob}"] polyline`)).not.toHaveAttribute('stroke-dasharray');
     await expect(loss.locator(`[data-result-attempt="${firstJob}"] polyline`)).toHaveAttribute('stroke-dasharray', '4 3');
   }
@@ -347,24 +353,13 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   }
   await captureStudioWindow(page, info, 'saved-train-loss-comparison');
 
-  let withheld = 0;
-  await page.route('**/api/events/history?**', async (route) => {
-    const response = await route.fetch();
-    const history = await response.json() as StudioJobEventHistory;
-    const events = history.events.map((event) => {
-      if (event.job_id !== firstJob || event.kind !== 'progress' || !event.data.metric_interval) return event;
-      withheld += 1;
-      const { metrics: _metrics, metric_interval: _interval, ...data } = event.data;
-      return { ...event, data };
-    });
-    await route.fulfill({ response, json: { ...history, events } });
-  });
+  await page.route(`**/api/jobs/${firstJob}/training-metrics?**`, (route) =>
+    route.fulfill({ status: 409, json: { detail: 'The completed Train metric history is unreadable.' } }));
   await page.reload();
   await select('train');
   await openResultsSlot(page);
   await results.getByRole('button', { name: 'Compare Results', exact: true }).click();
-  await expectLoss(changedJob, evidence.loss.current);
-  expect(withheld).toBe(evidence.loss.previous.length);
+  await expectLoss(changedJob, await retainedLoss(changedJob));
   await expect(loss.locator(`[data-result-attempt="${firstJob}"] polyline`)).toHaveCount(0);
   await expect(results.getByRole('list', { name: 'Metric train_loss', exact: true })
     .getByRole('listitem').filter({ hasText: 'Previous Result' }).getByRole('status')).toHaveText('train_loss unavailable');
