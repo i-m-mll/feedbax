@@ -331,7 +331,7 @@ async function sharedTraining(request: APIRequestContext, extra: readonly unknow
   const keys = ['method', 'settings', 'training_config'] as const;
   const inline = (snapshot.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
   const { snapshot: withDocument } = await appendManagedFiles(request, snapshot, [{ kind: 'document', id: 'training', document: {
-    schema: 'feedbax.spec.training_document', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
+    schema: 'feedbax.spec.training_document', label: 'Training', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
   } }]);
   const shared = await request.patch(projectPath, { data: { revision: withDocument.revision, files:
     ['train', 'sibling'].map((id) => ({ address: { kind: 'step', id }, patches: keys.map((key) => ({
@@ -434,7 +434,7 @@ test('a narrowed edit in the Training view makes a document based on the shown o
 });
 
 test('a continuation taken out keeps its runs, and Detach cuts a based document from its base', async ({ page, request }) => {
-  const continuation = { kind: 'step', id: 'train-2', step: { kind: 'train', base: { step: 'train' } } };
+  const continuation = { kind: 'step', id: 'train-2', step: { kind: 'train', label: 'Train 2', base: { step: 'train' } } };
   const { snapshot, saved, requests } = await sharedTraining(request, [continuation]);
   const { picker, batches, menu, indent } = trainingView(page);
 

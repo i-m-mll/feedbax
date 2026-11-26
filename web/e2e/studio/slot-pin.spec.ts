@@ -21,10 +21,10 @@ test('a Scene pinned on an Evaluate stays beside its Analyze\'s figures and foll
   const { snapshot } = await opened.json() as StudioProjectDocument;
   await appendManagedFiles(request, snapshot, [
     { kind: 'document', id: 'analysis', document: {
-      schema: 'feedbax.analysis_document.v1', payload: { inputs: { states: { kind: 'dataset' } } },
+      schema: 'feedbax.analysis_document.v1', label: 'Analysis', payload: { inputs: { states: { kind: 'dataset' } } },
     } },
     { kind: 'step', id: 'analyze', step: {
-      kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },
+      kind: 'analyze', label: 'Analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },
     } },
   ]);
 
