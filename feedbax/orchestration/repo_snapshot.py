@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import os
 import shutil
@@ -34,8 +35,6 @@ from feedbax._distribution_provenance import (
 
 
 REPO_SNAPSHOT_CACHE_DIR_ENV = "FEEDBAX_REPO_SNAPSHOT_CACHE_DIR"
-
-_PUBLISH_ATTEMPTS = 8
 
 
 class RepoSnapshotSourceFault(RepoSnapshotError):
@@ -731,34 +730,21 @@ def _publish_sealed_snapshot(
     publication. That trailing chmod changes neither the tree digest, which encodes only
     the executable bit, nor its readability.
 
-    A published entry whose bytes disagree with the content address holding them is a
-    damaged cache entry rather than a content mismatch, so it is quarantined and replaced
-    with the freshly verified tree instead of failing the run.
+    Hold the cache namespace lock from inspection through publication so a stale damage
+    check cannot quarantine a valid replacement published by another sealer.
     """
     _seal_tree_modes(build_root, include_root=False)
     build_root.chmod(0o755)
-    for _attempt in range(_PUBLISH_ATTEMPTS):
-        try:
-            os.replace(build_root, staging_root)
-        except OSError:
-            if not staging_root.exists():
-                raise
-        else:
-            staging_root.chmod(0o555)
-            return
-        if _cache_entry_matches(staging_root, content_sha256, file_count):
-            try:
+    with (staging_root.parent / ".publish.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if staging_root.exists():
+            if _cache_entry_matches(staging_root, content_sha256, file_count):
                 _seal_tree_modes(staging_root)
-            except FileNotFoundError:
-                # A concurrent repair replaced the entry between the check and the seal.
-                continue
-            _remove_tree(build_root)
-            return
-        _quarantine_cache_entry(staging_root)
-    raise RepoSnapshotCacheFault(
-        f"sealed snapshot cache entry could not be repaired after "
-        f"{_PUBLISH_ATTEMPTS} attempts: {staging_root}"
-    )
+                _remove_tree(build_root)
+                return
+            _quarantine_cache_entry(staging_root)
+        os.replace(build_root, staging_root)
+        staging_root.chmod(0o555)
 
 
 def _cache_entry_matches(root: Path, content_sha256: str, file_count: int) -> bool:
@@ -778,10 +764,6 @@ def _quarantine_cache_entry(staging_root: Path) -> None:
     try:
         staging_root.chmod(0o755)
         os.replace(staging_root, quarantine)
-    except FileNotFoundError:
-        # A concurrent sealer already repaired the entry; the caller retries.
-        quarantine.rmdir()
-        return
     except OSError as exc:
         quarantine.rmdir()
         raise RepoSnapshotCacheFault(

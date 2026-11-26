@@ -220,7 +220,8 @@ def test_registered_intervention_rollout_preserves_signal_dtype_and_gradients(
             result = outputs[output_port]
             return (result.astype(jnp.float32) * weights).sum(), result
 
-        scale = jnp.float32(0.5)
+        # Reset-slot parameters follow process precision independently of the signal.
+        scale = jnp.asarray(0.5, dtype=float)
         (_, result), (signal_grad, scale_grad) = jax.value_and_grad(
             loss, argnums=(0, 1), has_aux=True
         )(signal, scale)
