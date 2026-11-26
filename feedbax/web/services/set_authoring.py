@@ -14,7 +14,7 @@ from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCo
 from feedbax.planner.project_plan import RunKey, _sweep_problem
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_ROW, CooccurringSetTrials, ListedSetTrials, ManualCombination, NamedAxis, SetAxis,
-    SetEntryParts, SweepExpansionError, TrialSetField, WeightedSetTrials, numbered_run_name,
+    SweepExpansionError, TrialSetField, WeightedSetTrials, numbered_run_name,
 )
 from feedbax.contracts.set_document import (
     SET_DOCUMENT_SCHEMA_ID, SetMisfit, SetEntry, axis_from_set, check_fit, entry_pointer,
@@ -31,7 +31,7 @@ from feedbax.contracts.studio_sets import (
 )
 from feedbax.contracts.model_edit import ListedRuns
 from feedbax.contracts.member_family import FamilyProblem, family_member_count
-from feedbax.contracts.studio_trials import StudioSetField, StudioSetFieldEntry
+from feedbax.contracts.studio_trials import StudioSetEntryParts, StudioSetField, StudioSetFieldEntry
 from feedbax.project_members import generated_name, new_document_name
 from feedbax.web.services.authored_scope import choose_authored_store, choose_prepared_edit, selected_edit_runs
 from feedbax.web.services.axis_values import axis_values
@@ -53,14 +53,15 @@ def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
         sampling = field.sampling
         rows = []
         if isinstance(sampling, WeightedSetTrials):
-            rows.append(StudioSetFieldEntry(entry=None, weight=sampling.none))
+            rows.append(StudioSetFieldEntry(entry=None, weight=sampling.weight_for(None)))
         for id, entry in entries.items():
             if isinstance(sampling, ListedSetTrials):
                 weight = None
             elif isinstance(sampling, CooccurringSetTrials):
-                weight = sampling.weights.get(id, SetEntryParts())
+                parts = sampling.weight_for(id)
+                weight = StudioSetEntryParts(on=parts.on, off=parts.off)
             else:
-                weight = sampling.weights.get(id, 1.0)
+                weight = sampling.weight_for(id)
             count = None
             if entry.over is not None:
                 try:
@@ -526,15 +527,13 @@ def _set_field_weight(project: Project, command: SetFieldWeight) -> StoredEdit:
     sampling = raw["set_fields"][command.axis]["sampling"]
     weights = sampling.get("weights", {})
     if isinstance(field.sampling, WeightedSetTrials) and part is None:
-        if entry is None:
-            if field.sampling.none == weight:
-                return StoredEdit([])
-            return StoredEdit([file_value(address, raw, (*path, "none"), weight)])
-        if field.sampling.weights.get(entry, 1.0) == weight:
+        if field.sampling.weight_for(entry) == weight:
             return StoredEdit([])
+        if entry is None:
+            return StoredEdit([file_value(address, raw, (*path, "none"), weight)])
         weights = weights | {entry: weight}
     elif isinstance(field.sampling, CooccurringSetTrials) and entry is not None and part is not None:
-        if getattr(field.sampling.weights.get(entry, SetEntryParts()), part) == weight:
+        if getattr(field.sampling.weight_for(entry), part) == weight:
             return StoredEdit([])
         weights = weights | {entry: weights.get(entry, {}) | {part: weight}}
     else:

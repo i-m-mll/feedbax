@@ -35,7 +35,9 @@ from feedbax.contracts.studio_authoring import (
     StudioSetSweepValue,
     StudioSweepEdit,
 )
-from feedbax.contracts.studio_field import StudioSweepList, StudioSweepRange, StudioSweepSampler, StudioSweepValue
+from feedbax.contracts.studio_field import (
+    StudioSweepList, StudioSweepRange, StudioSweepRangeRule, StudioSweepSampler, StudioSweepValue,
+)
 from feedbax.contracts.studio_project import SetProjectValue
 
 
@@ -267,7 +269,8 @@ class FieldSweeps:
         if isinstance(axis, NamedAxis) and not self.may_edit_member(axis):
             return None
         if isinstance(axis, RangeAxis):
-            return StudioSweepRange(kind="range", id=name, rule=axis.range, can_list=self._can_list(axis))
+            rule = StudioSweepRangeRule.model_validate(axis.range, from_attributes=True)
+            return StudioSweepRange(kind="range", id=name, rule=rule, can_list=self._can_list(axis))
         if isinstance(axis, SampledAxis):
             return StudioSweepSampler(
                 kind="sampler", id=name, rule=axis.sampler, can_list=axis.draws is not None and self._can_list(axis),

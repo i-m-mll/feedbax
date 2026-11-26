@@ -73,10 +73,16 @@ class StudioSweepList(StrictModel):
     editable: bool
 
 
+class StudioSweepRangeRule(RangeValues):
+    """A rule as the field reads it, including the effective scale."""
+
+    scale: Literal["linear", "log"] = Field()
+
+
 class StudioSweepRange(StrictModel):
     kind: Literal["range"]
     id: ProjectName
-    rule: RangeValues
+    rule: StudioSweepRangeRule
     can_list: bool
 
 
