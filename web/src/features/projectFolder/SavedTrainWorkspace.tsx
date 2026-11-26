@@ -2004,7 +2004,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             }
           }}>
           <ProblemList entries={problemEntries(shownProblems)} refusal={refusal?.kind === 'problem' ? refusal : undefined} canReveal={(problem) => !!addressedStep(problem)}
-            onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} stepName={stepLabel} />
+            onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} stepName={stepLabel}
+            documentName={(problem, id) => problemDocumentName(shown!.window_map!, problem.variant ?? variant, id)} />
         </StudioProblems>}
         activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
           onToggle={activity.invoke}
@@ -2279,6 +2280,13 @@ function ProblemDestination({ reveal, action, children }: { reveal: Reveal; acti
   </div>;
 }
 
+/** The name the window map gives document `id` of `variant`; the map names every document its Problems place. */
+function problemDocumentName(map: NonNullable<StudioSavedTrainRuns['window_map']>, variant: string | null, id: string) {
+  const name = variant === null ? undefined : map.document_names[variant]?.[id];
+  if (name === undefined) throw new Error(`The window map names no document ${id} of variant ${variant}.`);
+  return name;
+}
+
 /** The document a problem's place is in, or else its step: what the Problems panel groups it under. */
 function problemHolder(problem: StudioProjectWindowMapProblem): { kind: 'document' | 'step'; id: string } | null {
   const place = problem.place;
@@ -2292,7 +2300,7 @@ function namedByHolder(problem: StudioProjectWindowMapProblem, holder: string | 
   return !!place && 'document' in place && place.document === holder && studioPlaceIsDocument(place) && !problem.document_path;
 }
 
-function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVariant, stepName }: {
+function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVariant, stepName, documentName }: {
   entries: readonly ProblemEntry[];
   /** The problem whose repair was refused, and why. */
   refusal?: { problem: string; reason: string };
@@ -2301,6 +2309,8 @@ function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVarian
   showVariant: boolean;
   /** A step's name, by the Service's naming rule. */
   stepName(id: string): string;
+  /** The name of document `id`, which `problem`'s place is in, by the Service's naming rule. */
+  documentName(problem: StudioProjectWindowMapProblem, id: string): string;
 }) {
   const groups = new Map<string | null, { holder: ReturnType<typeof problemHolder>; entries: ProblemEntry[] }>();
   for (const entry of listed) {
@@ -2311,7 +2321,7 @@ function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVarian
   }
   return <div className="space-y-2">{[...groups].map(([key, { holder, entries }]) => {
     const first = entries.find(({ problem }) => canReveal(problem))?.problem;
-    const name = holder && (holder.kind === 'step' ? stepName(holder.id) : holder.id);
+    const name = holder && (holder.kind === 'step' ? stepName(holder.id) : documentName(entries[0].problem, holder.id));
     return <section key={key ?? ''}>
       {name && <h2 className="font-medium">{first
         ? <Button variant="ghost" size="content" className="rounded-control px-control-inline text-left font-medium"
