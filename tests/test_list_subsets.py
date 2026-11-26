@@ -88,7 +88,7 @@ def test_a_second_measured_selection_of_one_step_takes_the_next_suffix():
 def test_a_refused_best_lands_on_its_own_selection():
     raw = listed_best()
     task = deepcopy(raw["documents"]["task"])
-    task["payload"]["validation_trials"] = task["payload"]["validation_trials"][:-1]
+    task["payload"]["validation_trials"].popitem()
     raw["documents"]["fewer-trials"] = task
     patches = raw["steps"]["train_b"]["sweep"]["axes"]["rate"]["values"]["e"]["patches"]
     patches["trial_documents.task"] = {"value": {"document": "fewer-trials"}}

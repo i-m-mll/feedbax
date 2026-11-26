@@ -146,13 +146,13 @@ def test_saved_source_snapshot_does_not_follow_project_mutations():
 
 def test_cli_review_locates_derived_trials_and_addressed_model_field(tmp_path, capsys):
     from feedbax.contracts.model_address import ModelAddress
-    from feedbax.contracts.task_document import TaskDocument
+    from feedbax.contracts.task_document import StoredTaskDocument
 
     root = tmp_path / "derived"
     project = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
-    first, second, *_ = TaskDocument.model_validate(
+    first, second, *_ = StoredTaskDocument.model_validate(
         project["documents"]["simple-reaches-task"]["payload"]
-    ).condition_ids
+    ).lower().condition_ids
     evaluate = managed_evaluation_step("train")
     params = evaluate["base"]["inline"]["params"]
     params["trial_set"] = {"kind": "conditions", "ids": [first, second]}
@@ -480,7 +480,7 @@ def test_plan_writes_each_problem_that_keeps_a_row_from_running(tmp_path, capsys
 
     raw = _one_bad_train_row()
     del raw["steps"]["baseline"]
-    for term in raw["documents"]["objective"]["payload"]["terms"]:
+    for term in raw["documents"]["objective"]["payload"]["terms"].values():
         term["enabled"] = False
     root = tmp_path / "refused"
     for relative, data in dump_text_project(
