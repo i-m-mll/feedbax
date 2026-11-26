@@ -32,7 +32,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await expect(rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true })).toHaveValue('0.001');
 
   await authorLearningRateSweep(rate);
-  await sweepLabel(card, 'Learning rate').click();
+  await sweepLabel(card, 'Learning Rate').click();
   for (const name of ['0.001', '0.002', '0.003']) {
     await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
     await expect(table.getByRole('cell', { name, exact: true })).toBeVisible();
@@ -82,7 +82,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
     }
   }
 
-  await card.getByRole('button', { name: 'Add Sweep train' }).click();
+  await card.getByRole('button', { name: 'Add Sweep Train' }).click();
   await page.getByRole('menu', { name: 'Add Sweep' }).getByRole('menuitem', { name: 'Seed', exact: true }).click();
   const seed = page.getByRole('region', { name: 'Seed field', exact: true });
   const seedText = seed.getByRole('textbox', { name: 'Seed', exact: true });
@@ -92,9 +92,9 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await expect(table).toHaveAttribute('aria-rowcount', '7');
   await expect(card.getByRole('button', { name: 'Sweep Seed 2', exact: true })).toBeVisible();
   // Unarranged, the longer of the first two sweeps runs across, so seed comes first.
-  await expect(card).toContainText('Seed 2 · Learning rate 3');
+  await expect(card).toContainText('Seed 2 · Learning Rate 3');
   await expect(table.getByRole('rowheader').locator('[data-run-ordinal]')).toHaveText(['1', '2', '3', '4', '5', '6']);
-  await expect(table.getByRole('columnheader')).toHaveText(['Learning rate', 'Seed', 'Status', 'Progress']);
+  await expect(table.getByRole('columnheader')).toHaveText(['Learning Rate', 'Seed', 'Status', 'Progress']);
   await expect(page.locator('body')).not.toContainText(/value-\w|=value\b/);
   const runsSlot = page.locator('[data-slot="primary"]');
   const runsHeader = runsSlot.locator('.studio-window-slot__header');
@@ -152,7 +152,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await expect(rateText).toHaveValue('0.00275');
   await expect(rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true })).toBeVisible();
   await expect(table).toHaveAttribute('aria-rowcount', '3');
-  await expect(sweepLabel(card, 'Learning rate')).toHaveCount(0);
+  await expect(sweepLabel(card, 'Learning Rate')).toHaveCount(0);
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Forward', exact: true }).click();
   await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
@@ -181,7 +181,7 @@ test('Add Sweep goes to a nested field and sweeps it only by the text it commits
   const b1 = page.getByRole('region', { name: 'B1 field', exact: true });
   const text = b1.getByRole('textbox', { name: 'B1', exact: true });
   const chooseB1 = async () => {
-    await card.getByRole('button', { name: 'Add Sweep train' }).click();
+    await card.getByRole('button', { name: 'Add Sweep Train' }).click();
     await page.getByRole('menu', { name: 'Add Sweep' }).getByRole('menuitem', { name: 'Optimizer', exact: true }).click();
     await page.getByRole('menu', { name: 'Optimizer' }).getByRole('menuitem', { name: 'B1', exact: true }).click();
     await expect(text).toBeFocused();
@@ -295,9 +295,9 @@ test('a press on a run\'s row shows that run\'s Results, and a reload keeps it',
   await openResultsSlot(page);
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const shown = async () => {
-    const history = results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('line[data-attempt]');
-    await expect(history.first()).toBeAttached({ timeout: jobTimeout });
-    return await history.first().getAttribute('data-attempt');
+    const history = results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('[data-result-attempt]');
+    await expect(history.locator('polyline')).toBeAttached({ timeout: jobTimeout });
+    return await history.getAttribute('data-result-attempt');
   };
   const first = await shown();
   await status(1).click();
