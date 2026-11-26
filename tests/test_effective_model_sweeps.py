@@ -10,7 +10,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_DIFFERENCE_BATCHES
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
-from feedbax.contracts.project_sweep import Sweep, SweepExpansionError, axis_to_list, expand_sweep
+from feedbax.contracts.project_sweep import Sweep, SweepExpansionError, axis_to_list, expand_sweep, model_field_path
 from feedbax.contracts.request_identity import decode_request
 from feedbax.jobs import JobService
 from feedbax.application.bundle import new_application_registry_bundle
@@ -65,7 +65,7 @@ def test_saved_managed_train_clock_range_preserves_equal_request_identity(tmp_pa
 
     clock = _field({"composites": [], "element": {"kind": "graph"}}, "step_seconds")
     train["sweep"] = {"axes": {"clock": {
-        "path": clock.to_text(), "range": {"start": 0.01, "stop": 0.03, "count": 3},
+        "path": model_field_path(clock), "range": {"start": 0.01, "stop": 0.03, "count": 3},
     }}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "clock-range", Project.model_validate(raw))
@@ -84,7 +84,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
     )
     jobs = JobService(host, registry)
     raw = _managed_project(authored)
-    target = _wire_field("train-added", "operands", "factor", "value").to_text()
+    target = model_field_path(_wire_field("train-added", "operands", "factor", "value"))
     raw["steps"]["train"]["sweep"] = {"axes": {"factor": {"path": target, "values": [0.5]}}}
     raw["steps"]["baseline"]["sweep"] = {
         "axes": {"trained": {"input": "subject"}},
@@ -128,13 +128,13 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
 
 def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     raw = _managed_project(authored)
-    target = _wire_field("train-added", "operands", "factor", "value").to_text()
+    target = model_field_path(_wire_field("train-added", "operands", "factor", "value"))
     variant_target = f"documents.{_TRAINED}.{target}"
     raw["documents"]["alternate"] = deepcopy(raw["documents"]["reach-model"])
     other = deepcopy(raw["steps"]["train"])
     other["base"]["inline"]["trial_documents"]["model"] = {"document": "alternate"}
     raw["steps"]["other"] = other
-    mass = _field({"composites": [], "element": {"kind": "component", "id": "plant"}}, "fields", "mass").to_text()
+    mass = model_field_path(_field({"composites": [], "element": {"kind": "component", "id": "plant"}}, "fields", "mass"))
     raw["sweep"] = {"axes": {
         "condition": {"path": variant_target, "values": [0.6, 0.9]},
         "step-mass": {"path": f"documents.{_TRAINED}.{mass}", "values": [2]},
@@ -181,7 +181,7 @@ def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     plan = compile_project(Project.model_validate(missing), memo=memo)
     assert len(plan.diagnostics) == 2
     assert all(
-        (problem.document, problem.model_address.to_text()) == (_TRAINED, target) for problem in plan.diagnostics
+        (problem.document, model_field_path(problem.model_address)) == (_TRAINED, target) for problem in plan.diagnostics
     )
     assert not plan.runs
 
@@ -205,8 +205,8 @@ def test_vector_operand_member_edit_does_not_reset_attachment_anchors(authored):
 
     whole = _wire_field("first", "operands", "factor", "value")
     sweep = Sweep.model_validate({
-        "axes": {"draw": {"path": whole.to_text(), "values": [first["attachment"]["operands"]["factor"]["value"]]}},
-        "exceptions": {"part": {"where": {"rule": ""}, "patches": {address.to_text(): {"value": 0.2}}}},
+        "axes": {"draw": {"path": model_field_path(whole), "values": [first["attachment"]["operands"]["factor"]["value"]]}},
+        "exceptions": {"part": {"where": {"rule": ""}, "patches": {model_field_path(address): {"value": 0.2}}}},
     })
     with pytest.raises(SweepExpansionError, match="already writes"):
         expand_sweep(sweep)
@@ -214,7 +214,7 @@ def test_vector_operand_member_edit_does_not_reset_attachment_anchors(authored):
 
 def test_document_variant_only_changes_the_addressed_base_model(authored):
     raw = document_project(authored, evaluation=False)
-    address = _wire_field("base", "operands", "factor", "value").to_text()
+    address = model_field_path(_wire_field("base", "operands", "factor", "value"))
     _model_controller(raw)["wires"]["read"]["attachments"] = {
         "base": _add_attachment(_attachment_owner("read"), "base", None, 0.9)["attachment"],
     }
@@ -271,7 +271,7 @@ def test_integer_range_uses_the_site_and_preserves_whole_request_ids(tmp_path, a
         "composites": [], "element": {"kind": "component", "id": "wrapper"},
     }, "substeps")
     raw["steps"]["train"]["sweep"]["axes"]["batches"] = {
-        "path": address.to_text(), "range": {"start": 1, "stop": 2, "count": 4},
+        "path": model_field_path(address), "range": {"start": 1, "stop": 2, "count": 4},
     }
     invalid = compile_project(Project.model_validate(raw))
     (problem,) = invalid.diagnostics

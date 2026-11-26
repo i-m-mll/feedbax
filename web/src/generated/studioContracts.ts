@@ -2850,6 +2850,10 @@ export type AttemptProvenance = {
   "ended_at": string;
 };
 
+export type AuthoredExpressionText = string;
+
+export type AuthoredExpressionValue = Scalar | AuthoredExpressionText;
+
 export type AuthoredFileAddress = {
   "kind": "document" | "step" | "variant" | "presentation" | "declaration";
   "id": string;
@@ -2979,7 +2983,7 @@ export type CheckpointRuleAxis = {
   "checkpoint_rule": UpdateRule;
 };
 
-export type CheckpointRulePath = "{\"field\":\"checkpoint\",\"input\":\"subject\"}";
+export type CheckpointRulePath = "{@subject.checkpoint}";
 
 export type CodeDifference = SourceDifference | RegistryDifference;
 
@@ -4269,7 +4273,7 @@ export type StoredBandLayer = {
 export type StoredCell = {
   "first_epoch": string;
   "last_epoch": string;
-  "value": Expression;
+  "value": StoredExpression;
 };
 
 export type StoredCompositeComponent = {
@@ -4277,20 +4281,29 @@ export type StoredCompositeComponent = {
   "label": string;
   "ports": StoredModelPorts;
   "interior": StoredGraphInterior | StoredPhysicalInterior;
-  "substeps"?: number | UnresolvedValue;
+  "substeps"?: StoredExpression;
   "attachments"?: StoredModelPortAttachments;
 };
 
 export type StoredDelayAttachment = {
   "kind": "delay";
-  "delay": ModelTime | UnresolvedValue;
-  "initial_source"?: ModelSignalSource;
+  "delay": StoredTime;
+  "initial_source"?: StoredModelSignalSource;
 };
+
+export type StoredDelayInitialValue = {
+  "kind": "value";
+  "value": StoredExpression;
+};
+
+export type StoredEnd = StoredLength | Rest | StoredUntil;
 
 export type StoredEpoch = {
   "label": string;
-  "end": End;
+  "end": StoredEnd;
 };
+
+export type StoredExpression = AuthoredExpressionValue;
 
 export type StoredFigureDocument = {
   "data": Array<Name>;
@@ -4326,8 +4339,8 @@ export type StoredHoldAttachment = {
 export type StoredInterventionAttachment = {
   "kind": "intervention";
   "operation": string;
-  "operands"?: Record<string, ModelSignalSource>;
-  "window"?: Window | null;
+  "operands"?: Record<string, StoredModelSignalSource>;
+  "window"?: StoredWindow | null;
 };
 
 export type StoredLeafComponent = {
@@ -4338,6 +4351,12 @@ export type StoredLeafComponent = {
   "fields"?: Record<string, JsonValue>;
   "port_counts"?: Record<string, number>;
   "attachments"?: StoredModelPortAttachments;
+};
+
+export type StoredLength = {
+  "kind"?: "length";
+  "length": StoredExpression;
+  "max_steps"?: number | null;
 };
 
 export type StoredLineLayer = {
@@ -4393,7 +4412,7 @@ export type StoredMembers_ValidationTrial_ = Record<string, ValidationTrial>;
 export type StoredModelAddressKey = string;
 
 export type StoredModelDocument = {
-  "step_seconds": number | UnresolvedValue;
+  "step_seconds": StoredTime;
   "ports": StoredModelPorts;
   "interior": StoredGraphInterior;
   "world"?: ModelWorld | null;
@@ -4410,6 +4429,8 @@ export type StoredModelPorts = {
   "physical"?: StoredMembers_StoredPhysicalPort_;
 };
 
+export type StoredModelSignalSource = StoredDelayInitialValue | DelayInitialTask | DelayInitialWire;
+
 export type StoredModelWire = {
   "source": ComponentPortEnd | InputBoundaryEnd;
   "target": ComponentPortEnd | OutputBoundaryEnd;
@@ -4422,11 +4443,11 @@ export type StoredObjectiveDocument = {
 };
 
 export type StoredObjectiveTerm = {
-  "measure": Expression;
+  "measure": StoredExpression;
   "measure_type"?: ValueType;
-  "weight"?: Expression;
+  "weight"?: StoredExpression;
   "reduction"?: Reduction;
-  "window"?: Window | null;
+  "window"?: StoredWindow | null;
   "enabled"?: boolean;
   "label"?: string | null;
 };
@@ -4462,7 +4483,7 @@ export type StoredProbeAttachment = {
 export type StoredRepeat = {
   "first_epoch": string;
   "last_epoch": string;
-  "count": Expression;
+  "count": StoredExpression;
 };
 
 export type StoredRuleLayer = {
@@ -4479,9 +4500,9 @@ export type StoredSignal = {
   "label": string;
   "type": ValueType;
   "cells": StoredMembers_StoredCell_;
-  "absent"?: Expression | null;
-  "window"?: Window | null;
-  "intervention"?: string | null;
+  "absent"?: StoredExpression | null;
+  "window"?: StoredWindow | null;
+  "intervention"?: StoredModelAddressKey | null;
 };
 
 export type StoredSignalInput = {
@@ -4516,6 +4537,8 @@ export type StoredTaskDocument = {
   "validation_trials"?: StoredMembers_ValidationTrial_;
 };
 
+export type StoredTime = AuthoredExpressionText;
+
 export type StoredTrajectoryLayer = {
   "role": Name;
   "panel": Name;
@@ -4526,13 +4549,43 @@ export type StoredTrajectoryLayer = {
   "style"?: LineStyle;
 };
 
+export type StoredUntil = {
+  "kind"?: "until";
+  "condition": StoredExpression;
+  "limit": StoredTime;
+};
+
 export type StoredVariable = {
   "label": string;
   "type": ValueType;
-  "value": Expression;
-  "count"?: Expression | null;
+  "value": StoredExpression;
+  "count"?: StoredExpression | null;
   "set_choices"?: SetVariableChoices | null;
   "marker"?: Marker | null;
+};
+
+export type StoredWindow = {
+  "spans": Array<WindowEpoch | StoredWindowInterval | StoredWindowMoment>;
+};
+
+export type StoredWindowInterval = {
+  "kind": "interval";
+  "start": StoredWindowPosition;
+  "end": StoredWindowPosition | StoredWindowRelativePosition;
+};
+
+export type StoredWindowMoment = {
+  "kind": "moment";
+  "at": StoredWindowPosition;
+};
+
+export type StoredWindowPosition = {
+  "anchor": WindowTrialAnchor | WindowEpochAnchor;
+  "offset"?: StoredExpression | null;
+};
+
+export type StoredWindowRelativePosition = {
+  "offset": StoredExpression;
 };
 
 export type StudioAddClassMember = {
@@ -4976,6 +5029,16 @@ export type StudioNewStepName = {
 export type StudioObjectivePlace = {
   "part": "objective";
   "document": string | null;
+};
+
+export type StudioObjectiveTerm = {
+  "measure": Expression;
+  "measure_type"?: ValueType;
+  "weight"?: Expression;
+  "reduction"?: Reduction;
+  "window"?: Window | null;
+  "enabled"?: boolean;
+  "label"?: string | null;
 };
 
 export type StudioOperationDatasetPage = {
@@ -5651,7 +5714,7 @@ export type StudioTrialObjectiveSource = {
 
 export type StudioTrialObjectiveTermAdd = {
   "kind": "add_objective_term";
-  "term": StoredObjectiveTerm;
+  "term": StudioObjectiveTerm;
 };
 
 export type StudioTrialOutput = {
@@ -6081,7 +6144,7 @@ export const blankTask = {
   ]
 };
 export const blankStoredModel = {
-  "step_seconds": 0.01,
+  "step_seconds": "0.01 s",
   "ports": {},
   "interior": {}
 };
@@ -6093,11 +6156,7 @@ export const blankStoredTask = {
       "label": "epoch",
       "end": {
         "kind": "length",
-        "length": {
-          "kind": "literal",
-          "value": 1,
-          "unit": "s"
-        }
+        "length": "1 s"
       }
     }
   },
@@ -6133,40 +6192,7 @@ export const firstTrainTask: Document = {
           },
           "space": "point"
         },
-        "value": {
-          "kind": "call",
-          "function": "vector",
-          "args": [
-            {
-              "kind": "draw",
-              "family": "uniform",
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": -0.4
-                },
-                {
-                  "kind": "literal",
-                  "value": 0.5
-                }
-              ]
-            },
-            {
-              "kind": "draw",
-              "family": "uniform",
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": -0.3
-                },
-                {
-                  "kind": "literal",
-                  "value": 0.45
-                }
-              ]
-            }
-          ]
-        }
+        "value": "[U(-0.4, 0.5), U(-0.3, 0.45)]"
       },
       "target": {
         "label": "target",
@@ -6180,54 +6206,7 @@ export const firstTrainTask: Document = {
           },
           "space": "point"
         },
-        "value": {
-          "kind": "call",
-          "function": "add",
-          "args": [
-            {
-              "kind": "name",
-              "reference": "start"
-            },
-            {
-              "kind": "call",
-              "function": "polar",
-              "args": [
-                {
-                  "kind": "draw",
-                  "family": "uniform",
-                  "args": [
-                    {
-                      "kind": "literal",
-                      "value": 0.1,
-                      "unit": "m"
-                    },
-                    {
-                      "kind": "literal",
-                      "value": 0.5,
-                      "unit": "m"
-                    }
-                  ]
-                },
-                {
-                  "kind": "draw",
-                  "family": "uniform",
-                  "args": [
-                    {
-                      "kind": "literal",
-                      "value": -3.141592653589793,
-                      "unit": "rad"
-                    },
-                    {
-                      "kind": "literal",
-                      "value": 3.141592653589793,
-                      "unit": "rad"
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        }
+        "value": "start + polar(U(0.1 m, 0.5 m), U(-3.141592653589793 rad, 3.141592653589793 rad))"
       }
     },
     "epochs": {
@@ -6235,11 +6214,7 @@ export const firstTrainTask: Document = {
         "label": "move",
         "end": {
           "kind": "length",
-          "length": {
-            "kind": "literal",
-            "value": 80,
-            "unit": "st"
-          }
+          "length": "80 st"
         }
       }
     },
@@ -6260,10 +6235,7 @@ export const firstTrainTask: Document = {
           "move": {
             "first_epoch": "move",
             "last_epoch": "move",
-            "value": {
-              "kind": "name",
-              "reference": "target"
-            }
+            "value": "target"
           }
         }
       },
@@ -6284,20 +6256,7 @@ export const firstTrainTask: Document = {
           "move": {
             "first_epoch": "move",
             "last_epoch": "move",
-            "value": {
-              "kind": "call",
-              "function": "vector",
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 0
-                },
-                {
-                  "kind": "literal",
-                  "value": 0
-                }
-              ]
-            }
+            "value": "[0, 0]"
           }
         }
       },
@@ -6317,16 +6276,13 @@ export const firstTrainTask: Document = {
           "move": {
             "first_epoch": "move",
             "last_epoch": "move",
-            "value": {
-              "kind": "name",
-              "reference": "target"
-            }
+            "value": "target"
           }
         }
       }
     },
     "links": {
-      "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"state\",\"effector/position\"]}}": "start"
+      "component.plant.state.\"effector/position\"": "start"
     },
     "fixed_steps": 80,
     "validation_trials": {
@@ -11514,6 +11470,14 @@ export const AttemptProvenanceSchema: z.ZodType<AttemptProvenance> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<AttemptProvenance>;
 
+export const AuthoredExpressionTextSchema: z.ZodType<AuthoredExpressionText> = z.lazy(() =>
+  z.string().max(8192)
+) as unknown as z.ZodType<AuthoredExpressionText>;
+
+export const AuthoredExpressionValueSchema: z.ZodType<AuthoredExpressionValue> = z.lazy(() =>
+  z.union([ScalarSchema, AuthoredExpressionTextSchema])
+) as unknown as z.ZodType<AuthoredExpressionValue>;
+
 export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(() =>
   z.object({
     "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant"), z.literal("presentation"), z.literal("declaration")]),
@@ -11692,7 +11656,7 @@ export const CheckpointRuleAxisSchema: z.ZodType<CheckpointRuleAxis> = z.lazy(()
 ) as unknown as z.ZodType<CheckpointRuleAxis>;
 
 export const CheckpointRulePathSchema: z.ZodType<CheckpointRulePath> = z.lazy(() =>
-  z.literal("{\"field\":\"checkpoint\",\"input\":\"subject\"}")
+  z.literal("{@subject.checkpoint}")
 ) as unknown as z.ZodType<CheckpointRulePath>;
 
 export const CodeDifferenceSchema: z.ZodType<CodeDifference> = z.lazy(() =>
@@ -13432,7 +13396,7 @@ export const StoredCellSchema: z.ZodType<StoredCell> = z.lazy(() =>
   z.object({
     "first_epoch": z.string(),
     "last_epoch": z.string(),
-    "value": ExpressionSchema,
+    "value": StoredExpressionSchema,
   }).strict()
 ) as unknown as z.ZodType<StoredCell>;
 
@@ -13442,7 +13406,7 @@ export const StoredCompositeComponentSchema: z.ZodType<StoredCompositeComponent>
     "label": z.string().min(1),
     "ports": StoredModelPortsSchema,
     "interior": z.union([StoredGraphInteriorSchema, StoredPhysicalInteriorSchema]),
-    "substeps": z.union([z.number().int().safe().min(1), UnresolvedValueSchema]).optional(),
+    "substeps": StoredExpressionSchema.optional(),
     "attachments": StoredModelPortAttachmentsSchema.optional(),
   }).strict().superRefine((value, ctx) => { if (value.interior.physical_domain == null && Object.keys(value.ports.physical ?? {}).length > 0) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "physical ports require an Equations or Mechanics interior" }); })
 ) as unknown as z.ZodType<StoredCompositeComponent>;
@@ -13450,17 +13414,32 @@ export const StoredCompositeComponentSchema: z.ZodType<StoredCompositeComponent>
 export const StoredDelayAttachmentSchema: z.ZodType<StoredDelayAttachment> = z.lazy(() =>
   z.object({
     "kind": z.literal("delay"),
-    "delay": z.union([ModelTimeSchema, UnresolvedValueSchema]),
-    "initial_source": ModelSignalSourceSchema.optional(),
+    "delay": StoredTimeSchema,
+    "initial_source": StoredModelSignalSourceSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredDelayAttachment>;
+
+export const StoredDelayInitialValueSchema: z.ZodType<StoredDelayInitialValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("value"),
+    "value": StoredExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<StoredDelayInitialValue>;
+
+export const StoredEndSchema: z.ZodType<StoredEnd> = z.lazy(() =>
+  z.union([StoredLengthSchema, RestSchema, StoredUntilSchema])
+) as unknown as z.ZodType<StoredEnd>;
 
 export const StoredEpochSchema: z.ZodType<StoredEpoch> = z.lazy(() =>
   z.object({
     "label": z.string().min(1),
-    "end": EndSchema,
+    "end": StoredEndSchema,
   }).strict()
 ) as unknown as z.ZodType<StoredEpoch>;
+
+export const StoredExpressionSchema: z.ZodType<StoredExpression> = z.lazy(() =>
+  AuthoredExpressionValueSchema
+) as unknown as z.ZodType<StoredExpression>;
 
 export const StoredFigureDocumentSchema: z.ZodType<StoredFigureDocument> = z.lazy(() =>
   z.object({
@@ -13509,8 +13488,8 @@ export const StoredInterventionAttachmentSchema: z.ZodType<StoredInterventionAtt
   z.object({
     "kind": z.literal("intervention"),
     "operation": z.string(),
-    "operands": z.record(z.string(), ModelSignalSourceSchema).optional(),
-    "window": z.union([WindowSchema, z.null()]).optional(),
+    "operands": z.record(z.string(), StoredModelSignalSourceSchema).optional(),
+    "window": z.union([StoredWindowSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredInterventionAttachment>;
 
@@ -13525,6 +13504,14 @@ export const StoredLeafComponentSchema: z.ZodType<StoredLeafComponent> = z.lazy(
     "attachments": StoredModelPortAttachmentsSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredLeafComponent>;
+
+export const StoredLengthSchema: z.ZodType<StoredLength> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("length").optional(),
+    "length": StoredExpressionSchema,
+    "max_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredLength>;
 
 export const StoredLineLayerSchema: z.ZodType<StoredLineLayer> = z.lazy(() =>
   z.object({
@@ -13624,7 +13611,7 @@ export const StoredModelAddressKeySchema: z.ZodType<StoredModelAddressKey> = z.l
 
 export const StoredModelDocumentSchema: z.ZodType<StoredModelDocument> = z.lazy(() =>
   z.object({
-    "step_seconds": z.union([z.number().finite().gt(0), UnresolvedValueSchema]),
+    "step_seconds": StoredTimeSchema,
     "ports": StoredModelPortsSchema,
     "interior": StoredGraphInteriorSchema,
     "world": z.union([ModelWorldSchema, z.null()]).optional(),
@@ -13650,6 +13637,10 @@ export const StoredModelPortsSchema: z.ZodType<StoredModelPorts> = z.lazy(() =>
       })()) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "port IDs must be unique within a port list" }); })
 ) as unknown as z.ZodType<StoredModelPorts>;
 
+export const StoredModelSignalSourceSchema: z.ZodType<StoredModelSignalSource> = z.lazy(() =>
+  z.union([StoredDelayInitialValueSchema, DelayInitialTaskSchema, DelayInitialWireSchema])
+) as unknown as z.ZodType<StoredModelSignalSource>;
+
 export const StoredModelWireSchema: z.ZodType<StoredModelWire> = z.lazy(() =>
   z.object({
     "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
@@ -13667,11 +13658,11 @@ export const StoredObjectiveDocumentSchema: z.ZodType<StoredObjectiveDocument> =
 
 export const StoredObjectiveTermSchema: z.ZodType<StoredObjectiveTerm> = z.lazy(() =>
   z.object({
-    "measure": ExpressionSchema,
+    "measure": StoredExpressionSchema,
     "measure_type": ValueTypeSchema.optional(),
-    "weight": ExpressionSchema.optional(),
+    "weight": StoredExpressionSchema.optional(),
     "reduction": ReductionSchema.optional(),
-    "window": z.union([WindowSchema, z.null()]).optional(),
+    "window": z.union([StoredWindowSchema, z.null()]).optional(),
     "enabled": z.boolean().optional(),
     "label": z.union([z.string().min(1), z.null()]).optional(),
   }).strict()
@@ -13721,7 +13712,7 @@ export const StoredRepeatSchema: z.ZodType<StoredRepeat> = z.lazy(() =>
   z.object({
     "first_epoch": z.string(),
     "last_epoch": z.string(),
-    "count": ExpressionSchema,
+    "count": StoredExpressionSchema,
   }).strict()
 ) as unknown as z.ZodType<StoredRepeat>;
 
@@ -13742,9 +13733,9 @@ export const StoredSignalSchema: z.ZodType<StoredSignal> = z.lazy(() =>
     "label": z.string().min(1),
     "type": ValueTypeSchema,
     "cells": StoredMembers_StoredCell_Schema,
-    "absent": z.union([ExpressionSchema, z.null()]).optional(),
-    "window": z.union([WindowSchema, z.null()]).optional(),
-    "intervention": z.union([z.string(), z.null()]).optional(),
+    "absent": z.union([StoredExpressionSchema, z.null()]).optional(),
+    "window": z.union([StoredWindowSchema, z.null()]).optional(),
+    "intervention": z.union([StoredModelAddressKeySchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredSignal>;
 
@@ -13788,6 +13779,10 @@ export const StoredTaskDocumentSchema: z.ZodType<StoredTaskDocument> = z.lazy(()
   }).strict()
 ) as unknown as z.ZodType<StoredTaskDocument>;
 
+export const StoredTimeSchema: z.ZodType<StoredTime> = z.lazy(() =>
+  AuthoredExpressionTextSchema
+) as unknown as z.ZodType<StoredTime>;
+
 export const StoredTrajectoryLayerSchema: z.ZodType<StoredTrajectoryLayer> = z.lazy(() =>
   z.object({
     "role": NameSchema,
@@ -13800,16 +13795,58 @@ export const StoredTrajectoryLayerSchema: z.ZodType<StoredTrajectoryLayer> = z.l
   }).strict()
 ) as unknown as z.ZodType<StoredTrajectoryLayer>;
 
+export const StoredUntilSchema: z.ZodType<StoredUntil> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("until").optional(),
+    "condition": StoredExpressionSchema,
+    "limit": StoredTimeSchema,
+  }).strict()
+) as unknown as z.ZodType<StoredUntil>;
+
 export const StoredVariableSchema: z.ZodType<StoredVariable> = z.lazy(() =>
   z.object({
     "label": z.string().min(1),
     "type": ValueTypeSchema,
-    "value": ExpressionSchema,
-    "count": z.union([ExpressionSchema, z.null()]).optional(),
+    "value": StoredExpressionSchema,
+    "count": z.union([StoredExpressionSchema, z.null()]).optional(),
     "set_choices": z.union([SetVariableChoicesSchema, z.null()]).optional(),
     "marker": z.union([MarkerSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredVariable>;
+
+export const StoredWindowSchema: z.ZodType<StoredWindow> = z.lazy(() =>
+  z.object({
+    "spans": z.array(z.union([WindowEpochSchema, StoredWindowIntervalSchema, StoredWindowMomentSchema])),
+  }).strict()
+) as unknown as z.ZodType<StoredWindow>;
+
+export const StoredWindowIntervalSchema: z.ZodType<StoredWindowInterval> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("interval"),
+    "start": StoredWindowPositionSchema,
+    "end": z.union([StoredWindowPositionSchema, StoredWindowRelativePositionSchema]),
+  }).strict()
+) as unknown as z.ZodType<StoredWindowInterval>;
+
+export const StoredWindowMomentSchema: z.ZodType<StoredWindowMoment> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("moment"),
+    "at": StoredWindowPositionSchema,
+  }).strict()
+) as unknown as z.ZodType<StoredWindowMoment>;
+
+export const StoredWindowPositionSchema: z.ZodType<StoredWindowPosition> = z.lazy(() =>
+  z.object({
+    "anchor": z.union([WindowTrialAnchorSchema, WindowEpochAnchorSchema]),
+    "offset": z.union([StoredExpressionSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredWindowPosition>;
+
+export const StoredWindowRelativePositionSchema: z.ZodType<StoredWindowRelativePosition> = z.lazy(() =>
+  z.object({
+    "offset": StoredExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<StoredWindowRelativePosition>;
 
 export const StudioAddClassMemberSchema: z.ZodType<StudioAddClassMember> = z.lazy(() =>
   z.object({
@@ -14387,6 +14424,18 @@ export const StudioObjectivePlaceSchema: z.ZodType<StudioObjectivePlace> = z.laz
     "document": z.union([z.string(), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<StudioObjectivePlace>;
+
+export const StudioObjectiveTermSchema: z.ZodType<StudioObjectiveTerm> = z.lazy(() =>
+  z.object({
+    "measure": ExpressionSchema,
+    "measure_type": ValueTypeSchema.optional(),
+    "weight": ExpressionSchema.optional(),
+    "reduction": ReductionSchema.optional(),
+    "window": z.union([WindowSchema, z.null()]).optional(),
+    "enabled": z.boolean().optional(),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioObjectiveTerm>;
 
 export const StudioOperationDatasetPageSchema: z.ZodType<StudioOperationDatasetPage> = z.lazy(() =>
   z.object({
@@ -15232,7 +15281,7 @@ export const StudioTrialObjectiveSourceSchema: z.ZodType<StudioTrialObjectiveSou
 export const StudioTrialObjectiveTermAddSchema: z.ZodType<StudioTrialObjectiveTermAdd> = z.lazy(() =>
   z.object({
     "kind": z.literal("add_objective_term"),
-    "term": StoredObjectiveTermSchema,
+    "term": StudioObjectiveTermSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioTrialObjectiveTermAdd>;
 

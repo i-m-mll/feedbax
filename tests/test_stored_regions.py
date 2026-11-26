@@ -92,11 +92,20 @@ def test_analysis_operation_and_python_task_use_the_installed_models():
 
 
 def test_model_duration_is_written_in_the_authored_unit():
-    tau = {"kind": "literal", "unit": "s", "value": 0.2}
-    component = {"kind": "leaf", "type": "feedbax.VanillaRNN", "label": "Cell", "fields": {"tau": tau}}
-    payload = {"step_seconds": 0.01, "ports": {}, "interior": {"components": {"cell": component}}}
+    component = {"kind": "leaf", "type": "feedbax.VanillaRNN", "label": "Cell", "fields": {"tau": "200   ms"}}
+    payload = {"step_seconds": "0.01 s", "ports": {}, "interior": {"components": {"cell": component}}}
     written = json.loads(write_project_file(_document(STORED_MODEL_DOCUMENT_SCHEMA_ID, payload)))
-    assert written["payload"]["interior"]["components"]["cell"]["fields"]["tau"] == tau
+    assert written["payload"]["interior"]["components"]["cell"]["fields"]["tau"] == "200 ms"
+
+
+def test_model_default_elision_compares_lowered_expressions():
+    component = {"kind": "leaf", "type": "feedbax.PointMass", "label": "Plant", "fields": {"mass": "1.0"}}
+    payload = {"step_seconds": "0.01 s", "ports": {}, "interior": {"components": {"plant": component}}}
+    document = _document(STORED_MODEL_DOCUMENT_SCHEMA_ID, payload)
+    assert "fields" not in json.loads(write_project_file(document))["payload"]["interior"]["components"]["plant"]
+    protected = [("payload", "interior", "components", "plant", "fields", "mass")]
+    written = json.loads(write_project_file(document, protected=protected))
+    assert written["payload"]["interior"]["components"]["plant"]["fields"]["mass"] == 1
 
 
 def test_component_defaults_and_training_settings_have_one_request_identity(tmp_path):

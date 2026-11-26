@@ -35,6 +35,7 @@ from feedbax.contracts.stored_model import (
 from feedbax.compiler.model_differences import structural_differences
 
 if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
     from feedbax.compiler.model_signals import ModelSignalTable
 
 
@@ -166,7 +167,7 @@ def _copy_endpoint(end: Record, ids: dict[str, str]) -> Record:
 class ModelEditDraft:
     def __init__(
         self, state: edits.ModelEditState, ports: LeafPorts,
-        component_problem: ComponentProblem = lambda *_: None,
+        component_problem: ComponentProblem = lambda *_: None, *, components: ComponentRegistry | None = None,
     ):
         self.document = state.document.model_dump(mode="json")
         self.positions = state.positions.copy()
@@ -177,6 +178,7 @@ class ModelEditDraft:
         self.relocations: dict[str, ModelAddress] = {}
         self.leaf_ports = ports
         self.component_problem = component_problem
+        self.components = components
 
     def layout(self) -> dict[str, MutableMapping[str, Any]]:
         return {
@@ -438,8 +440,8 @@ class ModelEditDraft:
         """Undo the structural difference at ``address`` from the Model ``reference``, with its layout."""
         difference = next((
             item for item in structural_differences(
-                authored_model_payload(reference.document),
-                authored_model_payload(ModelDocument.model_validate(self.document)), {},
+                authored_model_payload(reference.document, self.components),
+                authored_model_payload(ModelDocument.model_validate(self.document), self.components), {},
             )
             if item.address == address
         ), None)
@@ -466,7 +468,7 @@ class ModelEditDraft:
             collection = {"component": "components", "wire": "wires", "physical_connection": "connections"}[element.kind]
             definition = difference.definition
             if isinstance(definition, StoredLeafComponent | StoredCompositeComponent):
-                definition = lower_model_component(definition)
+                definition = lower_model_component(definition, self.components)
             elif isinstance(definition, StoredModelWire):
                 definition = lower_model_wire(definition)
             _, base_graph = ModelEditDraft(reference, self.leaf_ports, self.component_problem).context(address)
@@ -672,7 +674,7 @@ class ModelEditDraft:
         graph_address = _address(address.composites, "graph")
         self.add_component(edits.AddComponent(
             op="add_component", graph=graph_address, component=command.component, position=command.position, id=command.id,
-        ), lower_model_component(command.component))
+        ), lower_model_component(command.component, self.components))
         created = self.changed[-1]
         assert created.element.kind == "component"
         if command.flipped:
@@ -1385,13 +1387,14 @@ def apply_model_edit(
     next_input: Callable[[Record], tuple[str, str, int] | None] | None = None,
     reference: Callable[[], edits.ModelEditState | None] | None = None,
     instantiate_template: Callable[[str], CompositeComponent] | None = None,
+    components: ComponentRegistry | None = None,
 ) -> edits.ModelEditResult | edits.ModelEditProblem:
     """Apply one command to a private draft and return its complete transaction.
 
     ``reference`` gives the Model a structural difference is reset to, when the shown one differs from another.
     """
     operation = command.operation
-    edit = ModelEditDraft(state, ports, component_problem)
+    edit = ModelEditDraft(state, ports, component_problem, components=components)
     clipboard = None
     primary = _address((), "graph")
     try:
@@ -1402,7 +1405,7 @@ def apply_model_edit(
                         raise _Refusal(primary, "Component templates need a registered definition")
                     definition = instantiate_template(component.definition)
                 else:
-                    definition = lower_model_component(component)
+                    definition = lower_model_component(component, components)
                 if isinstance(operation, edits.AddComponent):
                     edit.add_component(operation, definition)
                 else:

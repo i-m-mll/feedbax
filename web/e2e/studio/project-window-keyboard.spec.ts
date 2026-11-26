@@ -60,8 +60,9 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(saved.project.documents).toMatchObject({
     model: { schema: modelDocumentSchemaId, payload: { ports: {}, interior: {} } },
     'simple-reaches': { ...firstTrainTask, payload: unlinked(rootPayload(firstTrainTask)) },
-    objective: { schema: objectiveDocumentSchemaId, payload: { id: 'objective' } },
+    objective: { schema: objectiveDocumentSchemaId },
   });
+  expect((rootPayload(saved.project.documents!['simple-reaches']) as { links?: unknown[] }).links ?? []).toEqual([]);
 
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await expect(chooser).toBeHidden();

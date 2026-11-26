@@ -95,7 +95,8 @@ def selected_model_and_task(
         source = None
     objective = managed.get("objective")
     return (
-        _trial_document(f"{prefix}model", model, StoredModelDocument).lower(), model_task_signals(source, folders.python_tasks),
+        _trial_document(f"{prefix}model", model, StoredModelDocument).lower(folders.components),
+        model_task_signals(source, folders.python_tasks),
         _trial_document(f"{prefix}objective", objective, StoredObjectiveDocument).lower() if objective is not None else None,
         managed.get("input_bindings", {}), source,
     )

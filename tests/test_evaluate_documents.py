@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sweep import model_field_path
 from feedbax.contracts.project import Project, diff
 from feedbax.planner.project_plan import ProjectPlanMemo, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
@@ -122,7 +123,7 @@ def test_an_evaluation_names_the_documents_it_reads_and_reads_its_subjects_as_a_
 
 
 def test_an_evaluation_keeps_its_subjects_swept_value_under_its_documents_change():
-    mass = ModelAddress.model_validate(MASS).to_text()
+    mass = model_field_path(ModelAddress.model_validate(MASS))
 
     def swept():
         data = _data()

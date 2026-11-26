@@ -21,12 +21,13 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.studio_scope import StoreKind
 from feedbax.compiler.model_reset import ModelResetField
 from feedbax.compiler.model_signals import model_measure_scope
-from feedbax.compiler.set_fields import entry_variable_id, rename_entry_references
+from feedbax.compiler.set_fields import rename_entry_references
+from feedbax.contracts.stored_members import scoped_set_member_id
 from feedbax.compiler.set_fields import resolve_trial_set_condition, trial_set_condition_site
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
-from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.compiler.model_attachment import lower_model_difference_values, resolve_effective_model
 from feedbax.contracts.project import (
     LoadedModelDocument, Payload, Project, RemoveProjectValue, RootDocument, SetProjectValue,
     apply_differences, apply_document_edits, diff,
@@ -674,7 +675,7 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
         if model is None:
             raise ProjectFolderInvalid("The selected Loaded Model is unavailable.")
     else:
-        model = StoredModelDocument.model_validate(subject.payload).lower()
+        model = StoredModelDocument.model_validate(subject.payload).lower(bundle.components)
     task = definition.input_documents["task"]
     if task.schema_id == PYTHON_TASK_SCHEMA_ID:
         source = PythonTaskSelection.model_validate(task.payload)
@@ -683,8 +684,9 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
     objective = definition.input_documents.get("objective")
     differences = MODEL_DIFFERENCE_BATCHES.validate_python(definition.payload.get(MODEL_ATTACHMENTS, {}))
     if differences and subject.schema_id != LOADED_MODEL_SCHEMA_ID:
+        writes = tuple(item for batch in differences.values() for item in batch)
         model = resolve_effective_model(
-            model, bundle.components, tuple(item for batch in differences.values() for item in batch),
+            model, bundle.components, lower_model_difference_values(model, bundle.components, writes),
             functions=bundle.expression_functions,
         )
     params = authored_rollout_settings(definition.payload.get("params"))
@@ -867,7 +869,7 @@ def _pairing(plan, key, bundle, *, definition=None):
         definition = _definition(plan, key)
     step = plan.steps[key.variant, key.step]
     if step.kind == "train":
-        documents = lower_stored_trial_documents(definition.payload.get("trial_documents"))
+        documents = lower_stored_trial_documents(definition.payload.get("trial_documents"), components=bundle.components)
         run = next((item for item in plan.runs if item.key == key), None)
         if run is not None and run.train is not None and run.train.task != documents.task_source:
             encoded = plan.requests.get(run.request_id)
@@ -879,7 +881,7 @@ def _pairing(plan, key, bundle, *, definition=None):
     if step.kind == "synthesize":
         task = trial_task_slot(definition.payload.get("task"))
         documents = TrialDocuments(
-            model=StoredModelDocument.model_validate(definition.payload.get("model")).lower(),
+            model=StoredModelDocument.model_validate(definition.payload.get("model")).lower(bundle.components),
             task=task if isinstance(task, TaskDocument) else None,
             python_task=task if isinstance(task, PythonTaskSelection) else None,
             objective=StoredObjectiveDocument.model_validate(definition.payload.get("objective")).lower(),
@@ -935,7 +937,7 @@ def _set_variables(project: Project, key: RunKey, row: PlannedRow | None) -> Ite
             if source is None:
                 continue
             for variable in source.task_variables:
-                id = entry_variable_id(axis, entry, variable) if scoped else variable
+                id = scoped_set_member_id(axis, entry, variable) if scoped else variable
                 yield id, SetVariableOrigin(
                     step=key.step, axis=axis, set=name, entry=entry, variable=variable,
                 ), scoped, source
@@ -953,7 +955,7 @@ def _set_variable_edit(project, plan, key, path, change):
     [(origin, scoped, source)] = choices
     (edit,) = change.edits
     assert isinstance(edit, SetProjectValue)
-    refs = {entry_variable_id(origin.axis, origin.entry, variable): variable for variable in source.task_variables}
+    refs = {scoped_set_member_id(origin.axis, origin.entry, variable): variable for variable in source.task_variables}
     value = rename_entry_references(edit.value, refs) if scoped else edit.value
     previous = stored_project_value(source.task_variables[origin.variable], keep_explicit=True)
     variables = source.task_variables | {origin.variable: StoredVariable.model_validate(previous | {"value": value})}
@@ -1773,7 +1775,7 @@ def trial_authoring(
         if model_document is not None:
             authored_model = compose_document(project.documents.get, model_document)
             if not isinstance(authored_model, ProjectDiagnostic):
-                reset_model = StoredModelDocument.model_validate(authored_model.payload).lower()
+                reset_model = StoredModelDocument.model_validate(authored_model.payload).lower(bundle.components)
         objective_source = StudioTrialObjectiveSource(
             kind="synthesize" if producer is not None and producer.kind == "synthesize" else "train",
             step=upstream[0].step,

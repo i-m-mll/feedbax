@@ -34,6 +34,7 @@ from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, Mode
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.project_sweep import model_field_target
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.train_settings import normalize_train_method
@@ -415,6 +416,7 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
     model = raw["documents"]["reach-model"]["payload"]
     raw["steps"]["train"]["base"]["inline"]["alias"] = {"document": "reach-model", "pointer": "/step_seconds"}
     model["step_seconds"] = 0.02
+    model["interior"]["components"]["plant"]["fields"]["mass"] = 1.25
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "fields", Project.model_validate(raw))
     model_file = tmp_path / "fields/documents/reach-model.json"
@@ -553,7 +555,7 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
         assert field["text"] == "0.03 s"
         assert field["conversion"] == {"value": 3, "unit": "st"}
         axis = snapshot["project"]["steps"]["train"]["sweep"]["axes"]["tau"]
-        assert ModelAddress.from_text(axis["path"]).element.path == ("fields", "tau")
+        assert model_field_target(axis["path"]).address.element.path == ("fields", "tau")
         assert axis["range"] == {"start": 0.02, "stop": 0.04, "count": 3}
         folders = ProjectFolderService(tmp_path)
         revision = folders.read("duration").revision

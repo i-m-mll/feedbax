@@ -43,11 +43,11 @@ type PoseValues = Mapping[str, JsonValue]
 type MechanismPose = Callable[[PoseValues], tuple[SceneMechanismGeometry, list[SceneAnchorGeometry]]]
 
 
-def _read_model(project: Project, document_id: str) -> ModelDocument:
+def _read_model(project: Project, document_id: str, registry: ComponentRegistry) -> ModelDocument:
     document = compose_document(project.documents.get, document_id)
     if isinstance(document, ProjectDiagnostic) or document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
         raise ValueError(f"{document_id!r} must name an authored Model document.")
-    return StoredModelDocument.model_validate(document.payload).lower()
+    return StoredModelDocument.model_validate(document.payload).lower(registry)
 
 
 def _compile_planar(
@@ -291,7 +291,7 @@ def prepare_scene_geometry(
 ) -> list[StudioSceneGeometryFrame]:
     """Prepare each model occurrence once and draw poses without realizing the surrounding graph."""
     try:
-        model = _read_model(project, document_id)
+        model = _read_model(project, document_id, registry)
     except ValueError as exc:
         return [StudioSceneGeometryFrame(mechanisms=[], diagnostics=[_invalid_model(exc)]) for _ in poses]
 

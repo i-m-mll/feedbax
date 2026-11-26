@@ -33,7 +33,7 @@ from feedbax.planner.project_plan import (
     diff_analyze_elements,
 )
 from feedbax.contracts.project_resolution import BaseReaders, ResolutionCode
-from feedbax.contracts.project_sweep import Sweep
+from feedbax.contracts.project_sweep import Sweep, model_field_path
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.rollout import RolloutParameters
@@ -89,10 +89,10 @@ def _project() -> Project:
 
 
 def _conditions() -> Step:
-    mass = ModelAddress.model_validate({
+    mass = model_field_path(ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
-    }).to_text()
+    }))
     return Step.model_validate(managed_evaluation_step("train") | {"sweep": {"axes": {"mass": {"values": {
         name: {"value": value, "patches": {mass: {"value": value}}}
         for name, value in (("nominal", 1), ("heavy", 2))

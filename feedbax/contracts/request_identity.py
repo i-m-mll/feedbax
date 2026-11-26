@@ -300,7 +300,7 @@ def encode_request(
         raise ValueError(f"Unknown request spec model: {type(spec).__name__}")
     kind, descriptor = match
     if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)):
-        canonical_trial = spec.trial_documents.without_signal_labels()
+        canonical_trial = spec.trial_documents.without_task_labels()
         if canonical_trial is not spec.trial_documents:
             spec = spec.model_copy(update={"trial_documents": canonical_trial})
     inputs = _validated_inputs(inputs)

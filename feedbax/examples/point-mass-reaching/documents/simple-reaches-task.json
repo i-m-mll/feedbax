@@ -7,74 +7,20 @@
       "start": {
         "label": "start",
         "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
-        "value": {
-          "kind": "call",
-          "function": "vector",
-          "args": [
-            {
-              "kind": "draw",
-              "family": "uniform",
-              "args": [{"kind": "literal", "value": -0.4}, {"kind": "literal", "value": 0.5}]
-            },
-            {
-              "kind": "draw",
-              "family": "uniform",
-              "args": [{"kind": "literal", "value": -0.3}, {"kind": "literal", "value": 0.45}]
-            }
-          ]
-        }
+        "value": "[U(-0.4, 0.5), U(-0.3, 0.45)]"
       },
       "target": {
         "label": "target",
         "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
-        "value": {
-          "kind": "call",
-          "function": "add",
-          "args": [
-            {"kind": "name", "reference": "start"},
-            {
-              "kind": "call",
-              "function": "polar",
-              "args": [
-                {
-                  "kind": "draw",
-                  "family": "uniform",
-                  "args": [
-                    {"kind": "literal", "value": 0.1, "unit": "m"},
-                    {"kind": "literal", "value": 0.5, "unit": "m"}
-                  ]
-                },
-                {
-                  "kind": "draw",
-                  "family": "uniform",
-                  "args": [
-                    {"kind": "literal", "value": -3.141592653589793, "unit": "rad"},
-                    {"kind": "literal", "value": 3.141592653589793, "unit": "rad"}
-                  ]
-                }
-              ]
-            }
-          ]
-        }
+        "value": "start + polar(U(0.1 m, 0.5 m), U(-3.141592653589793 rad, 3.141592653589793 rad))"
       }
     },
-    "epochs": {
-      "move": {
-        "label": "move",
-        "end": {"kind": "length", "length": {"kind": "literal", "value": 80, "unit": "st"}}
-      }
-    },
+    "epochs": {"move": {"label": "move", "end": {"kind": "length", "length": "80 st"}}},
     "signals": {
       "target_pos": {
         "label": "target position",
         "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
-        "cells": {
-          "move": {
-            "first_epoch": "move",
-            "last_epoch": "move",
-            "value": {"kind": "name", "reference": "target"}
-          }
-        }
+        "cells": {"move": {"first_epoch": "move", "last_epoch": "move", "value": "target"}}
       },
       "target_vel": {
         "label": "target velocity",
@@ -84,33 +30,15 @@
           "dimensions": {"length": 1, "time": -1},
           "space": "free"
         },
-        "cells": {
-          "move": {
-            "first_epoch": "move",
-            "last_epoch": "move",
-            "value": {
-              "kind": "call",
-              "function": "vector",
-              "args": [{"kind": "literal", "value": 0}, {"kind": "literal", "value": 0}]
-            }
-          }
-        }
+        "cells": {"move": {"first_epoch": "move", "last_epoch": "move", "value": "[0, 0]"}}
       },
       "goal": {
         "label": "goal",
         "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
-        "cells": {
-          "move": {
-            "first_epoch": "move",
-            "last_epoch": "move",
-            "value": {"kind": "name", "reference": "target"}
-          }
-        }
+        "cells": {"move": {"first_epoch": "move", "last_epoch": "move", "value": "target"}}
       }
     },
-    "links": {
-      "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"state\",\"effector/position\"]}}": "start"
-    },
+    "links": {"component.plant.state.\"effector/position\"": "start"},
     "fixed_steps": 80,
     "validation_trials": {
       "trial-1": {

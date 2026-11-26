@@ -15,6 +15,7 @@ from feedbax.execution import trial_resolution as trial_execution
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution, resolve_trial_execution
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sweep import model_field_path
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.objective_document import (
     STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm, StoredObjectiveDocument,
@@ -427,7 +428,7 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
     binding = "steps.train.base.inline.trial_documents.input_bindings.task-input"
     raw["sweep"] = {"rows": {
         "base": {},
-        "model": {"patches": {f"documents.reach-model.{mass.to_text()}": {"value": 2.0}}},
+        "model": {"patches": {model_field_path(mass, ("documents", "reach-model")): {"value": 2.0}}},
         "task": {"patches": {task: {"value": "alternate-task"}}},
         "objective": {"patches": {objective: {"value": 2}}},
         "bad-binding": {"patches": {binding: {"value": "missing-signal"}}},

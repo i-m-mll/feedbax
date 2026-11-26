@@ -745,13 +745,11 @@
   "feedbax.contracts.model_address.PortElement": {},
   "feedbax.contracts.model_address.WireElement": {},
   "feedbax.contracts.model_document.DelayInitialTask": {},
-  "feedbax.contracts.model_document.DelayInitialValue": {},
   "feedbax.contracts.model_document.DelayInitialWire": {
     "source": null
   },
   "feedbax.contracts.model_document.InputDefault": {},
   "feedbax.contracts.model_document.ModelPhysicalConnection": {},
-  "feedbax.contracts.model_document.ModelTime": {},
   "feedbax.contracts.model_document.ModelWorld": {},
   "feedbax.contracts.model_document.SignalType": {
     "base": null,
@@ -777,11 +775,7 @@
         "angle": 0
       }
     },
-    "weight": {
-      "kind": "literal",
-      "value": 1,
-      "unit": null
-    },
+    "weight": 1,
     "reduction": "mean",
     "window": null,
     "enabled": true,
@@ -1486,7 +1480,7 @@
   },
   "feedbax.contracts.project_sweep.CheckpointRuleAxis": {
     "label": null,
-    "path": "{\"field\":\"checkpoint\",\"input\":\"subject\"}"
+    "path": "{@subject.checkpoint}"
   },
   "feedbax.contracts.project_sweep.CooccurringSetTrials": {
     "weights": {}
@@ -1636,7 +1630,11 @@
     "differences": {}
   },
   "feedbax.contracts.stored_model.StoredCompositeComponent": {
-    "substeps": 1,
+    "substeps": {
+      "kind": "literal",
+      "value": 1,
+      "unit": null
+    },
     "attachments": {
       "sources": {},
       "sinks": {}
@@ -1645,9 +1643,10 @@
   "feedbax.contracts.stored_model.StoredDelayAttachment": {
     "initial_source": {
       "kind": "value",
-      "value": 0.0
+      "value": 0
     }
   },
+  "feedbax.contracts.stored_model.StoredDelayInitialValue": {},
   "feedbax.contracts.stored_model.StoredGraphInterior": {
     "components": {},
     "wires": {},
@@ -1762,9 +1761,6 @@
       }
     }
   },
-  "feedbax.contracts.task_document.Length": {
-    "max_steps": null
-  },
   "feedbax.contracts.task_document.Marker": {},
   "feedbax.contracts.task_document.PythonTaskSelection": {
     "params": {}
@@ -1773,6 +1769,9 @@
   "feedbax.contracts.task_document.SetVariableChoices": {},
   "feedbax.contracts.task_document.StoredCell": {},
   "feedbax.contracts.task_document.StoredEpoch": {},
+  "feedbax.contracts.task_document.StoredLength": {
+    "max_steps": null
+  },
   "feedbax.contracts.task_document.StoredRepeat": {},
   "feedbax.contracts.task_document.StoredSignal": {
     "absent": null,
@@ -1785,31 +1784,31 @@
     "fixed_steps": null,
     "validation_trials": {}
   },
+  "feedbax.contracts.task_document.StoredUntil": {},
   "feedbax.contracts.task_document.StoredVariable": {
     "count": null,
     "set_choices": null,
     "marker": null
   },
-  "feedbax.contracts.task_document.Until": {},
   "feedbax.contracts.task_document.ValidationTrial": {
     "variables": {},
     "epoch_steps": {}
   },
   "feedbax.contracts.time_units.TimeValue": {},
   "feedbax.contracts.training_document.TrainingDocument": {},
-  "feedbax.contracts.window.Window": {},
+  "feedbax.contracts.window.StoredWindow": {},
+  "feedbax.contracts.window.StoredWindowInterval": {},
+  "feedbax.contracts.window.StoredWindowMoment": {},
+  "feedbax.contracts.window.StoredWindowPosition": {
+    "offset": null
+  },
+  "feedbax.contracts.window.StoredWindowRelativePosition": {},
   "feedbax.contracts.window.WindowEpoch": {
     "occurrence": null
   },
   "feedbax.contracts.window.WindowEpochAnchor": {
     "occurrence": null
   },
-  "feedbax.contracts.window.WindowInterval": {},
-  "feedbax.contracts.window.WindowMoment": {},
-  "feedbax.contracts.window.WindowPosition": {
-    "offset": null
-  },
-  "feedbax.contracts.window.WindowRelativePosition": {},
   "feedbax.contracts.window.WindowTrialAnchor": {},
   "feedbax.training.optimizers.Adabelief": {
     "learning_rate": {

@@ -41,7 +41,7 @@ def test_model_edit_accepts_256_scalars_and_refuses_289_at_the_matrix_field(stud
         "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID,
         "label": "Model",
         "payload": {
-            "step_seconds": 0.01,
+            "step_seconds": "10 ms",
             "ports": {},
             "interior": {"components": {"plant": {
                 "kind": "leaf", "label": "Plant", "type": "feedbax.LinearStateSpace",
@@ -59,7 +59,9 @@ def test_model_edit_accepts_256_scalars_and_refuses_289_at_the_matrix_field(stud
         assert response.status_code == 200, response.text
         return response.json()["result"]
 
-    accepted = edit(client.get(_URL).json(), _matrix(16, 0.5))
+    opened = client.get(_URL)
+    assert opened.status_code == 200, opened.text
+    accepted = edit(opened.json(), _matrix(16, 0.5))
     assert accepted["status"] == "applied"
     saved = model.read_bytes()
     assert json.loads(saved)["payload"]["interior"]["components"]["plant"]["fields"]["A"] == _matrix(16, 0.5)
