@@ -7,6 +7,7 @@ import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedPro
 import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 import { applyTo } from './fixtures/controls';
+import { figureButton } from './fixtures/members';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -304,7 +305,7 @@ test('New in the Document header gives an empty report that cannot run', async (
   await page.goto('/?project=' + encodeURIComponent(project));
   await mapStep(page, 'analyze').click();
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
-  await page.getByRole('tabpanel', { name: 'Figures', exact: true }).getByRole('button', { name: 'Profile', exact: true }).click();
+  await figureButton(page.getByRole('tabpanel', { name: 'Figures', exact: true }), 'profile').click();
   await palette(page, 'newStep', 'New Step');
   await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('listitem')).toHaveCount(1);

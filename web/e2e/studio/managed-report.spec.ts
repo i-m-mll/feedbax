@@ -68,7 +68,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   await figureButton(figures, 'profile').click();
   await palette('New Step');
   await chooseStepKind(page, 'Report', true);
-  await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');
+  await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Velocity profile');
   const created = await snapshot();
   expect(report(created)).toMatchObject({ completeness: 'complete', blocks: [{ figure: 'figure-profile' }] });
   expect(inputs(created)).toMatchObject({ 'figure-profile': profile });
@@ -90,7 +90,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   await pick(variants, 'compare');
   await mapStep(page, 'report').click();
   await page.getByRole('tab', { name: 'Document', exact: true }).click();
-  await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');
+  await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Velocity profile');
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toBeDisabled();
   await pick(variants, 'base');
   await mapStep(page, 'report').click();
