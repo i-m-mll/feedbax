@@ -1,11 +1,14 @@
 """A Set document swept by Train and Evaluate steps plans one run per entry."""
 
 from copy import deepcopy
+import json
 
 import pytest
 from pydantic import ValidationError
 
+from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_io import ProjectConfiguration, parse_text_project_files
 from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.project_sweep import NamedAxis
 from feedbax.contracts.set_document import (
@@ -126,3 +129,55 @@ def test_a_set_that_does_not_fit_is_a_diagnostic_on_the_axis(pointer):
     assert not any(run.key.step in ("train", "baseline") for run in plan.runs)
     raw["documents"]["fits"] = {"label": "Fits", "schema": SET_DOCUMENT_SCHEMA_ID, "payload": {"entries": {"heavy": _entries()["heavy"]}}}
     assert sets_offered(Project.model_validate(raw), "train") == ("alterations", "fits")
+
+
+def test_sets_and_based_models_do_not_change_the_bytes_of_their_base(tmp_path):
+    attachment = {"kind": "intervention", "operation": "Scale",
+                  "operands": {"factor": {"kind": "value", "value": 0.5}}}
+    attachment_path = "/interior/wires/plant-wire/attachments/scale"
+    differences = {
+        attachment_path: {"value": attachment},
+        "/interior/components/plant/fields/mass": {"value": 2},
+    }
+    raw = _project({"scaled": {"label": "Scaled", "differences": differences}})
+    model = raw["documents"]["reach-model"]
+    model["payload"]["interior"]["components"]["plant"]["fields"] = {}
+    model["payload"]["interior"]["wires"]["plant-wire"]["attachments"] = {}
+    configuration = ProjectConfiguration(project="study", store="results")
+    base_files = dump_text_project(Project.model_validate({"documents": {"reach-model": model}}), configuration)
+
+    raw["documents"]["derived"] = {
+        "schema": model["schema"], "label": "Derived", "base": {"document": "reach-model"},
+        "differences": differences,
+    }
+    train = raw["steps"]["plain"]
+    raw["steps"]["derived"] = deepcopy(train)
+    raw["steps"]["derived"]["base"]["inline"]["trial_documents"]["model"] = {"document": "derived"}
+    raw["documents"]["force-set"] = {
+        "label": "Force", "schema": SET_DOCUMENT_SCHEMA_ID,
+        "payload": {"entries": {"scaled": {"label": "Scaled", "differences": {
+            attachment_path: differences[attachment_path],
+        }}}},
+    }
+    raw["steps"]["trial-set"] = deepcopy(train) | {
+        "set_fields": {"alteration": {"axis": {"set": "force-set"}, "sampling": {"kind": "cooccurring"}}},
+    }
+    train["sweep"] = {"axes": {}}
+    raw["sweep"] = None
+
+    files = dump_text_project(Project.model_validate(raw), configuration)
+    saved_base = files["documents/reach-model.json"]
+    assert saved_base == base_files["documents/reach-model.json"]
+    graph = json.loads(saved_base)["payload"]["interior"]
+    assert "attachments" not in graph["wires"]["plant-wire"]
+    assert "fields" not in graph["components"]["plant"]
+    assert "sweep" not in json.loads(files["steps/plain.json"])
+    assert not {"sweep", "variants"} & json.loads(files["study.feedbax"]).keys()
+
+    after = _plan(parse_text_project_files(tmp_path, files).project.model_dump(mode="json", by_alias=True, exclude_unset=True))
+    before = _plan(raw)
+    for plan in (before, after):
+        assert not plan.diagnostics, plan.diagnostics
+        assert {run.key.step for run in plan.runs} == {"train", "baseline", "plain", "derived", "trial-set"}, {row.key.step: row.problems for row in plan.rows}
+        assert all(run.request_id and run.admission_problem is None for run in plan.runs)
+    assert _requests(after) == _requests(before)

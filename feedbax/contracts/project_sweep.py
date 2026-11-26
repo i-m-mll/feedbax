@@ -334,6 +334,11 @@ class Sweep(StrictModel):
     inherit_rows: bool = True
 
 
+def sweep_refines_parent(sweep: Sweep) -> bool:
+    """Whether the authored Sweep changes any part of an inherited sweep."""
+    return bool(sweep.axes or sweep.rows or sweep.exceptions or not sweep.inherit_rows or "combination" in sweep.model_fields_set)
+
+
 _T = TypeVar("_T")
 
 

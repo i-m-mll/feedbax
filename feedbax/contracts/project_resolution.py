@@ -26,7 +26,7 @@ from feedbax.contracts.matrix_core import (
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
 from feedbax.contracts.project_storage import (
-    apply_document_differences, stored_expression_site, stored_keyed_collection, stored_step_expression_site,
+    apply_document_differences, document_difference_basis, stored_expression_site, stored_keyed_collection, stored_step_expression_site,
     stored_step_keyed_collection,
 )
 from feedbax.contracts.project import (
@@ -658,6 +658,8 @@ class _Documents:
                             raise ValueError("A variant writes into an object payload only")
                         if document.schema_id == TRAINING_DOCUMENT_SCHEMA_ID and item.patch.op == "replace":
                             draft = train_sweep_basis(draft, item.patch.path, self.training_methods)
+                        parents = tuple(item.patch.path.split(".")[:-1])
+                        draft = document_difference_basis(document.schema_id, draft, (parents,), registries=self.regions)
                         physical, expression = prepare_stored_patch(
                             draft, item.patch, expression_site=expression_site, keyed_collection=keyed_collection,
                         )

@@ -9,15 +9,13 @@ from functools import cache
 from pydantic import JsonValue, ValidationError
 
 from feedbax.contracts.matrix_core import resolve_segment
-from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project import BasedDocument, InlineBase, OrderDocumentMembers, Project, RootDocument, StepBase
+from feedbax.contracts.project import InlineBase, Project, RootDocument, StepBase
 from feedbax.contracts.project import base_chain, json_pointer_parts
 from feedbax.contracts.project_inputs import DocumentReference
 from feedbax.contracts.stored_regions import StoredRegionResolver
 from feedbax.contracts.project_resolution import compose_document, document_write_target
 from feedbax.contracts.project_storage import StoredPath
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep
-from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID
 
 type FileAddress = tuple[str, str]
@@ -136,23 +134,6 @@ def protected_project_fields(
             except ValidationError:
                 continue
             document(key, json_pointer_parts(reference.pointer), by_id=False, subtree=True)
-
-    for name, entry in project.documents.items():
-        if isinstance(entry, BasedDocument) and not entry.base.unresolved:
-            for pointer, difference in entry.differences.items():
-                parts = json_pointer_parts(pointer)
-                document(
-                    entry.base.document, parts if isinstance(difference, OrderDocumentMembers) else parts[:-1],
-                    by_id=False,
-                )
-        if entry.schema_id == SET_DOCUMENT_SCHEMA_ID:
-            try:
-                entries = SetDocument.model_validate(composed(name)).entries
-            except ValidationError:
-                continue
-            for item in entries.values():
-                for pointer in item.differences:
-                    compatible(frozenset({STORED_MODEL_DOCUMENT_SCHEMA_ID}), json_pointer_parts(pointer)[:-1])
 
     for path in _sweep_paths(project.sweep):
         if path.startswith(("steps.", "documents.")):
