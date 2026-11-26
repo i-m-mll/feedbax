@@ -91,7 +91,7 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
             continue
         try:
             if loaded:
-                source = LoadedModelDocument.model_validate(composed.payload).source
+                source = LoadedModelDocument.model_validate(composed.payload).lower()
                 roots.append(RootObservation(f"document:{name}", (
                     object_target(source.model), ContentRetentionTarget(ref_kind="tree", tree=source.weights),
                 )))

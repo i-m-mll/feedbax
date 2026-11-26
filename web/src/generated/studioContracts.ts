@@ -3007,13 +3007,6 @@ export type ContentRef = {
   "tree"?: boolean;
 };
 
-export type ContentTreeRef = {
-  "schema_id"?: "feedbax.spec.content_tree_ref";
-  "schema_version"?: "feedbax.spec.content_tree_ref.v1";
-  "tree_id": string;
-  "descriptor": ContentObjectRef;
-};
-
 export type ContinuousColorScale = {
   "kind": "continuous";
   "palette"?: "viridis" | "cividis" | "plasma" | "turbo";
@@ -3352,13 +3345,6 @@ export type ImportedModelProvenance = {
   "replicas": Array<string>;
 };
 
-export type ImportedModelSource = {
-  "kind": "imported";
-  "model": ContentObjectRef;
-  "weights": ContentTreeRef;
-  "encoding": SemanticModelEncoding;
-};
-
 export type IndexSelection = {
   "index": number;
 };
@@ -3477,10 +3463,16 @@ export type LiteralValue = {
   "unit"?: string | null;
 };
 
+export type LoadedModelAsset = {
+  "sha256": string;
+  "size_bytes": number;
+};
+
 export type LoadedModelDocument = {
-  "schema_version": "feedbax.spec.loaded_model.v1";
   "model": DocumentReference;
-  "source": ImportedModelSource;
+  "model_revision": LoadedModelAsset;
+  "weights": LoadedModelAsset;
+  "encoding_sha256": Sha256;
   "archive"?: ProjectModelArchive | null;
 };
 
@@ -3987,10 +3979,6 @@ export type SelectedAxisValueProblem = {
   "axis": string;
   "missing": SelectedAxisValue;
   "remaining": Array<SelectedAxisValue>;
-};
-
-export type SemanticModelEncoding = {
-  "descriptor_sha256": string;
 };
 
 export type SetAxis = {
@@ -5986,7 +5974,7 @@ export const modelDocumentSchemaId = "feedbax.spec.model.v2";
 export const taskDocumentSchemaId = "feedbax.spec.task_document.v2";
 export const objectiveDocumentSchemaId = "feedbax.spec.objective_document.v2";
 export const setDocumentSchemaId = "feedbax.set_document.v2";
-export const loadedModelDocumentSchemaId = "feedbax.spec.loaded_model";
+export const loadedModelDocumentSchemaId = "feedbax.spec.loaded_model.v2";
 
 export const firstTrainTask: Document = {
   "schema": "feedbax.spec.task_document.v2",
@@ -11608,15 +11596,6 @@ export const ContentRefSchema: z.ZodType<ContentRef> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<ContentRef>;
 
-export const ContentTreeRefSchema: z.ZodType<ContentTreeRef> = z.lazy(() =>
-  z.object({
-    "schema_id": z.literal("feedbax.spec.content_tree_ref").optional(),
-    "schema_version": z.literal("feedbax.spec.content_tree_ref.v1").optional(),
-    "tree_id": z.string().regex(new RegExp("^content-tree://sha256/[0-9a-f]{64}$")),
-    "descriptor": ContentObjectRefSchema,
-  }).strict()
-) as unknown as z.ZodType<ContentTreeRef>;
-
 export const ContinuousColorScaleSchema: z.ZodType<ContinuousColorScale> = z.lazy(() =>
   z.object({
     "kind": z.literal("continuous"),
@@ -12065,15 +12044,6 @@ export const ImportedModelProvenanceSchema: z.ZodType<ImportedModelProvenance> =
   }).strict()
 ) as unknown as z.ZodType<ImportedModelProvenance>;
 
-export const ImportedModelSourceSchema: z.ZodType<ImportedModelSource> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("imported"),
-    "model": ContentObjectRefSchema,
-    "weights": ContentTreeRefSchema,
-    "encoding": SemanticModelEncodingSchema,
-  }).strict()
-) as unknown as z.ZodType<ImportedModelSource>;
-
 export const IndexSelectionSchema: z.ZodType<IndexSelection> = z.lazy(() =>
   z.object({
     "index": z.number().int().safe().min(0),
@@ -12236,11 +12206,19 @@ export const LiteralValueSchema: z.ZodType<LiteralValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<LiteralValue>;
 
+export const LoadedModelAssetSchema: z.ZodType<LoadedModelAsset> = z.lazy(() =>
+  z.object({
+    "sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "size_bytes": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<LoadedModelAsset>;
+
 export const LoadedModelDocumentSchema: z.ZodType<LoadedModelDocument> = z.lazy(() =>
   z.object({
-    "schema_version": z.literal("feedbax.spec.loaded_model.v1"),
     "model": DocumentReferenceSchema,
-    "source": ImportedModelSourceSchema,
+    "model_revision": LoadedModelAssetSchema,
+    "weights": LoadedModelAssetSchema,
+    "encoding_sha256": Sha256Schema,
     "archive": z.union([ProjectModelArchiveSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<LoadedModelDocument>;
@@ -12935,12 +12913,6 @@ export const SelectedAxisValueProblemSchema: z.ZodType<SelectedAxisValueProblem>
     "remaining": z.array(SelectedAxisValueSchema),
   }).strict()
 ) as unknown as z.ZodType<SelectedAxisValueProblem>;
-
-export const SemanticModelEncodingSchema: z.ZodType<SemanticModelEncoding> = z.lazy(() =>
-  z.object({
-    "descriptor_sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-  }).strict()
-) as unknown as z.ZodType<SemanticModelEncoding>;
 
 export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
   z.object({

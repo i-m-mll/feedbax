@@ -385,7 +385,7 @@ def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_
         saved = imported.json()
         assert saved["document"] == "imported"
         payload = LoadedModelDocument.model_validate(saved["snapshot"]["project"]["documents"]["imported"]["payload"])
-        assert payload.source.weights == checkpoint.tree
+        assert payload.lower().weights == checkpoint.tree
         assert payload.model.document == "point-mass"
         assert client.post(url, params=query, content=archive, headers=headers).status_code == 409
 
