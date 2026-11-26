@@ -122,7 +122,9 @@ test('binds lists of selections to an Evaluate subject and an Analyze dataset ro
   const legend = figures.locator('svg.main-svg text.legendtext');
   await expect(legend.filter({ hasText: /^Conditions (?!b )/ }).first()).toBeVisible({ timeout: 20_000 });
   await expect(legend.filter({ hasText: /^Conditions b / }).first()).toBeVisible();
-  // Each trace is a distinct run and condition, so no two legend entries share a name.
+  // Each trace is a distinct run and condition, so no two legend entries share a name, and a run with no value
+  // on a grouped label names none.
   const names = await legend.allTextContents();
   expect(names.length - new Set(names).size, names.join(' | ')).toBe(0);
+  expect(names.filter((name) => /\bNone\b|\s{2}|\s$/.test(name))).toEqual([]);
 });
