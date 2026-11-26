@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pydantic import JsonValue
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.compiler.model_document import model_tau_seconds
 from feedbax.compiler.model_ports import model_unstored_fields
 from feedbax.contracts.expression_values import (
@@ -17,7 +18,7 @@ from feedbax.contracts.model_document import (
     CompositeComponent, DelayAttachment, DelayInitialTask, DelayInitialValue, InterventionAttachment,
     LeafComponent, ModelDocument,
 )
-from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, authored_model_payload
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, ListedRuns, StepRuns, ModelEditCommand, SetField,
 )
@@ -48,7 +49,7 @@ from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.trial_scope import (
-    evaluation_document_write, scoped_file, selected_value, selection_scope, source_value_file, variant_file,
+    evaluation_document_write, model_content_edits, scoped_file, selected_value, selection_scope, source_value_file, variant_file,
 )
 
 
@@ -282,15 +283,22 @@ def _kept_writes(
     return files, next((SetField(op="set_field", address=address, value=write.value) for address, write in fields), None)
 
 
+def _reference_model(project, restored: str | None) -> ModelDocument | None:
+    document = compose_document(project.documents.get, restored) if restored is not None else None
+    if document is None or isinstance(document, ProjectDiagnostic):
+        return None
+    return StoredModelDocument.model_validate(document.payload).lower()
+
+
 def _reset_text(
     project, restored: str | None, owner: ModelAddress, address: ModelAddress, components: ComponentRegistry,
 ) -> str | Problem:
     """The text of the field at ``address`` in ``restored``, the document a Reset gives the field its value from."""
-    document = compose_document(project.documents.get, restored) if restored is not None else None
-    if document is None or isinstance(document, ProjectDiagnostic):
+    model = _reference_model(project, restored)
+    if model is None:
         return Problem(code=ProblemCode.STRUCTURE, reason="This value is not changed from another document.")
     field = next((
-        item for item in _fields(StoredModelDocument.model_validate(document.payload).lower(), owner, components)
+        item for item in _fields(model, owner, components)
         if item.address == address
     ), None)
     if field is None:
@@ -453,6 +461,10 @@ def model_fields(
     } if effective_model is not None else {}
     authored_fields = {field.address.to_text(): field for field in _fields(model, body.owner, components, names)}
     visible_fields = effective_fields if evaluate or variant is not None else effective_fields | authored_fields
+    reference = _reference_model(project, restored) if changes else None
+    reference_fields = {
+        field.address.to_text(): field for field in _fields(reference, body.owner, components, names)
+    } if reference is not None else {}
     period = (effective_model or model).step_seconds
     if isinstance(period, UnresolvedValue):
         period = None
@@ -471,11 +483,15 @@ def model_fields(
                 step, target, numeric.label, numeric.key[-1:], integer=numeric.site.expected.base == ValueBase.INTEGER,
                 runs=runs,
             )
-            if evaluate is not None:
-                # The addressed sweep can set fields inherited from registry defaults.
-                numeric = replace(numeric, stored=True)
+            # An addressed sweep can set fields inherited from the registry.
+            numeric = replace(numeric, stored=True)
         relative = pointer(field.address.stored_path())
-        changed = any(relative == path or relative.startswith(path + "/") for path in changes)
+        changed = relative in changes
+        if not changed and any(relative.startswith(path + "/") for path in changes):
+            inherited = reference_fields.get(field_key)
+            changed = inherited is None or (
+                inherited.numeric.value, inherited.numeric.unit, inherited.expression
+            ) != (numeric.value, numeric.unit, field.expression)
         # The window map groups equal coordinates. Keep the stored origin key and path.
         sources = dict.fromkeys(
             replace(source, value=value_id) if (
@@ -646,9 +662,12 @@ def model_fields(
         chosen_steps = {body.run.step, *body.chosen_steps}
         alternatives = []
         if chosen_steps < plan.document_users(variant, owner_name):
-            narrowed = evaluation_document_write(project, plan, owner_name, [
-                SetProjectValue(op="replace", path=pointer(difference.address.stored_path()), value=value),
-            ], chosen_steps, "model", variant)
+            try:
+                changed = resolve_effective_model(model, components, (difference,), functions=functions)
+            except ValueError as error:
+                raise ProjectFolderInvalid(str(error)) from error
+            edits = model_content_edits(document.payload, authored_model_payload(changed))
+            narrowed = evaluation_document_write(project, plan, owner_name, edits, chosen_steps, "model", variant)
             alternatives.append(("selected_readers", "Selected Readers", variant, narrowed))
         return _field_store(
             folders, project_id, project, plan, body,

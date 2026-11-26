@@ -522,8 +522,11 @@ def _restore_variation_refs(definition, index, edit):
 
 
 def _task_selection_writes(definition, value):
-    raw = definition.payload["params"]["variation"]
+    params = definition.payload["params"]
     replacement = {"op": "replace", "path": "task", "value": value}
+    if "variation" not in params:
+        return [_override("params.variation", "add", {"task": replacement})]
+    raw = params["variation"]
     if isinstance(raw, list):
         retained = [
             _restore_variation_refs(definition, index, edit) for index, edit in enumerate(raw)

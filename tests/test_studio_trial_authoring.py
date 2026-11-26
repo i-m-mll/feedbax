@@ -1130,6 +1130,7 @@ def test_an_evaluate_task_choice_in_a_variant_is_its_row_s_task_reference(tmp_pa
     raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "variants", Project.model_validate(raw))
+    saved_steps = folders.read("variants").project.steps
     before = folders.read_plan("variants", revision=None)
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         reply = client.post("/api/projects/variants/authoring/trials", json={
@@ -1142,7 +1143,7 @@ def test_an_evaluate_task_choice_in_a_variant_is_its_row_s_task_reference(tmp_pa
         saved = client.patch("/api/projects/variants", json={"revision": before.revision, "files": view["files"]})
         assert saved.status_code == 200, saved.text
     project = folders.read("variants").project
-    assert project.steps == Project.model_validate(raw).steps
+    assert project.steps == saved_steps
     assert {path: write.model_dump(mode="json") for path, write in project.sweep.rows["treated"].patches.items()} == {
         "steps.baseline.base.inline.trial_documents": {"op": "add", "value": {"task": {"document": "test-task"}}},
     }
@@ -1171,6 +1172,7 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
         raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "check", Project.model_validate(raw))
+    saved_steps = folders.read("check").project.steps
     before = folders.read_plan("check", revision=None)
     run = {"variant": variant, "step": "check", "row": "default"}
     with TestClient(create_app(projects_dir=tmp_path)) as client:
@@ -1200,7 +1202,7 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
         run.key: run.request_id for run in before.plan.runs if run.key.step == "train"
     }
     if variant != "default":
-        assert folders.read("check").project.steps == Project.model_validate(raw).steps
+        assert folders.read("check").project.steps == saved_steps
 
 
 def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):

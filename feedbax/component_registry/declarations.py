@@ -492,3 +492,17 @@ def settings_schema(model: type[BaseModel]) -> SettingsSchema:
             if fields.get(name, {}).get("feedbax", {}).get("static") is True
         ),
     )
+
+
+def split_lowering_metadata(
+    type_id: str, fields: Mapping[str, Any], declaration: DeclaredComponent | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Separate graph controls from a component's declared parameters."""
+    params, metadata = dict(fields), {}
+    if type_id == "feedbax.Sum" and "channel_adapter" in params:
+        metadata["channel_adapter"] = params.pop("channel_adapter")
+    if declaration is not None and isinstance(params.get("trainable"), bool):
+        contract = declaration.params
+        if "trainable" not in contract.model.model_fields and "trainable" not in contract.build_context_fields:
+            metadata["trainable"] = params.pop("trainable")
+    return params, metadata

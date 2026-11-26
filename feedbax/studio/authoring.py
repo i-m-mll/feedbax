@@ -990,6 +990,7 @@ def project_numeric_fields(
     )
     definition.own(read_plan)
     effective = [definition.effective(payload) for payload in selection.payloads]
+    defaulted = definition.effective(definition.payload)
     selected = (
         SelectedValues(selection.values, selection.current)
         if selection.values is not None and selection.current is not None else None
@@ -1003,7 +1004,16 @@ def project_numeric_fields(
         path = json_pointer_parts(field_id)
         def step_writes(value, field=field):
             return _step_writes(field.number_write(value))
-        target = SweepTarget.from_field(view.value, view.control, step_writes) if not definition.inherits else None
+        default_path = (
+            ".".join(path) if path[0] == "settings" and _get(definition.payload, path) is None
+            and type(_get(defaulted, path)) in (int, float) else None
+        )
+        target = None
+        if not definition.inherits:
+            target = (
+                SweepTarget(view.value, step_writes, default_path) if default_path is not None
+                else SweepTarget.from_field(view.value, view.control, step_writes)
+            )
         axis = FieldSweeps(
             definition.step, target, view.label, field.name, integer=view.control.step == 1, selected=selected,
             runs=selection.coordinates,
@@ -1020,14 +1030,14 @@ def project_numeric_fields(
             values[0] if len(values) == 1 else None, held=values,
             scoped=selection.scoped, id=field_id,
         ))
-        targets[field_id] = field, numeric, axis
+        targets[field_id] = field, numeric, axis, default_path
     changed = changed_fields(project, step_id, [view.id for view in fields])
     fields = [view.model_copy(update={"changed": view.id in changed}) for view in fields]
     if body.edit is None:
         return TrainFieldResponse(fields=fields)
     if body.field not in targets:
         raise ValueError(f"Step {step_id!r} has no number field {body.field!r}")
-    field, numeric, axis = targets[body.field]
+    field, numeric, axis, default_path = targets[body.field]
     if isinstance(body.edit, FieldResetEdit):
         stored = selection.store(reset_writes(project, step_id, body.field))
         return TrainFieldResponse(files=stored.files, created=list(stored.created), dependencies=list(field.documents))
@@ -1036,7 +1046,14 @@ def project_numeric_fields(
     if isinstance(result, tuple):
         return TrainFieldResponse(problems=list(result))
     if isinstance(result, list):
-        stored = (selection.store(prepared.keep) if prepared.keep else StoredEdit([])).then(
+        keep = [
+            retained
+            for write in prepared.keep
+            for retained in (
+                field.number_write(write.value) if write.path == default_path else [write]
+            )
+        ]
+        stored = (selection.store(keep) if keep else StoredEdit([])).then(
             [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)] if result else [],
         )
     elif definition.step.sweep and axis is None:

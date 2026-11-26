@@ -13,6 +13,7 @@ from jax import ShapeDtypeStruct
 
 from feedbax.builtins.mechanics.linear_state_space import LinearStateSpace, linear_state_space_output_prototype
 from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry.declarations import DeclaredComponent, split_lowering_metadata
 from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
 from feedbax.compiler.model_signals import (
     ModelSignalTable, ResolvedSignalLeaf, boundary_signal_port, resolve_model_signals, task_data_value_type,
@@ -20,7 +21,9 @@ from feedbax.compiler.model_signals import (
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
 from feedbax.compiler.retained_state import resolve_retained_state_fields
 from feedbax.compiler.model_edit import model_graph_problems
-from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts, derives_input_width
+from feedbax.compiler.model_ports import (
+    BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts, derives_input_width, model_unstored_fields,
+)
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, PlanarDynamicsSpec, SolverConfigSpec
 from feedbax.contracts.acausal_interface import (
     PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
@@ -38,8 +41,8 @@ from feedbax.contracts.model_address import (
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.model_edit import ModelGraphProblem
 from feedbax.contracts.model_document import (
-    DelayAttachment, DelayInitialTask, DelayInitialValue, DelayInitialWire, GraphInterior, HoldAttachment, InterventionAttachment,
-    ModelDocument, ModelPorts,
+    CompositeComponent, DelayAttachment, DelayInitialTask, DelayInitialValue, DelayInitialWire, GraphInterior, HoldAttachment, InterventionAttachment,
+    LeafComponent, ModelDocument, ModelPorts,
     PhysicalInterior, ProbeAttachment, SignalInput, SignalType,
 )
 from feedbax.contracts.project import json_pointer_parts
@@ -51,6 +54,43 @@ from feedbax.runtime.task_data_roles import task_data_role
 from feedbax.compiler.model_reset import ModelResetPlan, resolve_model_reset
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
 from feedbax.contracts.graph import task_binding_id
+
+
+def split_model_field_context(declaration: DeclaredComponent, fields: Mapping) -> tuple[dict, dict]:
+    """Separate values interpreted by Model lowering from declared component parameters."""
+    params, context = split_lowering_metadata(declaration.name, fields, declaration)
+    for name in declaration.params.build_context_fields & params.keys():
+        context[name] = params.pop(name)
+    if declaration.name == "feedbax.VanillaRNN" and (
+        isinstance(tau := params.get("tau"), dict) and tau.get("kind") == "literal"
+    ):
+        context["tau"] = params.pop("tau")
+    return params, context
+
+
+def complete_model_fields(model: ModelDocument, registry: ComponentRegistry) -> ModelDocument:
+    """Complete leaf parameters for identity, leaving the authored projection alone."""
+
+    def complete(interior):
+        members = dict(interior.components)
+        for key, member in members.items():
+            if isinstance(member, CompositeComponent):
+                members[key] = member.model_copy(update={"interior": complete(member.interior)})
+            elif isinstance(member, LeafComponent) and (declaration := registry.get(member.type)) is not None and (
+                member.revision in (None, declaration.revision)
+            ):
+                contract = declaration.params
+                declared, context = split_model_field_context(declaration, member.fields)
+                resolved = contract.validate(declared)
+                if resolved.value is not None:
+                    fields = resolved.value.model_dump(mode="json")
+                    for name in model_unstored_fields(member.type) - member.fields.keys():
+                        fields.pop(name, None)
+                    fields.update(context)
+                    members[key] = member.model_copy(update={"fields": fields})
+        return interior.model_copy(update={"components": members})
+
+    return model.model_copy(update={"interior": complete(model.interior)})
 
 
 class ModelCompilationProblem(ValueError):

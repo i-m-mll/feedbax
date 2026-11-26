@@ -1,4 +1,466 @@
 {
+  "feedbax.builtins.acausal.system.AcausalSystemConfig": {
+    "dt": 0.01,
+    "domain": "translational"
+  },
+  "feedbax.builtins.control.affine._AffineFeedbackControllerConfig": {
+    "gain": [
+      [
+        [
+          1.0
+        ]
+      ]
+    ],
+    "bias": null,
+    "feedforward": null,
+    "schedule_policy": "hold"
+  },
+  "feedbax.builtins.control.continuous._DerivativeConfig": {
+    "dt": 0.01,
+    "n_dims": 1,
+    "initial_value": 0.0,
+    "input_dtype": null
+  },
+  "feedbax.builtins.control.continuous._IntegratorConfig": {
+    "dt": 0.01,
+    "n_dims": 1,
+    "initial_value": 0.0,
+    "input_dtype": null
+  },
+  "feedbax.builtins.control.continuous._StateSpaceConfig": {
+    "dt": 0.01
+  },
+  "feedbax.builtins.control.continuous._TransferFunctionConfig": {
+    "dt": 0.01
+  },
+  "feedbax.builtins.control.discrete._IntegratorDiscreteConfig": {
+    "dt": 1.0,
+    "n_dims": 1,
+    "initial_value": 0.0,
+    "input_dtype": null
+  },
+  "feedbax.builtins.control.discrete._UnitDelayConfig": {
+    "n_dims": 1,
+    "initial_value": 0.0,
+    "input_dtype": null
+  },
+  "feedbax.builtins.control.discrete._ZeroOrderHoldConfig": {
+    "hold_steps": 1,
+    "n_dims": 1,
+    "initial_value": 0.0,
+    "input_dtype": null
+  },
+  "feedbax.builtins.control.pid._ContinuousPIDParams": {
+    "Kp": 1.0,
+    "Ki": 0.0,
+    "Kd": 0.0,
+    "dt": 0.01,
+    "n_dims": 1,
+    "input_dtype": null,
+    "integral_limit": null
+  },
+  "feedbax.builtins.control.pid._DiscretePIDParams": {
+    "Kp": 1.0,
+    "Ki": 0.0,
+    "Kd": 0.0,
+    "dt": 0.01,
+    "n_dims": 1,
+    "input_dtype": null,
+    "output_limit": null
+  },
+  "feedbax.builtins.dynamics_operations.FixedPointParameters": {
+    "transition": 0,
+    "seed": 0,
+    "max_updates": 1000,
+    "loss_tolerance": 1e-06,
+    "merge_tolerance": 0.025
+  },
+  "feedbax.builtins.dynamics_operations.HiddenStatePCAParameters": {
+    "n_components": 3,
+    "centering": "mean",
+    "normalization": "none"
+  },
+  "feedbax.builtins.mechanics.force_fields.CurlFieldConfig": {
+    "scale": 1.0,
+    "amplitude": 1.0,
+    "active": false
+  },
+  "feedbax.builtins.mechanics.force_fields.DynamicsMatrixPerturbConfig": {
+    "scale": 1.0,
+    "delta_A": [
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "active": false
+  },
+  "feedbax.builtins.mechanics.force_fields.FixedFieldConfig": {
+    "scale": 1.0,
+    "amplitude": 1.0,
+    "field": [
+      0.0,
+      0.0
+    ],
+    "active": false
+  },
+  "feedbax.builtins.mechanics.force_fields.ThresholdLatchedForceConfig": {
+    "state_selector": {
+      "kind": "fixed",
+      "path": [
+        "pos",
+        0
+      ]
+    },
+    "direction": "increasing",
+    "dt": 0.01,
+    "scale": 1.0,
+    "active": false,
+    "threshold": 0.0,
+    "force": [
+      0.0,
+      0.0
+    ],
+    "lateral_force": 0.0,
+    "ramp_duration": 0.0
+  },
+  "feedbax.builtins.models.networks._VanillaRNNConfig": {
+    "dtype": "float32",
+    "input_size": 4,
+    "hidden_size": 4,
+    "use_bias": true,
+    "use_noise": false,
+    "noise_strength": 0.01,
+    "dt": 1.0,
+    "tau": 1.0,
+    "activation": "tanh"
+  },
+  "feedbax.builtins.operations.AlignedVelocityParameters": {
+    "target_transition": -1
+  },
+  "feedbax.builtins.operations.TrialSpeedParameters": {},
+  "feedbax.builtins.operations.VelocitySummaryParameters": {
+    "variable": "parallel_velocity",
+    "bounds_scale": 1.0
+  },
+  "feedbax.builtins.runtime.affine_composer._AffineValueComposerConfig": {
+    "output_block_size": 1,
+    "feature_rules": [
+      {
+        "kind": "identity",
+        "state_slice": [
+          0,
+          1
+        ]
+      }
+    ],
+    "gain_init": [
+      [
+        0.0
+      ]
+    ],
+    "bias_init": [
+      0.0
+    ],
+    "use_bias": true
+  },
+  "feedbax.builtins.runtime.channel._ChannelConfig": {
+    "init_value": 0.0,
+    "delay": 5,
+    "noise_model": "additive_gaussian",
+    "noise_std": 0.01,
+    "additive_noise_std": 0.0,
+    "signal_dependent_noise_std": 0.0,
+    "include_zero_noise_terms": false,
+    "add_noise": true,
+    "noise_role": null,
+    "noise_timing": null,
+    "input_shape": null,
+    "input_dtype": null
+  },
+  "feedbax.builtins.runtime.components._ActivationConfig": {
+    "activation": "identity"
+  },
+  "feedbax.builtins.runtime.components._ConcatenateConfig": {
+    "dtype": null,
+    "n_inputs": 2
+  },
+  "feedbax.builtins.runtime.components._ConstantParams": {
+    "dtype": null,
+    "value": 0.0
+  },
+  "feedbax.builtins.runtime.components._DeadZoneConfig": {
+    "threshold": 0.1
+  },
+  "feedbax.builtins.runtime.components._DelayLineConfig": {
+    "delay": 1,
+    "init_value": 0.0,
+    "input_shape": null,
+    "input_dtype": null
+  },
+  "feedbax.builtins.runtime.components._ElementwiseAffineModulatorConfig": {
+    "signal_shape": [
+      1
+    ],
+    "baseline": 1.0,
+    "gain_init": 0.0,
+    "bias_init": 0.0,
+    "trainable": true
+  },
+  "feedbax.builtins.runtime.components._GRUConfig": {
+    "dtype": "float32",
+    "input_size": 4,
+    "hidden_size": 4,
+    "use_bias": true,
+    "stateful": true
+  },
+  "feedbax.builtins.runtime.components._InputConfig": {
+    "output_port": "output"
+  },
+  "feedbax.builtins.runtime.components._LSTMConfig": {
+    "dtype": "float32",
+    "input_size": 4,
+    "hidden_size": 4,
+    "use_bias": true
+  },
+  "feedbax.builtins.runtime.components._LinearConfig": {
+    "dtype": "float32",
+    "input_size": 1,
+    "output_size": 1,
+    "use_bias": true,
+    "bias_init": null,
+    "initialization": "random",
+    "activation": "identity"
+  },
+  "feedbax.builtins.runtime.components._MLPConfig": {
+    "dtype": "float32",
+    "input_size": 4,
+    "output_size": 2,
+    "hidden_sizes": [
+      64
+    ],
+    "activation": "relu",
+    "final_activation": "identity"
+  },
+  "feedbax.builtins.runtime.components._NoiseConfig": {
+    "mean": 0.0,
+    "std": 1.0,
+    "shape": [
+      1
+    ]
+  },
+  "feedbax.builtins.runtime.components._PulseConfig": {
+    "amplitude": 1.0,
+    "period": 1.0,
+    "duty_cycle": 0.5,
+    "offset": 0.0,
+    "dt": 0.01
+  },
+  "feedbax.builtins.runtime.components._RampConfig": {
+    "slope": 1.0,
+    "intercept": 0.0,
+    "dt": 0.01
+  },
+  "feedbax.builtins.runtime.components._RateLimiterConfig": {
+    "max_rate": 1.0,
+    "dt": 0.01,
+    "n_dims": 1,
+    "initial_value": 0.0,
+    "input_shape": null,
+    "input_dtype": null
+  },
+  "feedbax.builtins.runtime.components._ReshapeConfig": {
+    "shape": [
+      1,
+      1
+    ]
+  },
+  "feedbax.builtins.runtime.components._ScaleConfig": {
+    "scale": 1.0,
+    "fixed": false
+  },
+  "feedbax.builtins.runtime.components._SineConfig": {
+    "amplitude": 1.0,
+    "frequency": 1.0,
+    "phase": 0.0,
+    "offset": 0.0,
+    "dt": 0.01
+  },
+  "feedbax.builtins.runtime.components._SplitConfig": {
+    "sizes": [
+      1,
+      1
+    ]
+  },
+  "feedbax.builtins.runtime.components._SwitchConfig": {
+    "threshold": 0.0
+  },
+  "feedbax.builtins.runtime.feedback._SelectStateConfig": {
+    "paths": [
+      "effector"
+    ]
+  },
+  "feedbax.builtins.runtime.filters._BandPassFilterConfig": {
+    "tau_low": 0.1,
+    "tau_high": 0.01,
+    "dt": 0.01,
+    "n_dims": 1,
+    "input_shape": null,
+    "input_dtype": null
+  },
+  "feedbax.builtins.runtime.filters._FirstOrderFilterConfig": {
+    "tau_rise": 0.05,
+    "tau_decay": 0.05,
+    "dt": 0.001,
+    "init_value": 0.0,
+    "input_shape": null,
+    "input_dtype": null
+  },
+  "feedbax.builtins.runtime.filters._HighPassFilterConfig": {
+    "tau": 0.1,
+    "dt": 0.01,
+    "n_dims": 1,
+    "input_shape": null,
+    "input_dtype": null
+  },
+  "feedbax.builtins.runtime.signal_transforms._AddNoiseConfig": {
+    "scale": 1.0,
+    "active": false
+  },
+  "feedbax.builtins.runtime.signal_transforms._ConstantInputParams": {
+    "active": false,
+    "payload_dtype": "float32",
+    "scale": 1.0,
+    "arrays": null
+  },
+  "feedbax.builtins.runtime.signal_transforms._NetworkClampParams": {
+    "active": false,
+    "payload_dtype": "float32",
+    "unit_spec": null
+  },
+  "feedbax.builtins.runtime.signal_transforms._NetworkConstantInputParams": {
+    "active": false,
+    "payload_dtype": "float32",
+    "unit_spec": null,
+    "scale": 1.0
+  },
+  "feedbax.builtins.synthesis.ConstantParametersSettings": {
+    "value": 0
+  },
+  "feedbax.builtins.templates.cde_templates._AntiNFConfig": {
+    "obs_dim": 1,
+    "hidden_dim": 1,
+    "action_dim": 1,
+    "hidden_sizes": [
+      128
+    ],
+    "decay": null,
+    "alpha": 0.1,
+    "dtype": "float32",
+    "bias_init": null
+  },
+  "feedbax.builtins.templates.cde_templates._DecayConfig": {
+    "obs_dim": 1,
+    "hidden_dim": 1,
+    "action_dim": 1,
+    "hidden_sizes": [
+      128
+    ],
+    "decay": 0.1,
+    "alpha": null,
+    "dtype": "float32",
+    "bias_init": null
+  },
+  "feedbax.builtins.templates.cde_templates._HybridConfig": {
+    "obs_dim": 1,
+    "hidden_dim": 1,
+    "action_dim": 1,
+    "hidden_sizes": [
+      128
+    ],
+    "decay": 0.1,
+    "alpha": 0.1,
+    "dtype": "float32",
+    "bias_init": null
+  },
+  "feedbax.builtins.templates.mechanics_templates.MassSpringDamperConfig": {
+    "solver_type": "euler",
+    "dt": 0.001,
+    "mass": 1.0,
+    "damping": 0.5,
+    "stiffness": 10.0
+  },
+  "feedbax.builtins.templates.mechanics_templates.PointMassWithMusclesConfig": {
+    "solver_type": "euler",
+    "dt": 0.001,
+    "mass": 1.0,
+    "damping": 0.0,
+    "max_isometric_force": 1.0
+  },
+  "feedbax.builtins.templates.mechanics_templates.TwoLinkArm6MuscleConfig": {
+    "solver_type": "euler",
+    "dt": 0.01,
+    "max_isometric_force": 1.0
+  },
+  "feedbax.builtins.templates.subgraph._SubgraphConfig": {},
+  "feedbax.builtins.templates.templates.RecurrentControllerConfig": {
+    "input_size": 6,
+    "hidden_size": 100,
+    "out_size": 2,
+    "cell_type": "GRU",
+    "cell_params": null,
+    "encoding_size": null,
+    "hidden_nonlinearity": "identity",
+    "hidden_noise_std": null,
+    "encoder_use_bias": true,
+    "readout_use_bias": true,
+    "readout_initialization": "random",
+    "out_nonlinearity": "tanh",
+    "dtype": "float32",
+    "name": "Recurrent controller",
+    "description": "Explicit recurrent controller graph template"
+  },
+  "feedbax.builtins.templates.templates.SimpleFeedbackConfig": {
+    "network": {
+      "input_size": 8
+    },
+    "mechanics": {
+      "dt": 0.01
+    },
+    "mechanics_type": "feedbax.PointMass",
+    "tau_rise": 0.0,
+    "tau_decay": 0.0,
+    "feedback_noise_std": 0.0,
+    "motor_noise_std": 0.0,
+    "feedback_delay": 0,
+    "motor_delay": 0,
+    "feedback_paths": [
+      "effector"
+    ]
+  },
+  "feedbax.builtins.training.StandardTrainingSettings": {
+    "optimizer": {
+      "type": "adam",
+      "learning_rate": {
+        "type": "constant_schedule",
+        "value": 0.001
+      },
+      "b1": 0.9,
+      "b2": 0.999,
+      "eps": 1e-08,
+      "eps_root": 0.0,
+      "nesterov": false
+    },
+    "grad_clip": 1.0
+  },
   "feedbax.contracts.analysis_document.AnalysisPayload[JsonValue]": {
     "schema_version": "feedbax.analysis_document.v1",
     "inputs": {},
@@ -67,10 +529,21 @@
   "feedbax.contracts.manifest.OverridePatch": {
     "value": null
   },
+  "feedbax.contracts.model_address.AttachmentElement": {},
+  "feedbax.contracts.model_address.ComponentElement": {},
+  "feedbax.contracts.model_address.ComponentPortAddress": {},
   "feedbax.contracts.model_address.ComponentPortEnd": {},
+  "feedbax.contracts.model_address.FieldElement": {},
+  "feedbax.contracts.model_address.GraphElement": {},
   "feedbax.contracts.model_address.InputBoundaryEnd": {},
+  "feedbax.contracts.model_address.InputsElement": {},
+  "feedbax.contracts.model_address.ModelAddress": {},
   "feedbax.contracts.model_address.OutputBoundaryEnd": {},
+  "feedbax.contracts.model_address.OutputsElement": {},
   "feedbax.contracts.model_address.PhysicalBoundaryEnd": {},
+  "feedbax.contracts.model_address.PhysicalConnectionElement": {},
+  "feedbax.contracts.model_address.PortElement": {},
+  "feedbax.contracts.model_address.WireElement": {},
   "feedbax.contracts.model_checkpoint.SemanticModelEncoding": {},
   "feedbax.contracts.model_document.DelayInitialTask": {},
   "feedbax.contracts.model_document.DelayInitialValue": {},
@@ -114,6 +587,601 @@
     "window": null,
     "enabled": true,
     "label": null
+  },
+  "feedbax.contracts.portable.ActuationInputConfig": {
+    "port_name": "u",
+    "order": 0,
+    "source_kind": "force",
+    "size": null,
+    "units": null
+  },
+  "feedbax.contracts.portable.AdaptiveAvgPool1dConfig": {},
+  "feedbax.contracts.portable.AdaptiveAvgPool2dConfig": {},
+  "feedbax.contracts.portable.AdaptiveAvgPool3dConfig": {},
+  "feedbax.contracts.portable.AdaptiveMaxPool1dConfig": {},
+  "feedbax.contracts.portable.AdaptiveMaxPool2dConfig": {},
+  "feedbax.contracts.portable.AdaptiveMaxPool3dConfig": {},
+  "feedbax.contracts.portable.AnalyticalMusculoskeletalPlantConfig": {
+    "dt": 0.01,
+    "n_steps": 1,
+    "solver_type": "euler",
+    "tau_act": 0.01,
+    "tau_deact": 0.04,
+    "clip_states": true
+  },
+  "feedbax.contracts.portable.AnchorConfig": {
+    "frame": "",
+    "world_frame": "world.frame"
+  },
+  "feedbax.contracts.portable.AngleSensorConfig": {},
+  "feedbax.contracts.portable.AngularVelocitySensorConfig": {},
+  "feedbax.contracts.portable.AvgPool1dConfig": {
+    "stride": 1,
+    "padding": 0,
+    "use_ceil": false
+  },
+  "feedbax.contracts.portable.AvgPool2dConfig": {
+    "stride": 1,
+    "padding": 0,
+    "use_ceil": false
+  },
+  "feedbax.contracts.portable.AvgPool3dConfig": {
+    "stride": 1,
+    "padding": 0,
+    "use_ceil": false
+  },
+  "feedbax.contracts.portable.BoundaryPortConfig": {
+    "port_name": "port",
+    "order": 0
+  },
+  "feedbax.contracts.portable.ClampConfig": {},
+  "feedbax.contracts.portable.Conv1dConfig": {
+    "stride": 1,
+    "padding": 0,
+    "dilation": 1,
+    "groups": 1,
+    "use_bias": true,
+    "padding_mode": "ZEROS",
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.Conv2dConfig": {
+    "stride": [
+      1,
+      1
+    ],
+    "padding": [
+      0,
+      0
+    ],
+    "dilation": [
+      1,
+      1
+    ],
+    "groups": 1,
+    "use_bias": true,
+    "padding_mode": "ZEROS",
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.Conv3dConfig": {
+    "stride": [
+      1,
+      1,
+      1
+    ],
+    "padding": [
+      0,
+      0,
+      0
+    ],
+    "dilation": [
+      1,
+      1,
+      1
+    ],
+    "groups": 1,
+    "use_bias": true,
+    "padding_mode": "ZEROS",
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.ConvTranspose1dConfig": {
+    "stride": 1,
+    "output_padding": 0,
+    "padding": 0,
+    "dilation": 1,
+    "groups": 1,
+    "use_bias": true,
+    "padding_mode": "ZEROS",
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.ConvTranspose2dConfig": {
+    "stride": [
+      1,
+      1
+    ],
+    "output_padding": [
+      0,
+      0
+    ],
+    "padding": [
+      0,
+      0
+    ],
+    "dilation": [
+      1,
+      1
+    ],
+    "groups": 1,
+    "use_bias": true,
+    "padding_mode": "ZEROS",
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.ConvTranspose3dConfig": {
+    "stride": [
+      1,
+      1,
+      1
+    ],
+    "output_padding": [
+      0,
+      0,
+      0
+    ],
+    "padding": [
+      0,
+      0,
+      0
+    ],
+    "dilation": [
+      1,
+      1,
+      1
+    ],
+    "groups": 1,
+    "use_bias": true,
+    "padding_mode": "ZEROS",
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.DamperConfig": {
+    "damping": 1.0
+  },
+  "feedbax.contracts.portable.DropoutConfig": {
+    "p": 0.5,
+    "inference": false,
+    "deterministic": null
+  },
+  "feedbax.contracts.portable.ForceSensorConfig": {},
+  "feedbax.contracts.portable.ForceSourceConfig": {},
+  "feedbax.contracts.portable.GRUCellConfig": {
+    "use_bias": true,
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.GainConfig": {
+    "gain": 1.0
+  },
+  "feedbax.contracts.portable.GearRatioConfig": {
+    "ratio": 1.0
+  },
+  "feedbax.contracts.portable.GroundConfig": {},
+  "feedbax.contracts.portable.GroupNormConfig": {
+    "channels": null,
+    "eps": 1e-05,
+    "channelwise_affine": true,
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.IdentityConfig": {},
+  "feedbax.contracts.portable.InertiaConfig": {
+    "inertia": 1.0
+  },
+  "feedbax.contracts.portable.JointMuscleGeometryConfig": {
+    "paths": [
+      {
+        "kind": "constant",
+        "params": {
+          "moment_arms": [
+            0.03999999910593033,
+            0.0
+          ],
+          "reference_length": 0.20000000298023224
+        }
+      },
+      {
+        "kind": "constant",
+        "params": {
+          "moment_arms": [
+            -0.03999999910593033,
+            0.0
+          ],
+          "reference_length": 0.20000000298023224
+        }
+      },
+      {
+        "kind": "constant",
+        "params": {
+          "moment_arms": [
+            0.0,
+            0.02500000037252903
+          ],
+          "reference_length": 0.20000000298023224
+        }
+      },
+      {
+        "kind": "constant",
+        "params": {
+          "moment_arms": [
+            0.0,
+            -0.02500000037252903
+          ],
+          "reference_length": 0.20000000298023224
+        }
+      },
+      {
+        "kind": "constant",
+        "params": {
+          "moment_arms": [
+            0.03500000014901161,
+            0.02199999988079071
+          ],
+          "reference_length": 0.30000001192092896
+        }
+      },
+      {
+        "kind": "constant",
+        "params": {
+          "moment_arms": [
+            -0.03500000014901161,
+            -0.02199999988079071
+          ],
+          "reference_length": 0.30000001192092896
+        }
+      }
+    ]
+  },
+  "feedbax.contracts.portable.LSTMCellConfig": {
+    "use_bias": true,
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.LayerNormConfig": {
+    "eps": 1e-05,
+    "use_weight": true,
+    "use_bias": true,
+    "dtype": "float32",
+    "elementwise_affine": null
+  },
+  "feedbax.contracts.portable.LinearConfig": {
+    "use_bias": true,
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.LinearDamperConfig": {
+    "damping": 1.0
+  },
+  "feedbax.contracts.portable.LinearSpringConfig": {
+    "stiffness": 1.0
+  },
+  "feedbax.contracts.portable.LinearStateSpaceConfig": {
+    "A": [
+      [
+        1.0,
+        0.0,
+        0.01,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.01
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "B": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.01,
+        0.0
+      ],
+      [
+        0.0,
+        0.01
+      ]
+    ],
+    "B_w": null,
+    "dt": 1.0,
+    "initial_state": null,
+    "pos_slice": [
+      0,
+      2
+    ],
+    "vel_slice": [
+      2,
+      4
+    ]
+  },
+  "feedbax.contracts.portable.MassConfig": {
+    "mass": 1.0
+  },
+  "feedbax.contracts.portable.MatMulConfig": {},
+  "feedbax.contracts.portable.MaxPool1dConfig": {
+    "stride": 1,
+    "padding": 0,
+    "use_ceil": false
+  },
+  "feedbax.contracts.portable.MaxPool2dConfig": {
+    "stride": 1,
+    "padding": 0,
+    "use_ceil": false
+  },
+  "feedbax.contracts.portable.MaxPool3dConfig": {
+    "stride": 1,
+    "padding": 0,
+    "use_ceil": false
+  },
+  "feedbax.contracts.portable.MechanicsForceSensorConfig": {},
+  "feedbax.contracts.portable.MechanicsForceSourceConfig": {},
+  "feedbax.contracts.portable.MechanicsGroundConfig": {},
+  "feedbax.contracts.portable.MechanicsLinearDamperConfig": {
+    "damping": 1.0
+  },
+  "feedbax.contracts.portable.MechanicsLinearSpringConfig": {
+    "stiffness": 1.0
+  },
+  "feedbax.contracts.portable.MechanicsMassConfig": {
+    "mass": 1.0
+  },
+  "feedbax.contracts.portable.MechanicsPositionSensorConfig": {},
+  "feedbax.contracts.portable.MechanicsVelocitySensorConfig": {},
+  "feedbax.contracts.portable.MultiheadAttentionConfig": {
+    "key_size": null,
+    "value_size": null,
+    "output_size": null,
+    "qk_size": null,
+    "vo_size": null,
+    "use_query_bias": false,
+    "use_key_bias": false,
+    "use_value_bias": false,
+    "use_output_bias": false,
+    "dropout_p": 0.0,
+    "inference": false,
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.MultiplyConfig": {},
+  "feedbax.contracts.portable.MusclePathConfig": {
+    "path_points": null,
+    "moment_arm": null,
+    "reference_length": 0.2,
+    "max_isometric_force": 1.0,
+    "law": "feedbax.RigidTendonHillMuscle",
+    "state_size": 1,
+    "optimal_muscle_length": 0.1,
+    "tendon_slack_length": 0.1,
+    "tau_act": 0.01,
+    "tau_deact": 0.04,
+    "max_contraction_velocity": null,
+    "law_parameters": null,
+    "law_revision": null
+  },
+  "feedbax.contracts.portable.PenzaiAdapterConfig": {
+    "input_port": "input",
+    "output_port": "output"
+  },
+  "feedbax.contracts.portable.PlanarLinkConfig": {
+    "length": 0.3,
+    "mass": 1.0,
+    "com": 0.5,
+    "inertia": 0.03,
+    "com_y": 0.0
+  },
+  "feedbax.contracts.portable.PointMarkerConfig": {
+    "frame": "",
+    "offset": null,
+    "marker_name": null
+  },
+  "feedbax.contracts.portable.PointMassConfig": {
+    "dt": 0.01,
+    "mass": 1.0,
+    "damping": 0.0
+  },
+  "feedbax.contracts.portable.PositionSensorConfig": {},
+  "feedbax.contracts.portable.PrescribedMotionConfig": {},
+  "feedbax.contracts.portable.RMSNormConfig": {
+    "eps": 1e-05,
+    "use_weight": true,
+    "use_bias": true,
+    "dtype": "float32"
+  },
+  "feedbax.contracts.portable.RadialMuscleGeometryConfig": {
+    "n_pairs": 4
+  },
+  "feedbax.contracts.portable.RavelConfig": {},
+  "feedbax.contracts.portable.ReluMuscleConfig": {
+    "max_isometric_force": 500.0,
+    "tau_activation": 0.015,
+    "tau_deactivation": 0.05,
+    "min_activation": 0.0,
+    "dt": 0.01,
+    "initial_activation": 0.0
+  },
+  "feedbax.contracts.portable.RevoluteJointConfig": {
+    "parent_frame": "",
+    "child_frame": "",
+    "damping": 0.0,
+    "rest_angle": 0.0,
+    "limit_min": null,
+    "limit_max": null,
+    "stiffness": 0.0,
+    "frame_angle": 0.0,
+    "frame_offset": null
+  },
+  "feedbax.contracts.portable.RigidTendonHillMuscleConfig": {
+    "max_isometric_force": 1.0,
+    "direction": 1.0
+  },
+  "feedbax.contracts.portable.RigidTendonHillMuscleThelenConfig": {
+    "max_isometric_force": 500.0,
+    "optimal_muscle_length": 0.1,
+    "tendon_slack_length": 0.1,
+    "vmax_factor": 10.0,
+    "min_activation": 0.001,
+    "tau_activation": 0.015,
+    "tau_deactivation": 0.05,
+    "dt": 0.01,
+    "initial_activation": 0.001,
+    "n_muscles": 1
+  },
+  "feedbax.contracts.portable.RotaryPositionalEmbeddingConfig": {
+    "theta": 10000.0,
+    "dtype": null
+  },
+  "feedbax.contracts.portable.RotationalDamperConfig": {
+    "damping": 1.0
+  },
+  "feedbax.contracts.portable.RotationalGroundConfig": {},
+  "feedbax.contracts.portable.SaturationConfig": {
+    "min_val": -1.0,
+    "max_val": 1.0
+  },
+  "feedbax.contracts.portable.SensorOutputConfig": {
+    "port_name": "y",
+    "order": 0,
+    "quantity": "position",
+    "units": null
+  },
+  "feedbax.contracts.portable.SigmoidConfig": {},
+  "feedbax.contracts.portable.SpringConfig": {
+    "stiffness": 1.0
+  },
+  "feedbax.contracts.portable.StructuralLinearStateSpaceConfig": {
+    "A": [
+      [
+        1.0,
+        0.0,
+        0.01,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.01
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "B": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.01,
+        0.0
+      ],
+      [
+        0.0,
+        0.01
+      ]
+    ],
+    "delta_A": {
+      "schema_id": "feedbax.spec.component_param.array_value",
+      "schema_version": "feedbax.spec.component_param.array_value.v1",
+      "shape": [
+        4,
+        4
+      ],
+      "dtype": "float32",
+      "nonfinite": "forbid",
+      "encoding": "sparse_coo",
+      "fill": 0.0,
+      "entries": []
+    },
+    "B_w": null,
+    "dt": 1.0,
+    "initial_state": null,
+    "pos_slice": [
+      0,
+      2
+    ],
+    "vel_slice": [
+      2,
+      4
+    ],
+    "scale": 1.0,
+    "active": false
+  },
+  "feedbax.contracts.portable.SubtractConfig": {},
+  "feedbax.contracts.portable.SumConfig": {},
+  "feedbax.contracts.portable.TorqueSensorConfig": {},
+  "feedbax.contracts.portable.TorqueSourceConfig": {},
+  "feedbax.contracts.portable.TorsionalSpringConfig": {
+    "stiffness": 1.0
+  },
+  "feedbax.contracts.portable.TwoLinkArmConfig": {
+    "dt": 0.01,
+    "link_lengths": [
+      0.3,
+      0.33
+    ]
+  },
+  "feedbax.contracts.portable.VectorElementsConfig": {
+    "size": 2
+  },
+  "feedbax.contracts.portable.VelocitySensorConfig": {},
+  "feedbax.contracts.portable.WorldFrameConfig": {},
+  "feedbax.contracts.portable.arm_6muscle_rigid_tendon_graphConfig": {
+    "dt": 0.01,
+    "max_isometric_force": 500.0,
+    "optimal_muscle_length": 0.1,
+    "tendon_slack_length": 0.1
+  },
+  "feedbax.contracts.portable.cde_step_specConfig": {
+    "obs_dim": 1,
+    "hidden_dim": 1,
+    "action_dim": 1,
+    "hidden_sizes": [
+      128
+    ],
+    "decay": null,
+    "alpha": null,
+    "dtype": "float32",
+    "bias_init": null
+  },
+  "feedbax.contracts.portable.point_mass_8muscle_relu_graphConfig": {
+    "n_pairs": 4,
+    "max_isometric_force": 500.0,
+    "dt": 0.01,
+    "tau_activation": 0.015,
+    "tau_deactivation": 0.05
   },
   "feedbax.contracts.project.BasedDocument": {
     "differences": {}
@@ -306,12 +1374,38 @@
     "through": null
   },
   "feedbax.contracts.request_refs.UpdateCheckpoint": {},
+  "feedbax.contracts.request_specs.AnalysisRequestSpec": {
+    "numerical_settings": {
+      "floating_point_bits": null,
+      "matmul_precision": null,
+      "deterministic": null
+    },
+    "params": {}
+  },
   "feedbax.contracts.request_specs.DocumentTrainingConfig": {
     "n_batches": 2000,
     "batch_size": 128,
     "snapshot_interval": 100,
     "replicates": 1
   },
+  "feedbax.contracts.request_specs.NumericalSettings": {
+    "floating_point_bits": null,
+    "matmul_precision": null,
+    "deterministic": null
+  },
+  "feedbax.contracts.request_specs.ReportRequestSpec": {
+    "numerical_settings": {
+      "floating_point_bits": null,
+      "matmul_precision": null,
+      "deterministic": null
+    }
+  },
+  "feedbax.contracts.request_specs.TrainContinuation": {
+    "mode": "continue_from"
+  },
+  "feedbax.contracts.rollout.EveryCondition": {},
+  "feedbax.contracts.rollout.SampleTrials": {},
+  "feedbax.contracts.rollout.SelectedConditions": {},
   "feedbax.contracts.run_matrix.MatrixCompositionDelta": {
     "patches": [],
     "acknowledges_ancestor_paths": [],
@@ -407,6 +1501,39 @@
     "default": null
   },
   "feedbax.contracts.stored_model.StoredSignalOutput": {},
+  "feedbax.contracts.stored_regions.StoredEvaluateInline": {
+    "numerical_settings": {
+      "floating_point_bits": null,
+      "matmul_precision": null,
+      "deterministic": null
+    },
+    "params": {},
+    "trial_documents": null
+  },
+  "feedbax.contracts.stored_regions.StoredRolloutSettings": {
+    "trial_policy": "paired",
+    "retention": "raw_states",
+    "variation": [],
+    "input_bindings": {},
+    "trial_set": null
+  },
+  "feedbax.contracts.stored_regions.StoredTrainInline": {
+    "numerical_settings": {
+      "floating_point_bits": null,
+      "matmul_precision": null,
+      "deterministic": null
+    },
+    "seed": null,
+    "checkpoint_initialization": null
+  },
+  "feedbax.contracts.stored_regions._EvaluateSlots": {
+    "model": null,
+    "task": null
+  },
+  "feedbax.contracts.stored_regions._TrialSlots": {
+    "input_bindings": {},
+    "python_task": null
+  },
   "feedbax.contracts.studio_project.DocumentPresentation": {
     "positions": {},
     "camera": null,
@@ -424,6 +1551,16 @@
   "feedbax.contracts.studio_project.StepPresentation": {
     "sweep_order": [],
     "model_positions": {}
+  },
+  "feedbax.contracts.synthesis.SynthesisStepPayload": {
+    "input_bindings": {},
+    "settings": {},
+    "target": {
+      "composites": [],
+      "element": {
+        "kind": "graph"
+      }
+    }
   },
   "feedbax.contracts.task_document.Length": {
     "max_steps": null
@@ -473,5 +1610,357 @@
     "offset": null
   },
   "feedbax.contracts.window.WindowRelativePosition": {},
-  "feedbax.contracts.window.WindowTrialAnchor": {}
+  "feedbax.contracts.window.WindowTrialAnchor": {},
+  "feedbax.training.optimizers.Adabelief": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-16,
+    "eps_root": 1e-16,
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.Adadelta": {
+    "learning_rate": null,
+    "rho": 0.9,
+    "eps": 1e-06
+  },
+  "feedbax.training.optimizers.Adafactor": {
+    "learning_rate": null,
+    "min_dim_size_to_factor": 128,
+    "decay_rate": 0.8,
+    "decay_offset": 0,
+    "multiply_by_parameter_scale": true,
+    "clipping_threshold": 1.0,
+    "momentum": null,
+    "weight_decay_rate": null,
+    "eps": 1e-30,
+    "factored": true
+  },
+  "feedbax.training.optimizers.Adagrad": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "initial_accumulator_value": 0.1,
+    "eps": 1e-07
+  },
+  "feedbax.training.optimizers.Adam": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "eps_root": 0.0,
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.Adamax": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08
+  },
+  "feedbax.training.optimizers.Adamaxw": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0001
+    }
+  },
+  "feedbax.training.optimizers.Adamw": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "eps_root": 0.0,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0001
+    },
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.Adan": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.98,
+    "b2": 0.92,
+    "b3": 0.99,
+    "eps": 1e-08,
+    "eps_root": 1e-08,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0
+    }
+  },
+  "feedbax.training.optimizers.Amsgrad": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "eps_root": 0.0,
+    "bias_correction_mu": true,
+    "bias_correction_nu": true
+  },
+  "feedbax.training.optimizers.ConstantSchedule": {
+    "value": 0.001
+  },
+  "feedbax.training.optimizers.CosineDecaySchedule": {
+    "init_value": 0.001,
+    "decay_steps": 1000,
+    "alpha": 0.0,
+    "exponent": 1.0
+  },
+  "feedbax.training.optimizers.CosineOnecycleSchedule": {
+    "transition_steps": 1000,
+    "peak_value": 0.001,
+    "pct_start": 0.3,
+    "div_factor": 25.0,
+    "final_div_factor": 10000.0
+  },
+  "feedbax.training.optimizers.ExponentialDecay": {
+    "init_value": 0.001,
+    "transition_steps": 1000,
+    "decay_rate": 0.5,
+    "transition_begin": 0,
+    "staircase": false,
+    "end_value": null
+  },
+  "feedbax.training.optimizers.Fromage": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "min_norm": 1e-06
+  },
+  "feedbax.training.optimizers.Lamb": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-06,
+    "eps_root": 0.0,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0
+    }
+  },
+  "feedbax.training.optimizers.Lars": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0
+    },
+    "trust_coefficient": 0.001,
+    "eps": 0.0,
+    "momentum": 0.9,
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.LinearOnecycleSchedule": {
+    "transition_steps": 1000,
+    "peak_value": 0.001,
+    "pct_start": 0.3,
+    "pct_final": 0.85,
+    "div_factor": 25.0,
+    "final_div_factor": 10000.0
+  },
+  "feedbax.training.optimizers.LinearSchedule": {
+    "init_value": 0.001,
+    "end_value": 0.0,
+    "transition_steps": 1000,
+    "transition_begin": 0
+  },
+  "feedbax.training.optimizers.Lion": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.99,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.001
+    }
+  },
+  "feedbax.training.optimizers.NoisySgd": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "eta": 0.01,
+    "gamma": 0.55,
+    "seed": null
+  },
+  "feedbax.training.optimizers.Novograd": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.25,
+    "eps": 1e-06,
+    "eps_root": 0.0,
+    "weight_decay": {
+      "type": "constant_schedule",
+      "value": 0.0
+    }
+  },
+  "feedbax.training.optimizers.OptimisticAdamV2": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "alpha": 1.0,
+    "beta": 1.0,
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "eps_root": 0.0,
+    "nesterov": true
+  },
+  "feedbax.training.optimizers.OptimisticGradientDescent": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "alpha": {
+      "type": "constant_schedule",
+      "value": 1.0
+    },
+    "beta": {
+      "type": "constant_schedule",
+      "value": 1.0
+    }
+  },
+  "feedbax.training.optimizers.PiecewiseConstantSchedule": {
+    "init_value": 0.001,
+    "boundaries_and_scales": null
+  },
+  "feedbax.training.optimizers.PiecewiseInterpolateSchedule": {
+    "interpolate_type": "linear",
+    "init_value": 0.001,
+    "boundaries_and_scales": null
+  },
+  "feedbax.training.optimizers.PolynomialSchedule": {
+    "init_value": 0.001,
+    "end_value": 0.0,
+    "power": 1.0,
+    "transition_steps": 1000,
+    "transition_begin": 0
+  },
+  "feedbax.training.optimizers.Radam": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 1e-08,
+    "eps_root": 0.0,
+    "threshold": 5.0,
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.Rmsprop": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "decay": 0.9,
+    "eps": 1e-08,
+    "initial_scale": 0.0,
+    "eps_in_sqrt": true,
+    "centered": false,
+    "momentum": null,
+    "nesterov": false,
+    "bias_correction": false
+  },
+  "feedbax.training.optimizers.Rprop": {
+    "learning_rate": 0.001,
+    "eta_minus": 0.5,
+    "eta_plus": 1.2,
+    "min_step_size": 1e-06,
+    "max_step_size": 50.0
+  },
+  "feedbax.training.optimizers.Sgd": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "momentum": null,
+    "nesterov": false
+  },
+  "feedbax.training.optimizers.SignSgd": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    }
+  },
+  "feedbax.training.optimizers.Signum": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "beta": 0.9
+  },
+  "feedbax.training.optimizers.Sm3": {
+    "learning_rate": 0.001,
+    "momentum": 0.9
+  },
+  "feedbax.training.optimizers.WarmupConstantSchedule": {
+    "init_value": 0.001,
+    "peak_value": 0.001,
+    "warmup_steps": 100
+  },
+  "feedbax.training.optimizers.WarmupCosineDecaySchedule": {
+    "init_value": 0.001,
+    "peak_value": 0.001,
+    "warmup_steps": 100,
+    "decay_steps": 1000,
+    "end_value": 0.0,
+    "exponent": 1.0
+  },
+  "feedbax.training.optimizers.WarmupExponentialDecaySchedule": {
+    "init_value": 0.001,
+    "peak_value": 0.001,
+    "warmup_steps": 100,
+    "transition_steps": 1000,
+    "decay_rate": 0.5,
+    "transition_begin": 0,
+    "staircase": false,
+    "end_value": null
+  },
+  "feedbax.training.optimizers.Yogi": {
+    "learning_rate": {
+      "type": "constant_schedule",
+      "value": 0.001
+    },
+    "b1": 0.9,
+    "b2": 0.999,
+    "eps": 0.001
+  }
 }

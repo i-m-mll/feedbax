@@ -179,6 +179,7 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
         )}
         for name in (trial[slot]["document"] for slot in ("model", "task", "objective"))
     ]
+    model["document"]["payload"]["interior"]["components"]["plant"]["fields"]["mass"] = 1.5
     for entry in (
         model, task, objective,
         {"kind": "step", "id": "train", "step": {"label": "Step", "kind": "train", "base": {"inline": {}}}},
@@ -220,8 +221,8 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     }
     assert set(before.selected_definitions) == {selected}
     definition = before.selected_definitions[selected]
-    assert definition.payload["trial_documents"]["model"] == model["document"]["payload"]
-    assert definition.payload["trial_documents"]["task"] == task["document"]["payload"]
+    assert definition.payload["trial_documents"]["model"] == snapshot["project"]["documents"][model["id"]]["payload"]
+    assert definition.payload["trial_documents"]["task"] == snapshot["project"]["documents"][task["id"]]["payload"]
     assert (
         definition.sources[mass].kind,
         definition.sources[mass].name,
@@ -241,7 +242,7 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
         plan.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
         == 2.0
     )
-    assert definition.payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"] == 1.0
+    assert definition.payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"] == 1.5
     files = _folder_state(root)
     with pytest.raises(project_folder.ProjectRevisionConflict) as conflict:
         app.state.project_folders.read_plan(snapshot["project_id"], revision=snapshot["revision"])
@@ -747,13 +748,15 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
 def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
     root, client = study
     opened = _read(client)
+    with client:
+        opened = _edit_mass(client, _URL, opened, 1.5)
     service = client.app.state.project_folders
     selected = RunKey("default", "fit", "seed=10")
     entered = Event()
     release = Event()
 
     def pause_old_compile(project, **kwargs):
-        if project.documents[_MODEL].payload["interior"]["components"]["plant"]["fields"]["mass"] == 1:
+        if project.documents[_MODEL].payload["interior"]["components"]["plant"]["fields"]["mass"] == 1.5:
             entered.set()
             assert release.wait(HANG_SECONDS)
         return compile_project(project, **kwargs)
@@ -775,7 +778,7 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
     assert (old.revision, old.semantic_root) == (opened["revision"], opened["semantic_root"])
     assert (
         old.plan.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
-        == 1
+        == 1.5
     )
     assert (
         current.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
