@@ -175,7 +175,7 @@ export function textField({ id, label, text, kinds, write, reason, span, changed
     keeps: members ? 'm0' : undefined,
     members: members && { values: members.map((value, index) => ({ id: `m${index}`, text: value, selected: index === 1 })) },
     structure: draw ? {
-      value: { kind: 'draw', family: 'U', args: [Number(draw[1]), Number(draw[2])].map((value) => ({ kind: 'literal', value })) },
+      value: { kind: 'draw', family: 'U', args: [Number(draw[1]), Number(draw[2])].map((value) => ({ kind: 'literal', value })), per: 'trial' },
       arguments: [draw[1], draw[2]], density: { low: Number(draw[1]), high: Number(draw[2]), values: Array(24).fill(1) },
     } : undefined,
     parts: until ? [

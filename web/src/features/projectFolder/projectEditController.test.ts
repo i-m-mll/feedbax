@@ -15,7 +15,7 @@ const hex = (number: number) => number.toString(16).padStart(64, '0');
 const encoded = (value: unknown) => btoa(JSON.stringify(value));
 const value = (number: number): ProjectValueEdit => ({ op: 'replace', path: '/payload/value', value: number });
 const initial: StudioProjectSnapshot = {
-  variant_names: {},
+  variant_names: {}, report_values: {},
   project_id: 'reach',
   revision: hex(1),
   presentation_revision: hex(2),
