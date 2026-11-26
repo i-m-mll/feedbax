@@ -14,7 +14,7 @@ from typing import Literal
 from lark import Lark, Token, Tree, UnexpectedInput
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_sequence import sequence_definition
+from feedbax.contracts.expression_sequence import range_refusal, sequence_definition
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
     RESERVED_NAMES,
@@ -33,7 +33,6 @@ from feedbax.contracts.expression_values import (
     SequenceValue,
     Site,
     SweepList,
-    SweepRange,
     SweepSample,
     TextSpan,
     UnresolvedValue,
@@ -200,11 +199,10 @@ class _Reader:
                     self.expr(item, ("members", i)) for i, item in enumerate(node.children)
                 )
             )
-        if node.data == "call" and node.children[0] in ("linspace", "geomspace", "sample"):
-            name, *arguments = node.children
-            required = 2 if name == "sample" else 3
-            if len(arguments) != required:
-                _fail(node, ProblemCode.ARITY, f"{name} requires {required} arguments.", ())
+        if node.data == "call" and node.children[0] == "sample":
+            _, *arguments = node.children
+            if len(arguments) != 2:
+                _fail(node, ProblemCode.ARITY, "sample requires two arguments.", ())
             count = self.expr(arguments[-1], ("count",))
             if (
                 not isinstance(count, LiteralValue)
@@ -218,30 +216,18 @@ class _Reader:
                     "Count must be a positive integer.",
                     ("count",),
                 )
-            if name == "sample":
-                draw = self.expr(arguments[0], ("draw",))
-                if not isinstance(draw, DrawValue):
-                    _fail(
-                        arguments[0],
-                        ProblemCode.TYPE_MISMATCH,
-                        "Sample requires a draw.",
-                        ("draw",),
-                    )
-                return SweepSample(draw=draw, count=count.value)
-            return SweepRange(
-                first=self.expr(arguments[0], ("first",)),
-                last=self.expr(arguments[1], ("last",)),
-                count=count.value,
-                spacing="linear" if name == "linspace" else "log",
-            )
+            draw = self.expr(arguments[0], ("draw",))
+            if not isinstance(draw, DrawValue):
+                _fail(arguments[0], ProblemCode.TYPE_MISMATCH, "Sample requires a draw.", ("draw",))
+            return SweepSample(draw=draw, count=count.value)
         return self.expr(node, ())
 
     def expr(self, node: Tree, path: NodePath) -> Expression:
         self.spans[path] = _span(node)
         expression = self._expr(node, path)
-        if self.stored and isinstance(expression, CallValue) and not expression.kwargs:
+        if isinstance(expression, CallValue) and not expression.kwargs:
             match expression.function, expression.args:
-                case ("neg" | "pos") as sign, (LiteralValue(value=value, unit=unit),) if type(value) is not bool:
+                case ("neg" | "pos") as sign, (LiteralValue(value=value, unit=unit),) if self.stored and type(value) is not bool:
                     self._keep_operand_spans(path)
                     return LiteralValue(value=_stored_number(-value if sign == "neg" else value), unit=unit)
                 case "lag", (operand, LiteralValue(value=0, unit=None)) if type(expression.args[1].value) is int:
@@ -474,7 +460,7 @@ def parse_stored_expression(value: Scalar | str) -> ParsedField[Expression] | tu
     parsed = _parsed_stored_text(value)
     if isinstance(parsed, tuple):
         return parsed
-    assert not isinstance(parsed.value, (SweepList, SweepRange, SweepSample))
+    assert not isinstance(parsed.value, (SweepList, SweepSample))
     return ParsedField(parsed.value.model_copy(deep=True), parsed.spans)
 
 
@@ -486,6 +472,9 @@ def parse_sequence_rule(text: str) -> ParsedField[SequenceValue] | tuple[Problem
     if isinstance(parsed, tuple):
         return parsed
     if not isinstance(parsed.value, SequenceValue):
+        if isinstance(parsed.value, CallValue) and parsed.value.function == "range":
+            return (Problem(code=ProblemCode.UNKNOWN_FUNCTION, reason=range_refusal(parsed.value.args),
+                            span=parsed.spans.get(())),)
         return (Problem(code=ProblemCode.STRUCTURE, reason="Expected one sequence rule.", span=parsed.spans.get(())),)
     return ParsedField(parsed.value, parsed.spans)
 
@@ -499,7 +488,7 @@ def resolve_expression(
     parsed = parse(value.text, site, functions)
     if isinstance(parsed, tuple):
         return parsed
-    if isinstance(parsed.value, SweepList | SweepRange | SweepSample):
+    if isinstance(parsed.value, SweepList | SequenceValue | SweepSample):
         return (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression."),)
     return ParsedField(parsed.value, parsed.spans)
 
@@ -704,9 +693,6 @@ def print_field(value: FieldValue, site: Site, *, fragment: bool = False) -> str
             if len(members) == 1:
                 return _print(members[0], names) + ","
             return ", ".join(_print(member, names) for member in members)
-        case SweepRange(first=first, last=last, count=count, spacing=spacing):
-            function = "linspace" if spacing == "linear" else "geomspace"
-            return f"{function}({_print(first, names)}, {_print(last, names)}, {count})"
         case SweepSample(draw=draw, count=count):
             return f"sample({_print(draw, names)}, {count})"
         case _:

@@ -8,6 +8,7 @@ from functools import cache
 from types import MappingProxyType
 
 from feedbax.contracts.expression_units import UNITS
+from feedbax.contracts.expression_sequence import SequenceDefinition, range_refusal, sequence_definition, structural_integer
 from feedbax.contracts.expression_text import resolve_expression
 from feedbax.contracts.expression_values import (
     DIMENSIONLESS,
@@ -46,6 +47,8 @@ class TypedNode:
     type: ValueType
     level: Level
     implicit_item: bool = False
+    sequence: SequenceDefinition | None = None
+    static_integer: int | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +132,8 @@ def _known_dimension(
         return UNITS[node.unit].dimensions
     if isinstance(node, NameValue) and node.reference in scope:
         return scope[node.reference].type.dimensions
+    if isinstance(node, SequenceValue):
+        return known_dimension(node.first)
     if isinstance(node, (CallValue, DrawValue)):
         key = node.function if isinstance(node, CallValue) else node.family
         function = functions.resolve(key)
@@ -294,7 +299,8 @@ def _checker(
                     if key in missing_functions or "." in key
                     else ProblemCode.UNKNOWN_FUNCTION
                 )
-                problem(node, code, f"Expression function {key!r} is unavailable.", at)
+                reason = range_refusal(node.args) if key == "range" else f"Expression function {key!r} is unavailable."
+                problem(node, code, reason, at)
                 return None
             info = function.info
             if site.structural and info.random:
@@ -307,14 +313,6 @@ def _checker(
                 return None
             if isinstance(node, DrawValue) != (info.display_class == FunctionClass.DRAW):
                 problem(node, ProblemCode.STRUCTURE, f"{key!r} has the wrong expression form.", at)
-                return None
-            if isinstance(node, DrawValue) and node.weights is not None and (
-                key != "choice" or len(node.weights) != len(node.args) or not any(node.weights)
-            ):
-                problem(
-                    node, ProblemCode.STRUCTURE,
-                    "Choice needs one weight per entry and at least one positive weight.", (*at, "weights"),
-                )
                 return None
             kwargs = node.kwargs if isinstance(node, CallValue) else {}
             if (
@@ -340,6 +338,7 @@ def _checker(
                     problem(node, bound.code, bound.reason, (*at, *bound.path))
                     return None
                 function, node = bound
+                info = function.info
                 if record:
                     calls[at[len(path) :]] = bound
                 kwargs = node.kwargs
@@ -370,24 +369,38 @@ def _checker(
                 if function.argument_context is not None
                 else ((OperandHint(dimension, requested),) * len(node.args), {})
             )
-            if key == "index" and isinstance(source := node.args[0], NameValue) and source.reference in lists:
+            list_item = None
+            list_index = key == "index" and isinstance(source := node.args[0], NameValue) and source.reference in lists
+            if list_index:
                 count = lists[source.reference]
                 item = node.args[1]
                 if isinstance(item, NameValue) and item.reference == "i" and site.repeat_count is not None:
                     if site.repeat_count != count:
                         problem(node, ProblemCode.LIST_COUNT, "The list and repeat must have the same count.", at)
                         return None
-                elif isinstance(item, LiteralValue) and type(item.value) is int and item.unit is None:
-                    if not 0 <= item.value < count:
+                elif not (isinstance(item, SequenceValue) or isinstance(item, NameValue) and item.reference == "i"):
+                    try:
+                        list_item = structural_integer(item)
+                    except ValueError as error:
+                        reason = f"A list item must be an integer expression or i. {error}"
+                        code = ProblemCode.TYPE_MISMATCH if isinstance(item, LiteralValue) else ProblemCode.STRUCTURE
+                        problem(item, code, reason, (*at, "args", 1))
+                        return None
+                    if not 0 <= list_item < count:
                         problem(item, ProblemCode.LIST_COUNT, f"The list has {count} items.", (*at, "args", 1))
                         return None
-                elif not isinstance(item, NameValue) or item.reference != "i":
-                    problem(item, ProblemCode.TYPE_MISMATCH, "A list item is an integer literal or i.", (*at, "args", 1))
-                    return None
-            positional = [
-                visit(arg, (*at, "args", i), hint.dimensions, hint.base, indexed=key == "index" and i == 0)
-                for i, (arg, hint) in enumerate(zip(node.args, hints, strict=True))
-            ]
+            positional = []
+            for i, (arg, hint) in enumerate(zip(node.args, hints, strict=True)):
+                address = (*at, "args", i)
+                if isinstance(arg, SequenceValue) and (key in ("choice", "vector") or key == "index" and i == 1):
+                    typed = sequence_operand(arg, address, hint, indices=key == "index")
+                elif i == 1 and list_item is not None:
+                    typed = TypedNode(ValueType(base=ValueBase.INTEGER), Level.RUN, static_integer=list_item)
+                    if record:
+                        checked[address[len(path) :]] = typed
+                else:
+                    typed = visit(arg, address, hint.dimensions, hint.base, indexed=key == "index" and i == 0)
+                positional.append(typed)
             named = {
                 name: visit(child, (*at, "kwargs", name), hint.dimensions, hint.base)
                 for name, child in kwargs.items()
@@ -397,13 +410,34 @@ def _checker(
                 return None
             arguments = tuple(item for item in positional if item is not None)
             keywords = {name: item for name, item in named.items() if item is not None}
+            member_count = sum(item.sequence.count if item.sequence is not None else 1 for item in arguments)
+            if isinstance(node, DrawValue) and node.weights is not None and (
+                key != "choice" or len(node.weights) != member_count or not any(node.weights)
+            ):
+                problem(
+                    node, ProblemCode.STRUCTURE,
+                    "Choice needs one weight per entry and at least one positive weight.", (*at, "weights"),
+                )
+                return None
             inferred = function.infer(
-                tuple(item.type for item in arguments),
+                tuple(item.type.model_copy(update={"shape": ()}) if item.sequence is not None else item.type
+                      for item in arguments),
                 {name: item.type for name, item in keywords.items()},
             )
             if isinstance(inferred, SignatureError):
                 problem(node, inferred.code, inferred.reason, at)
                 return None
+            if key == "vector" and inferred.shape[0] != member_count:
+                inferred = inferred.model_copy(update={"shape": (member_count, *inferred.shape[1:])})
+            if key == "index" and (indices := arguments[1].sequence) is not None:
+                last = indices.first if indices.count == 1 else indices.last
+                count = arguments[0].type.shape[0]
+                if count is not None and (
+                    min(indices.first, last) < (0 if list_index else -count) or max(indices.first, last) >= count
+                ):
+                    problem(node.args[1], ProblemCode.LIST_COUNT, f"The array has {count} items.", (*at, "args", 1))
+                    return None
+                inferred = inferred.model_copy(update={"shape": (indices.count, *inferred.shape)})
             level = max(
                 (
                     info.level,
@@ -427,6 +461,26 @@ def _checker(
         if record:
             checked[at[len(path) :]] = value
         return value
+
+    def sequence_operand(node: SequenceValue, at: NodePath, hint: OperandHint, *, indices: bool) -> TypedNode | None:
+        try:
+            sequence = sequence_definition(node)
+        except (ValueError, OverflowError) as error:
+            problem(node, ProblemCode.STRUCTURE, str(error), at)
+            return None
+        whole = sequence.whole
+        if sequence.unit == "st" and not whole:
+            problem(node, ProblemCode.STRUCTURE, "A sequence member in steps must be a whole number.", at)
+            return None
+        if indices and (not whole or sequence.unit is not None):
+            problem(node, ProblemCode.STRUCTURE, "An index sequence requires unitless whole numbers.", at)
+            return None
+        base = ValueBase.INTEGER if whole and hint.base != ValueBase.REAL else ValueBase.REAL
+        dimensions = UNITS[sequence.unit].dimensions if sequence.unit is not None else hint.dimensions or DIMENSIONLESS
+        typed = TypedNode(ValueType(base=base, shape=(sequence.count,), dimensions=dimensions), Level.RUN, sequence=sequence)
+        if record:
+            checked[at[len(path) :]] = typed
+        return typed
 
     def run(tree: Expression, *, collect: bool = True) -> Checked | tuple[Problem, ...]:
         nonlocal record

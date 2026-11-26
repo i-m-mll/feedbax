@@ -216,21 +216,13 @@ class SweepList(ValueRecord):
     members: tuple[Expression, ...] = Field(min_length=1)
 
 
-class SweepRange(ValueRecord):
-    kind: Literal["range"] = "range"
-    first: Expression
-    last: Expression
-    count: Annotated[StrictInt, Field(gt=0)]
-    spacing: Literal["linear", "log"]
-
-
 class SweepSample(ValueRecord):
     kind: Literal["sample"] = "sample"
     draw: DrawValue
     count: Annotated[StrictInt, Field(gt=0)]
 
 
-type FieldValue = Expression | SweepList | SweepRange | SweepSample
+type FieldValue = Expression | SweepList | SweepSample
 type NodePath = tuple[str | int, ...]
 
 
@@ -278,8 +270,12 @@ def children(node: Expression) -> tuple[tuple[NodePath, Expression], ...]:
     return ()
 
 
-def walk(tree: Expression, at: NodePath = ()) -> Iterator[tuple[NodePath, Expression]]:
+def walk(
+    tree: Expression, at: NodePath = (), *, include_sequence_bounds: bool = True,
+) -> Iterator[tuple[NodePath, Expression]]:
     """Every node of ``tree`` with its path, the root first."""
     yield at, tree
+    if not include_sequence_bounds and isinstance(tree, SequenceValue):
+        return
     for step, child in children(tree):
-        yield from walk(child, (*at, *step))
+        yield from walk(child, (*at, *step), include_sequence_bounds=include_sequence_bounds)

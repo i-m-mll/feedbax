@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any
 
+from feedbax.contracts.expression_sequence import structural_integer
 from feedbax.contracts.expression_values import (
     ANGLE,
     DIMENSIONLESS,
@@ -53,6 +54,7 @@ class CallContext:
     defined: tuple[Any, ...]
     step: Any
     discrete_uniform: bool
+    sequences: tuple[bool, ...] = ()
 
 
 def _type(reason: str) -> SignatureError:
@@ -262,9 +264,14 @@ def _power(_context: CallContext, base, exponent):
     return jnp.power(jnp.asarray(base, dtype=jnp.result_type(base, 1.0)), exponent)
 
 
-def _stack(_context: CallContext, *args):
+def _stack(context: CallContext, *args):
     import jax.numpy as jnp
 
+    if context.sequences:
+        return jnp.concatenate(tuple(
+            arg if sequence else jnp.expand_dims(arg, 0)
+            for arg, sequence in zip(args, context.sequences, strict=True)
+        ))
     return jnp.stack(args)
 
 
@@ -338,12 +345,18 @@ def _nominal_sample(family: str, context: CallContext, *args, weights=None):
         case "bernoulli":
             return args[0] > 0.5
         case "choice":
-            eligible = jnp.asarray(context.defined, dtype=bool)
-
-            parts = jnp.ones(len(args)) if weights is None else weights
+            members = _stack(context, *args)
+            if context.sequences:
+                eligible = jnp.concatenate(tuple(
+                    jnp.broadcast_to(jnp.all(defined), (jnp.shape(arg)[0] if sequence else 1,))
+                    for arg, defined, sequence in zip(args, context.defined, context.sequences, strict=True)
+                ))
+            else:
+                eligible = jnp.asarray(context.defined, dtype=bool)
+            parts = jnp.ones(members.shape[0]) if weights is None else weights
             eligible = eligible & (parts > 0)
             winner = jnp.argmax(jnp.where(eligible, parts, -1))
-            return Evaluation(jnp.stack(args)[winner], jnp.any(eligible))
+            return Evaluation(members[winner], jnp.any(eligible))
         case "truncexp":
             return _truncexp_quantile(*args, 0.5)
         case "uniform_region":
@@ -374,9 +387,10 @@ def _sample(family: str, context: CallContext, *args, weights=None):
         case "bernoulli":
             return random.bernoulli(key, args[0])
         case "choice" if weights is not None:
-            return random.choice(key, jnp.stack(args), axis=0, p=weights / weights.sum())
+            return random.choice(key, _stack(context, *args), axis=0, p=weights / weights.sum())
         case "choice":
-            return jnp.stack(args)[random.randint(key, (), 0, len(args))]
+            members = _stack(context, *args)
+            return members[random.randint(key, (), 0, members.shape[0])]
         case "truncexp":
             mean, lo, hi = args
             shape = jnp.broadcast_shapes(*(jnp.shape(arg) for arg in args))
@@ -514,18 +528,16 @@ def _bind_difference(derivative, function, node):
         )
     order_path = ("args", 1) if len(node.args) == 2 else ("kwargs", "n")
     size = node.args[1] if len(node.args) == 2 else node.kwargs.get("n", LiteralValue(value=1))
-    if (
-        not isinstance(size, LiteralValue)
-        or type(size.value) is not int
-        or size.value < 1
-        or size.unit is not None
-    ):
+    try:
+        order = structural_integer(size)
+    except ValueError:
+        order = 0
+    if order < 1:
         return SignatureError(
             ProblemCode.STRUCTURE,
-            "Difference order must be a positive integer literal.",
+            "Difference order must be a positive whole number or an expression of family indices that gives one.",
             order_path,
         )
-    order = size.value
     return replace(
         function,
         infer=partial(_difference_type, order, derivative),
@@ -556,20 +568,23 @@ def _lag(context, value):
 
 
 def _bind_lag(function, node):
-    steps = node.args[1]
-    if (
-        not isinstance(steps, LiteralValue)
-        or type(steps.value) is not int
-        or steps.value < 1
-        or steps.unit is not None
-    ):
+    try:
+        steps = structural_integer(node.args[1])
+    except ValueError:
+        steps = -1
+    if steps < 0:
         return SignatureError(
             ProblemCode.STRUCTURE,
-            "Lag steps must be a positive integer literal.",
+            "Lag steps must be a non-negative whole number, or an expression of family indices that gives one.",
             ("args", 1),
         )
+    if steps == 0:
+        return replace(
+            function, info=function.info.model_copy(update={"level": Level.RUN, "stateful": False}),
+            initial_state=None, evaluate=lambda _context, value: value,
+        ), node.model_copy(update={"args": node.args[:1]})
     return replace(
-        function, initial_state=partial(_lag_state, steps.value)
+        function, initial_state=partial(_lag_state, steps)
     ), node.model_copy(update={"args": node.args[:1]})
 
 

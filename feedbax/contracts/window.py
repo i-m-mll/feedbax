@@ -11,7 +11,7 @@ from feedbax.contracts.expression_storage import StoredExpression, lower_express
 from feedbax.contracts.expression_text import print_field
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
-    TIME, CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, ScopedValue, Site,
+    TIME, CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, ScopedValue, SequenceValue, Site,
     UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.time_units import TimeValue, literal_time
@@ -199,6 +199,8 @@ def window_offset_expression(offset: WindowOffset | None) -> Expression:
 
 def store_window_offset(expression: Expression) -> WindowOffset:
     """Store a numeric expression as a time value and keep other expressions authored."""
+    if isinstance(expression, SequenceValue):
+        raise ValueError("A Window offset takes one expression.")
     if not isinstance(expression, LiteralValue):
         return expression
     unit = expression.unit or "s"
