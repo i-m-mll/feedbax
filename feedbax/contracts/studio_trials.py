@@ -19,6 +19,7 @@ from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTe
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scene import ScenePoint
 from feedbax.contracts.studio_scope import StudioStoreChoice
+from feedbax.contracts.member_family import StoredFamilyMember
 from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, StoredTaskDocument
 from feedbax.contracts.task_structure import TaskStructureChange
 from feedbax.contracts.trial_record import TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace
@@ -199,10 +200,11 @@ class StudioTrialObjectiveSource(StrictModel):
     step: ProjectName
 
 
-class StudioSetFieldEntry(StrictModel):
+class StudioSetFieldEntry(StoredFamilyMember):
     entry: ProjectName | None
     label: str | None = None
     weight: WeightPart | SetEntryParts | None = None
+    member_count: int | None = None
 
 
 class StudioSetField(StrictModel):

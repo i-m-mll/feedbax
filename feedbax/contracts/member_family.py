@@ -124,15 +124,13 @@ def _label(template: str, selection: Mapping[str, _IndexValue], *, placeholders:
     return "".join(parts)
 
 
-def expand_family[Member: StoredFamilyMember](
-    key: str, member: Member, *, first: bool = False, label_placeholders: bool = True, unique_labels: bool = False,
-) -> Iterator[ExpandedFamilyMember[Member]]:
-    """Substitute one ordered family, retaining its authored key and selection in every generated member."""
+def _family_rules(
+    key: str, member: StoredFamilyMember,
+) -> tuple[dict[str, tuple[int, Iterator[_IndexValue]]], int]:
     if member.over is None:
         if member.combination != "cross":
             raise FamilyProblem(key, ("combination",), "A combination needs an index rule.")
-        yield ExpandedFamilyMember(key, key, member, {})
-        return
+        return {}, 1
 
     rules = {}
     definitions = getattr(member, "task_variables", {})
@@ -151,6 +149,21 @@ def expand_family[Member: StoredFamilyMember](
         raise FamilyProblem(key, ("combination",), str(error)) from error
     if count > DEFAULT_COMBINATION_LIMIT:
         raise FamilyProblem(key, ("over",), f"A family may generate at most {DEFAULT_COMBINATION_LIMIT:,} members.")
+    return rules, count
+
+
+def family_member_count(key: str, member: StoredFamilyMember) -> int:
+    return _family_rules(key, member)[1]
+
+
+def expand_family[Member: StoredFamilyMember](
+    key: str, member: Member, *, first: bool = False, label_placeholders: bool = True, unique_labels: bool = False,
+) -> Iterator[ExpandedFamilyMember[Member]]:
+    """Substitute one ordered family, retaining its authored key and selection in every generated member."""
+    rules, _ = _family_rules(key, member)
+    if not rules:
+        yield ExpandedFamilyMember(key, key, member, {})
+        return
 
     choices = {}
     for name, (_, values) in rules.items():
@@ -159,7 +172,7 @@ def expand_family[Member: StoredFamilyMember](
         except ValueError as error:
             raise FamilyProblem(key, ("over", name), str(error)) from error
     loaded = {name: len(values) for name, values in choices.items()}
-    dimensions = (zip_dimension(loaded),) if zipped else tuple(
+    dimensions = (zip_dimension(loaded),) if member.combination == "zip" else tuple(
         cross_dimension(name, size) for name, size in loaded.items()
     )
 

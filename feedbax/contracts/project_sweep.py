@@ -166,6 +166,7 @@ class PatchSet(StrictModel):
 class AxisValue(PatchSet, StoredTaskAdditions):
     label: str | None = None
     value: JsonValue = None
+    _set_source_key: str | None = PrivateAttr(default=None)
 
 
 class Row(AxisValue):
@@ -988,9 +989,10 @@ def _choices(
     try:
         match axis:
             case SetAxis(set=document):
+                inline = (sets or {})[name]
                 choices = tuple(
-                    replace(choice, origin=("set_entry", name, choice.key, document))
-                    for choice in _choices(name, (sets or {})[name], inputs)
+                    replace(choice, origin=("set_entry", name, inline.values[choice.key]._set_source_key or choice.key, document))
+                    for choice in _choices(name, inline, inputs)
                 )
             case NamedAxis(values=values):
                 choices = tuple(
