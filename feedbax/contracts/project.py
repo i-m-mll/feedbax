@@ -10,21 +10,15 @@ from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_val
 
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, check_analysis_labels
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, LOADED_MODEL_SCHEMA_VERSION, ImportedModelSource
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_VERSION, ImportedModelSource
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
-from feedbax.contracts.task_document import (
-    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument,
-)
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_inputs import (
     DocumentReference as DocumentReference, InputBinding, NonemptyText, Pointer as Pointer, ProjectName, RowKey,
 )
 from feedbax.contracts.project_sweep import PatchPath, Sweep, TrialSetField
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
-from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 
 type Payload = dict[str, JsonValue]
 type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
@@ -104,27 +98,29 @@ class LoadedModelDocument(StrictModel):
     """The project's portable model file, named at import."""
 
 
-def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
-    if schema_id == MODEL_DOCUMENT_SCHEMA_ID:
-        ModelDocument.model_validate(payload)
-    elif schema_id == TASK_DOCUMENT_SCHEMA_ID:
-        TaskDocument.model_validate(payload)
-    elif schema_id == PYTHON_TASK_SCHEMA_ID:
-        PythonTaskSelection.model_validate(payload)
-    elif schema_id == OBJECTIVE_DOCUMENT_SCHEMA_ID:
-        ObjectiveDocument.model_validate(payload)
-    elif schema_id == TRAINING_DOCUMENT_SCHEMA_ID:
-        TrainingDocument.model_validate(payload)
-    elif schema_id == LOADED_MODEL_SCHEMA_ID:
-        LoadedModelDocument.model_validate(payload)
-    elif schema_id == ANALYSIS_SCHEMA:
-        check_analysis_labels(payload)
-    else:
-        # A Set holds Differences, so its module imports this one.
-        from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
+def check_document_schema(schema_id: str) -> None:
+    from feedbax.contracts.project_storage import stored_document_models
 
-        if schema_id == SET_DOCUMENT_SCHEMA_ID:
-            SetDocument.model_validate(payload)
+    registry = stored_document_models()
+    if schema_id in registry:
+        return
+    family = schema_id.rsplit(".v", 1)[0]
+    successor = next((name for name in registry if name.rsplit(".v", 1)[0] == family), None)
+    if successor is not None:
+        raise ValueError(f"Unsupported document schema {schema_id!r}. Expected {successor!r}.")
+    raise ValueError(f"No registered stored document has schema {schema_id!r}.")
+
+
+def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
+    from feedbax.contracts.project_storage import stored_document_models
+    from feedbax.contracts.report_document import ReportDocument
+
+    check_document_schema(schema_id)
+    if schema_id == ANALYSIS_SCHEMA:
+        check_analysis_labels(payload)
+    elif schema_id not in ("subset", ReportDocument.model_fields["schema_version"].default):
+        if (model := stored_document_models()[schema_id]) is not None:
+            model.model_validate(payload)
 
 
 class RootDocument(StrictModel):
@@ -186,6 +182,7 @@ class BasedDocument(StrictModel):
 
     @model_validator(mode="after")
     def _disjoint_differences(self) -> BasedDocument:
+        check_document_schema(self.schema_id)
         check_disjoint(self.differences)
         return self
 

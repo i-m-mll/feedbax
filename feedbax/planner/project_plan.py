@@ -7,7 +7,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from functools import cache, cached_property
+from functools import cache, cached_property, partial
 from threading import Lock
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
@@ -31,9 +31,10 @@ from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelSource
 from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
-from feedbax.contracts.matrix_core import apply_override_patch_in_place, apply_value_patch_in_place
+from feedbax.contracts.matrix_core import apply_stored_patch_in_place, apply_value_patch_in_place
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.model_input import DocumentInput, InitialModelSource, authored_document_input, encode_document_input
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
@@ -46,6 +47,7 @@ from feedbax.contracts.project import (
     apply_differences, base_chain, diff, json_pointer_parts, member_name, nearest_shared_base,
 )
 from feedbax.contracts.run_rule import RuleRefusal, bind_metric_conditions
+from feedbax.contracts.project_storage import stored_keyed_collection
 from feedbax.contracts.expression_text import RuleBest
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
@@ -154,7 +156,10 @@ from feedbax.contracts.request_specs import (
     TrialDocuments,
 )
 from feedbax.contracts.synthesis import SynthesisStepPayload
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, TaskAdditions, TaskDocument, add_to_task
+from feedbax.contracts.task_document import (
+    PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, StoredTaskDocument, TaskAdditions, TaskDocument, add_to_task,
+)
+from feedbax.contracts.training import lower_stored_trial_documents
 from feedbax.contracts.train_settings import normalize_train_method, setting_field_title
 
 if TYPE_CHECKING:
@@ -391,7 +396,7 @@ def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry) -> TrainFac
             }
         try:
             if trial.get("task") is not None:
-                task = TaskDocument.model_validate(trial["task"])
+                task = StoredTaskDocument.model_validate(trial["task"]).lower()
             elif trial.get("python_task") is not None:
                 selection = PythonTaskSelection.model_validate(trial["python_task"])
                 resolved = resolve_python_task_instance(selection, python_tasks)
@@ -1110,7 +1115,7 @@ def _with_producer_model(
     payload: Payload, model: _ModelSource, document_ids: Mapping[str, str],
     document_pointers: Mapping[str, str],
 ) -> Payload:
-    data = model.model.model_dump(mode="json")
+    data = StoredModelDocument.from_lowered(model.model).model_dump(mode="json", exclude_unset=True)
     draft = deepcopy(payload)
     main = trial_model_path(payload)
     apply_value_patch_in_place(draft, main, "replace", data, path=pointer(main))
@@ -1122,6 +1127,15 @@ def _with_producer_model(
             selected = _select(data, json_pointer_parts(document_pointers.get(slot)))
             apply_value_patch_in_place(draft, path, "replace", selected, path=slot)
     return draft
+
+
+_MODEL_COLLECTION = partial(stored_keyed_collection, STORED_MODEL_DOCUMENT_SCHEMA_ID)
+
+
+def _model_with_stored_differences(model: ModelDocument, differences: Differences) -> ModelDocument:
+    stored = StoredModelDocument.from_lowered(model).model_dump(mode="json", exclude_unset=True)
+    content = apply_differences(stored, differences, keyed_collection=_MODEL_COLLECTION)
+    return StoredModelDocument.model_validate(content).lower()
 
 
 def _producer_model_definition(definition: SelectedRunDefinition, model: _ModelSource) -> SelectedRunDefinition:
@@ -1165,9 +1179,7 @@ def _refused_difference(
 
     for at, difference in model.differences.items():
         try:
-            evaluated = ModelDocument.model_validate(
-                apply_differences(trained.model_dump(mode="json"), {at: difference}),
-            )
+            evaluated = _model_with_stored_differences(trained, {at: difference})
             lower_evaluate_attachments(trained, evaluated, None, components, (), functions=functions)
         except ValueError:
             return ModelAddress.at_stored_path(json_pointer_parts(at))
@@ -1505,24 +1517,25 @@ def _synthesis_request(
     from feedbax.tasks.registry import resolve_python_task_instance
 
     authored = SynthesisStepPayload.model_validate(payload)
-    if not isinstance(authored.model, ModelDocument):
+    if isinstance(authored.model, DocumentReference):
         raise _PayloadProblems((("model", "Choose a Model document."),))
     if isinstance(authored.objective, DocumentReference):
         raise _PayloadProblems((("objective", "Choose an Objective document."),))
     authored_task = authored.task
     if isinstance(authored_task, DocumentReference):
         raise _PayloadProblems((("task", "Choose a Task document."),))
+    model, objective = authored.model.lower(), authored.objective.lower()
     if isinstance(authored_task, PythonTaskSelection):
         resolved = resolve_python_task_instance(authored_task, python_tasks)
         if isinstance(resolved, tuple):
             raise _PayloadProblems(tuple(("task", problem.reason) for problem in resolved))
         documents = TrialDocuments(
-            model=authored.model, task=None, python_task=resolved.selection(), objective=authored.objective,
+            model=model, task=None, python_task=resolved.selection(), objective=objective,
             input_bindings=authored.input_bindings,
         )
     else:
         documents = TrialDocuments(
-            model=authored.model, task=authored_task, objective=authored.objective, input_bindings=authored.input_bindings,
+            model=model, task=authored_task.lower(), objective=objective, input_bindings=authored.input_bindings,
         )
     try:
         method = methods.resolve(authored.method)
@@ -1603,17 +1616,15 @@ def _encode_row(
         model_source = prepared_train.model
     elif kind == "train":
         from feedbax.tasks.registry import resolve_python_task_instance
-        from feedbax.contracts.request_specs import TrialDocuments
-
         try:
-            authored = TrialDocuments.model_validate(payload.get("trial_documents"))
+            authored = lower_stored_trial_documents(payload.get("trial_documents"))
             if authored.python_task is not None:
                 resolved = resolve_python_task_instance(authored.python_task, python_tasks)
                 if not isinstance(resolved, tuple):
                     authored = authored.model_copy(update={"python_task": resolved.selection()})
-                    payload = payload | {"trial_documents": authored.model_dump(mode="json")}
             else:
                 resolved = None
+            payload = payload | {"trial_documents": authored}
             prepared = resolved if isinstance(resolved, tuple) else prepare_trial(authored)
         except ValueError as error:
             return _LoweredRow(None, (ProjectDiagnostic(
@@ -1911,7 +1922,6 @@ class _Compiler:
     def expand_variants(self, known_sites: Mapping[str, bool] | None = None) -> None:
         def integer_site(path: str) -> bool:
             if (target := model_field_target(path)) is not None:
-                from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 
                 address = target.address
                 if target.step is not None:
@@ -1941,8 +1951,8 @@ class _Compiler:
                 if target.document is None:
                     raise ValueError("A project Model field target must name a step or document")
                 entry = compose_document(self.project.documents.get, target.document)
-                return isinstance(entry, RootDocument) and entry.schema_id == MODEL_DOCUMENT_SCHEMA_ID and _integer_model_site(
-                    ModelDocument.model_validate(entry.payload), address,
+                return isinstance(entry, RootDocument) and entry.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID and _integer_model_site(
+                    StoredModelDocument.model_validate(entry.payload).lower(), address,
                     self.components or _builtin_model_registry(),
                 )
             parts = path.split(".", 4)
@@ -1988,7 +1998,6 @@ class _Compiler:
             try:
                 from feedbax.compiler.model_attachment import resolve_effective_model
                 from feedbax.compiler.model_document import ModelCompilationProblem
-                from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 
                 based_writes: dict[str, list[tuple[str, OverridePatch | SetField]]] = {}
                 for path, write in row.patches.items():
@@ -2004,7 +2013,7 @@ class _Compiler:
                         if document is None:
                             raise ValueError("A project Model field target names a Model document")
                         entry = data["documents"].get(document)
-                        if entry is None or entry["schema"] != MODEL_DOCUMENT_SCHEMA_ID:
+                        if entry is None or entry["schema"] != STORED_MODEL_DOCUMENT_SCHEMA_ID:
                             raise ValueError("The addressed Model document does not exist")
                         if "payload" not in entry:
                             based_writes.setdefault(document, []).append((path, patch))
@@ -2016,10 +2025,11 @@ class _Compiler:
                                 )
                             continue
                         before = entry["payload"]
-                        entry["payload"] = resolve_effective_model(
-                            ModelDocument.model_validate(before),
+                        model = resolve_effective_model(
+                            StoredModelDocument.model_validate(before).lower(),
                             self.components or _builtin_model_registry(), (patch,), functions=self.functions,
-                        ).model_dump(mode="json")
+                        )
+                        entry["payload"] = StoredModelDocument.from_lowered(model).model_dump(mode="json", exclude_unset=True)
                         if origins is not None:
                             source = ValueSource("variant", row.id, pointer(("sweep", path)), variant=row.id)
                             authored = origins["documents"][document]
@@ -2046,7 +2056,7 @@ class _Compiler:
                         continue
                     if parts[0] == "steps" and parts[2:3] == ("deltas",) and len(parts) > 3 and parts[1] in data["steps"]:
                         data["steps"][parts[1]].setdefault("deltas", [])
-                    apply_override_patch_in_place(data, patch)
+                    apply_stored_patch_in_place(data, patch)
                     if origins is not None:
                         source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
                         origins = patch_source(origins, patch, source_shape(patch.value, source))
@@ -2058,20 +2068,24 @@ class _Compiler:
                     base = compose_document(documents.get, documents[document].base.document)
                     if isinstance(base, ProjectDiagnostic):
                         raise ValueError(base.detail)
+                    keyed = partial(stored_keyed_collection, base.schema_id)
                     content = {"documents": {document: {"payload": apply_differences(
-                        base.payload, documents[document].differences,
+                        base.payload, documents[document].differences, keyed_collection=keyed,
                     )}}}
                     for path, patch in based_writes[document]:
                         if isinstance(patch, SetField):
-                            content["documents"][document]["payload"] = resolve_effective_model(
-                                ModelDocument.model_validate(content["documents"][document]["payload"]),
+                            model = resolve_effective_model(
+                                StoredModelDocument.model_validate(content["documents"][document]["payload"]).lower(),
                                 self.components or _builtin_model_registry(), (patch,), functions=self.functions,
-                            ).model_dump(mode="json")
+                            )
+                            content["documents"][document]["payload"] = StoredModelDocument.from_lowered(model).model_dump(
+                                mode="json", exclude_unset=True,
+                            )
                         else:
-                            apply_override_patch_in_place(content, patch)
+                            apply_stored_patch_in_place(content, patch)
                     data["documents"][document]["differences"] = {
                         at: difference.model_dump(mode="json") for at, difference in diff(
-                            base.payload, content["documents"][document]["payload"],
+                            base.payload, content["documents"][document]["payload"], keyed_collection=keyed,
                         ).items()
                     }
                 self.variants[row.id] = Project.model_validate(data)
@@ -2553,7 +2567,10 @@ class _Compiler:
         path = "inputs.task" if explicit is not None else "payload.task" if flat else "payload.trial_documents.task"
         try:
             content = explicit.payload if explicit is not None else raw["task"]
-            selected = add_to_task(TaskDocument.model_validate(content), row.task_additions).model_dump(mode="json")
+            task = StoredTaskDocument.model_validate(content)
+            selected = StoredTaskDocument.from_lowered(
+                add_to_task(task.lower(), row.task_additions), trial_keys=task.validation_trials or None,
+            ).model_dump(mode="json", exclude_unset=True)
         except ValueError as error:
             return ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD, path, str(error), key.step, row=key.row, variant=key.variant,
@@ -2801,9 +2818,9 @@ class _Compiler:
                 ):
                     trial = payload if flat else payload["trial_documents"]
                     try:
-                        authored_task = TaskDocument.model_validate(trial.get("task"))
+                        stored_task = StoredTaskDocument.model_validate(trial.get("task"))
                         model, task, condition_origins = lower_trial_sets(
-                            authored_model.model, authored_task, fields,
+                            authored_model.model, stored_task.lower(), fields,
                             reader or self.variants[key.variant].documents.get,
                             self.components or _builtin_model_registry(),
                             functions=self.functions or _builtin_expression_registry(),
@@ -2828,7 +2845,9 @@ class _Compiler:
                     )
                     payload = _with_producer_model(payload, authored_model, document_ids, document_pointers)
                     trial = payload if flat else payload["trial_documents"]
-                    trial["task"] = task.model_dump(mode="json")
+                    trial["task"] = StoredTaskDocument.from_lowered(
+                        task, trial_keys=stored_task.validation_trials or None,
+                    ).model_dump(mode="json", exclude_unset=True)
                     if not flat:
                         train = _train_facts(payload, self.python_tasks)
             elif kind == "evaluate":
@@ -2957,7 +2976,7 @@ class _Compiler:
                     address = differences[0].address
                     raise ValueError("Model differences require an authored Model")
                 return payload, None
-            model = ModelDocument.model_validate(model_payload)
+            model = StoredModelDocument.model_validate(model_payload).lower()
             if differences:
                 model = resolve_effective_model(
                     model, self.components or _builtin_model_registry(), differences,
@@ -3051,7 +3070,7 @@ class _Compiler:
             if isinstance(base, ProjectDiagnostic):
                 return replace(base, step=key.step, row=key.row, variant=key.variant)
             assert isinstance(base.payload, dict)
-            if differences := diff(base.payload, content):
+            if differences := diff(base.payload, content, keyed_collection=_MODEL_COLLECTION):
                 model = _EvaluationModel(name, differences)
         task = False
         if "task" in slots or task_additions:
@@ -3156,7 +3175,8 @@ class _Compiler:
                 navigation = LoadedModelDocument.model_validate(subject_document.payload).model
                 if (
                     EVALUATION_MODEL not in document_ids and not navigation.unresolved and navigation.pointer is None
-                    and (nav := project.documents.get(navigation.document)) is not None and nav.schema_id == MODEL_DOCUMENT_SCHEMA_ID
+                    and (nav := project.documents.get(navigation.document)) is not None
+                    and nav.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID
                 ):
                     followed = frozenset({navigation.document})
                     document_ids = {**document_ids, EVALUATION_MODEL: navigation.document}
@@ -3188,7 +3208,7 @@ class _Compiler:
                     raise ValueError(base.detail)
                 assert isinstance(base.payload, dict)
                 changes = diff(base.payload, slots["model"])
-                effective_model = ModelDocument.model_validate(apply_differences(model.model_dump(mode="json"), changes))
+                effective_model = _model_with_stored_differences(model, changes)
             components = self.components or _builtin_model_registry()
             functions = self.functions or _builtin_expression_registry()
             tasks = self.python_tasks
@@ -3563,9 +3583,7 @@ class _Compiler:
             evaluated = model_source.model
             if model is not None:
                 try:
-                    evaluated = ModelDocument.model_validate(
-                        apply_differences(model_source.model.model_dump(mode="json"), model.differences),
-                    )
+                    evaluated = _model_with_stored_differences(model_source.model, model.differences)
                 except DifferenceNotApplied as error:
                     return _model_difference_problem(
                         key, model.document, None, str(error), path=f"{EVALUATION_MODEL}{error.path.replace('/', '.')}",
