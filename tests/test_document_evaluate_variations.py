@@ -84,7 +84,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
 
     assert edit(_add_attachment(owner, "invalid", "missing")).status == "refused"
     for difference in (
-        _add_attachment(owner, "add", "retain", 0.4),
+        _add_attachment(owner, "add", "remove", 0.4),
         {
             "op": "change",
             "address": _attachment_address(owner, "retain"),

@@ -152,7 +152,7 @@ def _project(
     paired = pair_trial_source(
         documents.model, task, bundle.components, bundle.expression_functions,
         python_tasks=bundle.python_tasks, input_bindings=documents.input_bindings,
-        task_sites=task_sites, graph_override=graph_override, reset_fields=resets,
+        task_sites=task_sites, graph_override=graph_override, reset_fields=resets, keyed_root_ports=True,
     )
     partial = None
     if isinstance(paired, tuple):

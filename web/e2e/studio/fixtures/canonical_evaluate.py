@@ -94,7 +94,7 @@ def seed_eight_trials(home: str, project_id: str):
     """The evaluation project with a task of eight validation trials, which the baseline records every one of."""
     raw = _evaluation_project()
     task = raw["documents"]["task"]["payload"]
-    task["validation_trials"] = task["validation_trials"][:8]
+    task["validation_trials"] = dict(islice(task["validation_trials"].items(), 8))
     return _seed(home, project_id, raw)
 
 
@@ -102,13 +102,14 @@ def seed_sixty_four_trials(home: str, project_id: str):
     """The evaluation project with a task of 64 validation trials, each target moved a little, which the baseline records."""
     raw = _evaluation_project()
     task = raw["documents"]["task"]["payload"]
-    trials = task["validation_trials"]
-    task["validation_trials"] = [
-        deepcopy(trials[index % len(trials)]) | {"variables": trials[index % len(trials)]["variables"] | {
-            "target": [value + 0.001 * (index // len(trials)) for value in trials[index % len(trials)]["variables"]["target"]],
-        }}
-        for index in range(64)
-    ]
+    trials = tuple(task["validation_trials"].values())
+    scaled = {}
+    for index in range(64):
+        cycle, row = divmod(index, len(trials))
+        trial = deepcopy(trials[row])
+        trial["variables"]["target"] = [value + 0.001 * cycle for value in trial["variables"]["target"]]
+        scaled[f"trial-{index + 1}"] = trial
+    task["validation_trials"] = scaled
     return _seed(home, project_id, raw)
 
 
@@ -116,8 +117,8 @@ def _mean_conditions_project():
     """The eight-trial evaluation project with its last four trials catch trials, so that By has two conditions."""
     raw = _evaluation_project()
     task = raw["documents"]["task"]["payload"]
-    task["validation_trials"] = task["validation_trials"][:8]
-    for trial in task["validation_trials"][4:]:
+    task["validation_trials"] = dict(islice(task["validation_trials"].items(), 8))
+    for trial in islice(task["validation_trials"].values(), 4, None):
         trial["variables"]["catch"] = True
     return raw
 

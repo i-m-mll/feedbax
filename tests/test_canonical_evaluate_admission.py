@@ -525,7 +525,7 @@ def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, mon
     ))
     compiled = compile_graph(
         GraphDocument(graph=graph), registry.components,
-        input_prototypes={graph.input_bindings["reach_target"]: jax.ShapeDtypeStruct((2,), np.float32)},
+        input_prototypes={graph.input_bindings["task-input"]: jax.ShapeDtypeStruct((2,), np.float32)},
     )
     with pytest.raises(StateLayoutError, match="no declared raw-state layout") as failure:
         bind_raw_state(compiled.graph, compiled.resolved.graph)
