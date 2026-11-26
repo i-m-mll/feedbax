@@ -46,7 +46,7 @@ def _with_gain():
     data = _data()
     payload = data["documents"][TASK]["payload"]
     payload["variables"] = {"gain": {
-        "label": "gain", "type": {"base": "real"}, "value": {"kind": "literal", "value": 0.1},
+        "label": "gain", "type": {"base": "real"}, "value": 0.1,
     }} | payload["variables"]
     return data
 
@@ -79,7 +79,7 @@ def test_a_task_field_s_text_is_what_its_edit_stored(tmp_path):
         _save(project, view)
         assert _text(project, "fee", path) == "60 st"
         (epoch,) = project.composed(TASK)["epochs"].values()
-        assert epoch["end"]["length"] == {"kind": "literal", "value": 60, "unit": "st"}
+        assert epoch["end"]["length"] == "60 st"
 
 
 def _start_low(project):

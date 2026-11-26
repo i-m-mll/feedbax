@@ -183,7 +183,9 @@ def test_native_refusal_and_edit_during_approval_leave_no_admission(tmp_path, mo
             return challenges[0]
         changed_path = folders.root / PROJECT / "steps/train.json"
         document = json.loads(changed_path.read_bytes())
-        document["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = 0.002
+        document["base"]["inline"]["settings"]["optimizer"] = {
+            "type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.002},
+        }
         changed_path.write_text(json.dumps(document))
         return challenge
 

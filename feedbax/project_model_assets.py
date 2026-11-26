@@ -19,11 +19,12 @@ from feedbax._secure_fs import (
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentRetentionTarget, ContentRootRecord
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.loaded_model import (
-    ImportedModelSource, ModelFitReport, decode_imported_model_document,
+    ImportedModelSource, ModelFitReport, decode_imported_model_document, encode_imported_model_document,
 )
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.project import ProjectModelArchive
-from feedbax.contracts.project_resolution import LoadedModelRead, ResolvedImportedModel
+from feedbax.contracts.project import Document, LoadedModelDocument, ProjectModelArchive
+from feedbax.contracts.project_resolution import LoadedModelRead, ProjectDiagnostic, ResolvedImportedModel, compose_document
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.project_subject import resolve_imported_model
 from feedbax.persistence.store_damage import KnownDamage, inspect_without_recording, read_damage
@@ -38,6 +39,25 @@ _ARCHIVE = TypeAdapter(ProjectModelArchive)
 
 class ModelAssetError(ValueError):
     """The project assets cannot supply their declared Loaded Model."""
+
+
+def composed_loaded_model_projection(
+    loaded: LoadedModelDocument, read_document: Callable[[str], Document | None], components: ComponentRegistry,
+) -> bytes | None:
+    """Encode the currently composed navigation Model as a candidate for exact verification."""
+    nav = loaded.model
+    if nav.unresolved or nav.pointer is not None:
+        return None
+    document = compose_document(read_document, nav.document)
+    if isinstance(document, ProjectDiagnostic) or document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
+        return None
+    from feedbax.compiler.model_document import complete_model_fields
+
+    try:
+        model = StoredModelDocument.model_validate(document.payload).lower(components).with_keyed_root_ports()
+        return encode_imported_model_document(complete_model_fields(model, components))
+    except ValueError:
+        return None  # The pin may still be readable from the Store or its projection file.
 
 
 def _projection_path(source: ImportedModelSource) -> str:

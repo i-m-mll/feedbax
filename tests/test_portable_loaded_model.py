@@ -42,7 +42,7 @@ def _seed(folders, name):
     payload["training_config"] = {"n_batches": 1, "batch_size": 2, "replicates": 2}
     task = raw["documents"]["simple-reaches-task"]["payload"]
     task["fixed_steps"] = 8
-    task["epochs"]["move"]["end"]["length"]["value"] = 8
+    task["epochs"]["move"]["end"]["length"] = "8 st"
     task["validation_trials"] = dict(list(task["validation_trials"].items())[:1])
     evaluate = managed_evaluation_step("unused")
     evaluate["inputs"] = {
@@ -184,7 +184,7 @@ def test_same_name_load_reuses_pins_and_repairs_missing_assets_at_the_checked_re
         assert _loaded(restored) == loaded and projection.read_bytes() == encode_imported_model_document(complete_model_fields(model.with_keyed_root_ports(), components))
 
         authored = deepcopy(folders.read("original").project)
-        authored.documents["point-mass"].payload["step_seconds"] = 0.02
+        authored.documents["point-mass"].payload["step_seconds"] = "0.02 s"
         _save_project(folders, "original", authored)
         latest = _expect(client.get("/api/projects/original"))["revision"]
         store = ImmutableArtifactBlobProvider(root / "results")

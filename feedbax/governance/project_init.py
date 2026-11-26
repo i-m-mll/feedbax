@@ -10,11 +10,11 @@ from typing import Callable
 from pydantic import ValidationError
 
 from feedbax.contracts.project import Project
+from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.project_io import (
     PROJECT_DECLARATION_SUFFIX,
     ProjectConfiguration,
     ProjectReadError,
-    dump_text_project,
     load_text_project,
 )
 from feedbax.governance.agent_instructions import (

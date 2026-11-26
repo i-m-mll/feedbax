@@ -22,7 +22,7 @@ def test_new_lists_an_installed_package_s_task_documents_whole_beside_feedbax_s(
         "schema": STORED_TASK_DOCUMENT_SCHEMA_ID, "base": {"document": "curved-task"},
         "differences": {"/fixed_steps": {"value": 40}},
     }))
-    (documents / "model.json").write_text(json.dumps({"label": "Document", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}}}))
+    (documents / "model.json").write_text(json.dumps({"label": "Document", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": {"step_seconds": "0.01 s", "ports": {}, "interior": {}}}))
     metadata = plugins / "reach_library-1.0.dist-info"
     metadata.mkdir()
     (metadata / "METADATA").write_text("Name: reach-library\nVersion: 1.0\n")

@@ -23,7 +23,7 @@ from feedbax.contracts.project import (
     apply_differences,
     diff,
 )
-from feedbax.contracts.project_storage import stored_keyed_collection
+from feedbax.contracts.project_storage import stored_expression_site, stored_keyed_collection
 from feedbax.contracts.set_document import SetEntry
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 
@@ -33,7 +33,7 @@ def _keyed_collection(parts):
 
 
 def _term(value):
-    return {"measure": {"kind": "literal", "value": value}}
+    return {"measure": value}
 
 
 _keys = st.sampled_from(["a", "b", "c", "d", "e", "slash/key", "tilde~key"])
@@ -66,17 +66,17 @@ def test_order_runs_after_edits_and_keeps_new_base_members():
             "/terms": {"order": ["new", "a", "no-longer-in-base", "b"]},
             "/terms/dropped": {"op": "remove"},
             "/terms/new": {"value": _term(6)},
-            "/terms/b/measure/value": {"value": 7},
+            "/terms/b/measure": {"value": 7},
         },
     })
     actual = apply_differences(
         base, authored.differences, keyed_collection=partial(stored_keyed_collection, authored.schema_id),
     )
 
-    assert [(key, term["measure"]["value"]) for key, term in actual["terms"].items()] == [
+    assert [(key, term["measure"]) for key, term in actual["terms"].items()] == [
         ("new", 6), ("a", 1), ("b", 7), ("future-one", 4), ("future-two", 5),
     ]
-    assert [(key, term["measure"]["value"]) for key, term in base["terms"].items()] == list(base_values.items())
+    assert [(key, term["measure"]) for key, term in base["terms"].items()] == list(base_values.items())
 
 
 def test_diff_emits_member_edits_before_the_collection_order():
@@ -164,17 +164,20 @@ def test_stored_sweeps_write_keyed_members_while_lowered_variation_can_use_ids()
 
 def test_only_expression_arguments_accept_stored_array_indices():
     payload = {
-        "variable": {"kind": "call", "function": "vector", "args": [{"kind": "literal", "value": 1}]},
+        "variables": {"goal": {"label": "Goal", "type": {"base": "real", "shape": [2]}, "value": "[1, 3]"}},
         "weights": [1],
     }
-    expression_write = OverridePatch(path="variable.args.0.value", value=2)
-    apply_stored_patch_in_place(payload, expression_write)
-    assert payload["variable"]["args"][0]["value"] == 2
+    site = partial(stored_expression_site, STORED_TASK_DOCUMENT_SCHEMA_ID)
+    expression_write = OverridePatch(path="variables.goal.value.args.0.value", value=2)
+    apply_stored_patch_in_place(payload, expression_write, expression_site=site)
+    assert payload["variables"]["goal"]["value"] == "[2, 3]"
 
     with pytest.raises(ValueError, match="cannot traverse an array"):
-        apply_stored_patch_copy(payload, OverridePatch(path="weights.0", value=2))
+        apply_stored_patch_copy(payload, OverridePatch(path="weights.0", value=2), expression_site=site)
     with pytest.raises(ValueError, match="non-negative decimal index"):
-        apply_stored_patch_copy(payload, OverridePatch(path="variable.args.00.value", value=2))
+        apply_stored_patch_copy(
+            payload, OverridePatch(path="variables.goal.value.args.00.value", value=2), expression_site=site,
+        )
 
     apply_document_edit(payload, SetProjectValue(op="add", path="/weights/0", value=2), 2)
     assert payload["weights"] == [2, 1]

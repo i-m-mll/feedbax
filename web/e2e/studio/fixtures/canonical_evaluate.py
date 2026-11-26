@@ -12,7 +12,8 @@ from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient

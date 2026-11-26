@@ -5,7 +5,8 @@ import json
 from feedbax.cli import main
 from feedbax.contracts.jobs import JobStatus
 from feedbax.contracts.manifest import canonical_manifest_path
-from feedbax.contracts.project_io import dump_text_project, read_text_project_snapshot
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import read_text_project_snapshot
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.studio_place import StudioAnalysisPlace, StudioStepPlace
 from feedbax.host import HostClient

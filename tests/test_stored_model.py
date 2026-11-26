@@ -16,7 +16,8 @@ from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_VERSION, Mode
 from feedbax.contracts.model_input import authored_document_input
 from feedbax.contracts.project import BasedDocument, DocumentBase, Project, RootDocument, SetDocumentValue
 from feedbax.contracts.project_inputs import DocumentReference, InitialModelReference
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.contracts.stored_model import (
     STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, lower_model_field_value, stored_model_field_value,
 )

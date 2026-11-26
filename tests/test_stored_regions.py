@@ -7,15 +7,16 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from feedbax.application.composition import load_application
+from feedbax.application.project_writer import dump_text_project, write_project_file
+from feedbax.application.stored_regions import StoredRegionRegistries
 from feedbax.contracts.project import RootDocument, Step
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, parse_text_project_files
+from feedbax.contracts.project_io import ProjectConfiguration, parse_text_project_files
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.stored_regions import StoredRegionRegistries
-from feedbax.contracts.project_storage import write_project_file
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID
-from feedbax.planner.project_plan import RunKey, compile_project
+from feedbax.planner.project_plan import PlanRequests, RunKey, compile_project
+from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 from tests.support.python_task import REACHING_TASK, reaching_python_task  # noqa: F401
@@ -227,3 +228,9 @@ def test_studio_sweeps_a_train_setting_omitted_at_its_default(tmp_path):
         selected = folders.read_plan("fixture", revision=None, source_runs=tuple(row.key for row in plan.rows)).plan
         rate = "/payload/settings/optimizer/learning_rate/value"
         assert all(definition.sources[rate].kind == "sweep_value" for definition in selected.selected_definitions.values())
+
+        captured = compile_project(folders.read("fixture").project, capture_sources=True)
+        reviewed, _ = load_plan_requests(dump_plan_requests(PlanRequests.from_plan(captured), ("default",)))
+        for row in plan.rows:
+            source = reviewed.source_index.source(row.key, tuple(rate[1:].split("/")))
+            assert source == selected.selected_definitions[row.key].sources[rate]
