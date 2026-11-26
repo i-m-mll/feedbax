@@ -38,6 +38,8 @@ export interface SetAuthoringInputs {
   readonly confirmRemoval: ConfirmRunRemoval;
   /** Asks where an edit that reaches beyond the selection is written. */
   readonly ask: AskStore;
+  /** The Service's name for the value `entry` of the step's axis `axis`. */
+  readonly valueName: (step: string, axis: string, entry: string) => string;
 }
 
 /** The authored axis of a step's sweep, when the step authors it. */
@@ -51,7 +53,7 @@ function runKey(run: PlanRunView) {
   return { variant, step, row };
 }
 
-export function setAuthoring({ editor, project, applies, perform, state, select, confirmRemoval, ask }: SetAuthoringInputs) {
+export function setAuthoring({ editor, project, applies, perform, state, select, confirmRemoval, ask, valueName }: SetAuthoringInputs) {
   const refuseStep = (step: string) => (reason: string): Refusal => ({ kind: 'step', step, reason });
 
   /** Stores the edit `command` makes; one that removes runs first asks when some of them cost a confirmation. */
@@ -153,7 +155,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     if (!stored) return undefined;
     return {
       key: JSON.stringify([step, axis, entry]),
-      label: stored.label || entry,
+      label: valueName(step, axis, entry),
       variables: stored.task_variables ?? [],
       links: stored.task_links ?? [],
       write: applies ? (name, change) => editor.command(async () => {

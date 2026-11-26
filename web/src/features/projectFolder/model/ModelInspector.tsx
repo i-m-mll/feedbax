@@ -187,10 +187,10 @@ export function attachmentSources(item: Attachment, graph: ModelAddress, change?
       change && ((source) => change({ ...item, operands: { ...item.operands, [name]: source } }))));
 }
 
-/** A source's own value as a raw field, a number or numbers side by side; `linked` names what it reads instead. */
-export function sourceValueField(source: AttachmentSource, linked: string | undefined): FieldModel {
+/** A source's own value as a raw field, a number or numbers side by side. */
+export function sourceValueField(source: AttachmentSource): FieldModel {
   const { id, label, read, set } = source;
-  if (linked !== undefined || read.kind !== 'value') return rawField({ id, label, type: { kind: 'readOnly' }, value: linked ?? '' });
+  if (read.kind !== 'value') return rawField({ id, label, type: { kind: 'readOnly' }, value: '' });
   const { value } = read;
   const write: RawChange | undefined = set && ((next) => set({ kind: 'value', value: next }));
   if (Array.isArray(value)) {

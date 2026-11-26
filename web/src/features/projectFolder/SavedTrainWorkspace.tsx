@@ -368,6 +368,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     editor, project: saved.project, applies: !outside && reachable && variantApplies,
     perform, state: () => latestState.current, select: (next) => selection.select(next), confirmRemoval: runRemoval.confirm,
     ask: (anchor, choices) => askStore(anchor, choices),
+    valueName: (step, axis, entry) => {
+      const value = plan.steps.find(({ id }) => id === step)?.sweeps.find(({ id }) => id === axis)?.values.find(({ id }) => id === entry);
+      if (!value) throw new Error(`The plan has no value ${entry} of axis ${axis} of step ${step}.`);
+      return value.label;
+    },
   });
   const axisMenu: AxisMenu = (stepId, axis) => {
     const planned = plan.steps.find(({ id }) => id === stepId);

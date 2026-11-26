@@ -14,7 +14,7 @@ import { useAxisWithin, type TimeAxisStore } from './timeAxis';
  */
 export interface ShelfSegment {
   readonly key: string;
-  readonly name: string;
+  readonly name: ShownText;
   readonly start: number;
   readonly end: number;
   readonly selects?: ElementAddress;
@@ -101,9 +101,11 @@ const elementOf = (address: ElementAddress) =>
 function Segment({ segment, origin, duration, chosen }: { segment: ShelfSegment; origin: number; duration: number; chosen: boolean }) {
   const { key, name, start, end, spread, dashedFrom, ended, selects } = segment;
   const width = end - start;
+  const text = plainText(name);
+  const missing = holdsMissing(name) || undefined;
   return <>
     <span role={selects ? 'button' : undefined} tabIndex={selects ? -1 : undefined}
-      aria-label={ended ? `${name}, ${studioName(ended)}` : name}
+      aria-label={ended ? `${text}, ${studioName(ended)}` : text} aria-invalid={missing}
       aria-pressed={selects ? chosen : undefined} {...{ [markAttribute]: key }} data-start={start} data-end={end} data-ended={ended}
       className={clsx('absolute inset-y-0 flex min-w-0 items-center overflow-hidden rounded-sm border px-1 text-xs',
         chosen ? 'border-shell-foreground' : 'border-shell-control', dashedFrom === undefined && 'bg-shell-field')}
@@ -115,10 +117,10 @@ function Segment({ segment, origin, duration, chosen }: { segment: ShelfSegment;
       </>}
       {ended && <span aria-hidden="true" className={clsx('absolute inset-y-0 right-0 border-r-2 border-shell-foreground',
         ended === 'limit' && 'border-dashed')} />}
-      <span className="relative truncate">{name}</span>
+      <span className="relative truncate"><Shown text={name} /></span>
     </span>
     {spread && spread.greatest > spread.least && <span role="img"
-      aria-label={`${name} ${seconds(spread.least, 0.01)}–${seconds(spread.greatest, 0.01)} ${studioUnit('second')}`}
+      aria-label={`${text} ${seconds(spread.least, 0.01)}–${seconds(spread.greatest, 0.01)} ${studioUnit('second')}`}
       data-least={spread.least} data-greatest={spread.greatest}
       className="pointer-events-none absolute -bottom-1 h-1.5 border-x border-shell-foreground"
       style={{ left: percent(spread.least - origin, duration), width: percent(spread.greatest - spread.least, duration) }}>

@@ -9,7 +9,7 @@ import { NumberField } from '@/components/ui/NumberField';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { popupItem, primaryText, secondaryText } from '@/components/ui/styles';
-import type { TrialMeanOptions } from '@/generated/studioContracts';
+import { plainText, Shown, type ShownText } from '@/components/ui/ShownText';
 import {
   aggregates, averages, offeredPicks, pickText, samePick, sampleCount, setSize, type TrialClock, type TrialOffer, type TrialPick,
   type TrialSet, type TrialShowing,
@@ -24,7 +24,7 @@ export interface TrialPickerProps {
   /** Whether the recorded trials are a result an edit put out of date, which their entries and the shown text mark. */
   readonly recordedOutOfDate?: boolean;
   /** Mean's By options, once the Service has answered a Mean. */
-  readonly meanOptions?: TrialMeanOptions;
+  readonly meanOptions?: MeanChoices;
   readonly onChange: (clock: TrialClock) => void;
 }
 
@@ -59,8 +59,14 @@ const sectionLabel = 'px-row-inline pb-0.5 text-xs text-shell-muted';
 const sets: readonly TrialSet[] = ['nominal', 'samples', 'recorded'];
 
 /** The trials under Mean's By: the labels of the variables chosen, all of them unless chosen. */
-const byLabels = (options: TrialMeanOptions | undefined, by: readonly string[] | null) =>
-  (options?.by ?? []).filter(({ id }) => !by || by.includes(id)).map(({ label }) => label);
+/** What a Mean can be taken by and aligned on: Task variables and epochs, each by its id with its current name. */
+export interface MeanChoices {
+  readonly by: readonly { readonly id: string; readonly label: ShownText }[];
+  readonly align: readonly { readonly id: string; readonly label: ShownText }[];
+}
+
+const byLabels = (options: MeanChoices | undefined, by: readonly string[] | null) =>
+  (options?.by ?? []).filter(({ id }) => !by || by.includes(id)).map(({ label }) => plainText(label));
 
 /**
  * The one statement of which trials are shown and how. Its text is what is shown. Its popup chooses One, All or Mean,
@@ -119,16 +125,16 @@ export function TrialPicker({ offer, clock, shown, recordedLabels, recordedOutOf
             const next = meanOptions.by.map((option) => option.id)
               .filter((option) => option === id ? !chosen : !clock.mean.by || clock.mean.by.includes(option));
             onChange({ ...clock, mean: { ...clock.mean, by: next.length === meanOptions.by.length ? null : next } });
-          }}><span className={primaryText}>{label}</span></Entry>;
+          }}><span className={primaryText}><Shown text={label} /></span></Entry>;
         })}
         </div>
         <div role="radiogroup" aria-label={studioName('meanAlign')}
           className="mt-1 grid grid-cols-[minmax(0,1fr)] border-t border-shell-divider pt-1">
           <span aria-hidden="true" className={sectionLabel}>{studioName('meanAlign')}</span>
-          {[{ id: null, label: studioName('trialStart') }, ...meanOptions.align].map(({ id, label }) =>
+          {[{ id: null, label: studioName('trialStart') as ShownText }, ...meanOptions.align].map(({ id, label }) =>
             <Entry key={id ?? ''} role="radio" checked={clock.mean.align === id}
               onClick={() => onChange({ ...clock, mean: { ...clock.mean, align: id } })}>
-              <span className={primaryText}>{label}</span>
+              <span className={primaryText}><Shown text={label} /></span>
             </Entry>)}
         </div>
       </>;

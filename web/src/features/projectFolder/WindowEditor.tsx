@@ -1,4 +1,4 @@
-import { plainText, referentName } from '@/components/ui/ShownText';
+import { holdsMissing, joinText, plainText, referentName, Shown, type ShownText } from '@/components/ui/ShownText';
 import { Plus, X } from 'lucide-react';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
@@ -58,9 +58,9 @@ function epochItems(epochs: readonly WindowEpochChoice[]) {
   ]);
 }
 
-function epochName(epochs: readonly WindowEpochChoice[], { epoch, occurrence }: { epoch: string; occurrence?: number | null }) {
-  const name = plainText(referentName(epochs.find(({ id }) => id === epoch), epoch));
-  return occurrence == null ? name : `${name} ${occurrence + 1}`;
+function epochName(epochs: readonly WindowEpochChoice[], { epoch, occurrence }: { epoch: string; occurrence?: number | null }): ShownText {
+  const name = referentName(epochs.find(({ id }) => id === epoch), epoch);
+  return occurrence == null ? name : joinText([name, String(occurrence + 1)], ' ');
 }
 
 const trialKey = 'trial';
@@ -101,25 +101,28 @@ function spanOf(kind: Span['kind'], epochs: readonly WindowEpochChoice[], from?:
   }
 }
 
-/** The text of a window: its spans, `name` an epoch, `[a, b)` an interval, `@a` a moment; empty for the whole trial. */
-export function windowText(window: Window | null | undefined, host: Pick<WindowHost, 'epochs' | 'offset'>) {
-  const position = (position: WindowPosition | WindowRelativePosition, site: OffsetSite) => {
+/**
+ * The text of a window: its spans, `name` an epoch, `[a, b)` an interval, `@a` a moment; empty for the whole trial. An
+ * epoch the trial lacks is marked missing.
+ */
+export function windowText(window: Window | null | undefined, host: Pick<WindowHost, 'epochs' | 'offset'>): ShownText {
+  const position = (position: WindowPosition | WindowRelativePosition, site: OffsetSite): ShownText => {
     const offset = position.offset == null ? '' : host.offset(site).text ?? '';
     const shown = offset && !offset.startsWith('-') ? `+ ${offset}` : offset.replace(/^-\s*/, '- ');
     if (!('anchor' in position)) return shown;
     const { anchor } = position;
     const name = anchor.kind === 'trial' ? studioName('trial') : epochName(host.epochs, anchor);
-    const at = anchor.edge === 'end' ? `${name}.${studioName('end').toLowerCase()}` : name;
-    return shown && !/^[+-] 0(\.0*)? ?(s|st)?$/.test(shown) ? `${at} ${shown}` : at;
+    const at = anchor.edge === 'end' ? joinText([name, studioName('end').toLowerCase()], '.') : name;
+    return shown && !/^[+-] 0(\.0*)? ?(s|st)?$/.test(shown) ? joinText([at, shown], ' ') : at;
   };
-  return (window?.spans ?? []).map((span, index) => {
+  return joinText((window?.spans ?? []).map((span, index): ShownText => {
     switch (span.kind) {
       case 'epoch': return epochName(host.epochs, span);
       case 'interval':
-        return `[${position(span.start, ['spans', index, 'start', 'offset'])}, ${position(span.end, ['spans', index, 'end', 'offset'])})`;
-      case 'moment': return `@${position(span.at, ['spans', index, 'at', 'offset'])}`;
+        return ['[', ...joinText([position(span.start, ['spans', index, 'start', 'offset']), position(span.end, ['spans', index, 'end', 'offset'])], ', '), ')'];
+      case 'moment': return joinText(['@', position(span.at, ['spans', index, 'at', 'offset'])], '');
     }
-  }).join(', ');
+  }), ', ');
 }
 
 const kinds = ['epoch', 'interval', 'moment'] as const;
@@ -210,18 +213,17 @@ export function WindowEditor({ window, host, labelId }: { window: Window | null 
 
 /** A Window in a table cell: its text, which opens the editor when the host can change it. */
 export function WindowCell({ window, host }: { window: Window | null | undefined; host: WindowHost }) {
-  const text = windowText(window, host);
+  const shown = windowText(window, host);
+  const text = plainText(shown);
+  const missing = holdsMissing(shown) || undefined;
+  const drawn = text ? <Shown text={shown} /> : <span className="font-sans text-shell-muted">{studioName('wholeTrial')}</span>;
   const { changed } = host;
-  if (!host.change) {
-    return <span className="truncate px-control-inline font-mono text-xs">
-      {text || <span className="font-sans text-shell-muted">{studioName('wholeTrial')}</span>}
-    </span>;
-  }
+  if (!host.change) return <span className="truncate px-control-inline font-mono text-xs" aria-invalid={missing}>{drawn}</span>;
   return <Popover>
     <div data-field-box="" className={fieldBox}>
-      <PopoverTrigger aria-label={studioAccessibleName('window', text || studioName('wholeTrial'))}
+      <PopoverTrigger aria-label={studioAccessibleName('window', text || studioName('wholeTrial'))} aria-invalid={missing}
         className="flex h-full min-w-0 flex-1 items-center truncate px-control-inline text-left font-mono text-xs outline-none">
-        {text || <span className="font-sans text-shell-muted">{studioName('wholeTrial')}</span>}
+        {drawn}
       </PopoverTrigger>
       {changed && <span className="flex shrink-0 pr-1">
         <ChangedMark tip={changeTip(changed.from)} reset={changed.reset && (() => { void changed.reset!(); })} />

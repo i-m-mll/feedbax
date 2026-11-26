@@ -1,3 +1,4 @@
+import { plainText } from '@/components/ui/ShownText';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { rawField } from '@/components/values/adapters/raw';
 import type { FieldModel } from '@/components/values/fieldModel';
@@ -67,5 +68,5 @@ export function interventionWindow({ item, epochs, projected, linked, change }: 
 
 /** The text of an intervention's Window, the whole trial when it has none. */
 export function windowDescription(item: InterventionAttachment, epochs: readonly WindowEpochChoice[], linked: (reference: string) => string) {
-  return windowText(item.window, interventionWindow({ item, epochs, projected: () => undefined, linked })) || studioName('wholeTrial');
+  return plainText(windowText(item.window, interventionWindow({ item, epochs, projected: () => undefined, linked }))) || studioName('wholeTrial');
 }
