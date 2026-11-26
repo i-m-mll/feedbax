@@ -1106,7 +1106,9 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
             assert resolved.sources["/payload" + field_path].kind == "sweep_value"
 
         body = {"revision": reopened["revision"]}
-        edit = lambda text: client.post(endpoint, json=body | {"field": field_path, "edit": {"kind": "text", "text": text}}).json()
+        def edit(text):
+            return client.post(endpoint, json=body | {"field": field_path, "edit": {"kind": "text", "text": text}}).json()
+
         listed = edit("0.0001, 0.01")
         assert not listed["problems"], listed
         assert {axis: len(values) for axis, values in listed["removed_values"].items()} == {"learning-rate": 3}
