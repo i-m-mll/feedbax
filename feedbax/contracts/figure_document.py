@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Literal
+from typing import Annotated, Generic, Literal, TypeVar
 
 from pydantic import AfterValidator, Field, JsonValue, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
@@ -14,10 +14,12 @@ from feedbax.contracts.member_stack import MEMBER
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project_inputs import NonemptyText
 from feedbax.contracts.request_refs import ContentRef
+from feedbax.contracts.stored_members import StoredMembers, keyed_members, project_member
 from feedbax.plugins.declarations import validate_declaration_key
 
 
 FIGURE_DOCUMENT_SCHEMA = "feedbax.figure_document.v1"
+STORED_FIGURE_DOCUMENT_SCHEMA_ID = "feedbax.figure_document.v2"
 
 
 def is_figure_document_pin(payload: object) -> bool:
@@ -146,7 +148,6 @@ class SpanStyle(LineStyle):
 
 
 class _Layer(StrictModel):
-    name: Name
     role: Name
     panel: Name
     select: dict[Name, Selection] = Field(default_factory=dict)
@@ -154,13 +155,17 @@ class _Layer(StrictModel):
     """The grouping coordinates. Member grouping splits a dataset stack and leaves a single dataset whole."""
 
 
-class LineLayer(_Layer):
+class _NamedFigureMember(StrictModel):
+    name: Name
+
+
+class StoredLineLayer(_Layer):
     mark: Literal["line"]
     encode: LineEncodings
     style: LineStyle = Field(default_factory=LineStyle)
 
 
-class TrajectoryLayer(_Layer):
+class StoredTrajectoryLayer(_Layer):
     """A two-dimensional path or a three-dimensional path when z is encoded."""
 
     mark: Literal["trajectory"]
@@ -168,19 +173,19 @@ class TrajectoryLayer(_Layer):
     style: LineStyle = Field(default_factory=LineStyle)
 
 
-class BandLayer(_Layer):
+class StoredBandLayer(_Layer):
     mark: Literal["band"]
     encode: BandEncodings
     style: BandStyle = Field(default_factory=BandStyle)
 
 
-class PointsLayer(_Layer):
+class StoredPointsLayer(_Layer):
     mark: Literal["points"]
     encode: PointsEncodings
     style: PointsStyle = Field(default_factory=PointsStyle)
 
 
-class RuleLayer(_Layer):
+class StoredRuleLayer(_Layer):
     """One reference position across the other axis of its panel."""
 
     mark: Literal["rule"]
@@ -188,12 +193,42 @@ class RuleLayer(_Layer):
     style: LineStyle = Field(default_factory=LineStyle)
 
 
-class SpanLayer(_Layer):
+class StoredSpanLayer(_Layer):
     """One shaded interval across the other axis of its panel."""
 
     mark: Literal["span"]
     encode: SpanEncodings
     style: SpanStyle = Field(default_factory=SpanStyle)
+
+
+StoredFigureLayer = Annotated[
+    StoredLineLayer | StoredTrajectoryLayer | StoredBandLayer | StoredPointsLayer | StoredRuleLayer | StoredSpanLayer,
+    Field(discriminator="mark"),
+]
+
+
+class LineLayer(StoredLineLayer, _NamedFigureMember):
+    pass
+
+
+class TrajectoryLayer(StoredTrajectoryLayer, _NamedFigureMember):
+    pass
+
+
+class BandLayer(StoredBandLayer, _NamedFigureMember):
+    pass
+
+
+class PointsLayer(StoredPointsLayer, _NamedFigureMember):
+    pass
+
+
+class RuleLayer(StoredRuleLayer, _NamedFigureMember):
+    pass
+
+
+class SpanLayer(StoredSpanLayer, _NamedFigureMember):
+    pass
 
 
 FigureLayer = Annotated[
@@ -209,8 +244,7 @@ def color_encoding(layer: FigureLayer) -> ColorEncoding | None:
     return layer.encode.color if isinstance(layer.encode, LineEncodings) else None
 
 
-class FigurePanel(StrictModel):
-    name: Name
+class StoredFigurePanel(StrictModel):
     row: Annotated[StrictInt, Field(gt=0)]
     col: Annotated[StrictInt, Field(gt=0)]
     title: str | None = None
@@ -220,21 +254,32 @@ class FigurePanel(StrictModel):
     z_axis: PanelAxis | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
+class FigurePanel(StoredFigurePanel, _NamedFigureMember):
+    pass
+
+
 class FigureDocumentView(FigureView, ComparisonGridParams):
     """Authored whole-figure and grid settings."""
 
 
-class FigureDocument(StrictModel):
-    """One figure composed of dataset-bound marks."""
+_Layout = TypeVar("_Layout")
+_Layers = TypeVar("_Layers")
 
-    schema_version: Literal["feedbax.figure_document.v1"] = FIGURE_DOCUMENT_SCHEMA
+
+class _FigureFields(StrictModel, Generic[_Layout, _Layers]):
     data: tuple[Name, ...] = Field(min_length=1)
-    layout: tuple[FigurePanel, ...] = Field(min_length=1)
-    layers: tuple[FigureLayer, ...] = Field(min_length=1)
+    layout: _Layout = Field(min_length=1)
+    layers: _Layers = Field(min_length=1)
     theme: Name = "plotly_white"
     color_scales: dict[Name, ColorScale] = Field(default_factory=dict, exclude_if=lambda value: not value)
     view: FigureDocumentView = Field(default_factory=FigureDocumentView)
     caption: str | None = None
+
+
+class FigureDocument(_FigureFields[tuple[FigurePanel, ...], tuple[FigureLayer, ...]]):
+    """One lowered figure composed of dataset-bound marks in rendering order."""
+
+    schema_version: Literal["feedbax.figure_document.v1"] = FIGURE_DOCUMENT_SCHEMA
 
     @model_validator(mode="after")
     def _check_layout(self) -> FigureDocument:
@@ -265,6 +310,40 @@ class FigureDocument(StrictModel):
         return self
 
 
+_FIGURE_LAYER_MODELS = {
+    "line": (StoredLineLayer, LineLayer),
+    "trajectory": (StoredTrajectoryLayer, TrajectoryLayer),
+    "band": (StoredBandLayer, BandLayer),
+    "points": (StoredPointsLayer, PointsLayer),
+    "rule": (StoredRuleLayer, RuleLayer),
+    "span": (StoredSpanLayer, SpanLayer),
+}
+
+
+class StoredFigureDocument(_FigureFields[StoredMembers[StoredFigurePanel], StoredMembers[StoredFigureLayer]]):
+    """An authored figure whose panel and layer keys define identity and rendering order."""
+
+    def lower(self) -> FigureDocument:
+        return project_member(
+            self, FigureDocument,
+            layout=tuple(project_member(panel, FigurePanel, name=key) for key, panel in self.layout.items()),
+            layers=tuple(
+                project_member(layer, _FIGURE_LAYER_MODELS[layer.mark][1], name=key)
+                for key, layer in self.layers.items()
+            ),
+        )
+
+    @classmethod
+    def from_lowered(cls, figure: FigureDocument) -> StoredFigureDocument:
+        return project_member(
+            figure, cls,
+            layout=keyed_members((panel.name, project_member(panel, StoredFigurePanel)) for panel in figure.layout),
+            layers=keyed_members(
+                (layer.name, project_member(layer, _FIGURE_LAYER_MODELS[layer.mark][0])) for layer in figure.layers
+            ),
+        )
+
+
 FigureTemplateKey = Annotated[StrictStr, AfterValidator(validate_declaration_key)]
 
 
@@ -275,7 +354,7 @@ class FigureTemplateRef(StrictModel):
     settings: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-FigureSource = FigureDocument | FigureTemplateRef
+StoredFigureSource = StoredFigureDocument | FigureTemplateRef
 
 
 PLOTLY_FIGURE_ROLE = "figure"
@@ -353,8 +432,8 @@ def validate_figure_bindings(
     missing = set(figure.data) - schemas.keys()
     if missing:
         raise FigureBindingError("data", f"Missing figure data roles: {sorted(missing)}")
-    for index, layer in enumerate(figure.layers):
-        path = f"layers.{index}"
+    for layer in figure.layers:
+        path = f"layers.{layer.name}"
         schema = schemas[layer.role]
         coords = schema.coords if isinstance(schema, DatasetDescriptor) else schema.coordinates
         sizes = schema.dimensions if isinstance(schema, DatasetDescriptor) else {}

@@ -6,7 +6,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from feedbax.component_registry import ComponentRegistry
-from feedbax.compiler.model_document import LoweredModelDocument, ModelCompilationProblem, lower_model_document
+from feedbax.compiler.model_document import (
+    LoweredModelDocument, ModelCompilationProblem, complete_model_fields, lower_model_document,
+)
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import AttachmentElement, FieldElement, ModelAddress, WireElement
@@ -295,8 +297,8 @@ def lower_evaluate_attachments(
         )
     elif evaluated_task is not None:
         resolved, evaluated_task = lower_trial_interventions(resolved, evaluated_task, components)
-    before = lower_model_document(trained, components, binding)
-    after = lower_model_document(resolved, components, binding)
+    before = lower_model_document(complete_model_fields(trained, components), components, binding)
+    after = lower_model_document(complete_model_fields(resolved, components), components, binding)
     try:
         derived = tuple(sorted(_graph_edits(before.graph, after.graph), key=lambda edit: edit.path))
     except ValueError as error:

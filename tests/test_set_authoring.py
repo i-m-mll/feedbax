@@ -1,12 +1,15 @@
 """Duplicate Run, edits of a selected value, Save Set and Inline Set through the API, as Studio stores them."""
 
 from copy import deepcopy
+import json
 
 import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_sweep import Sweep
 from feedbax.jobs import _plan_run_data
+from feedbax.planner.project_plan import compile_project
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanRead
@@ -256,8 +259,7 @@ def test_removing_the_last_copy_removes_the_axis(studio):
     before = _runs(folders, "baseline")
     _duplicate(folders, client, "baseline")
     _set_edit(folders, client, {"kind": "remove_value", "step": "baseline", "axis": "run", "value": "run-2"})
-    assert folders.read(PROJECT).project.steps["baseline"].sweep is None or not folders.read(
-        PROJECT).project.steps["baseline"].sweep.axes
+    assert folders.read(PROJECT).project.steps["baseline"].sweep is None
     assert _runs(folders, "baseline") == before
 
 
@@ -490,18 +492,39 @@ def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
         assert after["window=pulse"] != before["window=pulse"]
 
 
-def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
+@pytest.mark.parametrize("policy", [{}, {"inherit_rows": False}], ids=["last-axis", "keep-row-policy"])
+def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio, policy):
     folders, client = studio
     train_before = _runs(folders, "train")
     for _ in range(3):
         _duplicate(folders, client, "other", ["default"])
     _set_edit(folders, client, {"kind": "save_set", "step": "other", "axis": "run"})
+    if policy:
+        reply = client.patch(BASE, json={
+            "revision": folders.read(PROJECT).revision,
+            "files": [{
+                "address": {"kind": "step", "id": "other"},
+                "patches": [{"op": "add", "path": f"/sweep/{key}", "value": value}
+                            for key, value in policy.items()],
+            }],
+        })
+        assert reply.status_code == 200, reply.text
     before = folders.read(PROJECT).project.steps["other"].sweep.axes["run"]
     sweep = _runs(folders, "other")
     assert len(sweep) == 4
 
     _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
-    assert list(_runs(folders, "other")) == ["default"]
+    after = _runs(folders, "other")
+    assert list(after) == ["default"], folders.read_plan(PROJECT, revision=None).plan.diagnostics
+    stored = json.loads((folders.root / PROJECT / "steps" / "other.json").read_bytes())
+    if policy:
+        assert stored["sweep"] == policy
+    else:
+        assert "sweep" not in stored
+        project = folders.read(PROJECT).project
+        steps = project.steps | {"other": project.steps["other"].model_copy(update={"sweep": Sweep()})}
+        explicit_empty = compile_project(project.model_copy(update={"steps": steps}))
+        assert after == {run.key.row: run.request_id for run in explicit_empty.runs if run.key.step == "other"}
     revision = folders.read(PROJECT).revision
     reply = client.post(f"{BASE}/authoring/trials", json={
         "revision": revision, "run": {"variant": "default", "step": "other", "row": "default"},
@@ -624,9 +647,10 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
                 assert written.status_code == 200, written.text
             return payload, next(item for item in payload["fields"] if item["path"] == path)
 
-        _, blank = author("load")
-        assert blank["text"] == "" and blank["site"]["site"]["expected"]["base"] == "boolean"
-        assert "is_catch" in {name["id"] for name in blank["site"]["site"]["names"]}
+        view, blank = author("load")
+        site = view["sites"][blank["site"]]
+        assert blank["text"] == "" and site["expected"]["base"] == "boolean"
+        assert "is_catch" in {name["id"] for name in site["names"]}
         _, listed = author("listed")
         assert "Weighted or Co-occurring" in listed["problems"][0]["reason"]
         assert listed["problems"][0]["span"] == {"start": 0, "end": 4}
@@ -645,7 +669,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
         _, valid = author("load", {"kind": "text", "text": "not is_catch"}, save=True)
         assert not valid["problems"] and valid["text"] == "not is_catch"
         view, field = author("load")
-        assert not field["site"]["parts"]
+        assert not view["sites"][field["site"]]["parts"]
         menu = client.post(f"{BASE}/authoring/trials/expression-menu", json={
             "revision": view["revision"], "run": run, "expression_context": view["expression_context"],
             "field": field["path"], "part": ["args", 0],

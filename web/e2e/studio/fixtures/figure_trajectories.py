@@ -2,8 +2,10 @@
 trajectory spec authors in the figure inspector."""
 
 import json
+from itertools import islice
 import sys
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.examples import load_shipped_projects
 from web.e2e.studio.fixtures.canonical_evaluate import _MASS, _seed
@@ -30,8 +32,8 @@ def _view(label: str, role: str, source: dict, panel: str, layer: dict):
         "inputs": {role: source},
         "figure": {
             "data": [role],
-            "layout": [{"name": panel, "row": 1, "col": 1, "axes_labels": {"x": "Time (s)", "y": "Position (m)"}}],
-            "layers": [{"name": "line", "role": role, "panel": panel, "mark": "line"} | layer],
+            "layout": {panel: {"row": 1, "col": 1, "axes_labels": {"x": "Time (s)", "y": "Position (m)"}}},
+            "layers": {"line": {"role": role, "panel": panel, "mark": "line"} | layer},
         },
     }
 
@@ -40,8 +42,8 @@ def seed(home: str, project_id: str):
     project = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task = project["documents"]["simple-reaches-task"]["payload"]
     task["fixed_steps"] = 8
-    task["epochs"][0]["end"]["length"]["value"] = 8
-    task["validation_trials"] = task["validation_trials"][:2]
+    task["epochs"]["move"]["end"]["length"]["value"] = 8
+    task["validation_trials"] = dict(islice(task["validation_trials"].items(), 2))
     train = project["steps"]["simple-reaches"]
     train["base"]["inline"]["training_config"].update(batch_size=1, replicates=1)
     first = {"checkpoint": {"index": 0}}
@@ -65,14 +67,14 @@ def seed(home: str, project_id: str):
         },
     }
     project["documents"] |= {
-        "hands": {"schema": "feedbax.analysis_document.v1", "label": "Hands", "payload": {
+        "hands": {"schema": ANALYSIS_SCHEMA, "label": "Hands", "payload": {
             "inputs": {"states": {"kind": "dataset"}},
             "views": {"hand-paths": _view("Hand paths", "trials", {"input": "states"}, "hand", {
                 "select": first, "group": ["member", "condition", "trial"],
                 "encode": {"x": "state_time", "y": {"variable": _POSITION, "select": {"xy": "x"}}},
             })},
         }},
-        "dynamics": {"schema": "feedbax.analysis_document.v1", "label": "Dynamics", "payload": {
+        "dynamics": {"schema": ANALYSIS_SCHEMA, "label": "Dynamics", "payload": {
             "inputs": {"states": {"kind": "dataset"}},
             "operations": {"pca": {
                 "label": "Pca",

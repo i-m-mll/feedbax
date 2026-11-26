@@ -15,7 +15,7 @@ from feedbax.contracts.project_resolution import compose_document
 from feedbax.web.app import create_app
 from feedbax.web.services.project_plan import row_problems
 from tests.support.managed_train_fixture import managed_evaluation_step
-from tests.test_evaluate_documents import FEE, MASS, TASK, _based, _data, _model, _with_mass, _with_push
+from tests.test_evaluate_documents import MASS, TASK, _based, _data, _model, _with_mass, _with_push
 
 _URL = "/api/projects/reach"
 _PLANT = {"composites": [], "element": {"kind": "component", "id": "plant"}}
@@ -106,13 +106,14 @@ def test_editing_the_base_for_its_remaining_reader_preserves_an_unselected_copy(
     project = _Project(tmp_path, data)
     with project.client:
         prior = project.ids()
+        original = project.composed("model")
         based = project.project().documents["model-2"]
         result = project.edit(_mass(3.0), step="other")
         assert not result["created"]
         assert project.project().documents["model-2"] == based
         assert project.ids()["fee"] == prior["fee"]
         assert project.ids()["other"] != prior["other"]
-        assert project.composed("model") == _with_mass(_model(data), 3.0)
+        assert project.composed("model") == _with_mass(original, 3.0)
 
 
 def test_an_evaluation_field_edit_makes_a_document_based_on_its_subjects(tmp_path):
@@ -143,10 +144,12 @@ def test_an_evaluation_edit_with_its_subject_chosen_is_written_to_the_subjects_d
     project = _Project(tmp_path, _data())
     with project.client:
         prior = project.ids()
+        original = project.composed("model")
         result = project.edit(_mass(2.0), step="check", chosen=("fee",))
         assert result["created"] == []
         assert set(project.project().documents) == set(_data()["documents"])
-        assert project.composed("model") == _with_mass(_model(_data()), 2.0)
+        original["interior"]["components"]["plant"].setdefault("fields", {})["mass"] = 2.0
+        assert project.composed("model") == original
         assert project.reads("check") == "model" and project.ids()["fee"] != prior["fee"]
 
 
@@ -308,6 +311,7 @@ def test_connection_review_reads_the_topology_on_the_selected_sweep_value(tmp_pa
 def test_an_evaluation_task_edit_makes_a_document_based_on_its_subjects(tmp_path):
     project = _Project(tmp_path, _data())
     with project.client:
+        original = project.ids()["fee"]
         task = project.composed(TASK)
         bound = task["variables"]["start"]["value"]["args"][0]["args"][0]
         path = "/variables/start/value/args/0/args/0/value"
@@ -326,7 +330,7 @@ def test_an_evaluation_task_edit_makes_a_document_based_on_its_subjects(tmp_path
         saved = project.client.patch(_URL, json={"revision": project.snapshot()["revision"], "files": body["files"]})
         assert saved.status_code == 200, saved.text
         assert project.reads("check", "task") == f"{TASK}-2"
-        assert project.ids()["fee"] == FEE
+        assert project.ids()["fee"] == original
 
 
 def test_a_variant_s_evaluation_task_edit_is_a_document_only_its_row_points_at(tmp_path):
@@ -485,6 +489,7 @@ def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path
     project = _Project(tmp_path, data)
 
     with project.client:
+        original = project.composed("model")
         revision = project.snapshot()["revision"]
         before = project.plan()
         assert len(before.runs) == 3 and all(not row.problems for row in before.runs)
@@ -513,7 +518,7 @@ def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path
         assert values["value-1"].value == values["value-1"].patches[path].value == unresolved
         assert values["value-1"].patches[_MASS_TEXT].value == 2.0
         assert [values[member].value for member in ("value-2", "value-3")] == [100, 128]
-        assert reopened.documents["model"].payload == data["documents"]["model"]["payload"]
+        assert reopened.documents["model"].payload == original
         after = project.plan()
         (problem,) = row_problems(after)
         assert problem.path == "sweep.axes.hidden-size.values.value-1"

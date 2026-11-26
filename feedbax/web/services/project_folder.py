@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from hmac import compare_digest, digest
 import os
 from pathlib import Path
 from secrets import token_bytes
+from threading import Lock
 from typing import TYPE_CHECKING
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
@@ -45,6 +47,7 @@ if TYPE_CHECKING:
         ModelConnectionReview, ModelConnectionReviewRequest, ModelEditRequest, ModelEditResponse, ModelUndoRequest,
     )
     from feedbax.contracts.expression_registry import FunctionRegistry
+    from feedbax.contracts.expression_values import Problem
     from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.synthesis.methods import SynthesisMethodRegistry
 from feedbax.training.methods import TrainingMethodRegistry
@@ -84,6 +87,24 @@ class ProjectFolderService(ProjectFolder):
         )
         self._model_undo_key = token_bytes(32)
         self.trial_expression_menus = TrialExpressionMenus()
+        self._task_choice_problems: OrderedDict[tuple[object, ...], tuple[Problem, ...]] = OrderedDict()
+        self._task_choice_lock = Lock()
+
+    def task_choice_problems(
+        self, key: tuple[object, ...], prepare: Callable[[], tuple[Problem, ...]],
+    ) -> tuple[Problem, ...]:
+        """Reuse the problems of a pairing under the same effective inputs and registries."""
+        with self._task_choice_lock:
+            if (cached := self._task_choice_problems.get(key)) is not None:
+                self._task_choice_problems.move_to_end(key)
+                return cached
+        problems = prepare()
+        with self._task_choice_lock:
+            self._task_choice_problems[key] = problems
+            self._task_choice_problems.move_to_end(key)
+            if len(self._task_choice_problems) > 128:
+                self._task_choice_problems.popitem(last=False)
+        return problems
 
     def open_selected_folder(self, folder: Path) -> StudioProjectDocument:
         """Open a folder selected through the private native control socket."""

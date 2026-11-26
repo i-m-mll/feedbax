@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
 
+from feedbax.contracts.authored_arrays import AuthoredArrayBudgetError
 from feedbax.contracts.canonical_json import CanonicalJsonError
 from feedbax.contracts.expression_site import ExpressionPartSite
 from feedbax.contracts.model_edit import (
@@ -80,7 +81,7 @@ def _project_response[Result](response: Response, operation: Callable[[], Result
         snapshot = operation()
     except ProjectFolderNotFound as exc:
         raise HTTPException(404, detail=str(exc), headers=_NO_STORE) from exc
-    except (ProjectFolderInvalid, CanonicalJsonError) as exc:
+    except (ProjectFolderInvalid, CanonicalJsonError, AuthoredArrayBudgetError) as exc:
         raise HTTPException(422, detail=str(exc), headers=_NO_STORE) from exc
     except ProjectRevisionConflict as exc:
         raise HTTPException(

@@ -154,7 +154,7 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     root = tmp_path / "saved"
     _, files = _write_walkthrough(root)
     invalid = json.loads(files["documents/velocity-figure.json"])
-    invalid["payload"]["layers"][0]["style"] = {"band_alpha": -1}
+    invalid["payload"]["layers"]["bounds"]["style"] = {"band_alpha": -1}
     name = "documents/bad-figure.json"
     files[name] = json.dumps(invalid).encode()
     (root / name).write_bytes(files[name])
@@ -181,7 +181,7 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     assert state == "cannot_run" and "feedbax.unknown" in reason
     assert table["report"][1] == "waiting"
     assert "steps/analyze.json" in output.err
-    assert "documents/bad-figure.json:payload.layers.0.style.band_alpha" in output.err
+    assert "documents/bad-figure.json:payload.layers.bounds.style.band_alpha" in output.err
     assert _files(root) == files
 
     registries = new_application_registry_bundle()
@@ -197,7 +197,7 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     assert any(
         (problem.place, problem.document_path)
         == (StudioAnalysisPlace(part="analysis", element="bad", name="Saved comparison"),
-            "payload.layers.0.style.band_alpha")
+            "payload.layers.bounds.style.band_alpha")
         for problem in mounted.problems
     )
     assert any(element.name == "profile" and element.status == "waiting" for element in mounted.analysis_elements)

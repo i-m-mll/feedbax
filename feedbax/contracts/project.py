@@ -9,8 +9,10 @@ from typing import Annotated, Any, Literal, Protocol
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, field_validator, model_validator
 
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, check_analysis_labels
+from feedbax.contracts.artifact_custody import CONTENT_TREE_REF_PREFIX, ContentTreeRef
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_VERSION, ImportedModelSource
+from feedbax.contracts.loaded_model import ImportedModelSource, LoadedModelAsset
+from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
 from feedbax.contracts.project_sources import pointer
@@ -117,13 +119,38 @@ def apply_document_edits(
 
 
 class LoadedModelDocument(StrictModel):
-    schema_version: Literal[LOADED_MODEL_SCHEMA_VERSION]
     model: DocumentReference
-    """The Model's project address for navigation. Its pinned revision is in ``source``."""
+    """The Model's project address for navigation."""
 
-    source: ImportedModelSource
+    model_revision: LoadedModelAsset
+    """The exact scientific Model projection at import."""
+
+    weights: LoadedModelAsset
+    """The canonical descriptor of the native weights tree."""
+
+    encoding_sha256: Sha256
     archive: ProjectModelArchive | None = Field(default=None, exclude_if=lambda value: value is None)
-    """The project's portable model file, named at import."""
+    """A portable archive at a path other than the one implied by the document key."""
+
+    def archive_path(self, document: str) -> str:
+        return self.archive or f"models/{document}.feedbax-model"
+
+    def lower(self) -> ImportedModelSource:
+        descriptor = self.weights.lower()
+        return ImportedModelSource(
+            kind="imported",
+            model=self.model_revision.lower(),
+            weights=ContentTreeRef(tree_id=f"{CONTENT_TREE_REF_PREFIX}{descriptor.sha256}", descriptor=descriptor),
+            encoding=SemanticModelEncoding(descriptor_sha256=self.encoding_sha256),
+        )
+
+    @classmethod
+    def from_source(cls, model: DocumentReference, source: ImportedModelSource) -> LoadedModelDocument:
+        return cls(
+            model=model, model_revision=LoadedModelAsset.from_ref(source.model),
+            weights=LoadedModelAsset.from_ref(source.weights.descriptor),
+            encoding_sha256=source.encoding.descriptor_sha256,
+        )
 
 
 def check_document_schema(schema_id: str) -> None:
@@ -140,13 +167,14 @@ def check_document_schema(schema_id: str) -> None:
 
 
 def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
+    from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID
     from feedbax.contracts.project_storage import stored_document_models
     from feedbax.contracts.report_document import ReportDocument
 
     check_document_schema(schema_id)
     if schema_id == ANALYSIS_SCHEMA:
         check_analysis_labels(payload)
-    elif schema_id not in ("subset", ReportDocument.model_fields["schema_version"].default):
+    elif schema_id not in ("subset", STORED_FIGURE_DOCUMENT_SCHEMA_ID, ReportDocument.model_fields["schema_version"].default):
         if (model := stored_document_models()[schema_id]) is not None:
             model.model_validate(payload)
 

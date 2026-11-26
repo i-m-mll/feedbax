@@ -8,11 +8,11 @@ from pydantic import Field, JsonValue, TypeAdapter, ValidationError, model_valid
 from typing_extensions import TypeVar
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.figure_document import FigureSource
+from feedbax.contracts.figure_document import StoredFigureSource
 from feedbax.contracts.project_inputs import DocumentReference, NonemptyText, ProjectName
 
 
-ANALYSIS_SCHEMA = "feedbax.analysis_document.v1"
+ANALYSIS_SCHEMA = "feedbax.analysis_document.v2"
 ELEMENT_FAMILIES = ("operations", "views")
 _LABEL = TypeAdapter(NonemptyText)
 
@@ -70,7 +70,7 @@ class OperationElement(StrictModel):
     params: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-_Figure = TypeVar("_Figure", default=FigureSource | DocumentReference)
+_Figure = TypeVar("_Figure", default=StoredFigureSource | DocumentReference)
 
 
 class FigureElement(StrictModel, Generic[_Figure]):
@@ -82,10 +82,12 @@ class FigureElement(StrictModel, Generic[_Figure]):
 
 
 class AnalysisPayload(StrictModel, Generic[_Figure]):
-    schema_version: Literal["feedbax.analysis_document.v1"] = "feedbax.analysis_document.v1"
     inputs: dict[ProjectName, AnalyzeInput] = Field(default_factory=dict)
     operations: dict[ProjectName, OperationElement] = Field(default_factory=dict)
     views: dict[ProjectName, FigureElement[_Figure]] = Field(default_factory=dict)
+
+
+StoredAnalysisPayload = AnalysisPayload[StoredFigureSource | DocumentReference]
 
 
 class AnalysisDocument(AnalysisPayload[_Figure], Generic[_Figure]):

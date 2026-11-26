@@ -6,7 +6,6 @@ from pathlib import Path
 
 from feedbax.contracts.loaded_model import ImportedModelProvenance, ImportedModelSource, decode_imported_model_document
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_resolution import LoadedModelRead, ResolvedImportedModel, TerminalTrainSource
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.model_tree import ModelTree, read_model_tree
@@ -45,8 +44,7 @@ def imported_model_reader(store_path: Path) -> Callable[[LoadedModelRead], Resol
         return ImmutableArtifactBlobProvider(store_path)
 
     def read(request: LoadedModelRead) -> ResolvedImportedModel:
-        loaded = LoadedModelDocument.model_validate_json(request.authored)
-        return resolve_imported_model(provider(), loaded.source)
+        return resolve_imported_model(provider(), request.source)
 
     return read
 

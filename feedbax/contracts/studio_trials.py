@@ -15,7 +15,7 @@ from feedbax.contracts.model_edit import (
 from feedbax.contracts.objective_document import StoredObjectiveDocument, StoredObjectiveTerm
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
+from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldSiteTables, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scene import ScenePoint
 from feedbax.contracts.studio_scope import StudioStoreChoice
@@ -184,7 +184,8 @@ class StudioTrialEpochInstance(StudioTrialEpoch):
 
 class StudioTaskChoice(StrictModel):
     document: ProjectName
-    problems: list[Problem]
+    problem_indices: list[Annotated[int, Field(ge=0)]]
+    """The choice's problems, as positions in the response's Task problem list."""
 
 
 class StudioTrialObjectiveSource(StrictModel):
@@ -206,7 +207,7 @@ class StudioSetField(StrictModel):
     entries: list[StudioSetFieldEntry]
 
 
-class StudioTrialAuthoring(StrictModel):
+class StudioTrialAuthoring(StudioFieldSiteTables):
     revision: Sha256
     run: StudioSavedTrainKey
     expression_context: str
@@ -226,6 +227,8 @@ class StudioTrialAuthoring(StrictModel):
     set_fields: list[StudioSetField] = Field(default_factory=list)
     task_types: list[StudioTaskType]
     tasks: list[StudioTaskChoice]
+    task_problems: list[Problem]
+    """Distinct problems referenced by the Task choices."""
     variables: list[ScopedValue]
     signals: list[ScopedValue]
     epochs: list[StudioTrialEpoch]
