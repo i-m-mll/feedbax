@@ -106,6 +106,7 @@ class StudioFieldFunction(StrictModel):
 
     id: str
     signature: str
+    label: str | None = Field(default=None, exclude_if=lambda value: value is None)
     parameters: tuple[FunctionParameter, ...] = ()
     display_class: FunctionClass
     min_args: int

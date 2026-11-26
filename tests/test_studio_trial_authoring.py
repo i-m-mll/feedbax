@@ -962,9 +962,11 @@ def test_objective_offsets_project_paired_editable_fields(tmp_path):
         assert field(shown, start)["conversion"] is None
         assert field(shown, end)["conversion"] == {"value": .05, "unit": "s"}
         assert not field(shown, start)["can_sweep"]
-        assert {"value", "formula", "link", "draw"} <= set(field(shown, start)["site"]["kinds"])
-        assert "sweep" not in field(shown, start)["site"]["kinds"]
-        assert "sweep" not in field(shown, end)["site"]["kinds"]
+        start_site = shown["sites"][field(shown, start)["site"]]
+        end_site = shown["sites"][field(shown, end)["site"]]
+        assert {"value", "formula", "link", "draw"} <= set(start_site["kinds"])
+        assert "sweep" not in start_site["kinds"]
+        assert "sweep" not in end_site["kinds"]
 
         edit(start, "-25 ms")
         reopened = author()
@@ -1362,8 +1364,9 @@ def test_until_authoring_switches_and_refuses_a_limit_that_rounds_to_zero(tmp_pa
             assert f"{end}/length" in fields
             condition = fields[f"{end}/condition"]
             assert condition.text == ""
-            assert condition.site.site.expected.base == "boolean"
-            assert {value.name for value in condition.site.site.names} >= {"command", "time", "t"}
+            site = result.sites[condition.site]
+            assert site.expected.base == "boolean"
+            assert {value.name for value in site.names} >= {"command", "time", "t"}
 
         assert_empty_condition(author(), "length")
         offered = change("length", "true ≤ 0.3 s")
@@ -1400,12 +1403,21 @@ def test_expression_menu_reuses_the_exact_projected_pairing(tmp_path, monkeypatc
 
     with TestClient(app) as client:
         folders = app.state.project_folders
+        prepared_fields = {}
+        remember = folders.trial_expression_menus.remember
+
+        def record_fields(project, revision, run, fields):
+            token = remember(project, revision, run, fields)
+            prepared_fields[token] = fields[pointer]
+            return token
+
+        monkeypatch.setattr(folders.trial_expression_menus, "remember", record_fields)
         revision = folders.read(project).revision
         request = {"revision": revision, "run": run}
         authored = client.post(url, json=request)
         assert authored.status_code == 200, authored.text
         view = StudioTrialAuthoring.model_validate(authored.json())
-        assert all(not field.site.parts for field in view.fields)
+        assert all(not site.parts for site in view.sites.values())
 
         edit = client.post(url, json=request | {"change": {
             "kind": "expression", "path": pointer, "edit": {"kind": "text", "text": "start"},
@@ -1419,10 +1431,9 @@ def test_expression_menu_reuses_the_exact_projected_pairing(tmp_path, monkeypatc
             pytest.fail("Opening an expression menu attempted to prepare another trial pairing.")
 
         monkeypatch.setattr(folders, "read_plan", forbid_plan)
-        field = next(field for field in view.fields if field.path == pointer)
-        expression = view.task.variables["target"].value
+        field = prepared_fields[view.expression_context]
         functions = app.state.bootstrap_state.bundle.expression_functions
-        expected = project_site(field.site.site, functions, expression).parts
+        expected = project_site(field.site, functions, field.expression).parts
 
         def menu(**updates):
             return client.post(url + "/expression-menu", json=(request | {
