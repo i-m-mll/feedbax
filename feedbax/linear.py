@@ -104,11 +104,7 @@ def quadratic_cost(
 
     def score(values):
         states, commands = values[:, :state_width], values[:-1, state_width:]
-        terms = objective.evaluate_trial(observe(states, commands), task, key, key)
-        return sum(
-            (jnp.where(term.covered, term.value, 0) for term in terms.values()),
-            jnp.asarray(0.0, dtype=values.dtype),
-        )
+        return objective.trial_loss(observe(states, commands), task, key, key)
 
     scalar_and_gradient = jax.jit(jax.value_and_grad(score))
     constant, gradient = scalar_and_gradient(base)

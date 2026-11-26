@@ -684,7 +684,7 @@ def _objective_points(
     coverage_paths = {
         key.removeprefix(coverage_prefix) for key in dataset.descriptor.variables if key.startswith(coverage_prefix + "/")
     }
-    labels = {pointer((term.id,)): term.name or term.id for term in objective.terms if term.enabled}
+    labels = {pointer((term.report_key,)): term.name or term.report_key for term in objective.terms if term.enabled}
     if paths != coverage_paths or paths != labels.keys():
         raise ValueError("Evaluate objective terms and coverage differ from the authored Objective.")
     terms: list[list[StudioEvaluationObjectiveTerm]] = [[] for _ in checkpoints]

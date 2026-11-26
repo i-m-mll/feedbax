@@ -50,6 +50,10 @@ class ObjectiveTerm(ObjectiveTermValue, _TermIdentity):
     name: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
     family: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
+    @property
+    def report_key(self) -> str:
+        return self.family if self.family is not None else self.id
+
 
 class StoredObjectiveTerm(_TermFields[StoredExpression, StoredWindow], StoredFamilyMember):
     weight: StoredExpression = Field(default=1, validate_default=True)
