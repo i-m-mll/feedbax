@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Locator, type Page } from '@playwright/test';
 import {
   type ModelDocument, type StudioJobSubmission, type StudioSavedTrainRuns,
@@ -43,7 +43,6 @@ async function drag(page: Page, from: Locator, to: Locator | { x: number; y: num
  * wrong ports, or a document that does not survive a reload.
  */
 test('authors a Model with the pointer and trains it @round', async ({ page, request }) => {
-  test.setTimeout(58_000);
   const { snapshot } = await startProject(page);
   const projectPath = '/api/projects/' + snapshot.project_id;
   const runsPath = projectPath + '/train-runs';
@@ -205,7 +204,7 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   expect(response.status(), await response.text()).toBe(202);
   const { items } = await response.json() as StudioJobSubmission;
   expect(items).toEqual([expect.objectContaining({ disposition: 'admitted', job_id: expect.any(String) })]);
-  await expect.poll(async () => (await reviewed()).rows[0]?.attempts[0]?.status, { timeout: 20_000 }).toBe('succeeded');
+  await expect.poll(async () => (await reviewed()).rows[0]?.attempts[0]?.status, { timeout: jobTimeout }).toBe('succeeded');
   expect((await reviewed()).rows[0].attempts[0]).toMatchObject({
     job_id: items[0].job_id, progress: { completed_updates: 2, total_updates: 2 },
   });

@@ -23,7 +23,7 @@ async function select(page: Page, step: string) {
 // being written, a rule the check cannot read that Enter drops instead of saving, its Problem lost on reopening or
 // left after its repair, checkpoint text that is dropped or offered To Sweep, To Rows offered on an unranked rule, and
 // a field for Evaluate subjects that Train Start lacks.
-test('a run rule narrows an Evaluate subject and a Train Start, and a rule naming a name that is not swept is kept with its Problem', async ({ page, request }) => {
+test('a run rule narrows an Evaluate subject and a Train Start, and a rule naming a name that is not swept is kept with its Problem', { tag: '@slow' }, async ({ page, request }) => {
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'walkthrough-files'));
   const train = files.at(-1).step;
   train.base.inline.seed = 0;
@@ -135,7 +135,7 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
 
 // Catches the new step's first field taking the keyboard when its form lands after the user has started writing the
 // Train Start rule: the rule is then saved on that blur, or dropped, and Enter saves nothing.
-test('a rule written before the new step\'s form lands keeps the keyboard and saves on Enter', async ({ page, request }) => {
+test('a rule written before the new step\'s form lands keeps the keyboard and saves on Enter', { tag: '@slow' }, async ({ page, request }) => {
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'walkthrough-files'));
   const train = files.at(-1).step;
   train.base.inline.seed = 0;

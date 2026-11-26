@@ -14,7 +14,7 @@ const hex = (number: number) => number.toString(16).padStart(64, '0');
 const encoded = (value: unknown) => btoa(JSON.stringify(value));
 const value = (number: number): ProjectValueEdit => ({ op: 'replace', path: '/payload/value', value: number });
 const initial: StudioProjectSnapshot = {
-  names: { documents: {}, steps: {}, elements: {} }, variant_names: {},
+  variant_names: {},
   project_id: 'reach',
   revision: hex(1),
   presentation_revision: hex(2),
@@ -22,12 +22,12 @@ const initial: StudioProjectSnapshot = {
   presentation: null,
   declaration: { revision: hex(3), data: encoded({}), authored_revision: hex(3) },
   file_revisions: [
-    { address: model, revision: hex(4), data: encoded({ schema: 'graph', payload: { value: 1 } }) },
-    { address: task, revision: hex(5), data: encoded({ schema: 'task', payload: { value: 1 } }) },
+    { address: model, revision: hex(4), data: encoded({ schema: 'graph', label: 'Model', payload: { value: 1 } }) },
+    { address: task, revision: hex(5), data: encoded({ schema: 'task', label: 'Task', payload: { value: 1 } }) },
   ],
   project: { documents: {
-    model: { schema: 'graph', payload: { value: 1 } },
-    task: { schema: 'task', payload: { value: 1 } },
+    model: { schema: 'graph', label: 'Model', payload: { value: 1 } },
+    task: { schema: 'task', label: 'Task', payload: { value: 1 } },
   } },
 };
 
@@ -140,7 +140,12 @@ function fixture(settleMs = 400, start = initial) {
     };
     return { member: to, snapshot: current };
   });
-  const editor = new ProjectEditController(document(), { read, write, replay, rename, create, memberCommand }, settleMs);
+  /** The Service's name for a new member, which a creating gesture writes as given. */
+  const nameMember = vi.fn<NonNullable<ProjectEditTransport['nameMember']>>(async (_id, { member }) => {
+    const kind = member.kind === 'document' ? member.schema_id.split('.').pop()! : member.kind === 'step' ? member.step : member.family;
+    return { id: `named-${kind}`, label: `Named ${kind}` };
+  });
+  const editor = new ProjectEditController(document(), { read, write, replay, rename, create, memberCommand, nameMember }, settleMs);
   return { editor, write, replay, read, rename, create, memberCommand, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
 }
 
@@ -171,11 +176,11 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
   const { editor } = fixture(400, {
     ...initial,
     project: { steps: { train: {} as never }, documents: {
-      model: { schema: 'feedbax.spec.model', payload: {} },
-      task: { schema: 'feedbax.spec.python_task', payload: {} },
-      objective: { schema: 'feedbax.report_document.v1', payload: {} },
-      'a-model': { schema: 'feedbax.spec.model', payload: {} },
-      'a-task': { schema: 'feedbax.spec.task_document', payload: {} },
+      model: { schema: 'feedbax.spec.model', label: 'Model', payload: {} },
+      task: { schema: 'feedbax.spec.python_task', label: 'Task', payload: {} },
+      objective: { schema: 'feedbax.report_document.v1', label: 'Objective', payload: {} },
+      'a-model': { schema: 'feedbax.spec.model', label: 'A model', payload: {} },
+      'a-task': { schema: 'feedbax.spec.task_document', label: 'A task', payload: {} },
     } },
   });
   const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(initial);
@@ -184,15 +189,16 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
 
   await createTrain(editor, initial.revision);
   expect(create).toHaveBeenCalledWith('New Step', [
-    { kind: 'document', id: 'objective-2', document: {
-      schema: 'feedbax.spec.objective_document', label: 'Objective', payload: { id: 'objective', terms: [] },
+    { kind: 'document', id: 'named-objective_document', document: {
+      schema: 'feedbax.spec.objective_document', label: 'Named objective_document', payload: { id: 'objective', terms: [] },
     } },
-    { kind: 'document', id: 'training', document: expect.objectContaining({ schema: 'feedbax.spec.training_document' }) },
-    expect.objectContaining({ kind: 'step', id: 'train-2', step: expect.objectContaining({
+    { kind: 'document', id: 'named-training_document', document: expect.objectContaining({ schema: 'feedbax.spec.training_document' }) },
+    expect.objectContaining({ kind: 'step', id: 'named-train', step: expect.objectContaining({
+      label: 'Named train',
       base: { inline: expect.objectContaining({ trial_documents: {
         model: { document: 'a-model' }, task: { document: 'a-task' },
-        objective: { document: 'objective-2' },
-      }, settings: { document: 'training', pointer: '/settings' } }) },
+        objective: { document: 'named-objective_document' },
+      }, settings: { document: 'named-training_document', pointer: '/settings' } }) },
     }) }),
   ], initial.revision);
   editor.dispose();
@@ -202,9 +208,9 @@ it('creates a Synthesize step whose payload names its documents and method, with
   const { editor } = fixture(400, {
     ...initial,
     project: { steps: { synthesize: {} as never }, documents: {
-      'a-model': { schema: 'feedbax.spec.model', payload: {} },
-      'a-task': { schema: 'feedbax.spec.python_task', payload: {} },
-      'an-objective': { schema: 'feedbax.spec.objective_document', payload: {} },
+      'a-model': { schema: 'feedbax.spec.model', label: 'A model', payload: {} },
+      'a-task': { schema: 'feedbax.spec.python_task', label: 'A task', payload: {} },
+      'an-objective': { schema: 'feedbax.spec.objective_document', label: 'An objective', payload: {} },
     } },
   });
   const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(initial);
@@ -212,8 +218,8 @@ it('creates a Synthesize step whose payload names its documents and method, with
     { key: 'feedbax.constant_parameters', label: 'Constant parameters', settings_schema: {} },
   ], origins: {} } } } as unknown as StudioAuthoringCatalog;
   await createSynthesize(editor, initial.revision, catalog);
-  expect(create).toHaveBeenCalledWith('New Step', [{ kind: 'step', id: 'synthesize-2', step: {
-    kind: 'synthesize', base: { inline: {
+  expect(create).toHaveBeenCalledWith('New Step', [{ kind: 'step', id: 'named-synthesize', step: {
+    kind: 'synthesize', label: 'Named synthesize', base: { inline: {
       model: { document: 'a-model' }, task: { document: 'a-task' }, objective: { document: 'an-objective' },
       method: 'feedbax.constant_parameters',
     } },
@@ -304,11 +310,32 @@ it('undoes and redoes placement while preserving a later fold', async () => {
   editor.dispose();
 });
 
+// Catches a successful create refused because the Service stored the file canonically, without the defaults sent.
+it('acknowledges a created file the Service stores without the defaults the request spelled out', async () => {
+  const { editor, create, restore } = fixture();
+  const address = { kind: 'document', id: 'reach-task' } as const;
+  const authored = { schema: 'feedbax.spec.task', label: 'Task', payload: { epochs: [], links: [] } };
+  const stored = { schema: authored.schema, label: authored.label, payload: { epochs: [] } };
+  create.mockImplementationOnce(async () => {
+    const snapshot = {
+      ...initial, revision: hex(61),
+      project: { ...initial.project, documents: { ...initial.project.documents, [address.id]: stored } },
+      file_revisions: [...initial.file_revisions, { address, revision: hex(60), data: btoa(JSON.stringify(stored)) }],
+    };
+    restore(snapshot);
+    return { configuration: { project: 'reach', store: 'results' }, snapshot };
+  });
+  await editor.createFiles('New Task', [{ ...address, document: authored }], initial.revision);
+  expect(editor.getSnapshot().saved.project.documents?.[address.id]).toEqual(stored);
+  expect(editor.getSnapshot().undoName).toBe('New Task');
+  editor.dispose();
+});
+
 it('does not attribute a preexisting identical file to a failed create', async () => {
   const { editor, create } = fixture();
   create.mockRejectedValueOnce(new ApiRequestError('network', '/api/projects/reach/files', 'Offline'));
   await expect(editor.createFile({
-    kind: 'document', id: 'model', document: { schema: 'graph', payload: { value: 1 } },
+    kind: 'document', id: 'model', document: { schema: 'graph', label: 'Model', payload: { value: 1 } },
   })).rejects.toMatchObject({ kind: 'network' });
   expect(create).toHaveBeenCalledTimes(1);
   expect(editor.getSnapshot().saved.revision).toBe(initial.revision);
@@ -319,7 +346,7 @@ it('refuses to create a file from a stale reviewed project', async () => {
   const { editor, create, external } = fixture();
   external(model, [value(2)]);
   await expect(editor.createFile({
-    kind: 'step', id: 'train-2', step: { kind: 'train', base: { step: 'train' } },
+    kind: 'step', id: 'train-2', step: { kind: 'train', label: 'Train 2', base: { step: 'train' } },
   }, initial.revision)).rejects.toBeInstanceOf(ProjectEditConflictError);
   expect(create).not.toHaveBeenCalled();
   editor.dispose();
@@ -350,11 +377,11 @@ it('does not widen a selected Train row to an unselected variant', async () => {
       problems: [],
     },
   };
-  const project = { steps: { train: { kind: 'train' as const, base: { inline: {} } } } };
+  const project = { steps: { train: { kind: 'train' as const, label: 'Train', base: { inline: {} } } } };
   const names = { documents: {}, steps: { train: 'Train' }, elements: {} };
   await expect(createCheckpointTrain(editor, {
     stepId: 'train', selection: { kind: 'rows', stepId: 'train', runIds: [savedRunId(rows[1].key)] },
-  }, projectWindowPlan(project, { names, variant_names: { baseline: names, compare: names } }, projection, 'compare'), projection)).rejects.toBeInstanceOf(ProjectEditConflictError);
+  }, projectWindowPlan(project, { baseline: names, compare: names }, projection, 'compare'), projection)).rejects.toBeInstanceOf(ProjectEditConflictError);
   expect(create).not.toHaveBeenCalled();
   editor.dispose();
 });
@@ -447,8 +474,8 @@ it('coalesces observed revisions across files and stops the burst at an undo or 
   const request = replay.mock.calls[0][1];
   expect(request.revision).toBe(outside);
   expect(request.files.map(({ address, after }) => [address.id, after]).sort()).toEqual([
-    ['model', encoded({ schema: 'graph', payload: { value: 1 } })],
-    ['task', encoded({ schema: 'task', payload: { value: 2 } })],
+    ['model', encoded({ schema: 'graph', label: 'Model', payload: { value: 1 } })],
+    ['task', encoded({ schema: 'task', label: 'Task', payload: { value: 2 } })],
   ]);
   expect(editor.getSnapshot()).toMatchObject({ undoName: 'Local Task', redoName: 'Outside Change' });
   await editor.redo();
@@ -709,7 +736,7 @@ it('undoes a narrowed edit, the document it creates and the patch that follows, 
   const { editor, current, write, replay } = fixture();
   const before = current();
   const edit: StoredEdit = {
-    created: [{ kind: 'document', id: 'model-2', document: { schema: 'graph', base: { document: 'model' }, differences: { '/value': { value: 2 } } } }],
+    created: [{ kind: 'document', id: 'model-2', document: { schema: 'graph', label: 'Model 2', base: { document: 'model' }, differences: { '/value': { value: 2 } } } }],
     files: [{ address: task, patches: [value(7)] }],
   };
   const settled = await editor.storeEdit('Set Value', edit, { reviewedRevision: before.revision });

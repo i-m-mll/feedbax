@@ -2,10 +2,10 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
-from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.request_refs import Name, ReferenceValue, RequestId, Sha256
@@ -46,6 +46,11 @@ class MethodCheckpointModel(ReferenceValue):
 class MethodCheckpointExtra(ReferenceValue):
     object: ContentObjectRef
     descriptor_sha256: Sha256
+
+
+class TrainMetricUpdate(StrictModel):
+    update: int = Field(gt=0, strict=True)
+    metrics: dict[str, JsonValue]
 
 
 class TrainMetricPrefix(ReferenceValue):

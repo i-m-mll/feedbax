@@ -15,6 +15,7 @@ from feedbax.contracts.studio_project import StudioProjectSnapshot
 class StudioLoadedModelImportQuery(StrictModel):
     revision: Sha256
     name: ProjectName
+    label: NonemptyText | None = None
     model: ProjectName
 
 

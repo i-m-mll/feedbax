@@ -13,7 +13,7 @@ from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFEREN
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_edit import (
     AxisValueRuns, EvaluateModelRequest, ListedRuns, EvaluateModelState,
-    VariantRuns, StudioEvaluateValueSource,
+    VariantRuns, StudioEvaluateValueSource, StudioStepNameReference,
 )
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, LoadedModelDocument, Project, apply_differences, diff, nearest_shared_base,
@@ -35,9 +35,10 @@ def evaluate_subject(definition: SelectedRunDefinition | None) -> tuple[RunKey, 
 
 
 def evaluate_value_source(source: ValueSource, *, evaluate_step: str | None = None) -> StudioEvaluateValueSource:
-    if evaluate_step is not None:
-        return StudioEvaluateValueSource(kind="evaluate", step=source.step or evaluate_step)
-    return StudioEvaluateValueSource(kind="trained", step=source.step or source.name)
+    return StudioEvaluateValueSource(
+        kind="evaluate" if evaluate_step is not None else "trained",
+        reference=StudioStepNameReference(kind="step", key=source.step or evaluate_step or source.name),
+    )
 
 
 @dataclass(frozen=True)

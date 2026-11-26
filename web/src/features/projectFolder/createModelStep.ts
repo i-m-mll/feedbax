@@ -5,38 +5,37 @@ import {
 } from '@/generated/studioContracts';
 import { catalogEntries } from '@/api/studioAuthoring';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
-import { blankDocuments, namedDocument } from './useProjectDocuments';
+import { blankDocuments, namedDocument, type UnnamedDocument } from './useProjectDocuments';
 import { trainingDocumentKeys } from './trainingDocument';
-import { generatedName, holds } from './generatedName';
 
 const { model, task, objective, training } = blankDocuments;
 const pythonTaskSchema = 'feedbax.spec.python_task';
 
 /** Feedbax's simple reaches without its links, which name the fields of the shipped Model that a new step does not read. */
-const seededTask: Document = (() => {
+const seededTask: UnnamedDocument = (() => {
   if (!('payload' in firstTrainTask)) throw new Error('The shipped simple reaches is not a root document');
   return { ...firstTrainTask, payload: { ...firstTrainTask.payload as Record<string, JsonValue>, links: [] } };
 })();
 
 /** Binds a new step to the project's first document of each schema, adding to `files` the documents that are missing. */
-function documentBinder(saved: StudioProjectSnapshot, files: StudioProjectCreateFile['file'][]) {
+function documentBinder(editor: ProjectEditController, saved: StudioProjectSnapshot, files: StudioProjectCreateFile['file'][]) {
   const documents = saved.project.documents ?? {};
   const documentNames = Object.keys(documents).sort();
-  return (document: Document, schemas = [document.schema]) => {
+  return async (document: UnnamedDocument, schemas = [document.schema]) => {
     const existing = documentNames.find((id) => schemas.includes(documents[id].schema));
     if (existing !== undefined) return existing;
-    const named = namedDocument(documents, saved.names.documents, document);
+    const named = await namedDocument(editor, document, saved.revision);
     files.push({ kind: 'document', ...named });
     return named.id;
   };
 }
 
 /** The Model, Task and Objective a new model-producing step reads, with the field that holds its Task. */
-function trialDocuments(saved: StudioProjectSnapshot, bind: ReturnType<typeof documentBinder>) {
-  const graph = bind(model);
-  const taskDocument = bind(seededTask, [task.schema, pythonTaskSchema]);
+async function trialDocuments(saved: StudioProjectSnapshot, bind: ReturnType<typeof documentBinder>) {
+  const graph = await bind(model);
+  const taskDocument = await bind(seededTask, [task.schema, pythonTaskSchema]);
   const taskField = saved.project.documents?.[taskDocument]?.schema === pythonTaskSchema ? 'python_task' : 'task';
-  return { model: graph, task: taskDocument, taskField, objective: bind(objective) } as const;
+  return { model: graph, task: taskDocument, taskField, objective: await bind(objective) } as const;
 }
 
 function reviewed(editor: ProjectEditController, reviewedRevision: string) {
@@ -50,14 +49,14 @@ function reviewed(editor: ProjectEditController, reviewedRevision: string) {
 export async function createTrain(editor: ProjectEditController, reviewedRevision: string) {
   const saved = reviewed(editor, reviewedRevision);
   const files: StudioProjectCreateFile['file'][] = [];
-  const bind = documentBinder(saved, files);
-  const trial = trialDocuments(saved, bind);
-  const trainingDocument = bind(training);
-  const id = generatedName('train', holds(saved.project.steps));
+  const bind = documentBinder(editor, saved, files);
+  const trial = await trialDocuments(saved, bind);
+  const trainingDocument = await bind(training);
+  const { id, label } = await editor.nameMember({ kind: 'step', step: 'train' }, reviewedRevision);
   files.push({
     kind: 'step', id,
     step: {
-      kind: 'train',
+      kind: 'train', label,
       base: { inline: {
         trial_documents: {
           model: { document: trial.model },
@@ -81,12 +80,12 @@ export async function createSynthesize(editor: ProjectEditController, reviewedRe
   if (!method) throw new Error('No synthesis method is registered.');
   const saved = reviewed(editor, reviewedRevision);
   const files: StudioProjectCreateFile['file'][] = [];
-  const trial = trialDocuments(saved, documentBinder(saved, files));
-  const id = generatedName('synthesize', holds(saved.project.steps));
+  const trial = await trialDocuments(saved, documentBinder(editor, saved, files));
+  const { id, label } = await editor.nameMember({ kind: 'step', step: 'synthesize' }, reviewedRevision);
   files.push({
     kind: 'step', id,
     step: {
-      kind: 'synthesize',
+      kind: 'synthesize', label,
       base: { inline: {
         model: { document: trial.model },
         task: { document: trial.task },

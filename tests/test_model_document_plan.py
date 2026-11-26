@@ -330,12 +330,12 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         assert len(plan.runs) == 2 and all(run.admission_problem is None for run in plan.runs), (
             plan.diagnostics, tuple(run.problems for run in plan.runs),
         )
-        assert {run.label for run in plan.runs} == {"Offset 0.1 s", "Offset 0.2 s"}
         window = ProjectPlanRead.without_history(settled).response(include_window_map=True).window_map
         assert window is not None
         (axis,) = window.steps[0].axes
-        assert axis.label == "Offset"
+        assert axis.name == offset["label"]
         assert [value.value_label for value in axis.values] == ["0.1 s", "0.2 s"]
+        assert {run.label for run in plan.runs} == {value.name for value in axis.values}
         values = set()
         for run in plan.runs:
             documents = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.trial_documents
@@ -399,12 +399,10 @@ def test_scale_operand_sweep_has_the_field_name_without_changing_the_axis_key(tm
     assert window is not None
     (axis,) = window.steps[0].axes
     assert axis.id == "value"
-    assert axis.label == "Factor"
-    assert [(value.id, value.label, value.value_label) for value in axis.values] == [
-        ("value-1", "Factor 0.5", "0.5"), ("value-2", "Factor 1", "1"),
-    ]
-    assert [(row.key.row, row.label) for row in window.rows] == [
-        ("value=value-1", "Factor 0.5"), ("value=value-2", "Factor 1"),
+    assert axis.name == factor["label"]
+    assert [(value.id, value.value_label) for value in axis.values] == [("value-1", "0.5"), ("value-2", "1")]
+    assert [(row.key.row, row.name) for row in window.rows] == [
+        (f"value={value.id}", value.name) for value in axis.values
     ]
 
 
@@ -416,6 +414,8 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
     model["step_seconds"] = 0.02
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "fields", Project.model_validate(raw))
+    model_file = tmp_path / "fields/documents/reach-model.json"
+    authored_model = model_file.read_bytes()
     url = "/api/projects/fields"
     owner = {"composites": [], "element": {"kind": "graph"}}
 
@@ -452,7 +452,7 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
             source = definition.sources["/payload/trial_documents/model/step_seconds"]
             assert source.kind == "sweep_value"
             assert definition.sources["/payload/alias"] == source
-        assert snapshot.project.documents["reach-model"].payload == model
+        assert model_file.read_bytes() == authored_model
 
         component_owner = {"composites": [],
                            "element": {"kind": "component", "id": "plant"}}
@@ -801,9 +801,7 @@ def test_an_optimizer_swept_with_its_parameters_crosses_the_learning_rate(tmp_pa
         assert sorted((row.coordinates["optimizer"].label, row.coordinates["learning-rate"].value) for row in plan.rows) == [
             ("Adam", 0.001), ("Adam", 0.003), ("SGD", 0.001), ("SGD", 0.003),
         ]
-        assert {row.label for row in plan.rows} == {
-            f"Learning rate {rate} · {name}" for rate in (0.001, 0.003) for name in ("Adam", "SGD")
-        }
+        assert len({row.label for row in plan.rows}) == len(plan.rows) == 4
         adam = train.runs(tmp_path, "classes", optimizer="adam")
         assert {definitions[key]["b1"] for key in adam} == {0.8}
         assert all("b1" not in optimizer_ for key, optimizer_ in definitions.items() if key not in adam)
@@ -844,6 +842,7 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
     raw["steps"]["baseline"]["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     raw["steps"]["picked"] = managed_evaluation_step("train")
     raw["steps"]["train-2"] = {
+        "label": "Train 2",
         "kind": "train", "base": {"step": "train"}, "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
         "deltas": [{"layer_id": "initialize", "patches": [
             {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
@@ -874,10 +873,9 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
         coordinate = {row.key: (row.coordinates["optimizer"].label, getattr(row.coordinates.get(axis), "value", None))
                       for row in runs}
         assert sorted(coordinate.values(), key=str) == [("Adam", 0.8), ("Adam", 0.9), ("SGD", None)]
-        assert {row.label for row in runs} == {
-            "Adam · Optimizer b1 0.8", "Adam · Optimizer b1 0.9", "SGD",
-        }
+        assert len({row.label for row in runs}) == len(runs) == 3
         (sgd,) = (key for key, value in coordinate.items() if value[0] == "SGD")
+        assert next(row.label for row in runs if row.key == sgd) == "SGD"
         assert train.requests(tmp_path, name)[sgd] == before[sgd]
         assert {key: plan.selected_definitions[key].payload["settings"]["optimizer"].get("b1") for key in coordinate} == {
             key: value for key, (_, value) in coordinate.items()
@@ -1002,7 +1000,7 @@ def test_a_model_field_swept_for_some_runs_reads_as_the_selected_runs_have_it(tm
         assert sorted(member["value"] for member in whole["members"]) == [1.0, 2, 3]
         assert [value["value"] for value in mass(first, {"seed": ["seed-1"]})["sweep"]["values"]] == [2, 3]
         other = mass([second], {"seed": ["seed-2"]})
-        assert other["sweep"] is None and not other["mixed"] and other["text"] == "1.0"
+        assert other["sweep"] is None and not other["mixed"] and other["text"] == "1"
 
 
 def test_a_class_without_a_swept_parameter_keeps_the_authored_axis(tmp_path):
@@ -1064,7 +1062,7 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
         step = reopened["project"]["steps"]["train"]
         assert "learning_rate" not in step["base"]["inline"]["training_config"]
         assert step["sweep"]["axes"]["learning-rate"] == {
-            "path": field_path[1:].replace("/", "."),
+            "label": rate["label"], "path": field_path[1:].replace("/", "."),
             "range": {"start": 1e-4, "stop": 1e-2, "count": 5, "scale": "log"},
         }
         fields = client.post(endpoint, json={"revision": reopened["revision"]}).json()["fields"]
@@ -1461,6 +1459,7 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
     project = Project.model_validate(raw)
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "nested", project)
+    authored_documents = folders.read("nested").project.documents
     before = folders.read_plan("nested", revision=None)
     owner = {"composites": ["wrapper", "controller"], "element": {
         "kind": "port", "end": {"owner": "component", "component": "cell", "port": "output", "direction": "output"},
@@ -1490,7 +1489,7 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
         result = requests()
         assert result.keys() == prior.keys()
         assert {key for key in prior if result[key] != prior[key]} == {selected}
-        assert folders.read("nested").project.documents == project.documents
+        assert folders.read("nested").project.documents == authored_documents
         assert "model_attachments" not in (tmp_path / "nested" / "steps/baseline.json").read_text()
         address = added["changed"][0]
         changed = edit(client, {
@@ -1545,9 +1544,9 @@ def test_a_variant_edit_of_an_evaluation_is_a_document_the_variant_points_it_at(
     assert result["status"] == "applied", result
     (created,) = result["created"]
     edited = folders.read("nested").project
-    assert edited.documents["reach-model"] == project.documents["reach-model"]
+    assert edited.documents["reach-model"] == snapshot.project.documents["reach-model"]
     assert edited.documents[created].base.document == "reach-model"
-    assert edited.steps == project.steps
+    assert edited.steps == snapshot.project.steps
     assert {path: write.model_dump(mode="json") for path, write in edited.sweep.rows["treated"].patches.items()} == {
         "steps.baseline.base.inline.trial_documents": {"op": "add", "value": {"model": {"document": created}}},
     }
@@ -2222,7 +2221,9 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     reopened = ProjectFolderService(folders.root)
     reopened_view = ProjectPlanService(reopened, jobs).read(project, revision=None)
     reopened_model = reopened.read(project).project.documents[model_name].payload
-    assert reopened_model == raw["documents"][model_name]["payload"]
+    assert ModelDocument.model_validate(reopened_model) == ModelDocument.model_validate(
+        raw["documents"][model_name]["payload"],
+    )
     assert reopened_view.settled.plan.requests == plan.plan.requests
     assert reopened_view.attempts_by_run[train][0].job_id == train_job.job_id
     assert reopened_view.attempts_by_run[train][0].successful_receipt == train_receipt

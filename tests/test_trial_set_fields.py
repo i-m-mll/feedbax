@@ -93,7 +93,7 @@ def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slo
     with jax.enable_x64(source != "task" or jax.config.x64_enabled):
         registry = ComponentRegistry()
         if source == "set":
-            bank = RootDocument(schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"pulse": {
+            bank = RootDocument(label="Document", schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"pulse": {
                 "differences": {"/interior/wires/out/attachments": {"value": [attachment]}},
             }}})
             field = TrialSetField.model_validate({"axis": {"set": "bank"}, "sampling": {"kind": "weighted", "none": 0}})
@@ -163,7 +163,7 @@ def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
                      }}]}],
     })
     intervention = {"kind": "attachment", "id": "pulse", "parent": {"kind": "wire", "id": "input"}}
-    bank = RootDocument(schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"curl": {
+    bank = RootDocument(label="Document", schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"curl": {
         "task_variables": [
             {"id": "amp", "name": "Amplitude", "type": {"base": "real"}, "value": choice(1.0, 2.0)},
             {"id": "onset", "name": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
@@ -239,7 +239,7 @@ def _conditioned_project(sampling):
     placements = {}
     for kind, axis in enumerate(("reach", "hold")):
         bank = f"{axis}-bank"
-        raw["documents"][bank] = {"schema": "feedbax.set_document.v1", "payload": {
+        raw["documents"][bank] = {"label": "Document", "schema": "feedbax.set_document.v1", "payload": {
             "entries": {"first": {}, "second": {}},
         }}
         placements[axis] = {
@@ -331,7 +331,7 @@ def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
         }}}
         for name, vector in {"x": [1.0, 0.0], "y": [0.0, 2.0], "z": [-3.0, -3.0]}.items()
     }
-    raw["documents"]["bank"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": entries}}
+    raw["documents"]["bank"] = {"label": "Bank", "schema": "feedbax.set_document.v1", "payload": {"entries": entries}}
     raw["steps"]["train"]["set_fields"] = {"bank": {
         "axis": {"set": "bank"},
         "sampling": {"kind": "weighted", "weights": {"x": 2, "y": 3, "z": 4}, "none": 1},
@@ -441,6 +441,7 @@ def test_set_free_twin_keeps_trial_values_and_matches_the_unmodified_train():
     plain_request, plain = training(raw)
     for bank, vector in (("choice-bank", [1.0, 0.0]), ("switch-bank", [0.0, 2.0])):
         raw["documents"][bank] = {
+            "label": "Document",
             "schema": "feedbax.set_document.v1",
             "payload": {"entries": {"pulse": {"differences": {
                 "/interior/wires/effector-wire/attachments": {"value": [{

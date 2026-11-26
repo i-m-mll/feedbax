@@ -13,6 +13,7 @@ from typing import Literal
 
 from lark import Lark, Token, Tree, UnexpectedInput
 
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
     RESERVED_NAMES,
@@ -27,12 +28,14 @@ from feedbax.contracts.expression_values import (
     NodePath,
     Problem,
     ProblemCode,
+    Scalar,
     Site,
     SweepList,
     SweepRange,
     SweepSample,
     TextSpan,
     UnresolvedValue,
+    ValueBase,
     scope_problems,
 )
 from feedbax.contracts.expression_registry import POINT_INTERPOLATIONS, FunctionClass, FunctionRegistry
@@ -498,20 +501,30 @@ _PREFIX = {"not": (3, "not "), "neg": (7, "-"), "pos": (7, "+")}
 _UNARY, _POWER, _INDEXED, _ATOM = 7, 8, 9, 10
 
 
-def _print(node: Expression, names: Mapping[str, str], least: int = 0) -> str:
+def _literal_text(value: Scalar, unit: str | None, expected: ValueBase | None) -> str:
+    number = canonical_json_v2_bytes(value).decode()
+    if type(value) is float and number.lstrip("-").isdigit():
+        # A decimal point or exponent keeps the legacy parser's real type.
+        legacy = repr(value)
+        if expected != ValueBase.REAL or abs(value) >= 2**53 or legacy == "-0.0":
+            number = legacy
+    return number + ("°" if unit == "°" else f" {unit}" if unit else "")
+
+
+def _print(
+    node: Expression, names: Mapping[str, str], least: int = 0, *, expected: ValueBase | None = None,
+) -> str:
     """The text of ``node`` as an operand that binds at least as tightly as ``least``, parenthesized only if it must be."""
-    text, precedence = _printed(node, names)
+    text, precedence = _printed(node, names, expected)
     return f"({text})" if precedence < least else text
 
 
-def _printed(node: Expression, names: Mapping[str, str]) -> tuple[str, int]:
+def _printed(node: Expression, names: Mapping[str, str], expected: ValueBase | None) -> tuple[str, int]:
     match node:
         case UnresolvedValue(text=text):
             return text, _ATOM
         case LiteralValue(value=value, unit=unit):
-            if unit == "st" and type(value) is float and value.is_integer():
-                value = int(value)
-            text = str(value).lower() + ("°" if unit == "°" else f" {unit}" if unit else "")
+            text = _literal_text(value, unit, expected)
             return text, _UNARY if text.startswith("-") else _ATOM
         case NameValue(reference=reference):
             name = names[reference]
@@ -558,8 +571,8 @@ def _printed(node: Expression, names: Mapping[str, str]) -> tuple[str, int]:
             return f"{function}({', '.join(parts)})", _ATOM
 
 
-def print_field(value: FieldValue, site: Site) -> str:
-    """Render editable text with the names currently assigned to references."""
+def print_field(value: FieldValue, site: Site, *, fragment: bool = False) -> str:
+    """Render editable text, using the site's expected type only for a whole field."""
     names = {item.id: item.name for item in site.names}
     match value:
         case SweepList(members=members):
@@ -572,4 +585,4 @@ def print_field(value: FieldValue, site: Site) -> str:
         case SweepSample(draw=draw, count=count):
             return f"sample({_print(draw, names)}, {count})"
         case _:
-            return _print(value, names)
+            return _print(value, names, expected=None if fragment else site.expected.base)

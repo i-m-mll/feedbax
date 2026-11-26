@@ -1,3 +1,4 @@
+import { referentName } from '@/components/ui/ShownText';
 import { createElement } from 'react';
 import { studioName } from '@/components/activity/studioVocabulary';
 import type { ShelfBar, ShelfRow, ShelfSegment } from '@/components/timeline/Shelf';
@@ -54,6 +55,11 @@ function joined(spans: readonly ShelfBar[]): ShelfBar[] {
  * The nominal trial's rows: each epoch at its nominal length, a drawn length with a whisker from where its end falls
  * least to greatest, a condition's dashed out to its limit, Rest what remains; each signal present over its cells.
  */
+/** The Task's current name for its epoch `epoch`, which a trial record keys by id; marked missing when the Task lacks it. */
+function epochName(task: ShelfTask, epoch: string) {
+  return referentName(task.epochs.find(({ id }) => id === epoch), epoch);
+}
+
 export function nominalRows(task: ShelfTask): ShelfRow[] {
   let cursor = 0;
   const segments = task.epochs.map((epoch, index): ShelfSegment => {
@@ -142,8 +148,8 @@ export function trialRows(task: ShelfTask, record: TrialRecord, stepSeconds: num
   return [
     {
       kind: 'segments', key: 'epochs', name: studioName('epochs'),
-      segments: record.timeline.flatMap(({ epoch, label, start, end, outcome }, index) => end > start ? [{
-        key: `${epoch}:${index}`, name: label, start: start * stepSeconds, end: end * stepSeconds,
+      segments: record.timeline.flatMap(({ epoch, start, end, outcome }, index) => end > start ? [{
+        key: `${epoch}:${index}`, name: epochName(task, epoch), start: start * stepSeconds, end: end * stepSeconds,
         selects: named(task.document, `epoch:${epoch}`), ended: endedBy(outcome),
       }] : []),
     },
@@ -183,8 +189,8 @@ const stepShareBars = (share: readonly number[], stepSeconds: number) => shareBa
  */
 export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSeconds: number): ShelfRow[] {
   return [
-    ...aggregate.epochs.map(({ epoch, label, share }): ShelfRow => ({
-      kind: 'bars', key: `epoch:${epoch}`, name: label, selects: named(task.document, `epoch:${epoch}`), bars: stepShareBars(share, stepSeconds),
+    ...aggregate.epochs.map(({ epoch, share }): ShelfRow => ({
+      kind: 'bars', key: `epoch:${epoch}`, name: epochName(task, epoch), selects: named(task.document, `epoch:${epoch}`), bars: stepShareBars(share, stepSeconds),
     })),
     ...task.signals.map((signal): ShelfRow => ({
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
@@ -204,8 +210,8 @@ export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSecond
  * one row per signal, term and intervention, each heavy where every trial holds and light where some do.
  */
 export function meanRows(task: ShelfTask, { shelf }: TrialMean): ShelfRow[] {
-  const segments = shelf.epochs.flatMap(({ epoch, label, occurrence, start, end }): ShelfSegment[] => end.mean > start.mean ? [{
-    key: `${epoch}:${occurrence}`, name: label, start: start.mean, end: end.mean, selects: named(task.document, `epoch:${epoch}`),
+  const segments = shelf.epochs.flatMap(({ epoch, occurrence, start, end }): ShelfSegment[] => end.mean > start.mean ? [{
+    key: `${epoch}:${occurrence}`, name: epochName(task, epoch), start: start.mean, end: end.mean, selects: named(task.document, `epoch:${epoch}`),
     ...end.upper > end.lower && { spread: { least: end.lower, greatest: end.upper } },
   }] : []).sort((a, b) => a.start - b.start);
   return [

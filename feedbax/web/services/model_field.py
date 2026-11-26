@@ -13,7 +13,6 @@ from feedbax.contracts.expression_values import (
     SweepList, SweepRange, SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress, PortElement, WireElement
-from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, DelayInitialTask, DelayInitialValue, InterventionAttachment,
     LeafComponent, ModelDocument,
@@ -43,6 +42,7 @@ from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, p
 from feedbax.studio.selection import StoredEdit, merged_files
 from feedbax.studio.value_structure import value_structure
 from feedbax.web.services.authored_scope import choose_prepared_edit, selected_edit_runs
+from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
@@ -112,6 +112,10 @@ def _window_fields(
         ), window_offset=True, expression=None if is_number or isinstance(expression, UnresolvedValue) else expression)
 
 
+_OPERAND_TITLES = {"factor": "Factor", "value": "Value", "low": "Low", "high": "High", "initial": "Initial"}
+"""The titles of the operands the intervention operations and delays declare."""
+
+
 def _attachment_fields(
     branch: ModelDocument | CompositeComponent, owner: ModelAddress, names: tuple[ScopedValue, ...],
 ) -> Iterator[_Field]:
@@ -177,7 +181,7 @@ def _attachment_fields(
             return number
 
         yield _Field(address, NumericField(
-            address.stored_path(), member_display_name(name), value,
+            address.stored_path(), _OPERAND_TITLES.get(name, "Operand"), value,
             Site(expected=value_type, finest=Level.TRIAL, names=names),
             True, validate,
         ), expression=expression)
@@ -252,7 +256,7 @@ def _fields(
 
         address = _address(owner, "fields", name)
         yield _Field(address, NumericField(
-            address.stored_path(), name.replace("_", " ").capitalize(), number,
+            address.stored_path(), definition.params.field_title(name), number,
             Site(expected=ValueType(base=base), finest=Level.RUN, structural=True),
             name in component.fields and "fields" in component.model_fields_set, validate,
         ))
@@ -386,6 +390,7 @@ def model_fields(
     shown = project.documents.get(body.document)
     changes, restored = (shown.differences, shown.base.document) if isinstance(shown, BasedDocument) else ({}, None)
     definitions = ()
+    visible_axis_values = {}
     runs = None
     held: dict[str, list[int | float]] = {}
     evaluate = None
@@ -408,8 +413,12 @@ def model_fields(
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         scoped = tuple(RunKey(key.variant, key.step, row) for row in body.rows)
         plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key, *scoped)).plan
-        definitions = tuple(plan.selected_definitions[item] for item in (scoped or (key,))
+        definitions = tuple((item, plan.selected_definitions[item]) for item in (scoped or (key,))
                             if item in plan.selected_definitions)
+        if definitions:
+            visible_axis_values = axis_values(
+                row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)
+            )
         definition = plan.selected_definitions.get(key)
         if definition is not None and (model_payload := selected_model(definition, body.document)) is not None:
             effective_model = ModelDocument.model_validate(model_payload)
@@ -466,8 +475,15 @@ def model_fields(
                 numeric = replace(numeric, stored=True)
         relative = pointer(field.address.stored_path())
         changed = any(relative == path or relative.startswith(path + "/") for path in changes)
-        sources = dict.fromkeys(source for definition in definitions
-                                if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
+        # The window map groups equal coordinates. Keep the stored origin key and path.
+        sources = dict.fromkeys(
+            replace(source, value=value_id) if (
+                source.kind == "sweep_value" and source.step == run.step and source.axis is not None
+                and (value_id := visible_axis_values.get((run, source.axis))) is not None
+            ) else source
+            for run, definition in definitions
+            if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None
+        )
         view = project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
             held=held.get(field_key, ()),
@@ -475,7 +491,7 @@ def model_fields(
             scoped=bool(body.rows or body.axes),
             address=field.address, problems=_held_problems(field, functions, period)
             or (_held_problems(resolved, functions, period) if resolved is not None else []),
-            sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
+            sources=[StudioPlanReviewSource.from_source(source) for source in sources],
             changed=changed,
         )
         if field.window_offset or field.address.element.path[0] == "operands" and isinstance(field.address.element.parent, AttachmentElement):

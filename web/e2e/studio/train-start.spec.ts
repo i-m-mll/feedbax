@@ -6,7 +6,7 @@ import { chooseStepKind } from './fixtures/studioKeyboard';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('a continuation started from its Model keeps its definition and continues again, and a step based on a row shows its refusal', async ({ page, request }) => {
+test('a continuation started from its Model keeps its definition and continues again, and a step based on a row shows its refusal', { tag: '@slow' }, async ({ page, request }) => {
   const files = await fixture('ordinary-files', '2');
   const train = files.at(-1).step;
   train.sweep = { rows: { slow: {}, fast: { patches: { 'settings.optimizer.learning_rate.value': { value: 0.003 } } } } };
@@ -51,7 +51,7 @@ test('a continuation started from its Model keeps its definition and continues a
   await expect(inspector.getByRole('textbox', { name: 'Batches', exact: true })).toHaveValue('2');
 
   const { snapshot: based } = await appendManagedFiles(request, await saved(), [
-    { kind: 'step', id: 'row-based', step: { kind: 'train', base: { step: 'train', row: 'slow' } } },
+    { kind: 'step', id: 'row-based', step: { kind: 'train', label: 'Row based', base: { step: 'train', row: 'slow' } } },
   ]);
   await page.reload();
   await mapStep(page, 'row-based').click();

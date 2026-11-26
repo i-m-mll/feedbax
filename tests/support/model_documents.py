@@ -33,6 +33,7 @@ def read_changed_model(
     normalized = ModelDocument.model_validate(payload).model_dump(mode="json")
     name = name or f"{base}-{step}"
     raw["documents"][name] = {
+        "label": "Document",
         "schema": MODEL_DOCUMENT_SCHEMA_ID, "base": {"document": base},
         "differences": {
             path: record.model_dump(mode="json")

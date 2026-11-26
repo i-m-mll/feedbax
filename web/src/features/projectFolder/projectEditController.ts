@@ -1,4 +1,4 @@
-import { isHttpConflict, isRefusal, isServiceFailure } from '@/api/request';
+import { isHttpConflict, isRefusal, isServiceFailure, isUnanswered } from '@/api/request';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
@@ -11,6 +11,8 @@ import type {
   PresentationDocument,
   StudioMemberCommand,
   StudioMemberCommandResult,
+  StudioMemberName,
+  StudioMemberNameRequest,
   ProjectValueEdit,
   StudioProjectCreateFile,
   StudioProjectCreateFiles,
@@ -38,6 +40,7 @@ export interface ProjectEditTransport {
   rename: (id: string, body: StudioProjectRename, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   create: (id: string, body: StudioProjectCreateFile | StudioProjectCreateFiles, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   memberCommand?: (id: string, body: StudioMemberCommand, signal?: AbortSignal) => Promise<StudioMemberCommandResult>;
+  nameMember?: (id: string, body: StudioMemberNameRequest, signal?: AbortSignal) => Promise<StudioMemberName>;
   editModel?: (id: string, body: ModelEditRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
   undoModel?: (id: string, body: ModelUndoRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
 }
@@ -92,7 +95,7 @@ interface ReplayTarget extends ReplayContent {
   readonly content?: string;
 }
 
-export type ProjectEditValidation = (before: AuthoredProject, after: AuthoredProject) => void;
+export type ProjectEditValidation = (before: AuthoredProject, after: AuthoredProject, direction: PendingEdit['direction']) => void;
 
 interface History {
   readonly undo: readonly Gesture[];
@@ -140,6 +143,25 @@ export class ProjectEditConflictError extends Error {
   constructor() {
     super('The project changed before the pending edits could be saved.');
   }
+}
+
+/** Reconcile a revision-bound read while a newer saved revision reaches the editor. */
+export function projectRead<T>(editor: ProjectEditController, revision: string, read: (signal: AbortSignal) => Promise<T>) {
+  return {
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      try {
+        return await read(signal);
+      } catch (error) {
+        if (isHttpConflict(error)) {
+          signal.throwIfAborted();
+          await editor.reconcileRead(revision);
+          signal.throwIfAborted();
+        }
+        throw error;
+      }
+    },
+    retry: (attempt: number, error: Error) => isUnanswered(error) || attempt === 0 && isHttpConflict(error),
+  };
 }
 
 const emptyHistory: History = { undo: [], redo: [] };
@@ -320,14 +342,17 @@ function versionsMatch(a: StudioProjectRevision, b: StudioProjectRevision) {
   return a.revision === b.revision && a.presentation_revision === b.presentation_revision;
 }
 
+/**
+ * Whether `project` holds the file `file` creates, by its identity: its key, and its schema or step kind. The Service
+ * stores a created file canonically, without the defaults a request may spell out, so its content is not compared.
+ */
 export function containsCreatedFile(project: AuthoredProject, file: NamedFileCreation) {
-  const collection = file.kind === 'document' ? project.documents : project.steps;
-  if (!collection || !Object.prototype.hasOwnProperty.call(collection, file.id)) return false;
-  const actual = new Map(Object.entries(collection[file.id]));
-  const intended = Object.entries(file.kind === 'document' ? file.document : file.step);
-  return actual.size === intended.length && intended.every(([key, value]) =>
-    actual.has(key) && JSON.stringify(actual.get(key)) === JSON.stringify(value),
-  );
+  if (file.kind === 'document') {
+    const stored = project.documents?.[file.id];
+    return !!stored && Object.prototype.hasOwnProperty.call(project.documents, file.id) && stored.schema === file.document.schema;
+  }
+  const stored = project.steps?.[file.id];
+  return !!stored && Object.prototype.hasOwnProperty.call(project.steps, file.id) && stored.kind === file.step.kind;
 }
 
 function isAcknowledgedAddition(
@@ -670,6 +695,13 @@ export class ProjectEditController {
     return latest;
   }
 
+  /** The key and label the Service gives `member`, a member about to be created in the project at `revision`. */
+  nameMember(member: StudioMemberNameRequest['member'], revision = this.saved.revision): Promise<StudioMemberName> {
+    const run = this.transport.nameMember;
+    if (!run) throw new Error('This editor has no Service to name members.');
+    return run(this.saved.project_id, { revision, member }, this.signal);
+  }
+
   /**
    * Rename a document or step, or duplicate a document, on the server as one Undo entry.
    * `use` may then return authored patches computed against the command's result, such
@@ -766,6 +798,13 @@ export class ProjectEditController {
     }).catch(() => {});
   }
 
+  /** An older read can conflict while a write is being acknowledged. Let that write settle before reading the disk. */
+  reconcileRead(revision: string) {
+    return this.sequence(async () => {
+      if (this.saved.revision === revision) await this.refresh();
+    });
+  }
+
   keep(choice: 'disk' | 'edits') {
     return this.sequence(async () => {
       if (!this.outside) return;
@@ -824,7 +863,7 @@ export class ProjectEditController {
             pending.settle(savedEdit);
             continue;
           }
-          pending.gesture.validate?.(base, applied.project);
+          pending.gesture.validate?.(base, applied.project, pending.direction);
           const edits = [{ address, patches: applied.edits }];
           const adjusted = sameFile ? gesture : { ...gesture, files: edits, inverse: [{ address, patches: applied.inverse }] };
           const direction = sameFile ? pending.direction : 'edit';
@@ -889,7 +928,7 @@ export class ProjectEditController {
     files: readonly StudioProjectFilePatch[],
     project: ProjectEditContent,
   ) {
-    gesture.validate?.(this.draft, project);
+    gesture.validate?.(this.draft, project, direction);
     this.outsideBurst = undefined;
     const historyAfter = moveHistory(this.history, gesture, direction);
     let settle!: PendingEdit['settle'];

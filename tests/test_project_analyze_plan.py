@@ -47,9 +47,10 @@ _FIXTURES = Path(__file__).resolve().parents[1] / "web/e2e/studio/fixtures"
 
 def _project() -> Project:
     project = managed_train_project()
-    project.steps["baseline"] = Step.model_validate(managed_evaluation_step("train"))
+    project.steps["baseline"] = Step.model_validate(managed_evaluation_step("train") | {"label": "Baseline"})
     project.documents["velocity-analysis"] = RootDocument.model_validate(
         {
+            "label": "Velocity analysis",
             "schema": "feedbax.analysis_document.v1",
             "payload": json.loads((_FIXTURES / "velocity-analysis.json").read_bytes()) | {
                 "inputs": {"states": {"kind": "dataset"}},
@@ -58,6 +59,7 @@ def _project() -> Project:
     )
     project.documents["velocity-figure"] = RootDocument.model_validate(
         {
+            "label": "Velocity figure",
             "schema": "feedbax.figure_document.v1",
             "payload": {
                 "data": ["summary"],
@@ -77,6 +79,7 @@ def _project() -> Project:
     )
     project.steps["analyze"] = Step.model_validate(
         {
+            "label": "Analyze",
             "kind": "analyze",
             "base": {"document": "velocity-analysis"},
             "inputs": {"states": {"step": "baseline"}},
@@ -163,6 +166,7 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
 def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp_path, monkeypatch):
     project = _project()
     project.documents["heavy-model"] = BasedDocument.model_validate({
+        "label": "Heavy model",
         "schema": project.documents["point-mass"].schema_id,
         "base": {"document": "point-mass"},
         "differences": {"/interior/components/plant/fields/mass": {"value": 2}},
@@ -174,6 +178,7 @@ def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp
     velocity = analysis["operations"]["align"]["params"]["velocity"]
     analysis["operations"] = {
         "speed": {
+            "label": "Speed",
             "operation": "feedbax.trial_speed",
             "params": {"velocity": velocity},
             "inputs": {"states": {"input": "states"}},
@@ -181,6 +186,7 @@ def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp
     }
     analysis["views"] = {
         "profile": {
+            "label": "Profile",
             "figure": {"template": "feedbax.SpeedByTrial"},
             "inputs": {"speed": {"element": "speed", "product": "speed"}},
         },
@@ -205,11 +211,11 @@ def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
         snapshot = client.get("/api/projects/reach").json()
-        assert snapshot["names"]["documents"]["velocity-analysis"] == "Movement analysis"
-        assert snapshot["names"]["documents"]["velocity-figure"] == "Velocity figure"
-        assert snapshot["names"]["steps"]["train"] == "Train"
-        assert snapshot["names"]["elements"]["analyze"] == {"speed": "Speed", "profile": "Profile"}
-        assert snapshot["variant_names"]["default"] == snapshot["names"]
+        assert snapshot["project"]["documents"]["velocity-analysis"]["label"] == "Movement analysis"
+        assert snapshot["project"]["documents"]["velocity-figure"]["label"] == "Velocity figure"
+        assert snapshot["project"]["steps"]["train"]["label"] == "Train"
+        assert snapshot["variant_names"]["default"]["elements"]["analyze"] == {"speed": "Speed", "profile": "Profile"}
+        assert "names" not in snapshot
         response = client.get("/api/projects/reach/train-runs", params={"revision": snapshot["revision"], "window_map": True})
         assert response.status_code == 200, response.text
         saved = response.json()
@@ -241,6 +247,7 @@ def test_snapshot_names_follow_authored_edits_and_variant_overrides(tmp_path):
     project.documents["velocity-analysis"].label = "Analysis"
     project.documents["velocity-analysis"].payload["operations"]["align"]["label"] = "Align velocity"
     project.documents["broken-document"] = BasedDocument(
+        label="Broken document",
         schema="feedbax.figure_document.v1", base={"document": "absent-figure"},
     )
     project.sweep = Sweep.model_validate({"rows": {
@@ -258,20 +265,20 @@ def test_snapshot_names_follow_authored_edits_and_variant_overrides(tmp_path):
 
     folders = ProjectFolderService(tmp_path)
     before = folders.read("reach")
-    assert before.names.steps["analyze"] == "Movement"
-    assert before.names.elements["analyze"]["align"] == "Align velocity"
+    assert before.project.steps["analyze"].label == "Movement"
+    assert before.project.documents["velocity-analysis"].payload["operations"]["align"]["label"] == "Align velocity"
     assert before.variant_names["compare"].steps["analyze"] == "Compare"
     assert before.variant_names["compare"].documents["velocity-analysis"] == "Comparison analysis"
     assert before.variant_names["compare"].elements["analyze"]["align"] == "Align comparison"
     problem, = before.problems
-    assert problem.subject_name == "Absent figure"
+    assert problem.missing_subject == "absent-figure"
 
     after = folders.patch("reach", StudioProjectPatch.model_validate({
         "revision": before.revision,
         "address": {"kind": "document", "id": "velocity-analysis"},
         "patches": [{"op": "replace", "path": "/label", "value": "New name"}],
     }))
-    assert after.names.documents["velocity-analysis"] == "New name"
+    assert after.project.documents["velocity-analysis"].label == "New name"
     assert after.variant_names["baseline"].documents["velocity-analysis"] == "New name"
     assert after.variant_names["compare"].documents["velocity-analysis"] == "Comparison analysis"
 
@@ -280,10 +287,11 @@ def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(ho
     project = _project()
     analysis = project.documents["velocity-analysis"].payload
     velocity = analysis["operations"]["align"]["params"]["velocity"]
-    analysis["views"]["profile"] = {"figure": {"template": "feedbax.SpeedByTrial"}, "inputs": {}}
+    analysis["views"]["profile"] = {"label": "Profile", "figure": {"template": "feedbax.SpeedByTrial"}, "inputs": {}}
     summary = analysis["operations"]["summarize"]
     summary["params"].pop("ddof")
     analysis["views"]["summary"] = {
+        "label": "Summary",
         "figure": {"template": "feedbax.VelocitySummary"}, "inputs": {},
     }
     project.steps["other-analysis"] = project.steps["analyze"]
@@ -312,6 +320,7 @@ def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(ho
         edit = client.post(f"{url}/authoring/analyze", json=body | {
             "change": {"kind": "edit", "edits": [{
                 "op": "add", "path": "/operations/trial_speed", "value": {
+                    "label": "Operation",
                     "operation": "feedbax.trial_speed", "params": {"velocity": velocity},
                     "inputs": {"states": {"input": "states"}},
                 },
@@ -372,7 +381,7 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     reviewed = review("profile", "summary", {"element": "summarize", "product": "summary"})
     wired = preview_authored_files(project, reviewed).documents["velocity-analysis"].payload
     assert wired["views"]["profile"]["inputs"] == {"summary": {"element": "summarize", "product": "summary"}}
-    assert view == {"figure": {"document": "velocity-figure"}, "inputs": {}}
+    assert view == {"label": "Profile", "figure": {"document": "velocity-figure"}, "inputs": {}}
 
 
 def test_element_edit_and_upstream_attribution_leave_independent_requests_equal():
@@ -512,6 +521,7 @@ def test_named_figure_pin_does_not_supply_an_external_train_base():
     train = project.steps["train"]
     raw = json.dumps(train.base.inline).encode()
     project.documents["train-pin"] = RootDocument.model_validate({
+        "label": "Train pin",
         "schema": "feedbax.figure_document.v1",
         "payload": {"path": "train.json", "sha256": sha256_bytes(raw)},
     })
@@ -604,6 +614,7 @@ def test_analyze_collects_static_rows_in_each_named_variant():
     project.sweep = Sweep.model_validate({"rows": {"base": {}, "compare": {"from": "base"}}})
     project.steps["analyze"] = Step.model_validate(
         {
+            "label": "Analyze",
             "kind": "analyze",
             "base": {"document": "velocity-analysis"},
             "inputs": {"states": {"step": "conditions", "where": {"rule": "mass=heavy,nominal"}}},
@@ -651,6 +662,7 @@ def test_axis_pin_widens_when_its_source_gains_an_unconstrained_axis():
     after = compile_project(project, operations=operations)
     assert not after.diagnostics
     assert len(_decode(after, "align").inputs["states"]) == 3
+    assert {row.coordinates["seed"].axis_label for row in after.rows if row.key.step == "baseline"} == {"Seed"}
 
 
 def test_missing_axis_value_points_to_the_original_pin_and_names_remaining_values():
@@ -689,6 +701,7 @@ def test_analyze_clause_value_order_does_not_change_the_request():
 
     def choose(rows):
         project.steps["analyze"] = Step.model_validate({
+            "label": "Analyze",
             "kind": "analyze",
             "base": {"document": "velocity-analysis"},
             "inputs": {"states": {"step": "conditions", "where": {"clauses": [{"mass": rows}]}}},
@@ -743,6 +756,7 @@ def test_diagonal_axis_clauses_widen_and_keep_their_other_matches():
     opposite = plan([chosen[1], chosen[0], chosen[1]])
     assert not first.diagnostics and not opposite.diagnostics
     assert len(producers(first)) == 2
+    assert {coordinates["seed"].axis_label for coordinates in producers(first)} == {"Seed"}
     assert _decode(first, "align").id == _decode(opposite, "align").id
     assert project.steps["analyze"].inputs["states"].where.model_dump(exclude_unset=True) == {"clauses": chosen}
 

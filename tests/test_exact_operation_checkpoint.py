@@ -107,14 +107,16 @@ def read_weight(model: Annotated[Graph, ModelPort()], params: Settings) -> Annot
 
     (trained,) = run(save(), "train")
     assert trained["state"] == "succeeded", trained["outcome"]
-    raw["documents"]["read-model"] = {"schema": "feedbax.analysis_document.v1", "payload": {
+    raw["documents"]["read-model"] = {"label": "Read model", "schema": "feedbax.analysis_document.v1", "payload": {
         "inputs": {"model": {"kind": "model"}},
         "operations": {"read": {
+            "label": "Read",
             "operation": "checkpoint_probe.read_weight", "inputs": {"model": {"input": "model"}},
         }},
     }}
     for name, selector in (("earlier", {"at": 2}), ("last", "last"), ("missing", {"at": 1})):
         raw["steps"][name] = {
+            "label": "Analyze",
             "kind": "analyze", "base": {"document": "read-model"},
             "inputs": {"model": {"step": "train", "checkpoint": selector}},
         }

@@ -8,8 +8,8 @@ from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, check_analysis_labels
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.display_names import member_display_name as member_display_name
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, LOADED_MODEL_SCHEMA_VERSION, ImportedModelSource
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
@@ -35,12 +35,12 @@ type ProjectModelArchive = Annotated[str, StringConstraints(pattern=r"^models/[A
 
 class _LabelledMember(Protocol):
     @property
-    def label(self) -> str | None: ...
+    def label(self) -> str: ...
 
 
 def member_name(members: Mapping[str, _LabelledMember], key: str) -> str:
     member = members.get(key)
-    return member_display_name(key, member.label if member is not None else None)
+    return member.label if member is not None else f"missing reference {key!r}"
 
 
 def json_pointer_parts(pointer: str | None) -> tuple[str, ...]:
@@ -117,6 +117,8 @@ def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
         TrainingDocument.model_validate(payload)
     elif schema_id == LOADED_MODEL_SCHEMA_ID:
         LoadedModelDocument.model_validate(payload)
+    elif schema_id == ANALYSIS_SCHEMA:
+        check_analysis_labels(payload)
     else:
         # A Set holds Differences, so its module imports this one.
         from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
@@ -129,7 +131,7 @@ class RootDocument(StrictModel):
     """A document whose file holds its whole payload. ``label`` is only what Studio shows, and enters no request."""
 
     schema_id: NonemptyText = Field(alias="schema")
-    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
+    label: NonemptyText
     payload: JsonValue
 
     @model_validator(mode="after")
@@ -171,7 +173,7 @@ class BasedDocument(StrictModel):
     """
 
     schema_id: NonemptyText = Field(alias="schema")
-    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
+    label: NonemptyText
     base: DocumentBase
     differences: Differences = Field(default_factory=dict)
 
@@ -236,7 +238,7 @@ def apply_differences(base: Payload, differences: Differences) -> Payload:
 
 
 def same_json(left: Any, right: Any) -> bool:
-    """JSON equality: unlike ``==``, ``1``, ``1.0`` and ``true`` differ."""
+    """Authored edit equality, including the legacy distinction between integer and real literals."""
     if isinstance(left, dict):
         return isinstance(right, dict) and left.keys() == right.keys() and all(
             same_json(value, right[key]) for key, value in left.items()
@@ -310,7 +312,7 @@ class Step(StrictModel):
     ``label`` is only what Studio and the CLI show, and enters no request, run key or reference."""
 
     kind: StepKind
-    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
+    label: NonemptyText
     base: Base
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
     sweep: Sweep | None = None

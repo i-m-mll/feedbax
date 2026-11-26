@@ -6,7 +6,9 @@ variable stays referenced where it was read: the document still compiles to Prob
 
 from typing import assert_never
 
-from feedbax.contracts.expression_values import LiteralValue, Problem, ProblemCode, UnresolvedValue, ValueBase, ValueType
+from feedbax.contracts.expression_values import (
+    RESERVED_NAMES, LiteralValue, Problem, ProblemCode, UnresolvedValue, ValueBase, ValueType,
+)
 from feedbax.contracts.task_document import Cell, Epoch, Length, Link, Repeat, Signal, TaskDocument, Variable
 from feedbax.contracts.task_structure import (
     AddMember, MakeAbsent, MakePresent, MoveMember, RemoveMember, RenameMember, SetLink, SetSpan, SetType,
@@ -116,12 +118,26 @@ def _add(document: TaskDocument, change: AddMember) -> TaskDocument:
 
 def _edit_member(
     document: TaskDocument, change: RemoveMember | RenameMember | MoveMember | SetType, members: tuple, index: int,
-) -> TaskDocument:
+) -> TaskDocument | Problem:
     field = _FIELDS[change.member]
     item = members[index]
     rest = (*members[:index], *members[index + 1:])
     match change:
         case RenameMember():
+            peers = rest
+            if change.member == "variable":
+                peers += document.signals
+            elif change.member == "signal":
+                peers += document.variables
+            place = (field, item.id, "name")
+            if change.name in RESERVED_NAMES:
+                return Problem(
+                    code=ProblemCode.DUPLICATE_NAME, reason=f"The name {change.name!r} is reserved.", path=place,
+                )
+            if any(peer.name == change.name for peer in peers):
+                return Problem(
+                    code=ProblemCode.DUPLICATE_NAME, reason=f"The name {change.name!r} is already in use.", path=place,
+                )
             return document.model_copy(update={field: (*members[:index], item.model_copy(update={"name": change.name}),
                                                        *members[index + 1:])})
         case SetType():

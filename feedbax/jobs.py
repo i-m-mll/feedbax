@@ -31,7 +31,6 @@ from feedbax.contracts.execution_target import (
     LOCAL_RUN_KINDS, LOCAL_TARGET, LOCAL_TARGET_ID, AttemptTarget, ExecutionTargets,
     SessionTarget, SessionTargetProfile, TargetRunKind, attempt_target,
 )
-from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     JobError,
@@ -54,6 +53,7 @@ from feedbax.contracts.jobs import (
     StudioSubmissionActor,
     StudioSubmissionItem,
     StudioTrainCheckpointSource,
+    StudioTrainMetricHistory,
     StudioVenueStream,
 )
 from feedbax.contracts.loaded_model import ImportedModelProvenance
@@ -1016,6 +1016,36 @@ class JobService(PlanJobReader):
                 data=data | {"manifest_root": str(root), "runtime": launch.argv[0]},
             ),
         )
+
+    def read_train_metric_history(self, *, project: str, job_id: str) -> StudioTrainMetricHistory:
+        """Read the retained metric product of one successful Train attempt."""
+        from feedbax.persistence.effective_success import SuccessView
+        from feedbax.persistence.train_metrics import read_train_metric_updates
+
+        rows = self.host.jobs_snapshot(job_id=job_id, project=project, start_host=False)["jobs"]
+        if not rows:
+            raise JobNotFound(job_id)
+        (job,) = rows
+        if job["project"] != project or job["state"] != "succeeded" or not job["request"].startswith("train:"):
+            raise JobNotFound(job_id)
+        try:
+            store = ImmutableArtifactBlobProvider(Path(job["data"]["manifest_root"]))
+            view = SuccessView(store)
+            accepted = ContentObjectRef.model_validate(job["outcome"]["store_success"])
+            if view.attempt_ref(job_id) != accepted:
+                raise ValueError("Train metrics belong to a different attempt.")
+            receipt = view.read_receipt(accepted)
+            if (
+                receipt.attempt != job_id or receipt.request.id != job["request"]
+                or receipt.target != attempt_target(job["data"].get("target"))
+            ):
+                raise ValueError("Train metrics differ from the accepted result.")
+            if not receipt.products.get("metrics"):
+                raise JobNotFound(job_id)
+            updates = read_train_metric_updates(store, receipt)
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise JobConflict("The completed Train metric history is unreadable.") from exc
+        return StudioTrainMetricHistory(job_id=job_id, start_exclusive=updates[0].update - 1, updates=updates)
 
     def read_evaluation_result(self, *, project: str, store: Path, job_id: str) -> EvaluationResult:
         """Locate an authenticated Evaluate result by exact project and attempt."""
@@ -2198,12 +2228,12 @@ def _planned_light_runs(
 
 def _plan_run_data(name: str, plan: ProjectPlan, run: PlannedRow) -> dict[str, Any]:
     """What a job records of its run at submission; ``label`` is the run's name as Studio showed it then."""
-    step = member_display_name(run.key.step, plan.steps[run.key.variant, run.key.step].label)
+    step = plan.steps[run.key.variant, run.key.step].label
     return {
         "run_key": name,
         "stage_id": run.key.step,
         "scenario_id": run.key.variant,
-        "label": f"{step} · {run.label}" if run.label else step,
+        "label": step if run.step_name else f"{step} · {run.name}",
         "coordinates": {
             axis: coordinate.value for axis, coordinate in run.coordinates.items()
             if coordinate.value is not None or coordinate.explicit_null

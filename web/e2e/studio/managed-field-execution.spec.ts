@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type {
   StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
@@ -7,7 +7,6 @@ import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixture
 test.use({ viewport: { width: 1440, height: 900 } });
 
 test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(50_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   const id = snapshot.project_id;
   const url = '/?project=' + encodeURIComponent(id);
@@ -40,10 +39,24 @@ test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await model.locator('[data-id="wrapper"] header').dblclick();
   await model.locator('[data-id="controller"] header').dblclick();
+  const fieldResponse = (hasEdit: boolean) => page.waitForResponse((response) => {
+    if (response.request().method() !== 'POST' || !new URL(response.url()).pathname.endsWith('/model/fields')) return false;
+    const body = response.request().postDataJSON();
+    return body?.owner?.element?.id === 'training-scale' && body?.run?.step === 'train' && Boolean(body.edit) === hasEdit;
+  });
+  const projected = fieldResponse(false);
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
+  const ready = await projected;
+  expect(ready.ok(), await ready.text()).toBe(true);
   const factor = inspector.getByRole('textbox', { name: 'Factor', exact: true });
-  await expect(factor).toHaveValue('1.0');
+  await expect(factor).toHaveValue('1');
+  await inspector.getByRole('button', { name: 'Factor kind: Value', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Sweep', exact: true }).click();
+  const factorEdit = fieldResponse(true);
   await enter(factor, 'linspace(0.5, 1, 2)');
+  const prepared = await factorEdit;
+  expect(prepared.ok(), await prepared.text()).toBe(true);
+  expect((await prepared.json()).problems ?? []).toEqual([]);
   const factorAxis = (saved: StudioProjectSnapshot) => Object.values(saved.project.steps?.train.sweep?.axes ?? {})
     .find((axis) => axis !== null && 'path' in axis && typeof axis.path === 'string' && axis.path.includes('"id":"training-scale"'));
   await expect.poll(async () => factorAxis(await save())).toMatchObject({
@@ -84,7 +97,7 @@ test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }
     disposition: 'admitted', job_id: expect.any(String),
   })]);
   await expect.poll(async () => (await plan(saved.revision)).rows.find(({ request_id }) =>
-    request_id === first.request_id)?.attempts[0]?.status, { timeout: 22_000 }).toBe('succeeded');
+    request_id === first.request_id)?.attempts[0]?.status, { timeout: jobTimeout }).toBe('succeeded');
   const completed = (await plan(saved.revision)).rows.find(({ request_id }) => request_id === first.request_id)!;
   expect(completed.attempts).toEqual([expect.objectContaining({
     job_id: items[0].job_id, status: 'succeeded',

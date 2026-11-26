@@ -1,3 +1,4 @@
+import { referentName } from '@/components/ui/ShownText';
 import type { ReactNode } from 'react';
 import { studioName, studioUnit, studioValueType } from '@/components/activity/studioVocabulary';
 import { FieldRow } from '@/components/ui/FieldRow';
@@ -16,7 +17,7 @@ const round = (value: number) => Number(value.toPrecision(3));
 
 /** A signal's trace over the shown trial or trials, with one trial's epoch boundaries. */
 function Trace({ view, signal, shown }: { view: TaskDocumentView; signal: string; shown?: TrialShown }) {
-  const name = view.signals.find(({ id }) => id === signal)?.name ?? signal;
+  const name = referentName(view.signals.find(({ id }) => id === signal), signal);
   if (!shown) return null;
   switch (shown.kind) {
     case 'one': return <section aria-label={studioName('plot')} className="grid gap-1">

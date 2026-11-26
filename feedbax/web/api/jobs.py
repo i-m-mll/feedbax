@@ -24,6 +24,7 @@ from feedbax.contracts.jobs import (
     StudioJobStopItem,
     StudioJobStopRequest,
     StudioJobSubmission,
+    StudioTrainMetricHistory,
     StudioLocalSession,
     StudioRemoteSession,
     StudioVenueStream,
@@ -339,6 +340,20 @@ def list_jobs(request: Request, project: str | None = None) -> StudioJobSnapshot
         return remote.snapshot(snapshot, project=project) if remote is not None else snapshot
     except FollowerStopped as exc:
         raise _activity_error(exc) from exc
+    except HostError as exc:
+        raise _host_error(exc) from exc
+
+
+@router.get("/jobs/{job_id}/training-metrics")
+def train_metric_history(
+    job_id: str, project: Annotated[str, Query(min_length=1)], request: Request,
+) -> StudioTrainMetricHistory:
+    try:
+        return _jobs(request).read_train_metric_history(project=project, job_id=job_id)
+    except JobNotFound as exc:
+        raise HTTPException(404, detail="No completed Train metric history for this attempt.") from exc
+    except JobConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
 

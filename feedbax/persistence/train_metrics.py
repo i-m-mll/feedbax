@@ -3,6 +3,7 @@
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from hashlib import sha256
+from io import BytesIO
 from math import fsum, isfinite
 import json
 import os
@@ -15,7 +16,7 @@ from feedbax.contracts.request_refs import ConditionalProduct, RequestId
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.run_rule import metric_condition_holds
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.method_checkpoint import TrainMetricPrefix
+from feedbax.contracts.method_checkpoint import TrainMetricPrefix, TrainMetricUpdate
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
@@ -73,14 +74,38 @@ def latest_metrics(store: ImmutableArtifactBlobProvider, history: MetricHistory)
     return result
 
 
-def _last_metric_row(store: ImmutableArtifactBlobProvider, success: Success) -> dict[str, Any]:
-    if success.continuation is None or len(held := success.products.get("metrics", ())) != 1:
+def _train_metrics_ref(success: Success) -> ContentObjectRef:
+    if len(held := success.products.get("metrics", ())) != 1:
         raise ValueError("The exact Train receipt has no final metric history.")
     (product,) = held
     if product.name != "updates" or product.content.media_type != "application/x-ndjson" or product.content.tree:
         raise ValueError("The exact Train receipt has no final metric history.")
     ref = success_content_ref(product.content)
     assert isinstance(ref, ContentObjectRef)
+    return ref
+
+
+def read_train_metric_updates(store: ImmutableArtifactBlobProvider, success: Success) -> list[TrainMetricUpdate]:
+    """Verify and decode the per-update history owned by a completed Train receipt."""
+    if success.continuation is None:
+        raise ValueError("The exact Train receipt has no final update coordinate.")
+    raw = store.get_object(_train_metrics_ref(success))
+    if not raw.endswith(b"\n"):
+        raise ValueError("The final Train metric row is incomplete.")
+    updates = [TrainMetricUpdate.model_validate(strict_json_loads(line)) for line in BytesIO(raw)]
+    clock = success.continuation.clock
+    if (
+        len(updates) != clock.completed_updates - clock.segment_start
+        or any(row.update != expected for expected, row in enumerate(updates, clock.segment_start + 1))
+    ):
+        raise ValueError("Train metric rows do not reach the accepted checkpoint in update order.")
+    return updates
+
+
+def _last_metric_row(store: ImmutableArtifactBlobProvider, success: Success) -> dict[str, Any]:
+    if success.continuation is None:
+        raise ValueError("The exact Train receipt has no final metric history.")
+    ref = _train_metrics_ref(success)
     with store.open_owned_object(ref) as path, path.open("rb") as stream:
         end = stream.seek(0, os.SEEK_END)
         if end < 2 or stream.seek(end - 1) != end - 1 or stream.read(1) != b"\n":

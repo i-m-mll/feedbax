@@ -15,7 +15,7 @@ function components(saved: StudioProjectSnapshot, document: string) {
   return Object.entries((rootPayload(saved.project.documents?.[document]) as unknown as ModelDocument).interior.components ?? {});
 }
 
-test('the Model inspector frames the document, one component and two', async ({ page, request }) => {
+test('the Model inspector frames the document, one component and two', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('managed-files'));
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').press('Enter');
@@ -78,7 +78,7 @@ test('each Layers entry hides one class, and selecting a body in the Scene selec
   await runProjectFixture('tests.fixtures.scene_geometry', 'seed', folder);
   await mkdir(join(folder, 'steps'), { recursive: true });
   await writeFile(join(folder, 'steps', 'train.json'), JSON.stringify({
-    kind: 'train', base: { inline: { trial_documents: { model: { document: 'chain' } } } },
+    kind: 'train', label: 'Train', base: { inline: { trial_documents: { model: { document: 'chain' } } } },
   }));
   await page.goto(`/?project=${id}`);
   await mapStep(page, 'train').press('Enter');

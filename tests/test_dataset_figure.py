@@ -421,7 +421,7 @@ def test_trajectory_scales_preserve_spatial_samples_and_group_values():
     pca = np.array([[[0, 1, 2], [3, 4, 5], [6, 7, 8]], [[10, 20, 30], [9, 8, 7], [5, 3, 1]]])
     data = stack_dataset_members([
         (
-            SweepInputMember(name, {"mass": SweepCoordinate(name, value=mass)}),
+            SweepInputMember(name, {"mass": SweepCoordinate(name, value=mass, axis_label="Mass")}),
             Dataset.from_arrays(
                 {
                     "hand": Variable(hand[index], ("sample", "xy"), units="m"),

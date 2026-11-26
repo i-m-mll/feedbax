@@ -1,3 +1,4 @@
+import { holdsMissing, plainText, Shown, type ShownText } from '@/components/ui/ShownText';
 import clsx from 'clsx';
 import { useRef, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
 import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
@@ -13,7 +14,7 @@ import { useAxisWithin, type TimeAxisStore } from './timeAxis';
  */
 export interface ShelfSegment {
   readonly key: string;
-  readonly name: string;
+  readonly name: ShownText;
   readonly start: number;
   readonly end: number;
   readonly selects?: ElementAddress;
@@ -38,7 +39,7 @@ export interface ShelfBar {
  */
 export type ShelfRow = {
   readonly key: string;
-  readonly name: string;
+  readonly name: ShownText;
   readonly glyph?: ReactNode;
   readonly problem?: string;
 } & (
@@ -100,9 +101,11 @@ const elementOf = (address: ElementAddress) =>
 function Segment({ segment, origin, duration, chosen }: { segment: ShelfSegment; origin: number; duration: number; chosen: boolean }) {
   const { key, name, start, end, spread, dashedFrom, ended, selects } = segment;
   const width = end - start;
+  const text = plainText(name);
+  const missing = holdsMissing(name) || undefined;
   return <>
     <span role={selects ? 'button' : undefined} tabIndex={selects ? -1 : undefined}
-      aria-label={ended ? `${name}, ${studioName(ended)}` : name}
+      aria-label={ended ? `${text}, ${studioName(ended)}` : text} aria-invalid={missing}
       aria-pressed={selects ? chosen : undefined} {...{ [markAttribute]: key }} data-start={start} data-end={end} data-ended={ended}
       className={clsx('absolute inset-y-0 flex min-w-0 items-center overflow-hidden rounded-sm border px-1 text-xs',
         chosen ? 'border-shell-foreground' : 'border-shell-control', dashedFrom === undefined && 'bg-shell-field')}
@@ -114,10 +117,10 @@ function Segment({ segment, origin, duration, chosen }: { segment: ShelfSegment;
       </>}
       {ended && <span aria-hidden="true" className={clsx('absolute inset-y-0 right-0 border-r-2 border-shell-foreground',
         ended === 'limit' && 'border-dashed')} />}
-      <span className="relative truncate">{name}</span>
+      <span className="relative truncate"><Shown text={name} /></span>
     </span>
     {spread && spread.greatest > spread.least && <span role="img"
-      aria-label={`${name} ${seconds(spread.least, 0.01)}–${seconds(spread.greatest, 0.01)} ${studioUnit('second')}`}
+      aria-label={`${text} ${seconds(spread.least, 0.01)}–${seconds(spread.greatest, 0.01)} ${studioUnit('second')}`}
       data-least={spread.least} data-greatest={spread.greatest}
       className="pointer-events-none absolute -bottom-1 h-1.5 border-x border-shell-foreground"
       style={{ left: percent(spread.least - origin, duration), width: percent(spread.greatest - spread.least, duration) }}>
@@ -181,9 +184,9 @@ export function Shelf({ rows, start = 0, duration, stepSeconds, time, onTimeChan
       !span && 'gap-x-2')}>
     {rows.map((row, index) => {
       const rowChosen = row.kind === 'bars' && isChosen(row.selects);
-      const name = <>{row.glyph}<span className="truncate font-mono">{row.name}</span>
+      const name = <>{row.glyph}<span className="truncate font-mono"><Shown text={row.name} /></span>
         {row.problem && <StatusMark status="cannot_run" label={row.problem} className="ml-auto" />}</>;
-      return <div key={row.key} role="group" aria-label={row.name}
+      return <div key={row.key} role="group" aria-label={plainText(row.name)} aria-invalid={holdsMissing(row.name) || undefined}
         className={clsx('col-span-2 col-start-1 grid grid-cols-subgrid items-center', unavailable && 'opacity-40')}
         style={{ gridRow: index + 1 }}>
         {row.kind === 'bars' && row.selects && !unavailable

@@ -12,6 +12,7 @@ vi.mock('@/api/jobs', () => ({ fetchSavedEvaluationObjective: vi.fn() }));
 vi.mock('@/hooks/useStudioJobs', () => ({
   useStudioJobActions: () => ({ refresh: vi.fn() }),
   useStudioJobConnection: () => 'connected',
+  useTrainMetricHistories: () => ({ retained: new Map(), error: undefined, retry: vi.fn() }),
   useStudioJobHistory: () => ({
     data: [{ kind: 'progress', request_id: 'train:source', job_id: 'train', data: { completed_updates: 0, metrics: {} } }],
     isError: false, isPending: false,

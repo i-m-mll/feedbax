@@ -19,7 +19,7 @@ import { sendWithStore, type AskStore } from './storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import type { EntryTask, TaskSetVariable, WeightEdit } from './task/taskModel';
-import { nameOf, type DocumentNames } from './memberNames';
+import { labelOf } from './memberLabels';
 import { documentTreeOf } from './useProjectDocuments';
 
 export const setSchema = 'feedbax.set_document.v1';
@@ -30,7 +30,6 @@ type Perform = (work: () => Promise<void>, refuse?: (reason: string) => Refusal 
 export interface SetAuthoringInputs {
   readonly editor: ProjectEditController;
   readonly project: Project;
-  readonly documentNames: DocumentNames;
   /** Whether its commands and controls apply; an edit made while the workspace saves waits for it. */
   readonly applies: boolean;
   readonly perform: Perform;
@@ -39,6 +38,8 @@ export interface SetAuthoringInputs {
   readonly confirmRemoval: ConfirmRunRemoval;
   /** Asks where an edit that reaches beyond the selection is written. */
   readonly ask: AskStore;
+  /** The Service's name for the value `entry` of the step's axis `axis`. */
+  readonly valueName: (step: string, axis: string, entry: string) => string;
 }
 
 /** The authored axis of a step's sweep, when the step authors it. */
@@ -52,7 +53,7 @@ function runKey(run: PlanRunView) {
   return { variant, step, row };
 }
 
-export function setAuthoring({ editor, project, documentNames, applies, perform, state, select, confirmRemoval, ask }: SetAuthoringInputs) {
+export function setAuthoring({ editor, project, applies, perform, state, select, confirmRemoval, ask, valueName }: SetAuthoringInputs) {
   const refuseStep = (step: string) => (reason: string): Refusal => ({ kind: 'step', step, reason });
 
   /** Stores the edit `command` makes; one that removes runs first asks when some of them cost a confirmation. */
@@ -154,7 +155,7 @@ export function setAuthoring({ editor, project, documentNames, applies, perform,
     if (!stored) return undefined;
     return {
       key: JSON.stringify([step, axis, entry]),
-      label: stored.label || entry,
+      label: valueName(step, axis, entry),
       variables: stored.task_variables ?? [],
       links: stored.task_links ?? [],
       write: applies ? (name, change) => editor.command(async () => {
@@ -204,8 +205,8 @@ export function setAuthoring({ editor, project, documentNames, applies, perform,
       patches: [{ op: 'replace', path: authoredPointer(['sweep', 'axes', axis, 'set']), value: next }],
     }], { reviewedRevision: editor.getSnapshot().saved.revision, dependencies: [{ kind: 'document', id: next }] });
     return {
-      label: 'setDocument', document, name: nameOf(documentNames, document),
-      documents: documentTreeOf(project, documentNames, [setSchema]),
+      label: 'setDocument', document, name: labelOf(project.documents, document),
+      documents: documentTreeOf(project, [setSchema]),
       choose: applies ? (next) => {
         void perform(async () => {
           const stored = await point(next);
@@ -304,6 +305,6 @@ export function OfferedSets({ editor, step, choose }: {
   if (!offered.data?.length) return null;
   return <>
     <MenuSeparator />
-    {offered.data.map((set) => <MenuItem key={set} onClick={() => choose(set)}>{nameOf(saved.names.documents, set)}</MenuItem>)}
+    {offered.data.map((set) => <MenuItem key={set} onClick={() => choose(set)}>{labelOf(saved.project.documents, set)}</MenuItem>)}
   </>;
 }

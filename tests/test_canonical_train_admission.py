@@ -9,8 +9,10 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
+from fastapi.testclient import TestClient
 
 from feedbax.contracts.checkpoint_projection import ContinuationEncoding
+from feedbax.contracts.effective_success import success_content_ref
 from feedbax.contracts.jobs import StudioSubmissionActor
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.planner.project_plan import RunKey
@@ -31,9 +33,65 @@ from feedbax.persistence.store_sync import sync_store
 from feedbax.application.composition import load_application
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput, verify_training_request_binding
 from feedbax.persistence.evidence import evidence_objects
+from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_payload
 from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
+
+
+def test_completed_train_metrics_return_every_retained_update(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    host.policy(compute=1)
+    release = tmp_path / "release"
+    with TestClient(create_app(projects_dir=tmp_path / "projects", automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+        snapshot = folders.new("metric-history").snapshot
+        project = snapshot.project_id
+        snapshot = folders.create_file(project, StudioProjectCreateFile.model_validate({
+            "revision": snapshot.revision,
+            "file": {
+                "kind": "step", "id": "train",
+                "step": {"label": "Train", "kind": "train", "base": {"inline": managed_train_payload(batches=3)}},
+            },
+        })).snapshot
+        gate = run_job(token("metric-history-gate"), held_until_released(release), project=project)
+        admit(host, token("metric-history-gate-admission"), gate)
+        try:
+            wait_until(lambda: job_row(host, gate.id, "running"))
+            submission = client.post(f"/api/projects/{project}/train-runs", json={
+                "revision": snapshot.revision, "token": token("metric-history-train"),
+                "run_keys": [{"variant": "default", "step": "train", "row": "default"}],
+            })
+            assert submission.status_code == 202, submission.text
+            (attempt,) = submission.json()["items"]
+            assert attempt["disposition"] == "admitted", attempt
+            job_id = attempt["job_id"]
+            endpoint = f"/api/jobs/{job_id}/training-metrics"
+            assert client.get(endpoint, params={"project": project}).status_code == 404
+        finally:
+            release.touch()
+
+        row = wait_until(lambda: (
+            observed if (observed := job_row(host, job_id)) and observed["outcome"] is not None else None
+        ))
+        assert row["state"] == "succeeded", row["outcome"]
+        materialized = Path(row["data"]["manifest_root"]) / "checkpoints" / job_id / "metrics.jsonl"
+        updates = [json.loads(line) for line in materialized.read_text().splitlines()]
+        assert [row["update"] for row in updates] == [1, 2, 3]
+        assert all("train_loss" in row["metrics"] for row in updates)
+        materialized.unlink()
+
+        response = client.get(endpoint, params={"project": project})
+        assert response.status_code == 200, response.text
+        assert response.json() == {"job_id": job_id, "start_exclusive": 0, "updates": updates}
+        assert client.get(endpoint, params={"project": "another-project"}).status_code == 404
+
+        store = ImmutableArtifactBlobProvider(Path(row["data"]["manifest_root"]))
+        receipt = SuccessView(store).read_attempt(job_id).receipt
+        (product,) = receipt.products["metrics"]
+        store.object_path(success_content_ref(product.content)).unlink()
+        assert client.get(endpoint, params={"project": project}).status_code == 409
 
 
 @pytest.mark.round(
@@ -66,7 +124,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
                     "file": {
                         "kind": "step",
                         "id": name,
-                        "step": {"kind": "train", "base": {"inline": payload}},
+                        "step": {"label": "Step", "kind": "train", "base": {"inline": payload}},
                     },
                 }
             ),
@@ -362,6 +420,7 @@ def _saved_chain(folders):
         snapshot,
         "prefix",
         {
+            "label": "Train",
             "kind": "train",
             "base": {"inline": payload},
         },
@@ -371,6 +430,7 @@ def _saved_chain(folders):
         snapshot,
         "child",
         {
+            "label": "Train",
             "kind": "train",
             "base": {"step": "prefix"},
             "inputs": {"checkpoint": {"step": "prefix", "checkpoint": "last"}},
@@ -505,6 +565,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
     source_payload = managed_train_payload(batches=4)
     source_payload["seed"] = 12
     snapshot = _saved_step(folders, snapshot, "prefix", {
+        "label": "Train",
         "kind": "train", "base": {"inline": source_payload},
     })
     preserve = state_policy == "preserve"
@@ -521,6 +582,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
         child["settings"]["optimizer"]["type"] = "adamw"
         child["trial_documents"]["model"]["interior"]["components"]["cell"]["fields"]["trainable"] = False
     snapshot = _saved_step(folders, snapshot, "child", {
+        "label": "Train",
         "kind": "train", "base": {"inline": child},
         "inputs": {"checkpoint": {"step": "prefix", "checkpoint": "last"}},
     })
@@ -528,6 +590,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
     incompatible["checkpoint_initialization"]["state"] = "preserve"
     incompatible["settings"]["optimizer"]["type"] = "sgd"
     snapshot = _saved_step(folders, snapshot, "incompatible", {
+        "label": "Train",
         "kind": "train", "base": {"inline": incompatible},
         "inputs": {"checkpoint": {"step": "prefix", "checkpoint": "last"}},
     })

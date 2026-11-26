@@ -78,7 +78,7 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   await expect(input).toHaveAccessibleDescription('Input · Point m real [2]');
 });
 
-test('a wire drawn to an occupied input of another type replaces its wire, keeping its attachment and waypoint', async ({ page, request }) => {
+test('a wire drawn to an occupied input of another type replaces its wire, keeping its attachment and waypoint', { tag: '@slow' }, async ({ page, request }) => {
   const files = await fixture('ordinary-files', '2');
   const modelFile = files.find((file: { id: string }) => file.id === 'point-mass');
   const definition = modelFile.document.payload as ModelDocument;

@@ -31,9 +31,10 @@ _MASS = ModelAddress.model_validate({
 }).to_text()
 
 
-def _evaluation_step():
+def _evaluation_step(label: str):
     return {
         "kind": "evaluate",
+        "label": label,
         "base": {"inline": {
             "evaluation_type": ROLLOUT_TYPE,
             "params": {
@@ -50,18 +51,20 @@ def _evaluation_step():
 def _evaluation_project():
     raw = document_project(authored_documents())
     raw["steps"]["train"]["base"]["inline"]["training_config"]["snapshot_interval"] = 1
-    baseline = _evaluation_step()
+    baseline = _evaluation_step("Baseline")
     raw["steps"].update({
         "baseline": baseline,
-        "conditions": baseline | {"sweep": {"axes": {"mass": {"values": {
+        "conditions": baseline | {"label": "Conditions", "sweep": {"axes": {"mass": {"values": {
             name: {"value": mass, "patches": {"params.seed": {"value": 732}, _MASS: {"value": mass}}}
             for name, mass in (("nominal", 1), ("heavy", 2))
         }}}}},
         "unsupported": baseline | {
+            "label": "Unsupported",
             "inputs": {"subject": {"step": "train", "checkpoint": {"best_by": "loss"}}},
         },
     })
     finite = deepcopy(baseline)
+    finite["label"] = "Finite"
     finite["inputs"]["subject"]["checkpoint"] = {"batches": [2, 1]}
     raw["steps"]["finite"] = finite
     return raw
@@ -125,19 +128,24 @@ def seed_mean_conditions(home: str, project_id: str):
 def seed_mean_figure(home: str, project_id: str):
     """The two-condition project with an Analyze of the baseline that draws Speed by trial."""
     raw = _mean_conditions_project()
-    raw["documents"]["analysis"] = {"schema": "feedbax.analysis_document.v1", "payload": {
+    raw["documents"]["analysis"] = {"schema": "feedbax.analysis_document.v1", "label": "Analysis", "payload": {
         "inputs": {"states": {"kind": "dataset"}},
         "operations": {"speed": {
+            "label": "Speed",
             "operation": "feedbax.trial_speed",
             "params": {"velocity": "/v1/model/state/plant/effector~1velocity"},
             "inputs": {"states": {"input": "states"}},
         }},
         "views": {"by_trial": {
+            "label": "By trial",
             "figure": {"template": "feedbax.SpeedByTrial"},
             "inputs": {"speed": {"element": "speed", "product": "speed"}},
         }},
     }}
-    raw["steps"]["analyze"] = {"kind": "analyze", "base": {"document": "analysis"}, "inputs": {"states": {"step": "baseline"}}}
+    raw["steps"]["analyze"] = {
+        "kind": "analyze", "label": "Analyze", "base": {"document": "analysis"},
+        "inputs": {"states": {"step": "baseline"}},
+    }
     return _seed(home, project_id, raw)
 
 
@@ -176,7 +184,7 @@ def missing_run_files():
     train = files[-1]["step"]
     train["base"]["inline"]["seed"] = 0
     train["sweep"] = {"axes": {"seed": {"path": "seed", "values": [0, 1, 2, 3]}}}
-    evaluate = _evaluation_step()
+    evaluate = _evaluation_step("Evaluate")
     evaluate["inputs"]["subject"]["where"] = {"rule": "seed=7"}
     evaluate["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     return [*files, {"kind": "step", "id": "evaluate", "step": evaluate}]
@@ -222,19 +230,20 @@ def task_pivot_files():
     }}
     task = next(file["document"] for file in files if file["id"] == "task")
     documents = []
-    for name, count in (("short-task", 2), ("long-task", 3)):
+    for name, label, count in (("short-task", "Short task", 2), ("long-task", "Long task", 3)):
         document = deepcopy(task)
+        document["label"] = label
         document["payload"]["id"] = name
         document["payload"]["validation_trials"] = document["payload"]["validation_trials"][:count]
         documents.append({"kind": "document", "id": name, "document": document})
-    evaluate = _evaluation_step()
+    evaluate = _evaluation_step("Evaluate")
     evaluate["base"]["inline"]["params"]["variation"] = {"task": {
         "op": "replace", "path": "task", "value": {"document": "short-task"},
     }}
     evaluate["inputs"]["subject"]["where"] = {"rule": "learning-rate=Slow,Fast seed=one"}
     evaluate["sweep"] = {"axes": {
         "subject": {"input": "subject"},
-        "task": {"values": {
+        "task": {"label": "Task", "values": {
             name: {"label": label, "patches": {"params.variation.task.value": {"value": {"document": name}}}}
             for name, label in (("short-task", "Short Task"), ("long-task", "Long Task"))
         }},
@@ -243,13 +252,13 @@ def task_pivot_files():
 
 
 def scoped_series_files():
-    evaluation = _evaluation_step()
+    evaluation = _evaluation_step("Evaluate")
     evaluation["inputs"]["subject"]["checkpoint"] = {"every": 2}
     evaluation["sweep"] = {"axes": {
         "subject": {"input": "subject"},
         "replicate": {"values": {
-            "left": {"patches": {"params.seed": {"value": 31}}},
-            "right": {"patches": {"params.seed": {"value": 32}}},
+            "left": {"label": "Left", "patches": {"params.seed": {"value": 31}}},
+            "right": {"label": "Right", "patches": {"params.seed": {"value": 32}}},
         }},
     }}
     return [*series_files(), {"kind": "step", "id": "evaluate", "step": evaluation}]
@@ -257,7 +266,7 @@ def scoped_series_files():
 
 def seed_series_variants(home: str):
     *documents, train = series_files()
-    evaluation = _evaluation_step()
+    evaluation = _evaluation_step("Evaluate")
     evaluation["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     project = Project.model_validate({
         "documents": {file["id"]: file["document"] for file in documents},

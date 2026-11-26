@@ -32,7 +32,7 @@ from tests.support.managed_train_fixture import managed_evaluation_step, managed
 def _write_project(root: Path, spec: DocumentTrainingRequestSpec) -> None:
     assert spec.seed is not None
     project = Project.model_validate({
-        "steps": {"fit": {"kind": "train", "base": {"inline": spec.model_dump(mode="json")}}},
+        "steps": {"fit": {"label": "Fit", "kind": "train", "base": {"inline": spec.model_dump(mode="json")}}},
         "sweep": {"rows": {
             "original": {},
             "same": {},
@@ -99,6 +99,46 @@ def test_plan_join_does_not_start_an_absent_host(tmp_path, monkeypatch):
     assert not (projects / "empty" / "results").exists()
 
 
+def test_window_map_names_axes_with_problems_before_they_have_values(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    data = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    data["documents"]["empty"] = {
+        "schema": "feedbax.set_document.v1", "label": "Noise conditions", "payload": {"entries": {}},
+    }
+    original = data["steps"].pop("train")
+    for name, axis in (
+        ("custom", {"set": "empty", "label": "Disturbance bank"}),
+        ("shared", {"set": "empty"}),
+        ("generated", {
+            "path": "training_config.snapshot_interval", "range": {"start": 2, "stop": 4, "count": 2},
+            "where": {"rule": "missing=1"},
+        }),
+    ):
+        data["steps"][name] = original | {"sweep": {"axes": {"opaque-axis": axis}}}
+    root = tmp_path / "reach"
+    files = dump_text_project(Project.model_validate(data), ProjectConfiguration(project="reach", store="results"))
+    for name, content in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        route = "/api/projects/reach"
+        revision = client.get(route).json()["revision"]
+        response = client.get(f"{route}/train-runs", params={"revision": revision, "window_map": "true"})
+        assert response.status_code == 200, response.text
+        window = response.json()["window_map"]
+
+    assert {problem["step"] for problem in window["problems"]} == {"custom", "shared", "generated"}
+    assert {
+        step["step_id"]: [(axis["id"], axis["name"], axis["values"]) for axis in step["axes"]]
+        for step in window["steps"]
+    } == {
+        "custom": [("opaque-axis", "Disturbance bank", [])],
+        "shared": [("opaque-axis", "Noise conditions", [])],
+        "generated": [("opaque-axis", "Checkpoint Interval", [])],
+    }
+
+
 def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     root = projects / "reach"
@@ -113,6 +153,7 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
         "b": {"label": "12", "patches": {"seed": {"value": 12}}},
     }}}}
     data["steps"]["evaluate"] = {
+        "label": "Evaluate",
         "kind": "evaluate",
         "base": {"inline": {"evaluation_type": "test.unsupported"}},
         "inputs": {"subject": {"step": "fit", "where": {
@@ -120,10 +161,11 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
         }}},
     }
     data["steps"]["report"] = {
+        "label": "Report",
         "kind": "report", "base": {"inline": {}}, "inputs": {"source": {"step": "evaluate"}},
     }
-    data["steps"]["broken"] = {"kind": "train", "base": {"document": "missing"}}
-    data["steps"]["invalid"] = {"kind": "train", "base": {"inline": {}}}
+    data["steps"]["broken"] = {"label": "Broken", "kind": "train", "base": {"document": "missing"}}
+    data["steps"]["invalid"] = {"label": "Invalid", "kind": "train", "base": {"inline": {}}}
     trial = data["steps"]["fit"]["base"]["inline"]["trial_documents"]
     data["documents"]["unscored"] = copy.deepcopy(data["documents"][trial["objective"]["document"]])
     data["documents"]["unscored"]["payload"]["terms"] = []

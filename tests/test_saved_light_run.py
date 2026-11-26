@@ -49,6 +49,7 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
     task["validation_trials"] = task["validation_trials"][:1]
     raw["steps"] = {
         "rollout": {
+            "label": "Rollout",
             "kind": "evaluate",
             "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
                 "seed": 17, "trial_policy": "paired", "variation": [],
@@ -61,10 +62,12 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
             },
         },
         "plot": {
+            "label": "Plot",
             "kind": "analyze",
             "base": {"inline": {
                 "inputs": {"states": {"kind": "dataset"}},
                 "views": {"target": {
+                    "label": "Target",
                     "inputs": {"states": {"input": "states"}},
                     "figure": {
                         "data": ["states"],
@@ -175,6 +178,7 @@ def test_saved_operation_products_can_be_read_without_a_figure(host, tmp_path, m
     definition["steps"] = {
         "analyze": definition["steps"]["analyze"],
         "baseline": {
+            "label": "Baseline",
             "kind": "evaluate",
             "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
                 "seed": 17, "trial_policy": "paired", "variation": [],
@@ -346,7 +350,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         figure_url = figure["products"]["figure"]
         figure_response = expect(client.get(figure_url))
         assert [trace["name"] for trace in figure_response.json()["data"] if trace.get("showlegend", True)] == [
-            "Baseline",
+            definition["steps"]["baseline"]["label"],
         ]
         report_url = report["light"]["result"]["products"]["report"]
         rendered = expect(client.get(report_url))
@@ -376,12 +380,14 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         assert stable_align | {"products": old_align["products"]} == old_align
         assert expect(client.get(stable_align["products"]["velocity"])).json() == aligned_descriptor
         assert {stale[name]["status"] for name in ("summarize", "profile")} == {stale_report["status"]} == {"stale"}
+        analysis = definition["documents"]["velocity-analysis"]["payload"]
         assert stale["summarize"]["changed"]["place"] == {
-            "part": "analysis", "element": "summarize", "name": "summarize", "field": "/params/bounds_scale",
+            "part": "analysis", "element": "summarize", "name": analysis["operations"]["summarize"]["label"],
+            "field": "/params/bounds_scale",
         }
         assert "bounds_scale" in stale["summarize"]["changed"]["path"]
         assert stale["profile"]["changed"]["place"] == {
-            "part": "analysis", "element": "profile", "name": "profile", "field": "/inputs/summary",
+            "part": "analysis", "element": "profile", "name": analysis["views"]["profile"]["label"], "field": "/inputs/summary",
         }
         assert "inputs.summary" in stale["profile"]["changed"]["path"]
         assert stale_report["light"]["changed"]["place"] == {"part": "input", "role": "velocity_summary"}
@@ -629,6 +635,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     definition = _saved_light_definition(paired=True)
     analysis = definition["documents"]["velocity-analysis"]["payload"]
     analysis["operations"]["speed"] = {
+        "label": "Speed",
         "operation": "feedbax.trial_speed",
         "params": {"velocity": analysis["operations"]["align"]["params"]["velocity"]},
         "inputs": {"states": {"input": "states"}},
@@ -640,10 +647,12 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     speed_figure["color_scales"] = scales
     speed_figure["layers"][0]["encode"]["color"] = color
     analysis["views"]["by_trial"] = {
+        "label": "By trial",
         "figure": speed_figure,
         "inputs": {"speed": {"element": "speed", "product": "speed"}},
     }
     analysis["views"]["motion"] = {
+        "label": "Motion",
         "figure": {
             "data": ["states"], "layout": [{"name": "motion", "row": 1, "col": 1}],
             "color_scales": scales,

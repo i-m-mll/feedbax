@@ -6,7 +6,7 @@ it('counts a step\'s chosen runs only, so a step whose chosen runs all succeeded
   const row = (name: string, status: StudioProjectWindowMapRow['status']): StudioProjectWindowMapRow => ({
     key: { variant: 'base', step: 'evaluate', row: name }, name, label: name, status, coordinates: {},
   });
-  const project: Project = { steps: { evaluate: { kind: 'evaluate', base: { inline: {} } } } };
+  const project: Project = { steps: { evaluate: { kind: 'evaluate', label: 'Evaluate', base: { inline: {} } } } };
   const saved: StudioSavedTrainRuns = {
     revision: '0'.repeat(64), rows: [],
     window_map: {
@@ -19,7 +19,7 @@ it('counts a step\'s chosen runs only, so a step whose chosen runs all succeeded
     },
   };
   const names = { documents: {}, steps: { evaluate: 'Evaluate' }, elements: {} };
-  const [step] = projectWindowPlan(project, { names, variant_names: { base: names } }, saved, 'base').steps;
+  const [step] = projectWindowPlan(project, { base: names }, saved, 'base').steps;
   expect(step.runs.map(({ state }) => state)).toEqual(['succeeded', 'not_chosen', 'succeeded']);
   expect(step.statusCounts).toEqual({ succeeded: 2 });
 });

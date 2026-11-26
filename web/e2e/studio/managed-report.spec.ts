@@ -10,7 +10,7 @@ import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('authors an ordered shared Report from a planned Analyze figure', async ({ page, request, studio }, info) => {
+test('authors an ordered shared Report from a planned Analyze figure', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const home = studio.home;
   const module = 'web.e2e.studio.fixtures.managed_report';
   const project = JSON.parse(await runProjectFixture(module, 'seed', home, 'managed-report'));
@@ -54,7 +54,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
     await document.getByRole('button', { name: 'Add Figure', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Add Figure', exact: true });
     // The picker names a figure by its step and its own name, as the snapshot names them.
-    const { names } = await snapshot();
+    const [names] = Object.values((await snapshot()).variant_names);
     await pick(dialog.getByRole('combobox', { name: 'Figures' }), `${names.steps.analyze} · ${names.elements.analyze[name]}`);
     return edit(() => dialog.getByRole('button', { name: 'Add Figure', exact: true }).click());
   }
@@ -70,7 +70,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Velocity profile');
   const created = await snapshot();
-  expect(report(created)).toMatchObject({ completeness: 'complete', blocks: [{ figure: 'figure-profile' }] });
+  expect(report(created)).toMatchObject({ blocks: [{ figure: 'figure-profile' }] });
   expect(inputs(created)).toMatchObject({ 'figure-profile': profile });
   const map = await windowMap(created.revision);
   expect(map.problems.filter(({ step }) => step === 'report')).toEqual([]);

@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { holdsMissing, plainText, Shown, type ShownText } from './ShownText';
 import {
   forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState,
   type KeyboardEvent, type MouseEvent, type ReactNode,
@@ -9,7 +10,8 @@ import { ContextMenu, ContextMenuContent, ContextMenuTrigger, openContextMenu, o
 
 export interface TreeNode {
   id: string;
-  name: string;
+  /** The row's name; a missing referent in it is drawn as missing. */
+  name: ShownText;
   glyph?: ReactNode;
   trailing?: ReactNode;
   children?: readonly TreeNode[];
@@ -225,7 +227,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
     const start = text.length === 1 ? from + 1 : from;
     for (let step = 0; step < visible.length; step += 1) {
       const node = visible[(start + step) % visible.length];
-      if (node.name.toLowerCase().startsWith(lower)) return move(node.id);
+      if (plainText(node.name).toLowerCase().startsWith(lower)) return move(node.id);
     }
   };
 
@@ -351,9 +353,10 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
             disabled={node.disabled}
             className={node.muted || node.struck ? 'text-shell-muted' : undefined}
             aria-description={node.description}
+            aria-invalid={holdsMissing(node.name) || undefined}
             name={onRename && renamable(node) ? <span data-tree-name>
               <InlineEdit
-                value={node.name}
+                value={plainText(node.name)}
                 editing={editing === node.id}
                 onEditingChange={(next) => {
                   setEditing(next ? node.id : null);
@@ -362,7 +365,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
                 onCommit={(name) => onRename(node.id, name)}
                 aria-label={renameLabel}
               />
-            </span> : node.struck ? <s>{node.name}</s> : node.name}
+            </span> : node.struck ? <s><Shown text={node.name} /></s> : <Shown text={node.name} />}
             onClick={(event) => onRowClick(event, node)}
             onDoubleClick={(event) => {
               if (node.disabled) return;

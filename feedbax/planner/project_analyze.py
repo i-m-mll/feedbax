@@ -456,9 +456,10 @@ class _Lowerer:
         for bindings in inputs.values():
             for binding in bindings:
                 for axis, coord in binding.coordinates.items():
-                    names.setdefault(axis, {}).setdefault(
-                        coord.value_id, LabelName(coord.value_id, sweep_value_name(axis, coord), kind="row"),
-                    )
+                    if axis not in binding.named:
+                        names.setdefault(axis, {}).setdefault(
+                            coord.value_id, LabelName(coord.value_id, sweep_value_name(coord), kind="row"),
+                        )
                 if binding.producer is None or (evaluation := self.datasets.get(binding.producer)) is None:
                     continue
                 spec, name = evaluation.spec, evaluation.name
@@ -792,7 +793,7 @@ def lower_analyze(
 
     lower.declarations = document.inputs
     lower.element_names = {
-        name: item.label or name
+        name: item.label
         for items in (document.operations, document.views) for name, item in items.items()
     }
     graph = TopologicalSorter()

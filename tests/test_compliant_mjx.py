@@ -127,6 +127,7 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         saved = client.post(path + "/files", json={
             "revision": created["revision"],
             "file": {"kind": "document", "id": "model", "document": {
+                "label": "Document",
                 "schema": graph.schema_id, "payload": graph.model_dump(mode="json", exclude_none=True),
             }},
         })

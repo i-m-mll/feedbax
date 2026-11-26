@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 import { z } from 'zod';
-import type { StudioActivityJob, StudioJobEvent } from '@/generated/studioContracts';
+import type { StudioActivityJob, StudioJobEvent, TrainMetricUpdate } from '@/generated/studioContracts';
 import { useElementSize } from '@/hooks/useElementSize';
 import type { ObjectiveTrack } from './heldOutObjective';
 import { PlotTrack, formatMetric } from './studioPlot';
@@ -81,10 +81,15 @@ function metricReadings(metrics: unknown, leaf: (value: unknown) => MetricReadin
   });
 }
 
+/**
+ * The metrics, log and last frame of an attempt and the attempts it continues. An attempt with a `retained` history
+ * plots that history, one point per update, in place of its progress events.
+ */
 export function studioRunHistory(
   job: Attempt,
   jobs: readonly Attempt[],
   events: readonly StudioJobEvent[],
+  retained: ReadonlyMap<string, readonly TrainMetricUpdate[]> = new Map(),
 ) {
   const byId = new Map(jobs.map((attempt) => [attempt.job_id, attempt]));
   const startByAttempt = new Map<string, number>();
@@ -127,6 +132,7 @@ export function studioRunHistory(
     const cutoff = attemptCutoffs.get(event.job_id);
     if (cutoff === undefined) continue;
     if (event.kind === 'progress') {
+      if (retained.has(event.job_id)) continue;
       const completed = event.data.completed_updates;
       if (typeof completed !== 'number' || completed === startByAttempt.get(event.job_id) || completed > cutoff) {
         continue;
@@ -141,6 +147,14 @@ export function studioRunHistory(
       log.push(event.data.line);
     } else if (event.kind === 'frame' && (!trajectory || depth(event.job_id) <= depth(trajectory.job_id))) {
       trajectory = event;
+    }
+  }
+  for (const [jobId, updates] of retained) {
+    const cutoff = attemptCutoffs.get(jobId);
+    if (cutoff === undefined) continue;
+    const start = attemptStarts.get(jobId) ?? 0;
+    for (const { update, metrics } of updates) {
+      if (start < update && update <= cutoff) record(update, jobId, undefined, metricReadings(metrics, rawReading));
     }
   }
   return {
@@ -250,6 +264,7 @@ function MetricPlot({ metric, vector, series, objectives }: {
     }))), vector);
     return {
       result, lines,
+      jobId: result?.jobId ?? lines[0]?.samples.at(-1)?.jobId,
       dashed: result?.name === 'previousResult' && series.length > 1,
       empty: lines.every(({ samples }) => samples.length === 0),
     };
@@ -327,8 +342,8 @@ function MetricPlot({ metric, vector, series, objectives }: {
             className="text-shell-divider" stroke="currentColor" strokeDasharray="3 3"
             vectorEffect="non-scaling-stroke" />
         ))}
-        {tracks.map(({ result, dashed, lines }) => (
-          <g key={result?.name ?? 'metric'} data-result-attempt={result?.jobId}
+        {tracks.map(({ result, jobId, dashed, lines }) => (
+          <g key={result?.name ?? 'metric'} data-result-attempt={jobId}
             role={result && 'group'} aria-label={result && studioName(result.name)}>
             {lines.map(({ element, samples }) => (
               <g key={element ?? 'line'} data-element={element} {...color(element)}>
@@ -338,7 +353,7 @@ function MetricPlot({ metric, vector, series, objectives }: {
                       ...[...samples].reverse().map(({ update, band, reading }) => `${x(update)},${y(band?.min ?? reading.value)}`)].join(' ')} />
                 )}
                 {samples.map(({ update, end, start, reading: { interval, value }, stage, jobId }) => {
-                  if (!interval && !result) return null;
+                  if (!interval && !result && !chained) return null;
                   const { count, min, max } = interval ?? { count: 1, min: value, max: value };
                   const first = start ?? end - 1;
                   return (

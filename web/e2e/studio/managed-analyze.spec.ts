@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Page, type Request } from '@playwright/test';
 import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
@@ -23,10 +23,10 @@ test('places the installed Speed by trial figure from the Analyze Library under 
   const { snapshot } = await opened.json() as StudioProjectDocument;
   await appendManagedFiles(request, snapshot, [
     { kind: 'document', id: 'analysis', document: {
-      schema: 'feedbax.analysis_document.v1', payload: { inputs: { states: { kind: 'dataset' } } },
+      schema: 'feedbax.analysis_document.v1', label: 'Analysis', payload: { inputs: { states: { kind: 'dataset' } } },
     } },
     { kind: 'step', id: 'analyze', step: {
-      kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },
+      kind: 'analyze', label: 'Analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },
     } },
   ]);
 
@@ -49,7 +49,6 @@ test('places the installed Speed by trial figure from the Analyze Library under 
 });
 
 test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(90_000);
   const home = studio.home;
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', home, 'managed-analyze'));
   const path = '/api/projects/' + project;
@@ -94,7 +93,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
     await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
     expect((await admitted).status()).toBe(202);
     await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Done', { exact: true })).toBeVisible({
-      timeout: 18_000,
+      timeout: jobTimeout,
     });
   }
 

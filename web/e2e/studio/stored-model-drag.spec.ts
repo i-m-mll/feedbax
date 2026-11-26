@@ -284,7 +284,7 @@ async function paceInputs(count: number, send: (index: number) => Promise<void>)
   return roundTrip;
 }
 
-test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ page, request, browser, browserName }, info) => {
+test('measures drag updates in the mounted Model at 20 and 100 cards', { tag: '@slow' }, async ({ page, request, browser, browserName }, info) => {
   const measureInteractions = process.env.FEEDBAX_STUDIO_TIER === 'release';
   test.setTimeout(measureInteractions ? 100_000 : 55_000);
   const result = [];
@@ -297,14 +297,14 @@ test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ 
   try {
     for (const cards of [20, 100]) {
       const { snapshot, projectPath } = await seedManagedProject(request, [
-        { kind: 'document', id: 'model', document: { schema: 'feedbax.spec.model', payload: modelFixture(cards) } },
+        { kind: 'document', id: 'model', document: { schema: 'feedbax.spec.model', label: 'Model', payload: modelFixture(cards) } },
         { kind: 'document', id: 'task', document: {
-          schema: 'feedbax.spec.task_document', payload: blankTask,
+          schema: 'feedbax.spec.task_document', label: 'Task', payload: blankTask,
         } },
         { kind: 'document', id: 'objective', document: {
-          schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+          schema: 'feedbax.spec.objective_document', label: 'Objective', payload: { id: 'objective', terms: [] },
         } },
-        { kind: 'step', id: 'train', step: { kind: 'train', base: { inline: { trial_documents: {
+        { kind: 'step', id: 'train', step: { kind: 'train', label: 'Train', base: { inline: { trial_documents: {
           model: { document: 'model' }, task: { document: 'task' },
           objective: { document: 'objective' },
         } } } } },

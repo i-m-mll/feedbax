@@ -1,4 +1,4 @@
-import { expect, isolatedTest, test, type Studio } from './fixtures/studio';
+import { expect, isolatedTest, test, type Studio, jobTimeout } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test';
 import type {
   AnalysisDocument, ReportDocument, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
@@ -42,7 +42,6 @@ async function expectSeparateVelocityLines(figure: Locator) {
 }
 
 async function savedLightGate(context: WalkthroughContext, info: TestInfo, studio?: Studio) {
-  test.setTimeout(studio ? 190_000 : 120_000);
   const start = performance.now();
   const first = studio ? await test.step('Author, Stop, Resume and recover the first Train', () =>
     authorAndRecoverTrain(context.page, context.request, info, studio)) : undefined;
@@ -129,7 +128,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
       const jobs = await request.get('/api/jobs', { params: { project } });
       const history = await jobs.json() as StudioJobSnapshot;
       return history.jobs.filter(({ job_id }) => watched.has(job_id)).map(({ status }) => status);
-    }, { timeout: 13_000 + 8_000 * doneCount }).toEqual(Array(items.length).fill('succeeded'));
+    }, { timeout: jobTimeout + 8_000 * doneCount }).toEqual(Array(items.length).fill('succeeded'));
     await expect(table.getByText('Done', { exact: true })).toHaveCount(doneCount);
   }
 
@@ -335,7 +334,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   }
   async function waitForLight(revision: string) {
     // The report runs last, so its Done status in the open Document view marks the whole chain.
-    await expect(document.getByRole('status').filter({ hasText: /^Done/ })).toBeVisible({ timeout: 22_000 });
+    await expect(document.getByRole('status').filter({ hasText: /^Done/ })).toBeVisible({ timeout: jobTimeout });
     let projection: StudioProjectWindowMap | undefined;
     await expect.poll(async () => lightStatus(projection = await plan(revision)).map(({ status }) => status))
       .toEqual(['succeeded', 'succeeded', 'succeeded', 'succeeded']);
@@ -508,7 +507,6 @@ isolatedTest('walks one saved project through paired results, variants, widened 
   savedLightGate({ page, request, home: studio.home }, info, studio));
 
 test('authors a paired Analyze and shared successors from the primary variant', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(65_000);
   const home = studio.home;
   const project = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.managed_light', 'seed-variants', home, 'managed-light-variants',
@@ -544,7 +542,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
     expect(response.status(), await response.text()).toBe(202);
     const { items } = await response.json() as StudioJobSubmission;
     expect(items.map(({ disposition }) => disposition)).toEqual(Array(count).fill('admitted'));
-    await expect(table.getByText('Done', { exact: true })).toHaveCount(count, { timeout: 22_000 });
+    await expect(table.getByText('Done', { exact: true })).toHaveCount(count, { timeout: jobTimeout });
   }
   async function selectPair() {
     await openRuns('conditions');
@@ -572,7 +570,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
     return (await created.json() as StudioProjectDocument).snapshot;
   }
 
-  await page.goto('/?project=' + encodeURIComponent(project), { waitUntil: 'domcontentloaded', timeout: 10_000 });
+  await page.goto('/?project=' + encodeURIComponent(project), { waitUntil: 'domcontentloaded', timeout: jobTimeout });
   await expect(variants).toHaveText('base');
   const initial = await snapshot();
   await runStep('train', 1);
@@ -647,7 +645,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   expect(child).toMatchObject({
     base: { step: 'train' }, inputs: { checkpoint: { step: 'train', checkpoint: 'last' } },
   });
-  expect(child?.deltas?.at(-1)?.patches).toEqual([
+  expect(child?.deltas?.at(-1)?.patches?.map(({ op = 'replace', ...patch }) => ({ op, ...patch }))).toEqual([
     { op: 'replace', path: 'training_config.n_batches', value: 4 },
   ]);
   expect(edited.project.steps?.train).toEqual(initial.project.steps?.train);

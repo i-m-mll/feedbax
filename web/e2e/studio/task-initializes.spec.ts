@@ -12,7 +12,6 @@ const position = JSON.stringify({ composites: [], element: {
 // Catches a Model start the Model needs that no row shows or marks, a row for a start nothing needs, a row whose choice
 // of variable does not write the link, and an Initializes choice that does not bring the row back when it is undone.
 test('a start the Model needs and no variable initializes is a row with its problem and a choice of variables', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const files = await fixture('ordinary-files', '2') as { kind: string; id: string; document?: { payload: Record<string, any> } }[];
   for (const file of files) {
     const payload = file.document?.payload;

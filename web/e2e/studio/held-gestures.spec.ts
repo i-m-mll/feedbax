@@ -6,7 +6,7 @@ import type { Page } from '@playwright/test';
 test.use({ viewport: { width: 1440, height: 900 } });
 
 /** Gestures made while an edit is saving run once it saves, in the order made, each on the state it finds. */
-test('gestures made while an edit saves run in order once it saves', async ({ page, request, studio }) => {
+test('gestures made while an edit saves run in order once it saves', { tag: '@slow' }, async ({ page, request, studio }) => {
   const projectId: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', studio.home, 'held-gestures',
   ));
@@ -163,7 +163,7 @@ test('entering a Model composite while an edit saves happens at once', async ({ 
   // The duplicate's save is held, so the workspace stays unsettled.
   const release = await holdRequests(page, (url) => url.pathname === `${projectPath}/members/command`);
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step Baseline\b/ }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step Evaluate\b/ }).click();
   await model.locator('[data-id="wrapper"] header').dblclick();
   await expect(model.locator('[data-id="controller"] header')).toBeVisible();
   release();

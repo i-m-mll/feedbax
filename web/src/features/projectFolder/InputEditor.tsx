@@ -16,7 +16,7 @@ import {
 import {
   chosenDocument, documentChoice, documentGroup, documentKind, stepChoice, stepChoiceId, stepGroup, type DocumentKind,
 } from './referenceChoices';
-import type { DocumentNames } from './memberNames';
+import type { ShownDocuments } from './memberLabels';
 import { savedRunId } from './projectWindowPlan';
 import { changedSelections, stepSelections, type SelectionProblems } from './selectionEdits';
 import { CheckpointEditor } from './StudioEvaluateAuthoring';
@@ -101,7 +101,7 @@ function unresolvedChoice(spelling: string): ReferenceChoice {
  * selections; a row per selection with its picker; under each its Runs and, for a checkpoint product, its
  * Checkpoint. Add makes an empty row, and nothing is written until its step is chosen.
  */
-export function InputEditor({ label, role, binding, self, steps, project, documentNames, outputs = [], absent, picking, refusal, selection,
+export function InputEditor({ label, role, binding, self, steps, project, documents, outputs = [], absent, picking, refusal, selection,
   checkpoint, onReveal, onChange }: {
   label: string;
   role: InputRole;
@@ -110,7 +110,7 @@ export function InputEditor({ label, role, binding, self, steps, project, docume
   self: string;
   steps: readonly PlanStepView[];
   project: AuthoredProject;
-  documentNames: DocumentNames;
+  documents: ShownDocuments;
   /** Other Analyze cards' operation outputs, which an input that takes them can read. */
   outputs?: readonly CardOutput[];
   /** What the step reads when the input is unbound, offered as the choice that unbinds it. */
@@ -134,7 +134,7 @@ export function InputEditor({ label, role, binding, self, steps, project, docume
     ...role.producers.length ? [stepGroup(producers)] : [],
     ...offered.length ? [{ label: studioName('operations'), choices: offered.map(outputChoice) }] : [],
   ];
-  const documentGroups = role.documents.length ? [documentGroup(project, documentNames, role.documents)] : [];
+  const documentGroups = role.documents.length ? [documentGroup(project, role.documents)] : [];
   const selections = stepSelections(binding);
   const document = documentOf(binding);
   const reads = (choice: ReferenceChoice): Pick<StepReference, 'step' | 'element' | 'product'> | undefined => {
@@ -189,7 +189,7 @@ export function InputEditor({ label, role, binding, self, steps, project, docume
     ? selections.map((reference) => ({ value: shown(reference), reference }))
     : role.gathers && !document ? []
       : [{ value: document !== undefined
-        ? documentChoice(documentNames, documentKind(project, document, role.documents) ?? role.documents[0] ?? 'model', document)
+        ? documentChoice(documents, documentKind(project, document, role.documents) ?? role.documents[0] ?? 'model', document)
         : absent ?? null }];
   const parts = rows.map(({ reference }, index) => reference ? selection?.(index, reference) : undefined);
   function checkpointEditor({ rule, selections: covered }: SelectionCheckpoint, step?: string) {

@@ -79,6 +79,7 @@ def _write_project(folders, project, store, *, evaluate_request=None):
     )
     receiver["training_config"]["n_batches"] = 1
     raw["steps"]["receiver"] = {
+        "label": "Receiver",
         "kind": "train", "base": {"inline": receiver},
         "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
     }

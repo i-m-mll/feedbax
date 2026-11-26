@@ -1,4 +1,4 @@
-import { expect, test as base, type Page } from '@playwright/test';
+import { expect, test as base, type BrowserContext, type Page, type Response } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFixtureRunner } from './python';
+import type { AnalysisDocument, StudioActivityJob, StudioJobSnapshot, StudioProjectSnapshot } from '../../../src/generated/studioContracts';
 
 export const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 
@@ -28,12 +29,14 @@ const backendModules: Record<StudioBackend, string> = {
 };
 
 /**
- * Bounds the wait for a Studio's first job to report progress. Each Studio home starts with an
- * idle Host, so its first worker imports feedbax and, for programs the shared JAX cache lacks,
- * compiles (about 10 s, more under parallel load) before training starts; later jobs report
- * within about 3 s.
+ * Bounds a wait for a Job to reach a state. A Job reports only after its worker imports feedbax and, for programs the
+ * shared JAX cache lacks, compiles: about 10 s alone, and up to several times that while the tier's other Jobs and
+ * other work on the machine share the CPU.
  */
-export const firstJobTimeout = 20_000;
+export const jobTimeout = 90_000;
+
+/** Bounds a Studio's start: its backend imports feedbax and opens its home, about 10 s alone and longer under load. */
+const launchTimeout = 60_000;
 
 export type Studio = {
   origin: string;
@@ -141,7 +144,7 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
     },
     startBackend: async () => {
       start('--backend-only');
-      await expect.poll(healthy, { timeout: 15_000 }).toBe(true);
+      await expect.poll(healthy, { timeout: launchTimeout }).toBe(true);
     },
     serviceLog: log,
   };
@@ -199,10 +202,145 @@ const traced = base.extend<{ namedTrace: void; cpuThrottle: void }, { fixtureRun
   }, { auto: true }],
 });
 
+/** Job statuses that hold a place in the Host's queue or a compute slot. */
+const unsettled = new Set<StudioActivityJob['status']>([
+  'queued', 'awaiting_authorization', 'blocked', 'waiting', 'starting', 'running', 'stopping', 'collecting',
+]);
+
+async function unsettledJobs(origin: string) {
+  const response = await fetch(`${origin}/api/jobs`);
+  if (!response.ok) throw new Error(`Listing the Studio's Jobs failed with ${response.status}: ${await response.text()}`);
+  return (await response.json() as StudioJobSnapshot).jobs.filter((job) => unsettled.has(job.status));
+}
+
+/**
+ * Force-stops every Job a test left in its worker's shared queue and waits until none holds a place,
+ * so the worker's next test starts on an empty queue whether this one passed or failed.
+ */
+async function settleJobs(origin: string) {
+  const left = await unsettledJobs(origin);
+  if (!left.length) return;
+  const stopping = left.filter((job) => job.status !== 'stopping');
+  if (stopping.length) {
+    const response = await fetch(`${origin}/api/jobs/stop`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ job_ids: stopping.map((job) => job.job_id), mode: 'force' }),
+    });
+    if (response.status !== 202) throw new Error(`Stopping leftover Jobs failed with ${response.status}: ${await response.text()}`);
+  }
+  await expect.poll(async () => (await unsettledJobs(origin)).map((job) => `${job.label}: ${job.status}`),
+    { message: 'Jobs a test left behind settle after a force stop' }).toEqual([]);
+}
+
+const snapshotRoute = /^\/api\/projects(?:\/[^/]+(?:\/(?:open|rename|files|history\/replay|members\/command|model\/(?:edit|undo)|loaded-models\/import))?)?$/;
+
+function memberNames(snapshot: StudioProjectSnapshot) {
+  const keys = new Set<string>();
+  const labels = new Set<string>();
+  const layerNames = new Set<string>();
+  function collect(members: Record<string, { label: string }> | undefined) {
+    for (const [key, { label }] of Object.entries(members ?? {})) {
+      keys.add(key);
+      labels.add(label);
+    }
+  }
+  function analysis(payload: unknown) {
+    const { operations, views } = payload as AnalysisDocument;
+    collect(operations);
+    collect(views);
+    for (const { figure } of Object.values(views ?? {})) {
+      if ('layers' in figure) for (const { name } of figure.layers) layerNames.add(name);
+    }
+  }
+
+  collect(snapshot.project.documents);
+  collect(snapshot.project.steps);
+  for (const [key, document] of Object.entries(snapshot.project.documents ?? {})) {
+    if (document.schema !== 'feedbax.analysis_document.v1') continue;
+    const payload = 'payload' in document ? document.payload : snapshot.composed?.[key];
+    if (payload && typeof payload === 'object') analysis(payload);
+  }
+  for (const step of Object.values(snapshot.project.steps ?? {})) {
+    if (step.kind === 'analyze' && 'inline' in step.base) analysis(step.base.inline);
+  }
+  // A variant can introduce members of its own and label existing ones differently.
+  for (const variant of Object.values(snapshot.variant_names)) {
+    for (const group of [variant.documents, variant.steps, ...Object.values(variant.elements)]) {
+      for (const [key, label] of Object.entries(group)) {
+        keys.add(key);
+        labels.add(label);
+      }
+    }
+  }
+  return { keys: [...keys].filter((key) => !labels.has(key)), layerNames: [...layerNames] };
+}
+
+/** Reads snapshots the browser already requested, then checks the visible text in each open Studio page. */
+async function checkMemberLabels({ context, studio }: { context: BrowserContext; studio: Studio }, use: () => Promise<void>) {
+  const reads: Promise<void>[] = [];
+  const latest = new Map<string, { order: number; members: ReturnType<typeof memberNames> }>();
+  const read = (response: Response) => {
+    const { origin, pathname } = new URL(response.url());
+    if (origin !== studio.origin || !response.ok() || !snapshotRoute.test(pathname)) return;
+    const order = reads.length;
+    reads.push(response.json().catch(() => undefined).then((body) => {
+      // Some specs abort requests and some matching routes also return a list.
+      const snapshot = (body?.snapshot ?? body) as StudioProjectSnapshot | undefined;
+      if (!snapshot?.project || !snapshot.variant_names) return;
+      if ((latest.get(snapshot.project_id)?.order ?? -1) < order) {
+        latest.set(snapshot.project_id, { order, members: memberNames(snapshot) });
+      }
+    }));
+  };
+  context.on('response', read);
+  try {
+    await use();
+  } finally {
+    context.off('response', read);
+    await Promise.all(reads);
+    for (const page of context.pages()) {
+      const url = new URL(page.url());
+      const shown = url.searchParams.get('project');
+      const members = url.origin === studio.origin && shown ? latest.get(shown)?.members : undefined;
+      if (!members?.keys.length) continue;
+      const leaked = await page.evaluate(({ keys, layerNames }) => {
+        const members = new Set(keys);
+        const layers = new Set(layerNames);
+        const nodes = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        const range = document.createRange();
+        const found = new Set<string>();
+        while (nodes.nextNode()) {
+          const node = nodes.currentNode;
+          const value = node.textContent?.trim();
+          const parent = node.parentElement;
+          if (!value || !members.has(value) || !parent || parent.closest('[data-member-key], input, textarea, .sr-only')) continue;
+          // The title names the project itself, which can share a name with one of its members.
+          if (parent.closest('.studio-window-bar__project h1')) continue;
+          // A figure layer can have the same authored name as a different member's key.
+          if (layers.has(value) && parent.closest('[data-node]')?.getAttribute('data-node') === JSON.stringify(['layer', value])) continue;
+          if (getComputedStyle(parent).visibility !== 'visible') continue;
+          range.selectNodeContents(node);
+          if (Array.from(range.getClientRects()).some(({ width, height }) => width > 0 && height > 0)) {
+            const place = [parent.localName, ...parent.classList].join('.');
+            found.add(`${value} in ${place}`);
+          }
+        }
+        return [...found];
+      }, members);
+      expect(leaked, 'Studio shows member names outside Change Key').toEqual([]);
+    }
+  }
+}
+
 type WorkerFixtures = { studioBackend: StudioBackend; studioFrontend: StudioFrontend; studio: Studio };
 
-/** Each worker owns one Studio; tests in the worker share its home and job host. */
-export const test = traced.extend<{}, WorkerFixtures>({
+/** Each worker owns one Studio; tests in the worker share its home and job host, and each leaves the queue empty. */
+export const test = traced.extend<{ settledJobs: void; memberLabels: void }, WorkerFixtures>({
+  memberLabels: [checkMemberLabels, { auto: true }],
+  settledJobs: [async ({ studio }, use) => {
+    await use();
+    await settleJobs(studio.origin);
+  }, { auto: true }],
   studioBackend: ['app', { scope: 'worker', option: true }],
   studioFrontend: ['preview', { scope: 'worker', option: true }],
   studio: [async ({ studioBackend, studioFrontend }, use) => {
@@ -212,7 +350,7 @@ export const test = traced.extend<{}, WorkerFixtures>({
     } finally {
       await close();
     }
-  }, { scope: 'worker', timeout: 60_000 }],
+  }, { scope: 'worker', timeout: launchTimeout }],
   baseURL: async ({ studio }, use) => {
     await use(studio.origin);
   },
@@ -227,7 +365,8 @@ async function workerLogs(home: string) {
 }
 
 /** Each test owns its Studio, for tests that stop and restart the backend. */
-export const isolatedTest = traced.extend<{ studio: Studio }>({
+export const isolatedTest = traced.extend<{ studio: Studio; memberLabels: void }>({
+  memberLabels: [checkMemberLabels, { auto: true }],
   studio: [async ({}, use, info) => {
     const { studio, close } = await launchStudio('app', 'preview');
     try {
@@ -245,7 +384,7 @@ export const isolatedTest = traced.extend<{ studio: Studio }>({
         }
       }
     }
-  }, { timeout: 60_000 }],
+  }, { timeout: launchTimeout }],
   baseURL: async ({ studio }, use) => {
     await use(studio.origin);
   },

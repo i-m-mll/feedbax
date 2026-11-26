@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
@@ -23,18 +23,18 @@ async function speedFigure(page: Page, request: APIRequestContext, home: string,
   const { snapshot } = await opened.json() as StudioProjectDocument;
   const { snapshot: seeded } = await appendManagedFiles(request, snapshot, [
     { kind: 'document', id: 'analysis', document: {
-      schema: 'feedbax.analysis_document.v1', payload: {
+      schema: 'feedbax.analysis_document.v1', label: 'Analysis', payload: {
         inputs: { states: { kind: 'dataset' } },
         operations: { speed: {
-          operation: 'feedbax.trial_speed', params: { velocity }, inputs: { states: { input: 'states' } },
+          label: 'Speed', operation: 'feedbax.trial_speed', params: { velocity }, inputs: { states: { input: 'states' } },
         } },
         views: { profile: {
-          figure: { template: 'feedbax.SpeedByTrial' }, inputs: { speed: { element: 'speed', product: 'speed' } },
+          label: 'Profile', figure: { template: 'feedbax.SpeedByTrial' }, inputs: { speed: { element: 'speed', product: 'speed' } },
         } },
       },
     } },
     { kind: 'step', id: 'analyze', step: {
-      kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },
+      label: 'Analyze', kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },
     } },
   ]);
   const plans = page.getByRole('table', { name: 'Runs', exact: true });
@@ -47,7 +47,7 @@ async function speedFigure(page: Page, request: APIRequestContext, home: string,
     const response = await accepted;
     expect(response.status(), await response.text()).toBe(202);
     expect((await response.json() as StudioJobSubmission).items[0].disposition).toBe('admitted');
-    await expect(plans.getByText('Done', { exact: true }).first()).toBeVisible({ timeout: 25_000 });
+    await expect(plans.getByText('Done', { exact: true }).first()).toBeVisible({ timeout: jobTimeout });
   };
   await page.goto('/?project=' + encodeURIComponent(project));
   await run('train');
@@ -112,7 +112,6 @@ const axisPoint = (plot: Locator, fraction: number) => plot.evaluate((node, frac
 // Scene share, a figure whose press does not move the clock, a click on a trace that picks no trial, a legend or hover
 // label listing every trial over the plot, and a playhead drawn over a figure that declares no time panel.
 test('with the Scene pinned on an Evaluate and its Analyze selected, scrubbing moves both and the trial is marked', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(120_000);
   const { trials } = await speedFigure(page, request, studio.home, 'figure-clock');
   await mapStep(page, 'baseline').click();
   await tab(page, 'Runs').click();
@@ -223,7 +222,6 @@ test('the playhead of Speed by trial over 64 trials holds 60 Hz in playback @res
 // Catches a window reopened on the Figures view that draws no figure and offers no trial clock until a figure is
 // pressed, since the selection that chose the figure is not kept across a reopen.
 test('a window reopened on the Figures view draws its figure on the clock without a press', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(120_000);
   await speedFigure(page, request, studio.home, 'figure-reopen');
   await showFigure(page);
   await expect(trialPicker(page)).toHaveText('trial 1 of 64');

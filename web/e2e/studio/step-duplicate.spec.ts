@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
@@ -8,7 +8,6 @@ test.use({ viewport: { width: 1440, height: 900 } });
 const runs = (page: Page) => page.getByRole('table', { name: 'Runs', exact: true });
 
 test('a duplicated Train step reads its source\'s results until it differs, and one Undo removes it', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(90_000);
   const projectId: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', studio.home, 'step-duplicate',
   ));
@@ -38,13 +37,13 @@ test('a duplicated Train step reads its source\'s results until it differs, and 
   const accepted = await submitted;
   expect(accepted.status(), await accepted.text()).toBe(202);
   expect((await accepted.json() as StudioJobSubmission).items.map(({ disposition }) => disposition)).toEqual(['admitted']);
-  await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   const before = await saved();
 
   await command('Duplicate Step Train');
   await expect.poll(async () => Object.keys((await saved()).project.steps ?? {}).sort()).toEqual(['baseline', 'train', 'train-2']);
   const duplicated = await saved();
-  expect(duplicated.project.steps!['train-2']).toEqual(before.project.steps!.train);
+  expect(duplicated.project.steps!['train-2']).toEqual({ ...before.project.steps!.train, label: 'Train 2' });
   expect(Object.keys(duplicated.project.documents ?? {}).sort()).toEqual(Object.keys(before.project.documents ?? {}).sort());
   const read = await rows();
   expect(read['train-2'].request_id).toBe(read.train.request_id);

@@ -150,7 +150,7 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
     const value: FieldModel = projection ? {
       ...trialField(view, projection, studioName('value'), runs, {
         id: `value:${variable.id}`, kind: expressionKind(variable.value),
-        changed: changedAt(view, 'task', `/variables/${index}/value`, commit), source: view.task_source ?? undefined,
+        changed: changedAt(view, 'task', `/variables/${index}/value`, commit), source: view.origin(view.task_source),
         commit: commit && ((edit) => commit(studioAccessibleName('set', variable.name), { kind: 'expression', path, edit })),
         selectedMembers: sweep ? runs?.values(sweep) : undefined,
         chooseMember: sweep && runs?.choose ? (member, extend) => runs.choose!(sweep, member, extend) : undefined,
@@ -238,13 +238,13 @@ const entryWeight = (weight: WeightPart | { on?: WeightPart; off?: WeightPart } 
  * The Sets the step's trials apply, as the service lists them, each weighed by `weigh` with its axis and limited by
  * the condition the service projects at its field.
  */
-function setVariables(view: TrialView, weigh?: (axis: string) => TaskSetVariable['weigh'], commit?: Commit,
+function setVariables(view: TrialView, setName: (set: string) => string, weigh?: (axis: string) => TaskSetVariable['weigh'], commit?: Commit,
   runs?: TrialRuns): TaskSetVariable[] {
   return (view.set_fields ?? []).map(({ axis, set, entries, condition }) => {
     const path = authoredPointer(['set_fields', axis, 'condition']);
     const projection = view.fields.find((field) => field.path === path);
     return {
-      axis, set, weigh: weigh?.(axis),
+      axis, name: setName(set), weigh: weigh?.(axis),
       condition: projection && trialField(view, projection, studioName('condition'), runs, {
         id: `condition:${axis}`, kind: expressionKind(condition ?? undefined),
         commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('condition')), { kind: 'expression', path, edit })),
@@ -262,10 +262,12 @@ export const selectedVariable = (selected: string | undefined): TaskSelection | 
   selected?.startsWith('variable:') ? { kind: 'variable', id: selected.slice('variable:'.length) } : undefined;
 
 /** The Task view of a task document: Variables, and the grid of epochs and signals. */
-export function TrialTaskDocument({ view, commit, runs, entries, selected, select, drawn, toSweep, weigh }: {
+export function TrialTaskDocument({ view, commit, runs, entries, selected, select, drawn, setName, toSweep, weigh }: {
   view: TrialView; commit?: Commit; runs?: TrialRuns; selected?: string; select(id: string): void;
   /** The Set entries the trials read, whose variables the table marks and whose edits they store. */
   entries?: TaskEntries;
+  /** The displayed name of a Set document read by these trials. */
+  setName(set: string): string;
   /** To Sweep on a Set the trials apply, by its axis. */
   toSweep?(axis: string): StudioCommand;
   /** The edit of a weight of a Set the trials apply, by its axis. */
@@ -276,7 +278,7 @@ export function TrialTaskDocument({ view, commit, runs, entries, selected, selec
   const shown = useVariables(view, commit, runs, entries);
   if (!shown) return null;
   return <TaskDocumentBody variables={<TaskVariables variables={shown.variables}
-    sets={setVariables(view, weigh, commit, runs).map((set) => ({ ...set, toSweep: toSweep?.(set.axis) }))} unstarted={shown.unstarted} selected={selectedVariable(selected)}
+    sets={setVariables(view, setName, weigh, commit, runs).map((set) => ({ ...set, toSweep: toSweep?.(set.axis) }))} unstarted={shown.unstarted} selected={selectedVariable(selected)}
     select={(selection) => select(`${selection.kind}:${selection.id}`)} edits={variableEdits(shown.task, commit, shown.owned, entries?.selected)}
     drawn={drawn} />}
     grid={<TrialTaskGrid view={view} commit={commit} runs={runs} selected={selected} select={select} />} />;

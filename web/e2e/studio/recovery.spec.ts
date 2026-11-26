@@ -1,8 +1,8 @@
-import { expect, firstJobTimeout } from './fixtures/studio';
+import { expect, jobTimeout } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import type { StudioJobSnapshot, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, openResultsSlot, runName, seedManagedProject } from './fixtures/canonicalTrain';
-import { isolatedTest as test } from './fixtures/studio';
+import { isolatedTest as test, test as sharedTest } from './fixtures/studio';
 import { hostPid, processExists } from './fixtures/studioRecovery';
 
 function lossCurve(page: Page) {
@@ -10,11 +10,11 @@ function lossCurve(page: Page) {
 }
 
 test.use({ viewport: { width: 1440, height: 900 } });
+sharedTest.use({ viewport: { width: 1440, height: 900 } });
 
 const unreachable = 'Service unreachable';
 
-test('shows a lost service once in the bottom bar and reconnects by itself', async ({ page, studio, request }) => {
-  test.setTimeout(50_000);
+test('shows a lost service once in the bottom bar and reconnects by itself', { tag: '@slow' }, async ({ page, studio, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
   await page.goto(studio.origin + '/?project=' + snapshot.project_id);
   await mapStep(page, 'train').click();
@@ -43,19 +43,18 @@ test('shows a lost service once in the bottom bar and reconnects by itself', asy
   }
 
   const refetched = page.waitForResponse((response) =>
-    new URL(response.url()).pathname === projectPath + '/train-runs' && response.request().method() === 'GET', { timeout: 20_000 });
+    new URL(response.url()).pathname === projectPath + '/train-runs' && response.request().method() === 'GET', { timeout: jobTimeout });
   await studio.startBackend();
-  await expect(footer.getByRole('alert')).toHaveCount(0, { timeout: 6_000 });
+  await expect(footer.getByRole('alert')).toHaveCount(0, { timeout: jobTimeout });
   expect((await refetched).ok()).toBe(true);
   await expect(run).toBeEnabled();
   await expect(table).toBeVisible();
   await expect(modelNode).toBeVisible();
 });
 
-test('a page loaded without the service shows its regions loading and the reason in the bottom bar', async ({
+test('a page loaded without the service shows its regions loading and the reason in the bottom bar', { tag: '@slow' }, async ({
   page, studio, request,
 }) => {
-  test.setTimeout(50_000);
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
   await studio.stopBackend();
   await page.goto(studio.origin + '/?project=' + snapshot.project_id);
@@ -65,20 +64,19 @@ test('a page loaded without the service shows its regions loading and the reason
   await expect(page.locator('[data-studio-focus-region="map"] [aria-busy="true"]')).toBeVisible();
 
   await studio.startBackend();
-  await expect(mapStep(page, 'train')).toBeVisible({ timeout: 8_000 });
+  await expect(mapStep(page, 'train')).toBeVisible({ timeout: jobTimeout });
   await expect(footer.getByRole('alert')).toHaveCount(0);
 });
 
 // Catches a test whose page carries the machine's live Mandible toolbar, or a test build stamped for a walkthrough.
-test('a test server serves its pages without the notes toolbar or source stamps', async ({ page, studio, request }) => {
+sharedTest('a test server serves its pages without the notes toolbar or source stamps', async ({ page, studio, request }) => {
   expect(await (await request.get(studio.origin + '/')).text()).not.toContain('/embed/notes.js');
   await page.goto(studio.origin + '/');
   await expect(page.locator('#root > *').first()).toBeAttached();
   await expect(page.locator('[data-source]')).toHaveCount(0);
 });
 
-test('an endpoint answering with an error fails its own region only', async ({ page, studio, request }) => {
-  test.setTimeout(50_000);
+sharedTest('an endpoint answering with an error fails its own region only', async ({ page, studio, request }) => {
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
   await page.route((url) => url.pathname.endsWith('/model/projection'), (route) =>
     route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"projection failed"}' }));
@@ -96,10 +94,9 @@ test('an endpoint answering with an error fails its own region only', async ({ p
   await expect(page.getByRole('alert')).toHaveCount(1);
 });
 
-test('a mounted Model render failure reports to the service and retries only its slot', async ({
+sharedTest('a mounted Model render failure reports to the service and retries only its slot', async ({
   page, studio, request,
 }) => {
-  test.setTimeout(50_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
   await hostPid(studio.home);
   const message = 'Model canvas observer failed';
@@ -170,7 +167,6 @@ test('a mounted Model render failure reports to the service and retries only its
 test('reopens the same live run and restores loss after backend and host restart', { tag: '@round' }, async ({
   browser, page, request, studio,
 }) => {
-  test.setTimeout(50_000);
   const batches = 6000;
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', String(batches)), studio.origin);
   const mounted = '/?project=' + snapshot.project_id;
@@ -199,7 +195,7 @@ test('reopens the same live run and restores loss after backend and host restart
   await page.getByRole('table', { name: 'Runs', exact: true }).getByRole('button').first().click();
   await openResultsSlot(page);
   const liveLoss = lossCurve(page);
-  await expect(liveLoss).toHaveAttribute('points', /\S+ \S+/, { timeout: firstJobTimeout });
+  await expect(liveLoss).toHaveAttribute('points', /\S+ \S+/, { timeout: jobTimeout });
   const retainedPoints = (await liveLoss.getAttribute('points'))!.split(' ').length;
   const live = await job();
   if (!live) throw new Error('The admitted reaching run is missing');
@@ -238,7 +234,7 @@ test('reopens the same live run and restores loss after backend and host restart
     await expect.poll(async () =>
       (await restored.getAttribute('points'))?.split(' ').length ?? 0,
     ).toBeGreaterThanOrEqual(retainedPoints);
-    await expect.poll(async () => (await job())?.status, { timeout: 25_000 }).toBe('succeeded');
+    await expect.poll(async () => (await job())?.status, { timeout: jobTimeout }).toBe('succeeded');
     const finished = await jobs();
     expect(finished).toHaveLength(1);
     expect(finished[0]).toMatchObject({

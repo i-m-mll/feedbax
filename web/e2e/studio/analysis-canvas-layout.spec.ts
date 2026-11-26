@@ -54,7 +54,7 @@ async function expectClearCanvas(analysis: Locator) {
 // Catches a dropped card drawn over the card it was dropped on, a laid-out card left behind a placed one once an input
 // is set, a wire to a card behind its source drawn back across the cards rather than around them, and a view that keeps
 // its frame after a drop or after the Inspector narrows it, leaving a card past its edge.
-test('keeps every Analysis card clear of the others and every wire clear of the cards', async ({ page, request, studio }) => {
+test('keeps every Analysis card clear of the others and every wire clear of the cards', { tag: '@slow' }, async ({ page, request, studio }) => {
   const project: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'analysis-layout',
   ));
@@ -63,11 +63,11 @@ test('keeps every Analysis card clear of the others and every wire clear of the 
   expect(opened.ok(), await opened.text()).toBe(true);
   const { snapshot } = await opened.json() as StudioProjectDocument;
   await appendManagedFiles(request, snapshot, [
-    { kind: 'document', id: 'analysis', document: { schema: 'feedbax.analysis_document.v1', payload: {
+    { kind: 'document', id: 'analysis', document: { schema: 'feedbax.analysis_document.v1', label: 'Analysis', payload: {
       inputs: { states: { kind: 'dataset' } },
       operations: {
         align: {
-          operation: 'feedbax.aligned_velocity',
+          label: 'Align', operation: 'feedbax.aligned_velocity',
           params: {
             position: '/v1/model/state/plant/effector~1position', velocity: '/v1/model/state/plant/effector~1velocity',
             target: '/v1/task/output/target_pos',
@@ -75,12 +75,12 @@ test('keeps every Analysis card clear of the others and every wire clear of the 
           inputs: { states: { input: 'states' } },
         },
         summarize: {
-          operation: 'feedbax.summarize_velocity', params: { ddof: 1, bounds_scale: 1.0 },
+          label: 'Summarize', operation: 'feedbax.summarize_velocity', params: { ddof: 1, bounds_scale: 1.0 },
           inputs: { velocity: { element: 'align', product: 'velocity' } },
         },
       },
     } } },
-    { kind: 'step', id: 'analyze', step: { kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
+    { kind: 'step', id: 'analyze', step: { kind: 'analyze', label: 'Analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
   ]);
   const edit = async (action: () => Promise<unknown>) => {
     const saving = page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === path);

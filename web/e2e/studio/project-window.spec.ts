@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Locator } from '@playwright/test';
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -103,7 +103,6 @@ test('a failed Train run draws the Host\'s reason in its row', async ({ page, re
 });
 
 test('a real Model edit updates map, drawer, and Runs from the saved plan', { tag: '@round' }, async ({ page, request }, info) => {
-  test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const host = await request.get('/api/jobs');
   expect(host.ok(), await host.text()).toBe(true);
@@ -139,7 +138,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   // A second Run pressed while the first is submitted waits for it, then attaches to the job the first submitted.
   await page.keyboard.press('Enter');
   expect((await (await run).response())!.status()).toBe(202);
-  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   await expect(runButton).toBeFocused();
   // However often Run is pressed, the run has one job.
   const jobsSubmitted = (await Promise.all(submissions)).flatMap(({ items }) => items.map(({ job_id }) => job_id));
@@ -181,8 +180,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   await expect(drawer.getByRole('treeitem', { name: 'Train Done', exact: true })).toBeVisible();
 });
 
-test('outside saved-folder edits join the mounted Undo history', async ({ page, request, studio }, info) => {
-  test.setTimeout(45_000);
+test('outside saved-folder edits join the mounted Undo history', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const root = join(studio.home, 'state', 'web', 'projects', configuration.project);
   const modelPath = join(root, 'documents', 'point-mass.json');
@@ -241,7 +239,7 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   const changed = JSON.parse(beforeOutside);
   changed.payload.interior.components.plant.fields.mass = 3;
   await outside(modelPath, json(changed));
-  await expect(mass).toHaveValue('3', { timeout: 2_000 });
+  await expect(mass).toHaveValue('3', { timeout: jobTimeout });
   await menu('Undo Outside Change');
   await history('Meta+Z', 'Model', '/history/replay');
   await expect(mass).toHaveValue('2');
@@ -275,10 +273,10 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   const outsideModel = structuredClone(changed);
   outsideModel.payload.interior.components.plant.fields.mass = 4;
   await outside(modelPath, json(outsideModel));
-  await expect(mass).toHaveValue('4', { timeout: 2_000 });
+  await expect(mass).toHaveValue('4', { timeout: jobTimeout });
   await outside(stepPath, json(outsideStep));
   await tab('Runs').click();
-  await expect(batchSize).toHaveValue('8', { timeout: 2_000 });
+  await expect(batchSize).toHaveValue('8', { timeout: jobTimeout });
   const burst = await history('Meta+Z', 'Runs', '/history/replay');
   expect(burst.files.map(({ address }: { address: { id: string } }) => address.id).sort()).toEqual(['point-mass', 'train']);
   await expect(batchSize).toHaveValue('6');
@@ -460,33 +458,33 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const [singleModel, chainModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.task_document', payload: blankTask,
+    schema: 'feedbax.spec.task_document', label: 'Task', payload: blankTask,
   } };
   const objective = { kind: 'document', id: 'objective', document: {
-    schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+    schema: 'feedbax.spec.objective_document', label: 'Objective', payload: { id: 'objective', terms: [] },
   } };
   const emptyModel = { ...singleModel, id: 'empty-model', document: {
-    ...singleModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
+    ...singleModel.document, label: 'Empty Model', payload: { step_seconds: 0.01, ports: {}, interior: {} },
   } };
   const documents = (model: string) => ({
     model: { document: model }, task: { document: task.id }, objective: { document: objective.id },
   });
-  const step = (id: string, model: string) => ({
-    ...template, id, step: { ...template.step, base: { inline: {
+  const step = (id: string, label: string, model: string) => ({
+    ...template, id, step: { ...template.step, label, base: { inline: {
       ...template.step.base.inline, trial_documents: documents(model),
     } } },
   });
   const { snapshot, projectPath } = await seedManagedProject(request, [
     singleModel, chainModel, task, objective, emptyModel,
-    step('train', 'chain'), step('single', 'single'), step('empty', 'empty-model'),
-    { kind: 'step', id: 'broken', step: { kind: 'train', base: { inline: { trial_documents: documents('empty-model') } } } },
-    { kind: 'step', id: 'rowless', step: { kind: 'train', base: { document: 'absent-base' } } },
+    step('train', 'Train', 'chain'), step('single', 'Single', 'single'), step('empty', 'Empty', 'empty-model'),
+    { kind: 'step', id: 'broken', step: { kind: 'train', label: 'Broken', base: { inline: { trial_documents: documents('empty-model') } } } },
+    { kind: 'step', id: 'rowless', step: { kind: 'train', label: 'Rowless', base: { document: 'absent-base' } } },
   ]);
   const host = await request.get('/api/jobs');
   expect(host.ok(), await host.text()).toBe(true);
   // The first plan of these multibody models compiles their MuJoCo and JAX kinematics in the
   // backend (about 5-8 s cold, 0.5 s warm), so this read waits on that real cost.
-  const read = await request.get(`${projectPath}/train-runs?revision=${snapshot.revision}&window_map=true`, { timeout: 20_000 });
+  const read = await request.get(`${projectPath}/train-runs?revision=${snapshot.revision}&window_map=true`, { timeout: jobTimeout });
   expect(read.ok(), await read.text()).toBe(true);
   const { window_map } = await read.json() as StudioSavedTrainRuns;
   const problems = window_map!.problems;
@@ -602,16 +600,16 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const rowless = mapCard(page, 'rowless');
   await rowless.getByRole('button', { name: "Can't run", exact: true }).click();
   await expect(list.getByRole('listitem')).toHaveCount(1);
-  await list.getByRole('button', { name: 'Base · Absent base', exact: true }).click();
+  await list.getByRole('listitem').getByRole('button').click();
   await expect(mapStep(page, 'rowless')).toHaveAttribute('aria-pressed', 'true');
 
   await problemButton.click();
   // The group heading names the document; the row names the field the problem is about.
-  await list.locator('section').filter({ has: page.getByRole('heading', { name: 'Empty model', exact: true }) })
+  await list.locator('section').filter({ has: page.getByRole('heading', { name: 'Empty Model', exact: true }) })
     .getByRole('button', { name: /^Components · Model has no components\./ }).click();
   const emptyReason = page.getByText('Components · Model has no components.', { exact: true });
   const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
-  await expect(empty.locator(':scope > header')).toContainText('Empty model');
+  await expect(empty.locator(':scope > header')).toContainText('Empty Model');
   await expect(emptyReason).toBeFocused();
   await expect(mapCard(page, 'empty').locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
 
@@ -636,7 +634,7 @@ test('a run whose own exception is refused dims its definition views with the pr
   await page.goto('/?project=' + snapshot.project_id);
   const card = page.locator('[data-map-step="train"]');
   await mapStep(page, 'train').click();
-  await chooseSweepValue(card, 'Rate', '0.001');
+  await chooseSweepValue(card, 'Learning Rate', '0.001');
   for (const name of ['Task', 'Objective', 'Training']) {
     const tab = page.getByRole('tab', { name, exact: true });
     await expect(tab).toHaveAttribute('aria-disabled', 'true');
@@ -646,7 +644,7 @@ test('a run whose own exception is refused dims its definition views with the pr
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
   expect(reads).not.toContain('rate=rate-0');
 
-  await chooseSweepValue(card, 'Rate', '0.01');
+  await chooseSweepValue(card, 'Learning Rate', '0.01');
   for (const name of ['Model', 'Objective']) {
     await expect(page.getByRole('tab', { name, exact: true })).not.toHaveAttribute('aria-disabled', 'true');
   }
@@ -661,21 +659,21 @@ test('a view with nothing to show is dimmed in the rail, and an open one gives w
   const [planarModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.task_document', payload: blankTask,
+    schema: 'feedbax.spec.task_document', label: 'Task', payload: blankTask,
   } };
   const objective = { kind: 'document', id: 'objective', document: {
-    schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+    schema: 'feedbax.spec.objective_document', label: 'Objective', payload: { id: 'objective', terms: [] },
   } };
   const flatModel = { ...planarModel, id: 'flat-model', document: {
-    ...planarModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
+    ...planarModel.document, label: 'Flat Model', payload: { step_seconds: 0.01, ports: {}, interior: {} },
   } };
-  const step = (id: string, model: string) => ({
-    ...template, id, step: { ...template.step, base: { inline: { ...template.step.base.inline, trial_documents: {
+  const step = (id: string, label: string, model: string) => ({
+    ...template, id, step: { ...template.step, label, base: { inline: { ...template.step.base.inline, trial_documents: {
       model: { document: model }, task: { document: task.id }, objective: { document: objective.id },
     } } } },
   });
   const { snapshot } = await seedManagedProject(request, [
-    planarModel, flatModel, task, objective, step('planar', planarModel.id), step('flat', flatModel.id),
+    planarModel, flatModel, task, objective, step('planar', 'Planar', planarModel.id), step('flat', 'Flat', flatModel.id),
   ]);
   await page.goto(`/?project=${snapshot.project_id}`);
   const sceneTab = page.getByRole('tab', { name: 'Scene', exact: true });
@@ -695,7 +693,7 @@ test('a view with nothing to show is dimmed in the rail, and an open one gives w
   await mapStep(page, 'planar').click();
   await expect(sceneTab).not.toHaveAttribute('aria-disabled', 'true');
   // The first plan of a multibody model compiles its kinematics in the backend, which this read waits on.
-  await sceneTab.click({ timeout: 20_000 });
+  await sceneTab.click({ timeout: jobTimeout });
   await expect(scene).toBeVisible();
   await mapStep(page, 'flat').click();
   await expect(runs).toBeVisible();

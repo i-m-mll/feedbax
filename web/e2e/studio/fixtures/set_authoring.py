@@ -15,10 +15,11 @@ def seed(home: str, project_id: str):
     steps = raw["steps"]
     for name in ("baseline", "report", "analyze"):
         steps.pop(name, None)
-    steps["train_b"] = deepcopy(steps["train"])
+    steps["train_b"] = deepcopy(steps["train"]) | {"label": "Train b"}
     steps["train_b"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = 0.003
-    steps["other"] = deepcopy(steps["train"])
+    steps["other"] = deepcopy(steps["train"]) | {"label": "Other"}
     evaluate = steps.pop("conditions")
+    evaluate["label"] = "Pair"
     evaluate["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     evaluate["inputs"]["subject"] = [{"step": "train", "checkpoint": "last"}, {"step": "train_b", "checkpoint": "last"}]
     steps["pair"] = evaluate
@@ -35,7 +36,9 @@ def seed_entries(home: str, project_id: str):
     raw["steps"] = {"train": raw["steps"]["train"]}
     for name in ("velocity-analysis", "velocity-figure", "velocity-report"):
         raw["documents"].pop(name, None)
-    raw["documents"]["set"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"light": {}, "heavy": {}}}}
+    raw["documents"]["set"] = {
+        "schema": "feedbax.set_document.v1", "label": "Set", "payload": {"entries": {"light": {"label": "Light"}, "heavy": {"label": "Heavy"}}},
+    }
     raw["steps"]["train"]["sweep"] = {"axes": {"set": {"set": "set"}}}
     return _seed(home, project_id, raw)
 
@@ -47,6 +50,7 @@ def seed_window(home: str, project_id: str):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["documents"]["pulses"] = {
         "schema": "feedbax.set_document.v1",
+        "label": "Pulses",
         "payload": {"entries": {
             "nominal": {},
             "force": {

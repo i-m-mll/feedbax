@@ -174,6 +174,7 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     folders, client = studio
     train_before = _runs(folders, "train")
     (original,) = _runs(folders, "baseline").values()
+    authored_model = folders.read(PROJECT).project.documents["reach-model"]
 
     assert _duplicate(folders, client, "baseline") == {"axis": "run", "value": "run-2"}
     assert _duplicate(folders, client, "baseline", ["run=run-2"], {"run": ["run-2"]}) == {"axis": "run", "value": "run-3"}
@@ -185,7 +186,7 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     edited = _runs(folders, "baseline")
     assert {row for row in edited if edited[row] != copies[row]} == {"run=run-2"}
     assert _runs(folders, "train") == train_before
-    assert folders.read(PROJECT).project.documents["reach-model"] == Project.model_validate(_raw()).documents["reach-model"]
+    assert folders.read(PROJECT).project.documents["reach-model"] == authored_model
 
     created = _set_edit(folders, client, {"kind": "save_set", "step": "baseline", "axis": "run"})["created"]
     assert [item["id"] for item in created] == ["set"]
@@ -208,7 +209,7 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     project = folders.read(PROJECT).project
     assert project.documents["set-2"].base.document == "set"
     assert project.documents["set-2"].label == "Set 2"
-    assert result["snapshot"]["names"]["documents"]["set-2"] == "Set 2"
+    assert result["snapshot"]["project"]["documents"]["set-2"]["label"] == "Set 2"
     assert project.steps["other"].sweep.axes["set"].set == "set-2"
     assert project.steps["baseline"].sweep.axes["run"].set == "set"
     assert _runs(folders, "baseline") == edited
@@ -276,10 +277,10 @@ def test_window_map_serves_axis_and_value_names(private_host, tmp_path, monkeypa
     window = response.json()["window_map"]
     (step,) = window["steps"]
     (row,) = window["rows"]
-    assert row["label"] == "Learning rate 0.001"
+    assert row["label"] == "Learning Rate 0.001"
     assert step["axes"] == [{
-        "id": "learning-rate", "label": "Learning rate",
-        "values": [{"id": "slow", "label": "Learning rate 0.001", "value_label": "0.001", "rule": "0.001"}],
+        "id": "learning-rate", "name": "Learning Rate",
+        "values": [{"id": "slow", "name": "Learning Rate 0.001", "value_label": "0.001", "rule": "0.001"}],
     }]
 
 
@@ -296,11 +297,13 @@ def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selec
     only = next(row for row in before["window_map"]["rows"] if row["key"]["step"] == "train")
     assert only["label"] is None and only["name"] == "Train"
     assert _duplicate(folders, client, "train") == {"axis": "run", "value": "run-2"}
+    axis = folders.read(PROJECT).project.steps["train"].sweep.axes["run"]
+    assert axis.label is None
     plan, result = read()
     train = next(step for step in result["window_map"]["steps"] if step["step_id"] == "train")
     assert train["label"] == "Train"
-    assert train["axes"][0]["label"] == "Run"
-    assert [(value["id"], value["label"], value["value_label"]) for value in train["axes"][0]["values"]] == [
+    assert train["axes"][0]["name"] == "Run"
+    assert [(value["id"], value["name"], value["value_label"]) for value in train["axes"][0]["values"]] == [
         ("", "Run 1", "Run 1"), ("run-2", "Run 2", "Run 2"),
     ]
     rows = [row for row in result["window_map"]["rows"] if row["key"]["step"] == "train"]
@@ -399,6 +402,7 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         bank = f"{axis}-bank"
         fields[axis] = {"axis": {"set": bank}, "sampling": {"kind": "cooccurring"}}
         raw["documents"][bank] = {
+            "label": "Document",
             "schema": SET_DOCUMENT_SCHEMA_ID,
             "payload": {"entries": {"shift": {"task_variables": [{
                 "id": "amount", "name": "Amount", "type": {"base": "real"},
@@ -449,6 +453,7 @@ def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
         "value": {"kind": "literal", "value": 0.03, "unit": "s"},
     }
     raw["documents"]["entry-set"] = {
+        "label": "Entry set",
         "schema": SET_DOCUMENT_SCHEMA_ID, "payload": {"entries": {"ordinary": {}, "pulse": {"task_variables": [variable]}}},
     }
     raw["steps"]["baseline"]["sweep"] = {"axes": {"window": {"set": "entry-set"}}}
@@ -526,6 +531,7 @@ def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, sub
         }
         step["base"]["inline"]["params"]["input_bindings"] = train["input_bindings"]
     raw["documents"]["loads"] = {
+        "label": "Loads",
         "schema": "feedbax.set_document.v1",
         "payload": {"entries": {"pulse": {"differences": {
             "/interior/wires/effector-wire/attachments": {"value": [{
@@ -584,7 +590,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
         "id": "is_catch", "name": "is_catch", "type": {"base": "boolean"},
         "value": {"kind": "literal", "value": False},
     })
-    raw["documents"]["loads"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"heavy": {}}}}
+    raw["documents"]["loads"] = {"label": "Loads", "schema": "feedbax.set_document.v1", "payload": {"entries": {"heavy": {}}}}
     raw["steps"]["train"]["set_fields"] = {
         "load": {"axis": {"set": "loads"}, "sampling": {"kind": "weighted"}},
         "listed": {
@@ -667,6 +673,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
 def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_path, sampling, edits, weights, variants):
     raw = document_project(authored_documents())
     raw["documents"]["loads"] = {
+        "label": "Loads",
         "schema": "feedbax.set_document.v1", "payload": {"entries": {"heavy": {}, "nominal": {}}},
     }
     raw["steps"]["train"]["set_fields"] = {"load": {"axis": {"set": "loads"}, "sampling": sampling}}
@@ -700,12 +707,21 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
 
 def test_required_set_can_be_emptied_and_repaired(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
-    raw["documents"]["draft"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}}}}
+    raw["documents"]["draft"] = {
+        "label": "Draft", "schema": "feedbax.set_document.v1", "payload": {
+            "entries": {"one": {"label": "One"}, "two": {"label": "Two"}},
+        },
+    }
     raw["steps"]["train"]["sweep"] = {"axes": {"draft": {"set": "draft"}}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, PROJECT, Project.model_validate(raw))
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        emptied = _set_edit(folders, client, {"kind": "remove_value", "step": "train", "axis": "draft", "value": "one"})
+        before = _runs(folders, "train")
+        remove = {"kind": "remove_value", "step": "train", "axis": "draft"}
+        removed = _set_edit(folders, client, remove | {"value": "one"})
+        assert [file["address"] for file in removed["files"]] == [{"kind": "document", "id": "draft"}]
+        assert _runs(folders, "train") == {"draft=two": before["draft=two"]}
+        emptied = _set_edit(folders, client, remove | {"value": "two"})
         assert emptied["files"] and emptied["problems"][0]["address"] == "documents/draft.json"
         assert emptied["problems"][0]["authored_path"] == "/payload/entries"
         snapshot = folders.read(PROJECT)
@@ -720,7 +736,7 @@ def test_required_set_can_be_emptied_and_repaired(tmp_path):
 def test_applying_an_inapplicable_set_stores_the_reference_and_marks_the_difference(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     pointer = "/interior/components/removed/fields/mass"
-    raw["documents"]["draft"] = {"schema": "feedbax.set_document.v1", "payload": {
+    raw["documents"]["draft"] = {"label": "Draft", "schema": "feedbax.set_document.v1", "payload": {
         "entries": {"heavy": {"differences": {pointer: {"value": 2.0}}}},
     }}
     folders = ProjectFolderService(tmp_path)

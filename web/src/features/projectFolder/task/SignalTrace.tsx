@@ -1,3 +1,4 @@
+import { holdsMissing, plainText, type ShownText } from '@/components/ui/ShownText';
 import type { ReactNode } from 'react';
 import { studioAccessibleName, studioName, studioUnit } from '@/components/activity/studioVocabulary';
 import { epochBoundaries, type Percentiles, type SignalAggregate, type SignalSteps, type TrialShown } from './trialSample';
@@ -51,10 +52,10 @@ function Presence({ share }: { share: readonly number[] }) {
 }
 
 function Frame({ label, low, high, boundaries, steps, children }: {
-  label: string; low: number; high: number; boundaries: readonly number[]; steps: number; children: ReactNode;
+  label: ShownText; low: number; high: number; boundaries: readonly number[]; steps: number; children: ReactNode;
 }) {
   return <div className="grid grid-cols-[minmax(0,1fr)_2.5rem] gap-x-1 text-xs tabular-nums text-shell-muted">
-    <svg role="img" aria-label={studioAccessibleName('plot', label)} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none"
+    <svg role="img" aria-label={studioAccessibleName('plot', plainText(label))} aria-invalid={holdsMissing(label) || undefined} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none"
       className="h-16 w-full text-shell-foreground">
       {boundaries.map((step) => <line key={step} x1={step * width / steps} x2={step * width / steps} y1={0} y2={height}
         stroke="currentColor" strokeOpacity={0.15} vectorEffect="non-scaling-stroke" />)}
@@ -78,7 +79,7 @@ function Legend({ count }: { count: number }) {
 
 /** A signal's trace over one sampled trial; absent steps are drawn as absent, not as zero. */
 export function TrialTrace({ label, steps, boundaries, duration }: {
-  label: string; steps: SignalSteps; boundaries: readonly number[]; duration: number;
+  label: ShownText; steps: SignalSteps; boundaries: readonly number[]; duration: number;
 }) {
   const count = steps.find((value) => value)?.length ?? 1;
   const { low, high } = range(steps.flatMap((value) => value ?? []));
@@ -98,7 +99,7 @@ export function TrialTrace({ label, steps, boundaries, duration }: {
 
 /** A signal over a batch: each component's median with its 25–75 and 5–95 percentile bands; presence heavy where every trial has it. */
 export function BatchTrace({ label, aggregate, boundaries, duration }: {
-  label: string; aggregate: SignalAggregate; boundaries: readonly number[]; duration: number;
+  label: ShownText; aggregate: SignalAggregate; boundaries: readonly number[]; duration: number;
 }) {
   const percentiles = aggregate.percentiles;
   const count = percentiles?.find((value) => value)?.length ?? 0;

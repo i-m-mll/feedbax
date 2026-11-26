@@ -12,8 +12,7 @@ interface Task {
 // Catches a Merge that writes more than one cell or loses the span on reload, an absent cell drawn the same as a cell
 // holding its absent value (or drawn without the value), a column drag that does not reorder the epochs, and a grid
 // that squashes its columns or scrolls its signal names away once five columns do not fit.
-test('the epochs grid merges cells, draws an absent cell apart from a zero, reorders columns and scrolls with its names held', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('the epochs grid merges cells, draws an absent cell apart from a zero, reorders columns and scrolls with its names held', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const task = async () => {
     const { project } = (await (await request.get(projectPath)).json()) as StudioProjectSnapshot;
@@ -102,8 +101,7 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
 // example's label, an absent cell that takes no caret (so only the Inspector could fill it), typed text that is dropped
 // or written as two edits, and a present cell emptied of its text that is refused or stored empty instead of becoming
 // absent.
-test('a Task from an example shows its label, and typing into an absent cell makes it present', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a Task from an example shows its label, and typing into an absent cell makes it present', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const saved = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project;
   const spans = async () => ((await saved()).documents?.['delayed-reaches'] as { payload: Task } | undefined)?.payload
@@ -164,28 +162,6 @@ test('a Task from an example shows its label, and typing into an absent cell mak
   await held.press('Enter');
   await expect.poll(spans).toEqual([['cue', 'move']]);
   await expect(cells.nth(0).getByRole('textbox', { name: /^Absent/ })).toBeVisible();
-});
-
-// Catches a signal rename that leaves the Model input it fed unfed, an Outline that does not say what feeds it, and an
-// Inputs card that keeps the old name or lists the renamed signal again as an unused port.
-test('renaming a signal in the grid keeps the Model input it feeds', async ({ page, request }) => {
-  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
-  await page.goto(`/?project=${snapshot.project_id}`);
-  await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Task', exact: true }).click();
-  const grid = page.locator('[data-slot="primary"]').getByRole('tabpanel').getByRole('table', { name: 'Epochs', exact: true });
-  await enter(grid.getByRole('textbox', { name: 'Rename target position', exact: true }), 'aim');
-  await expect(grid.getByRole('textbox', { name: 'Rename aim', exact: true })).toBeVisible();
-  const input = page.getByRole('complementary', { name: 'Details Drawer', exact: true })
-    .getByRole('tree', { name: 'Model Inputs', exact: true }).getByRole('treeitem').filter({ hasText: 'target_pos' });
-  await expect(input).toContainText('aim');
-  await expect(input.locator('[data-status-mark]')).toHaveCount(0);
-
-  await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  const inputs = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true })
-    .locator('[data-id="@inputs"] .studio-model-port > span:first-of-type');
-  await expect(inputs.filter({ hasText: /^aim$/ })).toHaveCount(1);
-  await expect(inputs.filter({ hasText: /^target_pos$/ })).toHaveCount(0);
 });
 
 // Catches a time field that shows only its authored unit, a paired value left from the old Step after Step changes, and

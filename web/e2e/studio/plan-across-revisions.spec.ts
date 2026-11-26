@@ -55,7 +55,7 @@ const frames = (page: Page) => page.evaluate(() =>
  * From an edit until its revision's plan is read, the window draws what the last plan read said: no control of the
  * Model view, the Evaluate inspector or the rail goes away or comes back. A gesture made meanwhile runs once, after.
  */
-test('a new revision\'s plan, while read, changes no control and holds a gesture until it is read', async ({ page, request }) => {
+test('a new revision\'s plan, while read, changes no control and holds a gesture until it is read', { tag: '@slow' }, async ({ page, request }) => {
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'scoped-series-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const patches: string[] = [];
@@ -80,8 +80,11 @@ test('a new revision\'s plan, while read, changes no control and holds a gesture
    * Makes `edit` with the next plan read held, and `gesture` while it is held; releases it and returns the controls
    * added or removed from the edit until the gesture's revision is drawn.
    */
-  async function heldEdit(revision: string, edit: () => Promise<void>, gesture: () => Promise<void>) {
+  async function heldEdit(revision: string, edit: () => Promise<void>, gesture: () => Promise<void>, readPath: string) {
     const held = await holdPlan(revision);
+    const projection = projectPath + readPath;
+    const heldRead = await hold(page, projection,
+      (body) => (body as { revision: string }).revision !== revision);
     const before = patches.length;
     await watchControls(page);
     const edited = saved();
@@ -98,7 +101,31 @@ test('a new revision\'s plan, while read, changes no control and holds a gesture
     const gestured = saved();
     const read = planRead(next);
     await markControls(page, 'release');
+    // Let Undo reach the disk before the intermediate read, and delay its acknowledgment to the window.
+    let notifyUndo!: () => void;
+    let releaseUndo!: () => void;
+    const undoWritten = new Promise<void>((resolve) => { notifyUndo = resolve; });
+    const undoReleased = new Promise<void>((resolve) => { releaseUndo = resolve; });
+    let heldUndo = false;
+    await page.route((url) => url.pathname === projectPath, async (route) => {
+      if (heldUndo || route.request().method() !== 'PATCH') return route.fallback();
+      heldUndo = true;
+      const reply = await route.fetch();
+      notifyUndo();
+      await undoReleased;
+      await route.fulfill({ response: reply });
+    });
+    const refused = page.waitForResponse((reply) => new URL(reply.url()).pathname === projection && reply.status() === 409);
     held.release();
+    try {
+      await Promise.all([undoWritten, heldRead.sent]);
+      heldRead.release();
+      await refused;
+      await frames(page);
+    } finally {
+      heldRead.release();
+      releaseUndo();
+    }
     await read;
     const last = (await (await gestured).json()).revision as string;
     await planRead(last);
@@ -119,7 +146,7 @@ test('a new revision\'s plan, while read, changes no control and holds a gesture
   await expect(inspector.getByRole('button', { name: 'Seed kind: Value', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Play', exact: true })).toBeVisible();
   await every.fill('3');
-  const evaluate = await heldEdit(snapshot.revision, () => every.press('Enter'), () => page.keyboard.press('Meta+Z'));
+  const evaluate = await heldEdit(snapshot.revision, () => every.press('Enter'), () => page.keyboard.press('Meta+Z'), '/authoring/train/evaluate');
   expect(evaluate.changes).toEqual([]);
   await expect(every).toHaveValue('2');
 
@@ -133,7 +160,7 @@ test('a new revision\'s plan, while read, changes no control and holds a gesture
   await expect(inspector.getByRole('button', { name: 'Step kind: Value', exact: true })).toBeVisible();
   await expect(page.locator('footer.studio-window-bottom').getByRole('group', { name: 'Clock', exact: true })
     .getByRole('button', { name: /^Trial / })).toBeVisible();
-  const train = await heldEdit(evaluate.revision, () => page.keyboard.press('Meta+Shift+Z'), () => page.keyboard.press('Meta+Z'));
+  const train = await heldEdit(evaluate.revision, () => page.keyboard.press('Meta+Shift+Z'), () => page.keyboard.press('Meta+Z'), '/model/projection');
   expect(train.changes).toEqual([]);
   const { project } = await (await request.get(projectPath)).json();
   expect(project.steps.evaluate.inputs.subject.checkpoint).toEqual({ every: 2 });

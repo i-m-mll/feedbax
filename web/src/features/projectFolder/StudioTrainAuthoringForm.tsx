@@ -7,7 +7,7 @@ import {
   catalogEntries, projectTrainFields, readStudioTrainAuthoring, useAuthoringCatalog,
 } from '@/api/studioAuthoring';
 import { studioName } from '@/components/activity/studioVocabulary';
-import { nameOf } from './memberNames';
+import { labelOf } from './memberLabels';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { MenuItem, MenuSubmenu } from '@/components/ui/Menu';
@@ -28,7 +28,7 @@ import { reasonOf } from '@/components/values/fieldModel';
 import { baseOf } from './documentPayload';
 import type { ClassProjection } from '@/components/values/adapters/jsonSchema';
 import { sameAuthoredFile, type AuthoredProject } from './authoredEdits';
-import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
+import { projectRead, ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
 import { filesRemoval, sweepValueRuns, useRunRemoval } from './runRemoval';
 import { sendWithStore, useAskStore } from './storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
@@ -67,19 +67,12 @@ function validateRecipe(
     bases.push({ kind: 'step', id: source.step });
     source = authored.steps?.[source.step]?.base;
   }
-  let edited: AuthoredProject | undefined;
-  const sameStep = (a: AuthoredProject, b: AuthoredProject) => sameAuthoredFile(a, b, address);
-  return (before, after) => {
-    if (JSON.stringify(before.sweep) !== JSON.stringify(authored.sweep) ||
+  return (before, _after, direction) => {
+    // Replaying an acknowledged gesture uses the saved revision. The writer can omit defaults from its optimistic form.
+    if ((direction === 'edit' && !sameAuthoredFile(before, authored, address)) ||
+        JSON.stringify(before.sweep) !== JSON.stringify(authored.sweep) ||
         documents.some((id) => JSON.stringify(before.documents?.[id]) !== JSON.stringify(authored.documents?.[id])) ||
         bases.some((base) => !sameAuthoredFile(before, authored, base))) {
-      throw new ProjectEditConflictError();
-    }
-    if (!edited && sameStep(before, authored)) {
-      edited = after;
-    } else if (!edited ||
-               !(sameStep(before, authored) && sameStep(after, edited) ||
-                 sameStep(before, edited) && sameStep(after, authored))) {
       throw new ProjectEditConflictError();
     }
   };
@@ -112,7 +105,7 @@ function useTrainFieldsQuery(
   const body = { revision, ...selection };
   return { body, fields: useQuery({
     queryKey: ['train-fields', projectId, stepId, body],
-    queryFn: ({ signal }) => projectTrainFields(projectId, stepId!, body, signal),
+    ...projectRead(editor, revision, (signal) => projectTrainFields(projectId, stepId!, body, signal)),
     enabled: stepId !== undefined && !runPending,
     placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
   }) };
@@ -230,7 +223,7 @@ function useTrainForm(props: Props) {
   /** The changed mark of the field at `id`, a pointer in the definition: the base of the document it is read from. */
   const changeMark = (id: string, reset?: () => Promise<string | undefined>): ChangeMark | undefined => {
     const base = baseOf(saved.project.documents, trainFieldDocument(saved.project.steps?.[stepId], id));
-    return base === undefined ? undefined : { from: { kind: 'base', name: nameOf(saved.names.documents, base) }, reset };
+    return base === undefined ? undefined : { from: { kind: 'base', name: labelOf(saved.project.documents, base) }, reset };
   };
   const { project_id: projectId, revision } = saved;
   const methodLabel = useId();
@@ -240,7 +233,7 @@ function useTrainForm(props: Props) {
   const shows = (id: string) => !props.trainingDocument || inTrainingDocument(id);
   const definition = useQuery({
     queryKey: ['train-authoring', projectId, stepId, revision, scope],
-    queryFn: ({ signal }) => readStudioTrainAuthoring(projectId, stepId, { revision, ...scope }, signal),
+    ...projectRead(editor, revision, (signal) => readStudioTrainAuthoring(projectId, stepId, { revision, ...scope }, signal)),
     enabled: !props.runPending,
     placeholderData: (previous) => previous?.project_id === projectId && previous.step_id === stepId ? previous : undefined,
   });

@@ -1,4 +1,4 @@
-import type { ExceptionMentions } from '@/components/values/adapters/fieldView';
+import type { SourceNaming } from '@/components/values/adapters/fieldView';
 import { documentPayload } from './documentPayload';
 import { conditionLabels } from './evaluateAuthoring';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
@@ -97,7 +97,7 @@ interface DetailInputs {
   readonly modelProblems?: readonly StudioProjectWindowMapProblem[];
   readonly drawerSections: DrawerSections;
   readonly openModelProblems?: (element: ModelAddress, opener: HTMLElement) => void;
-  readonly exceptions?: ExceptionMentions;
+  readonly sourceNaming: SourceNaming;
   /** The step's trial, whose epochs and Task variables the Model's attachments read. */
   readonly trial?: StudioTrialAuthoring;
 }
@@ -116,11 +116,15 @@ export function drawnEvaluation(evaluation: StudioSavedEvaluationRow | undefined
   return result ? { result, trials: result.trials ?? evaluation!.trials, outOfDate: !evaluation!.result } : undefined;
 }
 
-/** The trials a saved evaluation recorded, which the clock's picker lists, with each one's condition. */
-export function recordedTrials(evaluation: StudioSavedEvaluationRow | undefined) {
+/**
+ * The trials a saved evaluation recorded, which the clock's picker lists, with each one's condition named by the Task's
+ * `variables`; unnamed until the Task is read.
+ */
+export function recordedTrials(evaluation: StudioSavedEvaluationRow | undefined, variables: readonly { readonly id: string; readonly name: string }[] | undefined) {
   const drawn = drawnEvaluation(evaluation);
   if (!drawn) return { ids: [], labels: [], outOfDate: false };
-  const labels = conditionLabels(drawn.trials);
+  if (!variables) return { ids: drawn.trials, labels: [], outOfDate: drawn.outOfDate };
+  const labels = conditionLabels(drawn.trials, variables);
   return { ids: drawn.trials, labels: drawn.trials.map((id) => labels.get(id) ?? id), outOfDate: drawn.outOfDate };
 }
 
@@ -355,7 +359,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     setPath: (path, document = storedId) => { if (document) input.setModelPath(document, path); },
     sections: input.drawerSections,
     openProblems: input.openModelProblems,
-    exceptions: input.exceptions,
+    sourceNaming: input.sourceNaming,
     trial: input.trial,
   });
   return {

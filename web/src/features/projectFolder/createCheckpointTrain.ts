@@ -5,17 +5,16 @@ import type { Step, StepReference, StudioSavedTrainRuns, SubsetTerms } from '@/g
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { planVariants, selectedRowTerms, stepSourceRows } from './projectWindowPlan';
 import { authoredSubset } from './selectionEdits';
-import { generatedName, holds } from './generatedName';
 
 const initializationPath = 'checkpoint_initialization';
 
 /**
- * A new Train step continuing `source`'s step from its last checkpoint, initializing its model from it. `inherited` says
+ * A new Train step, labelled `label`, continuing `source`'s step from its last checkpoint, initializing its model from it. `inherited` says
  * whether that step is itself a continuation, whose initialization policy the new step replaces.
  */
-function continuation(source: StepReference, inherited: boolean): Step {
+function continuation(source: StepReference, inherited: boolean, label: string): Step {
   return {
-    kind: 'train', base: { step: source.step }, inputs: { checkpoint: source },
+    kind: 'train', label, base: { step: source.step }, inputs: { checkpoint: source },
     deltas: [{
       layer_id: 'initialize',
       patches: [{ path: initializationPath, op: inherited ? 'replace' : 'add', value: 'initialize_from' }],
@@ -54,11 +53,11 @@ export async function createCheckpointTrain(
   projection: StudioSavedTrainRuns,
 ) {
   const { step, where } = modelSourceSubset(source, view, projection, ['train']);
-  const id = generatedName('train', holds(editor.getSnapshot().saved.project.steps));
+  const { id, label } = await editor.nameMember({ kind: 'step', step: 'train' }, projection.revision);
   await editor.createFile({
     kind: 'step', id,
     step: continuation({ step: step.id, checkpoint: 'last', ...(where && { where }) },
-      step.inputs.some(({ id }) => id === 'checkpoint')),
+      step.inputs.some(({ id }) => id === 'checkpoint'), label),
   }, projection.revision);
   return id;
 }

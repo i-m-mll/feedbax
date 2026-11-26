@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
-import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import type { BasedDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { applyTo } from './fixtures/controls';
 import { documentChoice } from './fixtures/members';
@@ -64,8 +64,7 @@ function modelView(page: Page) {
   return { primary, picker, menu, inspector, mass, card, open, setMass };
 }
 
-test('a based document marks the value it changes, and Reset of its only one gives the step its runs on the base', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a based document marks the value it changes, and Reset of its only one gives the step its runs on the base', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, requests, documents } = await project(request);
   const { picker, mass, open, setMass } = modelView(page);
 
@@ -87,12 +86,11 @@ test('a based document marks the value it changes, and Reset of its only one giv
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(mass).toHaveValue(base);
   await expect(mass).not.toHaveAccessibleDescription(/Changed/);
-  await expect.poll(async () => (await documents())['point-mass-2']).toMatchObject({ differences: {} });
+  await expect.poll(async () => ((await documents())['point-mass-2'] as BasedDocument).differences ?? {}).toEqual({});
   expect(await requests()).toEqual(initial);
 });
 
-test('an edit in an Evaluate step\'s Model view makes a document for the evaluation alone', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('an edit in an Evaluate step\'s Model view makes a document for the evaluation alone', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, requests, documents } = await project(request, [evaluation('check', 'train')]);
   const { picker, menu, mass, card, open, setMass } = modelView(page);
 
@@ -122,7 +120,7 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
   await menu.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   const rename = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header').getByRole('textbox');
   await expect(rename).toBeFocused();
-  const duplicate = 'Point mass 2 2';
+  const duplicate = 'Point mass 3';
   await expect(rename).toHaveValue(duplicate);
   await page.keyboard.press('Escape');
   await expect(picker).toHaveText(duplicate);
@@ -136,7 +134,7 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
 
 test('Detach of an evaluation\'s based Model is stored, marks the Evaluate\'s Model and leaves its Task readable', async ({ page, request }) => {
   const narrowed = { kind: 'document', id: 'point-mass-2', document: {
-    schema: 'feedbax.spec.model', base: { document: 'point-mass' }, differences: {},
+    schema: 'feedbax.spec.model', label: 'Point mass 2', base: { document: 'point-mass' }, differences: {},
   } };
   const check = evaluation('check', 'train');
   (check.step.base.inline as Record<string, unknown>).trial_documents = { model: { document: 'point-mass-2' } };
@@ -159,8 +157,7 @@ test('Detach of an evaluation\'s based Model is stored, marks the Evaluate\'s Mo
   await expect(header.getByRole('alert')).toHaveCount(0);
 });
 
-test('a second Evaluate step and a new Train step can each pick the evaluation\'s document', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a second Evaluate step and a new Train step can each pick the evaluation\'s document', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, saved } = await project(request, [evaluation('check', 'train'), evaluation('check-2', 'train', 'Check 2')]);
   const { picker, menu, open, setMass } = modelView(page);
   const reads = async (step: string) => {
@@ -186,8 +183,7 @@ test('a second Evaluate step and a new Train step can each pick the evaluation\'
   }
 });
 
-test('a Train step put in an Evaluate step\'s Model view takes the edit, and no document is made', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a Train step put in an Evaluate step\'s Model view takes the edit, and no document is made', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, requests, documents } = await project(request, [evaluation('check', 'train')]);
   const { picker, card, open, setMass } = modelView(page);
 
@@ -206,7 +202,6 @@ test('a Train step put in an Evaluate step\'s Model view takes the edit, and no 
 });
 
 test('an Evaluate step pointed at a Model document unrelated to its subject\'s cannot run, for that document', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot, runs, documents } = await project(request, [evaluation('check', 'train')]);
   const { picker, menu } = modelView(page);
 
@@ -232,8 +227,7 @@ test('an Evaluate step pointed at a Model document unrelated to its subject\'s c
   await expect(page.locator('[data-slot="primary"]').getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
 });
 
-test('a based Objective document marks the term value it changes, and Reset gives it the base\'s', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a based Objective document marks the term value it changes, and Reset gives it the base\'s', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, requests, documents } = await project(request);
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
   const picker = primary.locator('.studio-window-slot__header').getByRole('button', { name: /^Objective Document / });
@@ -261,20 +255,19 @@ test('a based Objective document marks the term value it changes, and Reset give
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(name).toHaveValue('');
   await expect(inspected).not.toHaveAccessibleDescription(/Changed/);
-  await expect.poll(async () => (await documents())['simple-reaches-objective-2']).toMatchObject({ differences: {} });
+  await expect.poll(async () => ((await documents())['simple-reaches-objective-2'] as BasedDocument).differences ?? {}).toEqual({});
   expect(await requests()).toEqual(initial);
 });
 
 test('an attachment a based Model document adds is marked as authored there, and not in a document based on it', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot: seeded } = await project(request);
   const { snapshot } = await appendManagedFiles(request, seeded, [
     { kind: 'document', id: 'point-mass-2', document: {
-      schema: 'feedbax.spec.model', base: { document: 'point-mass' }, differences: {
+      schema: 'feedbax.spec.model', label: 'Point mass 2', base: { document: 'point-mass' }, differences: {
         '/interior/wires/decode/attachments': { value: [{ id: 'lag', kind: 'delay', delay: { value: 1, unit: 'st' }, initial_source: { kind: 'value', value: 0 } }] },
       },
     } },
-    { kind: 'document', id: 'point-mass-3', document: { schema: 'feedbax.spec.model', base: { document: 'point-mass-2' } } },
+    { kind: 'document', id: 'point-mass-3', document: { schema: 'feedbax.spec.model', label: 'Point mass 3', base: { document: 'point-mass-2' } } },
   ]);
   const pointed = await request.patch(`/api/projects/${snapshot.project_id}`, { data: { revision: snapshot.revision, files: [{
     address: { kind: 'step', id: 'train' },
@@ -303,7 +296,6 @@ test('an attachment a based Model document adds is marked as authored there, and
 });
 
 test('a based Training document marks the value it changes inside its field, and Reset on the mark gives it the base\'s', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot: seeded, saved, requests, documents } = await project(request);
   const keys = ['method', 'settings', 'training_config'] as const;
   const inline = (seeded.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
@@ -346,21 +338,20 @@ test('a based Training document marks the value it changes inside its field, and
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(batches).toHaveValue(base);
   await expect(batches).not.toHaveAccessibleDescription(/Changed/);
-  await expect.poll(async () => (await documents())['training-2']).toMatchObject({ differences: {} });
+  await expect.poll(async () => ((await documents())['training-2'] as BasedDocument).differences ?? {}).toEqual({});
   expect(await requests()).toEqual(initial);
 });
 
 test('a based Training document marks the class it changes, and Reset gives it the base\'s', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot: seeded, documents } = await project(request);
   const keys = ['method', 'settings', 'training_config'] as const;
   const inline = (seeded.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
   const { snapshot } = await appendManagedFiles(request, seeded, [
     { kind: 'document', id: 'training', document: {
-      schema: 'feedbax.spec.training_document', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
+      schema: 'feedbax.spec.training_document', label: 'Training', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
     } },
     { kind: 'document', id: 'training-2', document: {
-      schema: 'feedbax.spec.training_document', base: { document: 'training' },
+      schema: 'feedbax.spec.training_document', label: 'Training 2', base: { document: 'training' },
       differences: { '/settings/optimizer/type': { value: 'adabelief' } },
     } },
   ]);
@@ -379,13 +370,12 @@ test('a based Training document marks the class it changes, and Reset gives it t
   await expect(primary.getByRole('textbox', { name: 'Batches', exact: true })).not.toHaveAccessibleDescription(/Changed/);
   await optimizer.getByRole('button', { name: 'Changed', exact: true }).first().click();
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
-  await expect.poll(async () => (await documents())['training-2']).toMatchObject({ differences: {} });
+  await expect.poll(async () => (await documents())['training-2']).not.toHaveProperty('differences');
   await expect(optimizer.getByRole('combobox', { name: 'Optimizer', exact: true })).toHaveValue('Adam');
   await expect(optimizer.getByRole('button', { name: 'Changed', exact: true })).toHaveCount(0);
 });
 
 test('an Evaluate step\'s Task edit marks the value its document changes, and Reset gives it the base\'s', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const files = (JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring')) as { kind: string; id: string }[])
     .filter(({ id }) => id !== 'conditions');
   const { snapshot, projectPath } = await seedManagedProject(request, [...files, evaluation('check', 'train')]);
@@ -413,11 +403,10 @@ test('an Evaluate step\'s Task edit marks the value its document changes, and Re
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(target).toHaveValue(base);
   await expect(target).not.toHaveAccessibleDescription('Changed by Check');
-  await expect.poll(async () => (await documents())[created[0]]).toMatchObject({ differences: {} });
+  await expect.poll(async () => ((await documents())[created[0]] as BasedDocument).differences ?? {}).toEqual({});
 });
 
-test('a narrowed edit for two of three readers makes one document, and later edits of the base reach it by the document rule', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a narrowed edit for two of three readers makes one document, and later edits of the base reach it by the document rule', { tag: '@slow' }, async ({ page, request }) => {
   const [...files] = await fixture('history-files');
   const sibling = files.at(-1) as { id: string; step: { base: { inline: { seed: number } } } };
   const third = structuredClone(sibling);
@@ -454,11 +443,10 @@ test('a narrowed edit for two of three readers makes one document, and later edi
   await setMass('4');
   await expect.poll(() => changed(before)).toEqual(['sibling', 'third', 'train']);
   await expect(mass).toHaveValue('4');
-  expect((await documents())['point-mass-2']).toMatchObject({ differences: {} });
+  expect(((await documents())['point-mass-2'] as BasedDocument).differences ?? {}).toEqual({});
 });
 
-test('a subject moved to a new document leaves its evaluation\'s document as it was, and picking the old one back restores the evaluation', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a subject moved to a new document leaves its evaluation\'s document as it was, and picking the old one back restores the evaluation', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, requests, documents } = await project(request, [evaluation('check', 'train')]);
   const { picker, menu, open, setMass } = modelView(page);
 

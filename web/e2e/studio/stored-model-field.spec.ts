@@ -7,7 +7,7 @@ import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('reopens a Model duration range and an integer sample in their saved forms', async ({ page, request }) => {
+test('reopens a Model duration range and an integer sample in their saved forms', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();
@@ -27,7 +27,7 @@ test('reopens a Model duration range and an integer sample in their saved forms'
   await enter(tau.getByRole('textbox', { name: 'Count', exact: true }), '4');
   await expect(tauText).toHaveValue('linspace(0.02 s, 0.04 s, 4)');
   await enter(hidden, 'sample(choice(8, 12), 4)');
-  await expect(hidden).toHaveValue(/sample\(choice\(8, 12, per=run\), 4\)/);
+  await expect(hidden).toHaveValue('sample(choice(8, 12, per=run), 4)');
   const saved = await request.get(projectPath);
   expect(saved.ok()).toBe(true);
   const opened = await saved.json() as StudioProjectSnapshot;
@@ -35,18 +35,17 @@ test('reopens a Model duration range and an integer sample in their saved forms'
     path: expect.stringContaining('"path":["fields","tau"]'), range: { start: 0.02, stop: 0.04, count: 4 },
   });
   expect(opened.project.steps?.train.sweep?.axes?.['hidden-size']).toMatchObject({
-    sampler: { count: 4, distribution: { family: 'choice' } },
+    sampler: { count: 4, distribution: { family: 'choice', per: 'run' } },
   });
   await page.reload();
   await mapStep(page, 'train').click();
   await expect(model).toBeVisible();
   await model.locator('.react-flow__node').filter({ hasText: 'VanillaRNN' }).locator('header').click();
   await expect(tauText).toHaveValue('linspace(0.02 s, 0.04 s, 4)');
-  await expect(hidden).toHaveValue(/sample\(choice\(8, 12, per=run\), 4\)/);
+  await expect(hidden).toHaveValue('sample(choice(8, 12, per=run), 4)');
 });
 
-test('edits and reopens a stored Model field sweep through project history', async ({ page, request }) => {
-  test.setTimeout(50_000);
+test('edits and reopens a stored Model field sweep through project history', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();

@@ -65,6 +65,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
         _scale_attachment("remove", 0.5),
     ]
     _save_project(folders, project, Project.model_validate(raw))
+    authored_documents = folders.read(project).project.documents
     original = folders.read_plan(project, revision=None)
     previous = {run.key: run.request_id for run in original.plan.runs}
     train = RunKey("default", "train", "default")
@@ -95,7 +96,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
         applied = edit(difference)
         assert applied.status == "applied", applied
     plan = folders.read_plan(project, revision=None)
-    assert folders.read(project).project.documents == Project.model_validate(raw).documents
+    assert folders.read(project).project.documents == authored_documents
     current = {run.key: run.request_id for run in plan.plan.runs}
     assert current.keys() == previous.keys()
     assert {key for key in current if current[key] != previous[key]} == {condition}
@@ -398,6 +399,7 @@ def test_a_model_document_that_changes_the_trained_clock_is_refused_at_its_field
     raw = document_project(authored, evaluation=True)
     step = raw["documents"]["reach-model"]["payload"]["step_seconds"] * 3
     raw["documents"]["slow-model"] = {
+        "label": "Slow model",
         "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
         "differences": {"/step_seconds": {"value": step}},
     }

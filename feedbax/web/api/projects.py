@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
 
+from feedbax.contracts.canonical_json import CanonicalJsonError
 from feedbax.contracts.expression_site import ExpressionPartSite
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, EvaluateModelState,
@@ -31,6 +32,8 @@ from feedbax.contracts.studio_authoring import (
 from feedbax.contracts.studio_project import (
     StudioMemberCommand,
     StudioMemberCommandResult,
+    StudioMemberName,
+    StudioMemberNameRequest,
     StudioPresentationWrite,
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
@@ -77,7 +80,7 @@ def _project_response[Result](response: Response, operation: Callable[[], Result
         snapshot = operation()
     except ProjectFolderNotFound as exc:
         raise HTTPException(404, detail=str(exc), headers=_NO_STORE) from exc
-    except ProjectFolderInvalid as exc:
+    except (ProjectFolderInvalid, CanonicalJsonError) as exc:
         raise HTTPException(422, detail=str(exc), headers=_NO_STORE) from exc
     except ProjectRevisionConflict as exc:
         raise HTTPException(
@@ -338,11 +341,9 @@ def read_scene_geometry(
 
 @router.get("/examples")
 def list_project_examples(request: Request, response: Response) -> StudioProjectExamples:
-    from feedbax.contracts.project import member_display_name
-
     return _project_response(response, lambda: StudioProjectExamples(examples=[
-        StudioProjectExample(id=key, name=member_display_name(key))
-        for key in request.app.state.project_folders.project_examples()
+        StudioProjectExample(id=key, name=example.label)
+        for key, example in request.app.state.project_folders.project_examples().items()
     ]))
 
 
@@ -527,6 +528,15 @@ def create_project_file(
 ) -> StudioProjectDocument:
     return _project_response(
         response, lambda: request.app.state.project_folders.create_file(project_id, body)
+    )
+
+
+@router.post("/{project_id}/members/name")
+def name_project_member(
+    project_id: ProjectName, body: StudioMemberNameRequest, request: Request, response: Response,
+) -> StudioMemberName:
+    return _project_response(
+        response, lambda: request.app.state.project_folders.member_name(project_id, body)
     )
 
 

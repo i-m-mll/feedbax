@@ -46,6 +46,7 @@ def test_whole_taken_roles_with_different_labels_carry_the_role_the_output_names
     operations = _operations_of(definition)
     whole = _operations_of(_two_model_definition(MASSES))["align"]["operation"]
     operations["pair"] = {
+        "label": "Pair",
         "operation": "map_probe.pair", "params": {"ddof": 0, "bounds_scale": 1.0},
         "inputs": {"left": {"input": "states"}, "right": {"element": "align", "product": "velocity"}},
     }
