@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping, Sequence
+import re
 from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, StrictStr, StringConstraints
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.strict_json import strict_model_validate_json
+from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
 
-ModelElementId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]+$")]
+_ELEMENT_ID = re.compile(r"[A-Za-z0-9_-]+")
+_FIELD_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
+_AUTHORED_TOKEN = re.compile(rf'"(?:[^"\\\x00-\x1f]|\\.)*"|{_ELEMENT_ID.pattern}|[./#]')
+_PORT_HEADS: dict[Literal["input", "output", "physical"], str] = {
+    "input": "in", "output": "out", "physical": "physical",
+}
+_PORT_DIRECTIONS = {head: direction for direction, head in _PORT_HEADS.items()}
+
+ModelElementId = Annotated[str, StringConstraints(pattern=f"^{_ELEMENT_ID.pattern}$")]
 FieldIndex = Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
 FieldPath = Annotated[tuple[StrictStr | FieldIndex, ...], Field(min_length=1)]
 
@@ -259,3 +269,122 @@ class ModelAddress(StrictModel):
         if address.to_text() != text:
             raise ValueError("Model address text must be canonical JSON")
         return address
+
+    def to_authored_text(self) -> str:
+        """Encode the relative address for authored documents and expressions."""
+        return "/".join((*self.composites, _authored_element(self.element)))
+
+    @classmethod
+    def from_authored_text(cls, text: str) -> ModelAddress:
+        """Read an authored address in its one canonical spelling."""
+        tokens = _authored_tokens(text)
+
+        def take(expected: str | None = None) -> str:
+            if not tokens or expected is not None and tokens[0] != expected:
+                raise ValueError("Invalid authored Model address")
+            return tokens.popleft()
+
+        def id_after(separator: str | None = None) -> str:
+            if separator is not None:
+                take(separator)
+            value = take()
+            if not _ELEMENT_ID.fullmatch(value):
+                raise ValueError("Invalid element ID in authored Model address")
+            return value
+
+        composites = []
+        while len(tokens) > 1 and tokens[1] == "/":
+            composites.append(id_after())
+            take("/")
+
+        head = take()
+        element: AddressedElement
+        match head:
+            case "graph":
+                element = GraphElement(kind="graph")
+            case "inputs" if not tokens:
+                element = InputsElement(kind="inputs")
+            case "outputs" if not tokens:
+                element = OutputsElement(kind="outputs")
+            case "inputs":
+                element = PortElement(kind="port", end=InputBoundaryEnd(owner="inputs", port=id_after(".")))
+            case "outputs":
+                element = PortElement(kind="port", end=OutputBoundaryEnd(owner="outputs", port=id_after(".")))
+            case "boundary":
+                element = PortElement(kind="port", end=PhysicalBoundaryEnd(owner="boundary", port=id_after(".")))
+            case "component":
+                element = ComponentElement(kind="component", id=id_after("."))
+            case "wire":
+                element = WireElement(kind="wire", id=id_after("."))
+            case "connection":
+                element = PhysicalConnectionElement(kind="physical_connection", id=id_after("."))
+            case _ if head in _PORT_DIRECTIONS:
+                element = PortElement(kind="port", end=ComponentPortAddress(
+                    owner="component", direction=_PORT_DIRECTIONS[head], component=id_after("."), port=id_after("."),
+                ))
+            case _:
+                raise ValueError("Invalid element in authored Model address")
+
+        if tokens and tokens[0] == "#":
+            if not isinstance(element, PortElement | WireElement):
+                raise ValueError("An attachment address requires a port or wire owner")
+            element = AttachmentElement(kind="attachment", parent=element, id=id_after("#"))
+
+        if tokens:
+            assert not isinstance(element, InputsElement | OutputsElement)
+            path = []
+            while tokens:
+                take(".")
+                path.append(_authored_field_part(take()))
+            element = FieldElement(kind="field", parent=element, path=tuple(path))
+
+        address = cls(composites=tuple(composites), element=element)
+        if address.to_authored_text() != text:
+            raise ValueError("Model address must use canonical authored text")
+        return address
+
+
+def _authored_tokens(text: str) -> deque[str]:
+    tokens: deque[str] = deque()
+    start = 0
+    while start < len(text):
+        found = _AUTHORED_TOKEN.match(text, start)
+        if found is None:
+            raise ValueError("Invalid token in authored Model address")
+        tokens.append(found.group())
+        start = found.end()
+    return tokens
+
+
+def _authored_field_part(token: str) -> str | int:
+    if token.startswith('"'):
+        value = strict_json_loads(token)
+        assert isinstance(value, str)
+        return value
+    if _FIELD_WORD.fullmatch(token):
+        return token
+    if token.isdigit():
+        return int(token)
+    raise ValueError("Invalid field segment in authored Model address")
+
+
+def _authored_element(element: AddressedElement) -> str:
+    if isinstance(element, FieldElement):
+        path = ".".join(
+            str(part) if isinstance(part, int) or _FIELD_WORD.fullmatch(part)
+            else canonical_json_v2_bytes(part).decode("utf-8")
+            for part in element.path
+        )
+        return f"{_authored_element(element.parent)}.{path}"
+    if isinstance(element, AttachmentElement):
+        return f"{_authored_element(element.parent)}#{element.id}"
+    if isinstance(element, PortElement):
+        end = element.end
+        if isinstance(end, ComponentPortAddress):
+            return f"{_PORT_HEADS[end.direction]}.{end.component}.{end.port}"
+        return f"{end.owner}.{end.port}"
+    if isinstance(element, GraphElement | InputsElement | OutputsElement):
+        return element.kind
+    if isinstance(element, PhysicalConnectionElement):
+        return f"connection.{element.id}"
+    return f"{element.kind}.{element.id}"
