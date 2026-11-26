@@ -26,8 +26,7 @@ async function open(page: Page, request: APIRequestContext) {
 
 // Catches a penalty swap that retypes or loses the operand, adds an argument, or touches another field of the term;
 // and a Formula that cannot be reached again from a Draw chosen around it (the owner's annotation 4).
-test("a Measure's outer penalty is chosen in its parts, and a kind is left as it was entered", async ({ page, request }) => {
-  test.setTimeout(45_000);
+test("a Measure's outer penalty is chosen in its parts, and a kind is left as it was entered", { tag: '@slow' }, async ({ page, request }) => {
   const { table, inspector, terms } = await open(page, request);
   const [before] = await terms();
   const measure = table.getByRole('textbox', { name: 'Measure', exact: true });
@@ -87,7 +86,6 @@ test('a function menu of a view the service no longer holds is read again from t
 // Catches an Add Term that is not where the new row appears, a new row that is not selected, and a Measure the user
 // must find before typing it.
 test('Add Term at the foot of the Term column adds a row with its Measure focused', async ({ page, request }) => {
-  test.setTimeout(45_000);
   const { table, terms } = await open(page, request);
   await expect(table.getByRole('row')).toHaveCount(3);
   const add = table.getByRole('button', { name: 'Add Term', exact: true });
@@ -104,7 +102,6 @@ test('Add Term at the foot of the Term column adds a row with its Measure focuse
 // Catches an Enabled check pushed off a narrow table by the Inspector, a shipped term whose Enabled cannot be turned
 // off, an unnamed term whose Term cell is blank, and an Inspector whose fields move to put the clicked one first.
 test('with the Inspector open, an unnamed term shows its name and its Enabled check turns it off', async ({ page, request }) => {
-  test.setTimeout(45_000);
   await page.setViewportSize({ width: 1024, height: 760 });
   const { table, inspector, terms } = await open(page, request);
   const [before] = await terms();

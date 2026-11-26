@@ -6,7 +6,7 @@ import type { Page } from '@playwright/test';
 test.use({ viewport: { width: 1440, height: 900 } });
 
 /** Gestures made while an edit is saving run once it saves, in the order made, each on the state it finds. */
-test('gestures made while an edit saves run in order once it saves', async ({ page, request, studio }) => {
+test('gestures made while an edit saves run in order once it saves', { tag: '@slow' }, async ({ page, request, studio }) => {
   const projectId: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', studio.home, 'held-gestures',
   ));

@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioTrialReplayResponse, TrialMean } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
@@ -80,7 +80,7 @@ async function doneEvaluationScene(page: Page, home: string, seed: string, scena
     const response = await accepted;
     expect(response.status(), await response.text()).toBe(202);
     expect((await response.json() as StudioJobSubmission).items[0].disposition).toBe('admitted');
-    await expect(plans.getByText('Done', { exact: true }).first()).toBeVisible({ timeout: 25_000 });
+    await expect(plans.getByText('Done', { exact: true }).first()).toBeVisible({ timeout: jobTimeout });
   };
   await page.goto(`/?project=${encodeURIComponent(projectId)}`);
   await run('train');
@@ -95,7 +95,6 @@ async function doneEvaluationScene(page: Page, home: string, seed: string, scena
 // drawn without the rest pose beneath it, and a swept Evaluate whose clock offers no recorded trial until one of its
 // runs is picked.
 test('with a Done evaluation the mechanism at the last step is at its path\'s end', { tag: '@round' }, async ({ page, studio }) => {
-  test.setTimeout(80_000);
   await doneEvaluationScene(page, studio.home, 'seed', 'scene-trial', ['conditions']);
   await expect(trialPicker(page)).toHaveText(/^trial 1 of \d+$/);
   const track = scene(page).locator('[data-scene-track]');
@@ -122,7 +121,6 @@ test('with a Done evaluation the mechanism at the last step is at its path\'s en
 // Catches All that does not reach recorded trials, a Scene that draws only the picked trial's path under All or draws
 // every path alike, and Trails that leave a path drawn past the playhead.
 test('All on a Done evaluation draws every trial\'s path, the picked one heavier, and Trails end them at the playhead', { tag: '@round' }, async ({ page, studio }) => {
-  test.setTimeout(80_000);
   await doneEvaluationScene(page, studio.home, 'seed-eight-trials', 'scene-trials');
   await expect(trialPicker(page)).toHaveText('trial 1 of 8');
   await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
@@ -156,7 +154,6 @@ const meanPathCount = (mean: TrialMean) => mean.conditions
 // Align that Escape leaves open, an Align control left on the bar, a clock that overflows the bottom bar of a narrow
 // window, and an Evaluate bar whose buttons share the scrubber's line.
 test('Mean by condition aligned to an epoch draws one mean path with its spread per condition, on time from that epoch', { tag: '@round' }, async ({ page, studio }) => {
-  test.setTimeout(80_000);
   await doneEvaluationScene(page, studio.home, 'seed-mean-conditions', 'scene-mean');
   const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
   await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
@@ -225,7 +222,6 @@ test('Mean by condition aligned to an epoch draws one mean path with its spread 
 // that closes, or that Escape leaves open, while the figure is drawn again, a clock whose span is not the figure's
 // aligned data, and a hover label whose text is hard to read on its box.
 test('under Mean a figure draws the Service\'s Mean rendering for the clock\'s By and Align', { tag: '@round' }, async ({ page, studio }) => {
-  test.setTimeout(90_000);
   await doneEvaluationScene(page, studio.home, 'seed-mean-figure', 'figure-mean', ['analyze']);
   await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
   const shelf = page.getByRole('region', { name: 'Shelf', exact: true });

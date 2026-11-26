@@ -7,7 +7,7 @@ import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('reopens a Model duration range and an integer sample in their saved forms', async ({ page, request }) => {
+test('reopens a Model duration range and an integer sample in their saved forms', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();
@@ -45,8 +45,7 @@ test('reopens a Model duration range and an integer sample in their saved forms'
   await expect(hidden).toHaveValue(/sample\(choice\(8, 12, per=run\), 4\)/);
 });
 
-test('edits and reopens a stored Model field sweep through project history', async ({ page, request }) => {
-  test.setTimeout(50_000);
+test('edits and reopens a stored Model field sweep through project history', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();

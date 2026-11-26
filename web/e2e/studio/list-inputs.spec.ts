@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import type { StudioJobSnapshot, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
@@ -22,7 +22,6 @@ async function wire(page: Page, source: string, target: string) {
 }
 
 test('binds lists of selections to an Evaluate subject and an Analyze dataset role', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(180_000);
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.list_inputs', 'seed', studio.home, 'lists'));
   const path = '/api/projects/' + project;
   const runPath = path + '/train-runs';
@@ -120,7 +119,7 @@ test('binds lists of selections to an Evaluate subject and an Analyze dataset ro
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
   await activate(page, figures.getByRole('button', { name: 'Profile', exact: true }));
   const legend = figures.locator('svg.main-svg text.legendtext');
-  await expect(legend.filter({ hasText: /^Conditions (?!b )/ }).first()).toBeVisible({ timeout: 20_000 });
+  await expect(legend.filter({ hasText: /^Conditions (?!b )/ }).first()).toBeVisible({ timeout: jobTimeout });
   await expect(legend.filter({ hasText: /^Conditions b / }).first()).toBeVisible();
   // Each trace is a distinct run and condition, so no two legend entries share a name, and a run with no value
   // on a grouped label names none.

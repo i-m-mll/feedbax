@@ -29,8 +29,7 @@ async function routeTrials(request: APIRequestContext, documents: Documents, see
 // row that does not select its signal, a count beyond the step's batch size, and a timeline left in the Task view. In
 // All, catches a trial list left in the picker's popup, a shelf that keeps one epochs row, an epoch drawn as present in every trial (or none) where only some
 // trials are in it, and a Drawn column that shows one trial's value instead of the range.
-test('the clock picks the nominal trial or a sample of a task document, and the shelf draws that trial', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('the clock picks the nominal trial or a sample of a task document, and the shelf draws that trial', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
   const { documents = {} } = ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project;
   const period = (documents['point-mass'] as unknown as { payload: { step_seconds: number } }).payload.step_seconds;

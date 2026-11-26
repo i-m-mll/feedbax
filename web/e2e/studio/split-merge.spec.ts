@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Locator, type Page } from '@playwright/test';
 import type { StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
@@ -14,7 +14,6 @@ async function fromMenu(target: Locator, command: string) {
 }
 
 test('splits an Analyze card into three and merges it back, recomputing nothing', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(150_000);
   const home = studio.home;
   const module = 'web.e2e.studio.fixtures.split_merge';
   const project = JSON.parse(await runProjectFixture(module, 'seed', home, 'split-merge'));
@@ -60,7 +59,7 @@ test('splits an Analyze card into three and merges it back, recomputing nothing'
     await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
     expect((await admitted).status()).toBe(202);
     await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Done', { exact: true })).toBeVisible({
-      timeout: 40_000,
+      timeout: jobTimeout,
     });
   }
   /** The Report's rendered result draws its figure. */

@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Page } from '@playwright/test';
 import type { StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
@@ -32,12 +32,11 @@ async function runStep(page: Page, project: string, step: string) {
   await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
   expect((await admitted).status()).toBe(202);
   await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Done', { exact: true })).toBeVisible({
-    timeout: 18_000,
+    timeout: jobTimeout,
   });
 }
 
 test('one reference field sets an Evaluate subject by list and by crosshair, and an Analyze role by kind', async ({ page, studio }) => {
-  test.setTimeout(60_000);
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'reference-field'));
   const initial = await open(page, project);
   const analysis = {
@@ -107,7 +106,6 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
 });
 
 test('Evaluate edits that remove runs ask first and keep the other results', { tag: '@round' }, async ({ page, studio }) => {
-  test.setTimeout(90_000);
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'reference-removal'));
   const initial = await open(page, project);
   await appendManagedFiles(page.request, initial, [{ kind: 'step', id: 'trials', step: {
