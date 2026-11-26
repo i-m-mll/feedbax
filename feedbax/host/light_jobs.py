@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from functools import cache
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -30,7 +29,7 @@ from feedbax.contracts.effective_success import (
 )
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigureProduct
-from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, DocumentInput, read_document_input
+from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, DocumentInput
 from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
 from feedbax.contracts.operation import DatasetPort, ModelPort, OperationDefinition, TaskPort
@@ -60,11 +59,32 @@ type LightDeclaration = ResolvedDeclaration[RegisteredOperation] | ResolvedDecla
 type LightDefinition = OperationDefinition | SynthesisMethodExecution
 
 
+class AdmittedDeclaration(StrictModel):
+    """The operation or synthesis method a light job was planned and admitted with, as the Host knows it."""
+
+    definition: OperationDefinition | SynthesisMethodExecution
+    provider: DistributionSource
+
+    @classmethod
+    def of(cls, declaration: LightDeclaration) -> AdmittedDeclaration:
+        return cls(definition=declaration.value.definition, provider=declaration.source)
+
+    def require_resolved(self, declaration: LightDeclaration) -> None:
+        """Refuse to compute with a declaration other than the admitted one."""
+        if AdmittedDeclaration.of(declaration) != self:
+            raise ValueError(
+                f"Package {self.provider.distribution!r} changed {declaration.key!r} after the step was planned. "
+                "Run the step again to use the present code."
+            )
+
+
 class LightDelivery(StrictModel):
     project_id: str
     manifest_root: Path
     request: RequestObject
     excluded: dict[RequestId, ExcludedProduct] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    declaration: AdmittedDeclaration | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The admitted operation or synthesis method; a Figure or Report delivery has none."""
 
     @field_validator("manifest_root")
     @classmethod
@@ -82,13 +102,6 @@ class LightCompletionBindings(StrictModel):
 _PRODUCTS = TypeAdapter(Products)
 _ORIGINS = TypeAdapter(LightOrigins)
 _PROVIDER = TypeAdapter(DistributionSource)
-
-
-@cache
-def operation_application() -> ApplicationRegistryBundle:
-    from feedbax.application.composition import load_application
-
-    return load_application().bundle
 
 
 def resolve_analysis_operation(
@@ -136,7 +149,7 @@ def _typed_operation_input(port, members) -> bool:
 
 
 def validate_light_request(
-    request: DecodedRequest, *, registry: ApplicationRegistryBundle | None = None,
+    request: DecodedRequest, *, registry: ApplicationRegistryBundle,
     read_document: Callable[[ContentRef], DocumentInput] | None = None,
 ) -> tuple[str, LightDeclaration | None]:
     """Check declaration and binding metadata before managed dataset delivery."""
@@ -145,10 +158,8 @@ def validate_light_request(
     spec = request.spec
     operation = None
     if isinstance(spec, AnalysisRequestSpec):
-        registry = registry or operation_application()
         operation = resolve_analysis_operation(spec, registry)
     elif isinstance(spec, SynthesisRequestSpec):
-        registry = registry or operation_application()
         operation = registry.synthesis_methods.declaration_record(spec.method)
         if operation.key != spec.method:
             raise ValueError(f"Use the canonical synthesis method key {operation.key!r} in a managed request.")
@@ -157,7 +168,6 @@ def validate_light_request(
             raise ValueError("Synthesis settings differ from their validated values.")
     output = validate_light_requirements(request, operation.value.definition if operation is not None else None)
     if isinstance(spec, AnalysisRequestSpec) and operation is not None and read_document is not None:
-        assert registry is not None
         for role, port in operation.value.definition.inputs.items():
             if isinstance(port, TaskPort):
                 reference = request.inputs[role][0].reference
@@ -372,13 +382,14 @@ def publish_light_success(
     with store._exclusive_lock():
         view = SuccessView(store)
         request = view.read_request(delivery.request)
-        role, operation = validate_light_request(request, read_document=lambda content: read_document_input(content, store))
-        if (operation is None) != (provider is None):
+        declaration = delivery.declaration
+        definition = declaration.definition if declaration is not None else None
+        role = validate_light_requirements(request, definition)
+        if (declaration is None) != (provider is None):
             raise ValueError("Managed operation success requires its executed provider provenance")
         provider_trace = _PROVIDER.validate_python(provider) if provider is not None else None
-        definition = operation.value.definition if operation is not None else None
-        if isinstance(definition, SynthesisMethodExecution) and provider_trace != operation.source:
-            raise ValueError("Synthesis provider differs from the installed method declaration.")
+        if declaration is not None and provider_trace != declaration.provider:
+            raise ValueError("The provider that computed this result differs from the admitted declaration.")
         expected = {role, *definition.outputs} if isinstance(definition, SynthesisMethodExecution) else {role}
         if result.keys() != expected or any(len(items) != 1 or items[0].name != name for name, items in result.items()):
             raise ValueError(f"Managed {request.kind} success requires one member for each product in {sorted(expected)!r}.")

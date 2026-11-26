@@ -504,7 +504,9 @@ class JobService(PlanJobReader):
         submit_session: SessionSubmission | None = None,
         automatic_run: AutomaticRun = DEFAULT_AUTOMATIC_RUN,
         quick_duration: timedelta = QUICK_RECEIPT_DURATION,
+        environment_root: Path | None = None,
     ) -> None:
+        """``environment_root`` is the uv project of the environment this process and its workers run in."""
         super().__init__(host, components=registries.components, registries=registries)
         self._automatic_run = automatic_run
         self._quick_duration = quick_duration
@@ -522,6 +524,7 @@ class JobService(PlanJobReader):
                 if key in os.environ
             },
             cwd=str(Path.cwd()),
+            environment_root=str(environment_root) if environment_root is not None else None,
             preload=("jax",),
         )
         self._training_worker = replace(
@@ -539,7 +542,7 @@ class JobService(PlanJobReader):
             preload=(*base_worker.preload, "feedbax.application.composition"),
         )
         self._light_worker = Launch(
-            argv=(base_worker.argv[0],), cwd=base_worker.cwd,
+            argv=(base_worker.argv[0],), cwd=base_worker.cwd, environment_root=base_worker.environment_root,
             warm_entrypoint=LIGHT_ENTRYPOINT,
         )
         self._launch_lock = Lock()
@@ -878,7 +881,7 @@ class JobService(PlanJobReader):
         self, project: str, plan: ProjectPlan, store: ImmutableArtifactBlobProvider,
         row: PlannedRow, node: PlannedRun | PlannedElement, items: Mapping[str, AdmissionItem],
     ) -> AdmissionItem:
-        from feedbax.host.light_jobs import LightDelivery, validate_light_request
+        from feedbax.host.light_jobs import AdmittedDeclaration, LightDelivery, validate_light_request
         from feedbax.contracts.model_input import decode_document_input
         from feedbax.persistence.effective_success import store_document_inputs, store_request
 
@@ -926,18 +929,17 @@ class JobService(PlanJobReader):
         store_document_inputs(store, decoded.inputs, plan.documents.__getitem__)
         payload = LightDelivery(
             project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded), excluded=excluded,
+            declaration=AdmittedDeclaration.of(operation) if operation is not None else None,
         )
         profile = self._light_worker
         slot = "light"
-        metadata = None
         if operation is not None:
             definition = operation.value.definition
-            metadata = definition.model_dump(mode="json")
             if (numerical := definition.numerical) is not None:
                 profile = replace(profile, env=numerical.environment(), preload=("jax",))
                 slot = "compute"
         launch = replace(profile, payload=payload.model_dump(mode="json"))
-        return AdmissionItem(run_key=name, light_definition=metadata, job=Job(
+        return AdmissionItem(run_key=name, job=Job(
             id=uuid4().hex, project=project, request=node.request_id, launch=launch, slot=slot,
             edges=tuple(parents.values()),
             data=data | {"manifest_root": str(store.root), "runtime": launch.argv[0]},

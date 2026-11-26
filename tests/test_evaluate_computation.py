@@ -366,7 +366,7 @@ def test_equal_rollout_check_preserves_protected_wrapper_staleness(tmp_path, ini
         roster.enable()
         recorder = WorkerRecorder(roster, boot_ns=time_ns())
         with recorder.monitor():
-            recorder.bind_project(project)
+            recorder.bind_project(project, environment_root=project)
             monkeypatch.setattr(TrialExecution, "evaluate", load(score, original_score))
             monkeypatch.setattr(evaluate_worker, "_rollout_product", load(wrapper, original_product))
             with recorder.delivery("evaluate", store.root, tmp_path / "scratch"):

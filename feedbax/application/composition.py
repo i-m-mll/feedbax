@@ -18,15 +18,19 @@ from feedbax.plugins.bootstrap import (
     BootstrapError,
     BootstrapErrorCode,
     PackageDeclarations,
+    PackageLoadFailure,
     installed_declarations,
     installed_packages,
+    installed_scan,
     scan_packages,
+    tolerate_package_failures,
 )
 from feedbax.plugins.declarations import DistributionSource, declaration_key
 
 
 def build_application(
     packages: tuple[PackageDeclarations, ...] | None = None,
+    failures: tuple[PackageLoadFailure, ...] = (),
 ) -> BootstrapState:
     packages = installed_declarations() if packages is None else packages
     components = ComponentRegistry(installed_components(packages))
@@ -62,22 +66,26 @@ def build_application(
                 code, f"Cannot register {current!r} from {source.distribution!r}: {error}",
                 plugin_id=source.distribution,
             ) from error
-    return BootstrapState(bundle)
+    return BootstrapState(bundle, failures)
 
 
 @lru_cache(maxsize=1)
 def _sealed_application(sources: tuple[DistributionSource, ...]) -> BootstrapState:
-    state = build_application(scan_packages(sources))
+    scan = scan_packages(sources)
+    state = build_application(scan.packages, scan.failures)
     state.bundle.seal()
     return state
 
 
 def load_application() -> BootstrapState:
     """Load the application registry from the distributions installed in this process."""
+    installed_scan()
     return _sealed_application(installed_packages())
 
 
 async def compose_application() -> BootstrapState:
+    """Load the registry for Studio's backend, which reports a package that fails to import instead of stopping."""
+    tolerate_package_failures()
     return load_application()
 
 

@@ -4,17 +4,15 @@ from importlib import metadata
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
-from urllib.parse import urlsplit
-from urllib.request import url2pathname
 from typing import Annotated
 
 from packaging.utils import canonicalize_name
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.orchestration.repo_snapshot import RepoSnapshotRecord, RepoSnapshotSourceFault, seal_repo_snapshot
 from feedbax.plugins.declarations import DistributionSource
+from feedbax.project_environment import editable_source
 
 
 class ProjectPackagePin(StrictModel):
@@ -47,18 +45,14 @@ def pin_project_package(source: DistributionSource, snapshot_parent: Path) -> Pr
     """Seal the local editable install that supplied the planner's declaration."""
     name = canonicalize_name(source.distribution)
     try:
-        distribution = metadata.distribution(name)
-        installed = strict_json_loads(distribution.read_text("direct_url.json") or "{}", ref=f"{name} direct_url.json")
-        url = urlsplit(installed.get("url", ""))
-        editable = installed.get("dir_info", {}).get("editable") is True
-    except (AttributeError, TypeError, ValueError, metadata.PackageNotFoundError) as error:
+        installed = metadata.distribution(name).version
+        editable = editable_source(name)
+    except (ValueError, metadata.PackageNotFoundError) as error:
         raise RepoSnapshotSourceFault("The installed package has no usable local source metadata.") from error
-    if distribution.version != source.version or not editable or url.scheme != "file" or (
-        url.netloc not in ("", "localhost") or url.query or url.fragment
-    ):
+    if installed != source.version or editable is None:
         raise RepoSnapshotSourceFault("Install the project package in editable mode from its local Git checkout.")
     try:
-        project = Path(url2pathname(url.path)).resolve(strict=True)
+        project = editable.resolve(strict=True)
         root = Path(os.fsdecode(subprocess.check_output(
             ["git", "-C", str(project), "rev-parse", "--show-toplevel"], stderr=subprocess.DEVNULL, timeout=5,
         )).strip()).resolve(strict=True)

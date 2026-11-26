@@ -1,0 +1,18 @@
+[project]
+name = "environment-fixture"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = ["feedbax[web]"]
+
+[project.entry-points."feedbax.plugins"]
+environment_fixture = "environment_fixture"
+
+[tool.uv.sources]
+feedbax = { path = "@FEEDBAX@", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/environment_fixture"]

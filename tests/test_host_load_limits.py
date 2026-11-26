@@ -15,7 +15,8 @@ from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.request_specs import AnalysisRequestSpec, RenderRequestSpec
 from feedbax.host import AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.protocol import LIGHT_ENTRYPOINT
-from feedbax.host.light_jobs import LightDelivery
+from feedbax.host.light_jobs import AdmittedDeclaration, LightDelivery
+from feedbax.plugins.declarations import DistributionSource
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import store_request
 from tests.support.hang import HANG_SECONDS
@@ -78,7 +79,8 @@ def test_host_admits_a_light_job_with_edges_without_importing_jax(tmp_path, monk
         key="fixture.series", owner="fixture", owner_version="1", label="Series", description="Test input",
         param_schema=[], parameter_json_schema={},
         static_parameters=(), inputs={}, outputs={"series": DatasetOutputPort(schema_ids=(schema,))},
-    ).model_dump(mode="json")
+    )
+    admitted = AdmittedDeclaration(definition=definition, provider=DistributionSource("fixture", "fixture", "1"))
     series = store_request(blobs, encode_request(AnalysisRequestSpec(analysis_type="fixture.series", params={}), {}))
     figures = FigureDocument.model_validate({
         "data": ["series"], "layout": [{"name": "main", "row": 1, "col": 1}],
@@ -89,11 +91,11 @@ def test_host_admits_a_light_job_with_edges_without_importing_jax(tmp_path, monk
         "series": (InputMember(key="data", reference=ProductRef(request_id=series.id, role="series")),),
     }))
 
-    def job(attempt, request, parent=None):
+    def job(attempt, request, parent=None, declaration=None):
         return Job(
             attempt, "project", request.id,
             Launch((sys.executable,), payload=LightDelivery(
-                project_id="project", manifest_root=blobs.root, request=request,
+                project_id="project", manifest_root=blobs.root, request=request, declaration=declaration,
             ).model_dump(mode="json"), warm_entrypoint=LIGHT_ENTRYPOINT, project_root=str(tmp_path)),
             "light", edges=(Edge(parent),) if parent else (),
             data={"manifest_root": str(blobs.root), "run_key": attempt},
@@ -103,7 +105,7 @@ def test_host_admits_a_light_job_with_edges_without_importing_jax(tmp_path, monk
     pid = client.ping()["pid"]
     try:
         admitted = client.admit("light", [
-            AdmissionItem("series", job("series", series), light_definition=definition),
+            AdmissionItem("series", job("series", series, declaration=admitted)),
             AdmissionItem("plot", job("plot", plot, "series")),
         ], record={})
         assert [item["disposition"] for item in admitted["items"]] == ["admitted", "admitted"]

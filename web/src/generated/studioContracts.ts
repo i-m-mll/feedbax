@@ -4827,6 +4827,7 @@ export type StudioProjectWindowMapProblem = {
   "blocked_by"?: StudioSavedTrainKey | null;
   "span"?: TextSpan | null;
   "selection_value"?: SelectedAxisValueProblem | null;
+  "package"?: string | null;
 };
 
 export type StudioProjectWindowMapRequest = {
@@ -13759,6 +13760,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "blocked_by": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
     "span": z.union([TextSpanSchema, z.null()]).optional(),
     "selection_value": z.union([SelectedAxisValueProblemSchema, z.null()]).optional(),
+    "package": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 

@@ -1316,8 +1316,7 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     project = Project.model_validate(raw)
     memo = ProjectPlanMemo()
     first = compile_project(project, memo=memo)
-    (unregistered,) = [run for run in first.runs if run.kind == "train"]
-    assert any("unknown leaf type 'test.CustomRelay'" in problem.detail for problem in unregistered.problems)
+    assert "test.CustomRelay" in {diagnostic.missing_key for diagnostic in first.diagnostics}
     registry = ComponentRegistry()
     register_owners(registry, "test", CustomRelay)
     registry.seal()

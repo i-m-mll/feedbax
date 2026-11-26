@@ -191,7 +191,7 @@ def _serve(args: argparse.Namespace, call: _Admission) -> StudioJobSubmission:
         call.delegation, location, private_directory(args.stores_root) / call.delegation.project, bundle,
     )
     return admit_saved_delegation(
-        JobService(host, bundle), folders, call.delegation, token=call.token,
+        JobService(host, bundle, environment_root=args.cwd), folders, call.delegation, token=call.token,
         placement=call.placement,
     )
 

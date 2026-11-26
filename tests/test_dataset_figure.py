@@ -28,7 +28,7 @@ from feedbax.contracts.rollout import RAW_STATES_SCHEMA
 from feedbax.contracts.studio_figure import FigureProduct
 from feedbax.dataset import Dataset, Variable
 from feedbax.dataset_sweep import stack_dataset_members
-from feedbax.host.light_worker import _compute
+from feedbax.host.light_worker import _compute, operation_application
 from feedbax.host.light_jobs import validate_light_request
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
@@ -106,7 +106,7 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
         key="speed", content=ref.content.model_copy(update={"media_type": DATASET_MEDIA_TYPE}),
         descriptor={"descriptor_sha256": ref.descriptor_sha256},
     ),)}
-    saved = _compute(store, request, bindings, "render-attempt", *validate_light_request(request))
+    saved = _compute(store, request, bindings, "render-attempt", *validate_light_request(request, registry=operation_application()))
     product = store.get_object(success_content_ref(saved.content))
     assert product == figure.to_json().encode()
     parsed = FigureProduct.model_validate_json(product)
@@ -182,7 +182,7 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
         content=ref.content.model_copy(update={"media_type": DATASET_MEDIA_TYPE}),
         descriptor={"descriptor_sha256": ref.descriptor_sha256},
     ),)}
-    saved = _compute(store, request, bindings, "render-attempt", *validate_light_request(request))
+    saved = _compute(store, request, bindings, "render-attempt", *validate_light_request(request, registry=operation_application()))
     content = saved.content
     report = ReportDocument.model_validate({
         "title": "Saved figure",

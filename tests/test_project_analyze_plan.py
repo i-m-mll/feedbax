@@ -503,7 +503,7 @@ def test_installed_figure_template_shares_identity_with_its_inline_figure():
     assert (problem.path, problem.document_path) == (
         "payload.views.profile.figure.template", "payload.template",
     )
-    assert "'missing.Figure' from package 'missing'" in problem.detail
+    assert problem.missing_key == "missing.Figure"
     assert set(unresolved.elements) == {ElementKey(_KEY, "align"), ElementKey(_KEY, "summarize")}
 
 

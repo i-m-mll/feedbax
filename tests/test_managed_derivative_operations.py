@@ -262,7 +262,7 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
     _save_project(folders, project, _project())
     review = folders.read_plan(project, revision=None)
     assert not review.plan.diagnostics, review.plan.diagnostics
-    jobs = JobService(host, registry, quick_duration=timedelta(seconds=60))
+    jobs = JobService(host, registry, quick_duration=timedelta(seconds=60), environment_root=review.project_root)
     selected = tuple(RunKey("default", step, "default") for step in ("rollout", "fixed", "gain"))
     launch = jobs.admit_plan(folders, review, run_keys=selected, token="derivative-witness")
     assert len(launch.items) == 5, launch
