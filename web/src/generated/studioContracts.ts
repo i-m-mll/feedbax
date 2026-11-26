@@ -4669,6 +4669,7 @@ export type StudioAnalyzeAuthoring = {
   "variables": Record<string, Record<string, Array<string>>>;
   "variable_names"?: Record<string, string>;
   "figure": StoredFigureDocument;
+  "figure_values": Record<string, StudioAnalyzeFigureValues>;
   "created_layer"?: StoredMemberKey | null;
   "changed"?: Array<Pointer>;
   "files"?: Array<StudioProjectFilePatch>;
@@ -4681,6 +4682,11 @@ export type StudioAnalyzeChange = StudioAnalyzeWire | StudioAnalyzeEdit | Studio
 export type StudioAnalyzeEdit = {
   "kind": "edit";
   "edits": Array<DocumentEdit>;
+};
+
+export type StudioAnalyzeFigureValues = {
+  "layers": Record<string, StudioFigureLayerValues>;
+  "color_scales": Record<string, StudioFigureColorScaleValues>;
 };
 
 export type StudioAnalyzeRemove = {
@@ -5001,6 +5007,16 @@ export type StudioFieldSite = {
   "name_paths"?: Record<string, Array<string>>;
 };
 
+export type StudioFigureColorScaleValues = {
+  "legend": boolean;
+  "palette": "viridis" | "cividis" | "plasma" | "turbo" | "category10" | "plotly" | "dark24";
+};
+
+export type StudioFigureLayerValues = {
+  "name": string;
+  "fill_alpha"?: number | null;
+};
+
 export type StudioInputPlace = {
   "part": "input";
   "role": string;
@@ -5243,6 +5259,7 @@ export type StudioProjectSnapshot = {
   "settings"?: Record<string, JsonValue>;
   "default_keep_superseded_days"?: number | null;
   "composed"?: Record<string, JsonValue>;
+  "report_values": Record<string, StudioReportValues>;
   "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
@@ -5444,6 +5461,10 @@ export type StudioReportStep = {
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
   "group"?: string | null;
+};
+
+export type StudioReportValues = {
+  "completeness": "complete" | "allow_omissions";
 };
 
 export type StudioRunRuleCheck = {
@@ -13924,6 +13945,7 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
     "variable_names": z.record(z.string(), z.string()).optional(),
     "figure": StoredFigureDocumentSchema,
+    "figure_values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), StudioAnalyzeFigureValuesSchema),
     "created_layer": z.union([StoredMemberKeySchema, z.null()]).optional(),
     "changed": z.array(PointerSchema).optional(),
     "files": z.array(StudioProjectFilePatchSchema).optional(),
@@ -13942,6 +13964,13 @@ export const StudioAnalyzeEditSchema: z.ZodType<StudioAnalyzeEdit> = z.lazy(() =
     "edits": z.array(DocumentEditSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeEdit>;
+
+export const StudioAnalyzeFigureValuesSchema: z.ZodType<StudioAnalyzeFigureValues> = z.lazy(() =>
+  z.object({
+    "layers": z.record(StoredMemberKeySchema, StudioFigureLayerValuesSchema),
+    "color_scales": z.record(NameSchema, StudioFigureColorScaleValuesSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeFigureValues>;
 
 export const StudioAnalyzeRemoveSchema: z.ZodType<StudioAnalyzeRemove> = z.lazy(() =>
   z.object({
@@ -14353,6 +14382,20 @@ export const StudioFieldSiteSchema: z.ZodType<StudioFieldSite> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioFieldSite>;
 
+export const StudioFigureColorScaleValuesSchema: z.ZodType<StudioFigureColorScaleValues> = z.lazy(() =>
+  z.object({
+    "legend": z.boolean(),
+    "palette": z.union([z.union([z.literal("viridis"), z.literal("cividis"), z.literal("plasma"), z.literal("turbo")]), z.union([z.literal("category10"), z.literal("plotly"), z.literal("dark24")])]),
+  }).strict()
+) as unknown as z.ZodType<StudioFigureColorScaleValues>;
+
+export const StudioFigureLayerValuesSchema: z.ZodType<StudioFigureLayerValues> = z.lazy(() =>
+  z.object({
+    "name": z.string().min(1),
+    "fill_alpha": z.union([z.number().finite(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFigureLayerValues>;
+
 export const StudioInputPlaceSchema: z.ZodType<StudioInputPlace> = z.lazy(() =>
   z.object({
     "part": z.literal("input"),
@@ -14676,6 +14719,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "settings": z.record(z.string(), jsonValueSchema).optional(),
     "default_keep_superseded_days": z.union([z.number().int().safe().min(0), z.null()]).optional(),
     "composed": z.record(z.string(), jsonValueSchema).optional(),
+    "report_values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), StudioReportValuesSchema),
     "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
@@ -14925,6 +14969,12 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
     "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioReportStep>;
+
+export const StudioReportValuesSchema: z.ZodType<StudioReportValues> = z.lazy(() =>
+  z.object({
+    "completeness": z.union([z.literal("complete"), z.literal("allow_omissions")]),
+  }).strict()
+) as unknown as z.ZodType<StudioReportValues>;
 
 export const StudioRunRuleCheckSchema: z.ZodType<StudioRunRuleCheck> = z.lazy(() =>
   z.object({

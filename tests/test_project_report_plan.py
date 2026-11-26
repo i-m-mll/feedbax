@@ -4,9 +4,14 @@ from copy import deepcopy
 import json
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.figure_document import PlotlyFigurePort
-from feedbax.contracts.project import RootDocument, Project, Step
+from feedbax.contracts.project import BasedDocument, RootDocument, Project, Step
 from feedbax.contracts.project_inputs import StepReference
+from feedbax.contracts.project_io import ProjectConfiguration
+from feedbax.contracts.report_document import REPORT_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import (
     ElementChange,
     ElementKey,
@@ -18,6 +23,7 @@ from feedbax.planner.project_plan import (
 )
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
+from feedbax.web.app import create_app
 from tests.test_project_analyze_plan import _operations, _project
 
 
@@ -48,6 +54,43 @@ def _report_run(plan):
 
 def _compile(project, operations, memo=None):
     return compile_project(project, operations=operations, source_runs=(_REPORT,), memo=memo)
+
+
+def test_snapshot_projects_report_completeness_apart_from_the_authored_presence(tmp_path):
+    project = _report_project()
+    project.documents["partial-report"] = BasedDocument(
+        label="Partial report", schema=REPORT_DOCUMENT_SCHEMA_ID, base={"document": "velocity-report"},
+        differences={"/completeness": {"value": "allow_omissions"}},
+    )
+    root = tmp_path / "reach"
+    for name, content in dump_text_project(project, ProjectConfiguration(project="reach", store="results")).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    report_path = root / "documents/velocity-report.json"
+    original = report_path.read_bytes()
+    client = TestClient(create_app(projects_dir=tmp_path))
+    url = "/api/projects/reach"
+    opened = client.get(url).json()
+    assert opened["report_values"] == {
+        "velocity-report": {"completeness": "complete"},
+        "partial-report": {"completeness": "allow_omissions"},
+    }
+    assert "completeness" not in opened["project"]["documents"]["velocity-report"]["payload"]
+
+    def edit(revision, change):
+        response = client.patch(url, json={
+            "revision": revision, "address": {"kind": "document", "id": "velocity-report"},
+            "patches": [change | {"path": "/payload/completeness"}],
+        })
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    saved = edit(opened["revision"], {"op": "add", "value": "allow_omissions"})
+    assert saved["report_values"]["velocity-report"]["completeness"] == "allow_omissions"
+    edit(saved["revision"], {"op": "remove"})
+    assert client.get(url).json()["report_values"] == opened["report_values"]
+    assert report_path.read_bytes() == original
 
 
 def test_report_binds_the_typed_figure_and_preserves_other_requests():

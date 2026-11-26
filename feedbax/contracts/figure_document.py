@@ -42,6 +42,8 @@ class VariableBinding(StrictModel):
 Encoding = Name | VariableBinding
 PaletteNumber = Annotated[StrictFloat, Field(allow_inf_nan=False)]
 PaletteValue = StrictStr | StrictBool | StrictInt | PaletteNumber
+ContinuousPalette = Literal["viridis", "cividis", "plasma", "turbo"]
+OrdinalPalette = Literal["category10", "plotly", "dark24"]
 
 
 class ColorEncoding(StrictModel):
@@ -53,7 +55,7 @@ class ColorEncoding(StrictModel):
 
 class ContinuousColorScale(StrictModel):
     kind: Literal["continuous"]
-    palette: Literal["viridis", "cividis", "plasma", "turbo"] = "viridis"
+    palette: ContinuousPalette = "viridis"
     domain: tuple[PaletteNumber, PaletteNumber] | None = None
     title: str | None = None
     legend: bool = True
@@ -67,7 +69,7 @@ class ContinuousColorScale(StrictModel):
 
 class OrdinalColorScale(StrictModel):
     kind: Literal["ordinal"]
-    palette: Literal["category10", "plotly", "dark24"] = "category10"
+    palette: OrdinalPalette = "category10"
     domain: Annotated[tuple[PaletteValue, ...], Field(min_length=1)] | None = None
     title: str | None = None
     legend: bool = True

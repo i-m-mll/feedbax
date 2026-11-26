@@ -81,6 +81,7 @@ from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic,
 from feedbax.plugins.declarations import declaration_package
 from feedbax.project_environment import PackageAvailability
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_path, model_field_target
+from feedbax.contracts.report_document import REPORT_DOCUMENT_SCHEMA_ID, ReportDocument
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, analysis_elements, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.project_model_assets import (
@@ -130,6 +131,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectMemberNames,
     StudioProjectRevision,
     StudioProjectSnapshot,
+    StudioReportValues,
 )
 
 if TYPE_CHECKING:
@@ -1138,8 +1140,10 @@ class ProjectFolder:
             presentation_error = "unreadable_presentation"
         documents = text.project.documents
         composed = {}
+        report_values = {}
         problems = []
         for name, document in documents.items():
+            entry = document
             if isinstance(document, BasedDocument):
                 entry = compose_document(documents.get, name)
                 if isinstance(entry, ProjectDiagnostic):
@@ -1147,8 +1151,14 @@ class ProjectFolder:
                         replace(entry, authored_file=f"documents/{entry.document or name}.json"),
                         declaration=text.declaration,
                     ))
-                else:
-                    composed[name] = entry.payload
+                    continue
+                composed[name] = entry.payload
+            if isinstance(entry, RootDocument) and entry.schema_id == REPORT_DOCUMENT_SCHEMA_ID:
+                try:
+                    report = ReportDocument.model_validate(entry.payload)
+                except ValidationError:
+                    continue  # Plan reports invalid Report content.
+                report_values[name] = StudioReportValues(completeness=report.completeness)
         names = StudioProjectMemberNames.from_project(text.project)
         variants = project_variants(
             text.project, components=self.components, functions=self.functions, python_tasks=self.python_tasks,
@@ -1161,6 +1171,7 @@ class ProjectFolder:
                 for key, project in variants.items()
             },
             composed=composed,
+            report_values=report_values,
             problems=problems,
             revision=text.revision,
             project=text.project,
