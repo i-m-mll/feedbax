@@ -29,17 +29,8 @@ export function modelFields(model: StoredModelDocument, change?: FieldChange): F
 /** A component's raw fields: a composite's substeps, a leaf's declared parameters that the server does not project. */
 export function componentFields(component: Component, definition: ComponentDefinition | undefined, change?: FieldChange,
   projected?: ReadonlySet<string>): FieldModel[] {
-  if (component.kind === 'composite') {
-    const domain = component.interior.physical_domain;
-    if (projected?.has('substeps') || (domain !== 'planar_multibody' && domain !== 'spatial_multibody')) return [];
-    const label = studioName('substeps');
-    const text = typeof component.substeps === 'string';
-    return [rawField({
-      id: 'substeps', label, type: { kind: text ? 'string' : 'integer' }, value: component.substeps ?? 1,
-      change: change && ((value) => text ? typed(value, label, (written) => change(['substeps'], written))
-        : typeof value === 'number' && value > 0 ? change(['substeps'], value) : studioReason('takesPositive', label)),
-    })];
-  }
+  // A composite's Substeps is the field the Service projects for it.
+  if (component.kind === 'composite') return [];
   const values = { ...definition?.default_params, ...component.fields };
   return (definition?.param_schema ?? [])
     .filter(({ name }) => !projected?.has(name))

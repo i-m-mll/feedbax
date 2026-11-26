@@ -410,15 +410,17 @@ function termFields(view: TrialView, key: string, term: StoredObjectiveTerm, com
     const weights = shown?.kind === 'one' ? shown.record.terms?.[key]?.weights ?? undefined : undefined;
     return { ...model, anchor: weightAnchor(key), curve: weights };
   };
+  const values = view.objective_term_values[key];
+  if (!values) throw new Error(`The Objective's term ${key} has no values`);
   return {
     name: rawField({ id: key + 'name', label: studioName('name'), type: { kind: 'string' },
       value: term.label ?? '', change: set('label', studioName('name')), changed: changed('label') }),
     enabled: rawField({ id: key + 'enabled', label: studioName('enabled'), type: { kind: 'boolean' },
-      value: term.enabled ?? true, change: set('enabled', studioName('enabled')), changed: changed('enabled') }),
+      value: values.enabled, change: set('enabled', studioName('enabled')), changed: changed('enabled') }),
     measure: expression('measure'),
     weight: expression('weight'),
     reduction: rawField({ id: key + 'reduction', label: studioName('reduction'),
-      value: term.reduction ?? 'mean', change: set('reduction', humanizeLabel('reduction')), changed: changed('reduction'), type: { kind: 'choice', options:
+      value: values.reduction, change: set('reduction', humanizeLabel('reduction')), changed: changed('reduction'), type: { kind: 'choice', options:
         ([['mean', 'mean'], ['sum', 'sum'], ['last', 'last'], ['max', 'maximum']] as const)
           .map(([value, name]) => ({ value, label: studioName(name) })) } }),
   };

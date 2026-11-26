@@ -447,8 +447,9 @@ export function useManagedAnalyze({
     return port ? offeredFields(port) : {};
   }
   const authoredFigure = figure && 'data' in figure.figure ? figure.figure : undefined;
-  const layers = selected && authoredFigure && <FigureLayers key={JSON.stringify([scope, selected])}
-    figure={authoredFigure} fields={roleFields} refusal={roleRefusal(selected, layersPlace)}
+  const figureValues = selected ? catalog?.figure_values[selected] : undefined;
+  const layers = selected && authoredFigure && figureValues && <FigureLayers key={JSON.stringify([scope, selected])}
+    figure={authoredFigure} values={figureValues} fields={roleFields} refusal={roleRefusal(selected, layersPlace)}
     edit={canEdit ? (label, edits) => void perform(
       (current) => save(current, label, atFigure(['views', selected, 'figure'], edits)), canEdit, [selected, layersPlace],
     ) : undefined}

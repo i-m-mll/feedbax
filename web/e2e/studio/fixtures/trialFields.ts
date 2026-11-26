@@ -10,6 +10,8 @@ export async function trialView(request: APIRequestContext, projectId: string, r
   const path = `/api/projects/${encodeURIComponent(projectId)}`;
   const { revision } = await (await request.get(path)).json() as StudioProjectSnapshot;
   const response = await request.post(`${path}/authoring/trials`, { data: { revision, run } });
+  // A save between the two reads makes the revision stale; the view is read again at the next.
+  if (response.status() === 409) return trialView(request, projectId, run);
   expect(response.ok(), await response.text()).toBe(true);
   return await response.json() as StudioTrialAuthoring;
 }

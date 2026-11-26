@@ -9,7 +9,7 @@ import type { FieldModel, FieldOption } from '@/components/values/fieldModel';
 import { ValueField } from '@/components/values/ValueField';
 import type {
   ColorEncoding, ContinuousColorScale, DatasetPort, FieldDescriptor, JsonValue, OrdinalColorScale, StoredFigureDocument,
-  StoredFigurePanel, StoredPointsLayer, StoredRuleLayer, StoredSpanLayer, StoredTrajectoryLayer, VariableBinding,
+  StoredFigurePanel, StudioAnalyzeFigureValues, StudioFigureColorScaleValues, StudioFigureLayerValues, StoredPointsLayer, StoredRuleLayer, StoredSpanLayer, StoredTrajectoryLayer, VariableBinding,
 } from '@/generated/studioContracts';
 
 type Figure = StoredFigureDocument;
@@ -145,8 +145,13 @@ function newLayer(mark: AddedMark, figure: Figure): Layer {
 /** Adds a layer as one Undo entry, and gives the key the Service allocated it. */
 export type AddFigureLayer = (label: string, layer: Layer) => Promise<string | undefined>;
 
-export function FigureLayers({ figure, fields, edit, addLayer, refusal }: {
+export function FigureLayers({ figure, values, fields, edit, addLayer, refusal }: {
   figure: Figure;
+  /**
+   * The figure's effective values, as the Service reads its stored form: each layer's name, and its looks. They are of
+   * the reviewed figure, so a layer or scale an edit has just added waits for the review after it.
+   */
+  values: StudioAnalyzeFigureValues;
   /** The fields a role's bound data offers, when it is bound to data whose fields are known. */
   fields: (role: string) => RoleFields;
   edit?: FigureEdit;
@@ -185,16 +190,18 @@ export function FigureLayers({ figure, fields, edit, addLayer, refusal }: {
   };
   const removable = ({ kind, name }: Part) => kind === 'layer' ? Object.keys(figure.layers).length > 1
     : kind === 'scale' && !Object.values(figure.layers).some((item) => colorOf(item)?.scale === name);
-  const shownFields = layer && chosen ? layerFields(figure, chosen.name, layer, fields(layer.role), change)
-    : scale && chosen ? scaleFields(figure, chosen.name, scale, change)
+  const layerValues = chosen?.kind === 'layer' ? values.layers[chosen.name] : undefined;
+  const scaleValues = chosen?.kind === 'scale' ? values.color_scales[chosen.name] : undefined;
+  const shownFields = layer && layerValues && chosen ? layerFields(figure, chosen.name, layer, layerValues, fields(layer.role), change)
+    : scale && scaleValues && chosen ? scaleFields(figure, chosen.name, scale, scaleValues, change)
       : panel && chosen ? panelFields(figure, chosen.name, panel, change) : [];
   return <>
     <Tree aria-label={studioName('layers')} selected={chosen && (layer || scale || panel) ? [partId(chosen)] : []}
       nodes={[
-        ...Object.entries(figure.layers).map(([key, item]) => ({
-          id: partId({ kind: 'layer', name: key }), name: key, glyph: markGlyphs[item.mark],
+        ...Object.entries(figure.layers).flatMap(([key, item]) => values.layers[key] ? [{
+          id: partId({ kind: 'layer', name: key }), name: values.layers[key].name, glyph: markGlyphs[item.mark],
           trailing: <span>{studioName(item.mark)}</span>,
-        })),
+        }] : []),
         ...Object.keys(scales).map((name) => ({
           id: partId({ kind: 'scale', name }), name, glyph: <Palette />, trailing: <span>{studioName('colorScale')}</span>,
         })),
@@ -242,7 +249,8 @@ function fieldMaker(change: Change | undefined) {
 const text = (value: JsonValue) => String(value).trim() || null;
 const none = () => studioName('noneChoice');
 
-function layerFields(figure: Figure, key: string, layer: Layer, offered: RoleFields, change?: Change): FieldModel[] {
+function layerFields(figure: Figure, key: string, layer: Layer, own: StudioFigureLayerValues, offered: RoleFields,
+  change?: Change): FieldModel[] {
   const field = fieldMaker(change);
   const names = Object.keys(offered);
   const replaced = (next: Layer, document: Figure = figure): Figure => labelled(figure, layer, offered,
@@ -287,7 +295,7 @@ function layerFields(figure: Figure, key: string, layer: Layer, offered: RoleFie
       position('start', encode.start, (start) => ({ ...layer, encode: { ...encode, start } })),
       position('end', encode.end, (end) => ({ ...layer, encode: { ...encode, end } })),
       ...looks,
-      field('fillAlpha', { kind: 'number' }, layer.style?.fill_alpha ?? 0.15, (alpha) => {
+      field('fillAlpha', { kind: 'number' }, own.fill_alpha, (alpha) => {
         const value = Number(alpha);
         return value >= 0 && value <= 1 ? replaced({ ...layer, style: { ...layer.style, fill_alpha: value } })
           : studioReason('takesNumber', studioName('fillAlpha'));
@@ -407,7 +415,7 @@ function labelled(before: Figure, layer: Layer, offered: RoleFields, after: Figu
   return { ...after, layout: { ...after.layout, [layer.panel]: next } };
 }
 
-function scaleFields(figure: Figure, name: string, scale: ColorScale, change?: Change): FieldModel[] {
+function scaleFields(figure: Figure, name: string, scale: ColorScale, own: StudioFigureColorScaleValues, change?: Change): FieldModel[] {
   const field = fieldMaker(change);
   const set = (next: ColorScale): Figure => ({ ...figure, color_scales: { ...figure.color_scales, [name]: next } });
   const choices = (values: readonly string[]) => ({ kind: 'choice' as const, options: values.map((value) => ({ value, label: value })) });
@@ -415,8 +423,8 @@ function scaleFields(figure: Figure, name: string, scale: ColorScale, change?: C
   return [
     field('kind', choices(['continuous', 'ordinal']), scale.kind,
       (kind) => kind === scale.kind ? set(scale)
-        : set({ kind: kind as ColorScale['kind'], ...scale.title && { title: scale.title }, legend: scale.legend ?? true })),
-    field('palette', choices(palettes[scale.kind]), scale.palette ?? palettes[scale.kind][0],
+        : set({ kind: kind as ColorScale['kind'], ...scale.title && { title: scale.title }, ...scale.legend !== undefined && { legend: scale.legend } })),
+    field('palette', choices(palettes[scale.kind]), own.palette,
       (palette) => set({ ...scale, palette } as ColorScale)),
     field('domain', { kind: 'string' }, domainText, (entered) => {
       const parts = String(entered).split(',').map((part) => part.trim()).filter(Boolean);
@@ -431,7 +439,7 @@ function scaleFields(figure: Figure, name: string, scale: ColorScale, change?: C
         ? set({ ...scale, domain: [low, high] }) : studioReason('takesIncreasingPair', studioName('domain'));
     }),
     field('title', { kind: 'string' }, scale.title ?? undefined, (title) => set({ ...scale, title: text(title) })),
-    field('legend', { kind: 'boolean' }, scale.legend ?? true, (legend) => set({ ...scale, legend: legend === true })),
+    field('legend', { kind: 'boolean' }, own.legend, (legend) => set({ ...scale, legend: legend === true })),
   ];
 }
 

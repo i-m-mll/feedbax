@@ -68,8 +68,8 @@ test('authors coloured hand paths and 3D hidden-state trajectories in the figure
 
   await openFigure('hands', 'Hand paths');
   await addTrajectory();
-  await removeRow('line');
-  await row('trajectory').click();
+  await removeRow('Line');
+  await row('Trajectory').click();
   await edit(() => pick(choice('X'), position));
   await edit(() => enter(box('X xy'), 'x'));
   await edit(() => enter(box('Y xy'), 'y'));
@@ -93,8 +93,8 @@ test('authors coloured hand paths and 3D hidden-state trajectories in the figure
 
   await openFigure('dynamics', 'Hidden');
   await addTrajectory();
-  await removeRow('line');
-  await row('trajectory').click();
+  await removeRow('Line');
+  await row('Trajectory').click();
   await edit(() => pick(choice('X'), 'scores'));
   await edit(() => enter(box('X component'), '1'));
   await edit(() => enter(box('Y component'), '2'));
