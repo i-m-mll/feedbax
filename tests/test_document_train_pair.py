@@ -219,7 +219,7 @@ def test_plan_reports_every_unwired_required_input(authored):
 def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_trials):
     raw = document_project(authored)
     model = raw["documents"]["reach-model"]
-    model["payload"]["interior"]["components"]["plant"]["type"] = "unknown.Plant"
+    model["payload"]["interior"]["components"]["plant"]["fields"] = {"mass": "heavy"}
     raw["documents"]["other-model"] = deepcopy(model)
     _two_optimizer_rates(raw)
     other = deepcopy(raw["steps"]["train"])
