@@ -689,12 +689,39 @@ def apply_override_patch_in_place(
 
 def apply_override_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dict[str, Any]:
     """Apply a patch to new containers along its path, sharing untouched subtrees."""
+    return _patch_copy(root, patch, by_id=True)
+
+
+def apply_stored_patch_in_place(
+    root: dict[str, Any],
+    patch: OverridePatch,
+    *,
+    error_context: Literal["override", "delta"] = "override",
+) -> None:
+    """Apply an authored sweep patch, with absent object keys already removed."""
+    apply_value_patch_in_place(
+        root, patch.path.split("."), patch.op, patch.value, path=patch.path, error_context=error_context,
+        allow_absent_remove=True,
+    )
+
+
+def apply_stored_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dict[str, Any]:
+    """Apply an authored sweep patch, copying the containers along its path."""
+    return _patch_copy(root, patch, by_id=False, allow_absent_remove=True)
+
+
+def _patch_copy(
+    root: dict[str, Any], patch: OverridePatch, *, by_id: bool, allow_absent_remove: bool = False,
+) -> dict[str, Any]:
     parts = patch.path.split(".")
     result = copy(root)
     parent = _resolve_patch_parent(
-        result, parts, path=patch.path, error_context="override", copy_path=True, by_id=True,
+        result, parts, path=patch.path, error_context="override", copy_path=True, by_id=by_id,
     )
-    _apply_patch_target(parent, parts[-1], patch.op, patch.value, patch.path, "override", by_id=True)
+    _apply_patch_target(
+        parent, parts[-1], patch.op, patch.value, patch.path, "override",
+        by_id=by_id, allow_absent_remove=allow_absent_remove,
+    )
     return result
 
 
@@ -707,14 +734,17 @@ def apply_value_patch_in_place(
     path: str,
     error_context: Literal["override", "delta"] = "override",
     by_id: bool = False,
+    allow_absent_remove: bool = False,
 ) -> None:
     """Apply the common patch semantics to an already decoded path.
 
-    ``by_id`` says the path is a stored one, which names a member of a list of identified items by its id; a JSON
-    pointer against one revision of a document names it by its index.
+    Lowered variation paths use ``by_id`` to name identified list members. Authored sweep paths
+    can remove an absent object key, while revision-specific edits require the key to exist.
     """
     parent = _resolve_patch_parent(root, parts, path=path, error_context=error_context, by_id=by_id)
-    _apply_patch_target(parent, parts[-1], op, value, path, error_context, by_id=by_id)
+    _apply_patch_target(
+        parent, parts[-1], op, value, path, error_context, by_id=by_id, allow_absent_remove=allow_absent_remove,
+    )
 
 
 def ensure_value_collection(
@@ -802,6 +832,7 @@ def _apply_patch_target(
     error_context: Literal["override", "delta"],
     *,
     by_id: bool,
+    allow_absent_remove: bool = False,
 ) -> None:
     if op == "add" and isinstance(parent, list) and (
         leaf == "-" or (not by_id or member_ids(parent) is None) and leaf.isdigit() and int(leaf) == len(parent)
@@ -822,6 +853,8 @@ def _apply_patch_target(
         parent[leaf] = deepcopy(value)
         return
     if key is None:
+        if allow_absent_remove and op == "remove" and isinstance(parent, dict):
+            return
         if error_context == "delta":
             raise ValueError(f"{op} delta path is missing: {path!r}")
         if op == "replace":

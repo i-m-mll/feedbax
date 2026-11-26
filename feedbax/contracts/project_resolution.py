@@ -32,6 +32,7 @@ from feedbax.contracts.project import (
     ExternalBase,
     InlineBase,
     LoadedModelDocument,
+    OrderDocumentMembers,
     Payload,
     Project,
     RunBase,
@@ -594,6 +595,8 @@ class _Documents:
             else:
                 shape = self.shape(document.base.document)
                 for path, difference in document.differences.items():
+                    if isinstance(difference, OrderDocumentMembers):
+                        continue
                     shape = place_source(shape, json_pointer_parts(path), (
                         source_shape(difference.value, ValueSource("document", name, path))
                         if isinstance(difference, SetDocumentValue) else None
