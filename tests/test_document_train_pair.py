@@ -470,7 +470,7 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     plan = compile_project(Project.model_validate(document_project(authored)))
     identity, data = next(iter(plan.requests.items()))
     stored = json.loads(data)
-    assert stored["schema"] == "feedbax.request.train.documents.v3"
+    assert stored["schema"] == "feedbax.request.train.documents.v4"
     model = stored["spec"]["trial_documents"]["model"]
     assert "name" not in model["ports"]["inputs"][0]
     wrapper = model["interior"]["components"]["wrapper"]
@@ -485,9 +485,10 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     assert encode_request(decoded.spec, decoded.inputs).data == data
     assert identity != request_id("train", stored["spec"], decoded.inputs)
 
-    previous = stored | {"schema": "feedbax.request.train.documents.v2"}
-    with pytest.raises(ValueError, match="Unsupported stored request envelope"):
-        decode_request(canonical_json_v2_bytes(previous), plan.documents.__getitem__)
+    for previous_schema in ("feedbax.request.train.documents.v2", "feedbax.request.train.documents.v3"):
+        previous = stored | {"schema": previous_schema}
+        with pytest.raises(ValueError, match="Unsupported stored request envelope"):
+            decode_request(canonical_json_v2_bytes(previous), plan.documents.__getitem__)
     wrapper["name"] = "wrapper"
     with pytest.raises(ValueError, match="did not round-trip"):
         decode_request(canonical_json_v2_bytes(stored), plan.documents.__getitem__)

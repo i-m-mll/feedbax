@@ -300,10 +300,13 @@ class StoredTaskAdditions(StrictModel):
         })
 
 
-class ValidationTrial(ValueRecord):
+class ValidationTrialV2(ValueRecord):
     id: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
     variables: dict[str, Expression] = Field(default_factory=dict)
     epoch_steps: dict[str, Annotated[int, Field(strict=True, ge=0)]] = Field(default_factory=dict)
+
+
+ValidationTrial = ValidationTrialV2
 
 
 class StoredValidationTrial(StoredFamilyMember):

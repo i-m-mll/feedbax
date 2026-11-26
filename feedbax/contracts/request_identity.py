@@ -50,10 +50,10 @@ from feedbax.contracts.request_specs import (
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.task_document import PythonTaskSelection
 
-_IDENTITY = "feedbax.identity.request.v1"
-_STORAGE_SCHEMA = "feedbax.request.v1"
-_DOCUMENT_TRAIN_STORAGE_SCHEMA = "feedbax.request.train.documents.v3"
-_EFFECTIVE_IDENTITY = "feedbax.identity.effective-binding.v1"
+_IDENTITY = "feedbax.identity.request.v2"
+_STORAGE_SCHEMA = "feedbax.request.v2"
+_DOCUMENT_TRAIN_STORAGE_SCHEMA = "feedbax.request.train.documents.v4"
+_EFFECTIVE_IDENTITY = "feedbax.identity.effective-binding.v2"
 _INPUTS = TypeAdapter(RequestInputs)
 
 
