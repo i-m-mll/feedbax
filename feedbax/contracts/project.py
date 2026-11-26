@@ -238,7 +238,7 @@ def apply_differences(base: Payload, differences: Differences) -> Payload:
 
 
 def same_json(left: Any, right: Any) -> bool:
-    """Stored JSON equality, with one numeric value and separate boolean values."""
+    """Authored edit equality, including the legacy distinction between integer and real literals."""
     if isinstance(left, dict):
         return isinstance(right, dict) and left.keys() == right.keys() and all(
             same_json(value, right[key]) for key, value in left.items()
@@ -247,8 +247,6 @@ def same_json(left: Any, right: Any) -> bool:
         return isinstance(right, list) and len(left) == len(right) and all(
             same_json(a, b) for a, b in zip(left, right)
         )
-    if type(left) in (int, float) and type(right) in (int, float):
-        return left == right
     return type(left) is type(right) and left == right
 
 

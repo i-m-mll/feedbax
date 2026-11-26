@@ -43,6 +43,7 @@ from feedbax.contracts.project import (
     BasedDocument, Document, LoadedModelDocument, Project, RootDocument, Sha256, diff, json_pointer_parts, member_name, same_json,
 )
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_storage import write_project_file
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     ProjectReadError,
@@ -909,7 +910,7 @@ def _read_presentation(root: Path) -> tuple[bytes | None, str]:
 
 
 def _encode_presentation(presentation: PresentationDocument) -> bytes:
-    return (presentation.model_dump_json(indent=2, exclude_unset=True) + "\n").encode()
+    return write_project_file(presentation)
 
 
 def _decode_presentation(data: bytes | None) -> PresentationDocument:
@@ -1604,10 +1605,6 @@ class ProjectFolder:
                 raise ProjectFolderInvalid(str(error)) from error
             original = dump_text_project(text.project, text.configuration)
             encoded = dump_text_project(validated, text.configuration)
-            if command.kind == "duplicate":
-                copied, source_file = f"{command.family}/{name}.json", f"{command.family}/{member}.json"
-                if encoded[copied] == original[source_file]:
-                    encoded[copied] = text.files[source_file]
             pending = []
             for relative in sorted(original.keys() | encoded.keys()):
                 if original.get(relative) == encoded.get(relative):

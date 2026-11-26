@@ -26,6 +26,8 @@ from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.project import DOCUMENT, Payload, Project, Step
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
+from feedbax.contracts.project_storage import write_project_file
+from feedbax.contracts.project_storage_dependencies import protected_project_fields
 from feedbax.contracts.project_sweep import Row, Sweep
 from feedbax.contracts.strict_json import strict_json_loads
 
@@ -363,7 +365,8 @@ def parse_studio_project(data: bytes, *, source: str = "Studio project") -> Stud
     return _parse(StudioProjectFile, data, source)
 
 
-def _encode(model: StrictModel, *, exclude: set[str] | None = None) -> bytes:
+def _revision_bytes(model: StrictModel, *, exclude: set[str] | None = None) -> bytes:
+    """Keep the existing semantic and declaration revision byte contract."""
     return (
         json.dumps(
             model.model_dump(
@@ -382,53 +385,65 @@ def _encode(model: StrictModel, *, exclude: set[str] | None = None) -> bytes:
 
 def dump_studio_project(project_file: StudioProjectFile) -> bytes:
     """Serialize the semantic model beside its presentation."""
-    return _encode(project_file)
+    protected = (
+        ("project", family, name, *path)
+        for (family, name), paths in protected_project_fields(project_file.project).items()
+        for path in paths
+    )
+    return write_project_file(project_file, protected=protected)
 
 
 def project_semantic_root(project: Project) -> str:
     """Hash authored Project content with its ordered sweep maps intact."""
-    return sha256_bytes(_encode(project))
+    return sha256_bytes(_revision_bytes(project))
 
 
 def dump_text_project(project: Project, configuration: ProjectConfiguration) -> dict[str, bytes]:
     """Produce the complete set of relative paths and bytes for a text project."""
-    rows = project.sweep.rows if project.sweep is not None else {}
+    sweep = project.sweep
+    rows = sweep.rows if sweep is not None else {}
+    declaration_sweep = sweep.model_copy(update={"rows": {}}) if sweep is not None else None
+    if declaration_sweep is not None:
+        declaration_sweep.model_fields_set.discard("rows")
     manifest = TextProjectManifest(
         schema_version=PROJECT_SCHEMA_VERSION,
         **configuration.model_dump(exclude_unset=True, exclude={"project"}),
-        sweep=project.sweep.model_copy(update={"rows": {}}) if project.sweep is not None else None,
+        sweep=declaration_sweep,
         variants=list(rows),
     )
+    protected = protected_project_fields(project)
     return {
-        project_declaration_name(configuration.project): _encode(manifest),
+        project_declaration_name(configuration.project): write_project_file(manifest),
         **{
-            f"documents/{name}.json": _encode(document)
+            f"documents/{name}.json": write_project_file(document, protected=protected.get(("documents", name), ()))
             for name, document in project.documents.items()
         },
-        **{f"steps/{name}.json": _encode(step) for name, step in project.steps.items()},
-        **{f"variants/{name}.json": _encode(row) for name, row in rows.items() if row is not None},
+        **{
+            f"steps/{name}.json": write_project_file(step, protected=protected.get(("steps", name), ()))
+            for name, step in project.steps.items()
+        },
+        **{f"variants/{name}.json": write_project_file(row) for name, row in rows.items() if row is not None},
     }
-
 
 _SWEEP_DECLARATION_FIELDS = {"sweep", "variants"}
 _PROJECT_CONFIGURATION_FIELDS = set(TextProjectManifest.model_fields) - _SWEEP_DECLARATION_FIELDS
 
 
 def authored_declaration_revision(manifest: TextProjectManifest) -> str:
-    return sha256_bytes(_encode(manifest, exclude=_PROJECT_CONFIGURATION_FIELDS))
+    return sha256_bytes(_revision_bytes(manifest, exclude=_PROJECT_CONFIGURATION_FIELDS))
 
 
 def text_project_settings_edit(manifest: TextProjectManifest, settings: Payload) -> bytes:
-    return _encode(manifest.model_copy(update={"settings": settings}))
+    return write_project_file(manifest.model_copy(update={"settings": settings}))
 
 
 def replay_text_project_declaration(current: TextProjectManifest, data: bytes, *, declaration: str) -> bytes:
     """Restore the authored sweep declaration while retaining the current configuration."""
     target = _parse(TextProjectManifest, data, declaration)
-    current_configuration = _encode(current, exclude=_SWEEP_DECLARATION_FIELDS)
-    if current_configuration == _encode(target, exclude=_SWEEP_DECLARATION_FIELDS):
+    current_configuration = _revision_bytes(current, exclude=_SWEEP_DECLARATION_FIELDS)
+    if current_configuration == _revision_bytes(target, exclude=_SWEEP_DECLARATION_FIELDS):
         return data
-    return _encode(TextProjectManifest.model_validate({
+    return write_project_file(TextProjectManifest.model_validate({
         **current.model_dump(exclude_unset=True, include=_PROJECT_CONFIGURATION_FIELDS),
         **target.model_dump(exclude_unset=True, include=_SWEEP_DECLARATION_FIELDS),
     }))
