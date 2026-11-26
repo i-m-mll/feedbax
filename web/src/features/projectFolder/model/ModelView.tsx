@@ -38,7 +38,7 @@ import type { PhysicalInterior,
   ModelRemovedElement, StudioProjectRevision, StudioProjectSnapshot, StudioSavedTrainKey, StudioTrialAuthoring,
 } from '@/generated/studioContracts';
 import { ModelDocumentSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
-import type { ProjectEditController } from '../projectEditController';
+import { projectRead, type ProjectEditController } from '../projectEditController';
 import { sendWithStore, type AskStore } from '../storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
@@ -290,7 +290,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     : { ...(projectionRun ? { run: projectionRun } : {}), ...valueRuns };
   const projection = useQuery({
     queryKey: ['model-projection', saved.project_id, projectionBody],
-    queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
+    ...projectRead(editor, saved.revision, (signal) => readModelProjection(saved.project_id, projectionBody!, signal)),
     enabled: active && !!projectionBody,
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], projectionBody) ? previous : undefined,
   });
@@ -321,7 +321,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   ]), [projection.data, readSignals]);
   const attachments = useQuery({
     queryKey: ['model-evaluate-model', saved.project_id, readBody],
-    queryFn: ({ signal }) => readEvaluateModel(saved.project_id, readBody!, signal),
+    ...projectRead(editor, saved.revision, (signal) => readEvaluateModel(saved.project_id, readBody!, signal)),
     enabled: active && !!model && !!readBody,
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], readBody) ? previous : undefined,
   });
@@ -404,7 +404,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   type FieldBody = typeof fieldBodies[number];
   const fieldQueries = useQueries({ queries: fieldBodies.map((fieldBody) => ({
     queryKey: ['model-fields', saved.project_id, fieldBody],
-    queryFn: ({ signal }: { signal: AbortSignal }) => projectModelFields(saved.project_id, fieldBody, signal),
+    ...projectRead(editor, fieldBody.revision, (signal) => projectModelFields(saved.project_id, fieldBody, signal)),
     enabled: active,
   })) });
   const fieldsError = fieldQueries.find((query) => query.error)?.error ?? null;

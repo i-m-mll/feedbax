@@ -1,4 +1,4 @@
-import { isHttpConflict, isRefusal, isServiceFailure } from '@/api/request';
+import { isHttpConflict, isRefusal, isServiceFailure, isUnanswered } from '@/api/request';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
@@ -143,6 +143,25 @@ export class ProjectEditConflictError extends Error {
   constructor() {
     super('The project changed before the pending edits could be saved.');
   }
+}
+
+/** Reconcile a revision-bound read while a newer saved revision reaches the editor. */
+export function projectRead<T>(editor: ProjectEditController, revision: string, read: (signal: AbortSignal) => Promise<T>) {
+  return {
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      try {
+        return await read(signal);
+      } catch (error) {
+        if (isHttpConflict(error)) {
+          signal.throwIfAborted();
+          await editor.reconcileRead(revision);
+          signal.throwIfAborted();
+        }
+        throw error;
+      }
+    },
+    retry: (attempt: number, error: Error) => isUnanswered(error) || attempt === 0 && isHttpConflict(error),
+  };
 }
 
 const emptyHistory: History = { undo: [], redo: [] };
@@ -777,6 +796,13 @@ export class ProjectEditController {
       await this.refresh();
       if (retry && !this.outside) await this.drain();
     }).catch(() => {});
+  }
+
+  /** An older read can conflict while a write is being acknowledged. Let that write settle before reading the disk. */
+  reconcileRead(revision: string) {
+    return this.sequence(async () => {
+      if (this.saved.revision === revision) await this.refresh();
+    });
   }
 
   keep(choice: 'disk' | 'edits') {

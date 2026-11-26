@@ -28,7 +28,7 @@ import { reasonOf } from '@/components/values/fieldModel';
 import { baseOf } from './documentPayload';
 import type { ClassProjection } from '@/components/values/adapters/jsonSchema';
 import { sameAuthoredFile, type AuthoredProject } from './authoredEdits';
-import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
+import { projectRead, ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
 import { filesRemoval, sweepValueRuns, useRunRemoval } from './runRemoval';
 import { sendWithStore, useAskStore } from './storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
@@ -105,7 +105,7 @@ function useTrainFieldsQuery(
   const body = { revision, ...selection };
   return { body, fields: useQuery({
     queryKey: ['train-fields', projectId, stepId, body],
-    queryFn: ({ signal }) => projectTrainFields(projectId, stepId!, body, signal),
+    ...projectRead(editor, revision, (signal) => projectTrainFields(projectId, stepId!, body, signal)),
     enabled: stepId !== undefined && !runPending,
     placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
   }) };
@@ -233,7 +233,7 @@ function useTrainForm(props: Props) {
   const shows = (id: string) => !props.trainingDocument || inTrainingDocument(id);
   const definition = useQuery({
     queryKey: ['train-authoring', projectId, stepId, revision, scope],
-    queryFn: ({ signal }) => readStudioTrainAuthoring(projectId, stepId, { revision, ...scope }, signal),
+    ...projectRead(editor, revision, (signal) => readStudioTrainAuthoring(projectId, stepId, { revision, ...scope }, signal)),
     enabled: !props.runPending,
     placeholderData: (previous) => previous?.project_id === projectId && previous.step_id === stepId ? previous : undefined,
   });
