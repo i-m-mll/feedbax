@@ -30,6 +30,7 @@ from feedbax.contracts.studio_sets import (
     StudioSetsOffered, StudioSetsOfferedRequest,
 )
 from feedbax.contracts.model_edit import ListedRuns
+from feedbax.contracts.member_family import FamilyProblem, family_member_count
 from feedbax.contracts.studio_trials import StudioSetField, StudioSetFieldEntry
 from feedbax.project_members import generated_name, new_document_name
 from feedbax.web.services.authored_scope import choose_authored_store, choose_prepared_edit, selected_edit_runs
@@ -60,7 +61,16 @@ def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
                 weight = sampling.weights.get(id, SetEntryParts())
             else:
                 weight = sampling.weights.get(id, 1.0)
-            rows.append(StudioSetFieldEntry(entry=id, label=entry.label, weight=weight))
+            count = None
+            if entry.over is not None:
+                try:
+                    count = family_member_count(id, entry)
+                except FamilyProblem:
+                    pass  # Plan reports the invalid rule on the authored entry.
+            rows.append(StudioSetFieldEntry(
+                entry=id, label=entry.label, weight=weight,
+                over=entry.over, combination=entry.combination, member_count=count,
+            ))
         fields.append(StudioSetField(
             axis=axis, set=field.axis.set, sampling=sampling,
             condition=lower_expression(field.condition) if field.condition is not None else None, entries=rows,
@@ -322,7 +332,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
             return _optional_value_added(project, address, raw, name, axis, selected)
     name = generated_name("run", axes.__contains__)
     value = generated_name(name, name.__eq__)
-    axis: dict[str, Any] = {"label": "Run", "values": {value: {"label": numbered_run_name(2)}}, "optional": True}
+    axis: dict[str, Any] = {"values": {value: {"label": numbered_run_name(2)}}, "optional": True}
     if isinstance(scope, SweepValuesRuns):
         axis["where"] = {"rule": scope.rule}
         values = axis_values(rows)

@@ -15,7 +15,7 @@ from tests.test_model_document_edits import _URL, _Project
 from tests.test_task_document_fields import _save
 
 TASK = "delayed-reaches-task"
-LINKED = ModelAddress.at_state((), "plant", "effector/position").to_text()
+LINKED = ModelAddress.at_state((), "plant", "effector/position")
 DURATION = {"base": "real", "dimensions": {"time": 1}}
 
 
@@ -167,13 +167,13 @@ def test_each_structural_change_leaves_a_document_that_compiles(tmp_path):
             {"op": "set_span", "signal": "extra", "cell": "hold", "first_epoch": "hold", "last_epoch": "cue"},
             {"op": "absent", "signal": "extra", "cell": "hold"},
             {"op": "remove", "member": "signal", "id": "extra"},
-            {"op": "link", "model_field": LINKED, "variable": "target"},
+            {"op": "link", "address_text": LINKED.to_authored_text(), "variable": "target"},
         ):
             assert _made(project, change) == [], change
         task = project.composed(TASK)
         assert list(task["variables"]) == ["start", "target", "catch"]
         assert list(task["epochs"]) == ["hold", "cue", "move"]
-        assert task["links"] == {LINKED: "target"}
+        assert task["links"] == {LINKED.to_authored_text(): "target"}
 
 
 def test_task_rename_refuses_ambiguous_expression_names(tmp_path):
@@ -208,12 +208,12 @@ def test_a_variable_added_for_a_model_start_initializes_it_in_the_same_edit(tmp_
         skeleton = resets[ModelAddress.at_state((), "plant", "skeleton/position").to_text()]
         assert skeleton.path == ("Point mass", "skeleton", "position")
         assert skeleton.type == ValueType.model_validate(POINT) and not skeleton.required
-        change = {"op": "add", "member": "variable", "name": "origin", "type": POINT, "initializes": [LINKED]}
+        change = {"op": "add", "member": "variable", "name": "origin", "type": POINT, "initializes": [LINKED.to_text()]}
         assert _made(project, change) == []
         task = project.composed(TASK)
         assert next(reversed(task["variables"])) == "origin"
         assert ValueType.model_validate(task["variables"]["origin"]["type"]) == ValueType.model_validate(POINT)
-        assert task["links"] == {LINKED: "origin"}
+        assert task["links"] == {LINKED.to_authored_text(): "origin"}
 
 
 def test_making_a_cell_present_keeps_the_typed_text_in_the_same_write(tmp_path):

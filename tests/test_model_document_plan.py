@@ -36,7 +36,7 @@ from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, Mode
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.project_sweep import model_field_target
+from feedbax.contracts.project_sweep import model_field_path, model_field_target
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.train_settings import normalize_train_method
@@ -1338,6 +1338,73 @@ def test_unresolved_relative_link_is_reported_at_the_task():
         ("train", (pointer(("trial_documents", "task", "links", missing)),)),
         ("baseline", (pointer(("inputs", "task", "links", missing)),)),
     }
+
+
+def test_trial_view_resolves_compact_link_keys_and_labels_nested_missing_fields(tmp_path):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    group = _group_reaching_pipeline(raw, new_application_registry_bundle().components)
+    root = raw["documents"]["reach-model"]["payload"]["interior"]["components"][group]
+    root["interior"]["components"]["plant"]["label"] = "Reaching arm"
+    task = raw["documents"]["task"]["payload"]
+    (reset_key,) = task["links"]
+    missing_key = ModelAddress.at_state((group,), "plant", "effector/missing").to_authored_text()
+    task["links"][missing_key] = task["links"][reset_key]
+    _save_project(ProjectFolderService(tmp_path), "links", Project.model_validate(raw))
+    url = "/api/projects/links"
+    run = {"variant": "default", "step": "train", "row": "default"}
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        body = {"revision": client.get(url).json()["revision"], "run": run}
+        response = client.post(url + "/authoring/trials", json=body)
+        response.raise_for_status()
+        view = response.json()
+        reset = next(item for item in view["resets"] if item["address_text"] == reset_key)
+        assert reset["path"] == ["Group", "Reaching arm", "effector", "position"]
+        assert view["unresolved_links"] == [{
+            "key": missing_key, "path": ["Group", "Reaching arm", "effector", "missing"],
+        }]
+        assert [item["path"] for item in view["problems"] if item["path"][:1] == ["links"]] == [["links", missing_key]]
+
+        change = {"kind": "structure", "changes": [{"op": "link", "address_text": missing_key, "variable": None}]}
+        edit = client.post(url + "/authoring/trials", json=body | {"change": change})
+        edit.raise_for_status()
+        assert edit.json()["files"], edit.json()
+        saved = client.patch(url, json={"revision": body["revision"], "files": edit.json()["files"]})
+        saved.raise_for_status()
+        reopened = client.post(url + "/authoring/trials", json=body | {"revision": saved.json()["revision"]})
+        reopened.raise_for_status()
+        assert reopened.json()["task"]["links"] == {reset_key: task["links"][reset_key]}
+        assert reopened.json()["unresolved_links"] == []
+
+
+def test_window_map_labels_the_model_fields_in_an_exception(tmp_path, monkeypatch):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    field = model_field_path(ModelAddress.at_stored_path((
+        "interior", "components", "wrapper", "interior", "components", "controller",
+        "interior", "components", "cell", "fields", "hidden_size",
+    )))
+    raw["steps"]["train"]["sweep"] = {"exceptions": {
+        "widen": {"where": {"rows": ["default"]}, "patches": {
+            field: {"op": "replace", "value": 120},
+            "training_config.batch_size": {"value": 8},
+        }},
+    }}
+    _save_project(ProjectFolderService(tmp_path), "exceptions", Project.model_validate(raw))
+    url = "/api/projects/exceptions"
+    app = create_app(projects_dir=tmp_path, automatic_run="off")
+    with TestClient(app) as client:
+        monkeypatch.setattr(app.state.job_service.host, "jobs_snapshot", lambda **_: {"cursor": 0, "jobs": []})
+        revision = client.get(url).json()["revision"]
+        response = client.get(url + "/train-runs", params={"revision": revision, "window_map": True})
+        assert response.status_code == 200, response.text
+        (train,) = response.json()["window_map"]["steps"]
+        (exception,) = train["exceptions"]
+        assert exception["count"] == 1
+        assert exception["field_labels"] == {field: "Hidden size"}
+        assert set(exception["rule"]["patches"]) == {field, "training_config.batch_size"}
+        stored = client.get(url + "/open").json()["snapshot"]["project"]["steps"]["train"]["sweep"]["exceptions"]
+        assert "field_labels" not in stored["widen"]
 
 
 def test_stored_model_plan_uses_the_supplied_component_registry():

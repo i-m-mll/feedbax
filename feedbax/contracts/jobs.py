@@ -355,6 +355,8 @@ class StudioProjectWindowMapException(StrictModel):
     id: str
     count: int
     rule: SweepException
+    field_labels: dict[str, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    """Display names for Model fields, keyed by the exact exception patch path."""
 
 
 class StudioProjectWindowMapAxisValue(StrictModel):

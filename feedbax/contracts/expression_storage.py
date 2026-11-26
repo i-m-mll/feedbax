@@ -17,6 +17,7 @@ from feedbax.contracts.expression_values import (
     LiteralValue,
     NameValue,
     Scalar,
+    SequenceValue,
     SetVariableOrigin,
     UnresolvedValue,
 )
@@ -25,7 +26,8 @@ from feedbax.contracts.stored_members import scoped_set_member_id
 from feedbax.contracts.time_units import TimeValue, literal_time
 
 
-type AuthoredExpressionText = Annotated[str, StringConstraints(max_length=8192)]
+MAX_AUTHORED_EXPRESSION_TEXT = 8192
+type AuthoredExpressionText = Annotated[str, StringConstraints(max_length=MAX_AUTHORED_EXPRESSION_TEXT)]
 type AuthoredExpressionValue = Scalar | AuthoredExpressionText
 
 _KEY = r"[A-Za-z_][A-Za-z0-9_-]*"
@@ -50,6 +52,11 @@ def _map_refs(value: Expression, convert: Callable[[str], str]) -> Expression:
             })
         case DrawValue(args=args):
             return value.model_copy(update={"args": tuple(_map_refs(child, convert) for child in args)})
+        case SequenceValue(first=first, last=last, count=count):
+            return value.model_copy(update={
+                "first": _map_refs(first, convert), "last": _map_refs(last, convert),
+                "count": _map_refs(count, convert) if count is not None else None,
+            })
         case _:
             return value
 
@@ -105,11 +112,11 @@ def lower_expression(value: Expression) -> Expression:
 
 
 def _read_expression(raw: Any) -> Expression:
-    if isinstance(raw, (LiteralValue, NameValue, CallValue, DrawValue, UnresolvedValue)):
+    if isinstance(raw, (LiteralValue, NameValue, CallValue, DrawValue, SequenceValue, UnresolvedValue)):
         return store_expression(raw)
     if type(raw) not in (bool, int, float, str):
         raise ValueError("An authored expression must be a scalar or text.")
-    if isinstance(raw, str) and len(raw) > 8192:
+    if isinstance(raw, str) and len(raw) > MAX_AUTHORED_EXPRESSION_TEXT:
         raise ValueError("An expression can have at most 8,192 characters.")
     parsed = parse_stored_expression(raw)
     if isinstance(parsed, tuple):
@@ -129,7 +136,7 @@ def _read_time(raw: Any) -> TimeValue | UnresolvedValue:
         return raw
     if not isinstance(raw, str):
         raise ValueError("An authored time must be literal text, such as '50 ms' or '30 st'.")
-    if len(raw) > 8192:
+    if len(raw) > MAX_AUTHORED_EXPRESSION_TEXT:
         raise ValueError("A time can have at most 8,192 characters.")
     parsed = parse_stored_expression(raw)
     if not isinstance(parsed, tuple) and isinstance(parsed.value, LiteralValue):

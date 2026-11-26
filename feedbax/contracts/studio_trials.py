@@ -19,6 +19,7 @@ from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTe
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scene import ScenePoint
 from feedbax.contracts.studio_scope import StudioStoreChoice
+from feedbax.contracts.member_family import StoredFamilyMember
 from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, StoredTaskDocument
 from feedbax.contracts.task_structure import TaskStructureChange
 from feedbax.contracts.trial_record import TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace
@@ -57,11 +58,21 @@ class StudioTrialReset(StrictModel):
     """A value of the paired Model that a variable of the Task may initialize at the start of each trial."""
 
     address: ModelAddress
+    address_text: str
+    """The compact key for this address in a stored Task's links."""
     path: tuple[str, ...]
     """Display segments for enclosing composites, the component, and the state or parameter."""
     type: ValueType
     finest: Level
     required: bool
+
+
+class StudioTrialUnresolvedLink(StrictModel):
+    """A stored link whose address does not name a reset in the paired Model."""
+
+    key: str
+    path: tuple[str, ...]
+    """Display segments in the same form as a reset's path."""
 
 
 class StudioTrialDocumentEdit(StrictModel):
@@ -199,10 +210,11 @@ class StudioTrialObjectiveSource(StrictModel):
     step: ProjectName
 
 
-class StudioSetFieldEntry(StrictModel):
+class StudioSetFieldEntry(StoredFamilyMember):
     entry: ProjectName | None
     label: str | None = None
     weight: WeightPart | SetEntryParts | None = None
+    member_count: int | None = None
 
 
 class StudioSetField(StrictModel):
@@ -252,6 +264,7 @@ class StudioTrialAuthoring(StudioFieldSiteTables):
     inputs: list[StudioTrialInput]
     outputs: list[StudioTrialOutput]
     resets: list[StudioTrialReset]
+    unresolved_links: list[StudioTrialUnresolvedLink]
     fields: list[StudioTrialField]
     """Expression parts are returned by the menu route on request."""
     problems: list[Problem]

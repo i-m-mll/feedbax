@@ -8,6 +8,7 @@ from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
+from feedbax.contracts.member_family import FamilyProblem, StoredFamilyMember, expand_members
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
     DifferenceNotApplied, Document, EditDifferences, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
@@ -28,7 +29,7 @@ MODEL_SLOT = "payload.trial_documents.model"
 """Where a Train or Evaluate step reads its Model document."""
 
 
-class SetEntry(StoredTaskAdditions):
+class SetEntry(StoredTaskAdditions, StoredFamilyMember):
     label: NonemptyText
     differences: EditDifferences = Field(default_factory=dict)
 
@@ -93,7 +94,8 @@ def axis_from_set(
 ) -> NamedAxis:
     """The inline axis of patches into ``model``'s payload that applies each entry's differences to ``payload``."""
     values = {}
-    for key, entry in document.entries.items():
+    for member in expand_members(document.entries, unique_labels=True):
+        key, entry = member.key, member.value
         patches = {
             _target(model, path): (
                 SetValue(value=difference.value, op="replace" if _present(payload, path) else "add")
@@ -101,9 +103,11 @@ def axis_from_set(
             )
             for path, difference in entry.differences.items()
         }
-        values[key] = AxisValue(
+        value = AxisValue(
             label=entry.label, patches=patches, task_variables=entry.task_variables, task_links=entry.task_links,
         )
+        value._set_source_key = member.source_key
+        values[key] = value
     return NamedAxis(values=values) if where is None else NamedAxis(values=values, where=where)
 
 
@@ -175,6 +179,8 @@ def resolve_set_axes(
             raise
         except SetMisfit as error:
             raise SetProblem(axis.set, ("entries", error.entry, "differences", error.path), path, str(error)) from error
+        except FamilyProblem as error:
+            raise SetProblem(axis.set, ("entries", error.source_key, *error.path), path, str(error)) from error
         except ValueError as error:
             raise SweepExpansionError(SweepExpansionCode.INVALID_SET, f"{path}.set", str(error)) from error
     return resolved

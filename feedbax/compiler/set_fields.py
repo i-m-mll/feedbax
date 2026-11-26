@@ -20,6 +20,7 @@ from feedbax.contracts.expression_values import (
     CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, Site,
     ValueBase, ValueType, walk,
 )
+from feedbax.contracts.member_family import FamilyProblem, expand_members
 from feedbax.contracts.model_address import (
     AttachmentElement, AttachmentOwner, ComponentElement, ComponentPortAddress, ComponentPortEnd, FieldElement,
     InputBoundaryEnd, ModelAddress, PortElement, SignalSource, WireElement,
@@ -30,7 +31,10 @@ from feedbax.contracts.model_document import (
     SignalInput, SignalType,
 )
 from feedbax.contracts.project import Document, SetDocumentValue, apply_differences, json_pointer_parts
-from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField
+from feedbax.contracts.project_sweep import (
+    DEFAULT_SWEEP_ROW, CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField,
+)
+from feedbax.contracts.request_refs import axis_values_id
 from feedbax.contracts.set_document import SetEntry, read_set
 from feedbax.contracts.stored_model import StoredModelDocument, authored_model_payload, model_keyed_collection
 from feedbax.contracts.task_document import (
@@ -40,11 +44,15 @@ from feedbax.contracts.window import Window
 
 
 class SetFieldProblem(ValueError):
-    def __init__(self, axis: str, set_name: str, entry: str | None, reason: str, *, condition: bool = False):
+    def __init__(
+        self, axis: str, set_name: str, entry: str | None, reason: str, *,
+        condition: bool = False, member_path: tuple[str, ...] = (),
+    ):
         self.axis = axis
         self.set_name = set_name
         self.entry = entry
         self.condition = condition
+        self.member_path = member_path
         super().__init__(reason)
 
 
@@ -192,7 +200,7 @@ class _Union:
         self.wires = dict(model.interior.wires)
         self.port_attachments = model.interior.attachments
         self.alternatives: dict[str, list[_Alternative]] = defaultdict(list)
-        self.conditions: list[tuple[dict[str, int], ...]] = []
+        self.conditions: dict[str, tuple[str, ...]] = {}
         self.condition_origins: dict[str, str] = {}
         self.curl_activation: dict[str, tuple[bool, list[Expression]]] = {}
 
@@ -355,7 +363,8 @@ class _Union:
         return eligible
 
     def placement(
-        self, axis: str, placement: TrialSetField, entries: Mapping[str, SetEntry], functions: FunctionRegistry,
+        self, axis: str, placement: TrialSetField, entries: Mapping[str, SetEntry],
+        sources: Mapping[str, str], functions: FunctionRegistry,
     ):
         eligible = self.eligibility(axis, placement, functions)
 
@@ -371,25 +380,29 @@ class _Union:
         try:
             sample = placement.sampling
             by_id = tuple(entries)
+            if not isinstance(sample, ListedSetTrials) and sample.weights.keys() - (entries.keys() | set(sources.values())):
+                raise ValueError("Set sampling names an entry that the Set no longer has.")
+
+            def parts(entry, default):
+                return sample.weights.get(entry, sample.weights.get(sources[entry], default))
+
             if isinstance(sample, ListedSetTrials):
                 weights = (1.0,) * len(by_id)
                 choices = tuple(range(1, len(by_id) + 1))
             elif isinstance(sample, CooccurringSetTrials):
                 weights, choices = (), ()
             else:
-                weights = (sample.none, *(sample.weights.get(entry, 1.0) for entry in by_id))
+                weights = (sample.none, *(parts(entry, 1.0) for entry in by_id))
                 choices = tuple(range(len(by_id) + 1))
-            if not isinstance(sample, ListedSetTrials) and sample.weights.keys() - entries.keys():
-                raise ValueError("Set sampling names an entry that the Set no longer has.")
             if isinstance(sample, CooccurringSetTrials):
                 gates = []
                 for entry in by_id:
-                    parts = sample.weights.get(entry, SetEntryParts())
-                    if not (parts.off or parts.on):
-                        raise SetFieldProblem(axis, placement.axis.set, entry, "The switch has zero total parts.")
+                    weight = parts(entry, SetEntryParts())
+                    if not (weight.off or weight.on):
+                        raise SetFieldProblem(axis, placement.axis.set, sources[entry], "The switch has zero total parts.")
                     draw = DrawValue(
                         family="choice", args=(LiteralValue(value=False), LiteralValue(value=True)),
-                        weights=(parts.off, parts.on),
+                        weights=(weight.off, weight.on),
                     )
                     gates.append(select(scoped_set_member_id(axis, entry), _BOOL, draw, False, (None, entry)))
             else:
@@ -400,14 +413,19 @@ class _Union:
                 )
                 selected = select(axis, _INT, draw, 0, (None, *by_id))
                 if isinstance(sample, ListedSetTrials):
-                    self.conditions.append(tuple({selected.reference: value} for value in choices))
+                    self.conditions[selected.reference] = by_id
                 gates = [_call("eq", selected, LiteralValue(value=index)) for index in range(1, len(by_id) + 1)]
         except SetFieldProblem:
             raise
         except ValueError as error:
             raise SetFieldProblem(axis, placement.axis.set, None, str(error)) from error
         for entry, gate in zip(by_id, gates, strict=True):
-            self.entry(axis, placement, entry, gate, entries[entry])
+            try:
+                self.entry(axis, placement, entry, gate, entries[entry])
+            except SetFieldProblem as error:
+                if entry == sources[entry]:
+                    raise
+                raise SetFieldProblem(axis, placement.axis.set, sources[entry], f"{entry}: {error}") from error
 
     def route(
         self, id: str, source: SignalSource, chain, active_source: SignalSource, active_chain,
@@ -557,10 +575,7 @@ class _Union:
         })
         cohort = self.task.validation_trials
         if self.conditions:
-            cohort = tuple(
-                ValidationTrial(variables=row.variables | _combine_conditions(selected), epoch_steps=row.epoch_steps)
-                for row in cohort for selected in product(*self.conditions)
-            )
+            cohort = _crossed_trials(cohort, self.conditions)
         links = self.links
         for node, (base, selectors) in self.curl_activation.items():
             enabled = selectors[0]
@@ -582,8 +597,20 @@ def _curl_address(component: str) -> str:
     )).to_text()
 
 
-def _combine_conditions(selected):
-    return {id: value for condition in selected for id, value in condition.items()}
+def _crossed_trials(
+    cohort: tuple[ValidationTrial, ...], conditions: Mapping[str, tuple[str, ...]],
+) -> tuple[ValidationTrial, ...]:
+    trials = []
+    for row in cohort:
+        for selected in product(*(enumerate(entries, 1) for entries in conditions.values())):
+            choices = dict(zip(conditions, selected, strict=True))
+            coordinate = axis_values_id({axis: entry for axis, (_, entry) in choices.items()})
+            trials.append(ValidationTrial(
+                id=f"{row.id or DEFAULT_SWEEP_ROW}--{coordinate}",
+                variables=row.variables | {axis: LiteralValue(value=index) for axis, (index, _) in choices.items()},
+                epoch_steps=row.epoch_steps,
+            ))
+    return tuple(trials)
 
 
 def _has_window(wire: ModelWire) -> bool:
@@ -661,16 +688,24 @@ def lower_trial_sets(
         if placement.axis.where is not None:
             raise SetFieldProblem(axis, placement.axis.set, None, "Trial Set placements apply to all runs of the step.")
         try:
-            entries = read_set(read, placement.axis.set).entries
+            authored = read_set(read, placement.axis.set).entries
+            expanded = tuple(expand_members(authored, unique_labels=True))
+        except FamilyProblem as error:
+            coordinates = f" ({error.coordinates})" if error.coordinates else ""
+            raise SetFieldProblem(
+                axis, placement.axis.set, error.source_key, f"{error}{coordinates}", member_path=error.path,
+            ) from error
         except ValueError as error:
             raise SetFieldProblem(axis, placement.axis.set, None, str(error)) from error
-        placements.append((axis, placement, entries))
+        entries = {item.key: item.value for item in expanded}
+        sources = {item.key: item.source_key for item in expanded}
+        placements.append((axis, placement, entries, sources))
         names.update(_entry_label(entry, variable.label) for entry, source in entries.items()
                      for variable in source.task_variables.values())
 
     union = _Union(model, task, components, shared_entry_labels=frozenset(name for name, count in names.items() if count > 1))
-    for axis, placement, entries in placements:
-        union.placement(axis, placement, entries, functions)
+    for axis, placement, entries, sources in placements:
+        union.placement(axis, placement, entries, sources, functions)
     compiled_model, compiled_task = union.finish()
     return compiled_model, compiled_task, union.condition_origins
 

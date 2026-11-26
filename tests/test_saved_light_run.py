@@ -142,7 +142,7 @@ def _saved_light_definition(*, paired=False):
     task = load_shipped_projects()["point-mass-reaching"].documents["simple-reaches-task"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task["payload"]["fixed_steps"] = 8
     del task["payload"]["validation_trials"]
-    task["payload"]["epochs"]["move"]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"] = "8 st"
     evaluation["documents"]["task"] = task
     project["documents"] = evaluation["documents"] | {
         name: project["documents"][name]
@@ -170,7 +170,7 @@ def test_saved_operation_products_can_be_read_without_a_figure(host, tmp_path, m
     task = shipped["documents"]["simple-reaches-task"]
     del task["payload"]["validation_trials"]
     task["payload"]["fixed_steps"] = 8
-    task["payload"]["epochs"]["move"]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"] = "8 st"
     definition["documents"] = {
         "point-mass": shipped["documents"]["point-mass"], "task": task,
         "velocity-analysis": definition["documents"]["velocity-analysis"],

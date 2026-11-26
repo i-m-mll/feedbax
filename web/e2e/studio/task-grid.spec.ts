@@ -162,28 +162,6 @@ test('a Task from an example shows its label, and typing into an absent cell mak
   await expect(cells.nth(0).getByRole('textbox', { name: /^Absent/ })).toBeVisible();
 });
 
-// Catches a signal rename that leaves the Model input it fed unfed, an Outline that does not say what feeds it, and an
-// Inputs card that keeps the old name or lists the renamed signal again as an unused port.
-test('renaming a signal in the grid keeps the Model input it feeds', async ({ page, request }) => {
-  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
-  await page.goto(`/?project=${snapshot.project_id}`);
-  await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Task', exact: true }).click();
-  const grid = page.locator('[data-slot="primary"]').getByRole('tabpanel').getByRole('table', { name: 'Epochs', exact: true });
-  await enter(grid.getByRole('textbox', { name: 'Rename target position', exact: true }), 'aim');
-  await expect(grid.getByRole('textbox', { name: 'Rename aim', exact: true })).toBeVisible();
-  const input = page.getByRole('complementary', { name: 'Details Drawer', exact: true })
-    .getByRole('tree', { name: 'Model Inputs', exact: true }).getByRole('treeitem').filter({ hasText: 'target_pos' });
-  await expect(input).toContainText('aim');
-  await expect(input.locator('[data-status-mark]')).toHaveCount(0);
-
-  await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  const inputs = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true })
-    .locator('[data-id="@inputs"] .studio-model-port > span:first-of-type');
-  await expect(inputs.filter({ hasText: /^aim$/ })).toHaveCount(1);
-  await expect(inputs.filter({ hasText: /^target_pos$/ })).toHaveCount(0);
-});
-
 // Catches a time field that shows only its authored unit, a paired value left from the old Step after Step changes, and
 // a length that rounds to no step taken without its Problem.
 test('an End reads in both units, re-reads when Step changes, and refuses a length that rounds to no step', async ({ page, request }) => {

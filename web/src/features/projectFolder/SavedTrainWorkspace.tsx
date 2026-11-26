@@ -340,6 +340,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       results.map(({ jobId }) => [jobId, state] as const))));
     return (job) => states.get(job.job_id);
   }, [plan]);
+  const activityRunName = useMemo(() => {
+    const map = shown?.window_map;
+    const names = new Map(map?.rows.map(({ key, name }) => [savedRunId(key), name]));
+    const requests = new Map(map?.requests?.filter(({ element }) => element == null)
+      .map(({ key, request_id }) => [savedRunId(key), request_id]));
+    return (job: StudioActivityJob) => job.project_id === saved.project_id && requests.get(job.run_key) === job.request_id
+      ? names.get(job.run_key) : undefined;
+  }, [shown, saved.project_id]);
   const runMenu: RunMenu = (runs, anchor) => {
     const owner = runs[0] && plan.steps.find(({ id }) => id === (JSON.parse(runs[0].id) as string[])[1]);
     return [
@@ -771,18 +779,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
     trialEditable, trialChangeScope, runRemoval.confirm, askStore);
-  const clockView = clockSubject ? clockSubject.trial : trial.view;
-  const clockStep = clockSubject ? clockSubject.step : step;
   /** The runs the shown figure declares its data was read from, whose recorded trials the clock offers for an Analyze. */
   const [figureRuns, declareFigureRuns] = useState<FigureLayoutMeta['runs']>();
   const figureEvaluation = step?.kind === 'analyze' ? declaredEvaluation(shown, figureRuns) : undefined;
+  const figureRun = clockSubject ? undefined : figureEvaluation?.key;
+  const figureTrial = useTrialAuthoring(editor, saved.project_id, saved.revision, figureRun, !!figureRun,
+    false, trialChangeScope, runRemoval.confirm, askStore);
+  const clockView = clockSubject ? clockSubject.trial : trial.view ?? figureTrial.view;
+  const clockStep = clockSubject ? clockSubject.step : step;
   /** With no one run focused, an Evaluate's clock shows the first selected run that recorded trials. */
   const firstEvaluation = step?.kind === 'evaluate' ? sceneRows.find((row) => row.result ?? row.previous) : undefined;
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: clockView,
-    taskDocument: clockView && (clockView.task_document ?? clockStep?.id),
-    objectiveDocument: clockView && (clockView.objective_document ?? clockStep?.id),
-    run: clockSubject ? clockSubject.namedRun : namedRun,
+    taskDocument: clockView && (clockView.task_document ?? figureRun?.step ?? clockStep?.id),
+    objectiveDocument: clockView && (clockView.objective_document ?? figureRun?.step ?? clockStep?.id),
+    run: clockSubject ? clockSubject.namedRun : figureRun ?? namedRun,
     stored: clockSubject ? clockSubject.stored : stored, evaluation: clockSubject ? clockSubject.evaluation : selectedEvaluation ?? firstEvaluation ?? figureEvaluation,
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
@@ -2035,7 +2046,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         </StudioProblems>}
         activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
           onToggle={activity.invoke}
-          onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} resultState={activityResultState} />}
+          onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names}
+          resultState={activityResultState} runName={activityRunName} />}
         renderView={(view, slot) => {
           const details = slot === 'primary' ? primary : secondary;
           if (held[slot].step) {
@@ -2097,6 +2109,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     <TrialTaskDocument view={value} commit={commit} runs={runs} entries={entries} selected={selected} select={choose(document)}
+                      setName={(key) => nameIn(variantNames(plans.names, value.run.variant).documents, key)}
                       toSweep={step && ((axis) => sets.toSweep(step.id, axis))}
                       weigh={step && ((axis) => sets.fieldWeight(step.id, axis))}
                       drawn={drawnVariables(trialClock.trial)} />

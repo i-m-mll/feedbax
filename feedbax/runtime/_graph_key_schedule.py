@@ -121,8 +121,13 @@ def sample_training_trials(
     return map_trial_samples(sample, keys, keys)
 
 
-def validation_trial_keys(key: PRNGKeyArray, count: int) -> PRNGKeyArray:
-    """Derive the streams for the fixed validation rows."""
+def validation_trial_keys(key: PRNGKeyArray, count: int, *, ids: tuple[str, ...] = ()) -> PRNGKeyArray:
+    """Derive stable streams by trial ID, or by draw index for sampled trials."""
+    if ids:
+        if len(ids) != count:
+            raise ValueError("Validation trial IDs must match the number of rows")
+        words = jnp.asarray([_scope_words(("task", "validation", id_), False) for id_ in ids], dtype=jnp.uint32)
+        return _derive_many(_fold_scope, key, words)
     return _derive_many(
         lambda root, index: derive_key(root, "task", "validation", index=index),
         key,

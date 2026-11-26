@@ -40,7 +40,7 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'reference-field'));
   const initial = await open(page, project);
   const analysis = {
-    schema: analysisDocumentSchemaId,
+    schema: analysisDocumentSchemaId, label: 'Analysis',
     payload: {
       schema_version: analysisDocumentSchemaId,
       inputs: { states: { kind: 'dataset' }, policy: { kind: 'model' }, protocol: { kind: 'task' } },
@@ -49,7 +49,7 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   };
   await appendManagedFiles(page.request, initial, [
     { kind: 'document', id: 'analysis', document: analysis },
-    { kind: 'step', id: 'analyze', step: { kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
+    { kind: 'step', id: 'analyze', step: { kind: 'analyze', label: 'Analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
   ]);
   // A document is offered by the name the snapshot gives it, as the Model and Task views do.
   const models = Object.entries(initial.project.documents ?? {}).filter(([, { schema }]) => schema === modelDocumentSchemaId)
@@ -109,7 +109,7 @@ test('Evaluate edits that remove runs ask first and keep the other results', { t
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'reference-removal'));
   const initial = await open(page, project);
   await appendManagedFiles(page.request, initial, [{ kind: 'step', id: 'trials', step: {
-    ...initial.project.steps!.baseline, sweep: { axes: { subject: { input: 'subject' } } },
+    ...initial.project.steps!.baseline, label: 'Trials', sweep: { axes: { subject: { input: 'subject' } } },
   } }]);
   await page.addInitScript(() => window.localStorage.setItem('feedbax.settings', JSON.stringify({ removalThreshold: 0 })));
   await page.goto('/?project=' + encodeURIComponent(project));

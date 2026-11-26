@@ -11,7 +11,7 @@ from feedbax.compiler.model_document import model_tau_seconds
 from feedbax.compiler.model_ports import model_unstored_fields
 from feedbax.contracts.expression_values import (
     TIME, CallValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, Site,
-    SweepList, SweepRange, SweepSample, UnresolvedValue, ValueBase, ValueType,
+    SequenceValue, SweepList, SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress, PortElement, WireElement
 from feedbax.contracts.model_document import (
@@ -570,7 +570,7 @@ def model_fields(
         parsed = read_field(edit.text, field.numeric.site, functions)
         if isinstance(parsed, ParsedField):
             node = parsed.value
-            if field.window_offset and not isinstance(node, LiteralValue | SweepList | SweepRange | SweepSample):
+            if field.window_offset and not isinstance(node, LiteralValue | SequenceValue | SweepList | SweepSample):
                 expression = store_window_offset(node).model_dump(mode="json")
             elif operand and isinstance(node, NameValue):
                 write_address = _address(body.owner, *field.address.element.path[:2])

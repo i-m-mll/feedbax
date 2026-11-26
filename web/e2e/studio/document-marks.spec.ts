@@ -124,7 +124,7 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
   await menu.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   const rename = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header').getByRole('textbox');
   await expect(rename).toBeFocused();
-  const duplicate = 'Point mass 2 2';
+  const duplicate = 'Point mass 3';
   await expect(rename).toHaveValue(duplicate);
   await page.keyboard.press('Escape');
   await expect(picker).toHaveText(duplicate);
@@ -352,7 +352,7 @@ test('a based Training document marks the class it changes, and Reset gives it t
   const inline = (seeded.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
   const { snapshot } = await appendManagedFiles(request, seeded, [
     { kind: 'document', id: 'training', document: {
-      schema: 'feedbax.spec.training_document', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
+      schema: 'feedbax.spec.training_document', label: 'Training', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
     } },
     { kind: 'document', id: 'training-2', document: {
       schema: 'feedbax.spec.training_document', label: 'Training 2', base: { document: 'training' },

@@ -3235,7 +3235,7 @@ export type ErrorBounds = {
   "upper": Name | VariableBinding;
 };
 
-export type Expression = LiteralValue | NameValue | CallValue | DrawValue | UnresolvedValue;
+export type Expression = LiteralValue | NameValue | CallValue | DrawValue | SequenceValue | UnresolvedValue;
 
 export type ExpressionPartSite = {
   "path": Array<string | number>;
@@ -3266,7 +3266,7 @@ export type FieldTextResult = {
   "spans": Array<LocatedSpan>;
 };
 
-export type FieldValue = Expression | SweepList | SweepRange | SweepSample;
+export type FieldValue = Expression | SweepList | SweepSample;
 
 export type FigureDocument = {
   "data": Array<Name>;
@@ -3370,6 +3370,10 @@ export type ImportedModelProvenance = {
   "weights_sha256": string;
   "replicas": Array<string>;
 };
+
+export type IndexName = string;
+
+export type IndexRule = AuthoredExpressionText | Record<string, StoredExpression | NamedIndexValue>;
 
 export type IndexSelection = {
   "index": number;
@@ -3612,6 +3616,11 @@ export type NamedAxis = {
 
 export type NamedFileCreation = CreateNamedDocument | CreateNamedStep;
 
+export type NamedIndexValue = {
+  "value": StoredExpression;
+  "label"?: string | null;
+};
+
 export type NamedSubset = {
   "subset": string;
   "unresolved"?: true | null;
@@ -3644,6 +3653,7 @@ export type ObjectiveTerm = {
   "window"?: Window | null;
   "enabled"?: boolean;
   "name"?: string | null;
+  "family"?: string | null;
 };
 
 export type OmittedReference = {
@@ -4007,6 +4017,14 @@ export type SelectedAxisValueProblem = {
   "remaining": Array<SelectedAxisValue>;
 };
 
+export type SequenceValue = {
+  "kind"?: "sequence";
+  "rule": "span" | "linspace" | "geomspace";
+  "first": Expression;
+  "last": Expression;
+  "count"?: Expression | null;
+};
+
 export type SetAxis = {
   "label"?: string | null;
   "set": string;
@@ -4023,6 +4041,8 @@ export type SetDocumentValue = {
 };
 
 export type SetEntry = {
+  "over"?: Record<string, IndexRule> | null;
+  "combination"?: "cross" | "zip";
   "task_variables"?: StoredMembers_StoredVariable_;
   "task_links"?: StoredAddressedMembers_StoredMemberKey_;
   "label": string;
@@ -4054,7 +4074,7 @@ export type SetFieldWeight = {
 
 export type SetLink = {
   "op": "link";
-  "model_field": string;
+  "address_text": string;
   "variable": string | null;
 };
 
@@ -4424,9 +4444,9 @@ export type StoredMembers_StoredSignalOutput_ = Record<string, StoredSignalOutpu
 
 export type StoredMembers_StoredSignal_ = Record<string, StoredSignal>;
 
-export type StoredMembers_StoredVariable_ = Record<string, StoredVariable>;
+export type StoredMembers_StoredValidationTrial_ = Record<string, StoredValidationTrial>;
 
-export type StoredMembers_ValidationTrial_ = Record<string, ValidationTrial>;
+export type StoredMembers_StoredVariable_ = Record<string, StoredVariable>;
 
 export type StoredModelAddressKey = string;
 
@@ -4462,6 +4482,8 @@ export type StoredObjectiveDocument = {
 };
 
 export type StoredObjectiveTerm = {
+  "over"?: Record<string, IndexRule> | null;
+  "combination"?: "cross" | "zip";
   "measure": StoredExpression;
   "measure_type"?: ValueType;
   "weight"?: StoredExpression;
@@ -4553,7 +4575,7 @@ export type StoredTaskDocument = {
   "repeats"?: StoredMembers_StoredRepeat_;
   "links"?: StoredAddressedMembers_StoredMemberKey_;
   "fixed_steps"?: number | null;
-  "validation_trials"?: StoredMembers_ValidationTrial_;
+  "validation_trials"?: StoredMembers_StoredValidationTrial_;
 };
 
 export type StoredTime = AuthoredExpressionText;
@@ -4572,6 +4594,13 @@ export type StoredUntil = {
   "kind"?: "until";
   "condition": StoredExpression;
   "limit": StoredTime;
+};
+
+export type StoredValidationTrial = {
+  "over"?: Record<string, IndexRule> | null;
+  "combination"?: "cross" | "zip";
+  "variables"?: Record<string, StoredExpression>;
+  "epoch_steps"?: Record<string, StoredExpression>;
 };
 
 export type StoredVariable = {
@@ -5235,6 +5264,7 @@ export type StudioProjectWindowMapException = {
   "id": string;
   "count": number;
   "rule": SweepException;
+  "field_labels"?: Record<string, string>;
 };
 
 export type StudioProjectWindowMapFigure = {
@@ -5458,9 +5488,12 @@ export type StudioSetField = {
 };
 
 export type StudioSetFieldEntry = {
+  "over"?: Record<string, IndexRule> | null;
+  "combination"?: "cross" | "zip";
   "entry": string | null;
   "label"?: string | null;
   "weight"?: WeightPart | SetEntryParts | null;
+  "member_count"?: number | null;
 };
 
 export type StudioSetsOffered = {
@@ -5637,6 +5670,7 @@ export type StudioTrialAuthoring = {
   "inputs": Array<StudioTrialInput>;
   "outputs": Array<StudioTrialOutput>;
   "resets": Array<StudioTrialReset>;
+  "unresolved_links": Array<StudioTrialUnresolvedLink>;
   "fields": Array<StudioTrialField>;
   "problems": Array<Problem>;
   "created_term"?: string | null;
@@ -5749,6 +5783,7 @@ export type StudioTrialRelate = {
 
 export type StudioTrialReset = {
   "address": ModelAddress;
+  "address_text": string;
   "path": Array<string>;
   "type": ValueType;
   "finest": Level;
@@ -5769,6 +5804,11 @@ export type StudioTrialStepScope = {
 export type StudioTrialStructureEdit = {
   "kind": "structure";
   "changes": Array<TaskStructureChange>;
+};
+
+export type StudioTrialUnresolvedLink = {
+  "key": string;
+  "path": Array<string>;
 };
 
 export type StudioValueStructure = {
@@ -5805,14 +5845,6 @@ export type SweepExceptionTerms = {
 export type SweepList = {
   "kind"?: "list";
   "members": Array<Expression>;
-};
-
-export type SweepRange = {
-  "kind"?: "range";
-  "first": Expression;
-  "last": Expression;
-  "count": number;
-  "spacing": "linear" | "log";
 };
 
 export type SweepSample = {
@@ -5858,7 +5890,7 @@ export type TaskDocument = {
   "repeats"?: Array<Repeat>;
   "links"?: Array<Link>;
   "fixed_steps"?: number | null;
-  "validation_trials"?: Array<ValidationTrial>;
+  "validation_trials"?: Array<ValidationTrialV2>;
 };
 
 export type TaskDocumentReference_DocumentReference_ = {
@@ -5955,12 +5987,11 @@ export type ValidationPlacement = {
   "predicted_update_fraction"?: number | null;
 };
 
-export type ValidationTrial = {
-  "variables"?: Record<string, ValidationValue>;
+export type ValidationTrialV2 = {
+  "id"?: string | null;
+  "variables"?: Record<string, Expression>;
   "epoch_steps"?: Record<string, number>;
 };
-
-export type ValidationValue = Scalar | Array<ValidationValue>;
 
 export type ValidityAcceptance = {
   "revision": string;
@@ -6309,338 +6340,170 @@ export const firstTrainTask: Document = {
     "validation_trials": {
       "trial-1": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            -0.050000011920928955
-          ],
-          "target": [
-            0.3999999761581421,
-            -0.050000011920928955
-          ]
+          "start": "[-0.10000002384185791, -0.050000011920928955]",
+          "target": "[0.3999999761581421, -0.050000011920928955]"
         }
       },
       "trial-2": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            -0.050000011920928955
-          ],
-          "target": [
-            0.2117448770875089,
-            0.34091572931308595
-          ]
+          "start": "[-0.10000002384185791, -0.050000011920928955]",
+          "target": "[0.2117448770875089, 0.34091572931308595]"
         }
       },
       "trial-3": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            -0.050000011920928955
-          ],
-          "target": [
-            -0.21126049082001508,
-            0.43746394416998285
-          ]
+          "start": "[-0.10000002384185791, -0.050000011920928955]",
+          "target": "[-0.21126049082001508, 0.43746394416998285]"
         }
       },
       "trial-4": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            -0.050000011920928955
-          ],
-          "target": [
-            -0.5504844577930674,
-            0.16694185763785016
-          ]
+          "start": "[-0.10000002384185791, -0.050000011920928955]",
+          "target": "[-0.5504844577930674, 0.16694185763785016]"
         }
       },
       "trial-5": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            -0.050000011920928955
-          ],
-          "target": [
-            -0.5504844577930674,
-            -0.266941881479708
-          ]
+          "start": "[-0.10000002384185791, -0.050000011920928955]",
+          "target": "[-0.5504844577930674, -0.266941881479708]"
         }
       },
       "trial-6": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            -0.050000011920928955
-          ],
-          "target": [
-            -0.2112604908200152,
-            -0.5374639680118407
-          ]
+          "start": "[-0.10000002384185791, -0.050000011920928955]",
+          "target": "[-0.2112604908200152, -0.5374639680118407]"
         }
       },
       "trial-7": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            -0.050000011920928955
-          ],
-          "target": [
-            0.21174487708750878,
-            -0.4409157531549439
-          ]
+          "start": "[-0.10000002384185791, -0.050000011920928955]",
+          "target": "[0.21174487708750878, -0.4409157531549439]"
         }
       },
       "trial-8": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            -0.050000011920928955
-          ],
-          "target": [
-            0.6999999582767487,
-            -0.050000011920928955
-          ]
+          "start": "[0.19999995827674866, -0.050000011920928955]",
+          "target": "[0.6999999582767487, -0.050000011920928955]"
         }
       },
       "trial-9": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            -0.050000011920928955
-          ],
-          "target": [
-            0.5117448592061155,
-            0.34091572931308595
-          ]
+          "start": "[0.19999995827674866, -0.050000011920928955]",
+          "target": "[0.5117448592061155, 0.34091572931308595]"
         }
       },
       "trial-10": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            -0.050000011920928955
-          ],
-          "target": [
-            0.08873949129859149,
-            0.43746394416998285
-          ]
+          "start": "[0.19999995827674866, -0.050000011920928955]",
+          "target": "[0.08873949129859149, 0.43746394416998285]"
         }
       },
       "trial-11": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            -0.050000011920928955
-          ],
-          "target": [
-            -0.25048447567446086,
-            0.16694185763785016
-          ]
+          "start": "[0.19999995827674866, -0.050000011920928955]",
+          "target": "[-0.25048447567446086, 0.16694185763785016]"
         }
       },
       "trial-12": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            -0.050000011920928955
-          ],
-          "target": [
-            -0.2504844756744609,
-            -0.266941881479708
-          ]
+          "start": "[0.19999995827674866, -0.050000011920928955]",
+          "target": "[-0.2504844756744609, -0.266941881479708]"
         }
       },
       "trial-13": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            -0.050000011920928955
-          ],
-          "target": [
-            0.08873949129859136,
-            -0.5374639680118407
-          ]
+          "start": "[0.19999995827674866, -0.050000011920928955]",
+          "target": "[0.08873949129859136, -0.5374639680118407]"
         }
       },
       "trial-14": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            -0.050000011920928955
-          ],
-          "target": [
-            0.5117448592061153,
-            -0.4409157531549439
-          ]
+          "start": "[0.19999995827674866, -0.050000011920928955]",
+          "target": "[0.5117448592061153, -0.4409157531549439]"
         }
       },
       "trial-15": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            0.19999998807907104
-          ],
-          "target": [
-            0.3999999761581421,
-            0.19999998807907104
-          ]
+          "start": "[-0.10000002384185791, 0.19999998807907104]",
+          "target": "[0.3999999761581421, 0.19999998807907104]"
         }
       },
       "trial-16": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            0.19999998807907104
-          ],
-          "target": [
-            0.2117448770875089,
-            0.590915729313086
-          ]
+          "start": "[-0.10000002384185791, 0.19999998807907104]",
+          "target": "[0.2117448770875089, 0.590915729313086]"
         }
       },
       "trial-17": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            0.19999998807907104
-          ],
-          "target": [
-            -0.21126049082001508,
-            0.6874639441699828
-          ]
+          "start": "[-0.10000002384185791, 0.19999998807907104]",
+          "target": "[-0.21126049082001508, 0.6874639441699828]"
         }
       },
       "trial-18": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            0.19999998807907104
-          ],
-          "target": [
-            -0.5504844577930674,
-            0.4169418576378502
-          ]
+          "start": "[-0.10000002384185791, 0.19999998807907104]",
+          "target": "[-0.5504844577930674, 0.4169418576378502]"
         }
       },
       "trial-19": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            0.19999998807907104
-          ],
-          "target": [
-            -0.5504844577930674,
-            -0.01694188147970796
-          ]
+          "start": "[-0.10000002384185791, 0.19999998807907104]",
+          "target": "[-0.5504844577930674, -0.01694188147970796]"
         }
       },
       "trial-20": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            0.19999998807907104
-          ],
-          "target": [
-            -0.2112604908200152,
-            -0.28746396801184076
-          ]
+          "start": "[-0.10000002384185791, 0.19999998807907104]",
+          "target": "[-0.2112604908200152, -0.28746396801184076]"
         }
       },
       "trial-21": {
         "variables": {
-          "start": [
-            -0.10000002384185791,
-            0.19999998807907104
-          ],
-          "target": [
-            0.21174487708750878,
-            -0.1909157531549439
-          ]
+          "start": "[-0.10000002384185791, 0.19999998807907104]",
+          "target": "[0.21174487708750878, -0.1909157531549439]"
         }
       },
       "trial-22": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            0.19999998807907104
-          ],
-          "target": [
-            0.6999999582767487,
-            0.19999998807907104
-          ]
+          "start": "[0.19999995827674866, 0.19999998807907104]",
+          "target": "[0.6999999582767487, 0.19999998807907104]"
         }
       },
       "trial-23": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            0.19999998807907104
-          ],
-          "target": [
-            0.5117448592061155,
-            0.590915729313086
-          ]
+          "start": "[0.19999995827674866, 0.19999998807907104]",
+          "target": "[0.5117448592061155, 0.590915729313086]"
         }
       },
       "trial-24": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            0.19999998807907104
-          ],
-          "target": [
-            0.08873949129859149,
-            0.6874639441699828
-          ]
+          "start": "[0.19999995827674866, 0.19999998807907104]",
+          "target": "[0.08873949129859149, 0.6874639441699828]"
         }
       },
       "trial-25": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            0.19999998807907104
-          ],
-          "target": [
-            -0.25048447567446086,
-            0.4169418576378502
-          ]
+          "start": "[0.19999995827674866, 0.19999998807907104]",
+          "target": "[-0.25048447567446086, 0.4169418576378502]"
         }
       },
       "trial-26": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            0.19999998807907104
-          ],
-          "target": [
-            -0.2504844756744609,
-            -0.01694188147970796
-          ]
+          "start": "[0.19999995827674866, 0.19999998807907104]",
+          "target": "[-0.2504844756744609, -0.01694188147970796]"
         }
       },
       "trial-27": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            0.19999998807907104
-          ],
-          "target": [
-            0.08873949129859136,
-            -0.28746396801184076
-          ]
+          "start": "[0.19999995827674866, 0.19999998807907104]",
+          "target": "[0.08873949129859136, -0.28746396801184076]"
         }
       },
       "trial-28": {
         "variables": {
-          "start": [
-            0.19999995827674866,
-            0.19999998807907104
-          ],
-          "target": [
-            0.5117448592061153,
-            -0.1909157531549439
-          ]
+          "start": "[0.19999995827674866, 0.19999998807907104]",
+          "target": "[0.5117448592061153, -0.1909157531549439]"
         }
       }
     }
@@ -12027,7 +11890,7 @@ export const ErrorBoundsSchema: z.ZodType<ErrorBounds> = z.lazy(() =>
 ) as unknown as z.ZodType<ErrorBounds>;
 
 export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
-  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema, UnresolvedValueSchema])
+  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema, SequenceValueSchema, UnresolvedValueSchema])
 ) as unknown as z.ZodType<Expression>;
 
 export const ExpressionPartSiteSchema: z.ZodType<ExpressionPartSite> = z.lazy(() =>
@@ -12070,7 +11933,7 @@ export const FieldTextResultSchema: z.ZodType<FieldTextResult> = z.lazy(() =>
 ) as unknown as z.ZodType<FieldTextResult>;
 
 export const FieldValueSchema: z.ZodType<FieldValue> = z.lazy(() =>
-  z.union([ExpressionSchema, SweepListSchema, SweepRangeSchema, SweepSampleSchema])
+  z.union([ExpressionSchema, SweepListSchema, SweepSampleSchema])
 ) as unknown as z.ZodType<FieldValue>;
 
 export const FigureDocumentSchema: z.ZodType<FigureDocument> = z.lazy(() =>
@@ -12199,6 +12062,14 @@ export const ImportedModelProvenanceSchema: z.ZodType<ImportedModelProvenance> =
     "replicas": z.array(z.string().min(1)).min(1),
   }).strict()
 ) as unknown as z.ZodType<ImportedModelProvenance>;
+
+export const IndexNameSchema: z.ZodType<IndexName> = z.lazy(() =>
+  z.string().regex(new RegExp("^[A-Za-z_][A-Za-z_0-9]*$"))
+) as unknown as z.ZodType<IndexName>;
+
+export const IndexRuleSchema: z.ZodType<IndexRule> = z.lazy(() =>
+  z.union([AuthoredExpressionTextSchema, z.record(IndexNameSchema, z.union([StoredExpressionSchema, NamedIndexValueSchema])).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' })])
+) as unknown as z.ZodType<IndexRule>;
 
 export const IndexSelectionSchema: z.ZodType<IndexSelection> = z.lazy(() =>
   z.object({
@@ -12537,6 +12408,13 @@ export const NamedFileCreationSchema: z.ZodType<NamedFileCreation> = z.lazy(() =
   z.union([CreateNamedDocumentSchema, CreateNamedStepSchema])
 ) as unknown as z.ZodType<NamedFileCreation>;
 
+export const NamedIndexValueSchema: z.ZodType<NamedIndexValue> = z.lazy(() =>
+  z.object({
+    "value": StoredExpressionSchema,
+    "label": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<NamedIndexValue>;
+
 export const NamedSubsetSchema: z.ZodType<NamedSubset> = z.lazy(() =>
   z.object({
     "subset": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -12580,6 +12458,7 @@ export const ObjectiveTermSchema: z.ZodType<ObjectiveTerm> = z.lazy(() =>
     "window": z.union([WindowSchema, z.null()]).optional(),
     "enabled": z.boolean().optional(),
     "name": z.union([z.string().min(1), z.null()]).optional(),
+    "family": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<ObjectiveTerm>;
 
@@ -13070,6 +12949,16 @@ export const SelectedAxisValueProblemSchema: z.ZodType<SelectedAxisValueProblem>
   }).strict()
 ) as unknown as z.ZodType<SelectedAxisValueProblem>;
 
+export const SequenceValueSchema: z.ZodType<SequenceValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("sequence").optional(),
+    "rule": z.union([z.literal("span"), z.literal("linspace"), z.literal("geomspace")]),
+    "first": ExpressionSchema,
+    "last": ExpressionSchema,
+    "count": z.union([ExpressionSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<SequenceValue>;
+
 export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
   z.object({
     "label": z.union([z.string().min(1), z.null()]).optional(),
@@ -13093,6 +12982,8 @@ export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
 
 export const SetEntrySchema: z.ZodType<SetEntry> = z.lazy(() =>
   z.object({
+    "over": z.union([z.record(IndexNameSchema, IndexRuleSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }), z.null()]).optional(),
+    "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
     "task_variables": StoredMembers_StoredVariable_Schema.optional(),
     "task_links": StoredAddressedMembers_StoredMemberKey_Schema.optional(),
     "label": z.string().min(1),
@@ -13132,7 +13023,7 @@ export const SetFieldWeightSchema: z.ZodType<SetFieldWeight> = z.lazy(() =>
 export const SetLinkSchema: z.ZodType<SetLink> = z.lazy(() =>
   z.object({
     "op": z.literal("link"),
-    "model_field": z.string(),
+    "address_text": z.string(),
     "variable": z.union([z.string(), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<SetLink>;
@@ -13649,13 +13540,13 @@ export const StoredMembers_StoredSignal_Schema: z.ZodType<StoredMembers_StoredSi
   z.record(StoredMemberKeySchema, StoredSignalSchema)
 ) as unknown as z.ZodType<StoredMembers_StoredSignal_>;
 
+export const StoredMembers_StoredValidationTrial_Schema: z.ZodType<StoredMembers_StoredValidationTrial_> = z.lazy(() =>
+  z.record(StoredMemberKeySchema, StoredValidationTrialSchema)
+) as unknown as z.ZodType<StoredMembers_StoredValidationTrial_>;
+
 export const StoredMembers_StoredVariable_Schema: z.ZodType<StoredMembers_StoredVariable_> = z.lazy(() =>
   z.record(StoredMemberKeySchema, StoredVariableSchema)
 ) as unknown as z.ZodType<StoredMembers_StoredVariable_>;
-
-export const StoredMembers_ValidationTrial_Schema: z.ZodType<StoredMembers_ValidationTrial_> = z.lazy(() =>
-  z.record(StoredMemberKeySchema, ValidationTrialSchema)
-) as unknown as z.ZodType<StoredMembers_ValidationTrial_>;
 
 export const StoredModelAddressKeySchema: z.ZodType<StoredModelAddressKey> = z.lazy(() =>
   z.string()
@@ -13710,6 +13601,8 @@ export const StoredObjectiveDocumentSchema: z.ZodType<StoredObjectiveDocument> =
 
 export const StoredObjectiveTermSchema: z.ZodType<StoredObjectiveTerm> = z.lazy(() =>
   z.object({
+    "over": z.union([z.record(IndexNameSchema, IndexRuleSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }), z.null()]).optional(),
+    "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
     "measure": StoredExpressionSchema,
     "measure_type": ValueTypeSchema.optional(),
     "weight": StoredExpressionSchema.optional(),
@@ -13827,7 +13720,7 @@ export const StoredTaskDocumentSchema: z.ZodType<StoredTaskDocument> = z.lazy(()
     "repeats": StoredMembers_StoredRepeat_Schema.optional(),
     "links": StoredAddressedMembers_StoredMemberKey_Schema.optional(),
     "fixed_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
-    "validation_trials": StoredMembers_ValidationTrial_Schema.optional(),
+    "validation_trials": StoredMembers_StoredValidationTrial_Schema.optional(),
   }).strict()
 ) as unknown as z.ZodType<StoredTaskDocument>;
 
@@ -13854,6 +13747,15 @@ export const StoredUntilSchema: z.ZodType<StoredUntil> = z.lazy(() =>
     "limit": StoredTimeSchema,
   }).strict()
 ) as unknown as z.ZodType<StoredUntil>;
+
+export const StoredValidationTrialSchema: z.ZodType<StoredValidationTrial> = z.lazy(() =>
+  z.object({
+    "over": z.union([z.record(IndexNameSchema, IndexRuleSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }), z.null()]).optional(),
+    "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
+    "variables": z.record(StoredMemberKeySchema, StoredExpressionSchema).optional(),
+    "epoch_steps": z.record(StoredMemberKeySchema, StoredExpressionSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<StoredValidationTrial>;
 
 export const StoredVariableSchema: z.ZodType<StoredVariable> = z.lazy(() =>
   z.object({
@@ -14717,6 +14619,7 @@ export const StudioProjectWindowMapExceptionSchema: z.ZodType<StudioProjectWindo
     "id": z.string(),
     "count": z.number().int().safe(),
     "rule": SweepExceptionSchema,
+    "field_labels": z.record(z.string(), z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapException>;
 
@@ -14994,9 +14897,12 @@ export const StudioSetFieldSchema: z.ZodType<StudioSetField> = z.lazy(() =>
 
 export const StudioSetFieldEntrySchema: z.ZodType<StudioSetFieldEntry> = z.lazy(() =>
   z.object({
+    "over": z.union([z.record(IndexNameSchema, IndexRuleSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }), z.null()]).optional(),
+    "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
     "entry": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "label": z.union([z.string(), z.null()]).optional(),
     "weight": z.union([WeightPartSchema, SetEntryPartsSchema, z.null()]).optional(),
+    "member_count": z.union([z.number().int().safe(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSetFieldEntry>;
 
@@ -15213,6 +15119,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "inputs": z.array(StudioTrialInputSchema),
     "outputs": z.array(StudioTrialOutputSchema),
     "resets": z.array(StudioTrialResetSchema),
+    "unresolved_links": z.array(StudioTrialUnresolvedLinkSchema),
     "fields": z.array(StudioTrialFieldSchema),
     "problems": z.array(ProblemSchema),
     "created_term": z.union([z.string(), z.null()]).optional(),
@@ -15355,6 +15262,7 @@ export const StudioTrialRelateSchema: z.ZodType<StudioTrialRelate> = z.lazy(() =
 export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
   z.object({
     "address": ModelAddressSchema,
+    "address_text": z.string(),
     "path": z.array(z.string()),
     "type": ValueTypeSchema,
     "finest": LevelSchema,
@@ -15383,6 +15291,13 @@ export const StudioTrialStructureEditSchema: z.ZodType<StudioTrialStructureEdit>
     "changes": z.array(TaskStructureChangeSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialStructureEdit>;
+
+export const StudioTrialUnresolvedLinkSchema: z.ZodType<StudioTrialUnresolvedLink> = z.lazy(() =>
+  z.object({
+    "key": z.string(),
+    "path": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialUnresolvedLink>;
 
 export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.lazy(() =>
   z.object({
@@ -15431,16 +15346,6 @@ export const SweepListSchema: z.ZodType<SweepList> = z.lazy(() =>
     "members": z.array(ExpressionSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<SweepList>;
-
-export const SweepRangeSchema: z.ZodType<SweepRange> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("range").optional(),
-    "first": ExpressionSchema,
-    "last": ExpressionSchema,
-    "count": z.number().int().safe().gt(0),
-    "spacing": z.union([z.literal("linear"), z.literal("log")]),
-  }).strict()
-) as unknown as z.ZodType<SweepRange>;
 
 export const SweepSampleSchema: z.ZodType<SweepSample> = z.lazy(() =>
   z.object({
@@ -15498,7 +15403,7 @@ export const TaskDocumentSchema: z.ZodType<TaskDocument> = z.lazy(() =>
     "repeats": z.array(RepeatSchema).optional(),
     "links": z.array(LinkSchema).optional(),
     "fixed_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
-    "validation_trials": z.array(ValidationTrialSchema).min(1).optional(),
+    "validation_trials": z.array(ValidationTrialV2Schema).min(1).optional(),
   }).strict()
 ) as unknown as z.ZodType<TaskDocument>;
 
@@ -15630,16 +15535,13 @@ export const ValidationPlacementSchema: z.ZodType<ValidationPlacement> = z.lazy(
   }).strict()
 ) as unknown as z.ZodType<ValidationPlacement>;
 
-export const ValidationTrialSchema: z.ZodType<ValidationTrial> = z.lazy(() =>
+export const ValidationTrialV2Schema: z.ZodType<ValidationTrialV2> = z.lazy(() =>
   z.object({
-    "variables": z.record(z.string(), ValidationValueSchema).optional(),
-    "epoch_steps": z.record(z.string(), z.number().int().safe()).optional(),
+    "id": z.union([z.string().min(1), z.null()]).optional(),
+    "variables": z.record(z.string(), ExpressionSchema).optional(),
+    "epoch_steps": z.record(z.string(), z.number().int().safe().min(0)).optional(),
   }).strict()
-) as unknown as z.ZodType<ValidationTrial>;
-
-export const ValidationValueSchema: z.ZodType<ValidationValue> = z.lazy(() =>
-  z.union([ScalarSchema, z.array(ValidationValueSchema)])
-) as unknown as z.ZodType<ValidationValue>;
+) as unknown as z.ZodType<ValidationTrialV2>;
 
 export const ValidityAcceptanceSchema: z.ZodType<ValidityAcceptance> = z.lazy(() =>
   z.object({

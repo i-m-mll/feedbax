@@ -152,8 +152,9 @@ export function studioRunHistory(
   for (const [jobId, updates] of retained) {
     const cutoff = attemptCutoffs.get(jobId);
     if (cutoff === undefined) continue;
+    const start = attemptStarts.get(jobId) ?? 0;
     for (const { update, metrics } of updates) {
-      if (update <= cutoff) record(update, jobId, undefined, metricReadings(metrics, rawReading));
+      if (start < update && update <= cutoff) record(update, jobId, undefined, metricReadings(metrics, rawReading));
     }
   }
   return {
@@ -263,6 +264,7 @@ function MetricPlot({ metric, vector, series, objectives }: {
     }))), vector);
     return {
       result, lines,
+      jobId: result?.jobId ?? lines[0]?.samples.at(-1)?.jobId,
       dashed: result?.name === 'previousResult' && series.length > 1,
       empty: lines.every(({ samples }) => samples.length === 0),
     };
@@ -340,8 +342,8 @@ function MetricPlot({ metric, vector, series, objectives }: {
             className="text-shell-divider" stroke="currentColor" strokeDasharray="3 3"
             vectorEffect="non-scaling-stroke" />
         ))}
-        {tracks.map(({ result, dashed, lines }) => (
-          <g key={result?.name ?? 'metric'} data-result-attempt={result?.jobId}
+        {tracks.map(({ result, jobId, dashed, lines }) => (
+          <g key={result?.name ?? 'metric'} data-result-attempt={jobId}
             role={result && 'group'} aria-label={result && studioName(result.name)}>
             {lines.map(({ element, samples }) => (
               <g key={element ?? 'line'} data-element={element} {...color(element)}>
@@ -351,7 +353,7 @@ function MetricPlot({ metric, vector, series, objectives }: {
                       ...[...samples].reverse().map(({ update, band, reading }) => `${x(update)},${y(band?.min ?? reading.value)}`)].join(' ')} />
                 )}
                 {samples.map(({ update, end, start, reading: { interval, value }, stage, jobId }) => {
-                  if (!interval && !result) return null;
+                  if (!interval && !result && !chained) return null;
                   const { count, min, max } = interval ?? { count: 1, min: value, max: value };
                   const first = start ?? end - 1;
                   return (

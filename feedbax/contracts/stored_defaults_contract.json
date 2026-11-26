@@ -501,6 +501,9 @@
     "unit": null
   },
   "feedbax.contracts.expression_values.NameValue": {},
+  "feedbax.contracts.expression_values.SequenceValue": {
+    "count": null
+  },
   "feedbax.contracts.expression_values.UnresolvedValue": {},
   "feedbax.contracts.expression_values.ValueType": {
     "shape": [],
@@ -729,6 +732,9 @@
     "value": null,
     "op": "replace"
   },
+  "feedbax.contracts.member_family.NamedIndexValue": {
+    "label": null
+  },
   "feedbax.contracts.model_address.AttachmentElement": {},
   "feedbax.contracts.model_address.ComponentElement": {},
   "feedbax.contracts.model_address.ComponentPortAddress": {},
@@ -761,6 +767,8 @@
     "terms": {}
   },
   "feedbax.contracts.objective_document.StoredObjectiveTerm": {
+    "over": null,
+    "combination": "cross",
     "measure_type": {
       "base": "real",
       "shape": [],
@@ -1625,6 +1633,8 @@
   },
   "feedbax.contracts.set_document.SetDocument": {},
   "feedbax.contracts.set_document.SetEntry": {
+    "over": null,
+    "combination": "cross",
     "task_variables": {},
     "task_links": {},
     "differences": {}
@@ -1789,14 +1799,16 @@
     "validation_trials": {}
   },
   "feedbax.contracts.task_document.StoredUntil": {},
+  "feedbax.contracts.task_document.StoredValidationTrial": {
+    "over": null,
+    "combination": "cross",
+    "variables": {},
+    "epoch_steps": {}
+  },
   "feedbax.contracts.task_document.StoredVariable": {
     "count": null,
     "set_choices": null,
     "marker": null
-  },
-  "feedbax.contracts.task_document.ValidationTrial": {
-    "variables": {},
-    "epoch_steps": {}
   },
   "feedbax.contracts.time_units.TimeValue": {},
   "feedbax.contracts.training_document.TrainingDocument": {},

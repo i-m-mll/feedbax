@@ -23,6 +23,7 @@ from feedbax.contracts.expression_values import (
     NodePath,
     Problem,
     ProblemCode,
+    SequenceValue,
     Site,
     ValueBase,
 )
@@ -131,17 +132,47 @@ def compile_expression(
         nonlocal draw_ordinal, random_call_ordinal
         node_type = checked.nodes[at]
         slot = _path_key(at)
-        if isinstance(node, LiteralValue):
-            value = node.value
+        if isinstance(node, SequenceValue):
+            sequence = node_type.sequence
+            assert sequence is not None
+            unit = sequence.unit
+            if unit == "st" and period_seconds is None:
+                problems.append(Problem(
+                    code=ProblemCode.OUT_OF_SCOPE, reason="A value in steps needs a model period.", path=(*path, *at),
+                ))
+            scale = (period_seconds or 1) if unit == "st" else UNITS[unit].scale if unit is not None else 1
+            dtype = _DTYPES[node_type.type.base]
+            try:
+                values = tuple(value if scale == 1 else value * scale for value in sequence.numbers())
+            except (ValueError, OverflowError) as error:
+                problems.append(Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=(*path, *at)))
+                values = ()
+            if dtype is int and any(int(value) != value or not -(2**31) <= value < 2**31 for value in values):
+                problems.append(Problem(
+                    code=ProblemCode.TYPE_MISMATCH, reason="Integer sequence is outside the supported range.",
+                    path=(*path, *at),
+                ))
+                values = ()
+            index = len(parameters)
+            parameters.append(jnp.asarray(values, dtype=dtype))
+
+            def evaluate(inputs, _values, _slots):
+                return Evaluation(inputs.parameters[index], True)
+        elif isinstance(node, LiteralValue) or node_type.static_integer is not None:
+            if node_type.static_integer is not None:
+                value, unit = node_type.static_integer, None
+            else:
+                assert isinstance(node, LiteralValue)
+                value, unit = node.value, node.unit
             discrete_bound = discrete_uniform and len(at) == 2 and at[0] == "args"
             if discrete_bound:
-                assert period_seconds is not None
+                assert period_seconds is not None and isinstance(node, LiteralValue)
                 try:
                     value = length_steps(literal_time(node), period_seconds)
                 except ValueError as error:
                     problems.append(Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=(*path, *at)))
                     value = 0
-            elif node.unit == "st":
+            elif unit == "st":
                 if period_seconds is None:
                     problems.append(
                         Problem(
@@ -152,7 +183,7 @@ def compile_expression(
                     )
                 else:
                     value *= period_seconds
-            elif node.unit is not None and (scale := UNITS[node.unit].scale) != 1:
+            elif unit is not None and (scale := UNITS[unit].scale) != 1:
                 value *= scale
             dtype = int if discrete_bound else _DTYPES[node_type.type.base]
             if dtype is int and (int(value) != value or not -(2**31) <= value < 2**31):
@@ -214,6 +245,9 @@ def compile_expression(
                 and any(name.id == node.args[0].reference and name.list_count is not None for name in site.names)
             )
             args = tuple(visit(child, (*at, "args", i)) for i, child in enumerate(node.args))
+            sequences = tuple(isinstance(child, SequenceValue) for child in node.args)
+            if not any(sequences):
+                sequences = ()
             kwargs = {
                 name: visit(child, (*at, "kwargs", name))
                 for name, child in (
@@ -266,6 +300,7 @@ def compile_expression(
                     defined,
                     inputs.step,
                     discrete_uniform and not at,
+                    sequences,
                 )
                 if weight_index is not None:
                     named["weights"] = Evaluation(inputs.parameters[weight_index], True)
@@ -293,7 +328,7 @@ def compile_expression(
                 return Evaluation(result, valid)
 
         resolved = evaluate
-        if not isinstance(node, (LiteralValue, NameValue)) and node_type.level < Level.STEP:
+        if not isinstance(node, (LiteralValue, NameValue)) and node_type.static_integer is None and node_type.level < Level.STEP:
             phase = run_evaluators if node_type.level == Level.RUN else trial_evaluators
             phase.append((slot, evaluate))
 

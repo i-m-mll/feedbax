@@ -91,7 +91,7 @@ export type WeightEdit = { readonly kind: 'stored' } | { readonly kind: 'kept' }
 export interface TaskSetVariable {
   /** The sweep axis the Set was moved out of, which names the variable. */
   readonly axis: string;
-  readonly set: string;
+  readonly name: string;
   /** Each entry, then None where a trial may receive no entry, with its weight in parts when the trials are drawn. */
   readonly entries: readonly { readonly id: string | null; readonly label: string; readonly weight?: SetEntryWeight }[];
   /** Sets one part of an entry's weight (`side` where entries co-occur). */

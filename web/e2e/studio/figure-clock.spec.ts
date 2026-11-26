@@ -23,18 +23,18 @@ async function speedFigure(page: Page, request: APIRequestContext, home: string,
   const { snapshot } = await opened.json() as StudioProjectDocument;
   const { snapshot: seeded } = await appendManagedFiles(request, snapshot, [
     { kind: 'document', id: 'analysis', document: {
-      schema: analysisDocumentSchemaId, payload: {
+      schema: analysisDocumentSchemaId, label: 'Analysis', payload: {
         inputs: { states: { kind: 'dataset' } },
         operations: { speed: {
-          operation: 'feedbax.trial_speed', params: { velocity }, inputs: { states: { input: 'states' } },
+          label: 'Speed', operation: 'feedbax.trial_speed', params: { velocity }, inputs: { states: { input: 'states' } },
         } },
         views: { profile: {
-          figure: { template: 'feedbax.SpeedByTrial' }, inputs: { speed: { element: 'speed', product: 'speed' } },
+          label: 'Profile', figure: { template: 'feedbax.SpeedByTrial' }, inputs: { speed: { element: 'speed', product: 'speed' } },
         } },
       },
     } },
     { kind: 'step', id: 'analyze', step: {
-      kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },
+      label: 'Analyze', kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },
     } },
   ]);
   const plans = page.getByRole('table', { name: 'Runs', exact: true });

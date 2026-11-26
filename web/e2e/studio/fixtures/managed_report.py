@@ -3,7 +3,6 @@
 from copy import deepcopy
 import json
 from pathlib import Path
-import sys
 
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.project import RootDocument, Step
@@ -11,6 +10,7 @@ from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.release import AppPaths
 from feedbax.web.services.project_folder import ProjectFolderService
+from tests.support.browser_seed_actions import HomeSeed, NonSeed, print_action
 from tests.test_project_analyze_plan import _operations, _project
 
 _FIXTURES = Path(__file__).parent
@@ -76,6 +76,12 @@ def requests(home: str, project_id: str, revision: str):
     }
 
 
+ACTIONS = {
+    "seed": HomeSeed(seed),
+    "seed_labels": HomeSeed(seed_labels),
+    "requests": NonSeed(requests, "reads saved Plan identities"),
+}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed, "seed_labels": seed_labels, "requests": requests}[action](*args)))
+    print_action(ACTIONS)
