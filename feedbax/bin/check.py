@@ -1,4 +1,4 @@
-"""Verify a saved project's immutable Store without contacting the Host."""
+"""Verify a saved project's Store and advise on authored member families."""
 
 import argparse
 from pathlib import Path
@@ -21,6 +21,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace, output: CommandOutput) -> int:
+    from feedbax.bin.family_advice import unrolled_family_advice
     from feedbax.contracts.project_io import locate_text_project, read_text_project_snapshot
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.store_check import check_store
@@ -34,11 +35,15 @@ def run(args: argparse.Namespace, output: CommandOutput) -> int:
         output.failure(error, path=args.project_dir)
         return 2
 
+    if args.attempt is None and (advice := unrolled_family_advice(project.project)):
+        report = report.model_copy(update={"advice": advice})
     if output.json:
         output.response(report)
     else:
         scope = report.attempt or report.store
         output.write(f"{scope}: verified {report.verified_objects} objects, {report.verified_bytes} bytes")
+        for item in report.advice:
+            output.write(f"Advice {item.address}:{item.path} {item.detail}")
     for finding in report.findings:
         output.error(
             finding.code, finding.detail, path=finding.path, address=finding.address,

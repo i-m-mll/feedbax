@@ -10,19 +10,125 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMapProblem,
     StudioSavedTrainRuns,
 )
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     dump_text_project,
     read_text_project_snapshot,
 )
 from feedbax.contracts.studio_authoring import StudioAuthoringCatalog
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.store_check import StoreCheckResult
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.store_damage import writable_store_object
 from tests.support.host import admit, held_until_released, job_row, run_job, token, wait_until
 from tests.test_text_project_plan_cli import _edit, _write_walkthrough
+
+
+def _write_advice_project(root, documents):
+    project = Project.model_validate({"documents": documents})
+    files = dump_text_project(project, ProjectConfiguration(project="study", store="results"))
+    for name, data in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    ImmutableArtifactBlobProvider(root / "results").store_object(b"family advice check")
+
+
+def test_check_advises_on_unrolled_families_without_writing_files(tmp_path, capsys):
+    def document(schema, label, payload):
+        return {"schema": schema, "label": label, "payload": payload}
+
+    def entry(label, value, *, scale=1, target="gain"):
+        return {
+            "label": label,
+            "task_variables": {"load": {"label": "Load", "type": {"base": "real"}, "value": value}},
+            "differences": {f"/interior/components/{target}/fields/scale": {"value": scale}},
+        }
+
+    def trial(label, position, *, epoch="move"):
+        return {"label": label, "variables": {"position": position}, "epoch_steps": {epoch: 5}}
+
+    documents = {
+        "cost": document(STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "Cost", {"id": "cost", "terms": {
+            "early": {"label": "Early", "measure": "x * 2", "weight": 1},
+            "late": {"label": "Late", "measure": "x * 4"},
+            "other_signal": {"measure": "y * 6"},
+            "other_literal_type": {"measure": "x * 6.5"},
+            "other_unit": {"measure": "x * 6 s"},
+            "other_reduction": {"measure": "x * 6", "reduction": "last"},
+            "draft": {"measure": "x + "},
+            "family": {"label": "Movement", "measure": "x * k", "over": {"k": "1..10"}},
+        }}),
+        "bank": document(SET_DOCUMENT_SCHEMA_ID, "Bank", {"entries": {
+            "low": entry("Low", "2 * bias"),
+            "high": entry("High", "4 * bias"),
+            "other_target": entry("Other target", "6 * bias", target="other"),
+            "other_difference": entry("Other difference", "6 * bias", scale=2),
+            "family": entry("Gain {k}", "k * bias") | {"over": {"k": "1..10"}},
+        }}),
+        "cohort": document(STORED_TASK_DOCUMENT_SCHEMA_ID, "Cohort", {
+            "id": "cohort",
+            "variables": {"position": {"label": "Position", "type": {"base": "real", "shape": [2]}, "value": "[0, 0]"}},
+            "epochs": {name: {"label": name, "end": {"kind": "length", "length": "5 st"}}
+                       for name in ("move", "hold")},
+            "signals": {},
+            "validation_trials": {
+                "near": trial("Near", "[0, 1]"),
+                "far": trial("Far", "[3, 5]"),
+                "other_epoch": trial("Other epoch", "[4, 5]", epoch="hold"),
+                "other_shape": trial("Other shape", "[4, 5, 6]"),
+                "family": trial("Trial {k}", "[k, 0]") | {"over": {"k": "1..10"}},
+            },
+        }),
+    }
+    _write_advice_project(tmp_path, documents)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    assert main(["check", str(tmp_path), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    result = StoreCheckResult.model_validate_json(captured.out)
+    assert not result.findings and result.verified_objects == 1
+    expected = {
+        ("documents/cost.json", "/payload/terms", ("early", "late")),
+        ("documents/bank.json", "/payload/entries", ("low", "high")),
+        ("documents/cohort.json", "/payload/validation_trials", ("near", "far")),
+    }
+    assert {(item.address, item.path, item.members) for item in result.advice} == expected
+    assert all(item.count == 2 and item.code == "unrolled_member_family" for item in result.advice)
+    assert main(["check", str(tmp_path / "study.feedbax")]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert len(captured.out.splitlines()) == 4
+    for item in result.advice:
+        assert f"Advice {item.address}:{item.path} {item.detail}" in captured.out
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_check_locates_unrolled_family_created_by_a_based_difference(tmp_path, capsys):
+    schema = STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+    _write_advice_project(tmp_path, {
+        "base": {"schema": schema, "label": "Base", "payload": {
+            "id": "cost", "terms": {"first": {"measure": "x * 2"}},
+        }},
+        "second": {"schema": schema, "label": "Second", "base": {"document": "base"}, "differences": {
+            "/terms/second": {"value": {"measure": "x * 4"}},
+        }},
+        "copy": {"schema": schema, "label": "Copy", "base": {"document": "second"}},
+    })
+
+    assert main(["check", str(tmp_path), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    (item,) = StoreCheckResult.model_validate_json(captured.out).advice
+    assert (item.address, item.path, item.members, item.count) == (
+        "documents/second.json", "/differences/~1terms~1second", ("first", "second"), 2,
+    )
 
 
 def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, monkeypatch, capsys):
