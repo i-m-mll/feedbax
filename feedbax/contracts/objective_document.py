@@ -4,6 +4,7 @@ from enum import StrEnum
 
 from pydantic import Field
 
+from feedbax.contracts.expression_storage import StoredExpression, lower_expression, store_expression
 from feedbax.contracts.expression_values import (
     Expression,
     LiteralValue,
@@ -12,7 +13,7 @@ from feedbax.contracts.expression_values import (
     ValueType,
 )
 from feedbax.contracts.stored_members import StoredMembers, keyed_members, project_member
-from feedbax.contracts.window import Window
+from feedbax.contracts.window import StoredWindow, Window
 
 
 OBJECTIVE_DOCUMENT_SCHEMA_ID = "feedbax.spec.objective_document"
@@ -26,12 +27,12 @@ class Reduction(StrEnum):
     MAX = "max"
 
 
-class _TermFields(ValueRecord):
-    measure: Expression
+class _TermFields[ExpressionT, WindowT](ValueRecord):
+    measure: ExpressionT
     measure_type: ValueType = ValueType(base=ValueBase.REAL)
-    weight: Expression = LiteralValue(value=1)
+    weight: ExpressionT
     reduction: Reduction = Reduction.MEAN
-    window: Window | None = None
+    window: WindowT | None = None
     enabled: bool = True
 
 
@@ -39,12 +40,31 @@ class _TermIdentity(ValueRecord):
     id: str
 
 
-class ObjectiveTerm(_TermFields, _TermIdentity):
+class ObjectiveTerm(_TermFields[Expression, Window], _TermIdentity):
+    weight: Expression = LiteralValue(value=1)
     name: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
 
 
-class StoredObjectiveTerm(_TermFields):
+class StoredObjectiveTerm(_TermFields[StoredExpression, StoredWindow]):
+    weight: StoredExpression = Field(default=1, validate_default=True)
     label: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
+
+    def lower(self, key: str) -> ObjectiveTerm:
+        term = project_member(self, ObjectiveTerm, {
+            "measure": lower_expression,
+            "window": lambda window: window.lower() if window is not None else None,
+        }, id=key, name=self.label, weight=lower_expression(self.weight))
+        if "weight" not in self.model_fields_set:
+            term.model_fields_set.discard("weight")
+        return term
+
+    @classmethod
+    def from_lowered(cls, term: ObjectiveTerm) -> "StoredObjectiveTerm":
+        return project_member(term, cls, {
+            "measure": store_expression,
+            "weight": store_expression,
+            "window": lambda window: StoredWindow.from_lowered(window) if window is not None else None,
+        }, label=term.name)
 
 
 class ObjectiveDocument(ValueRecord):
@@ -60,15 +80,11 @@ class StoredObjectiveDocument(ValueRecord):
 
     def lower(self) -> ObjectiveDocument:
         return project_member(self, ObjectiveDocument, {
-            "terms": lambda terms: tuple(
-                project_member(term, ObjectiveTerm, id=key, name=term.label) for key, term in terms.items()
-            ),
+            "terms": lambda terms: tuple(term.lower(key) for key, term in terms.items()),
         })
 
     @classmethod
     def from_lowered(cls, objective: ObjectiveDocument) -> "StoredObjectiveDocument":
         return project_member(objective, cls, {
-            "terms": lambda terms: keyed_members(
-                (term.id, project_member(term, StoredObjectiveTerm, label=term.name)) for term in terms
-            ),
+            "terms": lambda terms: keyed_members((term.id, StoredObjectiveTerm.from_lowered(term)) for term in terms),
         })
