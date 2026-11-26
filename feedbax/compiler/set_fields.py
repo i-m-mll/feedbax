@@ -32,7 +32,7 @@ from feedbax.contracts.model_document import (
 )
 from feedbax.contracts.project import Document, SetDocumentValue, apply_differences, json_pointer_parts
 from feedbax.contracts.project_sweep import (
-    DEFAULT_SWEEP_ROW, CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField,
+    DEFAULT_SWEEP_ROW, CooccurringSetTrials, ListedSetTrials, SetTrialSampling, TrialSetField,
 )
 from feedbax.contracts.request_refs import axis_values_id
 from feedbax.contracts.set_document import SetEntry, read_set
@@ -383,21 +383,18 @@ class _Union:
             if not isinstance(sample, ListedSetTrials) and sample.weights.keys() - (entries.keys() | set(sources.values())):
                 raise ValueError("Set sampling names an entry that the Set no longer has.")
 
-            def parts(entry, default):
-                return sample.weights.get(entry, sample.weights.get(sources[entry], default))
-
             if isinstance(sample, ListedSetTrials):
                 weights = (1.0,) * len(by_id)
                 choices = tuple(range(1, len(by_id) + 1))
             elif isinstance(sample, CooccurringSetTrials):
                 weights, choices = (), ()
             else:
-                weights = (sample.none, *(parts(entry, 1.0) for entry in by_id))
+                weights = (sample.weight_for(None), *(sample.weight_for(entry, family=sources[entry]) for entry in by_id))
                 choices = tuple(range(len(by_id) + 1))
             if isinstance(sample, CooccurringSetTrials):
                 gates = []
                 for entry in by_id:
-                    weight = parts(entry, SetEntryParts())
+                    weight = sample.weight_for(entry, family=sources[entry])
                     if not (weight.off or weight.on):
                         raise SetFieldProblem(axis, placement.axis.set, sources[entry], "The switch has zero total parts.")
                     draw = DrawValue(

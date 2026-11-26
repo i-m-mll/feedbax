@@ -8,27 +8,27 @@ from feedbax.contracts.project import Project, diff
 from feedbax.planner.project_plan import ProjectPlanMemo, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_refs import LastMember
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
-# Request identities for the shipped point-mass fixture, with registered Model defaults filled
-# and Task member keys used for scientific names.
+# Request identities for the shipped point-mass fixture, with Model defaults filled and keyed Task trials.
 # These witnesses hold the same changes expressed on the Evaluate step or in its Model and Task documents.
-FEE = "train:59e1fe5c6423e06f371aa8c253b856c44660d23cf6eedd438e11e4dcbfa619d0"
-DEFAULT = "evaluate:5346ca90011c79121c10220c7f4b5bacebbcaedc257ce7553f66b562d4d3a05a"
-FIELD_CHANGED = "evaluate:fb4761b410be641046b212c8d1b740e6a1a5f2e72429fe06e25d8c1d103d80eb"
-ATTACHMENT_ADDED = "evaluate:ed7265998849c72f78200755520fa86300373a10ba95bb2a9a7d34f8a7f364a2"
+FEE = "train:52d8987cbf9cea9e6706ab37025a8b6d00c1063bd6f73cef8ba46ba0d1f6feec"
+DEFAULT = "evaluate:514c6ccf4b7b76dd3af60b5ed619de36ead2e541e865c933a4597778b5388694"
+FIELD_CHANGED = "evaluate:86580f29b2edcad563ddcdf7af55bd40ee65f0a175b433cb1062137283822774"
+ATTACHMENT_ADDED = "evaluate:4957f6e7585d7c1a725c6ac7e2ce5f84b62f21d9fb750e78402d80859cad7805"
 # The replacement Task now pairs target_pos by stable ID without a generated override.
-FEWER_CONDITIONS = "evaluate:46759412c10b4cbb04ea5da508803900346975a52657cc48ba283a636a4a3131"
+FEWER_CONDITIONS = "evaluate:6bff30ca35c87f7a9c4db2dccc3875a42dc5500005c0c4ead5b6d72d0c5f371d"
 SWEPT_PUSHED = (
     ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
-     "evaluate:12d2be2115ac1a2d21ca9a40a2b58a16bb9c89d9d4397147831ba83a7884b7b1"),
+     "evaluate:489ba0f6bb0478121871baab6c167d474ac28e35dc70474630ac94b9dece99eb"),
     ("trained==abb0ffe5124ac74b8d431462660c668b987dd969c5bf76fc07a20894a2b46eea",
-     "evaluate:94ab00ba6d0054e0ef0f7d34a6d99cbf859832606fa6dec890fd23e06b5a1501"),
+     "evaluate:337ed9ae58ac63a634efda4cd1a0f5c0307aa8b78636602e6975fc617038ce0e"),
 )
 NEAREST_SHARED = {
-    "fee": "train:84ca15c615742301ef78a87a36d436cac370e2ae19f73de24538913b2a66ce7c",
+    "fee": "train:f917ec7c972f5c6905bb219c09b774bc7cf919de5cd19b0a9e6654c16ddf20bc",
     "other": FEE,
-    "check": "evaluate:f2103a2158cda042344b398de22849598763ac5372b85a12d44a15eecc5f67d3",
+    "check": "evaluate:18ba9ba2989d3cc138878c9c0d96605512ad2b16fc769681cfd8ff908fd056ae",
 }
 UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
@@ -136,11 +136,25 @@ def test_an_evaluation_keeps_its_subjects_swept_value_under_its_documents_change
     _reads(data, "check", "model", "model-2")
     plan = _plan(data)
     assert tuple(sorted((run.key.row, run.request_id) for run in plan.runs if run.kind == "evaluate")) == SWEPT_PUSHED
-    trained = {run.request_id for run in plan.runs if run.kind == "train"}
+    trained = {
+        run.request_id: decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        for run in plan.runs if run.kind == "train"
+    }
+    measured = set()
     for run in (run for run in plan.runs if run.kind == "evaluate"):
-        spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-        assert run.inputs["subject"].member.reference.request_id in trained
-        assert all("mass" not in edit["path"] for edit in spec.params["variation"])
+        request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
+        (subject,) = request.inputs["subject"]
+        checkpoint = subject.reference
+        assert checkpoint.role == "checkpoint" and checkpoint.select == LastMember(kind="last")
+        paired = trained[checkpoint.request_id].trial_documents
+        measured.add(paired.model.interior.components["plant"].fields["mass"])
+        assert request.spec.params["trials"] == list(paired.task.condition_ids)
+        variation = request.spec.params["variation"]
+        assert all("mass" not in edit["path"] for edit in variation)
+        (push,) = [edit for edit in variation if edit["path"].startswith("graph.nodes.")]
+        assert push["op"] == "add" and push["value"]["type"] == "feedbax.Scale"
+        assert push["value"]["params"] == {"fixed": True, "scale": 0.5}
+    assert measured == {1.5, 3.0}
 
 
 def test_evaluate_ungroup_eligibility_reads_the_selected_axis_model(tmp_path):
@@ -238,7 +252,11 @@ def test_a_task_document_replaces_the_subjects_task_unless_it_holds_the_same_con
 
     shorter = data["documents"]["task-2"]["payload"]
     shorter["validation_trials"].popitem()
-    assert _ids(data) == {"fee": FEE, "check": FEWER_CONDITIONS}
+    plan = _plan(data)
+    assert {run.key.step: run.request_id for run in plan.runs} == {"fee": FEE, "check": FEWER_CONDITIONS}
+    request = decode_request(plan.requests[FEWER_CONDITIONS], plan.documents.__getitem__)
+    assert request.inputs["subject"][0].reference.request_id == FEE
+    assert request.spec.params["trials"] == list(shorter["validation_trials"])
 
     shorter["validation_trials"] = deepcopy(data["documents"][TASK]["payload"]["validation_trials"])
     del shorter["signals"]["target_pos"]

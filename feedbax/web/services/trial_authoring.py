@@ -58,7 +58,7 @@ from feedbax.studio.authoring import training_document_choice
 from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
-    StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
+    StudioObjectiveTermValues, StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
     StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialEpochInstance,
     StudioTrialExpressionEdit, StudioTrialField,
     StudioTrialInput, StudioTrialObjectiveSource, StudioTrialObjectiveTermAdd,
@@ -2136,6 +2136,10 @@ def trial_authoring(
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=objective_document,
         task=stored_task, objective=stored_objective, objective_source=objective_source,
+        objective_term_values={
+            key: StudioObjectiveTermValues(enabled=term.enabled, reduction=term.reduction)
+            for key, term in (stored_objective.terms.items() if stored_objective is not None else ())
+        },
         families=projected.family_editor.families,
         task_changed=changed_from_base(project, _whole_document(definition, task_path) if task_path else None),
         objective_changed=changed_from_base(project, _whole_document(

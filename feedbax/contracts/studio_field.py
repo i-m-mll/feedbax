@@ -2,13 +2,15 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_registry import FunctionClass, FunctionParameter
 from feedbax.contracts.expression_site import ExpressionPartSite, FieldKind
 from feedbax.contracts.expression_values import (
-    FieldValue, Level, Problem, SetVariableOrigin, SignalSpace, UnresolvedValue, ValueBase, ValueType,
+    CallValue, DrawCadence, DrawValue, Level, LiteralValue, NameValue, Problem, SequenceValue, SetVariableOrigin,
+    SignalSpace, SweepList, SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.model_address import ModelAddress
@@ -71,10 +73,16 @@ class StudioSweepList(StrictModel):
     editable: bool
 
 
+class StudioSweepRangeRule(RangeValues):
+    """A rule as the field reads it, including the effective scale."""
+
+    scale: Literal["linear", "log"] = Field()
+
+
 class StudioSweepRange(StrictModel):
     kind: Literal["range"]
     id: ProjectName
-    rule: RangeValues
+    rule: StudioSweepRangeRule
     can_list: bool
 
 
@@ -93,12 +101,29 @@ class StudioDensity(StrictModel):
     values: list[float]
 
 
+class StudioDrawValue(DrawValue):
+    per: DrawCadence
+
+
+type StudioStructuredValue = Annotated[
+    LiteralValue | NameValue | CallValue | StudioDrawValue | SequenceValue | UnresolvedValue | SweepList | SweepSample,
+    Field(discriminator="kind"),
+]
+
+
 class StudioValueStructure(StrictModel):
     """The value a field's text reads as, with the text of each positional argument of its root."""
 
-    value: FieldValue
+    value: StudioStructuredValue
     arguments: list[str] = Field(default_factory=list)
     density: StudioDensity | None = None
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _studio_draw(cls, value):
+        if isinstance(value, DrawValue):
+            return StudioDrawValue.model_validate(value, from_attributes=True)
+        return value
 
 
 class StudioFieldFunction(StrictModel):
@@ -136,6 +161,8 @@ class StudioFieldSite(StrictModel):
     list_count: int | None = None
     repeat_count: int | None = None
     kinds: tuple[FieldKind, ...]
+    draw_per: DrawCadence | SkipJsonSchema[None] = Field(default=None, exclude_if=lambda value: value is None)
+    """Initial cadence for a new Draw where the site offers Draw."""
     functions: str
     """Key in this response's function lists."""
     parts: tuple[ExpressionPartSite, ...]

@@ -26,8 +26,8 @@
           "seed": 731,
           "trial_policy": "paired",
           "trials": [
-            "{\"catch\":false,\"start\":[-0.10000002384185791,-0.050000011920928955],\"target\":[0.3999999761581421,-0.050000011920928955]}",
-            "{\"catch\":false,\"start\":[-0.10000002384185791,-0.050000011920928955],\"target\":[0.2117448770875089,0.34091572931308595]}"
+            "trial-1",
+            "trial-2"
           ],
           "variation": [],
           "input_bindings": {
@@ -70,7 +70,7 @@
           }
         ]
       },
-      "id": "evaluate:a7117988d618be39535bc83729470dbeb54524df5098ad5a3f14afc576edf9f9"
+      "id": "evaluate:e80275df6498f8a5ed73fd06beb679c93adcf1d7b7faa2ca60c59952623a4b91"
     },
     {
       "kind": "analyze",

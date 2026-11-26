@@ -1250,7 +1250,7 @@ export interface StudioSweepList {
 export interface StudioSweepRange {
   kind: "range";
   id: string;
-  rule: RangeValues;
+  rule: StudioSweepRangeRule;
   can_list: boolean;
 }
 
@@ -3150,11 +3150,13 @@ export type DocumentReference = {
   "unresolved"?: true | null;
 };
 
+export type DrawCadence = "run" | "trial";
+
 export type DrawValue = {
   "kind"?: "draw";
   "family": string;
   "args": Array<Expression>;
-  "per"?: "run" | "trial";
+  "per"?: DrawCadence;
   "weights"?: Array<WeightPart> | null;
 };
 
@@ -4667,6 +4669,7 @@ export type StudioAnalyzeAuthoring = {
   "variables": Record<string, Record<string, Array<string>>>;
   "variable_names"?: Record<string, string>;
   "figure": StoredFigureDocument;
+  "figure_values": Record<string, StudioAnalyzeFigureValues>;
   "created_layer"?: StoredMemberKey | null;
   "changed"?: Array<Pointer>;
   "files"?: Array<StudioProjectFilePatch>;
@@ -4679,6 +4682,11 @@ export type StudioAnalyzeChange = StudioAnalyzeWire | StudioAnalyzeEdit | Studio
 export type StudioAnalyzeEdit = {
   "kind": "edit";
   "edits": Array<DocumentEdit>;
+};
+
+export type StudioAnalyzeFigureValues = {
+  "layers": Record<string, StudioFigureLayerValues>;
+  "color_scales": Record<string, StudioFigureColorScaleValues>;
 };
 
 export type StudioAnalyzeRemove = {
@@ -4900,6 +4908,14 @@ export type StudioDensity = {
   "values": Array<number>;
 };
 
+export type StudioDrawValue = {
+  "kind"?: "draw";
+  "family": string;
+  "args": Array<Expression>;
+  "per": DrawCadence;
+  "weights"?: Array<WeightPart> | null;
+};
+
 export type StudioEvaluateStep = {
   "kind": "evaluate";
   "label": string;
@@ -4985,9 +5001,20 @@ export type StudioFieldSite = {
   "list_count"?: number | null;
   "repeat_count"?: number | null;
   "kinds": Array<FieldKind>;
+  "draw_per"?: DrawCadence;
   "functions": string;
   "parts": Array<ExpressionPartSite>;
   "name_paths"?: Record<string, Array<string>>;
+};
+
+export type StudioFigureColorScaleValues = {
+  "legend": boolean;
+  "palette": "viridis" | "cividis" | "plasma" | "turbo" | "category10" | "plotly" | "dark24";
+};
+
+export type StudioFigureLayerValues = {
+  "name": string;
+  "fill_alpha"?: number | null;
 };
 
 export type StudioInputPlace = {
@@ -5105,6 +5132,11 @@ export type StudioObjectiveTerm = {
   "window"?: Window | null;
   "enabled"?: boolean;
   "label"?: string | null;
+};
+
+export type StudioObjectiveTermValues = {
+  "enabled": boolean;
+  "reduction": Reduction;
 };
 
 export type StudioOperationDatasetPage = {
@@ -5227,6 +5259,7 @@ export type StudioProjectSnapshot = {
   "settings"?: Record<string, JsonValue>;
   "default_keep_superseded_days"?: number | null;
   "composed"?: Record<string, JsonValue>;
+  "report_values": Record<string, StudioReportValues>;
   "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
@@ -5430,6 +5463,10 @@ export type StudioReportStep = {
   "group"?: string | null;
 };
 
+export type StudioReportValues = {
+  "completeness": "complete" | "allow_omissions";
+};
+
 export type StudioRunRuleCheck = {
   "total": number;
   "metric_names"?: Array<string>;
@@ -5497,6 +5534,11 @@ export type StudioSetEditRequest = {
   "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | SetFieldWeight | RemoveAxisValue | AddSetEntry | SetEntryTask;
 };
 
+export type StudioSetEntryParts = {
+  "on": WeightPart;
+  "off": WeightPart;
+};
+
 export type StudioSetField = {
   "axis": string;
   "set": string;
@@ -5510,7 +5552,7 @@ export type StudioSetFieldEntry = {
   "combination"?: "cross" | "zip";
   "entry": string | null;
   "label"?: string | null;
-  "weight"?: WeightPart | SetEntryParts | null;
+  "weight": WeightPart | StudioSetEntryParts | null;
   "member_count"?: number | null;
 };
 
@@ -5541,6 +5583,8 @@ export type StudioStoreChoice = {
   "runs": Array<StudioSavedTrainKey>;
 };
 
+export type StudioStructuredValue = LiteralValue | NameValue | CallValue | StudioDrawValue | SequenceValue | UnresolvedValue | SweepList | SweepSample;
+
 export type StudioSubsetToRowsEdit = {
   "revision": string;
   "files": Array<StudioProjectFilePatch>;
@@ -5552,6 +5596,13 @@ export type StudioSubsetToRowsRequest = {
   "step": string;
   "input": string;
   "attempts": Array<string>;
+};
+
+export type StudioSweepRangeRule = {
+  "start": number;
+  "stop": number;
+  "count": number;
+  "scale": "linear" | "log";
 };
 
 export type StudioSynthesizeStep = {
@@ -5671,6 +5722,7 @@ export type StudioTrialAuthoring = {
   "task_changed"?: Array<Pointer>;
   "objective_changed"?: Array<Pointer>;
   "objective": StoredObjectiveDocument | null;
+  "objective_term_values": Record<string, StudioObjectiveTermValues>;
   "objective_source"?: StudioTrialObjectiveSource | null;
   "set_fields"?: Array<StudioSetField>;
   "task_types": Array<StudioTaskType>;
@@ -5831,7 +5883,7 @@ export type StudioTrialUnresolvedLink = {
 };
 
 export type StudioValueStructure = {
-  "value": FieldValue;
+  "value": StudioStructuredValue;
   "arguments"?: Array<string>;
   "density"?: StudioDensity | null;
 };
@@ -8676,7 +8728,7 @@ export const StudioSweepRangeSchema: z.ZodType<StudioSweepRange> = z.lazy(() =>
     .object({
       "kind": z.literal("range"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "rule": RangeValuesSchema,
+      "rule": StudioSweepRangeRuleSchema,
       "can_list": z.boolean(),
     })
     .strict()
@@ -11821,12 +11873,16 @@ export const DocumentReferenceSchema: z.ZodType<DocumentReference> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<DocumentReference>;
 
+export const DrawCadenceSchema: z.ZodType<DrawCadence> = z.lazy(() =>
+  z.union([z.literal("run"), z.literal("trial")])
+) as unknown as z.ZodType<DrawCadence>;
+
 export const DrawValueSchema: z.ZodType<DrawValue> = z.lazy(() =>
   z.object({
     "kind": z.literal("draw").optional(),
     "family": z.string(),
     "args": z.array(ExpressionSchema),
-    "per": z.union([z.literal("run"), z.literal("trial")]).optional(),
+    "per": DrawCadenceSchema.optional(),
     "weights": z.union([z.array(WeightPartSchema), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DrawValue>;
@@ -13889,6 +13945,7 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
     "variable_names": z.record(z.string(), z.string()).optional(),
     "figure": StoredFigureDocumentSchema,
+    "figure_values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), StudioAnalyzeFigureValuesSchema),
     "created_layer": z.union([StoredMemberKeySchema, z.null()]).optional(),
     "changed": z.array(PointerSchema).optional(),
     "files": z.array(StudioProjectFilePatchSchema).optional(),
@@ -13907,6 +13964,13 @@ export const StudioAnalyzeEditSchema: z.ZodType<StudioAnalyzeEdit> = z.lazy(() =
     "edits": z.array(DocumentEditSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeEdit>;
+
+export const StudioAnalyzeFigureValuesSchema: z.ZodType<StudioAnalyzeFigureValues> = z.lazy(() =>
+  z.object({
+    "layers": z.record(StoredMemberKeySchema, StudioFigureLayerValuesSchema),
+    "color_scales": z.record(NameSchema, StudioFigureColorScaleValuesSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeFigureValues>;
 
 export const StudioAnalyzeRemoveSchema: z.ZodType<StudioAnalyzeRemove> = z.lazy(() =>
   z.object({
@@ -14195,6 +14259,16 @@ export const StudioDensitySchema: z.ZodType<StudioDensity> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioDensity>;
 
+export const StudioDrawValueSchema: z.ZodType<StudioDrawValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("draw").optional(),
+    "family": z.string(),
+    "args": z.array(ExpressionSchema),
+    "per": DrawCadenceSchema,
+    "weights": z.union([z.array(WeightPartSchema), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioDrawValue>;
+
 export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("evaluate"),
@@ -14301,11 +14375,26 @@ export const StudioFieldSiteSchema: z.ZodType<StudioFieldSite> = z.lazy(() =>
     "list_count": z.union([z.number().int().safe(), z.null()]).optional(),
     "repeat_count": z.union([z.number().int().safe(), z.null()]).optional(),
     "kinds": z.array(FieldKindSchema),
+    "draw_per": DrawCadenceSchema.optional(),
     "functions": z.string(),
     "parts": z.array(ExpressionPartSiteSchema),
     "name_paths": z.record(z.string(), z.array(z.string())).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioFieldSite>;
+
+export const StudioFigureColorScaleValuesSchema: z.ZodType<StudioFigureColorScaleValues> = z.lazy(() =>
+  z.object({
+    "legend": z.boolean(),
+    "palette": z.union([z.union([z.literal("viridis"), z.literal("cividis"), z.literal("plasma"), z.literal("turbo")]), z.union([z.literal("category10"), z.literal("plotly"), z.literal("dark24")])]),
+  }).strict()
+) as unknown as z.ZodType<StudioFigureColorScaleValues>;
+
+export const StudioFigureLayerValuesSchema: z.ZodType<StudioFigureLayerValues> = z.lazy(() =>
+  z.object({
+    "name": z.string().min(1),
+    "fill_alpha": z.union([z.number().finite(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioFigureLayerValues>;
 
 export const StudioInputPlaceSchema: z.ZodType<StudioInputPlace> = z.lazy(() =>
   z.object({
@@ -14463,6 +14552,13 @@ export const StudioObjectiveTermSchema: z.ZodType<StudioObjectiveTerm> = z.lazy(
     "label": z.union([z.string().min(1), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioObjectiveTerm>;
+
+export const StudioObjectiveTermValuesSchema: z.ZodType<StudioObjectiveTermValues> = z.lazy(() =>
+  z.object({
+    "enabled": z.boolean(),
+    "reduction": ReductionSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioObjectiveTermValues>;
 
 export const StudioOperationDatasetPageSchema: z.ZodType<StudioOperationDatasetPage> = z.lazy(() =>
   z.object({
@@ -14623,6 +14719,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "settings": z.record(z.string(), jsonValueSchema).optional(),
     "default_keep_superseded_days": z.union([z.number().int().safe().min(0), z.null()]).optional(),
     "composed": z.record(z.string(), jsonValueSchema).optional(),
+    "report_values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), StudioReportValuesSchema),
     "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
@@ -14873,6 +14970,12 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioReportStep>;
 
+export const StudioReportValuesSchema: z.ZodType<StudioReportValues> = z.lazy(() =>
+  z.object({
+    "completeness": z.union([z.literal("complete"), z.literal("allow_omissions")]),
+  }).strict()
+) as unknown as z.ZodType<StudioReportValues>;
+
 export const StudioRunRuleCheckSchema: z.ZodType<StudioRunRuleCheck> = z.lazy(() =>
   z.object({
     "total": z.number().int().safe(),
@@ -14958,6 +15061,13 @@ export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.laz
   }).strict()
 ) as unknown as z.ZodType<StudioSetEditRequest>;
 
+export const StudioSetEntryPartsSchema: z.ZodType<StudioSetEntryParts> = z.lazy(() =>
+  z.object({
+    "on": WeightPartSchema,
+    "off": WeightPartSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioSetEntryParts>;
+
 export const StudioSetFieldSchema: z.ZodType<StudioSetField> = z.lazy(() =>
   z.object({
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -14974,7 +15084,7 @@ export const StudioSetFieldEntrySchema: z.ZodType<StudioSetFieldEntry> = z.lazy(
     "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
     "entry": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "label": z.union([z.string(), z.null()]).optional(),
-    "weight": z.union([WeightPartSchema, SetEntryPartsSchema, z.null()]).optional(),
+    "weight": z.union([WeightPartSchema, StudioSetEntryPartsSchema, z.null()]),
     "member_count": z.union([z.number().int().safe(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSetFieldEntry>;
@@ -15016,6 +15126,10 @@ export const StudioStoreChoiceSchema: z.ZodType<StudioStoreChoice> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<StudioStoreChoice>;
 
+export const StudioStructuredValueSchema: z.ZodType<StudioStructuredValue> = z.lazy(() =>
+  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, StudioDrawValueSchema, SequenceValueSchema, UnresolvedValueSchema, SweepListSchema, SweepSampleSchema])
+) as unknown as z.ZodType<StudioStructuredValue>;
+
 export const StudioSubsetToRowsEditSchema: z.ZodType<StudioSubsetToRowsEdit> = z.lazy(() =>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
@@ -15032,6 +15146,15 @@ export const StudioSubsetToRowsRequestSchema: z.ZodType<StudioSubsetToRowsReques
     "attempts": z.array(z.string()).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioSubsetToRowsRequest>;
+
+export const StudioSweepRangeRuleSchema: z.ZodType<StudioSweepRangeRule> = z.lazy(() =>
+  z.object({
+    "start": z.union([z.number().int().safe(), z.number().finite()]),
+    "stop": z.union([z.number().int().safe(), z.number().finite()]),
+    "count": z.number().int().safe().min(1),
+    "scale": z.union([z.literal("linear"), z.literal("log")]),
+  }).strict()
+) as unknown as z.ZodType<StudioSweepRangeRule>;
 
 export const StudioSynthesizeStepSchema: z.ZodType<StudioSynthesizeStep> = z.lazy(() =>
   z.object({
@@ -15175,6 +15298,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "task_changed": z.array(PointerSchema).optional(),
     "objective_changed": z.array(PointerSchema).optional(),
     "objective": z.union([StoredObjectiveDocumentSchema, z.null()]),
+    "objective_term_values": z.record(z.string(), StudioObjectiveTermValuesSchema),
     "objective_source": z.union([StudioTrialObjectiveSourceSchema, z.null()]).optional(),
     "set_fields": z.array(StudioSetFieldSchema).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
@@ -15375,7 +15499,7 @@ export const StudioTrialUnresolvedLinkSchema: z.ZodType<StudioTrialUnresolvedLin
 
 export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.lazy(() =>
   z.object({
-    "value": FieldValueSchema,
+    "value": StudioStructuredValueSchema,
     "arguments": z.array(z.string()).optional(),
     "density": z.union([StudioDensitySchema, z.null()]).optional(),
   }).strict()

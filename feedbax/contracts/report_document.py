@@ -10,6 +10,10 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 
 
+REPORT_DOCUMENT_SCHEMA_ID = "feedbax.report_document.v1"
+ReportCompleteness = Literal["complete", "allow_omissions"]
+
+
 class ReportText(StrictModel):
     markdown: StrictStr
 
@@ -29,10 +33,10 @@ class ReportFigure(StrictModel):
 class ReportDocument(StrictModel):
     """A report's order and captions, independent of product custody."""
 
-    schema_version: Literal["feedbax.report_document.v1"] = "feedbax.report_document.v1"
+    schema_version: Literal["feedbax.report_document.v1"] = REPORT_DOCUMENT_SCHEMA_ID
     title: NonemptyText
     blocks: tuple[ReportText | ReportFigure, ...]
-    completeness: Literal["complete", "allow_omissions"] = "complete"
+    completeness: ReportCompleteness = "complete"
 
     @property
     def figure_roles(self) -> tuple[str, ...]:

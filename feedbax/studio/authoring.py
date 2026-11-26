@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin, overload
@@ -338,7 +338,7 @@ def _effective(payload: dict[str, JsonValue], registry: TrainingMethodRegistry) 
     return effective
 
 
-def _differences(values: list[JsonValue], at: _Path = ()) -> set[str]:
+def _differences(values: Sequence[JsonValue], at: _Path = ()) -> set[str]:
     """Pointers below ``at`` where ``values`` differ: each differing leaf, and each entry some of them lack."""
     if all(value == values[0] for value in values):
         return set()
@@ -399,8 +399,8 @@ class _StepFields:
     """A Train or Evaluate step's own fields as the selected runs have them.
 
     ``current`` is the definition a write is made against, the step's own when absent. ``selected`` are the selected
-    runs' definitions and ``shown`` the one fields are drawn from; a class-valued field draws the parameters every
-    selected run's class has.
+    runs' effective definitions and ``shown`` the effective definition fields are drawn from. A class-valued field
+    draws the parameters every selected run's class has.
     """
 
     def __init__(
@@ -439,8 +439,12 @@ class _StepFields:
         # The definition as the step's runs read it: each named document it refers to read in place.
         self.payload = resolved.payload if isinstance(resolved, ResolvedStep) else self.authored
         self.current = self.payload if current is None else current
-        self.shown = shown if shown is not None else selected[0] if selected else self.payload
-        self.selected = selected or (self.shown,)
+        self.selected = tuple(self.effective(payload) for payload in selected)
+        self.shown = (
+            self.effective(shown) if shown is not None else self.selected[0] if self.selected else self.effective(self.payload)
+        )
+        if not self.selected:
+            self.selected = (self.shown,)
         self.runs = runs
         self.sources = (resolved.sources or {}) if isinstance(resolved, ResolvedStep) else {}
         self.fields: dict[str, _Field] = {}
@@ -457,7 +461,16 @@ class _StepFields:
         """Replace the value at ``path`` with ``model``'s."""
         current = _get(self.current, path)
         value = replacement(model, current)
-        return _changes(path, current, value) if isinstance(current, dict) else [self.set(path, value)]
+        return _changes(path, current, value) if isinstance(current, dict) else [self.set_setting(path, value)]
+
+    def set_setting(self, path: _Path, value: JsonValue) -> OverridePatch:
+        """Write through the first omitted setting, retaining its other effective values."""
+        for length in range(2, len(path)):
+            parent = path[:length]
+            if _get(self.current, parent) is None:
+                default = _get(self.effective(self.current), parent)
+                return self.set(parent, _set_in(default, path[length:], value))
+        return self.set(path, value)
 
     def field_label(self, path: _Path) -> str:
         field = self.fields.get(pointer(path))
@@ -812,7 +825,7 @@ def project_train_fields(
     definition = _StepFields(project, step_id, registry, selection.current, selected=payloads, runs=selection.coordinates)
     definition.own(read_plan)
     settings = definition.shown.get("settings")
-    mixed = _differences([definition.effective(payload) for payload in payloads]) if payloads else set()
+    mixed = _differences(definition.selected)
     stored = StoredEdit([])
     removed: dict[str, list[str]] = {}
     documents: set[str] = set()
@@ -934,26 +947,27 @@ def _settings_edit(definition: _StepFields, change: StudioAuthoringChange) -> _E
     missing = ValueError(f"Train step {definition.step_id!r} has no field {change.field!r}")
     if len(path) < 2 or path[0] != "settings" or method is None or not isinstance(settings, dict):
         raise missing
-    owner = _class_at(method.settings_model, settings, path[1:-1])
+    effective = definition.effective(definition.current).get("settings")
+    owner = _class_at(method.settings_model, effective, path[1:-1])
     if owner is None or path[-1] not in owner.model_fields:
         raise missing
-    choice = _class_choice_at(method.settings_model, settings, path[1:])
+    choice = _class_choice_at(method.settings_model, effective, path[1:])
     if choice is not None:
         below, tag, members = choice
         chosen = next((member for key, member in members.items() if key == change.value), None)
         if chosen is None:
             raise ValueError(f"{definition.field_label(('settings', *below))} has no class {change.value!r}")
-        if _get(settings, (*below, tag)) == change.value:
+        if _get(effective, (*below, tag)) == change.value:
             return []
         swept = definition.classes.get(pointer(("settings", *below)))
         if swept is not None and swept.covered:
             raise ValueError(f"{swept.label} is swept; its classes are the sweep's members")
         edit = definition.choose_class(("settings", *below), chosen)
     else:
-        parent = _get(settings, path[1:-1])
+        parent = _get(effective, path[1:-1])
         if isinstance(parent, dict) and parent.get(path[-1], _MISSING) == change.value:
             return []
-        edit = [definition.set(path, change.value)]
+        edit = [definition.set_setting(path, change.value)]
     if isinstance(edit, list):
         before = {_error_key(error) for error in _setting_errors(method.settings_model, settings)}
         edited = apply_override_patches({"settings": settings}, edit)["settings"]
@@ -990,7 +1004,7 @@ def project_numeric_fields(
         project, step_id, registry, shown=selection.current, selected=selection.payloads, runs=selection.coordinates,
     )
     definition.own(read_plan)
-    effective = [definition.effective(payload) for payload in selection.payloads]
+    effective = definition.selected if selection.payloads else ()
     defaulted = definition.effective(definition.payload)
     selected = (
         SelectedValues(selection.values, selection.current, selection.authored_additions)

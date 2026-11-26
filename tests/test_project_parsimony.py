@@ -33,6 +33,7 @@ from feedbax.contracts.project_storage import (
 )
 from feedbax.contracts.project_sweep import AxisValue, NamedAxis, Row, Sweep, SweepException
 from feedbax.contracts.rollout import ROLLOUT_TYPE
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.stored_regions import StoredRegion, step_inline_model, typed_region
 from feedbax.contracts.studio_project import PresentationDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
@@ -281,6 +282,34 @@ def test_each_inline_step_has_a_parsimonious_file(tmp_path, kind):
     assert kind in _STEP_FIXTURES, f"Register an inline step harness fixture for {kind}."
     step = Step.model_validate({"kind": kind, "label": kind.title(), "base": {"inline": _STEP_FIXTURES[kind]}})
     _verify_parsimony(tmp_path, Project(steps={kind: step}))
+
+
+@pytest.mark.parametrize("sequence", ["0..{last}", "linspace(1, 2, {count})", "geomspace(1, 2, {count})"])
+@pytest.mark.parametrize(("schema", "payload", "path", "expression"), [
+    pytest.param(STORED_TASK_DOCUMENT_SCHEMA_ID, _TASK | {"variables": {"sample": {
+        "label": "Sample", "type": {"base": "real"}, "value": None,
+    }}}, ("variables", "sample", "value"), "choice({rule})", id="sequence-expression"),
+    pytest.param(STORED_TASK_DOCUMENT_SCHEMA_ID, _TASK | {"validation_trials": {"reach": {
+        "label": "Reach {k}", "over": {"k": None},
+    }}}, ("validation_trials", "reach", "over", "k"), "{rule}", id="trial-family"),
+    pytest.param(STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, {"id": "score", "terms": {"effort": {
+        "label": "Effort", "measure": "k", "over": {"k": None},
+    }}}, ("terms", "effort", "over", "k"), "{rule}", id="objective-family"),
+    pytest.param(SET_DOCUMENT_SCHEMA_ID, {"entries": {"shift": {
+        "label": "Shift {k}", "over": {"k": None},
+    }}}, ("entries", "shift", "over", "k"), "{rule}", id="set-family"),
+])
+def test_rule_storage_grows_only_with_count_digits(tmp_path, schema, payload, path, expression, sequence):
+    def write(count):
+        authored = deepcopy(payload)
+        rule = sequence.format(count=count, last=count - 1)
+        reduce(getitem, path[:-1], authored)[path[-1]] = expression.format(rule=rule)
+        document = RootDocument(schema=schema, label="Fixture", payload=authored)
+        files = _verify_parsimony(tmp_path, Project(documents={"fixture": document}))
+        # The writer can wrap at 100 columns as the count gains digits.
+        return canonical_json_v2_bytes(json.loads(files["documents/fixture.json"]))
+
+    assert len(write(1000)) - len(write(10)) == 2
 
 
 def test_set_fields_deltas_and_variant_refinements_are_parsimonious(tmp_path):

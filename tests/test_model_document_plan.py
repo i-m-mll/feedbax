@@ -1097,7 +1097,9 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
             "range": {"start": 1e-4, "stop": 1e-2, "count": 5, "scale": "log"},
         }
         fields = client.post(endpoint, json={"revision": reopened["revision"]}).json()["fields"]
-        assert next(field["text"] for field in fields if field["id"] == field_path) == "geomspace(0.0001, 0.01, 5)"
+        rate, = [field for field in fields if field["id"] == field_path]
+        assert rate["text"] == "geomspace(0.0001, 0.01, 5)"
+        assert rate["sweep"]["rule"]["scale"] == "log"
         folders = ProjectFolderService(tmp_path)
         plan = folders.read_plan("managed-rate", revision=reopened["revision"]).plan
         keys = tuple(row.key for row in plan.rows)
@@ -1124,6 +1126,29 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
         reduced = client.get(url + "/open").json()["snapshot"]
         assert not any(((reduced["project"]["steps"]["train"].get("sweep") or {}).get("axes") or {}).values())
         assert len(folders.read_plan("managed-rate", revision=reduced["revision"]).plan.rows) == 1
+
+
+def test_managed_rate_field_projects_the_omitted_linear_range_scale(tmp_path):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    field_path = "/settings/optimizer/learning_rate/value"
+    rule = {"start": 1e-4, "stop": 1e-2, "count": 5}
+    raw["steps"]["train"]["sweep"] = {"axes": {
+        "learning-rate": {"path": field_path[1:].replace("/", "."), "range": rule},
+    }}
+    _save_project(ProjectFolderService(tmp_path), "managed-rate", Project.model_validate(raw))
+    path = tmp_path / "managed-rate" / "steps" / "train.json"
+    before = path.read_bytes()
+    assert json.loads(before)["sweep"]["axes"]["learning-rate"]["range"] == rule
+
+    url = "/api/projects/managed-rate"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        revision = client.get(url).json()["revision"]
+        reply = client.post(url + "/authoring/train/train/fields", json={"revision": revision})
+        assert reply.status_code == 200, reply.text
+        rate, = [field for field in reply.json()["fields"] if field["id"] == field_path]
+        assert rate["sweep"]["kind"] == "range" and rate["sweep"]["rule"] == rule | {"scale": "linear"}
+    assert path.read_bytes() == before
 
 
 def _group_reaching_pipeline(raw, registry):
@@ -1613,8 +1638,8 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
 
 
 # Equivalent stored edits retain these managed requests with key-based external Model ports.
-_VARIANT_WIRE = "evaluate:a4f50fd94931ca0e47f7d90aafb84122c8bc225e23a243b81bffe27c1b51e122"
-_VARIANT_FIELD = "evaluate:380a46acf9f9e17d0d3c8fed47af55b35ed4d059df247f2f7c0680bc87d18511"
+_VARIANT_WIRE = "evaluate:ba2ddd696cc5f047e1689550c2159a01611129e43026f58bba1a1764b31b66ee"
+_VARIANT_FIELD = "evaluate:6c5003818aa7029cf466845c7e7e7a6063862914b6b8a5c775533cf1e8d1b0c4"
 
 
 @pytest.mark.parametrize(("operation", "expected"), [

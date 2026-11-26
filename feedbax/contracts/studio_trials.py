@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, field_serializer
 
-from feedbax.contracts.project_sweep import SetEntryParts, SetTrialSampling
+from feedbax.contracts.project_sweep import SetTrialSampling
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import Expression, Level, NodePath, Problem, ScopedValue, ValueType, WeightPart
 from feedbax.contracts.jobs import StudioSavedTrainKey
@@ -12,7 +12,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
     AxisValueRuns, ListedRuns, StudioEvaluateValueSource,
 )
-from feedbax.contracts.objective_document import ObjectiveTermValue, StoredObjectiveDocument
+from feedbax.contracts.objective_document import ObjectiveTermValue, Reduction, StoredObjectiveDocument
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldSiteTables, StudioFieldView
@@ -210,10 +210,17 @@ class StudioTrialObjectiveSource(StrictModel):
     step: ProjectName
 
 
+class StudioSetEntryParts(StrictModel):
+    """The effective on and off parts of a cooccurring entry."""
+
+    on: WeightPart
+    off: WeightPart
+
+
 class StudioSetFieldEntry(StoredFamilyMember):
     entry: ProjectName | None
     label: str | None = None
-    weight: WeightPart | SetEntryParts | None = None
+    weight: WeightPart | StudioSetEntryParts | None
     member_count: int | None = None
 
 
@@ -240,6 +247,11 @@ class StudioFamily(StrictModel):
     indices: dict[IndexName, StudioFamilyIndex]
 
 
+class StudioObjectiveTermValues(StrictModel):
+    enabled: bool
+    reduction: Reduction
+
+
 class StudioTrialAuthoring(StudioFieldSiteTables):
     revision: Sha256
     run: StudioSavedTrainKey
@@ -256,6 +268,8 @@ class StudioTrialAuthoring(StudioFieldSiteTables):
     objective_changed: list[Pointer] = Field(default_factory=list)
     """The same, in the Objective document."""
     objective: StoredObjectiveDocument | None
+    objective_term_values: dict[str, StudioObjectiveTermValues]
+    """The parsed values of defaultable term controls, separate from authored field presence."""
     objective_source: StudioTrialObjectiveSource | None = None
     set_fields: list[StudioSetField] = Field(default_factory=list)
     task_types: list[StudioTaskType]
