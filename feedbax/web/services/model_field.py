@@ -35,7 +35,7 @@ from feedbax.contracts.studio_scope import StoreKind
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_site import project_site, read_field
 from feedbax.contracts.expression_text import ParsedField, print_field
-from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.task_document import StoredTaskDocument
 from feedbax.contracts.window import store_window_offset, window_offset_expression, window_offset_sites
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
@@ -432,9 +432,9 @@ def model_fields(
         slots = definition.payload.get("trial_documents") if definition is not None else None
         if isinstance(slots, dict) and isinstance(raw := slots.get("task"), dict):
             try:
-                task = TaskDocument.model_validate(raw)
-                names = tuple(ScopedValue(id=variable.id, name=variable.name, type=variable.type, level=Level.TRIAL)
-                              for variable in task.variables)
+                task = StoredTaskDocument.model_validate(raw)
+                names = tuple(ScopedValue(id=key, name=variable.label, type=variable.type, level=Level.TRIAL)
+                              for key, variable in task.variables.items())
             except ValueError:
                 pass
     effective_fields = {

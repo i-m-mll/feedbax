@@ -17,9 +17,9 @@ from feedbax.compiler.model_templates import with_model_placement_reason
 from feedbax.contracts.train_settings import setting_schema_node
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
-from feedbax.contracts.task_document import BLANK_TASK, TASK_DOCUMENT_SCHEMA_ID, VALUE_TYPES, TaskDocument
+from feedbax.contracts.task_document import BLANK_STORED_TASK, STORED_TASK_DOCUMENT_SCHEMA_ID, VALUE_TYPES, StoredTaskDocument
 from feedbax.studio.library import installed_library_sources
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, StoredObjectiveDocument
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
@@ -81,8 +81,8 @@ from feedbax.training.optimizers import OPTIMIZERS, SCHEDULES
 _TRAIN = REQUEST_KINDS["train"].spec_type
 _TRAIN_DOCUMENT_MODELS = {
     "model": (MODEL_DOCUMENT_SCHEMA_ID, ModelDocument),
-    "task": (TASK_DOCUMENT_SCHEMA_ID, TaskDocument),
-    "objective": (OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument),
+    "task": (STORED_TASK_DOCUMENT_SCHEMA_ID, StoredTaskDocument),
+    "objective": (STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, StoredObjectiveDocument),
     "training": (TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument),
 }
 _STEP_DOCUMENT_FAMILY = {"analyze": "analysis", "report": "report"}
@@ -259,12 +259,12 @@ def _task_catalog() -> StudioTaskCatalog:
         for name, document in source.documents().items():
             if isinstance(document, ProjectDiagnostic):
                 raise ValueError(f"{source.distribution} ships {source.name}/{name}, which does not compose: {document.detail}")
-            if document.schema_id == TASK_DOCUMENT_SCHEMA_ID:
+            if document.schema_id == STORED_TASK_DOCUMENT_SCHEMA_ID:
                 documents.append(StudioLibraryDocument(
                     distribution=source.distribution, library=source.name, name=name, document=document,
                 ))
     return StudioTaskCatalog(
-        blank=BLANK_TASK, documents=documents,
+        blank=BLANK_STORED_TASK, documents=documents,
         value_types=[StudioNamedValueType(name=name, type=value_type) for name, value_type in VALUE_TYPES],
     )
 

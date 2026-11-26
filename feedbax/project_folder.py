@@ -40,10 +40,10 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
-    BasedDocument, Document, LoadedModelDocument, Project, RootDocument, Sha256, diff, json_pointer_parts, member_name, same_json,
+    BasedDocument, Document, LoadedModelDocument, Project, RootDocument, Sha256, diff, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.project_storage import write_project_file
+from feedbax.contracts.project_storage import stored_keyed_collection, write_project_file
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     ProjectReadError,
@@ -344,12 +344,13 @@ def document_file(
 ) -> StudioProjectFilePatch | None:
     """The document's file holding ``content``: its payload, or its differences from ``base``; none when unchanged."""
     address = AuthoredFileAddress(kind="document", id=name)
+    keyed_collection = partial(stored_keyed_collection, document.schema_id)
     if isinstance(document, RootDocument):
-        if same_json(document.payload, content):
+        if isinstance(document.payload, dict) and not diff(document.payload, content, keyed_collection=keyed_collection):
             return None
         return StudioProjectFilePatch(address=address, patches=[SetProjectValue(op="replace", path="/payload", value=content)])
     assert base is not None
-    differences = diff(base, content)
+    differences = diff(base, content, keyed_collection=keyed_collection)
     if differences == document.differences:
         return None
     return StudioProjectFilePatch(address=address, patches=[SetProjectValue(
