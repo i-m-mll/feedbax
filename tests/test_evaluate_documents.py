@@ -9,24 +9,25 @@ from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.request_identity import decode_request
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
-# Request identities for the shipped point-mass Task, with its signal labels projected by ID.
+# Request identities for the shipped point-mass fixture, with Task signal labels projected by ID
+# and Model root port names excluded.
 # These witnesses hold the same changes expressed on the Evaluate step or in its Model and Task documents.
-FEE = "train:7ee0aec47e9eb5d0408a91707503e31114c55bf912e95406f206bd654db1bbe4"
-DEFAULT = "evaluate:7c6fad3f13cb972b160877409c34fda69843e13141ffdaf788250959b0289647"
-FIELD_CHANGED = "evaluate:36403904c6fbf41fda182a0997b17ef9afb0bb92f6034ab11ab1217c60775884"
-ATTACHMENT_ADDED = "evaluate:fb014cda6d2da4cb22047330a52f6013a32f812d968fbae93e78d45b5ece424b"
+FEE = "train:fa583901ea5b6d7ba92fe4aa9b6a8cfdd1351a7221cca985210005557c812ba4"
+DEFAULT = "evaluate:11b3d55b38edff880b2f61f343c620c4879e3a91504187244eec6372662e31c3"
+FIELD_CHANGED = "evaluate:8dd5574f606f0967f5e84fe2d00a4270fc26661be5130c20eb27e820e5755b03"
+ATTACHMENT_ADDED = "evaluate:979d082b32fef9d8667a67c93cd927c997a365f1c6caf7f21eda144e406a5dbd"
 # The replacement Task now pairs target_pos by stable ID without a generated override.
-FEWER_CONDITIONS = "evaluate:aef41d53a6e65f832f58a1281f33d810626c951e894423d6faf73053a3ecf563"
+FEWER_CONDITIONS = "evaluate:0a19f9c1899dc78f781eee263084fc9e813357b61caa1c9ce0ba778b0c01702b"
 SWEPT_PUSHED = (
     ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
-     "evaluate:dcf3f064b759cc1bfc8cc90b3f6f76b6af6947a432b708e288456a53967fa04a"),
+     "evaluate:fb56228e1a44d61f163eb110563f0e2d3ef0f4cabde9541cd1fc41de72a1afa9"),
     ("trained==abb0ffe5124ac74b8d431462660c668b987dd969c5bf76fc07a20894a2b46eea",
-     "evaluate:26c6ab856a6094343bbcbb74ed40ef5d75fae9d3316a0ecaf3fd4bac061a3216"),
+     "evaluate:352fd399323920910d7ea6221d457962a7cfed1c700ee261bb8cb5c4d21bc8b5"),
 )
 NEAREST_SHARED = {
-    "fee": "train:4e5dbd251fb8ae4d207e7a6223b5daec96cdb92517047cbbe3a0b734ed92318b",
+    "fee": "train:fd2940aa4c5036b912e4627fabb9d6d529d50df235c3fff9f9c66b362a35655e",
     "other": FEE,
-    "check": "evaluate:a2dc720dec386e1fd5951caece29c1570d6f7589a5ce512d34fe54676127552c",
+    "check": "evaluate:583b09d98b8fe38653c153d4143e5b6ffd53f072b8b2695225d3fe656781455c",
 }
 UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
@@ -235,11 +236,11 @@ def test_a_task_document_replaces_the_subjects_task_unless_it_holds_the_same_con
     assert _ids(data) == {"fee": FEE, "check": DEFAULT}
 
     shorter = data["documents"]["task-2"]["payload"]
-    shorter["validation_trials"] = shorter["validation_trials"][:-1]
+    shorter["validation_trials"].popitem()
     assert _ids(data) == {"fee": FEE, "check": FEWER_CONDITIONS}
 
     shorter["validation_trials"] = deepcopy(data["documents"][TASK]["payload"]["validation_trials"])
-    shorter["signals"] = [signal for signal in shorter["signals"] if signal["id"] != "target_pos"]
+    del shorter["signals"]["target_pos"]
     plan = _plan(data)
     assert not plan.diagnostics
     check = next(run for run in plan.runs if run.key.step == "check")
