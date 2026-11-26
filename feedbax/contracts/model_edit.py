@@ -17,7 +17,7 @@ from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTra
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
 from feedbax.contracts.stored_model import (
-    StoredModelComponent, StoredModelDocument, StoredModelWire, StoredWireAttachment,
+    StoredModelComponent, StoredModelDocument, StoredModelSignalSource, StoredModelWire, StoredWireAttachment,
 )
 from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.request_refs import Name
@@ -293,6 +293,20 @@ class ModelConnectionReviewRequest(ModelProjectionRequest):
     graph: ModelAddress
     source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
     grow_source: bool = False
+
+
+type InterventionOperation = Literal["add", "scale", "clamp"]
+
+
+class ModelAttachmentDefaultsRequest(ModelProjectionRequest):
+    """Default operands for an intervention on a Model wire or output source."""
+
+    owner: ModelAddress
+    operation: InterventionOperation
+
+
+class ModelAttachmentDefaults(StrictModel):
+    operands: dict[str, StoredModelSignalSource]
 
 
 class ModelPortProjection(StrictModel):
