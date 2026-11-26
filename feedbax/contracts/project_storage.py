@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
-from functools import cache
-from types import MappingProxyType
-from typing import Annotated, Any, TypeAliasType, get_args, get_origin
+from functools import cache, lru_cache
+from types import MappingProxyType, UnionType
+from typing import Annotated, Any, TypeAliasType, Union, get_args, get_origin
 
 import rfc8785
 from pydantic import BaseModel, JsonValue, ValidationError
@@ -17,10 +17,11 @@ from feedbax.contracts.canonical_json import validate_canonical_json_v2
 from feedbax.contracts.expression_values import LiteralValue
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import SetField
-from feedbax.contracts.objective_document import ObjectiveTerm
+from feedbax.contracts.objective_document import ObjectiveTerm, StoredObjectiveTerm
 from feedbax.contracts.project import InlineBase, RootDocument, SetDocumentValue, Step
 from feedbax.contracts.project_sweep import AxisValue, NamedAxis, SetValue, Sweep, SweepException
 from feedbax.contracts.rollout import ROLLOUT_TYPE
+from feedbax.contracts.stored_members import StoredAddressedMembers, StoredMembers
 
 
 type StoredPath = tuple[str, ...]
@@ -36,20 +37,22 @@ def stored_document_models() -> Mapping[str, type[BaseModel] | None]:
     from feedbax.contracts.analysis_document import AnalysisPayload
     from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA
     from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
-    from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
-    from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
+    from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+    from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, StoredObjectiveDocument
     from feedbax.contracts.project import LoadedModelDocument
     from feedbax.contracts.project_inputs import SubsetTerms
     from feedbax.contracts.report_document import ReportDocument
     from feedbax.contracts.result_address import ANALYSIS_SCHEMA
     from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
-    from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument
+    from feedbax.contracts.task_document import (
+        PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, StoredTaskDocument,
+    )
     from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 
     return MappingProxyType({
-        MODEL_DOCUMENT_SCHEMA_ID: ModelDocument,
-        TASK_DOCUMENT_SCHEMA_ID: TaskDocument,
-        OBJECTIVE_DOCUMENT_SCHEMA_ID: ObjectiveDocument,
+        STORED_MODEL_DOCUMENT_SCHEMA_ID: StoredModelDocument,
+        STORED_TASK_DOCUMENT_SCHEMA_ID: StoredTaskDocument,
+        STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID: StoredObjectiveDocument,
         TRAINING_DOCUMENT_SCHEMA_ID: TrainingDocument,
         PYTHON_TASK_SCHEMA_ID: PythonTaskSelection,
         LOADED_MODEL_SCHEMA_ID: LoadedModelDocument,
@@ -59,6 +62,36 @@ def stored_document_models() -> Mapping[str, type[BaseModel] | None]:
         ReportDocument.model_fields["schema_version"].default: ReportDocument,
         "subset": SubsetTerms,
     })
+
+
+@lru_cache(maxsize=4096)
+def stored_keyed_collection(schema_id: str, path: StoredPath) -> bool:
+    """Whether a stored pointer names a typed member map whose authored order matters."""
+    model = stored_document_models().get(schema_id)
+    return model is not None and _keyed_collection_at(model, path)
+
+
+def _keyed_collection_at(annotation: Any, path: StoredPath) -> bool:
+    if annotation is JsonValue:
+        return False
+    origin = get_origin(annotation)
+    arguments = get_args(annotation)
+    if origin in (StoredMembers, StoredAddressedMembers):
+        return not path or _keyed_collection_at(arguments[0], path[1:])
+    if origin is dict and len(arguments) == 2:
+        return bool(path) and _keyed_collection_at(arguments[1], path[1:])
+    if origin is Annotated:
+        return _keyed_collection_at(arguments[0], path)
+    if origin in (Union, UnionType):
+        return any(_keyed_collection_at(member, path) for member in arguments)
+    if isinstance(annotation, TypeAliasType):
+        return _keyed_collection_at(annotation.__value__, path)
+    if path and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        annotation.model_rebuild()
+        for name, field in annotation.model_fields.items():
+            if _key(name, field) == path[0]:
+                return _keyed_collection_at(field.annotation, path[1:])
+    return False
 
 
 @cache
@@ -227,7 +260,8 @@ def _projected_file(
                     continue
                 if not (required or observed) and (
                     isinstance(value, _REFINEMENTS) or _same_stored_value(
-                        child, _field_default(cls, name), real_site=isinstance(value, ObjectiveTerm) and name == "weight",
+                        child, _field_default(cls, name),
+                        real_site=isinstance(value, (ObjectiveTerm, StoredObjectiveTerm)) and name == "weight",
                     )
                 ):
                     continue

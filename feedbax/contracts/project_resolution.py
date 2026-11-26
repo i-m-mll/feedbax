@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from functools import cached_property
+from functools import cached_property, partial
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import JsonValue, ValidationError
@@ -21,6 +21,7 @@ from feedbax.contracts.loaded_model import encode_imported_model_document
 from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
+from feedbax.contracts.project_storage import stored_keyed_collection
 from feedbax.contracts.project import (
     DifferenceNotApplied,
     Document,
@@ -571,7 +572,9 @@ class _Documents:
         if not isinstance(content, dict):
             raise problem(ResolutionCode.INVALID_DOCUMENT, "base.document", f"{label} is not an object")
         try:
-            payload = apply_differences(content, document.differences)
+            payload = apply_differences(
+                content, document.differences, keyed_collection=partial(stored_keyed_collection, document.schema_id),
+            )
         except DifferenceNotApplied as error:
             raise problem(ResolutionCode.INVALID_DELTA, f"differences.{error.path}", str(error)) from error
         try:
