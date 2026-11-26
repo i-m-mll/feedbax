@@ -4756,6 +4756,7 @@ export type StudioEvaluationPointProgress = {
 export type StudioFieldFunction = {
   "id": string;
   "signature": string;
+  "label"?: string | null;
   "parameters"?: Array<FunctionParameter>;
   "display_class": FunctionClass;
   "min_args": number;
@@ -14017,6 +14018,7 @@ export const StudioFieldFunctionSchema: z.ZodType<StudioFieldFunction> = z.lazy(
   z.object({
     "id": z.string(),
     "signature": z.string(),
+    "label": z.union([z.string(), z.null()]).optional(),
     "parameters": z.array(FunctionParameterSchema).optional(),
     "display_class": FunctionClassSchema,
     "min_args": z.number().int().safe(),

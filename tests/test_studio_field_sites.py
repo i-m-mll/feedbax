@@ -36,7 +36,7 @@ def _check_tables(payload):
             assert "dimensions" not in name["type"]
     for functions in lists.values():
         for info in functions:
-            assert not info.keys() & {"label", "implicit_names", "level", "requires_period", "random", "stateful", "reset"}
+            assert not info.keys() & {"implicit_names", "level", "requires_period", "random", "stateful", "reset"}
 
 
 def test_field_sites_keep_task_response_growth_under_the_per_field_budget(tmp_path):
@@ -63,6 +63,13 @@ def test_field_sites_keep_task_response_growth_under_the_per_field_budget(tmp_pa
             replies.append((len(response.content), len(task["fields"])))
 
             if count == 8:
+                width = next(field for field in task["fields"] if field["path"] == "/task/variables/width/value")
+                site = task["sites"][width["site"]]
+                functions = {info["id"]: info for info in task["function_lists"][site["functions"]]}
+                assert functions["loguniform"]["label"] == "Log-uniform"
+                assert functions["truncexp"]["label"] == "Truncated exponential"
+                assert "label" not in functions["add"]
+
                 train = client.post(url + "/authoring/train/train/fields", json=body)
                 assert train.status_code == 200, train.text
                 _check_tables(train.json())
