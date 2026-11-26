@@ -1,29 +1,40 @@
 """The fields of a step's Task and Objective documents, addressed by the ids of the members they lie in."""
 
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Sequence
+from copy import deepcopy
+from dataclasses import dataclass, field
 from functools import partial
 from typing import TypeGuard
 
 from pydantic import BaseModel
 
+from feedbax.contracts.expression_check import infer_constant_type
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
-    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, SequenceValue, Site, SweepList,
+    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, SequenceValue, Site, SweepList,
     SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.expression_site import read_field
 from feedbax.contracts.expression_text import ParsedField, print_stored_expression
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.member_family import (
+    ExpandedFamilyMember, FamilyProblem, NamedIndexValue, StoredFamilyMember, expand_family,
+    family_member_count, family_reason, index_rule_count, named_index_name,
+)
 from feedbax.contracts.matrix_core import prepare_stored_patch
-from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, objective_weight_title
-from feedbax.contracts.project import Payload, SetProjectValue, Step
+from feedbax.contracts.objective_document import (
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, StoredObjectiveDocument, objective_weight_title,
+)
+from feedbax.contracts.project import (
+    Payload, ProjectValueEdit, RemoveProjectValue, SetProjectValue, Step, apply_document_edits, json_pointer_parts,
+)
 from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.project_storage import stored_expression_site
+from feedbax.contracts.project_storage import stored_expression_site, stored_keyed_collection
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
-from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.studio_trials import StudioFamily, StudioFamilyIndex, StudioFamilyValue
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID, StoredTaskDocument
 from feedbax.contracts.time_units import TimeUse, TimeValue, time_steps
 from feedbax.contracts.window import window_offset_expression
 from feedbax.studio.authoring_sweeps import FieldSweeps, SweepTarget
@@ -34,7 +45,7 @@ from feedbax.web.services.project_folder import ProjectFolderInvalid
 type FieldPath = tuple[str, ...]
 """A path into a document's payload that names a member of a list of identified items by its id."""
 
-_EXPRESSIONS = (LiteralValue, NameValue, CallValue, DrawValue, UnresolvedValue)
+_EXPRESSIONS = (LiteralValue, NameValue, CallValue, DrawValue, SequenceValue, UnresolvedValue)
 
 
 def member(value: object, part: str) -> object:
@@ -69,6 +80,233 @@ def site_expression(document: BaseModel, path: FieldPath) -> Expression | None:
     if isinstance(value, TimeValue):
         return window_offset_expression(value)
     return value if isinstance(value, _EXPRESSIONS) else None
+
+
+def with_family_indices(site: Site, indices: tuple[ScopedValue, ...]) -> Site:
+    """Put the family indices in the member's lexical scope."""
+    if not indices:
+        return site
+    names = {index.id for index in indices}
+    return site.model_copy(update={"names": (*(
+        value.model_copy(update={"name": value.id}) if value.name in names else value
+        for value in site.names if value.id not in names
+    ), *indices)})
+
+
+def family_indices(
+    member: ExpandedFamilyMember, functions: FunctionRegistry, path: FieldPath,
+) -> tuple[tuple[ScopedValue, ...], tuple[Problem, ...]]:
+    names, problems = [], []
+    for key, value in member.indices.items():
+        kind = infer_constant_type(value, functions, path=(*path, "over", key))
+        if isinstance(kind, tuple):
+            problems.extend(kind)
+        else:
+            names.append(ScopedValue(id=key, name=key, type=kind, level=Level.RUN))
+    return tuple(names), tuple(problems)
+
+
+def family_problem(error: FamilyProblem, path: FieldPath) -> Problem:
+    return Problem(code=ProblemCode.STRUCTURE, path=(*path, *error.path), reason=family_reason(str(error), error.coordinates))
+
+
+def is_family_member_path(path: FieldPath) -> bool:
+    return len(path) >= 3 and path[:2] in (("objective", "terms"), ("task", "validation_trials"))
+
+
+def is_family_rule(path: FieldPath) -> bool:
+    return len(path) == 5 and is_family_member_path(path) and path[3] == "over"
+
+
+@dataclass(frozen=True)
+class FamilyField:
+    site: Site
+    expression: Expression
+    label: str
+
+
+@dataclass
+class FamilyEditor:
+    fields: dict[FieldPath, FamilyField] = field(default_factory=dict)
+    families: dict[str, StudioFamily] = field(default_factory=dict)
+    problems: list[Problem] = field(default_factory=list)
+    names: dict[FieldPath, tuple[ScopedValue, ...]] = field(default_factory=dict)
+    combinations: dict[FieldPath, dict[str, str]] = field(default_factory=dict)
+    authored_keys: dict[str, str] = field(default_factory=dict)
+
+    def member[Member: StoredFamilyMember](
+        self, path: FieldPath, member: Member, functions: FunctionRegistry,
+    ) -> ExpandedFamilyMember[Member] | None:
+        """Prepare the authored rules and one representative scope."""
+        key = path[-1]
+        try:
+            preview = next(expand_family(key, member, first=True, label_placeholders=path[0] == "task"))
+        except FamilyProblem as error:
+            self.problems.append(family_problem(error, path))
+            preview = None
+        else:
+            self.names[path], problems = family_indices(preview, functions, path)
+            self.problems.extend(problems)
+            self.combinations[path] = dict(preview.coordinate_names)
+            if path[0] == "task":
+                self.authored_keys[preview.key] = key
+
+        if member.over is None:
+            return preview
+
+        types = {index.id: index.type for index in self.names.get(path, ())}
+        indices = {}
+        invalid = preview is None
+        for index, rule in member.over.items():
+            rule_path = (*path, "over", index)
+            expected = types.get(index, ValueType(base=ValueBase.REAL))
+            try:
+                count = index_rule_count(rule)
+            except ValueError:
+                count = None
+            values = None
+            if isinstance(rule, SequenceValue | UnresolvedValue):
+                self.fields[rule_path] = FamilyField(
+                    Site(expected=expected, finest=Level.RUN, structural=True), rule, index,
+                )
+            else:
+                values = []
+                for item, value in rule.items():
+                    item_path = (*rule_path, item)
+                    label = named_index_name(item, value)
+                    values.append(StudioFamilyValue(key=item, name=label))
+                    if isinstance(value, NamedIndexValue):
+                        value = value.value
+                    actual = infer_constant_type(value, functions, path=item_path)
+                    if isinstance(actual, tuple):
+                        self.problems.extend(actual)
+                        count = None
+                        actual = expected
+                    self.fields[item_path] = FamilyField(
+                        Site(expected=actual, finest=Level.RUN, structural=True), value, label,
+                    )
+            invalid = invalid or count is None
+            indices[index] = StudioFamilyIndex(count=count, values=values)
+        count = None if invalid else family_member_count(key, member)
+        self.families[pointer(path)] = StudioFamily(member_count=count, indices=indices)
+        return preview
+
+    def problem(self, problem: Problem) -> Problem:
+        path = tuple(map(str, problem.path))
+        if path[:2] == ("task", "validation_trials"):
+            return problem  # Stored Task rules already report their authored path.
+        if path[:1] == ("validation_trials",) and len(path) > 1:
+            path = ("task", "validation_trials", self.authored_keys.get(path[1], path[1]), *path[2:])
+        if is_family_member_path(path):
+            coordinates = self.combinations.get(path[:3])
+            reason = problem.reason
+            if coordinates and path[3:4] != ("over",):
+                reason = family_reason(reason, coordinates)
+            return problem.model_copy(update={"path": path, "reason": reason})
+        return problem
+
+
+def objective_editor(
+    stored: StoredObjectiveDocument, families: FamilyEditor, functions: FunctionRegistry,
+) -> ObjectiveDocument:
+    """Lower one term per authored member for Studio pairing."""
+    terms = []
+    for key, term in stored.terms.items():
+        preview = families.member(("objective", "terms", key), term, functions)
+        terms.append(
+            preview.value.lower(key) if preview is not None else term.lower(key).model_copy(update={"enabled": False}),
+        )
+    return ObjectiveDocument(id=stored.id, terms=tuple(terms))
+
+
+def validation_editor(
+    task: StoredTaskDocument, families: FamilyEditor, variables: tuple[ScopedValue, ...], functions: FunctionRegistry,
+) -> None:
+    variable_scopes = {variable.id: variable for variable in variables}
+    integer = ValueType(base=ValueBase.INTEGER)
+    for key, trial in task.validation_trials.items():
+        path = ("task", "validation_trials", key)
+        families.member(path, trial, functions)
+        for name, value in trial.variables.items():
+            variable = task.variables.get(name)
+            scoped = variable_scopes.get(name)
+            kind = variable.type if variable is not None else ValueType(base=ValueBase.REAL)
+            if scoped is not None and scoped.list_count is not None:
+                kind = kind.model_copy(update={"shape": (scoped.list_count, *kind.shape)})
+            site = Site(expected=kind, finest=Level.RUN, structural=True)
+            families.fields[(*path, "variables", name)] = FamilyField(
+                with_family_indices(site, families.names.get(path, ())), value, variable.label if variable else name,
+            )
+        for name, value in trial.epoch_steps.items():
+            epoch = task.epochs.get(name)
+            site = Site(expected=integer, finest=Level.RUN, structural=True)
+            families.fields[(*path, "epoch_steps", name)] = FamilyField(
+                with_family_indices(site, families.names.get(path, ())), value, epoch.label if epoch else name,
+            )
+
+
+def is_family_rule_edit(role: str, path: FieldPath) -> bool:
+    return is_family_member_path((role, *path)) and path[2:3] == ("over",)
+
+
+def _remove_family_rule(raw: Payload, path: FieldPath) -> list[ProjectValueEdit]:
+    member_path = path[:2]
+    member = at(raw, member_path)
+    if not isinstance(member, dict) or not isinstance(member.get("over"), dict):
+        return []
+    rules = member["over"]
+    if at(raw, path) is None:
+        return []
+    if len(path) == 5 and len(at(raw, path[:-1])) == 1:
+        return _remove_family_rule(raw, path[:-1])
+    if len(path) == 3 or len(path) == 4 and len(rules) == 1:
+        remove = [RemoveProjectValue(op="remove", path=pointer((*member_path, "over")))]
+        if "combination" in member:
+            remove.append(RemoveProjectValue(op="remove", path=pointer((*member_path, "combination"))))
+        return remove
+    return [RemoveProjectValue(op="remove", path=pointer(path))]
+
+
+def _family_rule_edit(raw: Payload, edit: ProjectValueEdit, path: FieldPath) -> list[ProjectValueEdit]:
+    if len(path) <= 4:
+        if isinstance(edit, RemoveProjectValue):
+            return _remove_family_rule(raw, path)
+        return [edit]
+    if len(path) > 6 or len(path) == 6 and path[-1] != "label":
+        return [edit]
+    target = path[:5]
+    previous = at(raw, target)
+    if previous is None:
+        return []
+    if len(path) == 6:
+        expression = previous["value"] if isinstance(previous, dict) else previous
+        label = edit.value if isinstance(edit, SetProjectValue) else None
+        value = {"value": expression, "label": label} if label is not None else expression
+        return [SetProjectValue(op="replace", path=pointer(target), value=value)]
+    if isinstance(edit, RemoveProjectValue):
+        return _remove_family_rule(raw, path)
+    if isinstance(edit, SetProjectValue) and isinstance(previous, dict) and not isinstance(edit.value, dict):
+        return [edit.model_copy(update={"path": pointer((*target, "value")), "op": "replace"})]
+    return [edit]
+
+
+def family_rule_edits(raw: Payload, role: str, edits: Sequence[ProjectValueEdit]) -> Sequence[ProjectValueEdit]:
+    """Apply named-value intent to the destination's actual stored scalar or record."""
+    if not any(is_family_rule_edit(role, json_pointer_parts(edit.path)) for edit in edits):
+        return edits
+    staged = deepcopy(raw)
+    schema = STORED_TASK_DOCUMENT_SCHEMA_ID if role == "task" else STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+    keyed = partial(stored_keyed_collection, schema)
+    writes = []
+    for edit in edits:
+        path = json_pointer_parts(edit.path)
+        if is_family_rule_edit(role, path):
+            pieces = _family_rule_edit(staged, edit, path)
+            apply_document_edits(staged, pieces, keyed_collection=keyed)
+        else:
+            pieces = [edit]
+        writes.extend(pieces)
+    return writes
 
 
 def is_window_offset(role: str, path: FieldPath) -> bool:

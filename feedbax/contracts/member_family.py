@@ -1,7 +1,7 @@
 """Shared expansion of authored Objective, Set, and validation-trial families."""
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import islice
 from math import prod
 from string import Formatter
@@ -65,6 +65,8 @@ class ExpandedFamilyMember[Member: StoredFamilyMember]:
     source_key: str
     value: Member
     coordinates: Mapping[str, str]
+    indices: Mapping[str, Expression] = field(default_factory=dict)
+    coordinate_names: Mapping[str, str] = field(default_factory=dict)
 
 
 class FamilyProblem(ValueError):
@@ -90,6 +92,22 @@ def _constant(value: Expression) -> bool:
     )
 
 
+def family_reason(reason: str, coordinates: Mapping[str, str]) -> str:
+    if not coordinates:
+        return reason
+    values = ", ".join(f"{name}={value}" for name, value in coordinates.items())
+    return f"{reason} (family {values})"
+
+
+def named_index_name(key: str, value: Expression | NamedIndexValue) -> str:
+    return value.label or key if isinstance(value, NamedIndexValue) else key
+
+
+def index_rule_count(rule: IndexRule) -> int:
+    """Number of index values, without materializing the sequence."""
+    return _index_values(rule)[0]
+
+
 def _index_values(rule: IndexRule) -> tuple[int, Iterator[_IndexValue]]:
     if isinstance(rule, UnresolvedValue):
         parsed = parse_sequence_rule(rule.text)
@@ -111,8 +129,7 @@ def _index_values(rule: IndexRule) -> tuple[int, Iterator[_IndexValue]]:
             value = item.value if isinstance(item, NamedIndexValue) else item
             if not _constant(value):
                 raise ValueError(f"Index value {key!r} must be a constant expression.")
-            label = (item.label if isinstance(item, NamedIndexValue) else None) or key
-            yield _IndexValue(key, value, label)
+            yield _IndexValue(key, value, named_index_name(key, item))
 
     return len(rule), named_values()
 
@@ -206,9 +223,9 @@ def expand_family[Member: StoredFamilyMember](
     for selection in select_combinations(dimensions, choices):
         coordinates = {name: selected.key for name, selected in selection.items()}
         generated_key = "-".join((key, *coordinates.values()))
-        bound = _bind(member.model_copy(update={"over": None, "combination": "cross"}), {
-            name: selected.value for name, selected in selection.items()
-        })
+        indices = {name: selected.value for name, selected in selection.items()}
+        coordinate_names = {name: selected.label for name, selected in selection.items()}
+        bound = _bind(member.model_copy(update={"over": None, "combination": "cross"}), indices)
         if (label := getattr(bound, "label", None)) is not None:
             try:
                 label = _label(label, selection, placeholders=label_placeholders)
@@ -216,9 +233,9 @@ def expand_family[Member: StoredFamilyMember](
                     raise ValueError(f"Several family members have the label {label!r}.")
                 labels.add(label)
             except ValueError as error:
-                raise FamilyProblem(key, ("label",), str(error), coordinates) from error
+                raise FamilyProblem(key, ("label",), str(error), coordinate_names) from error
             bound = bound.model_copy(update={"label": label})
-        yield ExpandedFamilyMember(generated_key, key, bound, coordinates)
+        yield ExpandedFamilyMember(generated_key, key, bound, coordinates, indices, coordinate_names)
 
 
 def expand_members[Member: StoredFamilyMember](
@@ -232,7 +249,7 @@ def expand_members[Member: StoredFamilyMember](
             if generated.coordinates:
                 if generated.key in keys:
                     raise FamilyProblem(
-                        key, ("over",), f"Generated member key {generated.key!r} already exists.", generated.coordinates,
+                        key, ("over",), f"Generated member key {generated.key!r} already exists.", generated.coordinate_names,
                     )
                 keys.add(generated.key)
             yield generated
