@@ -29,7 +29,8 @@ from feedbax.contracts.model_document import (
     WireAttachment,
 )
 from feedbax.contracts.stored_model import (
-    StoredModelWire, StoredCompositeComponent, StoredLeafComponent, authored_model_payload,
+    StoredModelWire, StoredCompositeComponent, StoredInterventionAttachment, StoredLeafComponent,
+    StoredModelSignalSource, authored_model_payload,
     lower_model_attachment, lower_model_component, lower_model_wire, stored_model_attachment,
 )
 from feedbax.compiler.model_differences import structural_differences
@@ -587,12 +588,16 @@ class ModelEditDraft:
             return placement[key].setdefault(end["port"], [])
         return placement[key].get(end["port"], [])
 
-    def set_attachment(self, difference: ModelAttachmentDifference) -> None:
+    def set_attachment(
+        self, difference: ModelAttachmentDifference, *,
+        defaults: Callable[[ModelAddress, str], dict[str, StoredModelSignalSource]] | None = None,
+    ) -> None:
         address = difference.address
         element = address.element
         assert element.kind == "attachment"
         chain = self.attachment_chain(address, element.parent.model_dump(mode="json"), create=True)
         existing = next((i for i, item in enumerate(chain) if item["id"] == element.id), None)
+        previous = chain[existing] if existing is not None else None
         if isinstance(difference, AddModelAttachment):
             if existing is not None:
                 raise _Refusal(address, "Attachment already exists on this owner")
@@ -613,7 +618,24 @@ class ModelEditDraft:
                 if after is None:
                     raise _Refusal(address, "The preceding attachment does not exist")
                 position = after + 1
-            chain.insert(position, lower_model_attachment(element.id, difference.attachment).model_dump(mode="json"))
+            attachment = difference.attachment
+            operands = None
+            if (
+                defaults is not None and isinstance(attachment, StoredInterventionAttachment)
+                and "operands" not in attachment.model_fields_set
+            ):
+                if (
+                    previous is not None and previous["kind"] == "intervention"
+                    and previous["operation"].lower() == attachment.operation.lower()
+                ):
+                    operands = previous["operands"]
+                else:
+                    owner = ModelAddress(composites=address.composites, element=element.parent)
+                    attachment = attachment.model_copy(update={"operands": defaults(owner, attachment.operation)})
+            lowered = lower_model_attachment(element.id, attachment).model_dump(mode="json")
+            if operands is not None:
+                lowered["operands"] = operands
+            chain.insert(position, lowered)
         self.changed.append(address)
 
     def move_wire_attachment(self, command: edits.MoveWireAttachment) -> None:
@@ -1388,6 +1410,7 @@ def apply_model_edit(
     reference: Callable[[], edits.ModelEditState | None] | None = None,
     instantiate_template: Callable[[str], CompositeComponent] | None = None,
     components: ComponentRegistry | None = None,
+    attachment_defaults: Callable[[ModelAddress, str], dict[str, StoredModelSignalSource]] | None = None,
 ) -> edits.ModelEditResult | edits.ModelEditProblem:
     """Apply one command to a private draft and return its complete transaction.
 
@@ -1515,7 +1538,7 @@ def apply_model_edit(
                 edit.set_field(primary, value, functions=functions)
             case edits.SetModelAttachment(difference=difference):
                 primary = difference.address
-                edit.set_attachment(difference)
+                edit.set_attachment(difference, defaults=attachment_defaults)
             case edits.MoveWireAttachment(address=primary):
                 edit.move_wire_attachment(operation)
             case edits.BringSignalIn(destination=primary):
