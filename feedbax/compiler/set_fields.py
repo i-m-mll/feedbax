@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from hashlib import sha256
 from itertools import product
+
+from pydantic import JsonValue
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_attachment import resolve_effective_model
@@ -28,6 +31,7 @@ from feedbax.contracts.model_document import (
 from feedbax.contracts.project import Document, apply_differences
 from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField
 from feedbax.contracts.set_document import SetEntry, read_set
+from feedbax.contracts.stored_model import StoredModelDocument, authored_model_payload
 from feedbax.contracts.task_document import (
     Cell, Link, SetVariableChoices, Signal, TaskDocument, ValidationTrial, Variable, add_to_task,
 )
@@ -181,6 +185,10 @@ class _Union:
         self.condition_origins: dict[str, str] = {}
         self.curl_activation: dict[str, tuple[bool, list[Expression]]] = {}
 
+    @cached_property
+    def _authored_model(self) -> dict[str, JsonValue]:
+        return authored_model_payload(self.model)
+
     def variable(
         self, id: str, value_type: ValueType, value: Expression, *, choices: SetVariableChoices | None = None,
     ) -> NameValue:
@@ -245,9 +253,11 @@ class _Union:
         cooccurring = isinstance(placement.sampling, CooccurringSetTrials)
         try:
             source = _entry_scope(axis, entry, authored, self.shared_entry_labels)
-            variant = ModelDocument.model_validate(
-                apply_differences(self.model.model_dump(mode="json"), source.differences),
-            )
+            variant = self.model
+            if source.differences:
+                variant = StoredModelDocument.model_validate(
+                    apply_differences(self._authored_model, source.differences),
+                ).lower()
             additions = source.lower()
             variant, links = _attachment_links(variant, additions.task_links, self.registry)
             task = add_to_task(
