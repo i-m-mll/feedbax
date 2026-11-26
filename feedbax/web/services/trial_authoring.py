@@ -267,7 +267,7 @@ def _project_task_drafts(documents, task: StoredTaskDocument, show_objective: bo
         task.lower(first=True)
     except StoredTaskDraftError as error:
         if error.path[:1] == ("validation_trials",) and error.path[2:3] not in (("over",), ("combination",), ("label",)):
-            problems.append(Problem(code=ProblemCode.STRUCTURE, path=("task", *error.path), reason=str(error)))
+            problems.append(Problem(code=ProblemCode.STRUCTURE, path=error.path, reason=str(error)))
     return _Projection(None, variables, signals, epochs, fields, tuple(problems), stored_task=task)
 
 
@@ -379,6 +379,8 @@ def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None 
 
 def _authored_trial_problem(problem: Problem) -> Problem:
     path = authored_task_link_path(problem.path)
+    if path[:2] == ("task", "validation_trials"):
+        path = path[1:]
     return problem if path is problem.path else problem.model_copy(update={"path": path})
 
 

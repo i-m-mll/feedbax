@@ -241,3 +241,19 @@ def test_family_problem_from_later_combination_uses_authored_path(tmp_path, role
     problem = problems[0]
     assert pointer(tuple(problem["path"])) == path
     assert "k=Later choice" in problem["reason"]
+
+
+def test_validation_trial_draft_problem_starts_at_the_section(tmp_path):
+    raw = document_project(authored_documents())
+    raw["documents"]["task"]["payload"]["validation_trials"] = {"cohort": {
+        "label": "Trial {k}", "over": {"k": "0..1"}, "epoch_steps": {"hold": "1 % k"},
+    }}
+    app = create_app(projects_dir=tmp_path)
+    folders = app.state.project_folders
+    _save_project(folders, "families", Project.model_validate(raw))
+    body = {"revision": folders.read("families").revision,
+            "run": {"variant": "default", "step": "train", "row": "default"}}
+    with TestClient(app) as client:
+        view = _post(client, body)
+    assert any(problem["path"] == ["validation_trials", "cohort", "epoch_steps", "hold"] for problem in view["problems"])
+    assert all(problem["path"][:2] != ["task", "validation_trials"] for problem in view["problems"])
