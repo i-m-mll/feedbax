@@ -136,7 +136,7 @@ export async function authorFirstTrain(
   await page.keyboard.press('Meta+4');
   await activate(page, objective.getByRole('button', { name: 'Add Term', exact: true }));
   await activateMenuItem(page, page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Output', exact: true }));
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Output)');
   await setNumber(weight, 2, (project) => {
     return terms(project)[0]?.weight;
   });
@@ -195,7 +195,7 @@ export async function authorFirstTrain(
     [plantId!]: { kind: 'leaf', type: 'feedbax.PointMass' },
   });
   const reachPort = keyLabelled(savedModel.ports.inputs, 'target position');
-  const commandPort = keyLabelled(savedModel.ports.outputs, 'output');
+  const commandPort = keyLabelled(savedModel.ports.outputs, 'Output');
   expect(reachPort).toBeTruthy();
   expect(commandPort).toBeTruthy();
   const linearOutput = { owner: 'component', component: linearId, port: 'output' };
@@ -233,7 +233,7 @@ export async function authorFirstTrain(
   expect(await savedProject()).toMatchObject({ project_id: saved.project_id, revision: saved.revision, project: saved.project });
   expect((await plan(saved.revision)).rows).toEqual(before.rows);
   await page.keyboard.press('Meta+4');
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Output)');
   await expect(weight).toHaveValue('2');
   await page.keyboard.press('Meta+1');
   await expect(nBatches).toHaveValue(String(totalUpdates));

@@ -40,9 +40,7 @@ export const blankDocuments = {
   },
   analysis: {
     schema: analysisDocumentSchemaId,
-    payload: {
-      schema_version: analysisDocumentSchemaId, inputs: { states: { kind: 'dataset' } }, operations: {}, views: {},
-    },
+    payload: { inputs: { states: { kind: 'dataset' } }, operations: {}, views: {} },
   },
   report: {
     schema: 'feedbax.report_document.v1',

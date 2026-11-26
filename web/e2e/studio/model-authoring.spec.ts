@@ -134,11 +134,11 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   expect(target).toBeDefined();
   await expect(inputs.getByRole('img', { name: 'Task', exact: true })).toHaveCount(1);
 
-  // Wiring to the empty handle of `outputs` adds a port named after the wire's source, and an Objective term on it marks it.
+  // Wiring to the empty handle of `outputs` adds a port the Service names Output, and an Objective term on it marks it.
   joining = edit();
   await drag(page, handle(readout, 'output:output'), outputs.locator('[data-handleid="input:__new_port__"]'));
   stored = await applied(joining);
-  const command = keyLabelled(stored.ports.outputs, 'output');
+  const command = keyLabelled(stored.ports.outputs, 'Output');
   expect(command).toBeDefined();
   expect(Object.values(stored.interior.wires ?? {})).toContainEqual(expect.objectContaining({
     source: readoutOutput, target: { owner: 'outputs', port: command },
@@ -146,7 +146,7 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   await tab('Objective').click();
   await objective.getByRole('button', { name: 'Add Term', exact: true }).click();
   await page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Output', exact: true }).click();
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Output)');
   await tab('Model').click();
   await expect(outputs.getByRole('img', { name: 'Objective', exact: true })).toHaveCount(1);
 

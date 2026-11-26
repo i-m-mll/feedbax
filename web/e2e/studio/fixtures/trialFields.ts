@@ -5,13 +5,26 @@ import type {
 
 const defaultRun: StudioSavedTrainKey = { variant: 'default', step: 'train', row: 'default' };
 
-/** The Service's Trial view of a run at the project's current revision: the read Studio's Task and Objective views use. */
+/**
+ * The Service's Trial view of a run at the project's current revision: the read Studio's Task and Objective views use.
+ * An edit that lands between reading the revision and the view makes the Service refuse the stale revision; the view is
+ * then read at the revision it names.
+ */
 export async function trialView(request: APIRequestContext, projectId: string, run = defaultRun): Promise<StudioTrialAuthoring> {
   const path = `/api/projects/${encodeURIComponent(projectId)}`;
-  const { revision } = await (await request.get(path)).json() as StudioProjectSnapshot;
-  const response = await request.post(`${path}/authoring/trials`, { data: { revision, run } });
-  expect(response.ok(), await response.text()).toBe(true);
-  return await response.json() as StudioTrialAuthoring;
+  let { revision } = await (await request.get(path)).json() as StudioProjectSnapshot;
+  for (;;) {
+    const response = await request.post(`${path}/authoring/trials`, { data: { revision, run } });
+    if (response.status() === 409) {
+      const { detail } = await response.json() as { detail: { current?: string } };
+      if (detail.current && detail.current !== revision) {
+        revision = detail.current;
+        continue;
+      }
+    }
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioTrialAuthoring;
+  }
 }
 
 /** The field the Service shows at `path` of the view (`['task', 'variables', key, 'value']`), as Studio shows it. */
