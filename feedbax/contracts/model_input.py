@@ -98,7 +98,7 @@ def authored_document_input(
 
         if document.schema_id != LOADED_MODEL_SCHEMA_ID:
             raise ValueError("Loaded model input requires a Loaded Model document")
-        return LoadedModelDocument.model_validate(document.payload).source
+        return LoadedModelDocument.model_validate(document.payload).lower()
     if isinstance(reference, ObjectiveDocumentReference):
         if document.schema_id != STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID:
             raise ValueError("Objective input requires an Objective document")

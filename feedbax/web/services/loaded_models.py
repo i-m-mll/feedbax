@@ -2,7 +2,7 @@
 
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentTreeRef
 from feedbax.contracts.effective_success import success_content_ref
-from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, LOADED_MODEL_SCHEMA_VERSION, ModelFitReport
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, ModelFitReport
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.project import LoadedModelDocument
@@ -43,7 +43,8 @@ def import_loaded_model(
             raise ProjectFileExists(f"documents/{query.name}.json")
         try:
             model = read_pinned_project_model(
-                authored.root, authored.store_path, existing, composed_loaded_model_projection(existing, read),
+                authored.root, authored.store_path, existing.lower(),
+                lambda: composed_loaded_model_projection(existing, read),
             )
         except (ModelAssetError, ArtifactBlobCustodyError) as error:
             raise ProjectFolderInvalid(str(error)) from error
@@ -65,10 +66,7 @@ def import_loaded_model(
             return StudioLoadedModelImportResult(StudioLoadedModelUnreadableArchive(
                 status="unreadable_archive", path=staged.path, detail=staged.detail,
             ))
-        payload = LoadedModelDocument(
-            schema_version=LOADED_MODEL_SCHEMA_VERSION, model=reference, source=staged,
-            archive=f"models/{query.name}.feedbax-model",
-        )
+        payload = LoadedModelDocument.from_source(reference, staged)
         snapshot = folders.publish_loaded_model(
             project, revision=query.revision, name=query.name, label=query.label, model=payload, staging=staging, raw_archive=raw,
         )

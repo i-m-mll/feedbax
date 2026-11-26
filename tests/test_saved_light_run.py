@@ -142,7 +142,7 @@ def _saved_light_definition(*, paired=False):
     task = load_shipped_projects()["point-mass-reaching"].documents["simple-reaches-task"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task["payload"]["fixed_steps"] = 8
     del task["payload"]["validation_trials"]
-    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"]["value"] = 8
     evaluation["documents"]["task"] = task
     project["documents"] = evaluation["documents"] | {
         name: project["documents"][name]

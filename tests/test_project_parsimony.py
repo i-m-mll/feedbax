@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 import pytest
 
 from feedbax.contracts.canonical_json import CanonicalJsonError, canonical_json_v2_bytes
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project, RootDocument
 from feedbax.contracts.project_io import (
@@ -26,7 +27,7 @@ from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import project_variants
 
 _SHA = "d" * 64
-_OBJECT = {"object_id": f"content-object://sha256/{_SHA}", "sha256": _SHA, "size_bytes": 42}
+_OBJECT = {"sha256": _SHA, "size_bytes": 42}
 _TASK = {
     "id": "task", "variables": {}, "signals": {}, "fixed_steps": None,
     "epochs": {"trial": {"label": "Trial", "end": {"kind": "length", "length": {"kind": "literal", "value": 1}}}},
@@ -43,11 +44,9 @@ _DOCUMENT_FIXTURES = {
         "method": "feedbax.example_training", "settings": {"schedule": {"value": False, "scale": 1.0}},
         "training_config": {"batch_size": 128, "snapshot_interval": 100, "replicates": 1},
     },
-    "feedbax.spec.loaded_model": {
-        "schema_version": "feedbax.spec.loaded_model.v1", "model": {"document": "model"}, "archive": None,
-        "source": {"kind": "imported", "model": _OBJECT,
-                   "weights": {"tree_id": f"content-tree://sha256/{_SHA}", "descriptor": _OBJECT},
-                   "encoding": {"descriptor_sha256": _SHA}},
+    LOADED_MODEL_SCHEMA_ID: {
+        "model": {"document": "model"}, "model_revision": _OBJECT, "archive": None,
+        "weights": {"sha256": "e" * 64, "size_bytes": 54}, "encoding_sha256": "f" * 64,
     },
     "feedbax.set_document.v2": {"entries": {"nominal": {"label": "Nominal", "differences": {}}}},
     "feedbax.analysis_document.v1": {
