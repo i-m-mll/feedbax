@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from typing import Annotated, Any, Literal, Protocol
 
@@ -148,14 +148,21 @@ class RemoveDocumentValue(StrictModel):
     op: Literal["remove"]
 
 
-type Differences = dict[DifferencePointer, SetDocumentValue | RemoveDocumentValue]
+class OrderDocumentMembers(StrictModel):
+    order: list[str]
 
 
-def check_disjoint(differences: Differences) -> None:
-    """Refuse a difference that lies under another."""
-    paths = sorted(json_pointer_parts(path) for path in differences)
-    for outer, inner in zip(paths, paths[1:]):
-        if inner[: len(outer)] == outer:
+type DocumentDifference = SetDocumentValue | RemoveDocumentValue | OrderDocumentMembers
+type Differences = dict[DifferencePointer, DocumentDifference]
+type EditDifferences = dict[DifferencePointer, SetDocumentValue | RemoveDocumentValue]
+type KeyedCollectionPath = Callable[[tuple[str, ...]], bool]
+
+
+def check_disjoint(differences: Mapping[DifferencePointer, DocumentDifference]) -> None:
+    """Refuse a difference inside a value replaced or removed by another difference."""
+    paths = sorted((json_pointer_parts(path), difference) for path, difference in differences.items())
+    for (outer, difference), (inner, _) in zip(paths, paths[1:]):
+        if not isinstance(difference, OrderDocumentMembers) and inner[: len(outer)] == outer:
             raise ValueError(f"difference {pointer(inner)!r} lies under {pointer(outer)!r}")
 
 
@@ -167,9 +174,9 @@ class DocumentBase(StrictModel):
 class BasedDocument(StrictModel):
     """A document whose payload is its base's composed payload with ``differences`` applied.
 
-    Each difference sets or removes the value at one JSON pointer into the payload. No difference
-    lies under another, and none passes through a list: a list is one value. ``label`` is the document's own, not
-    its base's, and enters no request.
+    A difference sets or removes a value or orders a keyed collection at a JSON pointer. No difference
+    lies under a set or remove, and none passes through a list. ``label`` belongs to this document and enters
+    no request.
     """
 
     schema_id: NonemptyText = Field(alias="schema")
@@ -195,45 +202,74 @@ class DifferenceNotApplied(ValueError):
         super().__init__(detail)
 
 
-def diff(base: Payload, content: Payload) -> Differences:
-    """The fewest disjoint differences that turn ``base`` into ``content``; a list is one value."""
+def _no_keyed_collections(_parts: tuple[str, ...]) -> bool:
+    return False
+
+
+def diff(
+    base: Payload, content: Payload, *, keyed_collection: KeyedCollectionPath = _no_keyed_collections,
+) -> Differences:
+    """The member edits and collection orders that turn ``base`` into ``content``."""
     differences: Differences = {}
+    orders: dict[DifferencePointer, OrderDocumentMembers] = {}
 
     def walk(before: dict[str, Any], after: dict[str, Any], parts: tuple[str, ...]) -> None:
-        for key in before.keys() - after.keys():
-            differences[pointer((*parts, key))] = RemoveDocumentValue(op="remove")
+        if parts and keyed_collection(parts):
+            edited_keys = [key for key in before if key in after] + [key for key in after if key not in before]
+            if edited_keys != list(after):
+                orders[pointer(parts)] = OrderDocumentMembers(order=list(after))
         for key, value in after.items():
+            child = (*parts, key)
             if key not in before:
-                differences[pointer((*parts, key))] = SetDocumentValue(value=deepcopy(value))
+                differences[pointer(child)] = SetDocumentValue(value=deepcopy(value))
             elif isinstance(value, dict) and isinstance(before[key], dict):
-                walk(before[key], value, (*parts, key))
+                walk(before[key], value, child)
             elif not same_json(before[key], value):
-                differences[pointer((*parts, key))] = SetDocumentValue(value=deepcopy(value))
+                differences[pointer(child)] = SetDocumentValue(value=deepcopy(value))
+        for key in before:
+            if key not in after:
+                differences[pointer((*parts, key))] = RemoveDocumentValue(op="remove")
 
     walk(base, content, ())
-    return dict(sorted(differences.items()))
+    differences.update(sorted(orders.items(), key=lambda item: item[0].count("/")))
+    return differences
 
 
-def apply_differences(base: Payload, differences: Differences) -> Payload:
-    """Apply ``differences`` to a copy of ``base``.
+def _difference_object(payload: Payload, parts: Sequence[str], path: str) -> Payload:
+    value: JsonValue = payload
+    for part in parts:
+        value = value.get(part) if isinstance(value, dict) else None
+    if not isinstance(value, dict):
+        raise DifferenceNotApplied(path, f"the base has no object at {pointer(tuple(parts)) or '/'}")
+    return value
 
-    Raises DifferenceNotApplied when a difference's parent is not an object in ``base``, or a
-    removed value is absent.
-    """
+
+def apply_differences(
+    base: Payload, differences: Mapping[DifferencePointer, DocumentDifference], *,
+    keyed_collection: KeyedCollectionPath = _no_keyed_collections,
+) -> Payload:
+    """Apply edits in stored order, then apply collection orders from outermost to innermost."""
     result = deepcopy(base)
+    orders = []
     for path, difference in differences.items():
+        if isinstance(difference, OrderDocumentMembers):
+            orders.append((path, difference))
+            continue
         *parents, key = json_pointer_parts(path)
-        parent: Any = result
-        for part in parents:
-            parent = parent.get(part) if isinstance(parent, dict) else None
-        if not isinstance(parent, dict):
-            raise DifferenceNotApplied(path, f"the base has no object at {pointer(tuple(parents)) or '/'}")
+        parent = _difference_object(result, parents, path)
         if isinstance(difference, SetDocumentValue):
             parent[key] = deepcopy(difference.value)
-        elif key in parent:
-            del parent[key]
         else:
-            raise DifferenceNotApplied(path, f"the base has no value at {path} to remove")
+            parent.pop(key, None)
+    for path, difference in sorted(orders, key=lambda item: item[0].count("/")):
+        parts = json_pointer_parts(path)
+        if not keyed_collection(parts):
+            raise DifferenceNotApplied(path, f"the document has no keyed collection at {path}")
+        collection = _difference_object(result, parts, path)
+        ordered = {key: collection[key] for key in difference.order if key in collection}
+        ordered.update(collection)
+        collection.clear()
+        collection.update(ordered)
     return result
 
 

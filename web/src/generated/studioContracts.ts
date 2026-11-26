@@ -3089,7 +3089,7 @@ export type DetachMember = {
 
 export type DifferencePointer = string;
 
-export type Differences = Record<string, SetDocumentValue | RemoveDocumentValue>;
+export type Differences = Record<string, DocumentDifference>;
 
 export type DimensionSize = number;
 
@@ -3110,6 +3110,8 @@ export type DocumentBase = {
   "document": string;
   "unresolved"?: true | null;
 };
+
+export type DocumentDifference = SetDocumentValue | RemoveDocumentValue | OrderDocumentMembers;
 
 export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
 
@@ -3162,6 +3164,8 @@ export type DuplicateRun = {
   "chosen_steps"?: Array<string>;
   "kind": "duplicate_run";
 };
+
+export type EditDifferences = Record<string, SetDocumentValue | RemoveDocumentValue>;
 
 export type End = Length | Rest | Until;
 
@@ -3656,6 +3660,10 @@ export type OperationElement = {
   "params"?: Record<string, JsonValue>;
 };
 
+export type OrderDocumentMembers = {
+  "order": Array<string>;
+};
+
 export type OrdinalColorScale = {
   "kind": "ordinal";
   "palette"?: "category10" | "plotly" | "dark24";
@@ -3998,7 +4006,7 @@ export type SetEntry = {
   "task_variables"?: Array<Variable>;
   "task_links"?: Array<Link>;
   "label"?: string | null;
-  "differences"?: Differences;
+  "differences"?: EditDifferences;
 };
 
 export type SetEntryParts = {
@@ -11486,7 +11494,7 @@ export const DifferencePointerSchema: z.ZodType<DifferencePointer> = z.lazy(() =
 ) as unknown as z.ZodType<DifferencePointer>;
 
 export const DifferencesSchema: z.ZodType<Differences> = z.lazy(() =>
-  z.record(DifferencePointerSchema, z.union([SetDocumentValueSchema, RemoveDocumentValueSchema]))
+  z.record(DifferencePointerSchema, DocumentDifferenceSchema)
 ) as unknown as z.ZodType<Differences>;
 
 export const DimensionSizeSchema: z.ZodType<DimensionSize> = z.lazy(() =>
@@ -11516,6 +11524,10 @@ export const DocumentBaseSchema: z.ZodType<DocumentBase> = z.lazy(() =>
     "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DocumentBase>;
+
+export const DocumentDifferenceSchema: z.ZodType<DocumentDifference> = z.lazy(() =>
+  z.union([SetDocumentValueSchema, RemoveDocumentValueSchema, OrderDocumentMembersSchema])
+) as unknown as z.ZodType<DocumentDifference>;
 
 export const DocumentEditSchema: z.ZodType<DocumentEdit> = z.lazy(() =>
   z.union([SetProjectValueSchema, RemoveProjectValueSchema, EnsureDocumentCollectionSchema])
@@ -11586,6 +11598,10 @@ export const DuplicateRunSchema: z.ZodType<DuplicateRun> = z.lazy(() =>
     "kind": z.literal("duplicate_run"),
   }).strict()
 ) as unknown as z.ZodType<DuplicateRun>;
+
+export const EditDifferencesSchema: z.ZodType<EditDifferences> = z.lazy(() =>
+  z.record(DifferencePointerSchema, z.union([SetDocumentValueSchema, RemoveDocumentValueSchema]))
+) as unknown as z.ZodType<EditDifferences>;
 
 export const EndSchema: z.ZodType<End> = z.lazy(() =>
   z.union([LengthSchema, RestSchema, UntilSchema])
@@ -12252,6 +12268,12 @@ export const OperationElementSchema: z.ZodType<OperationElement> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<OperationElement>;
 
+export const OrderDocumentMembersSchema: z.ZodType<OrderDocumentMembers> = z.lazy(() =>
+  z.object({
+    "order": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<OrderDocumentMembers>;
+
 export const OrdinalColorScaleSchema: z.ZodType<OrdinalColorScale> = z.lazy(() =>
   z.object({
     "kind": z.literal("ordinal"),
@@ -12717,7 +12739,7 @@ export const SetEntrySchema: z.ZodType<SetEntry> = z.lazy(() =>
     "task_variables": z.array(VariableSchema).optional(),
     "task_links": z.array(LinkSchema).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
-    "differences": DifferencesSchema.optional(),
+    "differences": EditDifferencesSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<SetEntry>;
 

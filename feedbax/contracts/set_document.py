@@ -10,7 +10,7 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
-    DifferenceNotApplied, Differences, Document, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
+    DifferenceNotApplied, Document, EditDifferences, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
     SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts,
 )
 from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, ProjectName, StepReference
@@ -29,7 +29,7 @@ MODEL_SLOT = "payload.trial_documents.model"
 
 class SetEntry(TaskAdditions):
     label: str | None = None
-    differences: Differences = Field(default_factory=dict)
+    differences: EditDifferences = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _disjoint(self) -> SetEntry:
@@ -113,7 +113,7 @@ def set_from_axis(axis: NamedAxis, model: str) -> SetDocument:
             continue
         if value.value is not None:
             raise ValueError(f"value {key!r} carries a coordinate value a set entry cannot hold")
-        differences: Differences = {
+        differences: EditDifferences = {
             entry_pointer(model, target): (
                 SetDocumentValue(value=write.value) if isinstance(write, SetValue) else RemoveDocumentValue(op="remove")
             )
