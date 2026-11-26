@@ -10,6 +10,7 @@ from pydantic import Field
 
 from feedbax.contracts.expression_values import (
     CallValue,
+    DrawCadence,
     DrawValue,
     Expression,
     FieldValue,
@@ -138,6 +139,10 @@ def _replace_part(tree: Expression, path: NodePath, value: Expression) -> Expres
     raise AssertionError(f"{path} is not a path in this expression.")
 
 
+def initial_draw_per(finest: Level) -> DrawCadence:
+    return "run" if finest == Level.RUN else "trial"
+
+
 def _with_function(node: Expression, info: FunctionInfo, finest: Level) -> Expression | None:
     args = node.args if isinstance(node, CallValue | DrawValue) else (node,)
     kwargs = node.kwargs if isinstance(node, CallValue) else {}
@@ -148,7 +153,7 @@ def _with_function(node: Expression, info: FunctionInfo, finest: Level) -> Expre
     if info.display_class == FunctionClass.DRAW:
         if kwargs:
             return None
-        per = node.per if isinstance(node, DrawValue) else ("run" if finest == Level.RUN else "trial")
+        per = node.per if isinstance(node, DrawValue) else initial_draw_per(finest)
         return DrawValue(family=info.id, args=args, per=per)
     return CallValue(function=info.id, args=args, kwargs=kwargs)
 
