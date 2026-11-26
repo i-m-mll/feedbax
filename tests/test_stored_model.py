@@ -11,7 +11,9 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_VERSION
-from feedbax.contracts.project import BasedDocument, DocumentBase, Project, RootDocument
+from feedbax.contracts.model_input import authored_document_input
+from feedbax.contracts.project import BasedDocument, DocumentBase, Project, RootDocument, SetDocumentValue
+from feedbax.contracts.project_inputs import DocumentReference, InitialModelReference
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.examples import load_shipped_projects
@@ -128,15 +130,28 @@ def test_attachment_address_names_its_keyed_member():
     assert address.stored_path() == path
 
 
-def test_based_model_port_order_survives_reopen_and_undo(tmp_path):
+def test_initial_input_uses_the_lowered_schema_and_order():
+    stored = RootDocument(schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, label="Model", payload=_stored_model())
+    source = authored_document_input(
+        InitialModelReference(kind="initial_model", source=DocumentReference(document="model"), seed=4), stored,
+    )
+    assert source.document.schema_version == MODEL_DOCUMENT_SCHEMA_VERSION
+    assert [port.id for port in source.document.ports.inputs] == ["right", "left"]
+    assert source.seed == 4
+
+
+@pytest.mark.parametrize("inherited", [True, False])
+def test_based_model_port_order_survives_reopen_and_undo(tmp_path, inherited):
     outputs = {"right": {"label": "Right", "type": {}}, "left": {"label": "Left", "type": {}}}
+    differences = {} if inherited else {"/ports/outputs": SetDocumentValue(value=outputs)}
     project = Project(documents={
         "base": RootDocument(
             schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, label="Base",
-            payload={"step_seconds": 0.01, "ports": {"outputs": outputs}, "interior": {}},
+            payload={"step_seconds": 0.01, "ports": {"outputs": outputs} if inherited else {}, "interior": {}},
         ),
         "tuned": BasedDocument(
             schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, label="Tuned", base=DocumentBase(document="base"),
+            differences=differences,
         ),
     })
     for name, data in dump_text_project(project, ProjectConfiguration(project="model", store="results")).items():
@@ -173,7 +188,11 @@ def test_based_model_port_order_survives_reopen_and_undo(tmp_path):
         assert response.is_success, response.text
         token = response.json()["result"]["undo_token"]
         saved = opened()
-        assert field(saved, "differences") == {"/ports/outputs": {"order": ["left", "right"]}}
+        ordered = field(saved, "differences")["/ports/outputs"]
+        if inherited:
+            assert ordered == {"order": ["left", "right"]}
+        else:
+            assert list(ordered["value"]) == ["left", "right"]
         assert port_order(saved) == ["left", "right"]
 
         response = client.post(url + "/model/undo", json={
@@ -181,5 +200,7 @@ def test_based_model_port_order_survives_reopen_and_undo(tmp_path):
         })
         assert response.is_success, response.text
         restored = opened()
-        assert not field(restored, "differences")
+        assert field(restored, "differences") == {
+            path: value.model_dump(mode="json") for path, value in differences.items()
+        }
         assert port_order(restored) == ["right", "left"]
