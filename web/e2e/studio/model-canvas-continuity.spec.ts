@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
-import type { ModelDocument } from '../../src/generated/studioContracts';
+import type { StoredModelDocument as ModelDocument } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { palette, readSaved, startProject } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';

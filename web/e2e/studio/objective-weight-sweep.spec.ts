@@ -4,15 +4,15 @@ import { enter, fixture, mapStep, seedManagedProject, sweepLabel, mapCard } from
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-interface Term { id: string; name?: string }
-interface File { kind: string; id: string; document?: { payload?: { terms?: Term[] } } }
+interface Term { label?: string }
+interface File { kind: string; id: string; document?: { payload?: { terms?: Record<string, Term> } } }
 
 /** The ordinary project, with its Objective's one term named Effort and a second term, Speed, after it. */
 async function twoTerms() {
   const files: File[] = await fixture('ordinary-files', '2');
   const objective = files.find(({ id }) => id === 'simple-reaches-objective')!.document!.payload!;
-  const [effort] = objective.terms!;
-  objective.terms = [{ ...effort, name: 'Effort' }, { ...effort, id: 'speed', name: 'Speed' }];
+  const [[key, effort]] = Object.entries(objective.terms!);
+  objective.terms = { [key]: { ...effort, label: 'Effort' }, speed: { ...effort, label: 'Speed' } };
   return files;
 }
 

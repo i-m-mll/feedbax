@@ -1,10 +1,13 @@
 import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
-import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
+import { modelDocumentSchemaId, type StoredModelDocument as ModelDocument, type ModelEditResponse, type StudioProjectDocument } from '../../src/generated/studioContracts';
 import { chooseSweepValue, enter, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { modelEdit, outlineRow, pick, placeFromLibrary } from './fixtures/controls';
 import { rootPayload } from './fixtures/rootPayload';
+
+/** The first attachment on the wire `wire` of `model`. */
+const firstAttachment = (model: ModelDocument, wire: string) => Object.values(model.interior.wires?.[wire]?.attachments ?? {})[0];
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -91,8 +94,8 @@ test('authors and reopens an addressed Model through the project history', async
   });
   const wire = wired.changed[0].element;
   if (wire.kind !== 'wire') throw new Error('Connect did not return a wire address');
-  expect(stored(wired.snapshot).interior.wires?.[wire.id].attachments).toMatchObject([
-    { kind: 'delay', delay: { value: 1, unit: 'st' }, initial_source: { kind: 'value', value: 0 } },
+  expect(Object.values(stored(wired.snapshot).interior.wires?.[wire.id].attachments ?? {})).toMatchObject([
+    { kind: 'delay', delay: { value: 1, unit: 'st' } },
   ]);
   const delay = model.getByRole('button', { name: 'Attachment Delay', exact: true });
   await expect(delay).toHaveAccessibleDescription(/1 st · .+hidden → .+hidden/);
@@ -100,7 +103,7 @@ test('authors and reopens an addressed Model through the project history', async
   await expect(inspector.getByRole('button', { name: 'Delay kind: Value' })).toBeVisible();
   await expect(inspector.getByRole('button', { name: 'Initial kind: Value' })).toBeVisible();
   const delayed = await apply(() => enter(inspector.getByRole('textbox', { name: 'Delay', exact: true }), '0.06 s'));
-  expect(stored(delayed.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({ delay: { value: 0.06, unit: 's' } });
+  expect(firstAttachment(stored(delayed.snapshot), wire.id)).toMatchObject({ delay: { value: 0.06, unit: 's' } });
   await expect(inspector.getByText('3 st')).toBeVisible();
   await model.getByRole('button', { name: 'Split Details', exact: true }).click();
   const secondary = page.locator('[data-slot="secondary"]');
@@ -114,15 +117,16 @@ test('authors and reopens an addressed Model through the project history', async
     await expect(otherHidden.locator('..')).toHaveAttribute('data-verdict', 'allowed');
     await otherHidden.click();
   });
-  expect(stored(linked.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({
+  expect(firstAttachment(stored(linked.snapshot), wire.id)).toMatchObject({
     initial_source: { kind: 'wire', source: { owner: 'component', component: component.id, port: 'hidden' } },
   });
   await model.focus();
   const undone = await apply(() => page.keyboard.press('Meta+Z'), 'undo');
-  expect(stored(undone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({ initial_source: { kind: 'value', value: 0 } });
+  const undoneDelay = firstAttachment(stored(undone.snapshot), wire.id) as { initial_source?: unknown };
+  expect(undoneDelay.initial_source ?? { kind: 'value', value: 0 }).toEqual({ kind: 'value', value: 0 });
   await model.focus();
   const redone = await apply(() => page.keyboard.press('Meta+Shift+Z'), 'undo');
-  expect(stored(redone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({
+  expect(firstAttachment(stored(redone.snapshot), wire.id)).toMatchObject({
     initial_source: { kind: 'wire', source: { owner: 'component', component: component.id, port: 'hidden' } },
   });
 
@@ -182,7 +186,7 @@ test('authors and reopens an addressed Model through the project history', async
   await expect(cell).toHaveCount(1);
   await expect(handle('output', 'hidden').locator('..')).toHaveAttribute('data-side', 'left');
   expect(await cell.evaluate((node) => node.style.transform)).toBe(before);
-  expect(initial.project.documents?.model.schema).toBe('feedbax.spec.model');
+  expect(initial.project.documents?.model.schema).toBe(modelDocumentSchemaId);
 });
 
 test('an Evaluate attachment for the step is stored in a document based on the subject\'s, and reopens', async ({ page, request, studio }, info) => {

@@ -11,9 +11,10 @@ const uniform = (low: number, high: number) => ({ kind: 'draw', family: 'uniform
 
 /** The ordinary Train project with its Objective's first term weighted by `weight`, open on the Objective view. */
 async function open(page: Page, request: APIRequestContext, weight: unknown) {
-  const files = await fixture('ordinary-files', '2') as { kind: string; id: string; document?: { payload: { terms: object[] } } }[];
+  const files = await fixture('ordinary-files', '2') as { kind: string; id: string; document?: { payload: { terms: Record<string, object> } } }[];
   const objective = files.find(({ id }) => id === 'simple-reaches-objective')!.document!;
-  objective.payload.terms[0] = { ...objective.payload.terms[0], weight };
+  const [[key, term]] = Object.entries(objective.payload.terms);
+  objective.payload.terms[key] = { ...term, weight };
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const writes: unknown[] = [];
   page.on('request', (sent) => {
@@ -25,7 +26,7 @@ async function open(page: Page, request: APIRequestContext, weight: unknown) {
   const weightOf = async () => {
     const response = await request.get(projectPath);
     const saved = await response.json() as StudioProjectSnapshot;
-    return (rootPayload(saved.project.documents?.['simple-reaches-objective']) as { terms: { weight: unknown }[] }).terms[0].weight;
+    return Object.values((rootPayload(saved.project.documents?.['simple-reaches-objective']) as { terms: Record<string, { weight: unknown }> }).terms)[0].weight;
   };
   const table = page.locator('[data-slot="primary"]').getByRole('table', { name: 'Objective Terms', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });

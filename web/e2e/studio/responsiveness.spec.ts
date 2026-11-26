@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
-import { blankTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns, type StudioTrialReplayResponse } from '../../src/generated/studioContracts';
+import { blankStoredTask, modelDocumentSchemaId, objectiveDocumentSchemaId, taskDocumentSchemaId, type StoredModelDocument as ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns, type StudioTrialReplayResponse } from '../../src/generated/studioContracts';
 import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runName, shownRunLabel, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { pickRecordedTrial } from './fixtures/controls';
@@ -13,7 +13,7 @@ function modelFixture(cards: number): ModelDocument {
   const wires: NonNullable<ModelDocument['interior']['wires']> = {};
   for (let index = 0; index < cards; index++) {
     const component = `sum-${index}`;
-    components[component] = { kind: 'leaf', name: `Signal aggregation ${index + 1}`, type: 'feedbax.Sum' };
+    components[component] = { kind: 'leaf', label: `Signal aggregation ${index + 1}`, type: 'feedbax.Sum' };
     for (const [offset, port] of ['a', 'b', 'c'].entries()) {
       const previous = index - offset - 1;
       wires[`wire-${index}-${port}`] = {
@@ -24,7 +24,7 @@ function modelFixture(cards: number): ModelDocument {
     }
   }
   return {
-    step_seconds: 0.01, ports: { inputs: [{ id: 'target', name: 'reach_target', type: {} }] },
+    step_seconds: 0.01, ports: { inputs: { target: { label: 'reach_target', type: {} } } },
     interior: { components, wires },
   };
 }
@@ -413,7 +413,7 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
 test('measures mounted Model, Runs and Scene responsiveness @responsiveness', async ({ page, request, browser, studio }, info) => {
   test.setTimeout(100_000);
   const files = await fixture('ordinary-files', '2');
-  const modelFile = files.find((file: { document?: { schema: string } }) => file.document?.schema === 'feedbax.spec.model');
+  const modelFile = files.find((file: { document?: { schema: string } }) => file.document?.schema === modelDocumentSchemaId);
   const stepFile = files.find((file: { kind: string }) => file.kind === 'step');
   const trial = stepFile.step.base.inline.trial_documents;
   delete trial.task;
@@ -423,10 +423,10 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
   const { snapshot, projectPath } = await seedManagedProject(request, [
     modelFile,
     { kind: 'document', id: 'profile-task', document: {
-      schema: 'feedbax.spec.task_document', payload: blankTask,
+      schema: taskDocumentSchemaId, label: 'Task', payload: blankStoredTask,
     } },
     { kind: 'document', id: 'profile-objective', document: {
-      schema: 'feedbax.spec.objective_document', payload: { id: 'profile-objective', terms: [] },
+      schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'profile-objective' },
     } },
     stepFile,
   ]);

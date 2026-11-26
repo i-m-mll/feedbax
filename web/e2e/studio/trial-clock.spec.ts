@@ -73,7 +73,7 @@ test('a link to a field the Model lacks does not stop a sample', async ({ page, 
   const files = await fixture('delayed-reaches-files') as { document?: { payload: Record<string, any> } }[];
   for (const file of files) {
     const payload = file.document?.payload;
-    if (payload?.variables) payload.links = [{ model_field: missing, variable: 'start' }];
+    if (payload?.variables) payload.links = { [missing]: 'start' };
   }
   const { snapshot } = await seedManagedProject(request, files);
   const clock = page.locator('footer.studio-window-bottom').getByRole('group', { name: 'Clock', exact: true });

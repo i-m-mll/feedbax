@@ -30,9 +30,9 @@ test('the Variables table names, types and values a new task\'s variables, and s
   const task = async () => {
     const project = await saved();
     const entry = Object.entries(project.documents ?? {}).find(([name]) => /^task(-\d+)?$/.test(name));
-    return entry?.[1] as { payload: { epochs: unknown[] } } | undefined;
+    return entry?.[1] as { payload: { epochs: object } } | undefined;
   };
-  await expect.poll(async () => (await task())?.payload.epochs.length).toBe(1);
+  await expect.poll(async () => Object.keys((await task())?.payload.epochs ?? {}).length).toBe(1);
   await expect(variables).toHaveCount(0);
 
   const add = async (name: string, type: string, text: string) => {
@@ -124,8 +124,8 @@ test('the Variables table names, types and values a new task\'s variables, and s
   held = new Promise<void>((resolve) => { release = resolve; });
   holding = 'read';
   releaseSave();
-  const stored = async (name: string) => JSON.stringify(((await task())?.payload as unknown as { variables: { name: string; value: unknown }[] })
-    .variables.find((variable) => variable.name === name)?.value);
+  const stored = async (name: string) => JSON.stringify(Object.values(((await task())?.payload as unknown as { variables: Record<string, { label: string; value: unknown }> })
+    .variables).find((variable) => variable.label === name)?.value);
   await expect.poll(() => stored('offset')).toContain('"value":0.1,');
   await expect(value('offset')).toHaveValue('[0.1 m, 0 m]');
   holding = undefined;

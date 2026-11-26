@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { Locator } from '@playwright/test';
-import type { ModelDocument, ModelEditResponse, StudioTrialAuthoringRequest } from '../../src/generated/studioContracts';
+import type { StoredModelDocument as ModelDocument, ModelEditResponse, StudioTrialAuthoringRequest } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -14,7 +14,7 @@ test('a drag dims the input that states another type yet still stores a wire to 
   const modelFile = files.find((file: { id: string }) => file.id === 'point-mass');
   const definition = modelFile.document.payload as ModelDocument;
   // The Model's output takes seconds, so a wire to it from the metre input states a type that differs.
-  definition.ports.outputs![0].type = { shape: [2], unit: 's' };
+  Object.values(definition.ports.outputs!)[0].type = { shape: [2], unit: 's' };
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
   const source = model.locator('[data-id="@inputs"] [data-handleid="output:target_pos"]');
@@ -118,7 +118,7 @@ test('wiring a task signal keeps the Inputs order', async ({ page, request }) =>
   const modelFile = files.find((file: { id: string }) => file.id === 'point-mass');
   const definition = modelFile.document.payload as ModelDocument;
   delete definition.interior.wires!.target;
-  definition.ports.inputs = [];
+  definition.ports.inputs = {};
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
   const inputs = model.locator('[data-id="@inputs"]');

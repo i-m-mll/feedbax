@@ -6,16 +6,16 @@ import { trialPopup } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-type Documents = NonNullable<StudioProjectSnapshot['project']['documents']>;
-
 /** The fixture's Train batch size, which bounds the count the clock samples. */
 const batchSize = 4;
 
-/** The trials the sampling route draws from the project's task under `seed`: the runtime's own trials. */
-async function routeTrials(request: APIRequestContext, documents: Documents, seed: number) {
-  const payload = (name: string) => (documents[name] as unknown as { payload: unknown }).payload;
+/** The trials the sampling route draws for the project's one Train run under `seed`: the runtime's own trials. */
+async function routeTrials(request: APIRequestContext, snapshot: StudioProjectSnapshot, seed: number) {
   const response = await request.post('/api/execution/task-trials/sample', {
-    data: { model: payload('point-mass'), task: payload('delayed-reaches-task'), seed, count: batchSize },
+    data: {
+      project_id: snapshot.project_id, revision: snapshot.revision,
+      run: { variant: 'default', step: 'train', row: 'default' }, seed, count: batchSize,
+    },
   });
   expect(response.ok(), await response.text()).toBe(true);
   const { drawn } = await response.json() as TaskTrialSampleResponse;
@@ -23,12 +23,6 @@ async function routeTrials(request: APIRequestContext, documents: Documents, see
   return drawn.trials;
 }
 
-// Catches a picker that does not start at the nominal trial, a nominal epochs row without the whisker of a drawn
-// length, a shelf that does not shorten the slots, a sample drawn with other boundaries than the runtime's under the
-// same seed, a signal bar before its first cell, a seed that does not reach the sampler or is lost on reload, a shelf
-// row that does not select its signal, a count beyond the step's batch size, and a timeline left in the Task view. In
-// All, catches a trial list left in the picker's popup, a shelf that keeps one epochs row, an epoch drawn as present in every trial (or none) where only some
-// trials are in it, and a Drawn column that shows one trial's value instead of the range.
 test('the clock picks the nominal trial or a sample of a task document, and the shelf draws that trial', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
@@ -36,10 +30,10 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   const period = (documents['point-mass'] as unknown as { payload: { step_seconds: number } }).payload.step_seconds;
   const holdEnd = (trials: Awaited<ReturnType<typeof routeTrials>>, index: number) =>
     trials[index].timeline.find(({ epoch }) => epoch === 'hold')!.end * period;
-  const seeded = await routeTrials(request, documents, 0);
+  const seeded = await routeTrials(request, snapshot, 0);
   let seed = 1;
-  let reseeded = await routeTrials(request, documents, seed);
-  while (holdEnd(reseeded, 0) === holdEnd(seeded, 0)) reseeded = await routeTrials(request, documents, ++seed);
+  let reseeded = await routeTrials(request, snapshot, seed);
+  while (holdEnd(reseeded, 0) === holdEnd(seeded, 0)) reseeded = await routeTrials(request, snapshot, ++seed);
 
   const primary = page.locator('[data-slot="primary"]');
   const footer = page.locator('footer.studio-window-bottom');

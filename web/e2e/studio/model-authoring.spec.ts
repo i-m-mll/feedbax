@@ -1,12 +1,13 @@
 import { expect, test } from './fixtures/studio';
 import { type Locator, type Page } from '@playwright/test';
 import {
-  type ModelDocument, type StudioJobSubmission, type StudioSavedTrainRuns,
+  type StoredModelDocument as ModelDocument, type StudioJobSubmission, type StudioSavedTrainRuns,
   type TaskDocument,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep } from './fixtures/canonicalTrain';
 import { post, readSaved, startProject } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
+import { keyLabelled } from './fixtures/members';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -129,7 +130,7 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   joining = edit();
   await drag(page, inputs.locator('[data-handleid="output:@task:target_pos"]'), handle(cell, 'input:input'));
   stored = await applied(joining);
-  const target = stored.ports.inputs?.find(({ name }) => name === 'target position');
+  const target = keyLabelled(stored.ports.inputs, 'target position');
   expect(target).toBeDefined();
   await expect(inputs.getByRole('img', { name: 'Task', exact: true })).toHaveCount(1);
 
@@ -137,10 +138,10 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   joining = edit();
   await drag(page, handle(readout, 'output:output'), outputs.locator('[data-handleid="input:__new_port__"]'));
   stored = await applied(joining);
-  const command = stored.ports.outputs?.find(({ name }) => name === 'output');
+  const command = keyLabelled(stored.ports.outputs, 'output');
   expect(command).toBeDefined();
   expect(Object.values(stored.interior.wires ?? {})).toContainEqual(expect.objectContaining({
-    source: readoutOutput, target: { owner: 'outputs', port: command!.id },
+    source: readoutOutput, target: { owner: 'outputs', port: command },
   }));
   await tab('Objective').click();
   await objective.getByRole('button', { name: 'Add Term', exact: true }).click();
@@ -177,11 +178,11 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   const authored = await saved();
   const authoredModel = rootPayload(authored.project.documents?.model) as unknown as ModelDocument;
   expect(Object.values(authoredModel.interior.wires ?? {})).toEqual(expect.arrayContaining([
-    expect.objectContaining({ source: { owner: 'inputs', port: target!.id }, target: { owner: 'component', component: cell, port: 'input' } }),
+    expect.objectContaining({ source: { owner: 'inputs', port: target }, target: { owner: 'component', component: cell, port: 'input' } }),
     expect.objectContaining({ source: { owner: 'component', component: cell, port: 'output' },
       target: { owner: 'component', component: readout, port: 'input' } }),
     expect.objectContaining({ source: readoutOutput, target: { owner: 'component', component: plant, port: 'force' } }),
-    expect.objectContaining({ source: readoutOutput, target: { owner: 'outputs', port: command!.id } }),
+    expect.objectContaining({ source: readoutOutput, target: { owner: 'outputs', port: command } }),
   ]));
   const reviewed = async () => {
     const response = await request.get(runsPath, { params: { revision: authored.revision, window_map: 'true' } });

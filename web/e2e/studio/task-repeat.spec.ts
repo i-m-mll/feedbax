@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures/studio';
-import type { StudioProjectSnapshot, TaskDocument } from '../../src/generated/studioContracts';
+import type { StudioProjectSnapshot, StoredTaskDocument as TaskDocument } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -11,8 +11,8 @@ async function files() {
   const all = await fixture('delayed-reaches-files') as File[];
   const task = all.find(({ id }) => id === 'delayed-reaches-task')!.document!.payload;
   const fixed = (steps: number) => ({ kind: 'length', length: { kind: 'literal', value: steps, unit: 'st' }, max_steps: steps }) as const;
-  task.epochs = task.epochs.map((epoch) => epoch.id === 'hold' ? { ...epoch, end: fixed(5) }
-    : epoch.id === 'cue' ? { ...epoch, end: fixed(10) } : epoch);
+  task.epochs.hold.end = fixed(5);
+  task.epochs.cue.end = fixed(10);
   delete task.validation_trials;
   return all;
 }
@@ -50,7 +50,7 @@ test('Repeat brackets the selected columns, its count repeats them on the shelf,
   await page.getByRole('menuitem', { name: 'Repeat', exact: true }).click();
   await expect(bracket).toHaveAttribute('colspan', '2');
   await expect(count).toHaveValue('2');
-  await expect.poll(async () => (await task()).repeats?.map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch]))
+  await expect.poll(async () => Object.values((await task()).repeats ?? {}).map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch]))
     .toEqual([['hold', 'cue']]);
 
   await enter(count, '3');
@@ -64,7 +64,7 @@ test('Repeat brackets the selected columns, its count repeats them on the shelf,
   await target.getByRole('button', { name: 'Variable target', exact: true }).click();
   await page.getByRole('menuitemcheckbox', { name: 'List', exact: true }).click();
   await expect(page.getByRole('menu', { name: 'Variable target', exact: true })).toHaveCount(0);
-  await expect.poll(async () => (await task()).variables.find(({ id }) => id === 'target')?.count).toMatchObject({ kind: 'literal', value: 2 });
+  await expect.poll(async () => (await task()).variables.target?.count).toMatchObject({ kind: 'literal', value: 2 });
 
   const goal = grid.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename goal', exact: true }) })
     .locator('td[data-cell]').first().getByRole('textbox');
@@ -72,7 +72,7 @@ test('Repeat brackets the selected columns, its count repeats them on the shelf,
   await inspector.getByRole('combobox', { name: 'Item', exact: true }).click();
   await page.getByRole('option', { name: 'Each Repeat', exact: true }).click();
   await expect(goal).toHaveValue('target[i]');
-  await expect.poll(async () => (await task()).signals.find(({ id }) => id === 'goal')?.cells[0].value).toMatchObject({
+  await expect.poll(async () => Object.values((await task()).signals.goal?.cells ?? {})[0]?.value).toMatchObject({
     kind: 'call', function: 'index', args: [{ kind: 'name', reference: 'target' }, { kind: 'name', reference: 'i' }],
   });
 
@@ -80,7 +80,7 @@ test('Repeat brackets the selected columns, its count repeats them on the shelf,
   await header('move').click({ modifiers: ['Shift'], position: { x: 4, y: 4 } });
   await header('move').getByRole('button', { name: 'Epoch move', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Repeat', exact: true }).click();
-  await expect.poll(async () => (await task()).repeats?.map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch]))
+  await expect.poll(async () => Object.values((await task()).repeats ?? {}).map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch]))
     .toEqual([['hold', 'cue'], ['cue', 'move']]);
   await expect(grid.locator('tr').filter({ has: page.locator('th[data-repeat]') })).toHaveCount(2);
   await expect(bracket.getByRole('img', { name: 'Problem', exact: true })).toHaveCount(1);

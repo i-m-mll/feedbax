@@ -6,7 +6,7 @@ import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-interface Term { id: string; measure: unknown; weight: unknown; name?: string }
+interface Term { measure: unknown; weight: unknown; label?: string }
 
 /** The ordinary Train project open on its Objective view, whose one term penalises a quantity's squared size. */
 async function open(page: Page, request: APIRequestContext) {
@@ -17,7 +17,7 @@ async function open(page: Page, request: APIRequestContext) {
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   const terms = async () => {
     const saved = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
-    return (rootPayload(saved.project.documents?.['simple-reaches-objective']) as unknown as { terms: Term[] }).terms;
+    return Object.values((rootPayload(saved.project.documents?.['simple-reaches-objective']) as unknown as { terms: Record<string, Term> }).terms);
   };
   const table = page.locator('[data-slot="primary"]').getByRole('table', { name: 'Objective Terms', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
@@ -108,7 +108,7 @@ test('with the Inspector open, an unnamed term shows its name and its Enabled ch
   await page.setViewportSize({ width: 1024, height: 760 });
   const { table, inspector, terms } = await open(page, request);
   const [before] = await terms();
-  expect(before.name).toBeUndefined();
+  expect(before.label).toBeUndefined();
   await expect(table.getByRole('textbox', { name: 'Rename Term 1', exact: true })).toHaveAttribute('placeholder', 'Term 1');
   await table.getByRole('textbox', { name: 'Measure', exact: true }).click();
   const labels = () => inspector.locator('.value-field, [role="group"]').evaluateAll((fields) =>

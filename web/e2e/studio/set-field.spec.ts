@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures/studio';
-import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
+import { setDocumentSchemaId, type StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -11,7 +11,7 @@ async function files() {
   const all = await fixture('delayed-reaches-files') as File[];
   all.find(({ id }) => id === 'train')!.step!.sweep = { axes: { load: { set: 'loads' } } };
   return [...all, { kind: 'document', id: 'loads', document: {
-    schema: 'feedbax.set_document.v1', label: 'Loads',
+    schema: setDocumentSchemaId, label: 'Loads',
     payload: { entries: { light: { label: 'Light' }, mid: { label: 'Mid' }, heavy: { label: 'Heavy' } } },
   } }];
 }

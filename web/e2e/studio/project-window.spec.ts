@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import { type Locator } from '@playwright/test';
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { blankTask, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { blankStoredTask, objectiveDocumentSchemaId, taskDocumentSchemaId, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import {
   captureStudioWindow, chooseSweepValue, enter, fixture, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
@@ -460,10 +460,10 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const [singleModel, chainModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.task_document', payload: blankTask,
+    schema: taskDocumentSchemaId, label: 'Task', payload: blankStoredTask,
   } };
   const objective = { kind: 'document', id: 'objective', document: {
-    schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+    schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
   } };
   const emptyModel = { ...singleModel, id: 'empty-model', document: {
     ...singleModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
@@ -661,10 +661,10 @@ test('a view with nothing to show is dimmed in the rail, and an open one gives w
   const [planarModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.task_document', payload: blankTask,
+    schema: taskDocumentSchemaId, label: 'Task', payload: blankStoredTask,
   } };
   const objective = { kind: 'document', id: 'objective', document: {
-    schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+    schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
   } };
   const flatModel = { ...planarModel, id: 'flat-model', document: {
     ...planarModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },

@@ -14,12 +14,12 @@ test('each term that is on has a row on the shelf, barred where it applies, and 
   const files = await fixture('delayed-reaches-files') as { document?: { payload: Record<string, any> } }[];
   for (const file of files) {
     const payload = file.document?.payload;
-    if (payload?.terms) payload.terms.push(
-      { id: 'reach', name: 'reach', measure: target, measure_type: squared, window: epochs('move', 'hold') },
-      { id: 'held', name: 'held', measure: target, measure_type: squared, window: epochs('hold') },
-      { id: 'off', name: 'off', measure: target, measure_type: squared, enabled: false },
-      { id: 'untyped', name: 'untyped', measure: target, window: epochs('move') },
-    );
+    if (payload?.terms) Object.assign(payload.terms, {
+      reach: { label: 'reach', measure: target, measure_type: squared, window: epochs('move', 'hold') },
+      held: { label: 'held', measure: target, measure_type: squared, window: epochs('hold') },
+      off: { label: 'off', measure: target, measure_type: squared, enabled: false },
+      untyped: { label: 'untyped', measure: target, window: epochs('move') },
+    });
   }
   const { snapshot } = await seedManagedProject(request, files);
   const clock = page.locator('footer.studio-window-bottom').getByRole('group', { name: 'Clock', exact: true });

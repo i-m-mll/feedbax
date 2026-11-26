@@ -1,9 +1,10 @@
 import { expect, test } from './fixtures/studio';
-import type { ModelDocument, ModelEditResponse } from '../../src/generated/studioContracts';
+import type { StoredModelDocument as ModelDocument, ModelEditResponse } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { expectVisibleFocus } from './fixtures/studioAccessibility';
 import { rootPayload } from './fixtures/rootPayload';
 import { palette } from './fixtures/studioKeyboard';
+import { keyLabelled } from './fixtures/members';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -15,7 +16,7 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   if (!firstWire) throw new Error('Expected the saved task wire in the managed fixture');
   const signal = firstWire.source.port;
   delete definition.interior.wires!.target;
-  definition.ports.inputs = [];
+  definition.ports.inputs = {};
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
   const source = model.locator(`[data-handleid="output:@task:${signal}"]`);
@@ -70,10 +71,10 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   if (result.status !== 'applied') throw new Error(JSON.stringify(result));
   const saved = rootPayload(result.snapshot.project.documents![modelFile.id]) as unknown as ModelDocument;
   // The new input takes the name of the Task signal it reads.
-  const taskPort = saved.ports.inputs?.find(({ name }) => name === 'target position');
+  const taskPort = keyLabelled(saved.ports.inputs, 'target position');
   expect(taskPort).toBeDefined();
   expect(Object.values(saved.interior.wires ?? {})).toContainEqual(expect.objectContaining({
-    source: { owner: 'inputs', port: taskPort?.id }, target: firstWire.target,
+    source: { owner: 'inputs', port: taskPort }, target: firstWire.target,
   }));
   await expect(input).toHaveAccessibleDescription('Input · Point m real [2]');
 });
@@ -83,10 +84,10 @@ test('a wire drawn to an occupied input of another type replaces its wire, keepi
   const modelFile = files.find((file: { id: string }) => file.id === 'point-mass');
   const definition = modelFile.document.payload as ModelDocument;
   // The Model's output takes seconds, so a wire to it from the metre input differs in type.
-  definition.ports.outputs![0].type = { shape: [2], unit: 's' };
+  Object.values(definition.ports.outputs!)[0].type = { shape: [2], unit: 's' };
   const drive = definition.interior.wires!.command;
   const original = drive.source;
-  drive.attachments = [{ id: 'gain', kind: 'intervention', operation: 'scale', operands: { factor: { kind: 'value', value: 2 } } }];
+  drive.attachments = { gain: { kind: 'intervention', operation: 'scale', operands: { factor: { kind: 'value', value: 2 } } } };
   const seeded = await seedManagedProject(request, files);
   const { projectPath } = seeded;
   const wire = { composites: [], element: { kind: 'wire', id: 'command' } } as const;

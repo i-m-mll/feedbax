@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { Page } from '@playwright/test';
-import type { StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { modelDocumentSchemaId, taskDocumentSchemaId, type StudioProjectDocument, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
@@ -53,10 +53,10 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
     { kind: 'step', id: 'analyze', step: { kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
   ]);
   // A document is offered by the name the snapshot gives it, as the Model and Task views do.
-  const models = Object.entries(initial.project.documents ?? {}).filter(([, { schema }]) => schema === 'feedbax.spec.model')
+  const models = Object.entries(initial.project.documents ?? {}).filter(([, { schema }]) => schema === modelDocumentSchemaId)
     .map(([id, { label }]) => ({ id, name: label }));
   const tasks = Object.entries(initial.project.documents ?? {})
-    .filter(([, { schema }]) => schema === 'feedbax.spec.python_task' || schema === 'feedbax.spec.task_document')
+    .filter(([, { schema }]) => schema === 'feedbax.spec.python_task' || schema === taskDocumentSchemaId)
     .map(([, { label }]) => label);
   expect(models.length).toBeGreaterThan(0);
 

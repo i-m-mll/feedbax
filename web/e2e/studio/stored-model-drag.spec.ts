@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
-import { blankTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { blankStoredTask, modelDocumentSchemaId, objectiveDocumentSchemaId, taskDocumentSchemaId, type StoredModelDocument as ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { rootPayload } from './fixtures/rootPayload';
 
@@ -11,7 +11,7 @@ function modelFixture(cards: number): ModelDocument {
   const wires: NonNullable<ModelDocument['interior']['wires']> = {};
   for (let index = 0; index < cards; index++) {
     const component = `sum-${index}`;
-    components[component] = { kind: 'leaf', name: `Signal aggregation ${index + 1}`, type: 'feedbax.Sum' };
+    components[component] = { kind: 'leaf', label: `Signal aggregation ${index + 1}`, type: 'feedbax.Sum' };
     for (const [offset, port] of ['a', 'b', 'c'].entries()) {
       const previous = index - offset - 1;
       wires[`wire-${index}-${port}`] = {
@@ -22,7 +22,7 @@ function modelFixture(cards: number): ModelDocument {
     }
   }
   return {
-    step_seconds: 0.01, ports: { inputs: [{ id: 'target', name: 'reach_target', type: {} }] },
+    step_seconds: 0.01, ports: { inputs: { target: { label: 'reach_target', type: {} } } },
     interior: { components, wires },
   };
 }
@@ -297,12 +297,12 @@ test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ 
   try {
     for (const cards of [20, 100]) {
       const { snapshot, projectPath } = await seedManagedProject(request, [
-        { kind: 'document', id: 'model', document: { schema: 'feedbax.spec.model', payload: modelFixture(cards) } },
+        { kind: 'document', id: 'model', document: { schema: modelDocumentSchemaId, label: 'Model', payload: modelFixture(cards) } },
         { kind: 'document', id: 'task', document: {
-          schema: 'feedbax.spec.task_document', payload: blankTask,
+          schema: taskDocumentSchemaId, label: 'Task', payload: blankStoredTask,
         } },
         { kind: 'document', id: 'objective', document: {
-          schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+          schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
         } },
         { kind: 'step', id: 'train', step: { kind: 'train', base: { inline: { trial_documents: {
           model: { document: 'model' }, task: { document: 'task' },

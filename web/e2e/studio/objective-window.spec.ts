@@ -13,7 +13,7 @@ test("a term's interval, authored in its Window cell, applies on the shelf over 
   const files = await fixture('delayed-reaches-files') as { document?: { payload: Record<string, any> } }[];
   for (const file of files) {
     const payload = file.document?.payload;
-    if (payload?.terms) payload.terms.push({ id: 'pulse', name: 'pulse', measure: target, measure_type: squared });
+    if (payload?.terms) payload.terms.pulse = { label: 'pulse', measure: target, measure_type: squared };
   }
   const { snapshot } = await seedManagedProject(request, files);
   const clock = page.locator('footer.studio-window-bottom').getByRole('group', { name: 'Clock', exact: true });

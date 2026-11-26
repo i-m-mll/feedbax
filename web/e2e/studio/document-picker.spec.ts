@@ -284,9 +284,9 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
   // `sibling` shares the Objective, so the edit asks where it applies.
   await page.getByRole('menuitem', { name: 'All 2 Steps', exact: true }).click();
   // A measure that names no signal is stored as typed, and its Problem keeps the step from running.
-  await expect.poll(async () => (rootPayload((await saved()).project.documents?.[objective!]) as {
-    terms: { measure: unknown }[];
-  }).terms[0].measure).toEqual({ kind: 'unresolved', text: 'sqnorm(absent)' });
+  await expect.poll(async () => Object.values((rootPayload((await saved()).project.documents?.[objective!]) as {
+    terms: Record<string, { measure: unknown }>;
+  }).terms)[0].measure).toEqual({ kind: 'unresolved', text: 'sqnorm(absent)' });
   expect((await trainProblems()).status).toBe('cannot_run');
 });
 

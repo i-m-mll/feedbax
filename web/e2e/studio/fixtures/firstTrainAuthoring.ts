@@ -1,12 +1,13 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import {
-  firstTrainTask, type ModelDocument, type ObjectiveDocument, type StudioProjectSnapshot, type StudioSavedTrainRuns,
+  firstTrainTask, type StoredModelDocument as ModelDocument, type ObjectiveDocument, type StudioProjectSnapshot, type StudioSavedTrainRuns,
   type StudioTrialAuthoring, type TaskDocument,
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
 import { pick } from './controls';
 import { activate, activateMenuItem, number, palette, post, readSaved, startProject } from './studioKeyboard';
 import { rootPayload } from './rootPayload';
+import { keyLabelled } from './members';
 
 /** The Task document a first Train creates: simple reaches, named by its label. */
 const taskDocument = 'simple-reaches';
@@ -202,22 +203,22 @@ export async function authorFirstTrain(
     } },
     [plantId!]: { kind: 'leaf', type: 'feedbax.PointMass' },
   });
-  const reachPort = savedModel.ports.inputs?.find(({ name }) => name === 'target position');
-  const commandPort = savedModel.ports.outputs?.find(({ name }) => name === 'output');
-  expect(reachPort?.id).toBeTruthy();
-  expect(commandPort?.id).toBeTruthy();
+  const reachPort = keyLabelled(savedModel.ports.inputs, 'target position');
+  const commandPort = keyLabelled(savedModel.ports.outputs, 'output');
+  expect(reachPort).toBeTruthy();
+  expect(commandPort).toBeTruthy();
   const linearOutput = { owner: 'component', component: linearId, port: 'output' };
   const wires = Object.values(savedModel.interior.wires ?? {});
   expect(wires).toHaveLength(3);
   expect(wires).toEqual(expect.arrayContaining([
     expect.objectContaining({
-      source: { owner: 'inputs', port: reachPort!.id },
+      source: { owner: 'inputs', port: reachPort },
       target: { owner: 'component', component: linearId, port: 'input' },
     }),
     expect.objectContaining({
       source: linearOutput, target: { owner: 'component', component: plantId, port: 'force' },
     }),
-    expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort!.id } }),
+    expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort } }),
   ]));
   expect(rootPayload(saved.project.documents?.[taskDocument])).toEqual({
     ...shipped, links: [{ model_field: plantLink, variable: 'start' }],
@@ -232,7 +233,7 @@ export async function authorFirstTrain(
   });
   const measureArgument = 'args' in term.measure ? term.measure.args?.[0] : undefined;
   expect(JSON.parse(measureArgument && 'reference' in measureArgument ? measureArgument.reference : 'null')).toEqual({
-    composites: [], element: { kind: 'port', end: { owner: 'outputs', port: commandPort!.id } },
+    composites: [], element: { kind: 'port', end: { owner: 'outputs', port: commandPort } },
   });
   const before = await plan(saved.revision);
   expect(before.window_map?.problems).toEqual([]);

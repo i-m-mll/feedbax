@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import type { ModelDocument, ModelEditResponse, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import type { StoredModelDocument as ModelDocument, StoredPhysicalInterior, ModelEditResponse, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { palette } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
@@ -29,10 +29,11 @@ async function revealModel(page: Page, url: string) {
 function storedConnections(current: StudioProjectDocument['snapshot']) {
   const document = rootPayload(current.project.documents?.['reach-model']) as unknown as ModelDocument;
   const component = document.interior.components?.equations;
-  if (component?.kind !== 'composite' || !('connections' in component.interior)) {
+  const interior = component?.kind === 'composite' ? component.interior : undefined;
+  if (!interior?.physical_domain) {
     throw new Error('Expected a stored Equations interior');
   }
-  return component.interior.connections ?? {};
+  return (interior as StoredPhysicalInterior).connections ?? {};
 }
 
 async function openSaved(request: APIRequestContext, projectPath: string) {

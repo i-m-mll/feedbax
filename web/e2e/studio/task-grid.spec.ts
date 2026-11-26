@@ -5,8 +5,8 @@ import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonica
 test.use({ viewport: { width: 1440, height: 900 } });
 
 interface Task {
-  epochs: { id: string; name: string }[];
-  signals: { id: string; cells: { id: string; first_epoch: string; last_epoch: string }[] }[];
+  epochs: Record<string, { label: string }>;
+  signals: Record<string, { cells: Record<string, { first_epoch: string; last_epoch: string }> }>;
 }
 
 // Catches a Merge that writes more than one cell or loses the span on reload, an absent cell drawn the same as a cell
@@ -35,7 +35,7 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
   await page.getByRole('menu', { name: 'Task Document', exact: true }).getByRole('menuitem', { name: 'New', exact: true }).click();
   await page.getByRole('menuitem', { name: /delayed/i }).click();
   await page.keyboard.press('Escape');
-  await expect.poll(async () => (await task())?.epochs.map(({ name }) => name)).toEqual(['hold', 'cue', 'move']);
+  await expect.poll(async () => Object.values((await task())?.epochs ?? {}).map(({ label }) => label)).toEqual(['hold', 'cue', 'move']);
 
   // target_on is absent in hold, where it reads its absent value 0; its cell over cue and move is given 0.
   await enter(cells('target on').nth(1).getByRole('textbox'), '0');
@@ -55,8 +55,7 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
   await cells('target position').nth(1).click({ modifiers: ['Shift'], position: { x: 4, y: 4 } });
   await page.getByRole('button', { name: 'Cells target position', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Merge', exact: true }).click();
-  await expect.poll(async () => (await task())?.signals.find(({ id }) => id === 'target_pos')?.cells
-    .map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch])).toEqual([['hold', 'move']]);
+  await expect.poll(async () => Object.values((await task())?.signals.target_pos?.cells ?? {}).map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch])).toEqual([['hold', 'move']]);
   await expect(cells('target position')).toHaveCount(1);
   await expect(cells('target position')).toHaveAttribute('colspan', '3');
 
@@ -65,22 +64,21 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
   await grid.getByRole('img', { name: 'Move cue', exact: true }).dragTo(header('hold'), {
     targetPosition: { x: 8, y: hold!.height / 2 },
   });
-  await expect.poll(async () => (await task())?.epochs.map(({ name }) => name)).toEqual(['cue', 'hold', 'move']);
+  await expect.poll(async () => Object.values((await task())?.epochs ?? {}).map(({ label }) => label)).toEqual(['cue', 'hold', 'move']);
 
   for (const name of ['reach', 'settle']) {
     await grid.getByRole('button', { name: 'Add Epoch', exact: true }).click();
     await enter(grid.getByRole('textbox', { name: 'Add Epoch', exact: true }), name);
     await expect(header(name)).toBeVisible();
   }
-  await expect.poll(async () => (await task())?.epochs.length).toBe(5);
+  await expect.poll(async () => Object.keys((await task())?.epochs ?? {}).length).toBe(5);
 
   // Moving cue out of the merged cell leaves it over hold and move, the cell still stored once.
   await page.reload();
   await openTask();
   await expect(cells('target position').locator('xpath=self::*[@colspan="2"]')).toHaveCount(1);
   await expect(cells('target position').getByRole('textbox', { name: 'target position', exact: true })).toHaveCount(1);
-  expect((await task())?.signals.find(({ id }) => id === 'target_pos')?.cells
-    .map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch])).toEqual([['hold', 'move']]);
+  expect(Object.values((await task())?.signals.target_pos?.cells ?? {}).map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch])).toEqual([['hold', 'move']]);
   await expect(grid.locator('th[data-epoch]')).toHaveCount(5);
 
   await page.setViewportSize({ width: 900, height: 900 });
@@ -106,8 +104,8 @@ test('a Task from an example shows its label, and typing into an absent cell mak
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const saved = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project;
-  const spans = async () => ((await saved()).documents?.['delayed-reaches'] as { payload: Task } | undefined)?.payload
-    .signals.find(({ id }) => id === 'target_pos')?.cells.map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch]);
+  const spans = async () => Object.values(((await saved()).documents?.['delayed-reaches'] as { payload: Task } | undefined)?.payload
+    .signals.target_pos?.cells ?? {}).map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch]);
   const primary = page.locator('[data-slot="primary"]');
   const picker = primary.locator('.studio-window-slot__header').getByRole('button', { name: /^Task Document / });
   const grid = primary.getByRole('tabpanel').getByRole('table', { name: 'Epochs', exact: true });
