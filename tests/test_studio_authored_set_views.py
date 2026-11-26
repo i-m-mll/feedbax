@@ -14,22 +14,16 @@ from web.e2e.studio.fixtures.canonical_train import hold_campaign_files
 
 
 @pytest.fixture
-def campaign(tmp_path):
+def campaign(tmp_path, request):
     files = hold_campaign_files()
     documents = {file["id"]: file["document"] for file in files if file["kind"] == "document"}
     steps = {file["id"]: file["step"] for file in files if file["kind"] == "step"}
-    swept = deepcopy(steps["train"])
-    swept["label"] = "Swept training"
-    placement = swept.pop("set_fields")["kicks"]
-    sweep_set = deepcopy(documents[placement["axis"]["set"]])
-    sweep_set["label"] = "Swept command kicks"
-    for entry in sweep_set["payload"]["entries"].values():
-        (path, value), = entry["differences"].items()
-        parent, _, attachment = path.rpartition("/")
-        entry["differences"] = {parent: {"value": {attachment: value["value"]}}}
-    documents["sweep-kicks"] = sweep_set
-    swept["sweep"] = {"axes": {"kicks": {"set": "sweep-kicks"}}}
-    steps["swept"] = swept
+    if getattr(request, "param", None) == "swept":
+        swept = deepcopy(steps["train"])
+        swept["label"] = "Swept training"
+        placement = swept.pop("set_fields")["kicks"]
+        swept["sweep"] = {"axes": {"kicks": placement["axis"]}}
+        steps["swept"] = swept
     project = Project.model_validate({"documents": documents, "steps": steps})
     app = create_app(projects_dir=tmp_path)
     folders = app.state.project_folders
@@ -100,13 +94,13 @@ def test_task_and_model_project_the_authored_model_members(campaign, step):
     )
 
 
-@pytest.mark.parametrize(("step", "row", "local_axis", "origins"), [
-    ("train", "default", "kicks", {"kicks": ("train", ("drift", "pulse"))}),
+@pytest.mark.parametrize(("step", "row", "local_axis", "origins", "campaign"), [
+    ("train", "default", "kicks", {"kicks": ("train", ("drift", "pulse"))}, None),
     ("kick-check", "default", "kick-bank", {
         "kicks": ("train", ("drift", "pulse")), "kick-bank": ("kick-check", ("drift", "pulse")),
-    }),
-    ("swept", "kicks=pulse-x-minus", None, {"kicks": ("swept", ("pulse",))}),
-])
+    }, None),
+    ("swept", "kicks=pulse-x-minus", None, {"kicks": ("swept", ("pulse",))}, "swept"),
+], indirect=["campaign"])
 def test_set_variables_carry_the_label_of_their_authored_entry(campaign, step, row, local_axis, origins):
     *_prefix, authored = campaign
     view = _post("authoring/trials", step, campaign, row=row)
