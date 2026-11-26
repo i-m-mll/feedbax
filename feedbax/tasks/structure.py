@@ -9,6 +9,7 @@ from typing import assert_never
 
 from feedbax.contracts.expression_storage import EXPRESSION_MEMBER_RESERVED_KEYS
 from feedbax.contracts.expression_values import LiteralValue, Problem, ProblemCode, UnresolvedValue, ValueBase, ValueType
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.task_document import Cell, Epoch, Length, Link, Repeat, Signal, TaskDocument, Variable
 from feedbax.contracts.task_structure import (
     AddMember, MakeAbsent, MakePresent, MoveMember, RemoveMember, RenameMember, SetLink, SetSpan, SetType,
@@ -49,9 +50,13 @@ def restructure(document: TaskDocument, change: TaskStructureChange) -> TaskDocu
                 for item in document.signals
             )})
         case SetLink():
-            links = tuple(link for link in document.links if link.model_field != change.model_field)
+            try:
+                field = ModelAddress.from_authored_text(change.address_text).to_text()
+            except ValueError as error:
+                return Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=("links", change.address_text))
+            links = tuple(link for link in document.links if link.model_field != field)
             if change.variable is not None:
-                links = (*links, Link(model_field=change.model_field, variable=change.variable))
+                links = (*links, Link(model_field=field, variable=change.variable))
             return document.model_copy(update={"links": links})
         case RepeatEpochs():
             order = tuple(epoch.id for epoch in document.epochs)
