@@ -29,14 +29,15 @@ from tests.support.host import admit, held_until_released, job_row, run_job, tok
 from tests.test_text_project_plan_cli import _edit, _write_walkthrough
 
 
-def _write_advice_project(root, documents):
+def _write_advice_project(root, documents, *, initialize_store=True):
     project = Project.model_validate({"documents": documents})
     files = dump_text_project(project, ProjectConfiguration(project="study", store="results"))
     for name, data in files.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    ImmutableArtifactBlobProvider(root / "results").store_object(b"family advice check")
+    if initialize_store:
+        ImmutableArtifactBlobProvider(root / "results").store_object(b"family advice check")
 
 
 def test_check_advises_on_unrolled_families_without_writing_files(tmp_path, capsys):
@@ -110,7 +111,7 @@ def test_check_advises_on_unrolled_families_without_writing_files(tmp_path, caps
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-def test_check_locates_unrolled_family_created_by_a_based_difference(tmp_path, capsys):
+def test_check_locates_unrolled_family_in_a_fresh_based_project(tmp_path, capsys):
     schema = STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
     _write_advice_project(tmp_path, {
         "base": {"schema": schema, "label": "Base", "payload": {
@@ -120,15 +121,28 @@ def test_check_locates_unrolled_family_created_by_a_based_difference(tmp_path, c
             "/terms/second": {"value": {"measure": "x * 4"}},
         }},
         "copy": {"schema": schema, "label": "Copy", "base": {"document": "second"}},
-    })
+    }, initialize_store=False)
 
     assert main(["check", str(tmp_path), "--json"]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
-    (item,) = StoreCheckResult.model_validate_json(captured.out).advice
+    report = StoreCheckResult.model_validate_json(captured.out)
+    assert report.verified_objects == report.verified_bytes == 0 and not report.findings
+    (item,) = report.advice
     assert (item.address, item.path, item.members, item.count) == (
         "documents/second.json", "/differences/~1terms~1second", ("first", "second"), 2,
     )
+    store = tmp_path / "results"
+    assert not store.exists()
+    assert main(["check", str(tmp_path), "--attempt", "missing", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and StudioProjectWindowMapProblem.model_validate_json(captured.err).code == "io_error"
+    assert not store.exists()
+    store.mkdir()
+    assert main(["check", str(tmp_path), "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and StudioProjectWindowMapProblem.model_validate_json(captured.err).code == "io_error"
+    assert not tuple(store.iterdir())
 
 
 def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, monkeypatch, capsys):

@@ -6,6 +6,15 @@ from pathlib import Path
 from feedbax.bin.project_commands import CommandOutput
 
 
+def _absent(path: Path) -> bool:
+    """Distinguish an absent Store path from an existing path with broken contents."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    return False
+
+
 def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "project_dir", nargs="?", type=Path, default=Path("."),
@@ -23,6 +32,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
 def run(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.bin.family_advice import unrolled_family_advice
     from feedbax.contracts.project_io import locate_text_project, read_text_project_snapshot
+    from feedbax.contracts.store_check import StoreCheckResult
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.store_check import check_store
 
@@ -30,7 +40,12 @@ def run(args: argparse.Namespace, output: CommandOutput) -> int:
         root, declaration = locate_text_project(args.project_dir)
         project = read_text_project_snapshot(root, declaration=declaration)
         store = ImmutableArtifactBlobProvider(project.store_path)
-        report = check_store(store, attempt=args.attempt)
+        if args.attempt is None and _absent(project.root / project.configuration.store):
+            report = StoreCheckResult(
+                store=str(store.root), attempt=None, receipt=None, verified_objects=0, verified_bytes=0, findings=(),
+            )
+        else:
+            report = check_store(store, attempt=args.attempt)
     except (OSError, ValueError) as error:
         output.failure(error, path=args.project_dir)
         return 2
