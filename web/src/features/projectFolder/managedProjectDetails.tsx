@@ -29,7 +29,7 @@ import { useStoredModelView } from './model/ModelView';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { ConfirmRunRemoval } from './runRemoval';
 import type { AskStore } from './storeChoice';
-import { modelSchema } from './model/modelGraph';
+import { modelDocumentSchemaId } from '@/generated/studioContracts';
 import { elementKey, isModelAddress, selectedElement, type ElementAddress, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { useStore } from 'zustand';
 import { usePlayhead, type PlayheadStore, type TrialShowing } from '@/components/timeline/trialClock';
@@ -309,7 +309,7 @@ export function useStoredModel(editor: ProjectEditController, step: PlanStepView
   const storedDocument = storedId ? saved.project.documents?.[storedId] : undefined;
   const storedPayload = storedId ? documentPayload(saved.project.documents, saved.composed, storedId) : undefined;
   return useMemo((): StoredModel | undefined => {
-    if (!storedId || storedDocument?.schema !== modelSchema) return undefined;
+    if (!storedId || storedDocument?.schema !== modelDocumentSchemaId) return undefined;
     const result = StoredModelDocumentSchema.safeParse(storedPayload);
     return result.success ? { id: storedId, value: result.data } : undefined;
   }, [storedId, storedDocument, storedPayload]);

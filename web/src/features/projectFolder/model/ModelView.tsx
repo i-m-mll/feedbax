@@ -52,7 +52,7 @@ import { WindowEditor } from '../WindowEditor';
 import { windowEpochs } from '../StudioTrialAuthoring';
 import {
   addressKey, isTemplate, libraryEntries, newEquations, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
-  holds, modelRegistry, portId, portTypeLabel, sentAttachment, sentComponent, shortName, storedRemoved, wireEnd, withRemoved, chainItems,
+  holds, modelRegistry, portId, portTypeLabel, sentAttachment, shortName, wireEnd, withRemoved, chainItems,
   type Attachment, type Component, type LibraryEntry, type PhysicalInterior, type Port,
 } from './modelGraph';
 import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
@@ -60,7 +60,7 @@ import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from 
 import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
 import { awaitedValue, commandQueue } from '../commandQueue';
 import { modelOutline } from './modelOutline';
-import { freshKey } from '../memberKeys';
+import { modelMemberKey } from '../memberKeys';
 import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
 
 type Operation = ModelEditCommand['operation'];
@@ -837,14 +837,13 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       op: 'add_component', graph, position, id,
       ...(source && to && (source.owner === 'inputs' || source.owner === 'component')
         ? { connect_from: source, connect_to_port: to } : {}),
-      component: sentComponent(component),
+      component,
     })).then((ok) => { if (ok) setSearch(undefined); });
   }
   /** Draws `component` at `position` from now until `adding` it under the id it is given has been answered. */
   async function place(component: Component, position: ModelPosition, flipped: boolean, adding: (id: string) => Promise<boolean>) {
     if (!model) return false;
-    const taken = [...Object.keys(interior?.components ?? {}), ...placing.map(({ id }) => id)];
-    const item = { document: model.id, graph: graphId, id: freshKey(component.label, taken), component, position, flipped };
+    const item = { document: model.id, graph: graphId, id: modelMemberKey(), component, position, flipped };
     setPlacing((prior) => [...prior, item]);
     try {
       return await adding(item.id);
@@ -921,7 +920,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       }
       const component = drawn(entry);
       void place(component, point, flipped, (id) => apply(studioName('insertComponent'), {
-        op: 'insert_physical_component', address, component: sentComponent(component), position: point, flipped, id,
+        op: 'insert_physical_component', address, component, position: point, flipped, id,
         a_port: ports.a.end.port, b_port: ports.b.end.port,
       }));
       return;
@@ -935,7 +934,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const { input, output } = ports;
     const component = registered(entry);
     void place(drawn(entry), point, flipped, (id) => apply(studioName('insertComponent'), {
-      op: 'insert_component', address, component: sentComponent(component), position: point, flipped, id,
+      op: 'insert_component', address, component, position: point, flipped, id,
       input_port: input.end.port, output_port: output.end.port,
     }));
   }
@@ -1040,7 +1039,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
   /** The attachments a document or value removed from the wire at `owner`, drawn where they were. */
   function removedAttachments(owner: ModelAddress) {
-    return removed.map(storedRemoved).flatMap(({ address, definition }) => address.element.kind === 'attachment' &&
+    return removed.flatMap(({ address, definition }) => address.element.kind === 'attachment' &&
       addressKey(at(address, address.element.parent)) === addressKey(owner)
       ? [{ ...definition as Exclude<Attachment, 'id'>, id: address.element.id } as Attachment] : []);
   }
@@ -1317,7 +1316,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
   function addAttachment(address: ModelAddress, kind: Attachment['kind']) {
     const list = effective.get(addressKey(address)) ?? [];
-    const id = freshKey(kind, list.map((each) => each.id));
+    const id = modelMemberKey();
     const item: Attachment = kind === 'delay' ? { id, kind, delay: { unit: 'st', value: 1 }, initial_source: { kind: 'value', value: 0 } }
       : kind === 'hold' ? { id, kind }
       : kind === 'intervention' ? { id, kind, operation: 'scale', operands: { factor: { kind: 'value', value: 1 } } }

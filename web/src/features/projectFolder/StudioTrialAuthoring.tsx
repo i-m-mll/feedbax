@@ -37,7 +37,7 @@ import type {
   StudioEvaluateValueSource, StudioTrialField, TrialTermAggregate,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
-import { freshKey, hasMember } from './memberKeys';
+import { hasMember } from './memberKeys';
 import { addressKey } from './model/modelGraph';
 import { BatchTrace, TermTrace, TrialTrace } from './task/SignalTrace';
 import { epochBoundaries, signalAggregate, signalSteps, type TrialShown } from './task/trialSample';
@@ -59,6 +59,7 @@ export type TrialChangeScope = (change: Change) => StudioTrialAuthoringRequest['
  * only when the service refuses the write.
  */
 export type Commit = (name: string, change: Change, removes?: boolean) => Promise<FieldRefusal | undefined>;
+export type AddTerm = (term: StoredObjectiveTerm) => Promise<{ term: string } | { refused: FieldRefusal } | undefined>;
 /** A step's Trial authoring, with what the changed values of its Task and Objective documents differ from. */
 export type TrialView = StudioTrialAuthoring & {
   readonly changedFrom: { readonly task?: ChangeSource; readonly objective?: ChangeSource };
@@ -187,9 +188,14 @@ export function useTrialAuthoring(
   /** Writes the term on `first`, or relating it to `second`; answers with the new term's id, or why it was refused. */
   const relate = send && (async (first: Relation['first'], second?: Relation['second']) => {
     const answer = await send(studioName('relate'), { kind: 'relate', first, ...second && { second } });
-    return typeof answer === 'string' ? { refused: answer } : answer?.related_term ? { term: answer.related_term } : undefined;
+    return typeof answer === 'string' ? { refused: answer } : answer?.created_term ? { term: answer.created_term } : undefined;
   });
-  return { view, error: query.error, retry: () => { void query.refetch(); }, commit, relate };
+  /** Adds `term` to the Objective; answers with the key the service gave it, or why it was refused. */
+  const addTerm: AddTerm | undefined = send && (async (term) => {
+    const answer = await send(studioName('addTerm'), { kind: 'add_objective_term', term });
+    return typeof answer === 'string' ? { refused: answer } : answer?.created_term ? { term: answer.created_term } : undefined;
+  });
+  return { view, error: query.error, retry: () => { void query.refetch(); }, commit, relate, addTerm };
 }
 
 export function TrialTaskForm({ view, commit }: { view: TrialView; commit?: Commit }) {
@@ -383,14 +389,11 @@ const termPath = (key: string, ...field: string[]) => authoredPointer(['terms', 
 /** A term's shown name: its label, or its place among the terms. */
 const termName = (term: StoredObjectiveTerm, index: number) => term.label ?? studioAccessibleName('term', index + 1);
 
-/**
- * The edit that puts the term `key` at `index`: the whole term map in its new order. It stands in for an order edit,
- * which the Service is to add.
- */
+/** The edit that puts the term `key` at `index` among the terms. */
 function reorderTerms(terms: Terms, key: string, index: number): ProjectValueEdit {
-  const keys = Object.keys(terms).filter((each) => each !== key);
-  keys.splice(index, 0, key);
-  return write('/terms', Object.fromEntries(keys.map((each) => [each, terms[each]])) as unknown as JsonValue, true);
+  const order = Object.keys(terms).filter((each) => each !== key);
+  order.splice(index, 0, key);
+  return { op: 'order', path: '/terms', order };
 }
 
 function termFields(view: TrialView, key: string, term: StoredObjectiveTerm, commit?: Commit, runs?: TrialRuns,
@@ -474,7 +477,7 @@ function measured(view: StudioTrialAuthoring) {
 }
 
 /** The term that penalises `chosen`'s squared size. */
-function newTerm(chosen: ReturnType<typeof measured>[number]) {
+function newTerm(chosen: ReturnType<typeof measured>[number]): StoredObjectiveTerm {
   return {
     label: humanizeLabel(chosen.name),
     measure: { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: chosen.id }] },
@@ -482,7 +485,7 @@ function newTerm(chosen: ReturnType<typeof measured>[number]) {
       Object.entries(chosen.type.dimensions ?? {}).map(([name, exponent]) => [name, exponent * 2]),
     ) },
     weight: { kind: 'literal', value: 1 }, enabled: true,
-  } satisfies JsonValue;
+  };
 }
 
 /**
@@ -490,9 +493,9 @@ function newTerm(chosen: ReturnType<typeof measured>[number]) {
  * Term column lists the quantities a term can measure, and the term added is selected with its Measure focused. A
  * term is renamed by clicking its name, moved by dragging its handle, and removed from its row's menu.
  */
-export function TrialObjectiveTable({ view, commit, selected, select, runs, scores }: {
-  view: TrialView; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void; runs?: TrialRuns;
-  scores?: TermScores;
+export function TrialObjectiveTable({ view, commit, addTerm, selected, select, runs, scores }: {
+  view: TrialView; commit?: Commit; addTerm?: AddTerm; selected?: TermSelection; select(term: string, field?: string): void;
+  runs?: TrialRuns; scores?: TermScores;
 }) {
   const columns = scores ? scoredColumns : authoredColumns;
   const terms = view.objective?.terms ?? {};
@@ -511,17 +514,15 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs, scor
     save(studioAccessibleName('move', studioName('term')), [reorderTerms(terms, id, index)]));
   const sources = measured(view);
   const add = async (chosen: (typeof sources)[number]) => {
-    const value = newTerm(chosen);
-    const key = freshKey(chosen.name, keys);
-    const edits = has(view.objective ?? {}, 'terms') ? [write(termPath(key), value, false)] : [write('/terms', { [key]: value }, false)];
-    if (await save(studioName('addTerm'), edits)) return;
-    select(key, 'measure');
-    setAdded(key);
+    const answer = await addTerm?.(newTerm(chosen));
+    if (!answer || 'refused' in answer) return;
+    select(answer.term, 'measure');
+    setAdded(answer.term);
   };
   return <Table aria-label={studioName('objectiveTerms')} held={1} heldEnd columns={columns.map((id) => columnWidths[id])}
     box={{ ref: box, axis: 'both', className: 'h-full min-h-0 [--fade-inset-top:var(--row-height)]' }}
     moveRow={move}
-    addRow={{ label: studioName('addTerm'), disabled: !commit || !sources.length, items: sources.map((source) =>
+    addRow={{ label: studioName('addTerm'), disabled: !addTerm || !sources.length, items: sources.map((source) =>
       <MenuItem key={source.id} onClick={() => { void add(source); }}>{humanizeLabel(source.name)}</MenuItem>) }}>
     <thead className="sticky top-0 z-10"><TableHeaderRow>{columns.map((id) =>
       <TableHeaderCell scope="col" key={id} className={clsx(id === 'enabled' && 'text-center')}>

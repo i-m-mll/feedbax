@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Document } from '@/generated/studioContracts';
 import { baseChain } from './documentPayload';
 import { documentTree } from './useProjectDocuments';
-import { modelSchema as schema } from './model/modelGraph';
+import { modelDocumentSchemaId as schema } from '@/generated/studioContracts';
 
 const documents = {
   arm: { schema, label: 'Arm', payload: {} },

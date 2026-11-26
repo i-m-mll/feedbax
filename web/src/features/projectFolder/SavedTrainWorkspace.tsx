@@ -2119,7 +2119,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 onClick={() => selection.select(selectStep(state, train.id))}>{train.label}</Button>,
               body: withProblem(<FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
                 onFocused={() => setFieldFocus(undefined)}>
-                <TrialObjectiveTable view={value} commit={scoring} selected={term} select={choose(objectiveDocument)} runs={runs} scores={scores} />
+                <TrialObjectiveTable view={value} commit={scoring} addTerm={train ? undefined : trial.addTerm} selected={term} select={choose(objectiveDocument)} runs={runs} scores={scores} />
               </FocusedFields>),
               drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={scoring} selected={term?.term} select={choose(objectiveDocument)} />,
               inspector: termInspector,

@@ -13,3 +13,6 @@ export function freshKey(name: string, taken: Iterable<string>): string {
 
 /** Whether the keyed collection `members` has a member `key`. */
 export const hasMember = (members: object, key: string) => Object.prototype.hasOwnProperty.call(members, key);
+
+/** A key for a Model member the client makes: a UUID, led by a letter as a member key must be. */
+export const modelMemberKey = () => `m-${crypto.randomUUID()}`;

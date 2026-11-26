@@ -8,7 +8,6 @@ import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 
-export const modelSchema = 'feedbax.spec.model.v2';
 export type Component = StoredLeafComponent | StoredCompositeComponent;
 export type GraphOwner = StoredModelDocument | StoredCompositeComponent;
 export type GraphInterior = StoredGraphInterior;
@@ -35,6 +34,13 @@ export type Registry = ReadonlyMap<string, ComponentDefinition>;
 /** The attachment `item` as its chain stores it, under its key. */
 export function storedAttachment({ id: _key, ...item }: Attachment): StoredAttachment {
   return item;
+}
+
+/** The attachment `item` as an attachment edit sends it: its key in the body, a probe's label as its name. */
+export function sentAttachment(item: Attachment): AddModelAttachment['attachment'] {
+  if (item.kind !== 'probe') return item;
+  const { label, ...probe } = item;
+  return { ...probe, name: label };
 }
 
 /** The attachments of `chain` in its order, each with its key. */
@@ -272,36 +278,11 @@ export function holds(holder: ModelAddress, address: ModelAddress) {
   return owners(address.element).some((element) => canonicalJsonV2(element) === key);
 }
 
-/**
- * `component` as an edit sends it. It stands in until the Service takes stored components, keyed by the edit's address.
- */
-export const sentComponent = <Sent extends Component | RegisteredComponent>(component: Sent) =>
-  component as unknown as Sent extends RegisteredComponent ? RegisteredComponent : Exclude<AddComponent['component'], RegisteredComponent>;
-
-/**
- * `item` as an edit sends it, its key in the edit's address. It stands in until the Service takes stored attachments.
- */
-export const sentAttachment = (item: Attachment) => storedAttachment(item) as unknown as AddModelAttachment['attachment'];
-
-/** A removed element as its document stored it. */
-export interface StoredRemoved {
-  readonly address: ModelAddress;
-  readonly definition: Component | ModelWire | ModelPhysicalConnection | StoredAttachment;
-  readonly wires?: Readonly<Record<string, ModelWire>>;
-  readonly connections?: Readonly<Record<string, ModelPhysicalConnection>>;
-}
-
-/**
- * `removed` in its stored form. It stands in until the Service sends removed definitions stored, the member key in the
- * address.
- */
-export const storedRemoved = (removed: ModelRemovedElement): StoredRemoved => removed as unknown as StoredRemoved;
-
 /** `model` with each of `removed` put back where it was, so that what a document or value removes can be drawn in place. */
 export function withRemoved(model: StoredModelDocument, removed: readonly ModelRemovedElement[]): StoredModelDocument {
   if (!removed.length) return model;
   const drawn = structuredClone(model);
-  for (const { address, definition, wires, connections } of removed.map(storedRemoved)) {
+  for (const { address, definition, wires, connections } of removed) {
     const reached = modelPath(drawn, address.composites);
     if (reached.entries.length !== address.composites.length) continue;
     const interior: Omit<GraphInterior, 'physical_domain'> & Partial<Pick<PhysicalInterior, 'connections'>> = reached.owner.interior;
