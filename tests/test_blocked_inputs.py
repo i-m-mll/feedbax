@@ -234,7 +234,7 @@ def test_a_first_train_whose_task_does_not_pair_with_its_model_is_planned_and_ca
     folders = ProjectFolderService(tmp_path / "projects")
     _save_project(folders, "first", Project.model_validate({
         "documents": {
-            "model": {"label": "Model", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}}},
+            "model": {"label": "Model", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": {"step_seconds": "10 ms", "ports": {}, "interior": {}}},
             "task": task,
             "objective": {"label": "Objective", "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "payload": {"id": "objective", "terms": {}}},
         },

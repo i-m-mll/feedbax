@@ -21,7 +21,7 @@ def _dynamics_project():
     task_name = "simple-reaches-task"
     task = project["documents"][task_name]["payload"]
     task["fixed_steps"] = 8
-    task["epochs"]["move"]["end"]["length"]["value"] = 8
+    task["epochs"]["move"]["end"]["length"] = "8 st"
     task["validation_trials"] = dict(list(task["validation_trials"].items())[:2])
     trained = {"step": "train", "checkpoint": "last"}
     task_binding = {"kind": "task", "source": {"document": task_name}}
@@ -31,7 +31,7 @@ def _dynamics_project():
             "label": "Rollout",
             "kind": "evaluate",
             "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
-                "seed": 7, "trial_policy": "paired", "variation": [], "trial_set": {"kind": "every_condition"},
+                "seed": 7, "trial_policy": "paired", "trial_set": {"kind": "every_condition"},
             }}},
             "inputs": {"subject": trained},
         },
