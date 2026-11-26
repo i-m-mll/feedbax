@@ -30,6 +30,7 @@ type Payload = dict[str, JsonValue]
 type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 type StepKind = Literal["train", "synthesize", "evaluate", "analyze", "report"]
+type ProjectModelArchive = Annotated[str, StringConstraints(pattern=r"^models/[A-Za-z0-9_][A-Za-z0-9_-]*\.feedbax-model$")]
 
 
 class _LabelledMember(Protocol):
@@ -99,6 +100,8 @@ class LoadedModelDocument(StrictModel):
     """The Model's project address for navigation. Its pinned revision is in ``source``."""
 
     source: ImportedModelSource
+    archive: ProjectModelArchive | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The project's portable model file, named at import."""
 
 
 def check_typed_payload(schema_id: str, payload: JsonValue) -> None:

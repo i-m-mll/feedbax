@@ -3462,6 +3462,7 @@ export type LoadedModelDocument = {
   "schema_version": "feedbax.spec.loaded_model.v1";
   "model": DocumentReference;
   "source": ImportedModelSource;
+  "archive"?: ProjectModelArchive | null;
 };
 
 export type LoadedModelOrigin = {
@@ -3746,6 +3747,8 @@ export type ProjectConfiguration = {
   "store": string;
   "settings"?: Payload;
 };
+
+export type ProjectModelArchive = string;
 
 export type ProjectValueEdit = SetProjectValue | RemoveProjectValue;
 
@@ -11915,6 +11918,7 @@ export const LoadedModelDocumentSchema: z.ZodType<LoadedModelDocument> = z.lazy(
     "schema_version": z.literal("feedbax.spec.loaded_model.v1"),
     "model": DocumentReferenceSchema,
     "source": ImportedModelSourceSchema,
+    "archive": z.union([ProjectModelArchiveSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<LoadedModelDocument>;
 
@@ -12306,6 +12310,10 @@ export const ProjectConfigurationSchema: z.ZodType<ProjectConfiguration> = z.laz
     "settings": PayloadSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<ProjectConfiguration>;
+
+export const ProjectModelArchiveSchema: z.ZodType<ProjectModelArchive> = z.lazy(() =>
+  z.string().regex(new RegExp("^models/[A-Za-z0-9_][A-Za-z0-9_-]*\\.feedbax-model$"))
+) as unknown as z.ZodType<ProjectModelArchive>;
 
 export const ProjectValueEditSchema: z.ZodType<ProjectValueEdit> = z.lazy(() =>
   z.union([SetProjectValueSchema, RemoveProjectValueSchema])

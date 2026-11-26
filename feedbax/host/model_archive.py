@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,6 +13,8 @@ from stat import S_IFDIR, S_IFMT, S_IFREG
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 from zipfile import BadZipFile, ZIP_STORED, ZipFile, ZipInfo
+
+import jax
 
 from feedbax.compiler.graph import GraphCompilationError, GraphDocument, realize_graph, resolve_graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
@@ -29,12 +31,15 @@ from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_GRAPH_PATH, MODEL_TREE_MANIFEST_PATH, SemanticModelEncoding, model_replica_array_path,
 )
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.model_values import model_owner_problems, scalar_source_parameters
+from feedbax.contracts.model_values import ModelOwnerProblem, model_owner_problems, scalar_source_parameters
 from feedbax.contracts.project import diff
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.execution.trial_resolution import declared_model_input_prototypes
-from feedbax.host.model_checkpoint import ModelCheckpointError, effective_model_graph, model_slot_fit_problems
+from feedbax.host.model_checkpoint import (
+    ModelCheckpointError, ModelSlotPrecision, SemanticModelSlot, effective_model_graph,
+    imported_array_dtype_fits, model_slot_fit_problems,
+)
 from feedbax.persistence.array_container import ArrayContainerError, DecodedArrayContainer, decode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.model_tree import ModelTree, ModelTreeLayoutError, read_model_tree
@@ -67,7 +72,8 @@ def stage_model_archive(
         try:
             tree, encoding = _read_archive_members(raw, staging)
             weights = _read_tree(staging, tree, encoding)
-            report = _fit_model(model, weights, staging, components)
+            decoded = tuple(_read_replica(weights, staging, index) for index in range(len(weights.replicas)))
+            report = _fit_model(model, weights, decoded, staging, components)
         except _ArchiveReadError as error:
             yield error.problem
             return
@@ -189,14 +195,11 @@ def _read_replica(
     replica = weights.replicas[index]
     path = model_replica_array_path(index)
     try:
-        decoded = decode_array_container(
+        return decode_array_container(
             staging.get_object(replica.arrays), expected_descriptor_sha256=replica.descriptor.array_descriptor_sha256,
         )
     except (ArrayContainerError, ArtifactBlobCustodyError, OSError) as error:
         raise _ArchiveReadError("/" + path, str(error)) from error
-    if not isinstance(decoded.descriptor.metadata, dict):
-        raise _ArchiveReadError("/" + path, "Replica has no named value declarations")
-    return decoded
 
 
 def _comparable_graph(graph: GraphSpec, components: ComponentRegistry) -> GraphSpec:
@@ -218,20 +221,63 @@ def _comparable_graph(graph: GraphSpec, components: ComponentRegistry) -> GraphS
     })
 
 
+@dataclass(frozen=True)
+class _CompiledArchiveFit:
+    graph: GraphSpec
+    template: Graph
+    owners: tuple[ModelOwnerProblem, ...]
+
+
+def read_fitted_imported_replicas(
+    model: ModelDocument, slot: SemanticModelSlot,
+) -> tuple[DecodedArrayContainer, ...]:
+    """Authenticate the slots against the pinned authored Model before any adaptation."""
+    decoded = tuple(slot.read_replica(index) for index in range(len(slot.replicas)))
+    try:
+        report = _fit_model(model, slot, decoded, slot.provider, slot.components)
+    except _ArchiveReadError as error:
+        raise ModelCheckpointError(error.problem.path, error.problem.detail) from error
+    if report is not None:
+        problem = report.problems[0]
+        raise ModelCheckpointError(problem.address, problem.detail)
+    return decoded
+
+
 def _fit_model(
-    model: ModelDocument, weights: ModelTree, staging: ImmutableArtifactBlobProvider, components: ComponentRegistry,
+    model: ModelDocument, weights: ModelTree | SemanticModelSlot, decoded: Sequence[DecodedArrayContainer],
+    staging: ImmutableArtifactBlobProvider, components: ComponentRegistry,
 ) -> ModelFitReport | None:
-    problems: list[ModelFitProblem] = []
-    fitted: tuple[GraphSpec, Graph, tuple[tuple[str, ...], ...]] | None = None
-    lowered = None
     try:
         supplied = canonical_json_v2_bytes(_comparable_graph(weights.graph, components).model_dump(mode="json"))
     except CanonicalJsonError as error:
         raise _ArchiveReadError("/graph.json", str(error)) from error
+    for index, replica in enumerate(decoded):
+        if not isinstance(replica.descriptor.metadata, dict):
+            raise _ArchiveReadError("/" + model_replica_array_path(index), "Replica has no named value declarations")
+
+    current = _compile_fit_model(model, weights.graph, staging, components)
+    problems = _fit_problems(current, weights, decoded, supplied, components, precision="exact")
+    if problems and jax.config.x64_enabled and isinstance(current, _CompiledArchiveFit):
+        # Archives carry their resolved declarations, so prove the original F32 layout
+        # before checking whether it can populate the caller's F64 layout.
+        with jax.enable_x64(False):
+            source = _compile_fit_model(model, weights.graph, staging, components)
+            source_problems = _fit_problems(source, weights, decoded, supplied, components, precision="exact")
+        if not source_problems:
+            problems = _fit_problems(current, weights, decoded, supplied, components, precision="imported")
+        elif len(source_problems) < len(problems):
+            problems = source_problems
+    return ModelFitReport(problems=problems) if problems else None
+
+
+def _compile_fit_model(
+    model: ModelDocument, supplied: GraphSpec, staging: ImmutableArtifactBlobProvider, components: ComponentRegistry,
+) -> _CompiledArchiveFit | list[ModelFitProblem]:
+    lowered = None
     try:
-        # Bundled bindings only select which declared optional inputs are exposed.
-        # Topology and every prototype are derived from the selected Model.
-        lowered = lower_model_document(model, components, supplied_inputs=frozenset(weights.graph.input_bindings))
+        # Archived bindings select exposed optional inputs. All prototypes and
+        # component configurations come from the selected authored Model.
+        lowered = lower_model_document(model, components, supplied_inputs=frozenset(supplied.input_bindings))
         prototypes = declared_model_input_prototypes(model)
         resolved = resolve_graph(
             GraphDocument(graph=lowered.graph), components,
@@ -242,18 +288,15 @@ def _fit_model(
             },
         )
         owners = tuple(model_owner_problems(resolved.graph, "checkpoint", components))
-        problems.extend(
-            ModelGraphFitProblem(kind="unsupported_owner", address=pointer(problem.path), detail=problem.reason)
-            for problem in sorted(owners, key=lambda item: item.path)
-        )
         template = realize_graph(resolved, artifact_provider=staging).graph
-        graph = effective_model_graph(resolved.graph, template)
+        return _CompiledArchiveFit(effective_model_graph(resolved.graph, template), template, owners)
     except ModelCompilationProblem as error:
-        problems.extend(
+        return [
             ModelGraphFitProblem(kind="unresolved_model", address=item.address.to_text(), detail=item.reason)
             for item in error.problems
-        )
+        ]
     except GraphCompilationError as error:
+        problems: list[ModelFitProblem] = []
         for diagnostic in error.record.diagnostics:
             path = diagnostic.source_anchor.authored_path
             address = lowered.source_address(path) if lowered is not None else None
@@ -261,7 +304,22 @@ def _fit_model(
                 kind="unresolved_model", address=address.to_text() if address else path,
                 detail=diagnostic.observed_condition,
             ))
-    else:
+        return problems
+
+
+def _fit_problems(
+    fitted: _CompiledArchiveFit | list[ModelFitProblem], weights: ModelTree | SemanticModelSlot,
+    decoded: Sequence[DecodedArrayContainer], supplied: bytes, components: ComponentRegistry,
+    *, precision: ModelSlotPrecision,
+) -> list[ModelFitProblem]:
+    if isinstance(fitted, list):
+        return fitted
+    graph, template = fitted.graph, fitted.template
+    problems: list[ModelFitProblem] = [
+        ModelGraphFitProblem(kind="unsupported_owner", address=pointer(problem.path), detail=problem.reason)
+        for problem in sorted(fitted.owners, key=lambda item: item.path)
+    ]
+    if precision == "exact":
         expected = canonical_json_v2_bytes(_comparable_graph(graph, components).model_dump(mode="json"))
         if expected != supplied:
             path = next(iter(diff(strict_json_loads(expected), strict_json_loads(supplied))))
@@ -269,20 +327,29 @@ def _fit_model(
                 kind="graph_mismatch", address="/graph" + path,
                 detail="Archive graph differs from the graph resolved from the selected Model",
             ))
-        unsupported = tuple(problem.occurrence for problem in owners)
-        fitted = graph, template, unsupported
-    for index, replica in enumerate(weights.replicas):
-        decoded = _read_replica(weights, staging, index)
-        if fitted is None:
-            continue
-        graph, template, unsupported = fitted
-        assert isinstance(decoded.descriptor.metadata, dict)
+    ports = template.input_arrays.keys() | weights.input_arrays.keys()
+    for name in sorted(ports):
+        expected = template.input_arrays.get(name)
+        saved = weights.input_arrays.get(name)
+        if expected is not None and saved is not None:
+            shape, dtype = expected
+            if saved.shape == shape and (
+                saved.dtype == dtype or precision == "imported" and imported_array_dtype_fits(saved.dtype, dtype)
+            ):
+                continue
+        problems.append(ModelGraphFitProblem(
+            kind="graph_mismatch", address=pointer(("model", "input_arrays", name)),
+            detail="Archive input array differs from the input resolved from the selected Model",
+        ))
+    unsupported = tuple(problem.occurrence for problem in fitted.owners)
+    for replica, arrays in zip(weights.replicas, decoded, strict=True):
+        assert isinstance(arrays.descriptor.metadata, dict)
         try:
             problems.extend(model_slot_fit_problems(
-                graph, template, replica.descriptor.id, decoded.tensors, decoded.descriptor.metadata,
-                unsupported=unsupported,
+                graph, template, replica.descriptor.id, arrays.tensors, arrays.descriptor.metadata,
+                unsupported=unsupported, precision=precision,
             ))
         except ModelCheckpointError as error:
             problems.append(ModelGraphFitProblem(kind="unsupported_owner", address=error.path, detail=str(error)))
-            fitted = None
-    return ModelFitReport(problems=problems) if problems else None
+            break
+    return problems
