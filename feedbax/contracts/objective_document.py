@@ -81,6 +81,13 @@ class ObjectiveDocument(ValueRecord):
     id: str
     terms: tuple[ObjectiveTerm, ...] = ()
 
+    def for_execution(self) -> "ObjectiveDocument":
+        if all(term.name is None for term in self.terms):
+            return self
+        return self.model_copy(update={"terms": tuple(
+            term if term.name is None else term.model_copy(update={"name": None}) for term in self.terms
+        )})
+
 
 class StoredObjectiveDocument(ValueRecord):
     """An ordered map of Objective terms addressed by stable key."""

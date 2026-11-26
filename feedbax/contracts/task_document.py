@@ -338,6 +338,10 @@ class TaskDocument(ValueRecord):
             for field, group in (("variables", self.variables), ("epochs", self.epochs), ("signals", self.signals))
         })
 
+    def for_execution(self) -> "TaskDocument":
+        """Project a Task onto the fields and stable names used in scientific requests."""
+        return self.without_markers().with_member_keys_as_names()
+
     @property
     def condition_ids(self) -> tuple[str, ...]:
         """Identify a fixed cohort by the variables that define each condition."""
