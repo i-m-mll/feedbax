@@ -4,9 +4,9 @@ import { fetchSavedEvaluationObjective } from '@/api/jobs';
 import type {
   StudioEvaluationObjectiveSeries, StudioJobEvent, StudioProjectWindowMapRow,
   StudioSavedEvaluationRow, StudioSavedTrainAttempt, StudioSavedTrainKey,
-  StudioSavedTrainResult, StudioSavedTrainRow,
+  StudioSavedTrainResult, StudioSavedTrainRow, TrainMetricUpdate,
 } from '@/generated/studioContracts';
-import { useStudioJobActions, useStudioJobHistory } from '@/hooks/useStudioJobs';
+import { useStudioJobActions, useStudioJobHistory, useTrainMetricHistories } from '@/hooks/useStudioJobs';
 import { heldOutTracks, type ObjectiveStage } from './heldOutObjective';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue } from './StudioRegion';
 import { MetricPlots, studioRunHistory, type MetricResultName, type MetricSeries, type MetricStage } from './StudioTrainMetrics';
@@ -64,13 +64,16 @@ interface ObjectiveRead {
   points: NonNullable<NonNullable<StudioSavedEvaluationRow['checkpoint_attempt']>['points']> | null;
 }
 
-function projectMetrics(lineage: Stage[], events: readonly StudioJobEvent[], stepName: (step: string) => string): ProjectMetricStage[] | null {
+function projectMetrics(
+  lineage: Stage[], events: readonly StudioJobEvent[], retained: ReadonlyMap<string, readonly TrainMetricUpdate[]>,
+  stepName: (step: string) => string,
+): ProjectMetricStage[] | null {
   const stages: ProjectMetricStage[] = [];
   let offset = 0;
   for (const stage of lineage) {
     const through = stage.through ?? stage.attempt.progress?.completed_updates ?? 0;
     const exactEvents = events.filter(({ request_id }) => request_id === stage.row.request_id);
-    const { metrics, stageStart, attemptStarts, attemptCutoffs } = studioRunHistory(stage.attempt, stage.row.attempts, exactEvents);
+    const { metrics, stageStart, attemptStarts, attemptCutoffs } = studioRunHistory(stage.attempt, stage.row.attempts, exactEvents, retained);
     const source = stage.attempt.checkpoint_source;
     // Stateful workers keep the source update clock across resumed attempts.
     if (source && through > 0 && stageStart !== 0 && stageStart !== source.completed_updates) return null;
@@ -94,17 +97,13 @@ function projectMetrics(lineage: Stage[], events: readonly StudioJobEvent[], ste
 
 export type TrainMetricResult = { name: MetricResultName; result: StudioSavedTrainResult };
 
-function resultMetrics(
-  { name, result }: TrainMetricResult, row: StudioSavedTrainRow, rows: readonly StudioSavedTrainRow[],
-  events: readonly StudioJobEvent[], stepName: (step: string) => string,
-): MetricSeries {
+function resultLineage({ result }: TrainMetricResult, row: StudioSavedTrainRow, rows: readonly StudioSavedTrainRow[]) {
   const exactRow = result.request_id === row.request_id ? row : historicalRequest(row);
   const attempt = exactRow?.attempts.find(({ job_id, successful_receipt }) => job_id === result.job_id &&
     successful_receipt?.manifest_id === result.receipt.manifest_id &&
     successful_receipt.manifest_sha256 === result.receipt.manifest_sha256);
-  const lineage = exactRow && attempt && result.progress &&
-    checkpointLineage(rows, exactRow, attempt, result.progress.completed_updates);
-  return { result: { name, jobId: result.job_id }, stages: (lineage && projectMetrics(lineage, events, stepName)) || [] };
+  return (exactRow && attempt && result.progress &&
+    checkpointLineage(rows, exactRow, attempt, result.progress.completed_updates)) || null;
 }
 
 function TrainMetrics({ project, revision, evaluations, mapRows, rows, row, selection, stepName }: {
@@ -122,12 +121,17 @@ function TrainMetrics({ project, revision, evaluations, mapRows, rows, row, sele
   const events = history.data ?? emptyEvents;
   const actions = useStudioJobActions();
   const queryClient = useQueryClient();
-  const stages = useMemo(() => {
-    if (selection.kind !== 'attempt') return undefined;
-    const lineage = checkpointLineage(rows, row, selection.attempt);
-    return lineage && projectMetrics(lineage, events, stepName);
-  }, [rows, row, selection, events, stepName]);
-  const series = selection.kind === 'results' ? selection.results.map((result) => resultMetrics(result, row, rows, events, stepName))
+  const lineages = useMemo(() => selection.kind === 'attempt'
+    ? [checkpointLineage(rows, row, selection.attempt)]
+    : selection.results.map((result) => resultLineage(result, row, rows)), [rows, row, selection]);
+  const completed = [...new Set(lineages.flatMap((lineage) => lineage?.flatMap(({ attempt }) =>
+    attempt.successful_receipt ? [attempt.job_id] : []) ?? []))];
+  const metricHistories = useTrainMetricHistories(project, completed);
+  const projected = useMemo(() => lineages.map((lineage) =>
+    lineage && projectMetrics(lineage, events, metricHistories.retained, stepName)), [lineages, events, metricHistories.retained, stepName]);
+  const stages = selection.kind === 'attempt' ? projected[0] : undefined;
+  const series: MetricSeries[] = selection.kind === 'results'
+    ? selection.results.map(({ name, result }, index) => ({ result: { name, jobId: result.job_id }, stages: projected[index] || [] }))
     : stages ? [{ stages }] : [];
   const reads = evaluations.flatMap(({ key, checkpoint_series, checkpoint_attempt, result }): ObjectiveRead[] => {
     const stage = checkpoint_series && stages?.find((candidate) => sameRow(candidate.key, checkpoint_series.subject));
@@ -196,6 +200,9 @@ function TrainMetrics({ project, revision, evaluations, mapRows, rows, row, sele
     <section aria-label={studioName('results')} className="mt-3 rounded border border-shell-divider p-3">
       <StudioRegion state={state} skeleton={<div className="h-28 motion-safe:animate-pulse rounded bg-shell-divider" />} empty={null}>
         <MetricPlots series={series} objectives={tracks} />
+        {metricHistories.error && <StudioRegion state={{
+          kind: 'failed', issue: studioRegionIssue('metric', metricHistories.error), retry: metricHistories.retry,
+        }} skeleton={null} empty={null}>{null}</StudioRegion>}
         {objectiveError && <StudioRegion state={{
           kind: 'failed', issue: studioRegionIssue('objective', objectiveError),
           retry: () => { for (const query of objectives) if (query.isError) void query.refetch(); },

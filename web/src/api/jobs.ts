@@ -63,6 +63,11 @@ export function fetchSavedEvaluationObjective(project: string, input: StudioSave
     { contract: 'StudioSavedEvaluationRead', body: input });
 }
 
+export function fetchTrainMetricHistory(project: string, jobId: string, signal?: AbortSignal) {
+  const query = new URLSearchParams({ project });
+  return readContract(`/api/jobs/${encodeURIComponent(jobId)}/training-metrics?${query}`, 'StudioTrainMetricHistory', { signal });
+}
+
 export function fetchStudioJobs(signal?: AbortSignal) {
   return readContract('/api/jobs', 'StudioJobSnapshot', { signal });
 }

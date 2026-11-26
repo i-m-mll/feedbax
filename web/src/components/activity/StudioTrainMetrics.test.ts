@@ -95,3 +95,25 @@ it('reads every metric a method names, a vector metric as one series per element
       ['losses', true, [[2, -2], [4, -4], [6, -6]]],
     ]);
 });
+
+it('plots a completed attempt from its retained updates and the attempt it resumes from its intervals', () => {
+  const first = { job_id: 'first', continues: null };
+  const latest = { job_id: 'latest', continues: first.job_id };
+  const progress: [string, number, number | null][] = [['first', 0, null], ['first', 2, 0], ['latest', 2, null], ['latest', 5, 2]];
+  const events: StudioJobEvent[] = progress.map(([jobId, end, start], index) => ({
+    cursor: index + 1, kind: 'progress', project_id: 'project', request_id: 'train', job_id: jobId,
+    data: {
+      completed_updates: end, metrics: {},
+      ...start !== null && { metric_interval: {
+        start_exclusive: start, end_inclusive: end,
+        metrics: { loss: { count: end - start, mean: 9, min: 8, max: 10, last: 8 } },
+      } },
+    },
+  }));
+  const retained = new Map([['latest', [3, 4, 5].map((update) => ({ update, metrics: { loss: update } }))]]);
+
+  const { metrics: [loss] } = studioRunHistory(latest, [first, latest], events, retained);
+  expect(loss.points.map(({ jobId, end, elements: [reading] }) => [jobId, end, reading?.value])).toEqual([
+    ['first', 2, 9], ['latest', 3, 3], ['latest', 4, 4], ['latest', 5, 5],
+  ]);
+});

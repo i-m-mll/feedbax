@@ -8,16 +8,17 @@ import {
   useState,
   type PropsWithChildren,
 } from 'react';
-import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
+import { skipToken, useQueries, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import {
   acknowledgeStudioJob,
   fetchStudioJobHistory,
   fetchStudioJobs,
+  fetchTrainMetricHistory,
   resumeStudioJob,
   stopStudioJobs,
   warmStudioWorkers,
 } from '@/api/jobs';
-import type { StudioActivityJob, StudioJobEvent, StudioJobSnapshot } from '@/generated/studioContracts';
+import type { StudioActivityJob, StudioJobEvent, StudioJobSnapshot, StudioTrainMetricHistory, TrainMetricUpdate } from '@/generated/studioContracts';
 import { studioFormat, studioName, studioRunStatus, studioStep } from '@/components/activity/studioVocabulary';
 import type { StudioJobCommand, StudioJobMessage, StudioJobPort } from '@/jobs/studioJobConnection';
 import { openJobPort } from '@/jobs/studioJobStream';
@@ -320,6 +321,31 @@ export function useStudioUnreadableJobs() {
 
 export function useStudioJobHistory(projectId: string | null) {
   return useQuery<StudioJobEvent[]>({ queryKey: historyKey(projectId), queryFn: skipToken });
+}
+
+/**
+ * The retained per-update metrics of completed Train attempts, by attempt. An attempt whose history could not be read
+ * maps to no updates, and `error` says why.
+ */
+export function useTrainMetricHistories(projectId: string, jobIds: readonly string[]) {
+  const attempts = JSON.stringify(jobIds);
+  const combine = useCallback((results: UseQueryResult<StudioTrainMetricHistory>[]) => {
+    const ids = JSON.parse(attempts) as string[];
+    return {
+      retained: new Map(results.flatMap(({ data, isError }, index): [string, readonly TrainMetricUpdate[]][] =>
+        data ? [[ids[index], data.updates]] : isError ? [[ids[index], []]] : [])),
+      error: results.find(({ isError }) => isError)?.error,
+      retry: () => { for (const result of results) if (result.isError) void result.refetch(); },
+    };
+  }, [attempts]);
+  return useQueries({
+    queries: jobIds.map((jobId) => ({
+      queryKey: ['train-metric-history', projectId, jobId] as const,
+      queryFn: ({ signal }: { signal: AbortSignal }) => fetchTrainMetricHistory(projectId, jobId, signal),
+      staleTime: Infinity,
+    })),
+    combine,
+  });
 }
 
 export function useStudioJobActions() {
