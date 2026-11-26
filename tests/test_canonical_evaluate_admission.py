@@ -332,10 +332,10 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     np.testing.assert_allclose(subset.history[position], np.asarray(reference.history[position])[[1, 0]], atol=1e-7)
     for index, condition in enumerate((1, 0)):
         authored = documents.task_source.validation_trials[condition]
-        target = [component.value for component in authored.variables["target"].args]
-        start = [component.value for component in authored.variables["start"].args]
-        np.testing.assert_allclose(subset.trials.inputs["target_pos"][index, -1], target)
-        np.testing.assert_allclose(subset.history[position][index, 0], start)
+        trial_target = [component.value for component in authored.variables["target"].args]
+        trial_start = [component.value for component in authored.variables["start"].args]
+        np.testing.assert_allclose(subset.trials.inputs["target_pos"][index, -1], trial_target)
+        np.testing.assert_allclose(subset.history[position][index, 0], trial_start)
 
     arrays = {}
     for key, result in outcomes.items():
