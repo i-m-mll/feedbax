@@ -530,7 +530,7 @@ def composed_loaded_model_projection(
     from feedbax.compiler.model_document import complete_model_fields
 
     try:
-        model = StoredModelDocument.model_validate(document.payload).lower().with_keyed_root_ports()
+        model = StoredModelDocument.model_validate(document.payload).lower(components).with_keyed_root_ports()
         return encode_imported_model_document(complete_model_fields(model, components))
     except ValueError:
         return None  # The pin may still be readable from the Store or its projection file.

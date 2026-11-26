@@ -732,9 +732,11 @@ def prepare_stored_patch(
     node = patch.model_copy(update={"path": ".".join(parts), "value": value})
     changed = replay_stored_patch_copy(before, node)
     text = print_stored_expression(_EXPRESSION.validate_python(changed))
-    _parse_expression_for_patch(text, patch.path)
-    if kind == "time" and isinstance(_STORED_TIME.validate_python(text), UnresolvedValue):
-        raise ValueError(f"Expected a literal time at {patch.path!r}.")
+    if kind == "time":
+        if isinstance(_STORED_TIME.validate_python(text), UnresolvedValue):
+            raise ValueError(f"Expected a literal time at {patch.path!r}.")
+    else:
+        _parse_expression_for_patch(text, patch.path)
     scalar = patch.model_copy(update={"path": ".".join(field), "op": "replace", "value": text})
     return scalar, ExpressionNodePatch(field, before, node)
 

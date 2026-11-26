@@ -1,6 +1,7 @@
 """Authored patches may enter a declared expression but no ordinary value."""
 
 from copy import deepcopy
+from functools import partial
 
 import pytest
 
@@ -10,6 +11,7 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolvedStep, ResolutionCode, compose_document, compose_step
 from feedbax.contracts.project_storage import stored_expression_site, stored_step_expression_site
 from feedbax.contracts.project_sweep import expand_sweep
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID, StoredTaskDocument
 from feedbax.planner.project_plan import PlanSourceIndex, compile_project, project_variants, resolve_authored_evaluation_task
 from tests.support.managed_train_fixture import managed_train_project
@@ -64,6 +66,16 @@ def test_raw_patch_only_opens_declarations_and_prints_after_editing_nodes():
             apply_stored_patch_copy(root, OverridePatch(path=path, value=3), expression_site=site)
     with pytest.raises(ValueError, match="non-negative decimal index"):
         apply_stored_patch_copy(root, OverridePatch(path="call.args.00.value", value=3), expression_site=site)
+
+
+def test_model_time_field_uses_its_declared_unit():
+    payload = {"step_seconds": "10 ms", "ports": {}, "interior": {}}
+    site = partial(stored_expression_site, STORED_MODEL_DOCUMENT_SCHEMA_ID)
+    changed = apply_stored_patch_copy(payload, OverridePatch(path="step_seconds.value", value=14), expression_site=site)
+    assert changed["step_seconds"] == "14 ms"
+    assert StoredModelDocument.model_validate(changed).lower().step_seconds == pytest.approx(0.014)
+    with pytest.raises(ValueError, match="Expected a literal time"):
+        apply_stored_patch_copy(payload, OverridePatch(path="step_seconds.value", value=True), expression_site=site)
 
 
 @pytest.mark.parametrize("named", [True, False], ids=["named-task", "inline-task"])

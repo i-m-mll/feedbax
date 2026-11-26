@@ -167,9 +167,9 @@ class ProjectFolderService(ProjectFolder):
 
         snapshot = self.read(project_id, revision=body.revision)
         payload, _ = model_edit_source(snapshot, body.document)
-        model = StoredModelDocument.model_validate(payload).lower()
-        task, overrides, source = (), {}, None
         components = bundle.components
+        model = StoredModelDocument.model_validate(payload).lower(components)
+        task, overrides, source = (), {}, None
         task_source = body.source if isinstance(body.source, TaskSignalSource) else None
         try:
             if body.run is None and (body.rows or body.axes or body.evaluate_scope is not None):
@@ -288,7 +288,7 @@ class ProjectFolderService(ProjectFolder):
         )
         problems = ()
         if self.components is not None:
-            model = StoredModelDocument.model_validate(payload).lower()
+            model = StoredModelDocument.model_validate(payload).lower(self.components)
             found = (
                 *ModelRegistryPorts(self.components).problems(model),
                 *inspect_model_signals(model, self.components).problems,

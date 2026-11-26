@@ -59,15 +59,22 @@ def _selected(plan: ProjectPlan, body: ModelEditRequest, variant: str) -> frozen
 def _read_field(model: object, parts: tuple[str, ...]) -> JsonValue:
     value = model
     for part in parts:
-        value = value.get(part) if isinstance(value, dict) else None
+        if isinstance(value, dict):
+            value = value.get(part)
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
+        else:
+            return None
     return value
 
 
 def _overridden_fields(
-    project: Project, plan: ProjectPlan, body: ModelEditRequest, selected: frozenset[RunKey], operation: SetField,
+    project: Project, plan: ProjectPlan, body: ModelEditRequest, selected: frozenset[RunKey],
+    operation: SetField, after: dict,
 ) -> tuple[frozenset[RunKey], list[tuple[StoreKind, str, str, StoredEdit]]]:
     parts = operation.address.stored_path()
     path = pointer(parts)
+    value = _read_field(after, parts)
     field = f"/payload/trial_documents/model{path}"
     remaining = set(selected)
     sources: dict[ValueSource, JsonValue] = {}
@@ -86,10 +93,10 @@ def _overridden_fields(
             entry = read_set(project.documents.get, source.name).entries[source.value]
             stored = set_entry_write(
                 project, source.name, source.value,
-                entry.differences | {path: SetDocumentValue(value=operation.value)}, set_readers(project, source.name),
+                entry.differences | {path: SetDocumentValue(value=value)}, set_readers(project, source.name),
             )
             alternatives.append(("set_entry", "Set Entry", f"{source.name}:{source.value}", stored))
-        elif (file := source_value_file(project, source, before, operation.value)) is not None:
+        elif (file := source_value_file(project, source, before, value)) is not None:
             kind, label = {
                 "sweep_value": ("sweep_value", "Sweep Value"), "exception": ("row_exception", "Row Exception"),
                 "variant": ("variant", "Variant"),
@@ -185,7 +192,7 @@ def model_edit_store(
             remaining = selected
             alternatives = []
             if isinstance(body.command.operation, SetField) and isinstance(row.scope, ListedRuns):
-                remaining, alternatives = _overridden_fields(project, tracked, body, selected, body.command.operation)
+                remaining, alternatives = _overridden_fields(project, tracked, body, selected, body.command.operation, after)
             recipient = (
                 replace(row, scope=ListedRuns(kind="rows", rows=tuple(sorted(key.row for key in remaining))))
                 if remaining and remaining != selected else row

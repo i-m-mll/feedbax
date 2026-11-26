@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
+from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, AnalysisDocument, DatasetSource, OperationDataset, StepInput
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.figure_document import FigureTemplateRef, StoredFigureDocument, validate_figure_bindings
@@ -409,7 +410,9 @@ def _states_port(
     }) if planned is not None else states
 
 
-def _state_models(project: Project, plan: ProjectPlan, row: PlannedAnalyzeRun) -> list[ModelDocument]:
+def _state_models(
+    project: Project, plan: ProjectPlan, row: PlannedAnalyzeRun, components: ComponentRegistry | None,
+) -> list[ModelDocument]:
     members = {binding.producer for binding in row.inputs.get("states", ())}
     documents = dict.fromkeys(
         name for run in plan.runs if run.key in members
@@ -422,7 +425,7 @@ def _state_models(project: Project, plan: ProjectPlan, row: PlannedAnalyzeRun) -
             loaded = LoadedModelDocument.model_validate(document.payload)
             document = compose_document(project.documents.get, loaded.model.document)
         if not isinstance(document, ProjectDiagnostic) and document.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID:
-            models.append(StoredModelDocument.model_validate(document.payload).lower())
+            models.append(StoredModelDocument.model_validate(document.payload).lower(components))
     return models
 
 
@@ -545,7 +548,7 @@ def analyze_authoring(
             and path_parts(problem.path)[3:4] in (("params",), ("inputs",))
         )
         variables = {definition.key: _variable_choices(definition, states, dimensions) for definition in definitions}
-        models = _state_models(project, plan, row) if row is not None and states is not None else []
+        models = _state_models(project, plan, row, service.folders.components) if row is not None and states is not None else []
         task_names = _task_names(plan, row) if row is not None and states is not None else {}
     except (JobConflict, JobNotFound, KeyError, ValueError) as error:
         raise ProjectFolderInvalid(str(error)) from error

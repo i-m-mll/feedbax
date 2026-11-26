@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import replace
 
-from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.compiler.model_attachment import lower_model_difference_values, resolve_effective_model
 from feedbax.compiler.model_document import ModelCompilationProblem
 from feedbax.compiler.model_edit import model_ungroup_eligibility
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
@@ -65,6 +65,8 @@ def read_evaluate_model(
         raise ProjectFolderInvalid("Choose an Evaluate step.")
     if selected is None:
         selected = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+    if components is None:
+        components = folders.components
     definition = selected.selected_definitions.get(key)
     problems = [
         problem for problem in selected.diagnostics
@@ -97,9 +99,10 @@ def read_evaluate_model(
         else:
             shared, changes = changed
             try:
+                pinned = _read_changed_model(authored_model_payload(definition.pinned_model, components), changes, components)
                 resolved = resolve_effective_model(
-                    _read_changed_model(authored_model_payload(definition.pinned_model), changes),
-                    components or folders.components, differences, functions=folders.functions,
+                    pinned, components, lower_model_difference_values(pinned, components, differences),
+                    functions=folders.functions,
                 )
             except (DifferenceNotApplied, ModelCompilationProblem) as error:
                 problems.append(located(ProjectDiagnostic(
@@ -127,9 +130,10 @@ def read_evaluate_model(
                 else:
                     shared, changes = changes_from_shared
                     try:
+                        base = _read_changed_model(model, changes, components)
                         resolved = resolve_effective_model(
-                            _read_changed_model(model, changes),
-                            components or folders.components, differences, functions=folders.functions,
+                            base, components, lower_model_difference_values(base, components, differences),
+                            functions=folders.functions,
                         )
                     except (DifferenceNotApplied, ModelCompilationProblem) as error:
                         problems.append(located(ProjectDiagnostic(
@@ -149,7 +153,7 @@ def read_evaluate_model(
         revision=body.revision,
         editable=editable,
         effective=tuple(record for record in differences if isinstance(record, AttachmentDifference)),
-        resolved_model=StoredModelDocument.from_lowered(resolved) if resolved is not None else None,
+        resolved_model=StoredModelDocument.from_lowered(resolved, components) if resolved is not None else None,
         ungroup=model_ungroup_eligibility(resolved) if resolved is not None else (),
         source=source,
         field_sources=field_sources,
@@ -161,9 +165,9 @@ def read_evaluate_model(
     ), changes, shared, resolved)
 
 
-def _read_changed_model(payload, changes: Differences) -> ModelDocument:
+def _read_changed_model(payload, changes: Differences, components=None) -> ModelDocument:
     authored = apply_differences(payload, changes, keyed_collection=model_keyed_collection)
-    return StoredModelDocument.model_validate(authored).lower()
+    return StoredModelDocument.model_validate(authored).lower(components)
 
 
 def _document_changes(

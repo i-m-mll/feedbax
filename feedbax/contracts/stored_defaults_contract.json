@@ -745,13 +745,11 @@
   "feedbax.contracts.model_address.PortElement": {},
   "feedbax.contracts.model_address.WireElement": {},
   "feedbax.contracts.model_document.DelayInitialTask": {},
-  "feedbax.contracts.model_document.DelayInitialValue": {},
   "feedbax.contracts.model_document.DelayInitialWire": {
     "source": null
   },
   "feedbax.contracts.model_document.InputDefault": {},
   "feedbax.contracts.model_document.ModelPhysicalConnection": {},
-  "feedbax.contracts.model_document.ModelTime": {},
   "feedbax.contracts.model_document.ModelWorld": {},
   "feedbax.contracts.model_document.SignalType": {
     "base": null,
@@ -1632,7 +1630,11 @@
     "differences": {}
   },
   "feedbax.contracts.stored_model.StoredCompositeComponent": {
-    "substeps": 1,
+    "substeps": {
+      "kind": "literal",
+      "value": 1,
+      "unit": null
+    },
     "attachments": {
       "sources": {},
       "sinks": {}
@@ -1641,9 +1643,10 @@
   "feedbax.contracts.stored_model.StoredDelayAttachment": {
     "initial_source": {
       "kind": "value",
-      "value": 0.0
+      "value": 0
     }
   },
+  "feedbax.contracts.stored_model.StoredDelayInitialValue": {},
   "feedbax.contracts.stored_model.StoredGraphInterior": {
     "components": {},
     "wires": {},
@@ -1800,19 +1803,12 @@
     "offset": null
   },
   "feedbax.contracts.window.StoredWindowRelativePosition": {},
-  "feedbax.contracts.window.Window": {},
   "feedbax.contracts.window.WindowEpoch": {
     "occurrence": null
   },
   "feedbax.contracts.window.WindowEpochAnchor": {
     "occurrence": null
   },
-  "feedbax.contracts.window.WindowInterval": {},
-  "feedbax.contracts.window.WindowMoment": {},
-  "feedbax.contracts.window.WindowPosition": {
-    "offset": null
-  },
-  "feedbax.contracts.window.WindowRelativePosition": {},
   "feedbax.contracts.window.WindowTrialAnchor": {},
   "feedbax.training.optimizers.Adabelief": {
     "learning_rate": {
