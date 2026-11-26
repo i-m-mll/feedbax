@@ -246,8 +246,7 @@ function outlineReasons(view: StudioTrialAuthoring) {
   const links = 'variables' in view.task ? view.task.links ?? {} : {};
   const reasons = new Map<string, string>();
   for (const { path = [], reason } of view.problems) {
-    // A draft's Problems are addressed from the Trial view (`task`, …), a compiled Task's from the Task.
-    const [section, id] = (path[0] === 'task' ? path.slice(1) : path).map(String);
+    const [section, id] = path.map(String);
     const linked = section === 'links' ? links[id] : undefined;
     const key = linked ? `variables:${linked}`
       : section === 'variables' || section === 'epochs' || section === 'signals' ? `${section}:${id}`
