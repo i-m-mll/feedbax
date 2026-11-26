@@ -141,7 +141,7 @@ test('Detach of an evaluation\'s based Model is stored, marks the Evaluate\'s Mo
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'check').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  await expect(picker).toHaveText('point-mass-2');
+  await expect(picker).toHaveText('Point mass 2');
   await expect(header.getByRole('alert')).toHaveCount(0);
   await picker.click();
   await menu.getByRole('menuitem', { name: 'Detach', exact: true }).click();
@@ -219,7 +219,7 @@ test('an Evaluate step pointed at a Model document unrelated to its subject\'s c
     .map(({ place }) => place)).toEqual([expect.objectContaining({ document: key })]);
   expect((await runs()).window_map?.rows.find(({ key }) => key.step === 'check')?.status).toBe('cannot_run');
   await page.getByRole('button', { name: /^Problems \d+$/ }).click();
-  await expect(page.getByRole('listitem').filter({ hasText: 'Shares no document with Point mass.' })).toContainText('check');
+  await expect(page.getByRole('listitem').filter({ hasText: 'Shares no document with Point mass.' })).toContainText('Check');
   // The view's refused read is on the document's picker, not a failed view.
   const header = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header');
   await expect(header.getByRole('alert')).toHaveText('Shares no document with Point mass.');
@@ -290,8 +290,8 @@ test('an attachment a based Model document adds is marked as authored there, and
     .getByRole('button', { name: /^Model Document / });
   await picker.click();
   await page.getByRole('menu', { name: 'Model Document', exact: true })
-    .getByRole('menuitemradio', { name: 'point-mass-2', exact: true }).click();
-  await expect(picker).toHaveText('point-mass-2');
+    .getByRole('menuitemradio', { name: 'Point mass 2', exact: true }).click();
+  await expect(picker).toHaveText('Point mass 2');
   await wire.click();
   await expect(delay(true)).toBeVisible();
 });
@@ -326,7 +326,7 @@ test('a based Training document marks the value it changes inside its field, and
   const revision = (await saved()).revision;
   await batches.fill('9');
   await batches.press('Enter');
-  await expect(picker).toHaveText('training 2');
+  await expect(picker).toHaveText('Training 2');
   await expect.poll(async () => (await saved()).revision).not.toBe(revision);
   await expect(batches).toHaveAccessibleDescription('Changed from training');
   // The mark is inside the field's box: the changed field is as tall as an unchanged one and draws no line under it.

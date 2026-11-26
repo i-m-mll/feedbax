@@ -71,7 +71,7 @@ async function showFigure(page: Page) {
 /** The shown Analyze's Speed by trial figure, once drawn. */
 async function drawnFigure(page: Page) {
   const figures = panel(page, 'Figures');
-  await figures.getByRole('button', { name: 'profile', exact: true }).click();
+  await figures.getByRole('button', { name: 'Profile', exact: true }).click();
   const plot = figures.locator('.js-plotly-plot');
   await expect(plot.locator('svg.main-svg').first()).toBeVisible();
   await expect.poll(() => plot.evaluate((node) => (node as unknown as { data?: unknown[] }).data?.length)).toBe(64);

@@ -178,7 +178,7 @@ test('Rename chosen from an Analyze canvas menu while an edit saves opens a fiel
   await page.goto(`/?project=${encodeURIComponent(project)}`);
   await mapStep(page, 'analyze').dblclick();
   await page.getByRole('tab', { name: 'Analysis', exact: true }).click();
-  const summarize = analysis.getByRole('group', { name: 'Select summarize', exact: true });
+  const summarize = analysis.getByRole('group', { name: 'Select Summarize', exact: true });
   await expect(summarize).toBeVisible();
 
   // The step's rename saves while held; the operation's Rename, made meanwhile, waits for it and the state it leaves.
@@ -192,7 +192,7 @@ test('Rename chosen from an Analyze canvas menu while an edit saves opens a fiel
   await stepName.press('Enter');
   await summarize.click({ button: 'right' });
   await page.getByRole('menuitem', { name: /^Rename\b/ }).click();
-  const operationName = analysis.getByRole('textbox', { name: 'Rename summarize', exact: true });
+  const operationName = analysis.getByRole('textbox', { name: 'Rename Summarize', exact: true });
   await expect(operationName).toHaveCount(0);
   const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/members/command`);
   release();

@@ -580,7 +580,7 @@ export function useManagedAnalyze({
     },
     figures: { body: <>{figureList}
       {shownFigure && shownPlan && <SavedFigureResult key={JSON.stringify([scope, shownFigure])}
-        history={shownPlan} name={shownFigure} project={saved.project_id} revision={saved.revision} mean={mean} />}
+        history={shownPlan} name={shown(shownFigure)} project={saved.project_id} revision={saved.revision} mean={mean} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
     results: operationResults.length > 0 ? { body: <OperationProducts operations={operationResults} />, drawer,
       inspector: libraryInspector || (operation ? inspector : undefined) } : undefined,

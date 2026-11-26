@@ -244,7 +244,7 @@ test('under Mean a figure draws the Service\'s Mean rendering for the clock\'s B
   await mapStep(page, 'analyze').click();
   await tab(page, 'Figures').click();
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
-  await figures.getByRole('button', { name: 'by_trial', exact: true }).click();
+  await figures.getByRole('button', { name: 'By trial', exact: true }).click();
   const response = await meanFigure;
   expect(response.status(), await response.text()).toBe(200);
   expect(response.request().postDataJSON()).toMatchObject({ mean: { by: null, align: epoch.id } });

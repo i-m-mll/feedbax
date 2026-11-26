@@ -67,7 +67,7 @@ test('authors coloured hand paths and 3D hidden-state trajectories in the figure
   await run('masses');
   await run('baseline');
 
-  await openFigure('hands', 'hand-paths');
+  await openFigure('hands', 'Hand paths');
   await addTrajectory();
   await removeRow('line');
   await row('trajectory').click();
@@ -90,7 +90,7 @@ test('authors coloured hand paths and 3D hidden-state trajectories in the figure
     }],
   });
 
-  await openFigure('dynamics', 'hidden');
+  await openFigure('dynamics', 'Hidden');
   await addTrajectory();
   await removeRow('line');
   await row('trajectory').click();
@@ -123,12 +123,12 @@ test('authors coloured hand paths and 3D hidden-state trajectories in the figure
   await run('dynamics');
   await run('hands');
   const draws = async () => {
-    await openFigure('dynamics', 'hidden');
-    await expect(drawn('hidden').locator('.gl-container')).toHaveCount(1);
-    await expect(drawn('hidden').locator('.legend, .colorbar').first()).toBeVisible();
-    await openFigure('hands', 'hand-paths');
-    await expect(drawn('hand-paths').locator('.colorbar')).toHaveCount(1);
-    await expect(drawn('hand-paths').locator('.colorbar')).toContainText('Mass (kg)');
+    await openFigure('dynamics', 'Hidden');
+    await expect(drawn('Hidden').locator('.gl-container')).toHaveCount(1);
+    await expect(drawn('Hidden').locator('.legend, .colorbar').first()).toBeVisible();
+    await openFigure('hands', 'Hand paths');
+    await expect(drawn('Hand paths').locator('.colorbar')).toHaveCount(1);
+    await expect(drawn('Hand paths').locator('.colorbar')).toContainText('Mass (kg)');
   };
   await draws();
   await page.reload();
