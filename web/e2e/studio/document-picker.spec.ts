@@ -8,6 +8,7 @@ import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 import { applyTo } from './fixtures/controls';
 import { figureButton } from './fixtures/members';
+import { trialView } from './fixtures/trialFields';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -271,9 +272,6 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
   }
 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
-  const base = (await saved()).project.steps?.train?.base;
-  const objective = base && 'inline' in base
-    ? (base.inline as { trial_documents: { objective: { document: string } } }).trial_documents.objective.document : undefined;
   const measure = page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('textbox', { name: 'Measure', exact: true });
   await primary.getByRole('textbox', { name: 'Measure', exact: true }).first().click();
@@ -282,9 +280,11 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
   // `sibling` shares the Objective, so the edit asks where it applies.
   await page.getByRole('menuitem', { name: 'All 2 Steps', exact: true }).click();
   // A measure that names no signal is stored as typed, and its Problem keeps the step from running.
-  await expect.poll(async () => Object.values((rootPayload((await saved()).project.documents?.[objective!]) as {
-    terms: Record<string, { measure: unknown }>;
-  }).terms)[0].measure).toEqual({ kind: 'unresolved', text: 'sqnorm(absent)' });
+  await expect.poll(async () => {
+    const view = await trialView(request, (await saved()).project_id);
+    const measure = view.fields.find(({ path }) => /^\/objective\/terms\/[^/]+\/measure$/.test(path));
+    return [measure?.text, measure?.problems?.length];
+  }).toEqual(['sqnorm(absent)', 1]);
   expect((await trainProblems()).status).toBe('cannot_run');
 });
 

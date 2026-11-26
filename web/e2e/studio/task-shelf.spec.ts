@@ -3,6 +3,7 @@ import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, TaskTrialSampleResponse } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { trialPopup } from './fixtures/controls';
+import { trialView } from './fixtures/trialFields';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -24,9 +25,8 @@ async function routeTrials(request: APIRequestContext, snapshot: StudioProjectSn
 }
 
 test('the clock picks the nominal trial or a sample of a task document, and the shelf draws that trial', { tag: '@slow' }, async ({ page, request }) => {
-  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
-  const { documents = {} } = ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project;
-  const period = (documents['point-mass'] as unknown as { payload: { step_seconds: number } }).payload.step_seconds;
+  const { snapshot } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
+  const period = (await trialView(request, snapshot.project_id)).period_seconds!;
   const holdEnd = (trials: Awaited<ReturnType<typeof routeTrials>>, index: number) =>
     trials[index].timeline.find(({ epoch }) => epoch === 'hold')!.end * period;
   const seeded = await routeTrials(request, snapshot, 0);

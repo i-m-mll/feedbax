@@ -42,7 +42,7 @@ def seed(home: str, project_id: str):
     project = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task = project["documents"]["simple-reaches-task"]["payload"]
     task["fixed_steps"] = 8
-    task["epochs"]["move"]["end"]["length"]["value"] = 8
+    task["epochs"]["move"]["end"]["length"] = "8 st"
     task["validation_trials"] = dict(islice(task["validation_trials"].items(), 2))
     train = project["steps"]["simple-reaches"]
     train["base"]["inline"]["training_config"].update(batch_size=1, replicates=1)

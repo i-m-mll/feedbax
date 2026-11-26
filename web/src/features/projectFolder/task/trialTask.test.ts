@@ -3,7 +3,7 @@ import type { StoredTaskDocument, StoredVariable } from '@/generated/studioContr
 import { variableEdits } from './trialTask';
 
 const number: StoredVariable['type'] = { base: 'real', shape: [] };
-const variable = (label: string): StoredVariable => ({ label, type: number, value: { kind: 'literal', value: 0 } });
+const variable = (label: string): StoredVariable => ({ label, type: number, value: 0 });
 
 describe('variableEdits with Set entries', () => {
   const onset = variable('onset');

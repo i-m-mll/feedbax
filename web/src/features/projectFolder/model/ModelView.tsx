@@ -43,7 +43,7 @@ import { sendWithStore, type AskStore } from '../storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
 import {
-  attachmentFields, attachmentSources, operationOf, componentFields, delayText, modelFields, sharedFields, sourceValueField,
+  attachmentFields, attachmentSources, operationOf, componentFields, modelFields, sharedFields, sourceValueField,
   type AttachmentSource, type FieldChange,
 } from './ModelInspector';
 import { AttachmentSourceRow } from './AttachmentSourceRow';
@@ -218,7 +218,6 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const variables = trial?.variables ?? noVariables;
   const epochs = useMemo(() => trial ? windowEpochs(trial) : [], [trial]);
   const variableRef = (id: string) => referentName(variables.find((variable) => variable.id === id), id);
-  const variableName = (id: string) => plainText(variableRef(id));
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
   const viewport = useRef<CanvasViewport>(null);
@@ -1257,8 +1256,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const displacedAttachments = displaced.get(key);
     const attached = (list: readonly Attachment[], removedHere: boolean) => list.map((item) => ({
       id: item.id, label: attachmentName(item), mark: attachmentMark(item, projection.data?.delay_steps?.[addressKey(attachmentAddress(address, item.id))]),
-      description: item.kind === 'delay' ? `${delayText(item.delay)} · ${wireLabel}`
-        : item.kind === 'intervention' ? `${windowDescription(item, epochs, variableName)} · ${wireLabel}` : wireLabel,
+      description: item.kind === 'delay' ? `${item.delay} · ${wireLabel}`
+        : item.kind === 'intervention' ? `${windowDescription(item, epochs)} · ${wireLabel}` : wireLabel,
       delay: item.kind === 'delay', select: () => select(attachmentAddress(address, item.id)),
       initial: item.kind === 'delay' && item.initial_source?.kind === 'wire' && item.initial_source.source
         ? { card: idFor(item.initial_source.source), handle: `output:${item.initial_source.source.port}` } : undefined,
@@ -1337,7 +1336,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function addAttachment(address: ModelAddress, kind: Attachment['kind']) {
     const list = effective.get(addressKey(address)) ?? [];
     const id = modelMemberKey();
-    const item: Attachment = kind === 'delay' ? { id, kind, delay: { unit: 'st', value: 1 }, initial_source: { kind: 'value', value: 0 } }
+    const item: Attachment = kind === 'delay' ? { id, kind, delay: '1 st' }
       : kind === 'hold' ? { id, kind }
       : kind === 'intervention' ? { id, kind, operation: 'scale', operands: { factor: { kind: 'value', value: 1 } } }
       : { id, kind, label: port?.name ?? 'Probe' };
@@ -1567,7 +1566,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const window = item.kind === 'intervention' && <div className="grid gap-1">
       <span id={windowLabel} className="text-xs text-shell-muted">{studioName('window')}</span>
       <WindowEditor window={item.window} labelId={windowLabel} host={interventionWindow({
-        item, epochs, linked: variableName, change,
+        item, epochs, change,
         projected: (site) => byId.get(['window', ...site].join('.')),
       })} />
     </div>;

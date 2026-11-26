@@ -3,7 +3,7 @@ import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain'
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-const target = { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: 'target_pos' }] };
+const target = 'sqnorm(target_pos)';
 const squared = { base: 'real', dimensions: { length: 2 } };
 const epochs = (...ids: string[]) => ({ spans: ids.map((epoch) => ({ kind: 'epoch', epoch })) });
 

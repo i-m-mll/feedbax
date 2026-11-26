@@ -1,6 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import { setDocumentSchemaId, type StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
+import { trialField } from './fixtures/trialFields';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -94,7 +95,8 @@ test('a Set in the trials takes a condition on Task variables, refuses an unknow
   await condition.pressSequentially('ca');
   await expect(page.getByRole('listbox', { name: 'Completions' }).getByRole('option')).toContainText(['catch']);
   await write('not catch');
-  await expect.poll(stored).toMatchObject({ kind: 'call', function: 'not', args: [{ kind: 'name', reference: 'catch' }] });
+  await expect.poll(async () => (await trialField(request, snapshot.project_id, ['set_fields', 'load', 'condition']))?.text)
+    .toBe('not catch');
   await expect(condition).not.toHaveAttribute('aria-invalid', 'true');
 
   await write('not cach');

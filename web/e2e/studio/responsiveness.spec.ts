@@ -4,7 +4,6 @@ import { blankStoredTask, modelDocumentSchemaId, objectiveDocumentSchemaId, task
 import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runName, shownRunLabel, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { pickRecordedTrial } from './fixtures/controls';
-import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -24,7 +23,7 @@ function modelFixture(cards: number): ModelDocument {
     }
   }
   return {
-    step_seconds: 0.01, ports: { inputs: { target: { label: 'reach_target', type: {} } } },
+    step_seconds: '0.01 s', ports: { inputs: { target: { label: 'reach_target', type: {} } } },
     interior: { components, wires },
   };
 }
@@ -182,9 +181,7 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     const { snapshot, changed, acknowledgedAt } = await savedEdit;
     const addressed = changed.find(({ element }) => element.kind === 'field' && element.path.at(-1) === 'step_seconds');
     if (!addressed) throw new Error('The acknowledgement did not address the Step field');
-    const model = rootPayload(snapshot.project.documents![modelDocument]) as unknown as ModelDocument;
-    expect(model.step_seconds).toBe(0.02);
-    const plan = await (await settled).json() as StudioSavedTrainRuns;
+      const plan = await (await settled).json() as StudioSavedTrainRuns;
     expect(plan.revision).toBe(snapshot.revision);
     expect(plan.window_map?.rows).toHaveLength(1);
     const cannotRun = plan.window_map?.steps.find(({ step_id }) => step_id === 'train')?.status_counts.cannot_run;

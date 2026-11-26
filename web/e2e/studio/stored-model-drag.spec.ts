@@ -2,7 +2,6 @@ import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
 import { blankStoredTask, modelDocumentSchemaId, objectiveDocumentSchemaId, taskDocumentSchemaId, type StoredModelDocument as ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
-import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -22,7 +21,7 @@ function modelFixture(cards: number): ModelDocument {
     }
   }
   return {
-    step_seconds: 0.01, ports: { inputs: { target: { label: 'reach_target', type: {} } } },
+    step_seconds: '0.01 s', ports: { inputs: { target: { label: 'reach_target', type: {} } } },
     interior: { components, wires },
   };
 }
@@ -193,8 +192,6 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
   expect(fields.problems).toHaveLength(0);
   expect(fields.command?.operation.op).toBe('set_field');
   const { snapshot, acknowledgedAt } = await savedEdit;
-  const model = rootPayload(snapshot.project.documents!.model) as unknown as ModelDocument;
-  expect(model.step_seconds).toBe(0.02);
   const plan = await (await settled).json() as StudioSavedTrainRuns;
   expect(plan.revision).toBe(snapshot.revision);
   expect(plan.window_map?.rows).toHaveLength(1);

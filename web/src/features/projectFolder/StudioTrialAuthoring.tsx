@@ -33,7 +33,7 @@ import { labelOf } from './memberLabels';
 import { partMenuKey } from '@/components/values/partMenu';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
-  FieldKind, JsonValue, ProjectValueEdit, StoredObjectiveDocument, StoredObjectiveTerm, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+  JsonValue, ProjectValueEdit, StoredObjectiveDocument, StoredObjectiveTerm, StudioObjectiveTerm, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
   StudioEvaluateValueSource, StudioTrialField, TrialTermAggregate,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
@@ -59,7 +59,7 @@ export type TrialChangeScope = (change: Change) => StudioTrialAuthoringRequest['
  * only when the service refuses the write.
  */
 export type Commit = (name: string, change: Change, removes?: boolean) => Promise<FieldRefusal | undefined>;
-export type AddTerm = (term: StoredObjectiveTerm) => Promise<{ term: string } | { refused: FieldRefusal } | undefined>;
+export type AddTerm = (term: StudioObjectiveTerm) => Promise<{ term: string } | { refused: FieldRefusal } | undefined>;
 /** A step's Trial authoring, with what the changed values of its Task and Objective documents differ from. */
 export type TrialView = StudioTrialAuthoring & {
   readonly changedFrom: { readonly task?: ChangeSource; readonly objective?: ChangeSource };
@@ -85,15 +85,9 @@ export function changedAt(view: TrialView, document: 'task' | 'objective', path:
   return { from, reset: commit && (() => commit(studioName('reset'), { kind: 'reset', document, paths: [path] })) };
 }
 
-/** The kind a stored expression reads as, which its field's mark shows. */
-export function expressionKind(value: JsonValue | undefined): FieldKind {
-  const kind = isRecord(value) ? value.kind : undefined;
-  return kind === 'name' ? 'link' : kind === 'call' || kind === 'unresolved' ? 'formula' : kind === 'draw' ? 'draw' : 'value';
-}
-
 /** A field the service projects in a step's Task or Objective, marked with its first stored Problem. */
 export function trialField(view: TrialView, projection: StudioTrialField, label: string, runs: TrialRuns | undefined,
-  options: FieldViewOptions): FieldModel {
+  options: Omit<FieldViewOptions, 'sites'>): FieldModel {
   const [problem] = projection.problems ?? [];
   return {
     ...fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, view, options),
@@ -405,10 +399,9 @@ function termFields(view: TrialView, key: string, term: StoredObjectiveTerm, com
     const label = humanizeLabel(field);
     const projection = view.fields.find((site) => site.path === authoredPointer(['objective', 'terms', key, field]));
     if (!projection) throw new Error(`The Objective's ${field} of term ${key} has no field`);
-    const kind = expressionKind(term[field] as JsonValue | undefined);
     const sweep = projection.sweep?.id;
     const model = trialField(view, projection, label, runs, {
-      id: key + field, kind, changed: changed(field),
+      id: key + field, changed: changed(field),
       commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', path: projection.path, edit })),
       selectedMembers: sweep ? runs?.values(sweep) : undefined,
       chooseMember: sweep && runs?.choose ? (value, extend) => runs.choose!(sweep, value, extend) : undefined,
@@ -449,7 +442,7 @@ function termWindow(view: TrialView, key: string, term: StoredObjectiveTerm, com
       if (!projection) throw new Error(`The Objective's window offset ${pointer} has no field`);
       const label = studioName(site[2]);
       return trialField(view, projection, label, runs, {
-        id: key + site.join('-'), kind: expressionKind(valueAt(term.window, site)),
+        id: key + site.join('-'),
         changed: changedAt(view, 'objective', authoredPointer(['terms', key, 'window', ...site]), commit),
         commit: commit && ((edit) => commit(studioAccessibleName('set', label), { kind: 'expression', path: projection.path, edit })),
       });
@@ -458,10 +451,6 @@ function termWindow(view: TrialView, key: string, term: StoredObjectiveTerm, com
       { kind: 'objective', edits: [write(path, value as unknown as JsonValue, has(term, 'window'))] })),
     changed: changedAt(view, 'objective', path, commit),
   };
-}
-
-function valueAt(root: unknown, path: readonly (string | number)[]): JsonValue | undefined {
-  return path.reduce<unknown>((node, key) => isRecord(node) || Array.isArray(node) ? (node as Record<string | number, unknown>)[key] : undefined, root) as JsonValue | undefined;
 }
 
 /** A term, and the field of it whose cell is selected. */
@@ -477,7 +466,7 @@ function measured(view: StudioTrialAuthoring) {
 }
 
 /** The term that penalises `chosen`'s squared size. */
-function newTerm(chosen: ReturnType<typeof measured>[number]): StoredObjectiveTerm {
+function newTerm(chosen: ReturnType<typeof measured>[number]): StudioObjectiveTerm {
   return {
     label: humanizeLabel(chosen.name),
     measure: { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: chosen.id }] },
