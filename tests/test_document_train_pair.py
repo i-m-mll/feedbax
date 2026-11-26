@@ -410,12 +410,16 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
         folders.read_plan("cohort", revision=original.settled.revision),
     )) == before
     trials = raw["documents"]["task"]["payload"]["validation_trials"]
-    variables = next(iter(trials.values()))["variables"]
-    target = variables["target"]
-    assert isinstance(target, list)
-    target[:] = [1.0, -0.0]
-    after = verify(read())
-    assert after["rows"][0]["evaluation_conditions"] != conditions
+    first = next(iter(trials))
+    trials[first]["variables"]["target"] = "[1, 0]"
+    changed = read()
+    assert verify(changed)["rows"][0]["evaluation_conditions"] == conditions
+    assert changed.settled.plan.requests != original.settled.plan.requests
+
+    raw["documents"]["task"]["payload"]["validation_trials"] = {
+        ("renamed-trial" if key == first else key): trial for key, trial in trials.items()
+    }
+    assert verify(read())["rows"][0]["evaluation_conditions"] == ["renamed-trial", *conditions[1:]]
     assert projected(original) == before
 
 
