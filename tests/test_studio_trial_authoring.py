@@ -831,6 +831,7 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
         stored = folders.read(project).project.documents["objective"].payload
         assert view["objective"] == stored
         assert not {"enabled", "reduction", "window", "weight", "measure_type"} & stored["terms"]["effort"].keys()
+        assert view["objective_term_values"] == {"effort": {"enabled": True, "reduction": "mean"}}
         for op, values in (
             ("add", {"enabled": False, "reduction": "sum", "window": {"spans": [{"kind": "epoch", "epoch": "move"}]}}),
             ("replace", {"enabled": True, "reduction": "mean", "window": None}),
@@ -849,6 +850,9 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
             expected = stored["terms"]["effort"] | values if op == "add" else stored["terms"]["effort"]
             assert view["objective"]["terms"]["effort"] == expected
             assert folders.read(project).project.documents["objective"].payload["terms"]["effort"] == expected
+            assert view["objective_term_values"] == {
+                "effort": {field: values[field] for field in ("enabled", "reduction")},
+            }
 
 
 def test_studio_saves_an_objective_ramp_weighted_by_a_delayed_signal(tmp_path):
@@ -1256,8 +1260,10 @@ def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):
         assert view["objective_source"] == {"kind": "own", "step": "evaluate"}
         assert list(view["objective"]["terms"]) == ["effort"]
         assert any(field["path"] == "/objective/terms/effort/measure" for field in view["fields"])
-        assert author("unscored")["objective"] is None
-        assert author("unscored")["objective_source"] is None
+        unscored = author("unscored")
+        assert unscored["objective"] is None
+        assert unscored["objective_source"] is None
+        assert unscored["objective_term_values"] == {}
         changed = author("evaluate", {"kind": "objective", "edits": [
             {"op": "add", "path": "/terms/effort/label", "value": "Command effort"},
         ]})

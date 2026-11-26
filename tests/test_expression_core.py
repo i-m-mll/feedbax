@@ -32,7 +32,9 @@ from feedbax.contracts.expression_text import ParsedField, parse, parse_stored_e
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.stored_members import scoped_set_member_id
 from feedbax.contracts.task_document import VALUE_TYPES
+from feedbax.contracts.studio_field import StudioFieldView
 from feedbax.contracts.time_units import TimeValue
+from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.studio.value_structure import value_structure
 
 
@@ -414,6 +416,31 @@ def test_huber_requires_a_positive_scalar_delta_in_the_residual_units(functions)
     assert read_field("huber(2 m, 1 s)", measure, functions)[0].code == ProblemCode.UNIT_MISMATCH
     problem = read_field("huber(2 m, 0 m)", measure, functions)[0]
     assert (problem.code, problem.path) == (ProblemCode.TYPE_MISMATCH, ("args", 1))
+
+
+def test_studio_draw_cadence_follows_the_field_site(functions):
+    index = FieldSiteIndex()
+    value = parsed("1 + 2", site())
+    for level, structural, expected_cadence in (
+        (Level.RUN, False, "run"), (Level.TRIAL, False, "trial"),
+        (Level.STEP, False, "trial"), (Level.RUN, True, None),
+    ):
+        expected = site(level=level).model_copy(update={"structural": structural})
+        projection = project_site(expected, functions, value)
+        ref = index.reference(projection)
+        field = StudioFieldView(label="Value", text="1 + 2", site=ref)
+        wire = index.tables((field,))["sites"][ref].model_dump(mode="json")
+        assert ("uniform" in projection.parts[0].functions) == (expected_cadence is not None)
+        if expected_cadence is None:
+            assert "draw_per" not in wire
+        else:
+            assert wire["draw_per"] == expected_cadence
+
+    expected = site(level=Level.TRIAL)
+    for text, cadence in (("U(0, 1)", "trial"), ("U(0, 1, per=run)", "run")):
+        expression = parsed(text, expected)
+        structure = value_structure(expression, expected, functions)
+        assert structure.model_dump(mode="json", exclude_unset=True)["value"]["per"] == cadence
 
 
 def test_literal_edits_keep_real_operands_and_do_not_retrace(functions):
