@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from itertools import product
+
+from pydantic import JsonValue
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_attachment import resolve_effective_model
@@ -28,8 +31,9 @@ from feedbax.contracts.model_document import (
 from feedbax.contracts.project import Document, apply_differences
 from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField
 from feedbax.contracts.set_document import SetEntry, read_set
+from feedbax.contracts.stored_model import StoredModelDocument, authored_model_payload
 from feedbax.contracts.task_document import (
-    Cell, Link, SetVariableChoices, Signal, TaskAdditions, TaskDocument, ValidationTrial, Variable, add_to_task,
+    Cell, Link, SetVariableChoices, Signal, TaskDocument, ValidationTrial, Variable, add_to_task,
 )
 from feedbax.contracts.window import Window
 
@@ -105,14 +109,14 @@ def _entry_label(entry: str, variable: str) -> str:
 
 
 def _entry_scope(axis: str, entry: str, source: SetEntry, shared_labels: frozenset[str]) -> SetEntry:
-    refs = {variable.id: scoped_set_member_id(axis, entry, variable.id) for variable in source.task_variables}
+    refs = {key: scoped_set_member_id(axis, entry, key) for key in source.task_variables}
     renamed = rename_entry_references(source.model_dump(mode="json"), refs)
-    for variable in renamed.get("task_variables", ()):
-        variable["id"] = refs[variable["id"]]
-        label = _entry_label(entry, variable["name"])
-        variable["name"] = f"{axis} · {label}" if label in shared_labels else label
-    for link in renamed.get("task_links", ()):
-        link["variable"] = refs.get(link["variable"], link["variable"])
+    variables = {}
+    for id, variable in renamed.get("task_variables", {}).items():
+        label = _entry_label(entry, variable["label"])
+        variables[refs[id]] = variable | {"label": f"{axis} · {label}" if label in shared_labels else label}
+    renamed["task_variables"] = variables
+    renamed["task_links"] = {field: refs.get(id, id) for field, id in source.task_links.items()}
     return SetEntry.model_validate(renamed)
 
 
@@ -174,6 +178,10 @@ class _Union:
         self.conditions: list[tuple[dict[str, int], ...]] = []
         self.condition_origins: dict[str, str] = {}
         self.curl_activation: dict[str, tuple[bool, list[Expression]]] = {}
+
+    @cached_property
+    def _authored_model(self) -> dict[str, JsonValue]:
+        return authored_model_payload(self.model)
 
     def variable(
         self, id: str, value_type: ValueType, value: Expression, *, choices: SetVariableChoices | None = None,
@@ -239,13 +247,16 @@ class _Union:
         cooccurring = isinstance(placement.sampling, CooccurringSetTrials)
         try:
             source = _entry_scope(axis, entry, authored, self.shared_entry_labels)
-            variant = ModelDocument.model_validate(
-                apply_differences(self.model.model_dump(mode="json"), source.differences),
-            )
-            variant, links = _attachment_links(variant, source.task_links, self.registry)
+            variant = self.model
+            if source.differences:
+                variant = StoredModelDocument.model_validate(
+                    apply_differences(self._authored_model, source.differences),
+                ).lower()
+            additions = source.lower()
+            variant, links = _attachment_links(variant, additions.task_links, self.registry)
             task = add_to_task(
                 self.task.model_copy(update={"variables": tuple(self.variables), "links": tuple(self.links)}),
-                (TaskAdditions(task_variables=source.task_variables, task_links=links),),
+                (additions.model_copy(update={"task_links": links}),),
             )
             self.variables = list(task.variables)
             self.links = list(task.links)
@@ -629,8 +640,8 @@ def lower_trial_sets(
         except ValueError as error:
             raise SetFieldProblem(axis, placement.axis.set, None, str(error)) from error
         placements.append((axis, placement, entries))
-        names.update(_entry_label(entry, variable.name) for entry, source in entries.items()
-                     for variable in source.task_variables)
+        names.update(_entry_label(entry, variable.label) for entry, source in entries.items()
+                     for variable in source.task_variables.values())
 
     union = _Union(model, task, components, shared_entry_labels=frozenset(name for name, count in names.items() if count > 1))
     for axis, placement, entries in placements:

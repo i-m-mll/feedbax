@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Locator } from '@playwright/test';
 import type { StudioJobSubmission, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
@@ -13,7 +13,6 @@ test.use({ viewport: { width: 1440, height: 900 } });
 const text = async (locator: Locator) => (await locator.innerText()).trim();
 
 test('a member reads the same in the map, Inspector, picker, Problems and Activity', { tag: '@round' }, async ({ page, request }) => {
-  test.setTimeout(60_000);
   const [model, task, objective, train, sibling] = await fixture('history-files');
   delete task.document.label;
   const siblingLabel = 'Reach sibling';
@@ -44,7 +43,7 @@ test('a member reads the same in the map, Inspector, picker, Problems and Activi
       const { revision } = await (await request.get(projectPath)).json() as { revision: string };
       const rows = await (await request.get(`${runsPath}?window_map=true&revision=${revision}`)).json() as StudioSavedTrainRuns;
       return rows.rows.find(({ key }) => key.step === step)?.status;
-    }, { timeout: 20_000 }).toBe('succeeded');
+    }, { timeout: jobTimeout }).toBe('succeeded');
   }
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('heading', { level: 3 });
 

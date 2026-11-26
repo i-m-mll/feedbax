@@ -1,5 +1,6 @@
 import { expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type { StudioActivityJob, StudioJobSnapshot, StudioJobSubmission } from '../../../src/generated/studioContracts';
+import { jobTimeout } from './studio';
 import { drawnRunLabel, mapStep, runName, runProjectFixture } from './canonicalTrain';
 import { authorFirstTrain } from './firstTrainAuthoring';
 import { activate, palette, post, tabTo } from './studioKeyboard';
@@ -57,14 +58,14 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   expect(items).toMatchObject([{ disposition: 'admitted', job_id: expect.any(String) }]);
   const initial = items[0].job_id!;
   await openRun();
-  await expect(line(initial).first()).toBeAttached({ timeout: 16_000 });
+  await expect(line(initial).first()).toBeAttached({ timeout: jobTimeout });
   expect(await job(initial)).toMatchObject({ request_id: row.request_id, status: 'running' });
   const stopping = post(page, '/api/jobs/stop');
   await page.keyboard.press('Meta+Period');
   const stop = await stopping;
   expect(stop.status(), await stop.text()).toBe(202);
   expect(stop.request().postDataJSON()).toEqual({ job_ids: [initial], mode: 'checkpoint' });
-  await expect.poll(async () => (await job(initial))?.status, { timeout: 12_000 }).toBe('stopped');
+  await expect.poll(async () => (await job(initial))?.status, { timeout: jobTimeout }).toBe('stopped');
   const checkpoint = await observe('checkpoint', initial);
   expect(checkpoint.completed_updates).toBeGreaterThan(0);
   expect(checkpoint.completed_updates).toBeLessThan(totalUpdates);
@@ -85,7 +86,7 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   const binding = await observe('resume', initial, resumed);
   expect(binding.checkpoint).toEqual(checkpoint);
   await activate(page, activity.getByRole('button', { name: 'Close', exact: true }));
-  await expect.poll(async () => (await job(resumed))?.status, { timeout: 14_000 }).toBe('running');
+  await expect.poll(async () => (await job(resumed))?.status, { timeout: jobTimeout }).toBe('running');
 
   await studio.stopBackend();
   const footer = page.locator('[data-studio-focus-region="bottom"]');
@@ -117,8 +118,8 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   await expect(footer.getByRole('alert')).toHaveCount(0);
   await expect(line(initial).first()).toBeAttached();
   await expect.poll(() => line(initial).count()).toBeGreaterThanOrEqual(previousLossCount);
-  await expect(line(resumed).first()).toBeAttached({ timeout: 16_000 });
-  await expect.poll(async () => (await job(resumed))?.status, { timeout: 25_000 }).toBe('succeeded');
+  await expect(line(resumed).first()).toBeAttached({ timeout: jobTimeout });
+  await expect.poll(async () => (await job(resumed))?.status, { timeout: jobTimeout }).toBe('succeeded');
   const final = (await plan(current.revision)).rows.find(({ key }) => key.variant === 'base' && key.step === 'train')!;
   expect(final.attempts.map(({ job_id }) => job_id)).toEqual([initial, resumed]);
   expect(final.result).toMatchObject({

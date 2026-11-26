@@ -480,6 +480,7 @@ def bind_task_inputs(
     model: ResolvedModelInterface,
     signals: tuple[ScopedValue, ...],
     input_bindings: Mapping[str, str | None] | None,
+    *, input_labels: Mapping[str, str] | None = None,
 ) -> tuple[tuple[tuple[str, str], ...], tuple[Problem, ...]]:
     """Resolve runtime input names to stable signal IDs and report invalid bindings."""
     problems = []
@@ -487,14 +488,15 @@ def bind_task_inputs(
     by_id = {value.id: value for value in signals}
     authored = input_bindings or {}
     for port in model.inputs:
+        label = (input_labels or {}).get(port.root_id, port.name)
         signal_id = selected_signal_id(port.root_id, by_id, authored)
         signal = by_id.get(signal_id) if signal_id is not None else None
         path = ("model", "inputs", port.id)
         if signal is None:
             if signal_id is not None:
-                reason = f"Model input {port.name!r} reads undeclared signal ID {signal_id!r}."
+                reason = f"Model input {label!r} reads undeclared signal ID {signal_id!r}."
             elif port.required:
-                reason = f"Model input {port.name!r} needs a Task signal."
+                reason = f"Model input {label!r} needs a Task signal."
             else:
                 continue
             problems.append(Problem(
@@ -503,7 +505,7 @@ def bind_task_inputs(
         elif not _compatible_task_signal(model, port, signal.type):
             problems.append(Problem(
                 code=ProblemCode.TYPE_MISMATCH,
-                reason=f"Signal {signal.name!r} does not fit model input {port.name!r}.",
+                reason=f"Signal {signal.name!r} does not fit model input {label!r}.",
                 path=path, model_address=port.address,
             ))
         else:

@@ -26,7 +26,8 @@ from feedbax.contracts.model_checkpoint import ModelReplicaManifest
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_input import InitialModelSource, document_input_object, encode_document_input
 from feedbax.contracts.operation import DatasetPort, JaxOperation, ModelPort
-from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.stored_model import StoredModelDocument
+from feedbax.contracts.task_document import StoredTaskDocument
 from feedbax.dataset import Dataset, Variable
 from feedbax.examples import load_shipped_projects
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
@@ -44,8 +45,8 @@ from feedbax.runtime.graph import Graph
 @pytest.fixture(scope="module")
 def native_archive(tmp_path_factory):
     project = load_shipped_projects()["point-mass-reaching"]
-    model = ModelDocument.model_validate(project.documents["point-mass"].payload)
-    task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
+    model = StoredModelDocument.model_validate(project.documents["point-mass"].payload).lower()
+    task = StoredTaskDocument.model_validate(project.documents["simple-reaches-task"].payload).lower()
     registry = new_application_registry_bundle()
     return model, registry.components, *_publish_archive(model, task, registry, tmp_path_factory.mktemp("native-train"))
 
@@ -72,11 +73,11 @@ def _publish_archive(model, task, registry, transaction):
 def _delay_archive(root, *, x64):
     project = load_shipped_projects()["point-mass-reaching"]
     raw = project.documents["point-mass"].payload
-    raw["interior"]["wires"]["command"]["attachments"] = [{
-        "kind": "delay", "id": "lag", "delay": {"value": 2, "unit": "st"},
-    }]
-    model = ModelDocument.model_validate(raw)
-    task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
+    raw["interior"]["wires"]["command"]["attachments"] = {
+        "lag": {"kind": "delay", "delay": {"value": 2, "unit": "st"}},
+    }
+    model = StoredModelDocument.model_validate(raw).lower()
+    task = StoredTaskDocument.model_validate(project.documents["simple-reaches-task"].payload).lower()
     registry = new_application_registry_bundle()
     with jax.enable_x64(x64):
         return model, registry, *_publish_archive(model, task, registry, root)
@@ -223,16 +224,16 @@ def test_archive_fits_changed_noise_without_changing_learned_weights(tmp_path):
     project = load_shipped_projects()["point-mass-reaching"]
     raw = project.documents["point-mass"].payload
     raw["interior"]["components"]["motor-noise"] = {
-        "kind": "leaf", "name": "Motor noise", "type": "feedbax.Noise",
+        "kind": "leaf", "label": "Motor noise", "type": "feedbax.Noise",
         "fields": {"std": 0.5, "shape": [2]},
     }
-    task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
+    task = StoredTaskDocument.model_validate(project.documents["simple-reaches-task"].payload).lower()
     registry = new_application_registry_bundle()
-    trained = ModelDocument.model_validate(raw)
+    trained = StoredModelDocument.model_validate(raw).lower()
     first, second, archive, checkpoint = _publish_archive(trained, task, registry, tmp_path / "trained")
     noise = raw["interior"]["components"]["motor-noise"]["fields"]
     noise["std"] = 0.0
-    selected = ModelDocument.model_validate(raw)
+    selected = StoredModelDocument.model_validate(raw).lower()
 
     store = ImmutableArtifactBlobProvider(tmp_path / "loaded")
     with stage_model_archive(archive, selected, store, components=registry.components) as imported:
@@ -252,7 +253,7 @@ def test_archive_fits_changed_noise_without_changing_learned_weights(tmp_path):
         assert export_model_archive(store, imported.weights, imported.encoding) == archive
 
     noise["shape"] = [3]
-    with stage_model_archive(archive, ModelDocument.model_validate(raw), store, components=registry.components) as rejected:
+    with stage_model_archive(archive, StoredModelDocument.model_validate(raw).lower(), store, components=registry.components) as rejected:
         assert isinstance(rejected, ModelFitReport), rejected
         assert any(
             problem.kind == "graph_mismatch" and problem.address.startswith("/graph/nodes/motor-noise/params/shape")
@@ -278,7 +279,7 @@ def test_a_loaded_models_replicas_are_planned_rendered_and_retained(native_archi
     example = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task = example["documents"]["simple-reaches-task"]
     task["payload"]["fixed_steps"] = 8
-    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"]["value"] = 8
     del task["payload"]["validation_trials"]
     figure = raw["documents"]["velocity-figure"]
     (layer,) = figure["payload"]["layers"]
@@ -363,8 +364,16 @@ def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_
     with TestClient(create_app(projects_dir=tmp_path / "projects")) as client:
         created = client.post("/api/projects", json={"name": "load", "example": "point-mass-reaching"})
         assert created.status_code == 201, created.text
-        prior = created.json()["snapshot"]
-        url = f"/api/projects/{prior['project_id']}/loaded-models/import"
+        project = created.json()["snapshot"]["project_id"]
+        folders = client.app.state.project_folders
+        root = folders.read_authored_snapshot(project, revision=None).root
+        model_file = root / "documents" / "point-mass.json"
+        authored = json.loads(model_file.read_bytes())
+        authored["payload"]["ports"]["inputs"]["target_pos"]["label"] = "Requested target"
+        authored["payload"]["ports"]["outputs"]["effector"]["label"] = "Point mass state"
+        model_file.write_text(json.dumps(authored))
+        prior = client.get(f"/api/projects/{project}").json()
+        url = f"/api/projects/{project}/loaded-models/import"
         query = {"name": "imported", "model": "point-mass", "revision": prior["revision"]}
         headers = {"Content-Type": "application/octet-stream"}
         rejected = client.post(url, params=query, content=b"not an archive", headers=headers)

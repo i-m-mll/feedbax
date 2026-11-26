@@ -7,7 +7,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 // Catches the shipped example's start and target drawn by one marker, a marker chosen on the list that the canvas does
 // not draw, and one that is not stored on the Task, so that reopening the project draws the default again.
-test('the example\'s start and target draw different markers, and a chosen marker survives reopening', async ({ page, request }) => {
+test('the example\'s start and target draw different markers, and a chosen marker survives reopening', { tag: '@slow' }, async ({ page, request }) => {
   const { examples } = await (await request.get('/api/projects/examples')).json() as StudioProjectExamples;
   const created = await request.post('/api/projects', { data: { name: testProjectName(), example: examples[0].id } });
   expect(created.status()).toBe(201);

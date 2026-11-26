@@ -35,7 +35,6 @@ async function open(page: Page, request: APIRequestContext, weight: unknown) {
 // Catches parts that do not round-trip to the text: a part read from the wrong argument, an edit that writes a draw
 // other than the one shown, and a family change that writes a draw before its parameters are filled.
 test('a draw in the Inspector shows its parts, and an edit of a part writes its text', async ({ page, request }) => {
-  test.setTimeout(45_000);
   const { inspector, writes, weightOf } = await open(page, request, uniform(0.3, 1));
   await page.getByRole('tree', { name: 'Objective Terms', exact: true }).getByRole('treeitem').first().click();
   await expect(inspector.getByRole('textbox', { name: 'Weight', exact: true })).toHaveValue('U(0.3, 1)');
@@ -65,7 +64,6 @@ test('a draw in the Inspector shows its parts, and an edit of a part writes its 
 // Catches a table cell whose parts are not shown where the owner chose (the Inspector), a part edit that writes
 // elsewhere than the cell's value, and a density strip drawn in the narrow cell.
 test('selecting a Weight cell that holds a draw shows its parts in the Inspector, and an edit there writes the cell', async ({ page, request }) => {
-  test.setTimeout(45_000);
   const { table, inspector, weightOf } = await open(page, request, uniform(0.5, 2));
   const cell = table.getByRole('textbox', { name: 'Weight', exact: true });
   await expect(cell).toHaveValue('U(0.5, 2)');

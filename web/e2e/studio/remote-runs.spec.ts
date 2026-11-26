@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import { readdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
@@ -8,9 +8,10 @@ import { fixture, mapStep, runName, shownRunLabel, runProjectFixture, seedManage
 import { pick, popupListbox } from './fixtures/controls';
 
 test.use({ studioBackend: 'remote' });
+// Every test here needs a Studio of its own kind, which is why each is in the round tier; they share one worker.
+test.describe.configure({ mode: 'default' });
 
 test('Machine approval reviews the saved selection and collects the remote result', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(50_000);
   const fixtureRoot = join(studio.home, 'state', 'studio-e2e-remote');
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const path = `${projectPath}/train-runs`;
@@ -94,7 +95,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
     } finally {
       await unlink(openingGate);
     }
-    await expect(runs.getByText('Downloading', { exact: true })).toBeVisible({ timeout: 18_000 });
+    await expect(runs.getByText('Downloading', { exact: true })).toBeVisible({ timeout: jobTimeout });
     const meter = runs.getByRole('progressbar', { name: 'Downloading' });
     await expect.poll(async () => Number(await meter.getAttribute('max'))).toBeGreaterThan(0);
     expect(Number(await meter.getAttribute('value'))).toBeLessThan(Number(await meter.getAttribute('max')));
@@ -105,7 +106,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   } finally {
     await unlink(downloadGate);
   }
-  await expect(runs.getByText('Done', { exact: true })).toBeVisible({ timeout: 20_000 });
+  await expect(runs.getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   const [attempt] = await attempts();
   expect(attempt).toMatchObject({ status: 'succeeded', successful_receipt: expect.any(Object) });
   await page.reload();
@@ -128,7 +129,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   await close.click();
   const confirmation = await closed;
   expect(confirmation.status(), confirmation.statusText()).toBe(204);
-  await expect(card).toBeHidden({ timeout: 10_000 });
+  await expect(card).toBeHidden({ timeout: jobTimeout });
   await unlink(meter);
   expect(await attempts()).toEqual([attempt]);
   const activityAfter = await request.get('/api/jobs');
@@ -154,7 +155,6 @@ test('Machine approval reviews the saved selection and collects the remote resul
 });
 
 test('A set of six remote rows keeps its Jobs states and commands across reloads', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture(
     'ordinary-files', '20000', '0.001', '0.0011', '0.0012', '0.0013', '0.0014', '0.0015',
   ));
@@ -196,10 +196,10 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   expect(response.status(), await response.text()).toBe(202);
   const { session_id: session } = await response.json() as StudioMachineApprovalReceipt;
   const queued = runs.getByRole('cell', { name: 'Queued', exact: true });
-  await expect(queued).toHaveCount(2, { timeout: 12_000 });
+  await expect(queued).toHaveCount(2, { timeout: jobTimeout });
   for (const cell of await queued.all()) await expect(cell).toHaveAccessibleDescription('Waiting for a training slot.');
   await expect.poll(async () => (await jobs()).filter(({ status }) => status === 'running').length,
-    { timeout: 15_000 }).toBe(4);
+    { timeout: jobTimeout }).toBe(4);
   expect((await jobs()).map(({ target }) => target)).toEqual(Array.from({ length: 6 }, () =>
     expect.objectContaining({ kind: 'session', session_id: session })));
   await reopen();
@@ -215,7 +215,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   const stop = page.waitForResponse((result) => new URL(result.url()).pathname === '/api/jobs/stop');
   await command('Stop').click();
   expect((await stop).status()).toBe(202);
-  await expect(row(checkpoint).getByText('Stopped', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(row(checkpoint).getByText('Stopped', { exact: true })).toBeVisible({ timeout: jobTimeout });
   await reopen();
   await row(checkpoint).getByRole('button').click();
   await expect(row(checkpoint).getByText('Stopped', { exact: true })).toBeVisible();
@@ -236,7 +236,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   expect(await job(force.job_id)).toMatchObject({ status: expect.stringMatching(/^(stopped|interrupted)$/) });
 
   await runProjectFixture('web.e2e.studio.fixtures.remote_run_process', studio.home, session, interrupt.job_id);
-  await expect(row(interrupt).getByText('Interrupted', { exact: true })).toBeVisible({ timeout: 9_000 });
+  await expect(row(interrupt).getByText('Interrupted', { exact: true })).toBeVisible({ timeout: jobTimeout });
   await reopen();
   await row(interrupt).getByRole('button').click();
   await expect(row(interrupt).getByText('Interrupted', { exact: true })).toBeVisible();
@@ -253,12 +253,12 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
     const response = await request.get('/api/sessions');
     const machines = await response.json() as StudioJobSnapshot['sessions'];
     return machines.find((machine) => machine.id === session && 'can_close' in machine);
-  }, { timeout: 12_000 }).toMatchObject({ can_close: true });
+  }, { timeout: jobTimeout }).toMatchObject({ can_close: true });
   const closed = await request.post(`/api/sessions/${session}/close`);
   expect(closed.status(), closed.statusText()).toBe(204);
 });
 
-test('Opening refusal survives reload on the exact approved row', async ({ page, request, studio }, info) => {
+test('Opening refusal survives reload on the exact approved row', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const refusal = join(studio.home, 'state', 'studio-e2e-remote', 'opening-refusal');
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const path = `${projectPath}/train-runs`;
@@ -275,7 +275,7 @@ test('Opening refusal survives reload on the exact approved row', async ({ page,
     const accepted = await ack;
     expect(accepted.status(), await accepted.text()).toBe(202);
     await expect(approval).toBeHidden();
-    await expect(runs.getByText('Failed', { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(runs.getByText('Failed', { exact: true })).toBeVisible({ timeout: jobTimeout });
     await page.reload();
     await mapStep(page, 'train').click();
     await expect(runs.getByText('Failed', { exact: true })).toBeVisible();
@@ -292,7 +292,7 @@ test('Opening refusal survives reload on the exact approved row', async ({ page,
   }
 });
 
-test('The Machine picker follows provider failure and recovery without reload', async ({ page, request, studio }, info) => {
+test('The Machine picker follows provider failure and recovery without reload', { tag: '@slow' }, async ({ page, request, studio }, info) => {
   const outage = join(studio.home, 'state', 'studio-e2e-remote', 'provider-unreachable');
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
@@ -311,6 +311,6 @@ test('The Machine picker follows provider failure and recovery without reload', 
   } finally {
     await unlink(outage);
   }
-  await expect(machine.getByRole('img')).toHaveCount(0, { timeout: 12_000 });
+  await expect(machine.getByRole('img')).toHaveCount(0, { timeout: jobTimeout });
   await expect(run).toBeEnabled();
 });

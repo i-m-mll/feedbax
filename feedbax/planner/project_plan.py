@@ -35,7 +35,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.model_input import DocumentInput, InitialModelSource, authored_document_input, encode_document_input
-from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.objective_document import ObjectiveDocument, objective_weight_title
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_authoring import InputProducer, InputRole
@@ -171,6 +171,7 @@ if TYPE_CHECKING:
     from feedbax.contracts.effective_success import TerminalTrainSubject
     from feedbax.contracts.request_specs import RequestSpec, TrialDocuments
     from feedbax.tasks.registry import PythonTaskRegistry
+    from feedbax.training.evaluation_variant import EvaluationVariant
     from feedbax.training.methods import TrainingMethodRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.compiler.model_document import LoweredModelDocument
@@ -733,12 +734,12 @@ def resolve_authored_evaluation_task(
 def _lower_evaluation_task_edits(
     raw: dict, source: TaskDocument | PythonTaskSelection,
     stored_source: StoredTaskDocument | None, *, selected: StoredTaskDocument | PythonTaskSelection | None = None,
-) -> dict:
+) -> tuple[dict, dict[tuple[str, ...], str]]:
     settings = authored_rollout_settings(raw)
     edits = tuple(authored_variation(settings.variation))
     task_edits = tuple((origin, edit) for origin, edit in edits if edit.path.partition(".")[0] == "task")
     if not task_edits and selected is None:
-        return raw
+        return raw, {}
     if selected is None and stored_source is None and isinstance(source, TaskDocument):
         for origin, edit in task_edits:
             if edit.path == "task" and edit.op == "replace":
@@ -750,11 +751,23 @@ def _lower_evaluation_task_edits(
         authored = StoredTaskDocument.from_lowered(source) if isinstance(source, TaskDocument) else source
     resolved = resolve_authored_evaluation_task(authored, settings.variation)
     lowered = resolved.lower().without_markers() if isinstance(resolved, StoredTaskDocument) else resolved
+    origins = {}
+    for origin, edit in task_edits:
+        if edit.path == "task":
+            origins.clear()
+        origins[tuple(edit.path.split("."))] = origin
     graph_edits = [edit.model_dump(mode="json", exclude_unset=True) for _, edit in edits
                    if edit.path.partition(".")[0] != "task"]
     return raw | {"variation": [
-        {"op": "replace", "path": "task", "value": lowered.model_dump(mode="json")}, *graph_edits,
-    ]}
+        {"op": "replace", "path": "task", "value": stored_project_value(lowered)}, *graph_edits,
+    ]}, origins
+
+
+def _restore_evaluation_task_origins(
+    variant: EvaluationVariant, origins: Mapping[tuple[str, ...], str],
+) -> EvaluationVariant:
+    graph_origins = {target: origin for target, origin in variant.edit_origins.items() if target[0] != "task"}
+    return replace(variant, edit_origins=graph_origins | dict(origins))
 
 
 @dataclass(frozen=True)
@@ -2436,6 +2449,10 @@ class _Compiler:
                 target = model_field_target(path)
                 if target is None:
                     parts = tuple(path.split("."))
+                    if kind == "train" and parts[:2] == ("trial_documents", "objective"):
+                        resolved = resolved_definition()
+                        documents = resolved.payload.get("trial_documents") if isinstance(resolved, ResolvedStep) else None
+                        return objective_weight_title(documents.get("objective"), parts[2:]) if isinstance(documents, dict) else None
                     if kind == "train" and parts == ("seed",):
                         return "Seed"
                     if kind == "train" and parts[0] == "training_config":
@@ -3019,6 +3036,7 @@ class _Compiler:
             authored.model, authored.task_source,
             components, self.functions or _builtin_expression_registry(),
             python_tasks=self.python_tasks, objective=authored.objective, input_bindings=authored.input_bindings,
+            keyed_root_ports=True,
         )
         result: _TrainPreparation | tuple[Problem, ...]
         if isinstance(paired, tuple):
@@ -3092,8 +3110,10 @@ class _Compiler:
         slots = self.evaluation_slots(key, payload, model_source, reference, document_ids, read, task_additions)
         if isinstance(slots, ProjectDiagnostic):
             return slots
-        lowered, model, task = slots
-        result = self._lower_evaluate_payload(key, lowered, model_source, reference, has_differences, model, read)
+        lowered, model, task, task_origins = slots
+        result = self._lower_evaluate_payload(
+            key, lowered, model_source, reference, has_differences, model, read, task_origins=task_origins,
+        )
 
         def move(problem: ProjectDiagnostic) -> ProjectDiagnostic:
             parts = path_parts(problem.path)
@@ -3113,7 +3133,7 @@ class _Compiler:
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
         task_additions: tuple[TaskAdditions, ...],
-    ) -> tuple[Payload, _EvaluationModel | None, bool] | ProjectDiagnostic:
+    ) -> tuple[Payload, _EvaluationModel | None, bool, dict[tuple[str, ...], str]] | ProjectDiagnostic:
         """Lower an Evaluate step's own Model and Task documents against its subject run's.
 
         The Task slot becomes the task replacement ahead of the authored variation, or nothing when it is the
@@ -3134,7 +3154,7 @@ class _Compiler:
         documents_read = self.evaluation_source_documents(reference) if isinstance(reference, ProductRef) else None
         if documents_read is None or model_source is None:
             if not slots and not task_additions:
-                return payload, None, False
+                return payload, None, False, {}
             path = EVALUATION_MODEL if "model" in slots else EVALUATION_TASK
             return problem(path, "Requires a step that produced a Model.")
         model = None
@@ -3163,7 +3183,7 @@ class _Compiler:
         if payload.get("evaluation_type") != ROLLOUT_TYPE or not isinstance(params, dict):
             if has_task_slot:
                 return problem("payload.params", "Declare rollout parameters.")
-            return payload, model, False
+            return payload, model, False, {}
         authored = model_source.trial.task if model_source.trial is not None else None
         inherited = authored or documents_read.task_source
         stored_task = model_source.stored_task
@@ -3179,33 +3199,38 @@ class _Compiler:
                 trial_keys = selected.validation_trials if isinstance(selected, StoredTaskDocument) else None
                 selected = StoredTaskDocument.from_lowered(add_to_task(task, task_additions), trial_keys=trial_keys or None)
             if has_task_slot and selected is not None:
-                chosen = selected.lower() if isinstance(selected, StoredTaskDocument) else selected
-                if chosen == inherited:
+                chosen = selected.lower().without_markers() if isinstance(selected, StoredTaskDocument) else selected
+                base = inherited.without_markers() if isinstance(inherited, TaskDocument) else inherited
+                if chosen == base:
                     has_task_slot = False
                     stored_task = selected if isinstance(selected, StoredTaskDocument) else None
-            lowered = _lower_evaluation_task_edits(params, inherited, stored_task, selected=selected if has_task_slot else None)
+            lowered, task_origins = _lower_evaluation_task_edits(
+                params, inherited, stored_task, selected=selected if has_task_slot else None,
+            )
         except CannotRun as error:
             return replace(problem(error.path, error.reason), variation_target=variation_targets(payload.get("params"))(
                 path_parts(error.path)[-1],
             ))
         except ValueError as error:
             return problem(EVALUATION_TASK if has_task_slot else "payload.params.variation", str(error))
-        return payload | {"params": lowered}, model, has_task_slot
+        return payload | {"params": lowered}, model, has_task_slot, task_origins
 
     def _lower_evaluate_payload(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool, model: _EvaluationModel | None,
-        read: Callable[[str], Document | None],
+        read: Callable[[str], Document | None], *, task_origins: Mapping[tuple[str, ...], str],
     ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         fields = self.variants[key.variant].steps[key.step].set_fields
         if not has_differences and model is None and not fields:
-            return self.lower_evaluate_trials(key, payload, reference, model_source)
+            return self.lower_evaluate_trials(key, payload, reference, model_source, task_origins=task_origins)
         original = payload.get("params")
         lowered = self.lower_evaluate_model(key, payload, model_source, reference, model, read)
         if isinstance(lowered, (ProjectDiagnostic, _EvaluatePayload)):
             return lowered
         varied, condition_origins = lowered
-        result = self.lower_evaluate_trials(key, varied, reference, model_source, condition_origins=condition_origins)
+        result = self.lower_evaluate_trials(
+            key, varied, reference, model_source, condition_origins=condition_origins, task_origins=task_origins,
+        )
         # Derived Model patches append to an ordered copy. Report a Task
         # refusal at the original named edit without changing request encoding.
         if isinstance(original, dict):
@@ -3332,7 +3357,7 @@ class _Compiler:
             stored_task = (
                 StoredTaskDocument.model_validate(task_document.payload) if isinstance(task, TaskDocument) else None
             )
-            raw = _lower_evaluation_task_edits(raw, task, stored_task)
+            raw, task_origins = _lower_evaluation_task_edits(raw, task, stored_task)
             payload = payload | {"params": raw}
             condition_origins = {}
             if fields or differences or effective_model != model:
@@ -3344,7 +3369,7 @@ class _Compiler:
             settings = authored_rollout_settings(raw)
             paired = pair_trial_source(
                 model, task, components, functions,
-                python_tasks=tasks, input_bindings=settings.input_bindings,
+                python_tasks=tasks, input_bindings=settings.input_bindings, keyed_root_ports=True,
             )
             unpaired = paired if isinstance(paired, tuple) else paired.problems
             refusals = _trial_problems(unpaired, model, initial=True)
@@ -3354,10 +3379,13 @@ class _Compiler:
                 variant = resolve_evaluation_variant(
                     paired.lowered.graph, task, settings.variation, components=components,
                 )
+                if task_origins:
+                    variant = _restore_evaluation_task_origins(variant, task_origins)
                 if variant.task != task or variant.graph != paired.lowered.graph:
                     paired = pair_trial_source(
                         model, variant.task, components, functions,
                         python_tasks=tasks, input_bindings=settings.input_bindings, graph_override=variant.graph,
+                        keyed_root_ports=True,
                     )
                     conditions = evaluation_conditions(variant.task, tasks)
                     if isinstance(paired, tuple) or paired.problems:
@@ -3505,7 +3533,7 @@ class _Compiler:
 
     def lower_evaluate_trials(
         self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,
-        *, condition_origins: Mapping[str, str] | None = None,
+        *, condition_origins: Mapping[str, str] | None = None, task_origins: Mapping[tuple[str, ...], str],
     ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         from feedbax.execution.trial_resolution import pair_trial_source, resolve_python_task
         from feedbax.contracts.rollout import CannotRun
@@ -3536,6 +3564,8 @@ class _Compiler:
                 model_source.evaluation_graph, documents.task_source, settings.variation,
                 components=self.components or _builtin_model_registry(),
             )
+            if task_origins:
+                variant = _restore_evaluation_task_origins(variant, task_origins)
             refusals = ()
             paired_task = None
             state_fields = model_source.evaluation_states
@@ -3644,7 +3674,8 @@ class _Compiler:
             axis, field = next(iter(fields.items()))
             raise SetFieldProblem(axis, field.axis.set, None, "A Set field needs a Task document.")
         attached = lower_evaluate_attachments(
-            source, evaluated, None, self.components or _builtin_model_registry(), differences,
+            source.with_keyed_root_ports(), evaluated.with_keyed_root_ports(), None,
+            self.components or _builtin_model_registry(), differences,
             functions=self.functions or _builtin_expression_registry(),
             trained_task=task if isinstance(task, TaskDocument) else None,
             evaluated_task=chosen_task if isinstance(chosen_task, TaskDocument) else None,

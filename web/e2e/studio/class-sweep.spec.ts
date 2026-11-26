@@ -5,8 +5,7 @@ import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('an optimizer swept with its classes crosses the learning rate, and a member selects its runs and parameters', async ({ page, request }) => {
-  test.setTimeout(55_000);
+test('an optimizer swept with its classes crosses the learning rate, and a member selects its runs and parameters', { tag: '@slow' }, async ({ page, request }) => {
   const files = await fixture('ordinary-files', '2');
   files.at(-1).step.base.inline.settings.optimizer.b1 = 0.8;
   const { snapshot, projectPath } = await seedManagedProject(request, files);

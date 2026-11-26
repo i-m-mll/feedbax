@@ -55,7 +55,7 @@ const frames = (page: Page) => page.evaluate(() =>
  * From an edit until its revision's plan is read, the window draws what the last plan read said: no control of the
  * Model view, the Evaluate inspector or the rail goes away or comes back. A gesture made meanwhile runs once, after.
  */
-test('a new revision\'s plan, while read, changes no control and holds a gesture until it is read', async ({ page, request }) => {
+test('a new revision\'s plan, while read, changes no control and holds a gesture until it is read', { tag: '@slow' }, async ({ page, request }) => {
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'scoped-series-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const patches: string[] = [];

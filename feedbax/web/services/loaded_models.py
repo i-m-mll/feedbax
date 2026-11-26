@@ -54,7 +54,7 @@ def import_loaded_model(
             raise ProjectFolderInvalid(composed.detail)
         if composed.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
             raise ProjectFolderInvalid("Choose a Model document to fit the archive.")
-        model = StoredModelDocument.model_validate(composed.payload).lower()
+        model = StoredModelDocument.model_validate(composed.payload).lower().with_keyed_root_ports()
     assert folders.components is not None
     with stage_project_archive(raw, model, folders.components) as (staging, staged):
         if isinstance(staged, ModelFitReport):

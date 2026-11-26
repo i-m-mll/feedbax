@@ -7,7 +7,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
  * Inside a composite, the Inputs card's empty handle lists the signals outside, each told apart from components of the
  * same name; Escape dismisses the list, and choosing a signal adds the port.
  */
-test('a composite\'s empty input handle lists the outside signals apart and brings one in', async ({ page }) => {
+test('a composite\'s empty input handle lists the outside signals apart and brings one in', { tag: '@slow' }, async ({ page }) => {
   const model = await newModel(page);
   const linears = [];
   for (let count = 0; count < 4; count += 1) linears.push(await addFromLibrary(page, model, 'Linear'));
@@ -66,7 +66,7 @@ test('a wire to the Outputs card\'s empty handle adds the output it carries', as
 });
 
 /** Ungroup is dimmed, with the reason as its tip, while the composite's port carries an attachment, and applies once it does not. */
-test('Ungroup is dimmed with its reason while a composite port has an attachment', async ({ page }) => {
+test('Ungroup is dimmed with its reason while a composite port has an attachment', { tag: '@slow' }, async ({ page }) => {
   const model = await newModel(page);
   const source = await addFromLibrary(page, model, 'Linear');
   const grouped = await addFromLibrary(page, model, 'Linear');

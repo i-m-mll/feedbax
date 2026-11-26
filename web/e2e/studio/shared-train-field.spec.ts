@@ -5,8 +5,7 @@ import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('the inspector edits the saved values for the step and its selected runs, and projects the selected source', async ({ page, request }) => {
-  test.setTimeout(55_000);
+test('the inspector edits the saved values for the step and its selected runs, and projects the selected source', { tag: '@slow' }, async ({ page, request }) => {
   const files = await fixture('ordinary-files', '2');
   // Train offers the settings a project authors, so the project authors Grad Clip to edit it.
   files.at(-1).step.base.inline.settings.grad_clip = 1;
@@ -165,7 +164,7 @@ test('two runs of a 4 × 2 sweep take a value as one exception, and removing it 
   await expect(batch.getByLabel('Changed', { exact: true })).toHaveCount(0);
 });
 
-test('choosing an optimizer keeps the inspector still, and reveals only the parameters it brings in', async ({ page, request }) => {
+test('choosing an optimizer keeps the inspector still, and reveals only the parameters it brings in', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   await page.setViewportSize({ width: 1440, height: 640 });
   await page.emulateMedia({ reducedMotion: 'reduce' });

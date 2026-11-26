@@ -12,8 +12,7 @@ interface Task {
 // Catches a Merge that writes more than one cell or loses the span on reload, an absent cell drawn the same as a cell
 // holding its absent value (or drawn without the value), a column drag that does not reorder the epochs, and a grid
 // that squashes its columns or scrolls its signal names away once five columns do not fit.
-test('the epochs grid merges cells, draws an absent cell apart from a zero, reorders columns and scrolls with its names held', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('the epochs grid merges cells, draws an absent cell apart from a zero, reorders columns and scrolls with its names held', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const task = async () => {
     const { project } = (await (await request.get(projectPath)).json()) as StudioProjectSnapshot;
@@ -102,8 +101,7 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
 // example's label, an absent cell that takes no caret (so only the Inspector could fill it), typed text that is dropped
 // or written as two edits, and a present cell emptied of its text that is refused or stored empty instead of becoming
 // absent.
-test('a Task from an example shows its label, and typing into an absent cell makes it present', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a Task from an example shows its label, and typing into an absent cell makes it present', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const saved = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project;
   const spans = async () => ((await saved()).documents?.['delayed-reaches'] as { payload: Task } | undefined)?.payload

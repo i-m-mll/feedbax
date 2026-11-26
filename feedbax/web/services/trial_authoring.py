@@ -42,6 +42,7 @@ from feedbax.contracts.request_refs import BestRank
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_rollout_settings, authored_variation
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.project_storage import stored_keyed_collection, stored_project_value
+from feedbax.contracts.stored_members import project_member
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.contracts.studio_sets import SetEntryTask
 from feedbax.contracts.studio_place import task_start_path
@@ -152,7 +153,7 @@ def _project(
     paired = pair_trial_source(
         documents.model, task, bundle.components, bundle.expression_functions,
         python_tasks=bundle.python_tasks, input_bindings=documents.input_bindings,
-        task_sites=task_sites, graph_override=graph_override, reset_fields=resets,
+        task_sites=task_sites, graph_override=graph_override, reset_fields=resets, keyed_root_ports=True,
     )
     partial = None
     if isinstance(paired, tuple):
@@ -703,6 +704,18 @@ def _evaluate_documents(plan, key, definition, bundle):
         documents, task, input_bindings=documents.input_bindings | authored_bindings | params.input_bindings,
     )
     paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
+    project = plan.variant_projects[key.variant]
+    if (
+        isinstance(stored_task, StoredTaskDocument) and isinstance(task, TaskDocument)
+        and (definition.task_additions or project.steps[key.step].set_fields)
+    ):
+        set_ids = {id for id, _, _, _ in _set_variables(project, key, plan.row(key))}
+        additions = {
+            variable.id: project_member(variable, StoredVariable, label=variable.name)
+            for variable in task.variables if variable.id in set_ids and variable.id not in stored_task.variables
+        }
+        if additions:
+            stored_task = stored_task.model_copy(update={"variables": stored_task.variables | additions})
     return documents, replace(
         paired, task_origins=_task_edit_origins(edits), stored_task=stored_task,
         set_condition_variables=authored_task.variables if isinstance(authored_task, TaskDocument) else (),

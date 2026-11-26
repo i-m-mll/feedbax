@@ -51,6 +51,7 @@ from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+from feedbax.web.services.axis_values import gather_axes
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.contracts.model_edit import ModelEditRequest
 from feedbax.web.services.project_plan import ProjectPlanRead, ProjectPlanService
@@ -566,6 +567,29 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
         assert len(sampled["draws"]) == 4
         assert all(type(value) is int and value in (8, 12) for value in sampled["draws"].values())
         assert sampled["sampler"]["distribution"]["family"] == "choice"
+        assert sampled["sampler"]["distribution"]["per"] == "run"
+
+    folders = ProjectFolderService(tmp_path)
+    saved = folders.read("duration")
+    sampled = saved.project.steps["train"].sweep.axes["hidden-size"]
+    assert sampled.sampler.distribution.per == "run"
+    plan = folders.read_plan("duration", revision=saved.revision).plan
+    rows = [row for row in plan.rows if row.key.step == "train"]
+    _, value_ids = gather_axes(rows)
+    row = next(row for row in rows if value_ids[row.key, "hidden-size"] != row.coordinates["hidden-size"].value_id)
+    draw_id = row.coordinates["hidden-size"].value_id
+    with TestClient(create_app(projects_dir=tmp_path)) as reopened:
+        fields = reopened.post(url + "/model/fields", json={
+            "revision": saved.revision, "document": "reach-model", "owner": owner,
+            "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row},
+        })
+        assert fields.status_code == 200, fields.text
+        hidden = next(item for item in fields.json()["fields"] if item["label"] == "Hidden size")
+        assert hidden["text"] == "sample(choice(8, 12, per=run), 4)"
+        source = next(item for item in hidden["sources"] if item["axis"] == "hidden-size")
+        assert source["key"] == draw_id
+        assert source["path"] == f"/sweep/axes/hidden-size/draws/{draw_id}/value"
+        assert source["value"] == value_ids[row.key, "hidden-size"]
 
 
 def test_class_parameter_axes_are_named_by_the_field_holding_the_class(tmp_path):
@@ -1151,12 +1175,12 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     documents = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
     documents.pop("input_bindings")
     model = raw["documents"]["reach-model"]["payload"]
-    model["ports"]["inputs"]["unknown"] = model["ports"]["inputs"].pop("task-input") | {"label": "unknown"}
+    model["ports"]["inputs"]["unknown"] = model["ports"]["inputs"].pop("task-input") | {"label": "Unknown signal"}
     model["interior"]["wires"]["task-wire"]["source"]["port"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
     (problem,) = [problem for row in refused.rows if row.key.step == "train" for problem in row.problems]
     assert problem.path.startswith("/trial_documents/model/")
-    assert problem.detail == "Model input 'unknown' needs a Task signal."
+    assert problem.detail == "Model input 'Unknown signal' needs a Task signal."
     assert problem.model_address == ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "port", "end": {"owner": "inputs", "port": "unknown"}},
@@ -1401,7 +1425,7 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids(monkeypatch):
     assert outgoing.target_node == "readout"
     executable = compile_graph(
         GraphDocument(graph=variant.graph), registry,
-        input_prototypes={graph.input_bindings["reach_target"]: jax.ShapeDtypeStruct((2,), jnp.float32)},
+        input_prototypes={graph.input_bindings["task-input"]: jax.ShapeDtypeStruct((2,), jnp.float32)},
     )
     assert executable.graph.nodes["wrapper"].nodes["controller"].nodes[incoming.target_node].scale == 0.5
 
@@ -1514,10 +1538,9 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
     assert requests() == prior
 
 
-# The ids the variant's evaluation had at a9b3bb7d, where the change was stored in the step's payload.
-# The fixture pins requests that bind Task signals by stable Model input ID (8a0009c3).
-_VARIANT_WIRE = "evaluate:4f26103959b7ccd1c1f27ba1acd2f8b53bb8f7446751b8c279f7345bdc3f7a4e"
-_VARIANT_FIELD = "evaluate:86530315779f1c0f14fc177396bae4f98e4f8ceb8a5600d09bd6b21232ba0374"
+# Equivalent stored edits retain these managed requests with key-based external Model ports.
+_VARIANT_WIRE = "evaluate:67b6b7b07886af24685d0bafb6b138bc8d3d8a1d8388c00f15270a9f5fb43c8b"
+_VARIANT_FIELD = "evaluate:fe38d5d871dfa3e929d611f55b4497ebf72f2f9c9a5c844ea77b7999aa303aa9"
 
 
 @pytest.mark.parametrize(("operation", "expected"), [
@@ -2130,11 +2153,15 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
             {"op": "remove", "address": _attachment_address(owner, "train-extra")},
         ):
             snapshot = folders.read(project)
-            applied = folders.edit_model(project, ModelEditRequest.model_validate({
+            request = ModelEditRequest.model_validate({
                 "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
-                "document": "reach-model", "step": "baseline", "rows": ["default"],
+                "document": "reach-model", "step": "baseline",
                 "command": {"operation": {"op": "set_attachment", "difference": difference}},
-            }), registry.components)
+            })
+            applied = folders.edit_model(project, request, registry.components)
+            if applied.result.status == "asked":
+                choice = next(item for item in applied.result.store_choices if item.kind == "selected_readers")
+                applied = folders.edit_model(project, request.model_copy(update={"store_choice": choice.id}), registry.components)
             assert applied.result.status == "applied", applied.result
         raw = folders.read(project).project.model_dump(mode="json", by_alias=True, exclude_unset=True)
         plan = folders.read_plan(project, revision=None)
@@ -2163,8 +2190,8 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     slot = read_method_checkpoint(checkpoint.checkpoint_root, checkpoint.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None
     restored = slot.restore()
-    assert restored.input_shapes == {"reach_target": (2,)}
-    assert slot.input_arrays["reach_target"].dtype == "float32"
+    assert restored.input_shapes == {"task-input": (2,)}
+    assert slot.input_arrays["task-input"].dtype == "float32"
     assert restored.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
     evaluated = finished(evaluation_job)
     assert evaluated["state"] == "succeeded", evaluated.get("outcome")
@@ -2245,6 +2272,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
 
     model = raw["documents"][model_name]["payload"]
     model["ports"]["inputs"]["task-input"]["label"] = "Renamed reach target"
+    model["ports"]["outputs"]["command"]["label"] = "Renamed command"
     _save_project(folders, project, Project.model_validate(raw))
     changed = reopened.read_plan(project, revision=None)
     assert not changed.plan.diagnostics
