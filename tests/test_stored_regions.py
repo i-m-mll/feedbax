@@ -291,7 +291,8 @@ def test_studio_sweeps_a_train_setting_omitted_at_its_default(tmp_path):
             assert source == selected.selected_definitions[row.key].sources[rate]
 
 
-def test_studio_plans_and_resets_a_based_optimizer_whose_adam_default_is_omitted(tmp_path):
+@pytest.mark.parametrize("reset_path", ["/settings/optimizer/type", "/settings/optimizer"])
+def test_studio_plans_and_resets_a_based_optimizer_whose_adam_default_is_omitted(tmp_path, reset_path):
     root = tmp_path / "fixture"
     project = managed_train_project()
     inline = project.steps["train"].base.inline
@@ -340,7 +341,7 @@ def test_studio_plans_and_resets_a_based_optimizer_whose_adam_default_is_omitted
         assert json.loads(derived_file.read_bytes())["differences"] == difference
 
         reset = client.post(f"{route}/authoring/train/train", json={
-            "revision": revision, "reset": "/settings/optimizer/type",
+            "revision": revision, "reset": reset_path,
         })
         assert reset.status_code == 200, reset.text
         assert reset.json()["files"]

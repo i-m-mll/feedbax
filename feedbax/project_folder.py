@@ -408,8 +408,20 @@ def document_file(
     assert base is not None
     if regions is None:
         regions = StoredRegionRegistries()
+    retained_parents = set()
+    for path in difference_parent_paths(document.differences):
+        parent, depth = content, 0
+        for part in path:
+            child = parent.get(part)
+            if not isinstance(child, dict):
+                break
+            parent = child
+            depth += 1
+        retained_parents.add(path[:depth])
+    # An omitted base parent was synthesized only to reach an override. Once the
+    # edit drops that parent, comparing against a synthesized object would save a removal.
     basis = document_difference_basis(
-        document.schema_id, base, difference_parent_paths(document.differences), registries=regions,
+        document.schema_id, base, retained_parents, registries=regions,
     )
     differences = diff(basis, content, keyed_collection=keyed)
     if edits is not None:
