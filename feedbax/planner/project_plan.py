@@ -51,7 +51,7 @@ from feedbax.contracts.project import (
 from feedbax.contracts.run_rule import RuleRefusal, bind_metric_conditions
 from feedbax.contracts.project_storage import (
     difference_parent_paths, document_difference_basis, stored_expression_site, stored_keyed_collection,
-    stored_project_expression_site, stored_project_value,
+    stored_project_expression_site, stored_project_keyed_collection, stored_project_value,
 )
 from feedbax.contracts.expression_text import RuleBest
 from feedbax.contracts.project_inputs import (
@@ -756,6 +756,8 @@ def resolve_authored_evaluation_task(
                     {"task": content}, edit,
                     expression_site=lambda path: stored_expression_site(STORED_TASK_DOCUMENT_SCHEMA_ID, path[1:])
                     if isinstance(task, StoredTaskDocument) else None,
+                    keyed_collection=lambda path: isinstance(task, StoredTaskDocument)
+                    and bool(path) and stored_keyed_collection(STORED_TASK_DOCUMENT_SCHEMA_ID, path[1:]),
                 )
                 task = type(task).model_validate(content)
             else:
@@ -2386,6 +2388,7 @@ class _Compiler:
                     else:
                         expression = apply_stored_patch_in_place(
                             data, patch, expression_site=partial(stored_project_expression_site, data),
+                            keyed_collection=partial(stored_project_keyed_collection, data),
                         )
                     if origins is not None:
                         source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
@@ -2415,6 +2418,7 @@ class _Compiler:
                         else:
                             expression = apply_stored_patch_in_place(
                                 content, patch, expression_site=partial(stored_project_expression_site, data),
+                                keyed_collection=partial(stored_project_keyed_collection, data),
                             )
                             if origins is not None:
                                 parts = tuple(patch.path.split("."))

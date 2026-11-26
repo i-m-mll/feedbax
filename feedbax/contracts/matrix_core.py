@@ -698,6 +698,7 @@ def apply_override_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dic
 
 type ExpressionSiteKind = Literal["expression", "time"]
 type ExpressionSite = Callable[[tuple[str, ...]], ExpressionSiteKind | None]
+type KeyedPatchCollection = Callable[[tuple[str, ...]], bool]
 
 
 @dataclass(frozen=True)
@@ -715,9 +716,10 @@ _STORED_TIME = TypeAdapter(StoredTime)
 
 def prepare_stored_patch(
     root: dict[str, Any], patch: OverridePatch, *, expression_site: ExpressionSite | None = None,
+    keyed_collection: KeyedPatchCollection | None = None,
 ) -> tuple[OverridePatch, ExpressionNodePatch | None]:
     """Translate a typed expression-node path to one validated authored field write."""
-    site = _stored_expression_site(root, patch.path, expression_site)
+    site = _stored_expression_site(root, patch.path, expression_site, keyed_collection, replace_leaf=patch.op == "replace")
     if site is None:
         return patch, None
     field, kind, raw = site
@@ -772,9 +774,10 @@ def apply_stored_patch_in_place(
     *,
     error_context: Literal["override", "delta"] = "override",
     expression_site: ExpressionSite | None = None,
+    keyed_collection: KeyedPatchCollection | None = None,
 ) -> ExpressionNodePatch | None:
     """Apply an authored sweep patch, with absent object keys already removed."""
-    physical, expression = prepare_stored_patch(root, patch, expression_site=expression_site)
+    physical, expression = prepare_stored_patch(root, patch, expression_site=expression_site, keyed_collection=keyed_collection)
     apply_value_patch_in_place(
         root, physical.path.split("."), physical.op, physical.value, path=patch.path, error_context=error_context,
         allow_absent_remove=True,
@@ -872,6 +875,11 @@ def member_ids(items: Sequence[Any]) -> tuple[str, ...] | None:
     return ids
 
 
+def _unknown_member(segment: str, ids: Iterable[str], path: str, collection: str) -> ValueError:
+    reason = "is addressed by its id" if segment.isdigit() else f"is not an id of this {collection}"
+    return ValueError(f"{segment!r} {reason}; the ids are {', '.join(ids) or '(none)'}: {path!r}")
+
+
 def resolve_segment(container: Any, segment: str, *, path: str, by_id: bool = True) -> str | int | None:
     """The key or index ``segment`` names in ``container``, or ``None`` when it names no member.
 
@@ -886,8 +894,7 @@ def resolve_segment(container: Any, segment: str, *, path: str, by_id: bool = Tr
     if ids is not None:
         if segment in ids:
             return ids.index(segment)
-        reason = "is addressed by its id" if segment.isdigit() else "is not an id of this list"
-        raise ValueError(f"{segment!r} {reason}; the ids are {', '.join(ids)}: {path!r}")
+        raise _unknown_member(segment, ids, path, "list")
     if segment.isdigit() and int(segment) < len(container):
         return int(segment)
     return None
@@ -900,6 +907,7 @@ def validate_stored_patch_path(root: Any, path: str) -> None:
 
 def _stored_expression_site(
     root: Any, path: str, expression_site: ExpressionSite | None,
+    keyed_collection: KeyedPatchCollection | None = None, *, replace_leaf: bool = False,
 ) -> tuple[tuple[str, ...], ExpressionSiteKind, Any] | None:
     parts = tuple(path.split("."))
     value = root
@@ -908,6 +916,9 @@ def _stored_expression_site(
             raise ValueError(f"A stored path cannot traverse an array: {path!r}")
         key = resolve_segment(value, part, path=path, by_id=False)
         if key is None:
+            if (keyed_collection is not None and isinstance(value, dict)
+                    and (replace_leaf or index < len(parts) - 1) and keyed_collection(parts[:index])):
+                raise _unknown_member(part, value, path, "collection")
             return None
         child = value[key]
         if index < len(parts) - 1:

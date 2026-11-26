@@ -111,10 +111,13 @@ def _keyed_collection_at(annotation: Any, path: StoredPath) -> bool:
     return False
 
 
-@lru_cache(maxsize=4096)
 def stored_expression_site(schema_id: str, path: StoredPath) -> ExpressionSiteKind | None:
     """Identify a declared scalar expression or time, without inspecting its content."""
-    model = stored_document_models().get(schema_id)
+    return _model_expression_site(stored_document_models().get(schema_id), path)
+
+
+@lru_cache(maxsize=4096)
+def _model_expression_site(model: type[BaseModel] | None, path: StoredPath) -> ExpressionSiteKind | None:
     return _expression_site_at(model, path)
 
 
@@ -143,47 +146,64 @@ def _expression_site_at(annotation: Any, path: StoredPath) -> ExpressionSiteKind
     return None
 
 
-@lru_cache(maxsize=4096)
-def stored_step_expression_site(kind: str, path: StoredPath) -> ExpressionSiteKind | None:
-    """Resolve an expression in a step's authored payload using its declared document roles."""
+def _step_patch_site(kind: str, path: StoredPath) -> tuple[type[BaseModel] | None, StoredPath]:
     from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
     from feedbax.contracts.result_address import ANALYSIS_SCHEMA
     from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
     from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 
     if kind == "analyze":
-        return stored_expression_site(ANALYSIS_SCHEMA, path)
+        return stored_document_models().get(ANALYSIS_SCHEMA), path
     if kind == "synthesize":
         from feedbax.contracts.synthesis import SynthesisStepPayload
 
-        return _expression_site_at(SynthesisStepPayload, path)
+        return SynthesisStepPayload, path
     if kind in {"train", "evaluate"} and len(path) > 2 and path[0] == "trial_documents":
         schema = {
             "model": STORED_MODEL_DOCUMENT_SCHEMA_ID,
             "task": STORED_TASK_DOCUMENT_SCHEMA_ID,
             "objective": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID,
         }.get(path[1])
-        return stored_expression_site(schema, path[2:]) if schema is not None else None
-    return None
+        return stored_document_models().get(schema) if schema is not None else None, path[2:]
+    return None, path
 
 
-def stored_project_expression_site(
-    project: Mapping[str, Any], path: StoredPath,
-) -> ExpressionSiteKind | None:
-    """Resolve declarations for variants, whose paths start at the authored project."""
+@lru_cache(maxsize=4096)
+def stored_step_expression_site(kind: str, path: StoredPath) -> ExpressionSiteKind | None:
+    """Resolve an expression in a step's authored payload using its declared document roles."""
+    return _model_expression_site(*_step_patch_site(kind, path))
+
+
+@lru_cache(maxsize=4096)
+def stored_step_keyed_collection(kind: str, path: StoredPath) -> bool:
+    model, relative = _step_patch_site(kind, path)
+    return model is not None and _keyed_collection_at(model, relative)
+
+
+def _project_patch_site(project: Mapping[str, Any], path: StoredPath) -> tuple[type[BaseModel] | None, StoredPath]:
     if len(path) < 3:
-        return None
+        return None, path
     family, name, *member_path = path
     if family not in {"documents", "steps"}:
-        return None
+        return None, path
     member = project.get(family, {}).get(name, {})
     if family == "documents" and member_path[0] == "payload":
-        return stored_expression_site(member.get("schema", ""), tuple(member_path[1:]))
+        return stored_document_models().get(member.get("schema", "")), tuple(member_path[1:])
     if family == "steps":
         if member_path[:2] == ["base", "inline"]:
-            return stored_step_expression_site(member.get("kind", ""), tuple(member_path[2:]))
-        return _expression_site_at(Step, tuple(member_path))
-    return None
+            return _step_patch_site(member.get("kind", ""), tuple(member_path[2:]))
+        return Step, tuple(member_path)
+    return None, path
+
+
+def stored_project_expression_site(project: Mapping[str, Any], path: StoredPath) -> ExpressionSiteKind | None:
+    """Resolve declarations for variants, whose paths start at the authored project."""
+    return _model_expression_site(*_project_patch_site(project, path))
+
+
+def stored_project_keyed_collection(project: Mapping[str, Any], path: StoredPath) -> bool:
+    model, relative = _project_patch_site(project, path)
+    return model is not None and _keyed_collection_at(model, relative)
 
 
 @cache
