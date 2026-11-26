@@ -114,11 +114,11 @@ def _add(document: TaskDocument, change: AddMember) -> TaskDocument:
         "signal": lambda: Signal(id=id, name=change.name, type=value_type, cells=()),
     }[change.member]()
     index = len(members) if change.index is None else min(change.index, len(members))
-    links = tuple(link for link in document.links if link.model_field not in change.initializes)
-    return document.model_copy(update={
-        field: (*members[:index], added, *members[index:]),
-        "links": (*links, *(Link(model_field=address, variable=id) for address in change.initializes)),
-    })
+    updates = {field: (*members[:index], added, *members[index:])}
+    if change.initializes:
+        links = tuple(link for link in document.links if link.model_field not in change.initializes)
+        updates["links"] = (*links, *(Link(model_field=address, variable=id) for address in change.initializes))
+    return document.model_copy(update=updates)
 
 
 def _edit_member(

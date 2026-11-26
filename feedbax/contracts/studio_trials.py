@@ -257,5 +257,7 @@ class StudioTrialAuthoring(StrictModel):
 
     @field_serializer("task", "objective")
     def _authored_document(self, document: StoredTaskDocument | PythonTaskSelection | StoredObjectiveDocument | None):
+        from feedbax.contracts.project_storage import stored_project_value
+
         # The editor uses field presence to choose between add and replace.
-        return document.model_dump(mode="json", exclude_unset=True) if document is not None else None
+        return stored_project_value(document, keep_explicit=True) if document is not None else None
