@@ -498,10 +498,13 @@ class ModelEditDraft:
         if key in members:
             members[key] = record
             return
-        siblings = tuple(base[collection])
+        inherited = base[collection]
+        siblings = tuple(inherited)
         following = next((name for name in siblings[siblings.index(key) + 1:] if name in members), None)
-        position = tuple(members).index(following) if following is not None else len(members)
         ordered = list(members.items())
+        position = tuple(members).index(following) if following is not None else max(
+            (index + 1 for index, (name, _) in enumerate(ordered) if name in inherited), default=0,
+        )
         ordered.insert(position, (key, record))
         graph[collection] = dict(ordered)
 

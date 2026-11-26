@@ -1245,6 +1245,8 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
     On one value of a named axis the value holds its differences from the document: on its patches when the axis is
     inline, on the set's entry when it reads a set, which is then an edit of the set for the chosen steps. Any other
     selection holds the change on the sweep's exception for it.
+
+    A named value can restore inherited order by dropping a removal, even when the row-relative edit needs Order.
     """
     step = body.step
     document = body.document
@@ -1252,14 +1254,14 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
         row.content, _in_form_of(row.content, after, _composed(project, document)),
         keyed_collection=model_keyed_collection,
     )
-    if any(isinstance(record, OrderDocumentMembers) for record in delta.values()):
-        raise ProjectFolderInvalid("Reorder members in the Model document. A run-scoped patch cannot store their order.")
     address = AuthoredFileAddress(kind="step", id=step)
     authored = project.steps[step]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
     stored = StoredEdit([], reached=frozenset({step}))
     named = selected_value(project, step, row.scope)
     if named is None:
+        if any(isinstance(record, OrderDocumentMembers) for record in delta.values()):
+            raise ProjectFolderInvalid("Reorder members in the Model document. A run-scoped patch cannot store their order.")
         writes = [
             OverridePatch(path=_payload_target(document, path), op="remove") if isinstance(record, RemoveDocumentValue)
             else OverridePatch(
@@ -1272,11 +1274,22 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
             stored = stored.then([_selection_file(address, raw, authored, row.scope, writes)])
     else:
         base = _composed(project, document)
+        previous = _value_differences(project, step, named, document)
         try:
-            edited = apply_differences(value_model(project, step, named, document), delta)
+            edited = apply_differences(
+                apply_differences(base, previous), delta, keyed_collection=model_keyed_collection,
+            )
+            restored = {
+                path for path, record in delta.items()
+                if isinstance(record, SetDocumentValue) and isinstance(previous.get(path), RemoveDocumentValue)
+            }
+            remaining = {path: record for path, record in previous.items() if path not in restored}
+            if restored and not diff(apply_differences(base, remaining), edited, keyed_collection=model_keyed_collection):
+                differences = remaining
+            else:
+                differences = diff(base, edited, keyed_collection=model_keyed_collection)
         except DifferenceNotApplied as error:
             raise ProjectFolderInvalid(f"The edit does not apply to the selected value: {error}") from error
-        differences = diff(base, edited, keyed_collection=model_keyed_collection)
         if any(isinstance(record, OrderDocumentMembers) for record in differences.values()):
             raise ProjectFolderInvalid("Reorder members in the Model document. A sweep value cannot store their order.")
         if named.set is None:
