@@ -82,7 +82,7 @@ import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type R
 import { createSynthesize, createTrain } from './createModelStep';
 import { trainingDocumentId } from './trainingDocument';
 import {
-  authoredTrialDomain, checkpointLabel, createEvaluation, editableCheckpointRule, evaluateSubject, evaluateSubjectEdits, exactCheckpoint,
+  authoredTrialDomain, checkpointLabel, createEvaluation, editableCheckpointRule, storedCheckpointRule, evaluateSubject, evaluateSubjectEdits, exactCheckpoint,
   managedTrialDomain, ordinaryEvaluation, selectionCheckpoints, type CheckpointRange, type EditableCheckpointRule, type EvaluateSubject,
   type SelectionCheckpoint, type StoppedEvaluationSubject,
 } from './evaluateAuthoring';
@@ -1322,7 +1322,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     checkpoint={startCheckpoints && startSelections && {
       groups: startCheckpoints, disabled: !applies, refusal: refusedAt('checkpoint'),
       range: (selections) => checkpointRange('checkpoint', selections),
-      onSave: (rule) => onCurrentPlan('startTrain')({ ...startSelections[0], checkpoint: rule }, 'checkpoint'),
+      onSave: (rule) => onCurrentPlan('startTrain')({ ...startSelections[0], checkpoint: storedCheckpointRule(rule) }, 'checkpoint'),
     }}
     onChange={applies ? onCurrentPlan('changeTrainStart') : undefined} />
     : evaluateInputs && subjectRole ? <InputEditor key={inputEditorKey} label={studioName('subject')} role={subjectRole}
@@ -1573,12 +1573,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const stepId = step.id;
     const sources = [...new Set(selections.map((index) => subjectReferences[index].step))];
     const listed = listedSubject;
+    const stored = storedCheckpointRule(rule);
     void perform(async (current) => {
       const dependencies = sources.map((id) => ({ kind: 'step' as const, id }));
       let address: { kind: 'step' | 'variant'; id: string } = { kind: 'step', id: stepId };
       let patches: ProjectValueEdit[] = listed
-        ? selections.map((index) => ({ op: 'replace', path: `/inputs/subject/${index}/checkpoint`, value: rule }))
-        : [{ op: 'replace', path: '/inputs/subject/checkpoint', value: rule }];
+        ? selections.map((index) => ({ op: 'replace', path: `/inputs/subject/${index}/checkpoint`, value: stored }))
+        : [{ op: 'replace', path: '/inputs/subject/checkpoint', value: stored }];
       if (checkpointVariant && !listed) {
         const row = current.project.sweep?.rows?.[checkpointVariant];
         if (!row) return;
@@ -1586,8 +1587,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         address = { kind: 'variant', id: checkpointVariant };
         dependencies.push({ kind: 'step', id: stepId });
         patches = [row.patches
-          ? { op: key in row.patches ? 'replace' : 'add', path: authoredPointer(['patches', key]), value: { value: rule } }
-          : { op: 'add', path: '/patches', value: { [key]: { value: rule } } }];
+          ? { op: key in row.patches ? 'replace' : 'add', path: authoredPointer(['patches', key]), value: { value: stored } }
+          : { op: 'add', path: '/patches', value: { [key]: { value: stored } } }];
       }
       const files = [{ address, patches }];
       if (!await runRemoval.confirm(filesRemoval(current.project_id, current.revision, files, editor.signal))) return;
