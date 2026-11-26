@@ -35,7 +35,9 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.project_sources import pointer as json_pointer
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef, UpdateSeriesMember, is_synthesized_model_product
+from feedbax.contracts.request_refs import (
+    BestRank, ContentRef, LastMember, ProductRef, UpdateSeriesMember, is_synthesized_model_product,
+)
 from feedbax.contracts.rollout import (
     ResolvedInitialRollout, ResolvedRolloutBinding, ResolvedRolloutMember, ResolvedSynthesizedRollout,
     rollout_objective_sha256, rollout_semantics,
@@ -57,6 +59,7 @@ from feedbax.persistence.canonical_evaluate import (
     BoundEvaluationJobInput,
     RolloutParameters,
     SynthesizedSubjectBinding,
+    best_bound_rank,
     decode_rollout_request,
     evaluation_checkpoint_coordinates,
     exact_evaluation_subject,
@@ -114,21 +117,27 @@ class PreparedRollout:
 
 
 def _bound_native_subject(
-    request: BoundEvaluationJobInput, binding: dict,
-) -> tuple[tuple[PublishedTrainingCheckpoint, BoundStudioTrainingJobInput], ...]:
+    request: BoundEvaluationJobInput, binding: dict, params: RolloutParameters,
+) -> tuple[tuple[tuple[PublishedTrainingCheckpoint, BoundStudioTrainingJobInput], ...], RolloutParameters]:
     from feedbax.host.job_completion import (
         load_bound_checkpoint_selection,
         verify_bound_training_completion,
     )
 
-    assert request.canonical_request.checkpoint is not None
-    subject = exact_evaluation_subject(request.canonical_request.checkpoint, binding, verify_metrics=True)
+    requested = request.canonical_request.checkpoint
+    assert requested is not None
+    if isinstance(requested, BestRank):
+        winner = requested.candidates[best_bound_rank(requested, binding, verify_metrics=True)]
+        subject, params = winner.reference, params.for_best_candidate(winner.key)
+    else:
+        subject = exact_evaluation_subject(requested, binding, verify_metrics=True)
     if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
-        return load_bound_checkpoint_selection(
+        points = load_bound_checkpoint_selection(
             binding, root=request.manifest_root, producer_request=subject.request_id,
             coordinates=coordinates, project=request.project_id,
             allow_gaps=isinstance(subject.select, UpdateSeriesMember),
         )
+        return points, params
     completion = binding["completion"]
     if (
         completion["project_id"] != request.project_id
@@ -140,7 +149,7 @@ def _bound_native_subject(
     if source.canonical_request is None:
         raise CompletionFileError("Pinned subject is missing its canonical Train request.")
     checkpoint = PublishedTrainingCheckpoint.model_validate(completion["checkpoint"])
-    return ((checkpoint, source),)
+    return ((checkpoint, source),), params
 
 
 
@@ -802,9 +811,9 @@ def main(argv: Sequence[str]) -> int:
             )),)
             train, provenance = terminal_train_provenance(pin, source)
         else:
-            checkpoints = _bound_native_subject(request, binding)
+            checkpoints, selected_params = _bound_native_subject(request, binding, params)
             members = tuple(
-                (point.completed_updates, partial(prepare_rollout, source, point, params))
+                (point.completed_updates, partial(prepare_rollout, source, point, selected_params))
                 for point, source in checkpoints
             )
             train, provenance = evaluation_subject_provenance(binding)

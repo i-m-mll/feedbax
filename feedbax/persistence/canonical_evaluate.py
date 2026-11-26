@@ -170,6 +170,11 @@ def decode_rollout_request(
         first = error.errors()[0]
         path = pointer(("params", *map(str, first["loc"])))
         raise CannotRun(path, first["msg"]) from error
+    if params.best_variant_tasks and (
+        not isinstance(subject, BestRank)
+        or params.best_variant_tasks.keys() - {candidate.key for candidate in subject.candidates}
+    ):
+        raise CannotRun("/params/best_variant_tasks", "Task variants must name candidates of the ranked subject")
     for path, patch in authored_variation(params.variation):
         if "op" not in patch.model_fields_set:
             raise CannotRun(f"{path}/op", "declare the override operation explicitly")

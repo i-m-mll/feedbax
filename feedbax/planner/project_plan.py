@@ -46,7 +46,7 @@ from feedbax.contracts.project import (
     apply_differences, base_chain, diff, json_pointer_parts, member_name, nearest_shared_base,
 )
 from feedbax.contracts.run_rule import RuleRefusal, bind_metric_conditions
-from feedbax.contracts.project_storage import stored_keyed_collection
+from feedbax.contracts.project_storage import stored_keyed_collection, stored_project_value
 from feedbax.contracts.expression_text import RuleBest
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
@@ -719,7 +719,8 @@ def resolve_authored_evaluation_task(
             if not relative and edit.op == "replace":
                 task = _AUTHORED_EVALUATION_TASK.validate_python(edit.value)
             elif relative and (isinstance(task, StoredTaskDocument) or relative.startswith("params.")):
-                content = task.model_dump(mode="json", exclude_unset=True)
+                content = stored_project_value(task, keep_explicit=True)
+                assert isinstance(content, dict)
                 apply_stored_patch_in_place({"task": content}, edit)
                 task = type(task).model_validate(content)
             else:
@@ -731,24 +732,24 @@ def resolve_authored_evaluation_task(
 
 def _lower_evaluation_task_edits(
     raw: dict, source: TaskDocument | PythonTaskSelection,
-    stored_source: StoredTaskDocument | None,
+    stored_source: StoredTaskDocument | None, *, selected: StoredTaskDocument | PythonTaskSelection | None = None,
 ) -> dict:
     settings = authored_rollout_settings(raw)
     edits = tuple(authored_variation(settings.variation))
     task_edits = tuple((origin, edit) for origin, edit in edits if edit.path.partition(".")[0] == "task")
-    if not task_edits:
+    if not task_edits and selected is None:
         return raw
-    if stored_source is None and isinstance(source, TaskDocument):
+    if selected is None and stored_source is None and isinstance(source, TaskDocument):
         for origin, edit in task_edits:
             if edit.path == "task" and edit.op == "replace":
                 break
             if edit.path.startswith("task.validation_trials."):
                 raise CannotRun(origin, "Name a Task document to edit its authored validation trial keys.")
-    authored = stored_source if stored_source is not None else (
-        StoredTaskDocument.from_lowered(source) if isinstance(source, TaskDocument) else source
-    )
-    selected = resolve_authored_evaluation_task(authored, settings.variation)
-    lowered = selected.lower().without_markers() if isinstance(selected, StoredTaskDocument) else selected
+    authored = selected or stored_source
+    if authored is None:
+        authored = StoredTaskDocument.from_lowered(source) if isinstance(source, TaskDocument) else source
+    resolved = resolve_authored_evaluation_task(authored, settings.variation)
+    lowered = resolved.lower().without_markers() if isinstance(resolved, StoredTaskDocument) else resolved
     graph_edits = [edit.model_dump(mode="json", exclude_unset=True) for _, edit in edits
                    if edit.path.partition(".")[0] != "task"]
     return raw | {"variation": [
@@ -3163,21 +3164,16 @@ class _Compiler:
                 trial_keys = selected.validation_trials if isinstance(selected, StoredTaskDocument) else None
                 selected = StoredTaskDocument.from_lowered(add_to_task(task, task_additions), trial_keys=trial_keys or None)
             if has_task_slot and selected is not None:
-                stored_content = selected.model_dump(mode="json")
                 chosen = selected.lower() if isinstance(selected, StoredTaskDocument) else selected
-                if chosen != inherited:
-                    variation = params.get("variation", [])
-                    values = tuple(variation[name] for name in sorted(variation)) if isinstance(variation, dict) else variation
-                    params = params | {"variation": [{"op": "replace", "path": "task", "value": stored_content}, *values]}
-                else:
+                if chosen == inherited:
                     has_task_slot = False
-                stored_task = selected if isinstance(selected, StoredTaskDocument) else None
-            lowered = _lower_evaluation_task_edits(params, inherited, stored_task)
+                    stored_task = selected if isinstance(selected, StoredTaskDocument) else None
+            lowered = _lower_evaluation_task_edits(params, inherited, stored_task, selected=selected if has_task_slot else None)
         except CannotRun as error:
             return replace(problem(error.path, error.reason), variation_target=variation_targets(payload.get("params"))(
                 path_parts(error.path)[-1],
             ))
-        except (TypeError, ValueError) as error:
+        except ValueError as error:
             return problem(EVALUATION_TASK if has_task_slot else "payload.params.variation", str(error))
         return payload | {"params": lowered}, model, has_task_slot
 
@@ -3434,6 +3430,7 @@ class _Compiler:
         common = None
         unpaired = None
         ports = []
+        candidate_tasks = {}
         for producer, candidate in zip(subject.candidates, rank.candidates, strict=True):
             model = self.model_sources.get(producer)
             name = f"{producer.variant}/{producer.step}/{producer.row}"
@@ -3463,13 +3460,29 @@ class _Compiler:
             try:
                 if "trial_set" in lowered["params"]:
                     raise ValueError("Task trial rule was not resolved")
-                RolloutParameters.model_validate(lowered["params"])
+                parameters = RolloutParameters.model_validate(lowered["params"])
             except (KeyError, ValueError) as error:
                 return problem(f"Best candidate {name}: {error}")
+            remaining = []
+            for _, edit in authored_variation(parameters.variation):
+                if edit.path == "task" and edit.op == "replace":
+                    candidate_tasks[candidate.key] = edit.value
+                else:
+                    remaining.append(edit.model_dump(mode="json", exclude_unset=True))
+            lowered = lowered | {"params": lowered["params"] | {"variation": remaining}}
             if common is not None and not same_typed_value(common, lowered):
                 return problem(f"Best candidate {name} resolves a different Evaluate definition or trial order.")
             common = lowered
         assert common is not None
+        if candidate_tasks:
+            params = common["params"]
+            first, *_ = candidate_tasks.values()
+            if len(candidate_tasks) == len(rank.candidates) and all(
+                same_typed_value(task, first) for task in candidate_tasks.values()
+            ):
+                params["variation"] = [{"op": "replace", "path": "task", "value": first}, *params["variation"]]
+            else:
+                params["best_variant_tasks"] = candidate_tasks
         return _EvaluatePayload(
             common, unpaired.problems if unpaired is not None else (),
             common_rollout_port(ports) if len(ports) == len(subject.candidates) else None,
