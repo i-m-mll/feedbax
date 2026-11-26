@@ -140,19 +140,32 @@ class ModelAddress(StrictModel):
                 return "interior", "wires", element.id
             if isinstance(element, PhysicalConnectionElement):
                 return "interior", "connections", element.id
+            if isinstance(element, PortElement):
+                end = element.end
+                if isinstance(end, ComponentPortAddress):
+                    group = {"input": "inputs", "output": "outputs", "physical": "physical"}[end.direction]
+                    return "interior", "components", end.component, "ports", group, end.port
+                return "ports", "physical" if end.owner == "boundary" else end.owner, end.port
             if isinstance(element, AttachmentElement):
-                return (*element_path(element.parent), "attachments")
+                owner = element.parent
+                if isinstance(owner, WireElement):
+                    return (*element_path(owner), "attachments", element.id)
+                end = owner.end
+                if isinstance(end, ComponentPortAddress):
+                    side = "sources" if end.direction == "output" else "sinks"
+                    return "interior", "components", end.component, "attachments", side, end.port, element.id
+                side = "sources" if end.owner == "inputs" else "sinks"
+                return "interior", "attachments", side, end.port, element.id
             return ()
 
         return (*scope, *element_path(self.element))
 
     @classmethod
     def at_stored_path(cls, path: Sequence[str]) -> ModelAddress:
-        """Address the member at ``path`` in the stored tree: the inverse of ``stored_path`` for a member that is
-        not an attachment."""
+        """Address the member at a keyed Model path."""
         parts = tuple(path)
         composites: list[str] = []
-        while len(parts) > 5 and parts[:2] == ("interior", "components") and parts[3:5] == ("interior", "components"):
+        while len(parts) >= 5 and parts[:2] == ("interior", "components") and parts[3] == "interior":
             composites.append(parts[2])
             parts = parts[3:]
         element: ModelElement = GraphElement(kind="graph")
@@ -164,6 +177,31 @@ class ModelAddress(StrictModel):
             }.get(parts[1])
             if member is not None:
                 element, parts = member(parts[2]), parts[3:]
+        if isinstance(element, WireElement) and len(parts) >= 2 and parts[0] == "attachments":
+            element, parts = AttachmentElement(kind="attachment", parent=element, id=parts[1]), parts[2:]
+        elif isinstance(element, ComponentElement) and len(parts) >= 4 and parts[0] == "attachments" and parts[1] in {"sources", "sinks"}:
+            end = ComponentPortAddress(
+                owner="component", component=element.id, port=parts[2],
+                direction="output" if parts[1] == "sources" else "input",
+            )
+            element, parts = AttachmentElement(kind="attachment", parent=PortElement(kind="port", end=end), id=parts[3]), parts[4:]
+        elif isinstance(element, GraphElement) and len(parts) >= 5 and parts[:2] == ("interior", "attachments") and parts[2] in {"sources", "sinks"}:
+            end = InputBoundaryEnd(owner="inputs", port=parts[3]) if parts[2] == "sources" else OutputBoundaryEnd(
+                owner="outputs", port=parts[3],
+            )
+            element, parts = AttachmentElement(kind="attachment", parent=PortElement(kind="port", end=end), id=parts[4]), parts[5:]
+        elif isinstance(element, GraphElement | ComponentElement) and len(parts) >= 3 and parts[0] == "ports" and parts[1] in {"inputs", "outputs", "physical"}:
+            group, port = parts[1:3]
+            if isinstance(element, ComponentElement):
+                direction = {"inputs": "input", "outputs": "output", "physical": "physical"}[group]
+                end = ComponentPortAddress(owner="component", component=element.id, port=port, direction=direction)
+            elif group == "inputs":
+                end = InputBoundaryEnd(owner="inputs", port=port)
+            elif group == "outputs":
+                end = OutputBoundaryEnd(owner="outputs", port=port)
+            else:
+                end = PhysicalBoundaryEnd(owner="boundary", port=port)
+            element, parts = PortElement(kind="port", end=end), parts[3:]
         return cls(
             composites=tuple(composites),
             element=FieldElement(kind="field", parent=element, path=parts) if parts else element,

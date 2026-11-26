@@ -31,9 +31,7 @@ def managed_train_project(*, batches: int = 2, scenario: str = "simple-reaches")
         name: interior["wires"][name] for name in ("target", "decode", "drive", "command")
     }
     interior["wires"]["target"]["target"] = {"owner": "component", "component": "cell", "port": "input"}
-    model["ports"]["outputs"] = [
-        port for port in model["ports"]["outputs"] if port["id"] == "command"
-    ]
+    model["ports"]["outputs"] = {"command": model["ports"]["outputs"]["command"]}
     objective = example.documents[trial["objective"]["document"]].payload
     objective["terms"] = [{
         "id": "command",

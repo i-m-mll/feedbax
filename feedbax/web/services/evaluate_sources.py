@@ -11,6 +11,7 @@ from feedbax.compiler.model_edit import model_ungroup_eligibility
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, AttachmentDifference
 from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.stored_model import StoredModelDocument, authored_model_payload, model_keyed_collection
 from feedbax.contracts.model_edit import (
     AxisValueRuns, EvaluateModelRequest, ListedRuns, EvaluateModelState,
     VariantRuns, StudioEvaluateValueSource, StudioStepNameReference,
@@ -48,6 +49,8 @@ class EvaluateReading:
     """What the read Model document changes on the trained model: its differences from ``shared``."""
     shared: str | None
     """The nearest document the read Model document shares with the subject's, when they differ."""
+    model: ModelDocument | None
+    """The effective Model in the compiler's form."""
 
 
 def read_evaluate_model(
@@ -95,7 +98,7 @@ def read_evaluate_model(
             shared, changes = changed
             try:
                 resolved = resolve_effective_model(
-                    ModelDocument.model_validate(apply_differences(definition.pinned_model.model_dump(mode="json"), changes)),
+                    _read_changed_model(authored_model_payload(definition.pinned_model), changes),
                     components or folders.components, differences, functions=folders.functions,
                 )
             except (DifferenceNotApplied, ModelCompilationProblem) as error:
@@ -125,7 +128,7 @@ def read_evaluate_model(
                     shared, changes = changes_from_shared
                     try:
                         resolved = resolve_effective_model(
-                            ModelDocument.model_validate(apply_differences(model, changes)),
+                            _read_changed_model(model, changes),
                             components or folders.components, differences, functions=folders.functions,
                         )
                     except (DifferenceNotApplied, ModelCompilationProblem) as error:
@@ -146,7 +149,7 @@ def read_evaluate_model(
         revision=body.revision,
         editable=editable,
         effective=tuple(record for record in differences if isinstance(record, AttachmentDifference)),
-        resolved_model=resolved,
+        resolved_model=StoredModelDocument.from_lowered(resolved) if resolved is not None else None,
         ungroup=model_ungroup_eligibility(resolved) if resolved is not None else (),
         source=source,
         field_sources=field_sources,
@@ -155,7 +158,12 @@ def read_evaluate_model(
             StudioProjectWindowMapProblem.from_diagnostic(problem, declaration=project_declaration_name(project_id))
             for problem in problems
         ],
-    ), changes, shared)
+    ), changes, shared, resolved)
+
+
+def _read_changed_model(payload, changes: Differences) -> ModelDocument:
+    authored = apply_differences(payload, changes, keyed_collection=model_keyed_collection)
+    return StoredModelDocument.model_validate(authored).lower()
 
 
 def _document_changes(
@@ -173,7 +181,10 @@ def _document_changes(
     composed = [compose_document(project.documents.get, name) for name in (shared, read)]
     if bad := next((entry for entry in composed if isinstance(entry, ProjectDiagnostic)), None):
         return replace(bad, path=EVALUATION_MODEL, document=read)
-    changes = diff(composed[0].payload, own if isinstance(own, dict) else composed[1].payload)
+    changes = diff(
+        composed[0].payload, own if isinstance(own, dict) else composed[1].payload,
+        keyed_collection=model_keyed_collection,
+    )
     return (shared if changes or read != subject else None), changes
 
 

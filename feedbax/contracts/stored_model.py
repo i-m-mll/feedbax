@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, JsonValue, model_validator
@@ -23,6 +24,28 @@ from feedbax.contracts.window import Window
 
 
 STORED_MODEL_DOCUMENT_SCHEMA_ID = "feedbax.spec.model.v2"
+
+
+def model_keyed_collection(path: tuple[str, ...]) -> bool:
+    from feedbax.contracts.project_storage import stored_keyed_collection
+
+    return stored_keyed_collection(STORED_MODEL_DOCUMENT_SCHEMA_ID, path)
+
+
+def authored_model_payload(model: ModelDocument) -> dict[str, JsonValue]:
+    """Project a typed Model into a complete keyed payload for authored comparisons."""
+    return StoredModelDocument.from_lowered(model).model_dump(mode="json")
+
+
+def model_member_order(
+    value: JsonValue, path: tuple[str, ...] = (),
+) -> Iterator[tuple[tuple[str, ...], list[str]]]:
+    """List the member orders that canonical JSON's key sorting would erase."""
+    if isinstance(value, dict):
+        if model_keyed_collection(path):
+            yield path, list(value)
+        for key, child in value.items():
+            yield from model_member_order(child, (*path, key))
 
 
 class StoredSignalInput(StrictModel):

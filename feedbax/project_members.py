@@ -21,7 +21,7 @@ from feedbax.contracts.result_address import (
 )
 from feedbax.contracts.studio_project import KeyedFamily, MemberFamily, StudioMemberName
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
@@ -41,7 +41,7 @@ def generated_name(base: str, taken: Callable[[str], bool], separator: str = "-"
 
 
 _DOCUMENT_NAMES = {
-    MODEL_DOCUMENT_SCHEMA_ID: ("model", "Model"),
+    STORED_MODEL_DOCUMENT_SCHEMA_ID: ("model", "Model"),
     LOADED_MODEL_SCHEMA_ID: ("loaded-model", "Loaded Model"),
     TASK_DOCUMENT_SCHEMA_ID: ("task", "Task"),
     PYTHON_TASK_SCHEMA_ID: ("task", "Task"),

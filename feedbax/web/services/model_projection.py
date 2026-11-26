@@ -10,7 +10,8 @@ from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf
 from feedbax.contracts.model_address import (
     AttachmentElement, ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement, WireElement,
 )
-from feedbax.contracts.model_document import DelayAttachment, ModelDocument, ModelTime, PhysicalPortType, SignalType
+from feedbax.contracts.model_document import DelayAttachment, ModelTime, PhysicalPortType, SignalType
+from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.time_units import length_steps
 from feedbax.contracts.objective_document import ObjectiveDocument
@@ -95,7 +96,7 @@ def _declared_ports(authority: ModelRegistryPorts, owner, scope=()):
 
 
 def _dumped(payload) -> dict:
-    return ModelDocument.model_validate(payload).model_dump(mode="json")
+    return StoredModelDocument.model_validate(payload).lower().model_dump(mode="json")
 
 
 def model_differences(folders, project_id, body, snapshot, shown, layout):
@@ -167,7 +168,7 @@ def evaluate_projection(folders, project_id, body, bundle):
             revision=body.revision, run=body.run, scope=body.evaluate_scope or StepRuns(kind="step"),
         ), bundle.components, selected=plan, model_document=body.document,
     )
-    model = reading.state.resolved_model
+    model = reading.model
     definition = plan.selected_definitions.get(key)
     if definition is None:
         return model, (), None, {}, None
@@ -184,7 +185,7 @@ def evaluate_projection(folders, project_id, body, bundle):
 def model_projection(folders, project_id, body, bundle):
     snapshot = folders.read(project_id, revision=body.revision)
     payload, layout = model_edit_source(snapshot, body.document)
-    authored = ModelDocument.model_validate(payload)
+    authored = StoredModelDocument.model_validate(payload).lower()
     differences = model_differences(folders, project_id, body, snapshot, authored.model_dump(mode="json"), layout)
     selected = None
     step = snapshot.project.steps.get(body.run.step) if body.run is not None else None
@@ -229,6 +230,6 @@ def model_projection(folders, project_id, body, bundle):
         task_inputs=tuple(
             ModelTaskInput(composites=(), element=_boundary_port((), "input", port.id).element, signal_id=signal.id)
             for port, signal in bound
-        ), resolved_model=model,
+        ), resolved_model=StoredModelDocument.from_lowered(model),
         ungroup=model_ungroup_eligibility(model), **differences,
     )

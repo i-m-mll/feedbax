@@ -54,7 +54,8 @@ from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Length, PythonTaskSelection, TaskDocument, Variable,
 )
 from feedbax.contracts.task_structure import RenameMember as RenameTaskMember
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.time_units import TimeValue, length_steps
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.graph import GraphSpec
@@ -552,7 +553,7 @@ def _producer_trial_writes(change, project, definition, documents, projection):
     return _value_writes(f"{prefix}{field}", value, change)
 
 
-_DOCUMENT_SCHEMAS = {"model": MODEL_DOCUMENT_SCHEMA_ID, "objective": OBJECTIVE_DOCUMENT_SCHEMA_ID}
+_DOCUMENT_SCHEMAS = {"model": STORED_MODEL_DOCUMENT_SCHEMA_ID, "objective": OBJECTIVE_DOCUMENT_SCHEMA_ID}
 
 
 def _chosen_document(project, document, role):
@@ -584,7 +585,7 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
         if model is None:
             raise ProjectFolderInvalid("The selected Loaded Model is unavailable.")
     else:
-        model = ModelDocument.model_validate(subject.payload)
+        model = StoredModelDocument.model_validate(subject.payload).lower()
     task = definition.input_documents["task"]
     if task.schema_id == PYTHON_TASK_SCHEMA_ID:
         source = PythonTaskSelection.model_validate(task.payload)
@@ -710,7 +711,7 @@ def _pairing(plan, key, bundle, *, definition=None):
     if step.kind == "synthesize":
         task = trial_task_slot(definition.payload.get("task"))
         documents = TrialDocuments(
-            model=ModelDocument.model_validate(definition.payload.get("model")),
+            model=StoredModelDocument.model_validate(definition.payload.get("model")).lower(),
             task=task if isinstance(task, TaskDocument) else None,
             python_task=task if isinstance(task, PythonTaskSelection) else None,
             objective=ObjectiveDocument.model_validate(definition.payload.get("objective")),
@@ -1596,7 +1597,7 @@ def trial_authoring(
         if model_document is not None:
             authored_model = compose_document(project.documents.get, model_document)
             if not isinstance(authored_model, ProjectDiagnostic):
-                reset_model = ModelDocument.model_validate(authored_model.payload)
+                reset_model = StoredModelDocument.model_validate(authored_model.payload).lower()
         objective_source = StudioTrialObjectiveSource(
             kind="synthesize" if producer is not None and producer.kind == "synthesize" else "train",
             step=upstream[0].step,

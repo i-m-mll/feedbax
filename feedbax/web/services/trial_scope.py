@@ -16,7 +16,7 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.project import (
     BasedDocument, Differences, Document, DocumentBase, DocumentEdit, DocumentReference, InlineBase, Payload, Project,
-    DifferenceNotApplied, RemoveDocumentValue, RemoveProjectValue, SetDocumentValue, SetProjectValue, StepBase,
+    DifferenceNotApplied, OrderDocumentMembers, RemoveDocumentValue, RemoveProjectValue, SetDocumentValue, SetProjectValue, StepBase,
     apply_differences,
     apply_document_edit, based_on, diff,
     document_edit_value, json_pointer_parts, member_name, same_json,
@@ -28,10 +28,12 @@ from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
 )
 from feedbax.contracts.project_sources import ValueSource, pointer
+from feedbax.contracts.project_storage import stored_keyed_collection
 from feedbax.contracts.project_sweep import (
     AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
+from feedbax.contracts.stored_model import StoredModelDocument, model_keyed_collection
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.project_members import generated_name, numbered_document_label
 from feedbax.project_folder import _free_member_name, document_file
@@ -352,7 +354,7 @@ class _DocumentStores:
 
 def _document_stores(
     project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: frozenset[str] | None, readers: DocumentUsers,
-    taken: set[str], adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
+    taken: set[str], adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None, *, orders: Differences | None = None,
 ) -> _DocumentStores:
     """Where ``edits`` of ``shown`` are stored for the ``chosen`` steps, every step when None.
 
@@ -373,15 +375,21 @@ def _document_stores(
             before[name] = _composed(project, name)
         return before[name]
 
+    def changes(name: str, base: Payload, content: Payload) -> Differences:
+        return diff(base, content, keyed_collection=partial(stored_keyed_collection, documents[name].schema_id))
+
     def changed(name: str, content: Payload | None, seen: tuple[str, ...]) -> frozenset[str]:
         """The steps whose content changes when ``name`` composes to ``content``, its children keeping their
         differences; None is content their differences no longer apply to."""
         if name in seen:
             return frozenset()
-        steps = set(readers(name)) if content is None or not same_json(content, old(name)) else set()
+        steps = set(readers(name)) if content is None or changes(name, old(name), content) else set()
         for child in based_on(documents, name):
             try:
-                inherited = None if content is None else apply_differences(content, documents[child].differences)
+                inherited = None if content is None else apply_differences(
+                    content, documents[child].differences,
+                    keyed_collection=partial(stored_keyed_collection, documents[child].schema_id),
+                )
             except DifferenceNotApplied:
                 inherited = None
             steps |= changed(child, inherited, (*seen, name))
@@ -393,8 +401,13 @@ def _document_stores(
         if name in seen or chosen is not None and not inherits and not lit_steps(documents, readers, name) & chosen:
             return
         content = _edited(old(name), edits if adapt is None else adapt(old(name)), member_name(documents, name))
+        if orders:
+            content = apply_differences(
+                content, orders, keyed_collection=partial(stored_keyed_collection, document.schema_id),
+            )
+        delta = changes(name, old(name), content)
         if chosen is None or changed(name, content, ()) <= chosen:
-            if not same_json(content, old(name)):
+            if delta:
                 after[name] = content
                 stores.written[name] = (old(name), content)
             base = None
@@ -410,7 +423,7 @@ def _document_stores(
             label = numbered_document_label(named, document.schema_id, member_name(documents, name))
             stores.created.append(CreateNamedDocument(kind="document", id=variant, document=BasedDocument(
                 schema=document.schema_id, label=label,
-                base=DocumentBase(document=name), differences=diff(old(name), content),
+                base=DocumentBase(document=name), differences=delta,
             )))
             for step in direct:
                 stores.pointing.setdefault(step, {})[name] = variant
@@ -684,7 +697,7 @@ def variant_view(plan, project: Project, variant: str | None) -> Project:
 def document_write(
     project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], readers: DocumentUsers,
     variant: str | None = None, named: Mapping[str, tuple[str, str]] = {}, view: Project | None = None,
-    *, adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
+    *, adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None, orders: Differences | None = None,
 ) -> StoredEdit:
     """Store ``edits`` of the document ``shown`` for the ``chosen`` steps, which read it or a document based on it.
 
@@ -696,7 +709,7 @@ def document_write(
     if variant is not None and view is None:
         raise ValueError("An edit in a variant reads the variant's project.")
     store = _Store(project, variant, view or project)
-    stores = _document_stores(store.view, shown, edits, chosen, readers, set(), adapt)
+    stores = _document_stores(store.view, shown, edits, chosen, readers, set(), adapt, orders=orders)
     store.documents(stores)
     store.point(stores.pointing, named)
     return store.stored(chosen)
@@ -765,7 +778,7 @@ _ABSENT = object()
 
 def evaluation_document_write(
     project: Project, plan, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], slot: str,
-    variant: str | None = None,
+    variant: str | None = None, *, orders: Differences | None = None,
 ) -> StoredEdit:
     """:func:`document_write` of ``shown`` for the ``chosen`` steps of ``variant``, among which an Evaluate step may
     read it through its subject at ``trial_documents.<slot>``.
@@ -792,7 +805,9 @@ def evaluation_document_write(
     def readers(name: str) -> frozenset[str]:
         return plan.document_users(variant_id, name) | (frozenset(named) if name == shown else frozenset())
 
-    return document_write(project, shown, edits, chosen, readers, variant, named, variant_view(plan, project, variant))
+    return document_write(
+        project, shown, edits, chosen, readers, variant, named, variant_view(plan, project, variant), orders=orders,
+    )
 
 
 def _holds(payload: Any, parts: Sequence[str]) -> bool:
@@ -812,14 +827,16 @@ def _in_form_of(before: Payload, after: Payload, reference: Payload | None = Non
     A member ``before`` lacks is spelled as the Model ``reference`` spells it, when it means the same there, so that
     restoring what a document differs from leaves no difference.
     """
-    from feedbax.contracts.model_document import ModelDocument
-
     def normalized(payload: Payload) -> Payload:
-        return ModelDocument.model_validate(payload).model_dump(mode="json")
+        return StoredModelDocument.model_validate(payload).model_dump(mode="json")
 
     result = deepcopy(before)
     lacked: list[tuple[str, ...]] = []
-    for path, record in diff(normalized(before), after).items():
+    orders: Differences = {}
+    for path, record in diff(normalized(before), after, keyed_collection=model_keyed_collection).items():
+        if isinstance(record, OrderDocumentMembers):
+            orders[path] = record
+            continue
         target, source = result, after
         parts = json_pointer_parts(path)
         for index, part in enumerate(parts):
@@ -832,13 +849,15 @@ def _in_form_of(before: Payload, after: Payload, reference: Payload | None = Non
                     target[part] = deepcopy(source[part])
                 break
             target, source = target[part], source[part]
+    if orders:
+        result = apply_differences(result, orders, keyed_collection=model_keyed_collection)
     if reference is None or not lacked:
         return result
     spelled = deepcopy(result)
     for parts in lacked:
         if (member := _member(reference, parts)) is not _ABSENT:
             _member(spelled, parts[:-1])[parts[-1]] = deepcopy(member)
-    return spelled if normalized(spelled) == normalized(result) else result
+    return result if diff(normalized(spelled), normalized(result), keyed_collection=model_keyed_collection) else spelled
 
 
 def _member(payload: Any, parts: Sequence[str]) -> Any:
@@ -855,12 +874,17 @@ def model_document_store(folders, project_id: str, project: Project, body, befor
     project = preview_authored_files(project, body.files)
     entry = project.documents[body.document]
     base = _composed(project, entry.base.document) if isinstance(entry, BasedDocument) else None
-    edits = content_edits(before, _in_form_of(before, after, base))
+    content = _in_form_of(before, after, base)
+    edits = content_edits(before, content)
+    orders = {
+        path: record for path, record in diff(before, content, keyed_collection=model_keyed_collection).items()
+        if isinstance(record, OrderDocumentMembers)
+    }
     if body.step is None:
-        return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set()).files)
+        return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set(), orders=orders).files)
     plan = folders.read_plan(project_id, revision=body.revision).plan
     return head + evaluation_document_write(
-        project, plan, body.document, edits, {body.step, *body.chosen_steps}, "model", body.variant,
+        project, plan, body.document, edits, {body.step, *body.chosen_steps}, "model", body.variant, orders=orders,
     )
 
 
@@ -1198,7 +1222,12 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
     """
     step = body.step
     document = body.document
-    delta = diff(row.content, _in_form_of(row.content, after, _composed(project, document)))
+    delta = diff(
+        row.content, _in_form_of(row.content, after, _composed(project, document)),
+        keyed_collection=model_keyed_collection,
+    )
+    if any(isinstance(record, OrderDocumentMembers) for record in delta.values()):
+        raise ProjectFolderInvalid("Reorder members in the Model document. A run-scoped patch cannot store their order.")
     address = AuthoredFileAddress(kind="step", id=step)
     authored = project.steps[step]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -1221,7 +1250,9 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
             edited = apply_differences(value_model(project, step, named, document), delta)
         except DifferenceNotApplied as error:
             raise ProjectFolderInvalid(f"The edit does not apply to the selected value: {error}") from error
-        differences = diff(base, edited)
+        differences = diff(base, edited, keyed_collection=model_keyed_collection)
+        if any(isinstance(record, OrderDocumentMembers) for record in differences.values()):
+            raise ProjectFolderInvalid("Reorder members in the Model document. A sweep value cannot store their order.")
         if named.set is None:
             value = raw["sweep"]["axes"][named.axis]["values"][named.value]
             prefix = f"documents.{document}.payload."

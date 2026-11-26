@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from feedbax.compiler.model_document import lower_model_document
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_VERSION, ModelDocument
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_VERSION
 from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.examples import load_shipped_projects
 
@@ -104,7 +104,7 @@ def test_stored_model_rejects_nonkeyed_or_ambiguous_members(path, value, problem
 
 def test_shipped_model_projection_preserves_the_executable_graph():
     document = load_shipped_projects()["point-mass-reaching"].documents["point-mass"]
-    original = ModelDocument.model_validate(document.payload)
+    original = StoredModelDocument.model_validate(document.payload).lower()
     restored = StoredModelDocument.model_validate_json(
         StoredModelDocument.from_lowered(original).model_dump_json(),
     ).lower()

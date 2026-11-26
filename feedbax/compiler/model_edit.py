@@ -81,10 +81,14 @@ def _address(scope: tuple[str, ...], kind: str, **element: Any) -> ModelAddress:
     })
 
 
+def _new_model_id() -> str:
+    return f"m-{uuid4().hex}"
+
+
 def _id(graph: Record, reserved: set[str] | None = None) -> str:
     used = graph["components"].keys() | graph["wires"].keys() | graph.get("connections", {}).keys()
     used |= reserved or set()
-    while (key := uuid4().hex) in used:
+    while (key := _new_model_id()) in used:
         pass
     return key
 
@@ -131,7 +135,7 @@ def _signal_end_name(owner: Record, graph: Record, end: Record, direction: Direc
     return _port_name(component, direction, end["port"]) if "ports" in component else end["port"]
 
 
-def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Record:
+def _new_port(owner: Record, direction: Direction, name: str, port: Port, *, key: str | None = None) -> Record:
     names = {item["name"] for item in _port_list(owner, direction)}
     base = name
     suffix = 1
@@ -139,7 +143,10 @@ def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Rec
         suffix += 1
         name = f"{base} {suffix}"
     type_ = SignalType() if direction == "output" else port.type
-    value = {"id": uuid4().hex, "name": name, "type": type_.model_dump(mode="json") if isinstance(type_, SignalType) else type_}
+    value = {
+        "id": key if key is not None else _new_model_id(),
+        "name": name, "type": type_.model_dump(mode="json") if isinstance(type_, SignalType) else type_,
+    }
     _port_list(owner, direction).append(value)
     return value
 
@@ -284,7 +291,7 @@ class ModelEditDraft:
             owner, graph, source, target, output, replacing=key,
         ):
             attachments.append({
-                "kind": "delay", "id": uuid4().hex, "delay": {"value": 1, "unit": "st"},
+                "kind": "delay", "id": _new_model_id(), "delay": {"value": 1, "unit": "st"},
                 "initial_source": {"kind": "value", "value": 0},
             })
         graph["wires"][key] = _signal(source, target, attachments)

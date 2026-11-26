@@ -16,7 +16,7 @@ from pydantic.fields import FieldInfo
 from feedbax.compiler.model_templates import with_model_placement_reason
 from feedbax.contracts.train_settings import setting_schema_node
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.task_document import BLANK_TASK, TASK_DOCUMENT_SCHEMA_ID, VALUE_TYPES, TaskDocument
 from feedbax.studio.library import installed_library_sources
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
@@ -80,7 +80,7 @@ from feedbax.training.optimizers import OPTIMIZERS, SCHEDULES
 
 _TRAIN = REQUEST_KINDS["train"].spec_type
 _TRAIN_DOCUMENT_MODELS = {
-    "model": (MODEL_DOCUMENT_SCHEMA_ID, ModelDocument),
+    "model": (STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument),
     "task": (TASK_DOCUMENT_SCHEMA_ID, TaskDocument),
     "objective": (OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument),
     "training": (TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument),

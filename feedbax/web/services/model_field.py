@@ -14,9 +14,10 @@ from feedbax.contracts.expression_values import (
 )
 from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress, PortElement, WireElement
 from feedbax.contracts.model_document import (
-    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, DelayInitialTask, DelayInitialValue, InterventionAttachment,
+    CompositeComponent, DelayAttachment, DelayInitialTask, DelayInitialValue, InterventionAttachment,
     LeafComponent, ModelDocument,
 )
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, ListedRuns, StepRuns, ModelEditCommand, SetField,
 )
@@ -284,7 +285,7 @@ def _reset_text(
     if document is None or isinstance(document, ProjectDiagnostic):
         return Problem(code=ProblemCode.STRUCTURE, reason="This value is not changed from another document.")
     field = next((
-        item for item in _fields(ModelDocument.model_validate(document.payload), owner, components)
+        item for item in _fields(StoredModelDocument.model_validate(document.payload).lower(), owner, components)
         if item.address == address
     ), None)
     if field is None:
@@ -304,7 +305,7 @@ def _held_values(
         payload = selected_model(definition, document) if definition is not None else None
         if payload is None:
             continue
-        for field in _fields(ModelDocument.model_validate(payload), owner, components):
+        for field in _fields(StoredModelDocument.model_validate(payload).lower(), owner, components):
             values = held.setdefault(field.address.to_text(), [])
             if field.expression is None and not isinstance(field.numeric.value, UnresolvedValue) and field.numeric.value not in values:
                 values.append(field.numeric.value)
@@ -378,9 +379,9 @@ def model_fields(
     document = compose_document(project.documents.get, body.document)
     if isinstance(document, ProjectDiagnostic):
         raise ProjectFolderInvalid(f"The Model document cannot be read: {document.detail}")
-    if document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+    if document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
         raise ProjectFolderInvalid("The Model document does not exist.")
-    model = ModelDocument.model_validate(document.payload)
+    model = StoredModelDocument.model_validate(document.payload).lower()
     step = selected = plan = effective_model = None
     shown = project.documents.get(body.document)
     changes, restored = (shown.differences, shown.base.document) if isinstance(shown, BasedDocument) else ({}, None)
@@ -396,7 +397,7 @@ def model_fields(
         reading = read_evaluate_model(
             folders, project_id, evaluate, components, selected=plan, model_document=body.document,
         )
-        effective_model = reading.state.resolved_model
+        effective_model = reading.model
         changes, restored = reading.differences, reading.shared
         candidate = project.steps[key.step]
         if (isinstance(evaluate.scope, StepRuns) and plan.variants[:1] == (key.variant,)
@@ -411,7 +412,7 @@ def model_fields(
                             if item in plan.selected_definitions)
         definition = plan.selected_definitions.get(key)
         if definition is not None and (model_payload := selected_model(definition, body.document)) is not None:
-            effective_model = ModelDocument.model_validate(model_payload)
+            effective_model = StoredModelDocument.model_validate(model_payload).lower()
             selected = next((row for row in plan.rows if row.key == key), None)
             if plan.steps[(key.variant, key.step)].kind == "train":
                 if project.sweep is None:
