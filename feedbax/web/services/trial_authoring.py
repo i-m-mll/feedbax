@@ -969,7 +969,8 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
         def write_for(members):
             return document_write(
                 project, document, change.edits, members, readers, variant, view=view,
-                adapt=(lambda target: _objective_edits(raw, target, change)) if change.kind == "objective" else None,
+                adapt=(lambda target: _objective_edits(raw, target, change, expression=expression is not None))
+                if change.kind == "objective" else None,
             )
 
         candidates = [("all_readers", "All Steps", document, write_for(users))]
@@ -1084,8 +1085,8 @@ def _reordered(terms: list, change) -> list | None:
     return [by_id[term] for term in order] if sorted(order) == sorted(by_id) and len(order) == len(edit.value) else None
 
 
-def _objective_edits(shown, target, change):
-    """Translate a concrete term pointer through its authored id when term order differs."""
+def _objective_edits(shown, target, change, *, expression: bool):
+    """Place edits on the same term and apply expression values against each target's field presence."""
     if (order := _reordered(shown.get("terms", []), change)) is not None and list(
         map(ObjectiveTerm.model_validate, order)
     ) == list(map(ObjectiveTerm.model_validate, change.edits[0].value)):
@@ -1106,6 +1107,10 @@ def _objective_edits(shown, target, change):
             if len(parts) > 2:
                 path += pointer(parts[-1:])
             edit = edit.model_copy(update={"path": path})
+        if expression and isinstance(edit, SetProjectValue):
+            parts = json_pointer_parts(edit.path)
+            if isinstance(parent := at(target, parts[:-1]), dict):
+                edit = edit.model_copy(update={"op": "replace" if parts[-1] in parent else "add"})
         edits.append(edit)
     return edits
 
