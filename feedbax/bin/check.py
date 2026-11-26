@@ -1,4 +1,4 @@
-"""Verify a saved project's Store and advise on authored member families."""
+"""Verify a saved project's Store and advise on authored files."""
 
 import argparse
 from pathlib import Path
@@ -30,6 +30,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace, output: CommandOutput) -> int:
+    from feedbax.application.project_parsimony import restated_default_advice
     from feedbax.bin.family_advice import unrolled_family_advice
     from feedbax.contracts.project_io import locate_text_project, read_text_project_snapshot
     from feedbax.contracts.store_check import StoreCheckResult
@@ -50,7 +51,8 @@ def run(args: argparse.Namespace, output: CommandOutput) -> int:
         output.failure(error, path=args.project_dir)
         return 2
 
-    if args.attempt is None and (advice := unrolled_family_advice(project.project)):
+    if args.attempt is None:
+        advice = (*unrolled_family_advice(project.project), *restated_default_advice(project))
         report = report.model_copy(update={"advice": advice})
     if output.json:
         output.response(report)

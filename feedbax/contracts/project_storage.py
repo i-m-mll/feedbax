@@ -27,7 +27,7 @@ from feedbax.contracts.project import (
     Differences, ExternalBase, InlineBase, OrderDocumentMembers, Payload, RootDocument, SetDocumentValue, Step,
     apply_differences, json_pointer_parts,
 )
-from feedbax.contracts.project_sweep import AxisValue, NamedAxis, SetValue, Sweep, SweepException
+from feedbax.contracts.project_sweep import AxisValue, NamedAxis, SetValue, Sweep, SweepException, sweep_refines_parent
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.stored_members import StoredAddressedMembers, StoredMembers
 
@@ -293,7 +293,7 @@ def stored_defaults_manifest(installed: Iterable[type[BaseModel]]) -> dict[str, 
     }
 
 
-def _payload_model(document: RootDocument) -> BaseModel | None:
+def validated_stored_payload(document: RootDocument) -> BaseModel | None:
     model = stored_document_models().get(document.schema_id)
     if model is None:
         return None
@@ -407,6 +407,9 @@ def _projected_file(
                     continue
                 raw = getattr(value, name, None)
                 child = encoded[key] if key in encoded else to_jsonable_python(raw, by_alias=True)
+                if (isinstance(value, Step) and name == "sweep" and isinstance(raw, Sweep)
+                    and not observed and not sweep_refines_parent(raw)):
+                    continue
                 needed = parent_needed and isinstance(child, dict)
                 if key not in encoded and not (observed or needed):
                     continue
@@ -431,7 +434,7 @@ def _projected_file(
                 if isinstance(value, RootDocument) and name == "payload":
                     if isinstance(child, dict) and child.get("evaluation_type") == ROLLOUT_TYPE:
                         remember_variation(child, child_path)
-                    typed = _payload_model(value)
+                    typed = validated_stored_payload(value)
                     if typed is not None:
                         raw = typed
                         child = typed.model_dump(mode="json", by_alias=True)

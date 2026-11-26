@@ -12,7 +12,7 @@ import stat
 from types import MappingProxyType
 from typing import Literal, TYPE_CHECKING
 
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import Field, JsonValue, TypeAdapter, ValidationError
 
 from feedbax._secure_fs import (
     SecurePathRigor,
@@ -25,7 +25,7 @@ from feedbax.contracts._authoring_inputs import AuthoringInputs
 from feedbax.contracts.authored_arrays import check_authored_array_budget
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.project import DOCUMENT, Payload, Project, Step
+from feedbax.contracts.project import DOCUMENT, Document, Payload, Project, Step
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.project_storage import StoredPath, write_project_file
 from feedbax.contracts.project_storage_dependencies import protected_project_fields
@@ -141,11 +141,14 @@ class ProjectReadError(ValueError):
         super().__init__(f"{self.source}: {message}")
 
 
+def _validate[Model](model: type[Model] | TypeAdapter[Model], value: JsonValue) -> Model:
+    check_authored_array_budget(value)
+    return model.validate_python(value) if isinstance(model, TypeAdapter) else model.model_validate(value)  # type: ignore[attr-defined]
+
+
 def _parse[Model](model: type[Model] | TypeAdapter[Model], data: bytes, source: str | Path) -> Model:
     try:
-        value = strict_json_loads(data, ref=str(source))
-        check_authored_array_budget(value)
-        return model.validate_python(value) if isinstance(model, TypeAdapter) else model.model_validate(value)  # type: ignore[attr-defined]
+        return _validate(model, strict_json_loads(data, ref=str(source)))
     except (ValueError, RecursionError) as error:
         raise ProjectReadError(source, str(error)) from error
 
@@ -303,8 +306,7 @@ def load_text_project(root: Path | str) -> TextProject:
     return parse_text_project_files(root, files)
 
 
-def _parse_manifest(data: bytes, path: Path) -> TextProjectManifest:
-    manifest = _parse(TextProjectManifest, data, path)
+def _checked_manifest(manifest: TextProjectManifest, path: Path) -> TextProjectManifest:
     variants = manifest.variants
     if len(set(variants)) != len(variants):
         raise ProjectReadError(path, "variant names must be unique")
@@ -313,6 +315,21 @@ def _parse_manifest(data: bytes, path: Path) -> TextProjectManifest:
     if manifest.sweep is not None and manifest.sweep.rows:
         raise ProjectReadError(path, "variant rows belong in variants/*.json")
     return manifest
+
+
+def _parse_manifest(data: bytes, path: Path) -> TextProjectManifest:
+    return _checked_manifest(_parse(TextProjectManifest, data, path), path)
+
+
+def parse_text_project_file(source: Path, value: JsonValue) -> TextProjectManifest | Document | Step | Row:
+    """Validate one decoded authored file through the text project codec."""
+    if source.suffix == PROJECT_DECLARATION_SUFFIX:
+        return _checked_manifest(_validate(TextProjectManifest, value), source)
+    if source.parent.name == "documents":
+        return _validate(DOCUMENT, value)
+    if source.parent.name == "steps":
+        return _validate(Step, value)
+    return _validate(Row, value)
 
 
 def parse_text_project_files(root: Path, files: Mapping[str, bytes]) -> TextProject:
