@@ -13,6 +13,7 @@ from jax import ShapeDtypeStruct
 
 from feedbax.builtins.mechanics.linear_state_space import LinearStateSpace, linear_state_space_output_prototype
 from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry.declarations import DeclaredComponent, split_lowering_metadata
 from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
 from feedbax.compiler.model_signals import (
     ModelSignalTable, ResolvedSignalLeaf, boundary_signal_port, resolve_model_signals, task_data_value_type,
@@ -55,10 +56,20 @@ from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal
 from feedbax.contracts.graph import task_binding_id
 
 
+def split_model_field_context(declaration: DeclaredComponent, fields: Mapping) -> tuple[dict, dict]:
+    """Separate values interpreted by Model lowering from declared component parameters."""
+    params, context = split_lowering_metadata(declaration.name, fields, declaration)
+    for name in declaration.params.build_context_fields & params.keys():
+        context[name] = params.pop(name)
+    if declaration.name == "feedbax.VanillaRNN" and (
+        isinstance(tau := params.get("tau"), dict) and tau.get("kind") == "literal"
+    ):
+        context["tau"] = params.pop("tau")
+    return params, context
+
+
 def complete_model_fields(model: ModelDocument, registry: ComponentRegistry) -> ModelDocument:
     """Complete leaf parameters for identity, leaving the authored projection alone."""
-
-    from feedbax.component_registry.declarations import split_lowering_metadata
 
     def complete(interior):
         members = dict(interior.components)
@@ -69,14 +80,13 @@ def complete_model_fields(model: ModelDocument, registry: ComponentRegistry) -> 
                 member.revision in (None, declaration.revision)
             ):
                 contract = declaration.params
-                declared, metadata = split_lowering_metadata(member.type, member.fields, declaration)
-                context = {name: value for name, value in declared.items() if name in contract.build_context_fields}
-                resolved = contract.validate({name: value for name, value in declared.items() if name not in context})
+                declared, context = split_model_field_context(declaration, member.fields)
+                resolved = contract.validate(declared)
                 if resolved.value is not None:
                     fields = resolved.value.model_dump(mode="json")
                     for name in model_unstored_fields(member.type) - member.fields.keys():
                         fields.pop(name, None)
-                    fields.update(context | metadata)
+                    fields.update(context)
                     members[key] = member.model_copy(update={"fields": fields})
         return interior.model_copy(update={"components": members})
 

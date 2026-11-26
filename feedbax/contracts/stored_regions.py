@@ -131,13 +131,12 @@ class StoredRegionRegistries:
             if isinstance(owner, StoredLeafComponent) and field == "fields":
                 declaration = self._registry("components").get(owner.type)
                 if declaration is not None and owner.revision in (None, declaration.revision):
-                    from feedbax.component_registry.declarations import split_lowering_metadata
+                    from feedbax.compiler.model_document import model_tau_seconds, split_model_field_context
 
-                    _, metadata = split_lowering_metadata(owner.type, owner.fields, declaration)
-                    return StoredRegion(
-                        declaration.params.model, component=True,
-                        contextual=declaration.params.build_context_fields | frozenset(metadata),
-                    )
+                    _, context = split_model_field_context(declaration, owner.fields)
+                    if declaration.name == "feedbax.VanillaRNN" and "tau" in context:
+                        model_tau_seconds(context["tau"], 1.0)
+                    return StoredRegion(declaration.params.model, component=True, contextual=frozenset(context))
                 return StoredRegion(None)
             if isinstance(owner, StoredEvaluateInline) and field == "params" and (
                 getattr(owner, "evaluation_type", None) == ROLLOUT_TYPE

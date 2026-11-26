@@ -332,10 +332,10 @@ def _projected_file(
 
 def stored_project_value(
     model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
-    keep_explicit: bool = False,
+    keep_explicit: bool = False, registries: StoredRegionRegistries | None = None,
 ) -> JsonValue:
     """Project typed stored fields, retaining explicit defaults when a patch view needs their presence."""
-    return _projected_file(model, exclude, protected, keep_explicit=keep_explicit)[0]
+    return _projected_file(model, exclude, protected, keep_explicit=keep_explicit, registries=registries)[0]
 
 
 def _scalar(value: JsonValue, *, keep_real: bool = False) -> str:

@@ -17,7 +17,7 @@ from feedbax.contracts.project_storage import write_project_file
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.web.app import create_app
-from tests.support.managed_train_fixture import managed_train_project
+from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 from tests.support.python_task import REACHING_TASK, reaching_python_task  # noqa: F401
 
 
@@ -51,6 +51,21 @@ def test_evaluate_inline_defaults_omit_without_changing_the_rollout():
     assert authored_rollout_settings(json.loads(written)["base"]["inline"]["params"]) == authored_rollout_settings(authored)
 
 
+def test_rewritten_evaluate_defaults_keep_its_request_identity(tmp_path):
+    project = managed_train_project()
+    step = Step.model_validate(managed_evaluation_step("train"))
+    step.base.inline["params"].update(retention="raw_states", input_bindings={})
+    project.steps["check"] = step
+    configuration = ProjectConfiguration(project="fixture", store="results")
+    written = dump_text_project(project, configuration)
+    reopened = parse_text_project_files(tmp_path, written).project
+    params = reopened.steps["check"].base.inline["params"]
+    assert not params.keys() & {"retention", "trial_policy", "variation", "input_bindings"}
+    key = RunKey("default", "check", "default")
+    original, canonical = (compile_project(source).row(key) for source in (project, reopened))
+    assert original.request_id is not None and canonical.request_id == original.request_id
+
+
 @pytest.mark.usefixtures("reaching_python_task")
 def test_analysis_operation_and_python_task_use_the_installed_models():
     operation = {
@@ -69,6 +84,14 @@ def test_analysis_operation_and_python_task_use_the_installed_models():
     implicit = _document(PYTHON_TASK_SCHEMA_ID, {"type": REACHING_TASK})
     assert write_project_file(explicit, registries=registries) == write_project_file(implicit, registries=registries)
     assert "params" not in json.loads(write_project_file(explicit, registries=registries))["payload"]
+
+
+def test_model_duration_is_written_in_the_authored_unit():
+    tau = {"kind": "literal", "unit": "s", "value": 0.2}
+    component = {"kind": "leaf", "type": "feedbax.VanillaRNN", "label": "Cell", "fields": {"tau": tau}}
+    payload = {"step_seconds": 0.01, "ports": {}, "interior": {"components": {"cell": component}}}
+    written = json.loads(write_project_file(_document(STORED_MODEL_DOCUMENT_SCHEMA_ID, payload)))
+    assert written["payload"]["interior"]["components"]["cell"]["fields"]["tau"] == tau
 
 
 def test_component_defaults_and_training_settings_have_one_request_identity(tmp_path):

@@ -30,7 +30,8 @@ from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
 )
 from feedbax.contracts.project_sources import ValueSource, pointer
-from feedbax.contracts.project_storage import stored_keyed_collection
+from feedbax.contracts.project_storage import stored_keyed_collection, stored_project_value
+from feedbax.contracts.stored_regions import StoredRegionRegistries
 from feedbax.contracts.project_sweep import (
     AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
 )
@@ -899,8 +900,29 @@ def _member(payload: Any, parts: Sequence[str]) -> Any:
     return payload
 
 
-def model_content_edits(before: Payload, after: Payload, base: Payload | None = None) -> list[DocumentEdit]:
-    return content_edits(before, _in_form_of(before, after, base), schema_id=STORED_MODEL_DOCUMENT_SCHEMA_ID)
+def model_content_edits(
+    before: Payload, after: Payload, base: Payload | None = None, *, components=None,
+) -> list[DocumentEdit]:
+    target = _in_form_of(before, after, base)
+    if base is not None:
+        restored = [
+            parts for path, change in diff(before, target).items()
+            if isinstance(change, SetDocumentValue)
+            and (parts := json_pointer_parts(path))[-4:-3] == ("components",)
+            and parts[-2:-1] == ("fields",)
+            and _member(base, parts) is _ABSENT
+        ]
+        if restored:
+            canonical = stored_project_value(
+                StoredModelDocument.model_validate(target), registries=StoredRegionRegistries(components=components),
+            )
+            for parts in restored:
+                if _member(canonical, parts) is _ABSENT:
+                    fields = _member(target, parts[:-1])
+                    del fields[parts[-1]]
+                    if not fields and _member(base, parts[:-1]) is _ABSENT:
+                        del _member(target, parts[:-2])["fields"]
+    return content_edits(before, target, schema_id=STORED_MODEL_DOCUMENT_SCHEMA_ID)
 
 
 def model_document_store(folders, project_id: str, project: Project, body, before: Payload, after: Payload) -> StoredEdit:
@@ -909,7 +931,7 @@ def model_document_store(folders, project_id: str, project: Project, body, befor
     project = preview_authored_files(project, body.files)
     entry = project.documents[body.document]
     base = _composed(project, entry.base.document) if isinstance(entry, BasedDocument) else None
-    edits = model_content_edits(before, after, base)
+    edits = model_content_edits(before, after, base, components=folders.components)
     if body.step is None:
         return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set()).files)
     plan = folders.read_plan(project_id, revision=body.revision).plan

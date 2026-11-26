@@ -282,15 +282,22 @@ def _kept_writes(
     return files, next((SetField(op="set_field", address=address, value=write.value) for address, write in fields), None)
 
 
+def _reference_model(project, restored: str | None) -> ModelDocument | None:
+    document = compose_document(project.documents.get, restored) if restored is not None else None
+    if document is None or isinstance(document, ProjectDiagnostic):
+        return None
+    return StoredModelDocument.model_validate(document.payload).lower()
+
+
 def _reset_text(
     project, restored: str | None, owner: ModelAddress, address: ModelAddress, components: ComponentRegistry,
 ) -> str | Problem:
     """The text of the field at ``address`` in ``restored``, the document a Reset gives the field its value from."""
-    document = compose_document(project.documents.get, restored) if restored is not None else None
-    if document is None or isinstance(document, ProjectDiagnostic):
+    model = _reference_model(project, restored)
+    if model is None:
         return Problem(code=ProblemCode.STRUCTURE, reason="This value is not changed from another document.")
     field = next((
-        item for item in _fields(StoredModelDocument.model_validate(document.payload).lower(), owner, components)
+        item for item in _fields(model, owner, components)
         if item.address == address
     ), None)
     if field is None:
@@ -448,6 +455,10 @@ def model_fields(
     } if effective_model is not None else {}
     authored_fields = {field.address.to_text(): field for field in _fields(model, body.owner, components, names)}
     visible_fields = effective_fields if evaluate or variant is not None else effective_fields | authored_fields
+    reference = _reference_model(project, restored) if changes else None
+    reference_fields = {
+        field.address.to_text(): field for field in _fields(reference, body.owner, components, names)
+    } if reference is not None else {}
     period = (effective_model or model).step_seconds
     if isinstance(period, UnresolvedValue):
         period = None
@@ -466,11 +477,15 @@ def model_fields(
                 step, target, numeric.label, numeric.key[-1:], integer=numeric.site.expected.base == ValueBase.INTEGER,
                 runs=runs,
             )
-            if evaluate is not None:
-                # The addressed sweep can set fields inherited from registry defaults.
-                numeric = replace(numeric, stored=True)
+            # An addressed sweep can set fields inherited from the registry.
+            numeric = replace(numeric, stored=True)
         relative = pointer(field.address.stored_path())
-        changed = any(relative == path or relative.startswith(path + "/") for path in changes)
+        changed = relative in changes
+        if not changed and any(relative.startswith(path + "/") for path in changes):
+            inherited = reference_fields.get(field_key)
+            changed = inherited is None or (
+                inherited.numeric.value, inherited.numeric.unit, inherited.expression
+            ) != (numeric.value, numeric.unit, field.expression)
         sources = dict.fromkeys(source for definition in definitions
                                 if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
         view = project_numeric_field(

@@ -152,6 +152,7 @@ from feedbax.contracts.request_refs import (
 from feedbax.contracts.request_specs import (
     DocumentTrainingConfig,
     DocumentTrainingRequestSpec,
+    EvaluationRequestSpec,
     SynthesisRequestSpec,
     TrainContinuation,
     ReportRequestSpec,
@@ -1796,6 +1797,14 @@ def _encode_row(
                     (".".join(("settings", *map(str, failure["loc"]))), failure["msg"])
                     for failure in error.errors(include_url=False, include_input=False)
                 )) from error
+        if isinstance(spec, EvaluationRequestSpec) and spec.evaluation_type == ROLLOUT_TYPE and "trials" in spec.params:
+            settings = RolloutParameters.model_validate(spec.params)
+            params = settings.model_dump(mode="json", include={"trial_policy", "variation"}) | spec.params
+            if settings.retention == RolloutSettings.model_fields["retention"].default:
+                params.pop("retention", None)
+            if not settings.input_bindings:
+                params.pop("input_bindings", None)
+            spec = spec.model_copy(update={"params": params})
         if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)):
             from feedbax.compiler.model_document import complete_model_fields
 
