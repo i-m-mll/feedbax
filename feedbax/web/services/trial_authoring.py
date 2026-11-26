@@ -1065,7 +1065,7 @@ def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
             path: with_family_indices(site, families.names.get(path[:3], ()))
             if path[:2] == ("objective", "terms") else site
             for path, site in projected.fields.items()
-            if path[:1] != ("validation_trials",)
+            if path[:2] != ("task", "validation_trials")
         }
         problems = (*map(families.problem, projected.problems), *families.problems)
         projected = replace(
