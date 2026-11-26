@@ -1630,21 +1630,14 @@
     "differences": {}
   },
   "feedbax.contracts.stored_model.StoredCompositeComponent": {
-    "substeps": {
-      "kind": "literal",
-      "value": 1,
-      "unit": null
-    },
+    "substeps": 1,
     "attachments": {
       "sources": {},
       "sinks": {}
     }
   },
   "feedbax.contracts.stored_model.StoredDelayAttachment": {
-    "delay": {
-      "value": 1.0,
-      "unit": "st"
-    },
+    "delay": "1 st",
     "initial_source": {
       "kind": "value",
       "value": 0
@@ -1807,11 +1800,7 @@
     "offset": null
   },
   "feedbax.contracts.window.StoredWindowRelativePosition": {
-    "offset": {
-      "kind": "literal",
-      "value": 1,
-      "unit": "st"
-    }
+    "offset": "1 st"
   },
   "feedbax.contracts.window.WindowEpoch": {
     "occurrence": null
