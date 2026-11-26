@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from enum import IntEnum, StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictBool, StrictInt, model_validator
 
 from feedbax.contracts.model_address import ModelAddress
 
@@ -151,6 +151,13 @@ class Problem(ValueRecord):
 type Scalar = StrictBool | StrictInt | FiniteFloat
 
 
+def normal_literal_number(value: Scalar) -> Scalar:
+    """Use an integer for a whole, representable numeric literal."""
+    if type(value) is float and value.is_integer() and abs(value) < 2**53:
+        return int(value)
+    return value
+
+
 class LiteralValue(ValueRecord):
     kind: Literal["literal"] = "literal"
     value: Scalar
@@ -185,8 +192,22 @@ class UnresolvedValue(ValueRecord):
     text: str
 
 
+class SequenceValue(ValueRecord):
+    kind: Literal["sequence"] = "sequence"
+    rule: Literal["span", "linspace", "geomspace"]
+    first: Expression
+    last: Expression
+    count: Expression | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def _count_matches_rule(self) -> SequenceValue:
+        if (self.count is None) != (self.rule == "span"):
+            raise ValueError("Only linspace and geomspace take a count.")
+        return self
+
+
 type Expression = Annotated[
-    LiteralValue | NameValue | CallValue | DrawValue | UnresolvedValue, Field(discriminator="kind")
+    LiteralValue | NameValue | CallValue | DrawValue | SequenceValue | UnresolvedValue, Field(discriminator="kind")
 ]
 
 
@@ -251,6 +272,9 @@ def children(node: Expression) -> tuple[tuple[NodePath, Expression], ...]:
         )
     if isinstance(node, DrawValue):
         return tuple((("args", i), child) for i, child in enumerate(node.args))
+    if isinstance(node, SequenceValue):
+        bounds = ((("first",), node.first), (("last",), node.last))
+        return bounds if node.count is None else (*bounds, (("count",), node.count))
     return ()
 
 

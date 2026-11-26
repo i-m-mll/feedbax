@@ -22,6 +22,7 @@ from feedbax.contracts.expression_values import (
     NodePath,
     Problem,
     ProblemCode,
+    SequenceValue,
     Site,
     TextSpan,
     UnresolvedValue,
@@ -240,6 +241,9 @@ def _checker(
     ) -> TypedNode | None:
         if isinstance(node, UnresolvedValue):
             problem(node, ProblemCode.PARSE, "The expression text has not resolved.", at)
+            return None
+        if isinstance(node, SequenceValue):
+            problem(node, ProblemCode.STRUCTURE, "A sequence must be inside choice, a vector or an index.", at)
             return None
         if isinstance(node, LiteralValue):
             base = {
