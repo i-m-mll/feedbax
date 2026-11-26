@@ -8,6 +8,7 @@ import pytest
 
 from feedbax.contracts.expression_values import (
     CallValue,
+    DrawValue,
     LENGTH,
     TIME,
     Level,
@@ -24,7 +25,7 @@ from feedbax.contracts.expression_check import Checked, check, dependency_order
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import Function, FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.contracts.expression_site import FieldKind, field_kind, project_site, read_field
-from feedbax.contracts.expression_text import ParsedField, parse, print_field
+from feedbax.contracts.expression_text import ParsedField, parse, parse_stored_expression, print_field, print_stored_expression
 from feedbax.contracts.task_document import VALUE_TYPES
 from feedbax.studio.value_structure import value_structure
 
@@ -149,6 +150,38 @@ def test_printed_text_reads_back_as_the_same_value(tree):
     """Catches a printer whose operators or parentheses change what the text means when it is read back."""
     names = site(names=_OPERANDS)
     assert parsed(print_field(tree, names), names) == tree
+
+
+def test_authored_choice_round_trips_weights_and_quoted_member_keys():
+    text = r"choice('fore-arm', 'controller/o\'clock.\\axis', weights=[3, 1])"
+    result = parse_stored_expression(text)
+    assert isinstance(result, ParsedField)
+    assert result.value == DrawValue(
+        family="choice", args=(
+            NameValue(reference="fore-arm"), NameValue(reference="controller/o'clock.\\axis"),
+        ), weights=(3, 1),
+    )
+    assert print_stored_expression(result.value) == text
+    assert ("weights", 1) in result.spans
+
+
+@pytest.mark.parametrize("text", (
+    "choice(1, 2, weights=[1])",
+    "choice(1, 2, weights=[0, 0])",
+    "choice(1, 2, weights=[1 s, 3])",
+    "sample(B(0.5), 20)",
+    "1, 2",
+))
+def test_authored_expression_refuses_invalid_weights_and_field_gestures(text):
+    assert isinstance(parse_stored_expression(text), tuple)
+
+
+def test_authored_expression_normalizes_signs_and_zero_lag():
+    result = parse_stored_expression("lag((x + 2.0), 0)")
+    assert isinstance(result, ParsedField)
+    assert print_stored_expression(result.value) == "x + 2"
+    assert ("args", 1) in result.spans
+    assert print_stored_expression(LiteralValue(value=2.0)) == 2
 
 
 @pytest.mark.parametrize(
