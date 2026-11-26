@@ -29,6 +29,7 @@ from feedbax.persistence.array_container import decode_array_container
 from feedbax.runtime.raw_state import bind_raw_state
 from feedbax.tasks.document import TaskParameters
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
+from tests.support.hang import HANG_SECONDS
 
 
 def _leaf(kind, **fields):
@@ -265,7 +266,7 @@ def test_authored_stab10_uses_process_precision(precision):
     env = {**os.environ, "JAX_ENABLE_X64": str(int(precision == "float64")), "JAX_PLATFORMS": "cpu"}
     result = subprocess.run(
         [sys.executable, "-m", "tests.test_l2_stab10", precision],
-        env=env, capture_output=True, text=True, timeout=60,
+        env=env, capture_output=True, text=True, timeout=HANG_SECONDS,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

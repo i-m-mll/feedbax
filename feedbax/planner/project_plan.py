@@ -3238,7 +3238,7 @@ class _Compiler:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem, model_input_prototypes
         from feedbax.compiler.resolution import resolve_graph_parameters
-        from feedbax.project_model_selection import matched_task_inputs, model_task_signals
+        from feedbax.application.task_signals import matched_task_inputs, model_task_signals
         from feedbax.compiler.graph_schema import validate_graph_connection_schema
         from feedbax.contracts.rollout import CannotRun
         from feedbax.training.evaluation_variant import resolve_evaluation_task, resolve_evaluation_variant
