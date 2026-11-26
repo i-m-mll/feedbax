@@ -16,7 +16,7 @@ def _row(step, row, **coordinates):
 def _seeds(train, seeds):
     """Evaluate rows reading ``train``'s runs, whose seeds it stores as ``value``, ``value-1``, … in order."""
     return [
-        _row("evaluate", f"{train}-{seed}", seed=SweepCoordinate("value" if index == 0 else f"value-{index}", None, seed))
+        _row("evaluate", f"{train}-{seed}", seed=SweepCoordinate("value" if index == 0 else f"value-{index}", None, seed, axis_label="Seed"))
         for index, seed in enumerate(seeds)
     ]
 
@@ -24,8 +24,8 @@ def _seeds(train, seeds):
 def test_runs_of_one_seed_from_two_producers_share_a_value_and_seeds_are_in_order():
     rows = [*_seeds("train", [0, 2, 3]), *_seeds("train-2", [0, 1, 2, 3])]
     (axis,), values = gather_axes(rows)
-    assert axis.label == "Seed"
-    assert [(value.label, value.value_label) for value in axis.values] == [
+    assert axis.name == "Seed"
+    assert [(value.name, value.value_label) for value in axis.values] == [
         ("Seed 0", "0"), ("Seed 1", "1"), ("Seed 2", "2"), ("Seed 3", "3"),
     ]
     ids = {value.value_label: value.id for value in axis.values}
@@ -40,7 +40,7 @@ def test_set_entries_with_one_key_and_different_names_stay_apart():
         _row("evaluate", "b", size=SweepCoordinate("entry", "large")),
     ]
     (axis,), values = gather_axes(rows)
-    assert [value.label for value in axis.values] == ["small", "large"]
+    assert [value.name for value in axis.values] == ["small", "large"]
     assert values[RunKey("base", "evaluate", "a"), "size"] != values[RunKey("base", "evaluate", "b"), "size"]
 
 

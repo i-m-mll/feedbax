@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.matrix_core import MirrorList, apply_override_patch_copy
+from feedbax.contracts.matrix_core import MirrorList, replay_stored_patch_copy
 
 SourceKind = Literal["document", "step", "sweep_value", "exception", "variant", "upstream"]
 type Path = tuple[str, ...]
@@ -140,6 +140,7 @@ def first_source(shape: Any) -> ValueSource | None:
 def patch_source(
     shape: dict[str, Any], patch: OverridePatch, source: Any = None
 ) -> dict[str, Any]:
+    """Replay a payload patch on its parallel tree of origins."""
     if patch.op != "remove":
         patch = patch.model_copy(update={"value": source})
-    return apply_override_patch_copy(shape, patch)
+    return replay_stored_patch_copy(shape, patch)

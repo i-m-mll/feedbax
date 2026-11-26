@@ -699,6 +699,7 @@ def apply_stored_patch_in_place(
     error_context: Literal["override", "delta"] = "override",
 ) -> None:
     """Apply an authored sweep patch, with absent object keys already removed."""
+    validate_stored_patch_path(root, patch.path)
     apply_value_patch_in_place(
         root, patch.path.split("."), patch.op, patch.value, path=patch.path, error_context=error_context,
         allow_absent_remove=True,
@@ -707,6 +708,12 @@ def apply_stored_patch_in_place(
 
 def apply_stored_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dict[str, Any]:
     """Apply an authored sweep patch, copying the containers along its path."""
+    validate_stored_patch_path(root, patch.path)
+    return replay_stored_patch_copy(root, patch)
+
+
+def replay_stored_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dict[str, Any]:
+    """Replay a checked path in an origin tree, or apply an internally generated path."""
     return _patch_copy(root, patch, by_id=False, allow_absent_remove=True)
 
 
@@ -790,7 +797,7 @@ def member_ids(items: Sequence[Any]) -> tuple[str, ...] | None:
 def resolve_segment(container: Any, segment: str, *, path: str, by_id: bool = True) -> str | int | None:
     """The key or index ``segment`` names in ``container``, or ``None`` when it names no member.
 
-    In a stored path (``by_id``), a member of a list whose members carry ids is named by its id; an index or an
+    In a lowered path (``by_id``), a member of a list whose members carry ids is named by its id; an index or an
     unknown id under such a list is refused, naming the ids it has. Any other list is addressed by index.
     """
     if isinstance(container, dict):
@@ -806,6 +813,33 @@ def resolve_segment(container: Any, segment: str, *, path: str, by_id: bool = Tr
     if segment.isdigit() and int(segment) < len(container):
         return int(segment)
     return None
+
+
+def validate_stored_patch_path(root: Any, path: str) -> None:
+    """Validate a dotted write as far as its target is visible in the stored payload."""
+    parts = path.split(".")
+    value = root
+    expression_args = False
+    for index, part in enumerate(parts):
+        if isinstance(value, list):
+            if not expression_args:
+                raise ValueError(f"A stored path cannot traverse an array: {path!r}")
+            if _ARRAY_INDEX_RE.fullmatch(part) is None:
+                raise ValueError(f"An expression argument needs a non-negative decimal index: {path!r}")
+        key = resolve_segment(value, part, path=path, by_id=False)
+        if key is None:
+            return
+        child = value[key]
+        if (
+            index < len(parts) - 1 and part in {"links", "task_links"}
+            and isinstance(child, dict) and all(isinstance(link, str) for link in child.values())
+        ):
+            raise ValueError(f"Link members require a JSON pointer: {path!r}")
+        expression_args = part == "args" and isinstance(value, dict) and (
+            value.get("kind") == "call" and isinstance(value.get("function"), str)
+            or value.get("kind") == "draw" and isinstance(value.get("family"), str)
+        )
+        value = child
 
 
 def stored_parts(root: Any, parts: Sequence[str]) -> tuple[str, ...]:
