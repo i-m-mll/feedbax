@@ -2865,6 +2865,8 @@ export type AttemptProvenance = {
   "ended_at": string;
 };
 
+export type AuthoredCheckpointRule = string | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule;
+
 export type AuthoredExpressionText = string;
 
 export type AuthoredExpressionValue = Scalar | AuthoredExpressionText;
@@ -2990,7 +2992,7 @@ export type CheckpointCadence = {
   "through": number;
 };
 
-export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule | UnresolvedValue;
+export type CheckpointRule = ValidCheckpointRule | UnresolvedValue;
 
 export type CheckpointRuleAxis = {
   "label"?: string | null;
@@ -4258,7 +4260,7 @@ export type StepReference = {
   "step": string;
   "where"?: SubsetTerms | NamedSubset | null;
   "variants"?: "all" | Array<string> | null;
-  "checkpoint"?: CheckpointRule | null;
+  "checkpoint"?: StoredCheckpointRule | null;
   "element"?: string | null;
   "product"?: string | null;
   "unresolved"?: true | null;
@@ -4290,6 +4292,8 @@ export type StoredCell = {
   "last_epoch": string;
   "value": StoredExpression;
 };
+
+export type StoredCheckpointRule = AuthoredCheckpointRule;
 
 export type StoredCompositeComponent = {
   "kind": "composite";
@@ -5943,6 +5947,8 @@ export type UpdateCheckpoint = {
 
 export type UpdateRule = UpdateCadence | Array<UpdateCheckpoint>;
 
+export type ValidCheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule;
+
 export type ValidationPlacement = {
   "location": "live" | "ordinary";
   "reason": "within_budget" | "late" | "unqualified" | "unmeasured" | "over_budget" | "driver_occupied";
@@ -7210,7 +7216,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "subject_rank_key": z.string().nullable().optional(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
       "checkpoint_attempt": StudioEvaluationCheckpointAttemptSchema.nullable().optional(),
-      "checkpoint_rule": z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)]), UnresolvedValueSchema]).nullable().optional(),
+      "checkpoint_rule": z.union([z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)])]), UnresolvedValueSchema]).nullable().optional(),
       "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),
     })
     .strict()
@@ -11508,6 +11514,10 @@ export const AttemptProvenanceSchema: z.ZodType<AttemptProvenance> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<AttemptProvenance>;
 
+export const AuthoredCheckpointRuleSchema: z.ZodType<AuthoredCheckpointRule> = z.lazy(() =>
+  z.union([z.string(), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema])
+) as unknown as z.ZodType<AuthoredCheckpointRule>;
+
 export const AuthoredExpressionTextSchema: z.ZodType<AuthoredExpressionText> = z.lazy(() =>
   z.string().max(8192)
 ) as unknown as z.ZodType<AuthoredExpressionText>;
@@ -11682,7 +11692,7 @@ export const CheckpointCadenceSchema: z.ZodType<CheckpointCadence> = z.lazy(() =
 ) as unknown as z.ZodType<CheckpointCadence>;
 
 export const CheckpointRuleSchema: z.ZodType<CheckpointRule> = z.lazy(() =>
-  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema, UnresolvedValueSchema])
+  z.union([ValidCheckpointRuleSchema, UnresolvedValueSchema])
 ) as unknown as z.ZodType<CheckpointRule>;
 
 export const CheckpointRuleAxisSchema: z.ZodType<CheckpointRuleAxis> = z.lazy(() =>
@@ -13394,7 +13404,7 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "where": z.union([SubsetTermsSchema, NamedSubsetSchema, z.null()]).optional(),
     "variants": z.union([z.literal("all"), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))), z.null()]).optional(),
-    "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
+    "checkpoint": z.union([StoredCheckpointRuleSchema, z.null()]).optional(),
     "element": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "product": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "unresolved": z.union([z.literal(true), z.null()]).optional(),
@@ -13437,6 +13447,10 @@ export const StoredCellSchema: z.ZodType<StoredCell> = z.lazy(() =>
     "value": StoredExpressionSchema,
   }).strict()
 ) as unknown as z.ZodType<StoredCell>;
+
+export const StoredCheckpointRuleSchema: z.ZodType<StoredCheckpointRule> = z.lazy(() =>
+  AuthoredCheckpointRuleSchema
+) as unknown as z.ZodType<StoredCheckpointRule>;
 
 export const StoredCompositeComponentSchema: z.ZodType<StoredCompositeComponent> = z.lazy(() =>
   z.object({
@@ -15603,6 +15617,10 @@ export const UpdateCheckpointSchema: z.ZodType<UpdateCheckpoint> = z.lazy(() =>
 export const UpdateRuleSchema: z.ZodType<UpdateRule> = z.lazy(() =>
   z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)])
 ) as unknown as z.ZodType<UpdateRule>;
+
+export const ValidCheckpointRuleSchema: z.ZodType<ValidCheckpointRule> = z.lazy(() =>
+  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema])
+) as unknown as z.ZodType<ValidCheckpointRule>;
 
 export const ValidationPlacementSchema: z.ZodType<ValidationPlacement> = z.lazy(() =>
   z.object({

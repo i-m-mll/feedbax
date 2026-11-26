@@ -11,7 +11,7 @@ from itertools import product
 import math
 from typing import Annotated, Literal, TypeVar
 
-from pydantic import AfterValidator, Field, JsonValue, PrivateAttr, TypeAdapter, model_validator
+from pydantic import AfterValidator, Field, JsonValue, PrivateAttr, model_validator
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -22,12 +22,12 @@ from feedbax.contracts.model_address import FieldElement, ModelAddress, ModelFie
 from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.request_refs import UpdateCadence, UpdateRule, axis_values_id
 from feedbax.contracts.project_inputs import (
-    CheckpointRule,
     NonemptyText,
     ProjectName,
     RowKey,
     StepReference,
     SweepExceptionTerms,
+    read_stored_checkpoint_rule,
     select_sweep_exception_rows,
 )
 from feedbax.contracts.run_rule import RuleRefusal, rule_names
@@ -50,7 +50,6 @@ type PatchValue = SetValue | RemoveValue
 
 type CheckpointRulePath = Literal["{@subject.checkpoint}"]
 CHECKPOINT_RULE_TARGET: CheckpointRulePath = "{@subject.checkpoint}"
-_CHECKPOINT_RULE = TypeAdapter(CheckpointRule)
 
 
 def checkpoint_rule_write(subject: object, write: PatchValue) -> StepReference:
@@ -58,7 +57,7 @@ def checkpoint_rule_write(subject: object, write: PatchValue) -> StepReference:
         raise ValueError("A checkpoint rule edit requires a Train step reference")
     if not isinstance(write, SetValue):
         raise ValueError("A checkpoint rule edit requires a rule")
-    return subject.model_copy(update={"checkpoint": _CHECKPOINT_RULE.validate_python(write.value)})
+    return subject.model_copy(update={"checkpoint": read_stored_checkpoint_rule(write.value)})
 
 
 def checkpoint_sweep_refusal(subject: object, sweep: Sweep | None, *, project_swept: bool) -> str | None:
