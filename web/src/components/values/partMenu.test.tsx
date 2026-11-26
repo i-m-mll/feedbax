@@ -3,13 +3,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test } from 'vitest';
-import type { ExpressionPartSite, FunctionInfo, NodePath } from '@/generated/studioContracts';
+import type { ExpressionPartSite, StudioFieldFunction, NodePath } from '@/generated/studioContracts';
 import type { FieldEdit, FieldModel } from './fieldModel';
 import { ValueField } from './ValueField';
 
 afterEach(cleanup);
 
-const penalty = (id: string): FunctionInfo => ({ id, signature: `${id}(x)`, display_class: 'penalty', min_args: 1, max_args: 1 });
+const penalty = (id: string): StudioFieldFunction => ({ id, signature: `${id}(x)`, display_class: 'penalty', min_args: 1, max_args: 1 });
 
 /** A Measure `sqnorm(x)` whose root menu the service sends when `release` is called. */
 function measure() {

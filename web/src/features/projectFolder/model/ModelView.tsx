@@ -474,7 +474,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const projectedLists = fieldBodies.map((fieldBody, index) => (fieldsData?.[index]?.fields ?? []).map((field) => {
     const evaluateSource = attachments.data?.field_sources?.[addressKey(field.address)] ??
       attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ?? attachments.data?.source ?? undefined;
-    const model = fromFieldView(field, {
+    const model = fromFieldView(field, fieldsData![index]!, {
       id: addressKey(field.address),
       planSources: field.sources && {
         ...sourceNaming, sources: field.sources.filter((source) => !(source.kind === 'document' && shownChain.includes(source.key))),

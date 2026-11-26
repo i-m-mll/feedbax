@@ -96,7 +96,7 @@ export function trialField(view: TrialView, projection: StudioTrialField, label:
   options: FieldViewOptions): FieldModel {
   const [problem] = projection.problems ?? [];
   return {
-    ...fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, options),
+    ...fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, view, options),
     reason: problem?.reason, span: problem?.span ?? undefined, menus: view.menus(projection.path),
   };
 }
