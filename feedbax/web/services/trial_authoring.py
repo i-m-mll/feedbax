@@ -67,7 +67,7 @@ from feedbax.contracts.objective_document import (
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.training import TrialDocuments, lower_stored_trial_documents
 from feedbax.contracts.trial_bindings import selected_signal_id
-from feedbax.contracts.window import WindowPosition, store_window_offset, window_offset_expression, window_offset_sites
+from feedbax.contracts.window import WindowPosition, store_window_offset, window_offset_sites
 from feedbax.contracts.expression_check import check, references
 from feedbax.contracts.expression_site import FieldKind, project_site, read_field
 from feedbax.contracts.expression_text import parse, print_field, resolve_expression
@@ -438,6 +438,8 @@ def _swept_document(plan, key, definition, role) -> str | None:
 def _field_sweep(project, plan, key, definition, path, site, label) -> TrialFieldSweep | None:
     """The number at ``path`` of a document the step reads whole, when the step can sweep it."""
     role, *rest = path
+    if is_window_offset(role, tuple(rest[:7])):
+        return None
     parse = {"objective": StoredObjectiveDocument.model_validate, "task": StoredTaskDocument.model_validate}.get(role)
     if parse is None:
         return None
@@ -647,23 +649,25 @@ def _evaluate_documents(plan, key, definition, bundle):
         task = authored_task
         authored_bindings = params.input_bindings
         edits = tuple(authored_variation(params.variation))
-        graph = resolve_evaluation_variant(
-            projection.pair.lowered.graph, task,
-            tuple(patch for _, patch in edits if patch.path.split(".", 1)[0] != "task"),
-            components=bundle.components,
-        ).graph
+        source_graph = projection.pair.lowered.graph
+        graph_edits = tuple(patch for _, patch in edits if patch.path.split(".", 1)[0] != "task")
+        graph = resolve_evaluation_variant(source_graph, task, graph_edits, components=bundle.components).graph if (
+            graph_edits
+        ) else source_graph
         run = next((row for row in plan.runs if row.key == key), None)
         if run is not None:
             effective = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
             if isinstance(effective, EvaluationRequestSpec):
-                params = authored_rollout_settings(effective.params)
-                lowered = resolve_evaluation_variant(
-                    projection.pair.lowered.graph, documents.task_source, params.variation,
-                    components=bundle.components,
-                )
-                graph = lowered.graph
-                if any(patch.path.split(".", 1)[0] == "task" for _, patch in authored_variation(params.variation)):
-                    task = _with_authored_task_details(lowered.task, authored_task)
+                settings = authored_rollout_settings(effective.params)
+                if settings.variation and settings.variation != params.variation:
+                    lowered = resolve_evaluation_variant(
+                        source_graph, documents.task_source, settings.variation, components=bundle.components,
+                    )
+                    graph = lowered.graph
+                    if any(patch.path.split(".", 1)[0] == "task"
+                           for _, patch in authored_variation(settings.variation)):
+                        task = _with_authored_task_details(lowered.task, authored_task)
+                params = settings
     except ValueError as error:
         return documents, _Projection(
             projection.pair, projection.variables, projection.signals, projection.epochs,
@@ -1471,13 +1475,11 @@ def _trial_fields(
     if not _epoch_end_field(path, "limit"):
         menu_fields[field_path] = TrialExpressionField(site, expression)
     fields = []
-    implicit_offset = expression is None and is_window_offset(path[0], path[1:])
-    numeric = window_offset_expression(None) if implicit_offset else expression
-    for inner, label in numeric_nodes(numeric, functions) if shown or implicit_offset else ():
+    for inner, label in numeric_nodes(expression, functions) if shown else ():
         swept = sweep((*path, *inner), site, label or _field_label(path))
         if swept is None:
             continue
-        current = at(numeric, inner)
+        current = at(expression, inner)
         view = project_numeric_field(
             StudioTrialField, swept.field, swept.axis, functions, row, current.value,
             period=period, effective_unit=current.unit, defer_parts=True,
@@ -1487,8 +1489,6 @@ def _trial_fields(
             menu_fields[view.path] = TrialExpressionField(swept.field.site, None)
             fields.append(view)
         elif view.sweep is not None or view.can_sweep:
-            if implicit_offset and view.sweep is None:
-                view = view.model_copy(update={"text": "", "conversion": None, "structure": None})
             return [view.model_copy(update={
                 "site": projection, "problems": _field_problems(path, site, view.text, functions, problems),
             })]
