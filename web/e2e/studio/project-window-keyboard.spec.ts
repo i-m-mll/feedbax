@@ -51,11 +51,13 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
       objective: { document: 'objective' },
     } } },
   });
+  const { links: _templateLinks, ...unlinked } = rootPayload(firstTrainTask) as { links?: unknown };
   expect(saved.project.documents).toMatchObject({
     model: { schema: 'feedbax.spec.model', payload: { ports: {}, interior: {} } },
-    'simple-reaches': { ...firstTrainTask, payload: { ...rootPayload(firstTrainTask) as object, links: [] } },
-    objective: { schema: 'feedbax.spec.objective_document', payload: { terms: [] } },
+    'simple-reaches': { ...firstTrainTask, payload: unlinked },
+    objective: { schema: 'feedbax.spec.objective_document' },
   });
+  expect((rootPayload(saved.project.documents!['simple-reaches']) as { links?: unknown[] }).links ?? []).toEqual([]);
 
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await expect(chooser).toBeHidden();
