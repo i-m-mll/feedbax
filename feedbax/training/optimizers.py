@@ -107,6 +107,12 @@ _SIGNATURE_DEFAULTS: Mapping[str, Mapping[str, Any]] = {
 
 # Optax types noisy_sgd's PRNG key as a number.
 _UNREPRESENTED_PARAMETERS = frozenset({"key"})
+# Optax 0.2.9 exposed these controls. Keep the established transform and
+# checkpoint state by passing the equivalent upstream defaults as static arguments.
+_UPSTREAM_ONLY_DEFAULTS: Mapping[str, Mapping[str, Any]] = {
+    "adabelief": {"weight_decay": None, "weight_decay_mask": None},
+    "sm3": {"eps": 1e-08},
+}
 # lbfgs and polyak_sgd read the loss value through update's extra arguments, which the training step does
 # not pass; Optax deprecates optimistic_adam for optimistic_adam_v2.
 _EXCLUDED_OPTIMIZERS = frozenset({"lbfgs", "polyak_sgd", "optimistic_adam"})
@@ -126,6 +132,7 @@ class RegistryEntry:
     factory: Callable[..., Any]
     model: type[BaseModel]
     kinds: Mapping[str, _Kind]
+    upstream_defaults: Mapping[str, Any]
 
     @property
     def label(self) -> str:
@@ -164,7 +171,11 @@ def _field_type(hint: Any, schedule: Any) -> tuple[Any, _Kind] | None:
 def _entry(key: str, factory: Callable[..., Any], schedule: Any, constant: type[BaseModel] | None) -> RegistryEntry | None:
     fields: dict[str, Any] = {"type": (Literal[key], key)}
     kinds: dict[str, _Kind] = {}
-    for name, parameter in inspect.signature(factory).parameters.items():
+    parameters = inspect.signature(factory).parameters
+    upstream_defaults = {name: value for name, value in _UPSTREAM_ONLY_DEFAULTS.get(key, {}).items() if name in parameters}
+    for name, parameter in parameters.items():
+        if name in upstream_defaults:
+            continue
         derived = None if name in _UNREPRESENTED_PARAMETERS else _field_type(parameter.annotation, schedule)
         required = parameter.default is inspect.Parameter.empty
         if derived is None:
@@ -180,7 +191,7 @@ def _entry(key: str, factory: Callable[..., Any], schedule: Any, constant: type[
     model = create_model(
         _class_name(key), __config__=ConfigDict(extra="forbid", title=_title(key)), __module__=__name__, **fields,
     )
-    return RegistryEntry(key, factory, model, kinds)
+    return RegistryEntry(key, factory, model, kinds, upstream_defaults)
 
 
 def _registry(entries: list[RegistryEntry]) -> tuple[dict[str, RegistryEntry], Any]:
@@ -254,7 +265,7 @@ def build_step_optimizer(
 ) -> optax.GradientTransformationExtraArgs:
     """Build an optimizer whose scheduled parameters follow an explicit update clock."""
     entry, arguments = _arguments(spec)
-    static = []
+    static = list(entry.upstream_defaults)
     schedules = {}
     for name, kind in entry.kinds.items():
         value = arguments[name]
@@ -262,6 +273,7 @@ def build_step_optimizer(
             schedules[name] = build_schedule(value)
         elif kind == "static" or value is None:
             static.append(name)
+    arguments.update(entry.upstream_defaults)
     inject = optax.inject_hyperparams(entry.factory, static_args=static)
     if schedules:
         rate_name = next(iter(schedules))
