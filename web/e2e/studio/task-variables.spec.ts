@@ -125,7 +125,7 @@ test('the Variables table names, types and values a new task\'s variables, and s
   releaseSave();
   const stored = async (name: string) => JSON.stringify(Object.values(((await task())?.payload as unknown as { variables: Record<string, { label: string; value: unknown }> })
     .variables).find((variable) => variable.label === name)?.value);
-  await expect.poll(() => stored('offset')).toContain('"value":0.1,');
+  await expect.poll(() => stored('offset')).toBe('"[0.1 m, 0 m]"');
   await expect(value('offset')).toHaveValue('[0.1 m, 0 m]');
   holding = undefined;
   release();

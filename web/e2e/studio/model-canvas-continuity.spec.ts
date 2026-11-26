@@ -272,6 +272,13 @@ test('a Model field edited while a card move saves stays editable and saves afte
   await expect(hidden).toBeEditable();
   const original = await hidden.inputValue();
   const next = original === '17' ? '19' : '17';
+  const cell = async () => {
+    const saved = await readSaved(request, projectPath);
+    const document = rootPayload(saved.project.documents?.['point-mass']) as unknown as ModelDocument;
+    const component = document.interior.components?.cell;
+    return component?.kind === 'leaf' ? component.fields?.hidden_size : undefined;
+  };
+  const stored = await cell();
 
   const header = (await card.locator('header').boundingBox())!;
   await page.mouse.move(header.x + 20, header.y + header.height / 2);
@@ -281,13 +288,7 @@ test('a Model field edited while a card move saves stays editable and saves afte
   await move.sent;
   await expect(hidden).toBeEditable();
   await enter(hidden, next);
-  const cell = async () => {
-    const saved = await readSaved(request, projectPath);
-    const document = rootPayload(saved.project.documents?.['point-mass']) as unknown as ModelDocument;
-    const component = document.interior.components?.cell;
-    return component?.kind === 'leaf' ? component.fields?.hidden_size : undefined;
-  };
-  expect(String(await cell())).toBe(original);
+  expect(await cell()).toEqual(stored);
 
   move.release();
   await expect.poll(cell).toBe(Number(next));
