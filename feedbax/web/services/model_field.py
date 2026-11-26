@@ -111,6 +111,10 @@ def _window_fields(
         ), window_offset=True, expression=None if is_number or isinstance(expression, UnresolvedValue) else expression)
 
 
+_OPERAND_TITLES = {"factor": "Factor", "value": "Value", "low": "Low", "high": "High", "initial": "Initial"}
+"""The titles of the operands the intervention operations and delays declare."""
+
+
 def _attachment_fields(
     branch: ModelDocument | CompositeComponent, owner: ModelAddress, names: tuple[ScopedValue, ...],
 ) -> Iterator[_Field]:
@@ -176,7 +180,7 @@ def _attachment_fields(
             return number
 
         yield _Field(address, NumericField(
-            address.stored_path(), {"low": "Low", "high": "High", "initial": "Initial"}.get(name, "Operand"), value,
+            address.stored_path(), _OPERAND_TITLES.get(name, "Operand"), value,
             Site(expected=value_type, finest=Level.TRIAL, names=names),
             True, validate,
         ), expression=expression)

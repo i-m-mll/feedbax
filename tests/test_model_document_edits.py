@@ -480,7 +480,7 @@ def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path
     }
     data = _data()
     del data["steps"]["check"]
-    data["steps"]["fee"]["sweep"] = {"axes": {"hidden-size": {"values": entries}}}
+    data["steps"]["fee"]["sweep"] = {"axes": {"hidden-size": {"label": "Hidden size", "values": entries}}}
     project = _Project(tmp_path, data)
 
     with project.client:
