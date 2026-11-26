@@ -11,9 +11,10 @@ from web.e2e.studio.fixtures.canonical_evaluate import _MASS, _seed
 _POSITION = "/v1/model/state/plant/effector~1position"
 
 
-def _rollout(sweep: dict | None = None):
+def _rollout(label: str, sweep: dict | None = None):
     step = {
         "kind": "evaluate",
+        "label": label,
         "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
             "seed": 7, "trial_policy": "paired", "variation": [], "trial_set": {"kind": "every_condition"},
         }}},
@@ -22,9 +23,10 @@ def _rollout(sweep: dict | None = None):
     return step | ({"sweep": sweep} if sweep else {})
 
 
-def _view(role: str, source: dict, panel: str, layer: dict):
+def _view(label: str, role: str, source: dict, panel: str, layer: dict):
     """An authored figure of one line layer, which the spec replaces by trajectories."""
     return {
+        "label": label,
         "inputs": {role: source},
         "figure": {
             "data": [role],
@@ -44,38 +46,41 @@ def seed(home: str, project_id: str):
     train["base"]["inline"]["training_config"].update(batch_size=1, replicates=1)
     first = {"checkpoint": {"index": 0}}
     project["steps"] = {
-        "train": train,
-        "masses": _rollout({"axes": {"mass": {"values": {
+        "train": train | {"label": "Train"},
+        "masses": _rollout("Masses", {"axes": {"mass": {"values": {
             name: {"value": mass, "patches": {_MASS: {"value": mass}}} for name, mass in (("light", 0.5), ("heavy", 2.0))
         }}}}),
-        "baseline": _rollout(),
+        "baseline": _rollout("Baseline"),
         "hands": {
             "kind": "analyze",
+            "label": "Hands",
             "base": {"document": "hands"},
             "inputs": {"states": {"step": "masses"}},
         },
         "dynamics": {
             "kind": "analyze",
+            "label": "Dynamics",
             "base": {"document": "dynamics"},
             "inputs": {"states": {"step": "baseline"}},
         },
     }
     project["documents"] |= {
-        "hands": {"schema": "feedbax.analysis_document.v1", "payload": {
+        "hands": {"schema": "feedbax.analysis_document.v1", "label": "Hands", "payload": {
             "inputs": {"states": {"kind": "dataset"}},
-            "views": {"hand-paths": _view("trials", {"input": "states"}, "hand", {
+            "views": {"hand-paths": _view("Hand paths", "trials", {"input": "states"}, "hand", {
                 "select": first, "group": ["member", "condition", "trial"],
                 "encode": {"x": "state_time", "y": {"variable": _POSITION, "select": {"xy": "x"}}},
             })},
         }},
-        "dynamics": {"schema": "feedbax.analysis_document.v1", "payload": {
+        "dynamics": {"schema": "feedbax.analysis_document.v1", "label": "Dynamics", "payload": {
             "inputs": {"states": {"kind": "dataset"}},
             "operations": {"pca": {
+                "label": "Pca",
                 "operation": "feedbax.hidden_state_pca",
                 "inputs": {"states": {"input": "states"}},
                 "params": {"state": semantic_key("model", "state", ("cell",), "hidden")},
                 }},
-                "views": {"hidden": _view("scores", {"element": "pca", "product": "pca"}, "pc", {
+                "views": {"hidden": _view("Hidden", "scores", {"element": "pca", "product": "pca"}, "pc", {
                     "select": first, "group": ["condition", "trial"],
                     "encode": {"x": "state_time", "y": {"variable": "scores", "select": {"component": 1}}},
                 })},
