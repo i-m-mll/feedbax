@@ -173,11 +173,13 @@ class FieldSweeps:
     def __init__(
         self, step: Step, target: SweepTarget, label: str, name: tuple[str, ...], *, integer: bool,
         selected: SelectedValues | None = None, runs: Sequence[Mapping[str, SweepCoordinate]] | None = None,
+        derived_label: bool = False,
     ):
         self.step = step
         self.selected = selected
         self.target = target
         self.label = label
+        self.derived_label = derived_label
         self.name = re.sub(r"[^a-z0-9]+", "-", "-".join(name).lower()).strip("-") or "value"
         self.paths = set(target.entry(target.value).patches)
         self.integer = integer
@@ -305,7 +307,8 @@ class FieldSweeps:
 
     def write_axis(self, axis: Axis) -> list[SetProjectValue]:
         if self.can_sweep:
-            axis = axis.model_copy(update={"label": axis.label or self.label})
+            if axis.label is None and not self.derived_label:
+                axis = axis.model_copy(update={"label": self.label})
             if self.selected is not None:
                 axis = axis.model_copy(update={"where": self.selected.condition})
             name = self._fresh_id(self.name, self.axes)
@@ -324,7 +327,7 @@ class FieldSweeps:
                 isinstance(previous, GeneratedAxis) and self._can_list(previous)
             )
             if editable:
-                return [self._axis_write(name, axis.model_copy(update={"where": _where(previous), "label": previous.label or self.label}))]
+                return [self._axis_write(name, axis.model_copy(update={"where": _where(previous), "label": previous.label}))]
         raise ValueError(f"{self.label} has no supported sweep edit")
 
     def edit(self, command: StudioAuthoringSweepChange, validate_number: Callable[[int | float], int | float]) -> list[SetProjectValue]:

@@ -14,6 +14,7 @@ from feedbax.contracts.expression_values import (
 )
 from feedbax.contracts.expression_site import read_field
 from feedbax.contracts.expression_text import ParsedField
+from feedbax.contracts.objective_document import objective_weight_title
 from feedbax.contracts.project import BasedDocument, Project, RootDocument, SetProjectValue, json_pointer_parts
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import ValueSource, pointer
@@ -223,10 +224,14 @@ def trial_field_sweep(
     )
     patch = ".".join(("trial_documents", role, *path, "value"))
     target = SweepTarget(node.value, lambda _value: [], patch)
-    named = _names(parsed, path) or (role,)
+    weight = objective_weight_title(entry.payload, path) if role == "objective" else None
+    named = path[1:3] if weight is not None else _names(parsed, path) or (role,)
     return TrialFieldSweep(
         role, path, field,
-        FieldSweeps(step, target, label, named, integer=node.unit == "st" and time_use in {"length", "offset"}),
+        FieldSweeps(
+            step, target, weight or label, named, integer=node.unit == "st" and time_use in {"length", "offset"},
+            derived_label=weight is not None,
+        ),
         at(entry.payload, path) is not None, path,
     )
 
