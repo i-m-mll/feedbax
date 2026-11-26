@@ -45,10 +45,10 @@ def pin_project_package(source: DistributionSource, snapshot_parent: Path) -> Pr
     """Seal the local editable install that supplied the planner's declaration."""
     name = canonicalize_name(source.distribution)
     try:
-        installed = metadata.version(name)
-    except metadata.PackageNotFoundError as error:
+        installed = metadata.distribution(name).version
+        editable = editable_source(name)
+    except (ValueError, metadata.PackageNotFoundError) as error:
         raise RepoSnapshotSourceFault("The installed package has no usable local source metadata.") from error
-    editable = editable_source(name)
     if installed != source.version or editable is None:
         raise RepoSnapshotSourceFault("Install the project package in editable mode from its local Git checkout.")
     try:

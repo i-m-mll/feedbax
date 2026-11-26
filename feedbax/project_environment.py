@@ -14,6 +14,7 @@ import subprocess
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.plugins.bootstrap import PackageLoadFailure
 from feedbax.plugins.declarations import DistributionSource, declaration_package
 
@@ -119,12 +120,15 @@ def running_environment() -> Path | None:
 
 
 def editable_source(distribution: str) -> Path | None:
-    """The local directory an editable install of ``distribution`` was made from, if it was made so."""
+    """The local directory an editable install of ``distribution`` was made from, if it was made so.
+
+    Raises ``ValueError`` when the install's ``direct_url.json`` is not strict JSON.
+    """
     try:
         found = metadata.distribution(distribution)
-        installed = json.loads(found.read_text("direct_url.json") or "{}")
-    except (metadata.PackageNotFoundError, ValueError):
+    except metadata.PackageNotFoundError:
         return None
+    installed = strict_json_loads(found.read_text("direct_url.json") or "{}", ref=f"{distribution} direct_url.json")
     url = urlsplit(installed.get("url", "")) if isinstance(installed, dict) else None
     editable = isinstance(installed, dict) and isinstance(installed.get("dir_info"), dict) and (
         installed["dir_info"].get("editable") is True
