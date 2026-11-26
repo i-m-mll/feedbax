@@ -35,7 +35,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.model_input import DocumentInput, InitialModelSource, authored_document_input, encode_document_input
-from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.objective_document import ObjectiveDocument, objective_weight_title
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_authoring import InputProducer, InputRole
@@ -2449,6 +2449,10 @@ class _Compiler:
                 target = model_field_target(path)
                 if target is None:
                     parts = tuple(path.split("."))
+                    if kind == "train" and parts[:2] == ("trial_documents", "objective"):
+                        resolved = resolved_definition()
+                        documents = resolved.payload.get("trial_documents") if isinstance(resolved, ResolvedStep) else None
+                        return objective_weight_title(documents.get("objective"), parts[2:]) if isinstance(documents, dict) else None
                     if kind == "train" and parts == ("seed",):
                         return "Seed"
                     if kind == "train" and parts[0] == "training_config":

@@ -1079,8 +1079,13 @@ def test_whole_step_weight_sweep_writes_without_asking_about_its_new_rows(tmp_pa
         assert answer["files"] and not answer.get("store_choices"), answer
         saved = client.patch(route, json={"revision": revision, "files": answer["files"]})
         assert saved.status_code == 200, saved.text
+        axes = saved.json()["project"]["steps"]["train"]["sweep"]["axes"]
+        assert list(axes) == ["effort-weight"]
+        assert "label" not in axes["effort-weight"]
         plan = folders.read_plan("weight", revision=saved.json()["revision"]).plan
-        assert len([row for row in plan.rows if row.key.step == "train"]) == 3
+        rows = [row for row in plan.rows if row.key.step == "train"]
+        assert len(rows) == 3
+        assert {row.coordinates["effort-weight"].axis_label for row in rows} == {"Effort weight"}
 
 
 def test_scoped_rename_asks_before_changing_an_unselected_inheritor(tmp_path):

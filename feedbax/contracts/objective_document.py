@@ -72,3 +72,15 @@ class StoredObjectiveDocument(ValueRecord):
                 (term.id, project_member(term, StoredObjectiveTerm, label=term.name)) for term in terms
             ),
         })
+
+
+def objective_weight_title(payload: object, path: tuple[str, ...]) -> str | None:
+    """Name a scalar Weight axis by the current label of its Objective term."""
+    if len(path) not in (3, 4) or path[0] != "terms" or path[2] != "weight" or path[3:] not in ((), ("value",)):
+        return None
+    terms = payload.get("terms") if isinstance(payload, dict) else None
+    term = terms.get(path[1]) if isinstance(terms, dict) else None
+    if not isinstance(term, dict):
+        return None
+    label = term.get("label") or path[1].replace("-", " ").replace("_", " ").capitalize()
+    return f"{label} weight"
