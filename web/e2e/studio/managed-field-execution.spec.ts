@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type {
   StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
@@ -7,7 +7,6 @@ import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixture
 test.use({ viewport: { width: 1440, height: 900 } });
 
 test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }, async ({ page, request, studio }, info) => {
-  test.setTimeout(50_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   const id = snapshot.project_id;
   const url = '/?project=' + encodeURIComponent(id);
@@ -84,7 +83,7 @@ test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }
     disposition: 'admitted', job_id: expect.any(String),
   })]);
   await expect.poll(async () => (await plan(saved.revision)).rows.find(({ request_id }) =>
-    request_id === first.request_id)?.attempts[0]?.status, { timeout: 22_000 }).toBe('succeeded');
+    request_id === first.request_id)?.attempts[0]?.status, { timeout: jobTimeout }).toBe('succeeded');
   const completed = (await plan(saved.revision)).rows.find(({ request_id }) => request_id === first.request_id)!;
   expect(completed.attempts).toEqual([expect.objectContaining({
     job_id: items[0].job_id, status: 'succeeded',

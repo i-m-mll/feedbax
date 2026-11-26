@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
@@ -38,7 +38,6 @@ test('New makes a Synthesize step whose Method and settings are edited in its in
 // Catches: a synthesized model an Evaluate or a Train start cannot read, or one read as a Train checkpoint, so the
 // Evaluate's result names no origin.
 test('a Synthesize step on the shipped Model is run, read by an Evaluate made from it, and starts a Train', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(90_000);
   const project: string = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.synthesis', 'seed', studio.home, 'synthesis'));
   const projectPath = `/api/projects/${project}`;
   const runsPath = `${projectPath}/train-runs`;
@@ -60,7 +59,7 @@ test('a Synthesize step on the shipped Model is run, read by an Evaluate made fr
     const response = await admission;
     expect(response.status(), await response.text()).toBe(202);
     expect((await response.json() as StudioJobSubmission).items[0]?.disposition).toBe('admitted');
-    await expect.poll(() => status(id), { timeout: 30_000 }).toBe('succeeded');
+    await expect.poll(() => status(id), { timeout: jobTimeout }).toBe('succeeded');
   }
   const header = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header');
   const picker = (label: string) => header.getByRole('button', { name: new RegExp(`^${label} Document `) });

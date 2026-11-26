@@ -12,7 +12,7 @@ const limit = 0.24;
 // into the limit), an Until End shown without its Condition and Limit parts, a recorded epoch whose end is not marked
 // with how it ended, a condition's ending marked as the limit's (or the reverse), and an ending at another step than
 // the condition held for its duration or the limit reached.
-test('an End made Until in the Task view ends each trial at its condition or its limit, and the shelf says which', async ({ page, request }) => {
+test('an End made Until in the Task view ends each trial at its condition or its limit, and the shelf says which', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
   const primary = page.locator('[data-slot="primary"]');
   const clock = page.locator('footer.studio-window-bottom').getByRole('group', { name: 'Clock', exact: true });

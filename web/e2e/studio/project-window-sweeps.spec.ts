@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import { type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import {
@@ -20,7 +20,6 @@ async function readPlan(request: APIRequestContext, path: string): Promise<{ sna
 }
 
 test('the saved Train field, map and Runs share sweep values and row identity', { tag: '@round' }, async ({ page, request }) => {
-  test.setTimeout(55_000);
   const files = await fixture('ordinary-files', '2');
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   await page.goto(`/?project=${snapshot.project_id}`);
@@ -58,7 +57,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await page.getByRole('button', { name: 'Run', exact: true }).click();
   const accepted = await admission;
   expect(accepted.status(), await accepted.text()).toBe(202);
-  await expect(table.getByText('Done', { exact: true })).toHaveCount(3, { timeout: 25_000 });
+  await expect(table.getByText('Done', { exact: true })).toHaveCount(3, { timeout: jobTimeout });
   const done = (await readPlan(request, projectPath)).plan.rows;
 
   await enter(rateText, '0.001, 0.00275, 0.003');
@@ -275,7 +274,6 @@ test('an authored component range reopens as its exact rule and To List keeps ro
 });
 
 test('a press on a run\'s row shows that run\'s Results, and a reload keeps it', { tag: '@round' }, async ({ page, request }) => {
-  test.setTimeout(45_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
@@ -290,7 +288,7 @@ test('a press on a run\'s row shows that run\'s Results, and a reload keeps it',
   const accepted = await admission;
   expect(accepted.status(), await accepted.text()).toBe(202);
   const jobs = ((await accepted.json()) as { items: { job_id: string }[] }).items.map(({ job_id }) => job_id);
-  await expect(table.getByText('Done', { exact: true })).toHaveCount(2, { timeout: 25_000 });
+  await expect(table.getByText('Done', { exact: true })).toHaveCount(2, { timeout: jobTimeout });
 
   const status = (index: number) => table.locator('tbody tr[data-index]').nth(index).getByRole('cell').filter({ hasText: 'Done' });
   await status(0).click();
@@ -298,7 +296,7 @@ test('a press on a run\'s row shows that run\'s Results, and a reload keeps it',
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const shown = async () => {
     const history = results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('line[data-attempt]');
-    await expect(history.first()).toBeAttached({ timeout: 10_000 });
+    await expect(history.first()).toBeAttached({ timeout: jobTimeout });
     return await history.first().getAttribute('data-attempt');
   };
   const first = await shown();

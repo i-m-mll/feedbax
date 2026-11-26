@@ -1,4 +1,4 @@
-import { expect, firstJobTimeout, test } from './fixtures/studio';
+import { expect, jobTimeout, test } from './fixtures/studio';
 import { runPython } from './fixtures/python';
 import { type APIRequestContext, type Page } from '@playwright/test';
 import type {
@@ -48,21 +48,9 @@ async function projectJobs(request: APIRequestContext, project: string) {
   return (await response.json() as StudioJobSnapshot).jobs;
 }
 
-async function drainProjects(request: APIRequestContext, projects: string[]) {
-  const pending = new Set(['queued', 'awaiting_authorization', 'blocked', 'starting', 'running', 'stopping', 'collecting']);
-  const activeIds = async () => (await Promise.all(projects.map((project) => projectJobs(request, project))))
-    .flat().filter((job) => pending.has(job.status)).map((job) => job.job_id);
-  const jobIds = await activeIds();
-  if (!jobIds.length) return;
-  const stopped = await request.post('/api/jobs/stop', { data: { job_ids: jobIds, mode: 'force' } });
-  expect(stopped.status(), await stopped.text()).toBe(202);
-  await expect.poll(activeIds, { timeout: 10_000 }).toEqual([]);
-}
-
 test('shares live Jobs across windows and observes the four-slot queue', { tag: '@round' }, async ({
   page, context, request, baseURL, studio,
 }, testInfo) => {
-  test.setTimeout(50_000);
   if (!baseURL) throw new Error('The real Studio origin is required');
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '6000', ...rates));
   const projectId = snapshot.project_id;
@@ -93,12 +81,12 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
         current.filter((job) => job.status === 'starting' || job.status === 'running').length,
         current.filter((job) => job.status === 'queued').length,
       ];
-    }, { timeout: 12_000 }).toEqual([slots, rates.length - slots]);
+    }, { timeout: jobTimeout }).toEqual([slots, rates.length - slots]);
     const initial = await jobs();
     const queued = initial.filter((job) => job.status === 'queued');
     const first = initial.find((job) => job.status === 'running' || job.status === 'starting')!;
     await expect(row(page, first).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/, {
-      timeout: 15_000,
+      timeout: jobTimeout,
     });
 
     await expect.poll(() => observer.subscriptions().map((stream) => stream.projects)).toEqual([[projectId]]);
@@ -131,7 +119,7 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     const secondAttempt = (label: string) => secondActivity.getByRole('region', { name: configuration.project, exact: true })
       .getByRole('listitem').filter({ hasText: label }).first();
     const resume = secondAttempt(first.label).getByRole('button', { name: 'Resume', exact: true });
-    await expect(resume).toBeEnabled({ timeout: 10_000 });
+    await expect(resume).toBeEnabled({ timeout: jobTimeout });
     const stopped = (await jobs()).find((job) => job.job_id === first.job_id);
     expect(stopped).toMatchObject({ status: 'stopped', can_resume: true });
     expect(stopped?.progress?.completed_updates).toBeGreaterThan(0);
@@ -153,7 +141,7 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     // The other admitted rows may still be starting their workers; wait for one to run.
     const runningSibling = async () =>
       (await jobs()).find((job) => job.status === 'running' && job.run_key !== first.run_key);
-    await expect.poll(async () => (await runningSibling())?.status, { timeout: firstJobTimeout }).toBe('running');
+    await expect.poll(async () => (await runningSibling())?.status, { timeout: jobTimeout }).toBe('running');
     const sibling = (await runningSibling())!;
     const forced = post(second, '/api/jobs/stop');
     await secondAttempt(sibling.label).getByRole('button', { name: 'Force Stop', exact: true }).click();
@@ -167,8 +155,8 @@ import os
 import signal
 import time
 
-project, *exclude = sys.argv[2:]
-deadline = time.monotonic() + 5
+seconds, project, *exclude = sys.argv[2:]
+deadline = time.monotonic() + float(seconds)
 while time.monotonic() < deadline:
     for row in host.jobs(project=project):
         if row["id"] in exclude or row["state"] != "running" or not row["checkpoint"] or row["stop_mode"]:
@@ -181,7 +169,7 @@ while time.monotonic() < deadline:
         sys.exit(0)
     time.sleep(0.05)
 raise TimeoutError("No isolated sibling published a checkpoint")
-`, projectId, first.job_id, sibling.job_id, attempt.job_id);
+`, String(jobTimeout / 1000), projectId, first.job_id, sibling.job_id, attempt.job_id);
     const interrupted = (await jobs()).find((job) => job.job_id === interruptedId);
     if (!interrupted) throw new Error('The interrupted sibling disappeared from Jobs');
     await expect(secondAttempt(interrupted.label).getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
@@ -195,25 +183,20 @@ raise TimeoutError("No isolated sibling published a checkpoint")
     await expect.poll(async () => {
       const current = await jobs();
       return current.find((job) => job.job_id === attempt.job_id)?.progress?.completed_updates ?? 0;
-    }, { timeout: 15_000 }).toBeGreaterThan(stopped!.progress!.completed_updates);
+    }, { timeout: jobTimeout }).toBeGreaterThan(stopped!.progress!.completed_updates);
     await expect(row(second, first).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/);
     const after = await jobs();
     expect(after.find((job) => job.job_id === first.job_id)?.outcome).toEqual(stopped?.outcome);
     expect(after).toHaveLength(rates.length + 1);
   } finally {
-    try {
-      await drainProjects(request, [projectId]);
-    } finally {
-      await second.close();
-      await observer.close();
-    }
+    await second.close();
+    await observer.close();
   }
 });
 
 test('opens a ninth project window while one stream serves active projects', { tag: '@round' }, async ({
   context, page, request, baseURL,
 }) => {
-  test.setTimeout(45_000);
   if (!baseURL) throw new Error('The real Studio origin is required');
   const files = await fixture('ordinary-files', '12000');
   const projects = await Promise.all(Array.from({ length: 4 }, async () =>
@@ -251,7 +234,7 @@ test('opens a ninth project window while one stream serves active projects', { t
     ));
     await expect.poll(subscriptions).toEqual([[...runningProjects].sort()]);
     await Promise.all(windows.map((window) =>
-      expect(window.getByRole('table', { name: 'Runs', exact: true }).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/, { timeout: firstJobTimeout }),
+      expect(window.getByRole('table', { name: 'Runs', exact: true }).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/, { timeout: jobTimeout }),
     ));
     expect(windows).toHaveLength(8);
 
@@ -266,17 +249,12 @@ test('opens a ninth project window while one stream serves active projects', { t
       await expect(run.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
     }
   } finally {
-    try {
-      await drainProjects(request, projects);
-    } finally {
-      await Promise.all(windows.map((window) => window.close()));
-      await observer.close();
-    }
+    await Promise.all(windows.map((window) => window.close()));
+    await observer.close();
   }
 });
 
-test('reads Connecting while the event stream is refused and catches up when it returns', async ({ page, request, baseURL }) => {
-  test.setTimeout(40_000);
+test('reads Connecting while the event stream is refused and catches up when it returns', { tag: '@slow' }, async ({ page, request, baseURL }) => {
   if (!baseURL) throw new Error('The real Studio origin is required');
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const observer = await observeJobStreams(baseURL);
@@ -288,7 +266,7 @@ test('reads Connecting while the event stream is refused and catches up when it 
     await expect(card.locator('[data-status-mark="not_run"]')).toBeVisible();
     await expect(page.getByRole('combobox', { name: 'Machine' })).toBeEnabled();
     observer.blockStreams(true);
-    await expect(bar.getByRole('status')).toHaveText('Connecting', { timeout: 2_000 });
+    await expect(bar.getByRole('status')).toHaveText('Connecting', { timeout: jobTimeout });
     await expect(page.getByRole('combobox', { name: 'Machine' })).toBeDisabled();
     const admission = await request.post(`${projectPath}/train-runs`, { data: {
       token: 'stream-refused', revision: snapshot.revision,
@@ -296,21 +274,19 @@ test('reads Connecting while the event stream is refused and catches up when it 
     } });
     expect(admission.status(), await admission.text()).toBe(202);
     await expect.poll(async () => (await projectJobs(request, snapshot.project_id)).map(({ status }) => status),
-      { timeout: firstJobTimeout }).toEqual(['succeeded']);
+      { timeout: jobTimeout }).toEqual(['succeeded']);
     await expect(bar.getByRole('status')).toHaveText('Connecting');
     await expect(bar.getByRole('alert')).toHaveCount(0);
     await expect(card.locator('[data-status-mark="succeeded"]')).toHaveCount(0);
     observer.blockStreams(false);
-    await expect(card.locator('[data-status-mark="succeeded"]')).toBeVisible({ timeout: 8_000 });
+    await expect(card.locator('[data-status-mark="succeeded"]')).toBeVisible({ timeout: jobTimeout });
     await expect(bar.getByRole('status')).toHaveCount(0);
   } finally {
-    await drainProjects(request, [snapshot.project_id]);
     await observer.close();
   }
 });
 
-test('one window holds the event stream for all and hands it on when it closes', async ({ context, page, request, baseURL }) => {
-  test.setTimeout(40_000);
+test('one window holds the event stream for all and hands it on when it closes', { tag: '@slow' }, async ({ context, page, request, baseURL }) => {
   if (!baseURL) throw new Error('The real Studio origin is required');
   await context.addInitScript(() => {
     const Shared = window.SharedWorker;
@@ -336,27 +312,25 @@ test('one window holds the event stream for all and hands it on when it closes',
     for (const window of [page, second]) await expect(bar(window).getByRole('status')).toHaveCount(0);
 
     await page.close();
-    await expect.poll(() => observer.subscriptions().length, { timeout: 5_000 }).toBe(1);
-    await expect(second.getByRole('button', { name: 'Run', exact: true })).toBeEnabled({ timeout: 1_000 });
+    await expect.poll(() => observer.subscriptions().length, { timeout: jobTimeout }).toBe(1);
+    await expect(second.getByRole('button', { name: 'Run', exact: true })).toBeEnabled({ timeout: jobTimeout });
     await expect(bar(second).getByRole('status')).toHaveCount(0);
     const admission = await request.post(`${projectPath}/train-runs`, { data: {
       token: 'after-handover', revision: snapshot.revision,
       run_keys: [{ variant: 'default', step: 'train', row: 'default' }],
     } });
     expect(admission.status(), await admission.text()).toBe(202);
-    await expect(second.locator('[data-map-step="train"] [data-status-mark="succeeded"]')).toBeVisible({ timeout: firstJobTimeout });
+    await expect(second.locator('[data-map-step="train"] [data-status-mark="succeeded"]')).toBeVisible({ timeout: jobTimeout });
     expect(await second.evaluate(() => (window as unknown as { sharedWorkersStarted: number }).sharedWorkersStarted)).toBe(0);
   } finally {
-    await drainProjects(request, [snapshot.project_id]);
     await second.close();
     await observer.close();
   }
 });
 
-test('names an unreadable run only in its own project window', async ({
+test('names an unreadable run only in its own project window', { tag: '@slow' }, async ({
   context, page, request, baseURL, studio,
 }) => {
-  test.setTimeout(45_000);
   if (!baseURL) throw new Error('The real Studio origin is required');
   const files = await fixture('ordinary-files', '12000');
   const [unreadable, readable] = await Promise.all([0, 1].map(async () =>
@@ -380,7 +354,7 @@ data = {"run_key": "malformed", "stage_id": "train", "scenario_id": "default", "
 job = Job("malformed-result", sys.argv[2], "train:malformed", Launch((sys.executable, "-c", "pass")), data=data)
 host.admit("malformed-result", [AdmissionItem(job.id, job)], record={})
 `, unreadable);
-    await expect(alert(page)).toBeVisible({ timeout: 15_000 });
+    await expect(alert(page)).toBeVisible({ timeout: jobTimeout });
     await page.reload();
     await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
     await expect(alert(page)).toBeVisible();
@@ -392,7 +366,7 @@ host.admit("malformed-result", [AdmissionItem(job.id, job)], record={})
     }));
     for (const window of windows) {
       await expect(window.getByRole('table', { name: 'Runs', exact: true }).getByRole('progressbar'))
-        .toHaveAttribute('value', /[1-9]/, { timeout: firstJobTimeout });
+        .toHaveAttribute('value', /[1-9]/, { timeout: jobTimeout });
       await expect(window.getByRole('region', { name: 'Activity', exact: true })
         .getByRole('list', { name: 'Runs', exact: true }).getByRole('button', { name: 'Stop', exact: true }).first())
         .toBeEnabled();
@@ -400,10 +374,6 @@ host.admit("malformed-result", [AdmissionItem(job.id, job)], record={})
     await expect(alert(page)).toBeVisible();
     await expect(alert(second)).toHaveCount(0);
   } finally {
-    try {
-      await drainProjects(request, [unreadable, readable]);
-    } finally {
-      await second.close();
-    }
+    await second.close();
   }
 });

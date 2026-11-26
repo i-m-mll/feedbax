@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type {
   StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns,
@@ -17,7 +17,6 @@ function submitted(page: Page, path: string) {
 }
 
 test('the slot header switches, creates, duplicates, renames and re-keys a step\'s documents in place, and Activity keeps a run\'s label', { tag: '@round' }, async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('history-files'));
   const runsPath = `${projectPath}/train-runs`;
   const table = page.getByRole('table', { name: 'Runs' });
@@ -56,7 +55,7 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
     const response = await admission;
     expect(response.status(), await response.text()).toBe(202);
     expect((await response.json() as StudioJobSubmission).items[0]?.disposition).toBe('admitted');
-    await expect.poll(() => status(step), { timeout: 20_000 }).toBe('succeeded');
+    await expect.poll(() => status(step), { timeout: jobTimeout }).toBe('succeeded');
   }
 
   async function renameStep(step: string, label: string) {
@@ -192,8 +191,7 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
-test('a Train step keeps a new Model with its Problems and a duplicated Model without any, and one Undo restores each', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a Train step keeps a new Model with its Problems and a duplicated Model without any, and one Undo restores each', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
   const header = primary.locator('.studio-window-slot__header');
@@ -373,8 +371,7 @@ function trainingView(page: Page) {
   return { primary, picker, batches, menu, indent };
 }
 
-test('a narrowed edit in the Training view makes a document based on the shown one, and one Undo restores the files', async ({ page, request }) => {
-  test.setTimeout(60_000);
+test('a narrowed edit in the Training view makes a document based on the shown one, and one Undo restores the files', { tag: '@slow' }, async ({ page, request }) => {
   const { snapshot, saved, requests } = await sharedTraining(request);
   const { primary, picker, batches, indent } = trainingView(page);
   /** Commits a Batches value and waits for the plan of the revision it saved. */
@@ -437,7 +434,6 @@ test('a narrowed edit in the Training view makes a document based on the shown o
 });
 
 test('a continuation taken out keeps its runs, and Detach cuts a based document from its base', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const continuation = { kind: 'step', id: 'train-2', step: { kind: 'train', base: { step: 'train' } } };
   const { snapshot, saved, requests } = await sharedTraining(request, [continuation]);
   const { picker, batches, menu, indent } = trainingView(page);
@@ -467,7 +463,6 @@ test('a continuation taken out keeps its runs, and Detach cuts a based document 
 });
 
 test('a narrowed edit in the Model view makes a document based on the shown one, and one Undo restores the files', async ({ page, request }) => {
-  test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
   const picker = primary.locator('.studio-window-slot__header').getByRole('button', { name: /^Model Document / });

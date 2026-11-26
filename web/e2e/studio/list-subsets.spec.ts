@@ -8,7 +8,6 @@ test.use({ viewport: { width: 1440, height: 900 } });
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
 test('freezes one measured selection of a listed Evaluate subject and leaves the others', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(180_000);
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.list_subsets', 'seed', studio.home, 'subsets'));
   const path = '/api/projects/' + project;
   const runPath = path + '/train-runs';

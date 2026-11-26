@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, test, jobTimeout } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
@@ -8,7 +8,6 @@ test.use({ viewport: { width: 1440, height: 900 } });
 const runs = (page: Page) => page.getByRole('table', { name: 'Runs', exact: true });
 
 test('renaming a Train step labels it, changing its key keeps its runs and its Evaluate reader Done, and one Undo restores it', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(90_000);
   const projectId: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', studio.home, 'step-rename',
   ));
@@ -34,7 +33,7 @@ test('renaming a Train step labels it, changing its key keeps its runs and its E
     const accepted = await response;
     expect(accepted.status(), await accepted.text()).toBe(202);
     expect((await accepted.json() as StudioJobSubmission).items.map(({ disposition }) => disposition)).toEqual(['admitted']);
-    await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: jobTimeout });
   }
 
   /** Return on a step goes into its views: the keyboard moves into the slot, here showing Runs. */

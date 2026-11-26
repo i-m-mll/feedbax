@@ -14,7 +14,7 @@ const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: t
 // problem listed once per row, a listed subject drawing no Checkpoint, an update past a subject's training saved,
 // an Objective term's Weight locked while the Model does not build, and an input whose producer cannot run explained by
 // a sentence (a raw run key) rather than the Cannot Run mark and its link.
-test('keeps the steps that read an invalid Model editable and marks them waiting on it', async ({ page, request, studio }) => {
+test('keeps the steps that read an invalid Model editable and marks them waiting on it', { tag: '@slow' }, async ({ page, request, studio }) => {
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.invalid_model', 'seed', studio.home, 'invalid'));
   const path = '/api/projects/' + project;
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
