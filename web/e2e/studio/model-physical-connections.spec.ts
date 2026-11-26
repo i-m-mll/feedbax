@@ -29,7 +29,7 @@ async function revealModel(page: Page, url: string) {
 function storedConnections(current: StudioProjectDocument['snapshot']) {
   const document = rootPayload(current.project.documents?.['reach-model']) as unknown as ModelDocument;
   const component = document.interior.components?.equations;
-  if (component?.kind !== 'composite' || !('connections' in component.interior)) {
+  if (component?.kind !== 'composite' || !('physical_domain' in component.interior) || component.interior.physical_domain !== 'translational') {
     throw new Error('Expected a stored Equations interior');
   }
   return component.interior.connections ?? {};

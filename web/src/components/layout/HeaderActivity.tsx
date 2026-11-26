@@ -1,6 +1,6 @@
 import { Activity, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef } from 'react';
-import { StudioActivityPane, useStudioActivityCount, type ActivityResultState } from '@/components/activity/StudioActivity';
+import { StudioActivityPane, useStudioActivityCount, type ActivityResultState, type ActivityRunName } from '@/components/activity/StudioActivity';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { commandTip, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { StudioActivityJob } from '@/generated/studioContracts';
@@ -15,6 +15,7 @@ export function HeaderActivity({
   placement = 'below',
   command,
   resultState,
+  runName,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -24,6 +25,7 @@ export function HeaderActivity({
   placement?: 'above' | 'below';
   command?: StudioCommand;
   resultState?: ActivityResultState;
+  runName?: ActivityRunName;
 }) {
   const panelId = useId();
   const trigger = useRef<HTMLButtonElement | null>(null);
@@ -66,7 +68,7 @@ export function HeaderActivity({
             <h2 className="font-semibold">{studioName('activity')}</h2>
             <IconButton ref={close} label={studioName('close')} icon={<X aria-hidden="true" />} onClick={closePanel} />
           </header>
-          <StudioActivityPane projectNames={projectNames} onClose={onClose} onOpenRun={onOpenRun} resultState={resultState} />
+          <StudioActivityPane projectNames={projectNames} onClose={onClose} onOpenRun={onOpenRun} resultState={resultState} runName={runName} />
         </section>
       )}
     </div>

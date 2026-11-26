@@ -91,7 +91,7 @@ test('authors and reopens an addressed Model through the project history', { tag
   const wire = wired.changed[0].element;
   if (wire.kind !== 'wire') throw new Error('Connect did not return a wire address');
   expect(stored(wired.snapshot).interior.wires?.[wire.id].attachments).toMatchObject([
-    { kind: 'delay', delay: { value: 1, unit: 'st' }, initial_source: { kind: 'value', value: 0 } },
+    { kind: 'delay', delay: { value: 1, unit: 'st' } },
   ]);
   const delay = model.getByRole('button', { name: 'Attachment Delay', exact: true });
   await expect(delay).toHaveAccessibleDescription(/1 st · .+hidden → .+hidden/);
@@ -117,8 +117,8 @@ test('authors and reopens an addressed Model through the project history', { tag
     initial_source: { kind: 'wire', source: { owner: 'component', component: component.id, port: 'hidden' } },
   });
   await model.focus();
-  const undone = await apply(() => page.keyboard.press('Meta+Z'), 'undo');
-  expect(stored(undone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({ initial_source: { kind: 'value', value: 0 } });
+  await apply(() => page.keyboard.press('Meta+Z'), 'undo');
+  await expect(inspector.getByRole('button', { name: 'Initial kind: Value', exact: true })).toBeVisible();
   await model.focus();
   const redone = await apply(() => page.keyboard.press('Meta+Shift+Z'), 'undo');
   expect(stored(redone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({

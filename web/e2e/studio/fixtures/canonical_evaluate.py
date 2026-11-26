@@ -247,7 +247,7 @@ def task_pivot_files():
     evaluate["inputs"]["subject"]["where"] = {"rule": "learning-rate=Slow,Fast seed=one"}
     evaluate["sweep"] = {"axes": {
         "subject": {"input": "subject"},
-        "task": {"values": {
+        "task": {"label": "Task", "values": {
             name: {"label": label, "patches": {"params.variation.task.value": {"value": {"document": name}}}}
             for name, label in (("short-task", "Short Task"), ("long-task", "Long Task"))
         }},
@@ -261,8 +261,8 @@ def scoped_series_files():
     evaluation["sweep"] = {"axes": {
         "subject": {"input": "subject"},
         "replicate": {"values": {
-            "left": {"patches": {"params.seed": {"value": 31}}},
-            "right": {"patches": {"params.seed": {"value": 32}}},
+            "left": {"label": "Left", "patches": {"params.seed": {"value": 31}}},
+            "right": {"label": "Right", "patches": {"params.seed": {"value": 32}}},
         }},
     }}
     return [*series_files(), {"kind": "step", "id": "evaluate", "step": evaluation}]

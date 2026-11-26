@@ -1,4 +1,4 @@
-import { isHttpConflict, isRefusal, isServiceFailure } from '@/api/request';
+import { isHttpConflict, isRefusal, isServiceFailure, isUnanswered } from '@/api/request';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
@@ -95,7 +95,7 @@ interface ReplayTarget extends ReplayContent {
   readonly content?: string;
 }
 
-export type ProjectEditValidation = (before: AuthoredProject, after: AuthoredProject) => void;
+export type ProjectEditValidation = (before: AuthoredProject, after: AuthoredProject, direction: PendingEdit['direction']) => void;
 
 interface History {
   readonly undo: readonly Gesture[];
@@ -143,6 +143,25 @@ export class ProjectEditConflictError extends Error {
   constructor() {
     super('The project changed before the pending edits could be saved.');
   }
+}
+
+/** Reconcile a revision-bound read while a newer saved revision reaches the editor. */
+export function projectRead<T>(editor: ProjectEditController, revision: string, read: (signal: AbortSignal) => Promise<T>) {
+  return {
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      try {
+        return await read(signal);
+      } catch (error) {
+        if (isHttpConflict(error)) {
+          signal.throwIfAborted();
+          await editor.reconcileRead(revision);
+          signal.throwIfAborted();
+        }
+        throw error;
+      }
+    },
+    retry: (attempt: number, error: Error) => isUnanswered(error) || attempt === 0 && isHttpConflict(error),
+  };
 }
 
 const emptyHistory: History = { undo: [], redo: [] };
@@ -779,6 +798,13 @@ export class ProjectEditController {
     }).catch(() => {});
   }
 
+  /** An older read can conflict while a write is being acknowledged. Let that write settle before reading the disk. */
+  reconcileRead(revision: string) {
+    return this.sequence(async () => {
+      if (this.saved.revision === revision) await this.refresh();
+    });
+  }
+
   keep(choice: 'disk' | 'edits') {
     return this.sequence(async () => {
       if (!this.outside) return;
@@ -837,7 +863,7 @@ export class ProjectEditController {
             pending.settle(savedEdit);
             continue;
           }
-          pending.gesture.validate?.(base, applied.project);
+          pending.gesture.validate?.(base, applied.project, pending.direction);
           const edits = [{ address, patches: applied.edits }];
           const adjusted = sameFile ? gesture : { ...gesture, files: edits, inverse: [{ address, patches: applied.inverse }] };
           const direction = sameFile ? pending.direction : 'edit';
@@ -902,7 +928,7 @@ export class ProjectEditController {
     files: readonly StudioProjectFilePatch[],
     project: ProjectEditContent,
   ) {
-    gesture.validate?.(this.draft, project);
+    gesture.validate?.(this.draft, project, direction);
     this.outsideBurst = undefined;
     const historyAfter = moveHistory(this.history, gesture, direction);
     let settle!: PendingEdit['settle'];

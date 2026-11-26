@@ -416,17 +416,16 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
   const modelFile = files.find((file: { document?: { schema: string } }) => file.document?.schema === 'feedbax.spec.model');
   const stepFile = files.find((file: { kind: string }) => file.kind === 'step');
   const trial = stepFile.step.base.inline.trial_documents;
-  delete trial.task;
-  trial.python_task = { document: 'profile-task' };
+  trial.task = { document: 'profile-task' };
   trial.objective = { document: 'profile-objective' };
   modelFile.document.payload = modelFixture(100);
   const { snapshot, projectPath } = await seedManagedProject(request, [
     modelFile,
     { kind: 'document', id: 'profile-task', document: {
-      schema: 'feedbax.spec.task_document', payload: blankTask,
+      schema: 'feedbax.spec.task_document', label: 'Profile Task', payload: blankTask,
     } },
     { kind: 'document', id: 'profile-objective', document: {
-      schema: 'feedbax.spec.objective_document', payload: { id: 'profile-objective', terms: [] },
+      schema: 'feedbax.spec.objective_document', label: 'Profile Objective', payload: { id: 'profile-objective', terms: [] },
     } },
     stepFile,
   ]);

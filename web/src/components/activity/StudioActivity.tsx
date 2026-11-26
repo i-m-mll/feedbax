@@ -16,6 +16,8 @@ import {
 
 /** The state a finished job's result is in, where the window knows its validity. */
 export type ActivityResultState = (job: StudioActivityJob) => StudioResultState | undefined;
+
+export type ActivityRunName = (job: StudioActivityJob) => string | undefined;
 import { Button, IconButton } from '@/components/ui/Button';
 import { X } from 'lucide-react';
 import { Section } from '@/components/ui/Section';
@@ -38,6 +40,7 @@ const activityTime = (job: StudioActivityJob) => job.ended_at_ms ?? job.submitte
 
 function ActivityRun({
   job,
+  label,
   selected,
   machine,
   resultState,
@@ -45,6 +48,7 @@ function ActivityRun({
   onClose,
 }: {
   job: StudioActivityJob;
+  label: string;
   selected: boolean;
   machine?: string;
   resultState?: StudioResultState;
@@ -113,7 +117,7 @@ function ActivityRun({
             <Icon aria-hidden="true" className="size-3.5 shrink-0" />
             {name}
           </span>
-          <span className="block break-words font-medium">{job.label}</span>
+          <span className="block break-words font-medium">{label}</span>
         </Button>
         <div className="flex items-center gap-1">
           <StudioRunStatus status={resultState ?? job.status} />
@@ -243,6 +247,7 @@ interface StudioActivityPaneProps {
   onClose: () => void;
   standalone?: boolean;
   resultState?: ActivityResultState;
+  runName?: ActivityRunName;
 }
 
 export function StudioActivityPane(props: StudioActivityPaneProps) {
@@ -280,7 +285,7 @@ function ActivityProject({ name, children }: PropsWithChildren<{ name: string }>
   );
 }
 
-function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultState }: StudioActivityPaneProps) {
+function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultState, runName }: StudioActivityPaneProps) {
   const snapshot = useStudioJobs();
   const unreadable = useStudioUnreadableJobs();
   const actions = useStudioJobActions();
@@ -335,6 +340,7 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultS
               <ActivityRun
                 key={job.job_id}
                 job={job}
+                label={runName?.(job) ?? job.label}
                 selected={job === selected}
                 machine={machineByJob.get(job.job_id)}
                 resultState={resultState?.(job)}
@@ -351,7 +357,7 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultS
       </ul>
       {selected && (standalone
         ? <StudioJobsProvider projectId={selected.project_id}><StudioRunInspector job={selected} /></StudioJobsProvider>
-        : <StudioRunInspector job={selected} />)}
+        : <StudioRunInspector job={{ ...selected, label: runName?.(selected) ?? selected.label }} />)}
     </StudioRegion>
   );
 }

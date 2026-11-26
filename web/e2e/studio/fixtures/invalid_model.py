@@ -31,6 +31,7 @@ def seed(home: str, project_id: str):
     steps["train_b"]["base"]["inline"]["training_config"]["n_batches"] = 8000
     steps["train_b"]["base"]["inline"]["trial_documents"]["model"] = {"document": "sound-model"}
     conditions = steps["conditions"]
+    conditions["label"] = "Conditions"
     conditions["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     conditions["inputs"]["subject"] = {"step": "train", "checkpoint": "last"}
     return _seed(home, project_id, raw)

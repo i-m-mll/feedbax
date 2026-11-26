@@ -164,12 +164,12 @@ export function TaskVariables({ variables, sets = [], unstarted = [], selected, 
 function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: StudioCommand }; drawn: boolean }) {
   const { toSweep, weigh } = set;
   return <>
-  <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
+  <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.name), items:
     <MenuItem disabled={!toSweep.enabled} onClick={() => toSweep.invoke()}>{toSweep.title}</MenuItem> }}>
-    <TableRowHeader className="font-mono">{set.set}</TableRowHeader>
+    <TableRowHeader className="font-mono">{set.name}</TableRowHeader>
     <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
     <TableCell>
-      <ul aria-label={studioAccessibleName('values', set.set)} className="flex h-full min-w-0 items-center gap-x-3 overflow-x-auto">
+      <ul aria-label={studioAccessibleName('values', set.name)} className="flex h-full min-w-0 items-center gap-x-3 overflow-x-auto">
         {set.entries.map(({ id, label, weight }) => {
           const part = (side?: WeightSide) => weigh && ((value: number) => weigh(id, side, value));
           return <li key={id ?? ''} className="flex h-full shrink-0 items-center gap-1">
@@ -188,7 +188,7 @@ function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: St
     <TableCell />
   </TableRow>
   {set.condition && <TableRow>
-    <TableRowHeader><span className="sr-only">{set.set}</span></TableRowHeader>
+    <TableRowHeader><span className="sr-only">{set.name}</span></TableRowHeader>
     <TableCell className="text-shell-muted">{studioName('condition')}</TableCell>
     <TableFieldCell><ValueField form="cell" model={set.condition} /></TableFieldCell>
     {drawn && <TableCell />}

@@ -63,11 +63,11 @@ test('keeps every Analysis card clear of the others and every wire clear of the 
   expect(opened.ok(), await opened.text()).toBe(true);
   const { snapshot } = await opened.json() as StudioProjectDocument;
   await appendManagedFiles(request, snapshot, [
-    { kind: 'document', id: 'analysis', document: { schema: 'feedbax.analysis_document.v1', payload: {
+    { kind: 'document', id: 'analysis', document: { schema: 'feedbax.analysis_document.v1', label: 'Analysis', payload: {
       inputs: { states: { kind: 'dataset' } },
       operations: {
         align: {
-          operation: 'feedbax.aligned_velocity',
+          label: 'Align', operation: 'feedbax.aligned_velocity',
           params: {
             position: '/v1/model/state/plant/effector~1position', velocity: '/v1/model/state/plant/effector~1velocity',
             target: '/v1/task/output/target_pos',
@@ -75,12 +75,12 @@ test('keeps every Analysis card clear of the others and every wire clear of the 
           inputs: { states: { input: 'states' } },
         },
         summarize: {
-          operation: 'feedbax.summarize_velocity', params: { ddof: 1, bounds_scale: 1.0 },
+          label: 'Summarize', operation: 'feedbax.summarize_velocity', params: { ddof: 1, bounds_scale: 1.0 },
           inputs: { velocity: { element: 'align', product: 'velocity' } },
         },
       },
     } } },
-    { kind: 'step', id: 'analyze', step: { kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
+    { kind: 'step', id: 'analyze', step: { kind: 'analyze', label: 'Analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
   ]);
   const edit = async (action: () => Promise<unknown>) => {
     const saving = page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === path);
