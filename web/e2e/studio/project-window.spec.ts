@@ -464,7 +464,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
     schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
   } };
   const emptyModel = { ...singleModel, id: 'empty-model', document: {
-    ...singleModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
+    ...singleModel.document, payload: { step_seconds: '0.01 s', ports: {}, interior: {} },
   } };
   const documents = (model: string) => ({
     model: { document: model }, task: { document: task.id }, objective: { document: objective.id },
@@ -665,7 +665,7 @@ test('a view with nothing to show is dimmed in the rail, and an open one gives w
     schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
   } };
   const flatModel = { ...planarModel, id: 'flat-model', document: {
-    ...planarModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
+    ...planarModel.document, payload: { step_seconds: '0.01 s', ports: {}, interior: {} },
   } };
   const step = (id: string, model: string) => ({
     ...template, id, step: { ...template.step, base: { inline: { ...template.step.base.inline, trial_documents: {

@@ -1,6 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StoredTaskDocument as TaskDocument } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { trialField } from './fixtures/trialFields';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -63,7 +64,8 @@ test('Repeat brackets the selected columns, its count repeats them on the shelf,
   await target.getByRole('button', { name: 'Variable target', exact: true }).click();
   await page.getByRole('menuitemcheckbox', { name: 'List', exact: true }).click();
   await expect(page.getByRole('menu', { name: 'Variable target', exact: true })).toHaveCount(0);
-  await expect.poll(async () => (await task()).variables.target?.count).toBe(2);
+  const shown = async (...path: string[]) => (await trialField(request, snapshot.project_id, ['task', ...path]))?.text;
+  await expect.poll(() => shown('variables', 'target', 'count')).toBe('2');
 
   const goal = grid.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename goal', exact: true }) })
     .locator('td[data-cell]').first().getByRole('textbox');
@@ -71,7 +73,8 @@ test('Repeat brackets the selected columns, its count repeats them on the shelf,
   await inspector.getByRole('combobox', { name: 'Item', exact: true }).click();
   await page.getByRole('option', { name: 'Each Repeat', exact: true }).click();
   await expect(goal).toHaveValue('target[i]');
-  await expect.poll(async () => Object.values((await task()).signals.goal?.cells ?? {})[0]?.value).toBe('target[i]');
+  await expect.poll(async () => shown('signals', 'goal', 'cells', Object.keys((await task()).signals.goal?.cells ?? {})[0], 'value'))
+    .toBe('target[i]');
 
   await header('cue').click({ position: { x: 4, y: 4 } });
   await header('move').click({ modifiers: ['Shift'], position: { x: 4, y: 4 } });

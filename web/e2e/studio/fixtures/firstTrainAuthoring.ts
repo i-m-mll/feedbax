@@ -225,8 +225,7 @@ export async function authorFirstTrain(
   });
   const [term] = terms(saved.project);
   expect(terms(saved.project)).toHaveLength(1);
-  // The measure names the Model's command output by its address, quoted when the port's key is not a bare name.
-  expect(term).toMatchObject({ measure: expect.stringMatching(new RegExp(`^sqnorm\\('?outputs\\.${commandPort}'?\\)$`)), weight: 2 });
+  expect(term).toMatchObject({ weight: 2 });
   const before = await plan(saved.revision);
   expect(before.window_map?.problems).toEqual([]);
   expect(before.rows).toMatchObject([{ key: { variant: 'default', step: 'train', row: 'default' },

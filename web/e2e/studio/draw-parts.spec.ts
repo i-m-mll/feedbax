@@ -1,12 +1,11 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
-import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
-import { rootPayload } from './fixtures/rootPayload';
+import { trialField } from './fixtures/trialFields';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-/** A uniform draw's stored text, as the Service writes it. */
+/** A uniform draw as its seed stores it. */
 const uniform = (low: number, high: number) => `U(${low}, ${high})`;
 
 /** The ordinary Train project with its Objective's first term weighted by `weight`, open on the Objective view. */
@@ -15,7 +14,7 @@ async function open(page: Page, request: APIRequestContext, weight: unknown) {
   const objective = files.find(({ id }) => id === 'simple-reaches-objective')!.document!;
   const [[key, term]] = Object.entries(objective.payload.terms);
   objective.payload.terms[key] = { ...term, weight };
-  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const { snapshot } = await seedManagedProject(request, files);
   const writes: unknown[] = [];
   page.on('request', (sent) => {
     if (sent.method() === 'POST' && sent.url().endsWith('/authoring/trials') && sent.postDataJSON()?.change) writes.push(sent.postDataJSON().change);
@@ -23,11 +22,8 @@ async function open(page: Page, request: APIRequestContext, weight: unknown) {
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
-  const weightOf = async () => {
-    const response = await request.get(projectPath);
-    const saved = await response.json() as StudioProjectSnapshot;
-    return Object.values((rootPayload(saved.project.documents?.['simple-reaches-objective']) as { terms: Record<string, { weight: unknown }> }).terms)[0].weight;
-  };
+  /** The term's Weight as the Service shows it. */
+  const weightOf = async () => (await trialField(request, snapshot.project_id, ['objective', 'terms', key, 'weight']))?.text;
   const table = page.locator('[data-slot="primary"]').getByRole('table', { name: 'Objective Terms', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   return { table, inspector, writes, weightOf };
