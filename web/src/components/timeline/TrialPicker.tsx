@@ -140,21 +140,22 @@ export function TrialPicker({ offer, clock, shown, recordedLabels, recordedOutOf
       <span className="grow truncate text-left">{shownText}</span>
       <ChevronDown aria-hidden="true" />
     </PopoverTrigger>
-    <PopoverContent side="top" aria-label={studioName('trial')} className="grid w-72 grid-cols-[minmax(0,1fr)] gap-1 !p-1">
-      <SegmentedControl aria-label={studioName('trials')} value={kind} className="w-full [&>*]:flex-1"
-        items={[
-          { value: 'one', label: studioName('oneTrial') },
-          { value: 'all', label: studioName('allTrials'), disabled: !aggregated.length },
-          { value: 'mean', label: studioName('mean'), disabled: !sets.some((trials) => averages(trials) && setSize(trials, clock, offer) > 0) },
-        ]}
-        onValueChange={showAs} />
-      {second && <div className="border-t border-shell-divider pt-1">{second}</div>}
-      {sampled && <div className="grid gap-1 border-t border-shell-divider px-1 pt-1">
+    <PopoverContent side="top" aria-label={studioName('trial')}
+      className="grid w-72 grid-cols-[minmax(0,1fr)] gap-1 !p-1 [&>*+*]:border-t [&>*+*]:border-shell-divider [&>*+*]:pt-1">
+      {second && <div>{second}</div>}
+      {sampled && <div className="grid gap-1 px-1">
         <WholeField label={studioName('seed')} value={clock.seed} least={Number.MIN_SAFE_INTEGER} most={Number.MAX_SAFE_INTEGER}
           onCommit={(seed) => onChange({ ...clock, seed })} />
         <WholeField label={studioName('count')} value={count} least={1} most={offer.samples}
           onCommit={(count) => onChange({ ...clock, count })} />
       </div>}
+      <div><SegmentedControl aria-label={studioName('trials')} value={kind} className="w-full [&>*]:flex-1"
+        items={[
+          { value: 'one', label: studioName('oneTrial') },
+          { value: 'all', label: studioName('allTrials'), disabled: !aggregated.length },
+          { value: 'mean', label: studioName('mean'), disabled: !sets.some((trials) => averages(trials) && setSize(trials, clock, offer) > 0) },
+        ]}
+        onValueChange={showAs} /></div>
     </PopoverContent>
   </Popover>;
 }
