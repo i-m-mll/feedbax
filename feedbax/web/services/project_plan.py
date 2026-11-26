@@ -89,7 +89,10 @@ from feedbax.planner.project_plan import (
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
-from feedbax.contracts.project_sweep import CheckpointRuleAxis, authored_sweep_axis_name, axis_coordinates, sweep_value_name
+from feedbax.contracts.project_sweep import (
+    CheckpointRuleAxis, SetAxis, authored_sweep_axis_name, axis_coordinates, sweep_value_name,
+)
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.run_rule import (
     METRIC_CONDITION_FALSE, RuleRefusal, bind_metric_conditions, choose, metric_condition_holds,
 )
@@ -423,16 +426,23 @@ class ProjectPlanRead:
         def axes(variant: str, step_id: str) -> list[StudioProjectWindowMapAxis]:
             at = variant, step_id
             projected = {axis.id: axis for axis in gathered.get(at, ([], {}))[0]}
-            sweep = plan.steps[at].sweep
-            if sweep is None and (project := plan.variant_projects.get(variant)) is not None:
+            step = plan.steps[at]
+            sweep = step.sweep
+            project = plan.variant_projects.get(variant)
+            if sweep is None and project is not None:
                 sweep = project.steps[step_id].sweep
             if sweep is not None:
                 for number, (key, axis) in enumerate(sweep.axes.items(), 1):
                     if axis is None:
                         continue
                     if key not in projected:
+                        title = step.unexpanded_axis_titles.get(key)
+                        if isinstance(axis, SetAxis) and project is not None:
+                            document = project.documents.get(axis.set)
+                            if document is not None and document.schema_id == SET_DOCUMENT_SCHEMA_ID:
+                                title = document.label
                         projected[key] = StudioProjectWindowMapAxis(
-                            id=key, name=authored_sweep_axis_name(axis, number), values=[],
+                            id=key, name=axis.label or title or authored_sweep_axis_name(axis, number), values=[],
                         )
                     elif axis.label is not None:
                         projected[key] = projected[key].model_copy(update={"name": axis.label})

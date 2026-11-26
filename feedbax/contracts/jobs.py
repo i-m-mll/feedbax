@@ -371,7 +371,7 @@ class StudioProjectWindowMapAxisValue(StrictModel):
 
 
 class StudioProjectWindowMapAxis(StrictModel):
-    """An axis a step's runs carry, with its values in order: numbers by number, other values as the runs give them."""
+    """A named sweep axis, with gathered values when expansion reaches it."""
 
     id: str
     name: str
@@ -390,7 +390,7 @@ class StudioProjectWindowMapStep(StrictModel):
     exceptions: list[StudioProjectWindowMapException] = Field(default_factory=list, exclude_if=lambda value: not value)
     status_counts: dict[str, int]
     axes: list[StudioProjectWindowMapAxis] = Field(default_factory=list, exclude_if=lambda value: not value)
-    """Each axis the step's runs carry, in the order the runs first carry them."""
+    """Axes gathered from runs, followed by authored axes with no gathered values."""
     rule_metrics: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
     """The metrics the step's finished Train runs report, which a lowest or highest term ranks by."""
 
