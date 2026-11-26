@@ -14,22 +14,16 @@ from web.e2e.studio.fixtures.canonical_train import hold_campaign_files
 
 
 @pytest.fixture
-def campaign(tmp_path):
+def campaign(tmp_path, request):
     files = hold_campaign_files()
     documents = {file["id"]: file["document"] for file in files if file["kind"] == "document"}
     steps = {file["id"]: file["step"] for file in files if file["kind"] == "step"}
-    swept = deepcopy(steps["train"])
-    swept["label"] = "Swept training"
-    placement = swept.pop("set_fields")["kicks"]
-    sweep_set = deepcopy(documents[placement["axis"]["set"]])
-    sweep_set["label"] = "Swept command kicks"
-    for entry in sweep_set["payload"]["entries"].values():
-        (path, value), = entry["differences"].items()
-        parent, _, attachment = path.rpartition("/")
-        entry["differences"] = {parent: {"value": {attachment: value["value"]}}}
-    documents["sweep-kicks"] = sweep_set
-    swept["sweep"] = {"axes": {"kicks": {"set": "sweep-kicks"}}}
-    steps["swept"] = swept
+    if getattr(request, "param", None) == "swept":
+        swept = deepcopy(steps["train"])
+        swept["label"] = "Swept training"
+        placement = swept.pop("set_fields")["kicks"]
+        swept["sweep"] = {"axes": {"kicks": placement["axis"]}}
+        steps["swept"] = swept
     project = Project.model_validate({"documents": documents, "steps": steps})
     app = create_app(projects_dir=tmp_path)
     folders = app.state.project_folders
@@ -100,13 +94,13 @@ def test_task_and_model_project_the_authored_model_members(campaign, step):
     )
 
 
-@pytest.mark.parametrize(("step", "row", "local_axis", "origins"), [
-    ("train", "default", "kicks", {"kicks": ("train", ("drift", "pulse"))}),
+@pytest.mark.parametrize(("step", "row", "local_axis", "origins", "campaign"), [
+    ("train", "default", "kicks", {"kicks": ("train", ("drift", "pulse"))}, None),
     ("kick-check", "default", "kick-bank", {
         "kicks": ("train", ("drift", "pulse")), "kick-bank": ("kick-check", ("drift", "pulse")),
-    }),
-    ("swept", "kicks=pulse-x-minus", None, {"kicks": ("swept", ("pulse",))}),
-])
+    }, None),
+    ("swept", "kicks=pulse-x-minus", None, {"kicks": ("swept", ("pulse",))}, "swept"),
+], indirect=["campaign"])
 def test_set_variables_carry_the_label_of_their_authored_entry(campaign, step, row, local_axis, origins):
     *_prefix, authored = campaign
     view = _post("authoring/trials", step, campaign, row=row)
@@ -142,3 +136,24 @@ def test_set_variables_carry_the_label_of_their_authored_entry(campaign, step, r
                 key = (origin["axis"], origin["entry"], origin["variable"])
                 assert variables[key] == named["id"]
                 assert named["name"] == authored[origin["entry"]]["task_variables"][origin["variable"]]["label"]
+
+
+def test_editing_an_inherited_set_variable_writes_the_set_entry(campaign):
+    view = _post("authoring/trials", "kick-check", campaign)
+    inherited = next(variable for variable in view["variables"] if (
+        (origin := variable.get("set_entry")) is not None
+        and origin["step"] == "train" and origin["entry"] == "pulse"
+    ))
+    edited = _post("authoring/trials", "kick-check", campaign, change={
+        "kind": "expression", "path": f"/task/variables/{inherited['id']}/value",
+        "edit": {"kind": "text", "text": "0.7 * sign * axis"},
+    })
+    (file,) = edited["files"]
+    assert file["address"] == {"kind": "document", "id": "command-kicks"}
+    client, revision, *_rest, entries = campaign
+    response = client.patch("/api/projects/hold-campaign", json={"revision": revision, "files": edited["files"]})
+    assert response.status_code == 200, response.text
+    saved = client.app.state.project_folders.read("hold-campaign").project.documents["command-kicks"].payload
+    expected = deepcopy(entries)
+    expected["pulse"]["task_variables"]["kick"]["value"] = "0.7 * sign * axis"
+    assert saved["entries"] == expected
