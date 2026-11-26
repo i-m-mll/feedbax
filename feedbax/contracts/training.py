@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any
 
 from pydantic import Field, model_validator
@@ -37,22 +37,22 @@ class TrialDocuments(StrictModel):
         return self.python_task
 
     def resolved_signal_bindings(
-        self, names: Mapping[str, str], overrides: Mapping[str, str | None] | None = None,
+        self, signal_keys: Collection[str], overrides: Mapping[str, str | None] | None = None,
     ) -> dict[str, str | None]:
         """Record the chosen signal ID at each Model input."""
         bindings = self.input_bindings | overrides if overrides is not None else self.input_bindings
         return bindings | {
-            port.id: selected_signal_id(port.id, port.name, names, bindings) for port in self.model.ports.inputs
+            port.id: selected_signal_id(port.id, signal_keys, bindings) for port in self.model.ports.inputs
         }
 
     def without_signal_labels(self) -> TrialDocuments:
         """Use stable signal IDs as names while retaining the resolved input choices."""
         if self.task is None or not self.task.signals:
             return self
-        bindings = self.resolved_signal_bindings({signal.name: signal.id for signal in self.task.signals})
-        canonical_names = {signal.id: signal.id for signal in self.task.signals}
+        signal_keys = {signal.id for signal in self.task.signals}
+        bindings = self.resolved_signal_bindings(signal_keys)
         for port in self.model.ports.inputs:
-            default = selected_signal_id(port.id, port.name, canonical_names, {})
+            default = selected_signal_id(port.id, signal_keys, {})
             if bindings[port.id] == default:
                 del bindings[port.id]
         task = self.task.with_signal_ids_as_names()
@@ -69,7 +69,7 @@ class TrialDocuments(StrictModel):
             task.without_markers().with_signal_ids_as_names()
         ):
             return {}
-        return self.resolved_signal_bindings({signal.name: signal.id for signal in original.signals})
+        return self.resolved_signal_bindings({signal.id for signal in original.signals})
 
     @model_validator(mode="after")
     def _one_task(self) -> "TrialDocuments":

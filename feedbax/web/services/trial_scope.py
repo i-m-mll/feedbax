@@ -16,7 +16,8 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.project import (
     BasedDocument, Differences, Document, DocumentBase, DocumentEdit, DocumentReference, InlineBase, Payload, Project,
-    DifferenceNotApplied, OrderDocumentMembers, RemoveDocumentValue, RemoveProjectValue, SetDocumentValue, SetProjectValue, StepBase,
+    DifferenceNotApplied, OrderDocumentMembers, RemoveDocumentValue, RemoveProjectValue,
+    SetDocumentValue, SetProjectValue, StepBase,
     apply_differences,
     apply_document_edit, based_on, diff,
     document_edit_value, json_pointer_parts, member_name, same_json,
@@ -501,12 +502,13 @@ class _Store:
             self.files.extend(stores.files)
         else:
             self.row.extend(
-                OverridePatch(path=".".join(("documents", name, "payload", *json_pointer_parts(path))), op="remove")
-                if isinstance(record, RemoveDocumentValue) else OverridePatch(
-                    path=".".join(("documents", name, "payload", *json_pointer_parts(path))),
-                    op="replace" if _holds(before, json_pointer_parts(path)) else "add", value=record.value,
+                OverridePatch(path=".".join(("documents", name, "payload", *json_pointer_parts(edit.path))), op="remove")
+                if isinstance(edit, RemoveProjectValue) else OverridePatch(
+                    path=".".join(("documents", name, "payload", *json_pointer_parts(edit.path))),
+                    op="replace" if _holds(before, json_pointer_parts(edit.path)) else "add", value=edit.value,
                 )
-                for name, (before, after) in stores.written.items() for path, record in diff(before, after).items()
+                for name, (before, after) in stores.written.items()
+                for edit in content_edits(before, after, schema_id=self.view.documents[name].schema_id, dotted=True)
             )
         self.view = preview_stored(self.view, StoredEdit(
             stores.files if self.variant is None else [], tuple(stores.created),
@@ -715,13 +717,35 @@ def document_write(
     return store.stored(chosen)
 
 
-def content_edits(before: Payload, after: Payload) -> list[DocumentEdit]:
-    """The edits that turn a document's composed content ``before`` into ``after``."""
-    return [
-        RemoveProjectValue(op="remove", path=path) if isinstance(record, RemoveDocumentValue)
-        else SetProjectValue(op="replace", path=path, value=record.value)
-        for path, record in diff(before, after).items()
-    ]
+def content_edits(
+    before: Payload, after: Payload, *, schema_id: str | None = None, dotted: bool = False,
+) -> list[DocumentEdit]:
+    """Express composed differences as editor patches, replacing a collection when its order changes."""
+    differences = (
+        diff(before, after, keyed_collection=partial(stored_keyed_collection, schema_id))
+        if schema_id is not None else diff(before, after)
+    )
+    whole = set()
+    for path, difference in differences.items():
+        parts = json_pointer_parts(path)
+        if isinstance(difference, OrderDocumentMembers):
+            whole.add(parts)
+        if dotted and (boundary := next((index for index, part in enumerate(parts) if "." in part), None)) is not None:
+            whole.add(parts[:boundary])
+    edits: list[DocumentEdit] = []
+    written = set()
+    for path, difference in differences.items():
+        parts = json_pointer_parts(path)
+        replacement = next((parts[:index] for index in range(len(parts) + 1) if parts[:index] in whole), None)
+        if replacement is not None:
+            if replacement not in written:
+                edits.append(SetProjectValue(op="replace", path=pointer(replacement), value=_member(after, replacement)))
+                written.add(replacement)
+        elif isinstance(difference, RemoveDocumentValue):
+            edits.append(RemoveProjectValue(op="remove", path=path))
+        else:
+            edits.append(SetProjectValue(op="replace", path=path, value=difference.value))
+    return edits
 
 
 def changed_from_base(project: Project, document: str | None) -> list[str]:
@@ -735,7 +759,13 @@ def changed_from_base(project: Project, document: str | None) -> list[str]:
     composed = [compose_document(project.documents.get, name) for name in (entry.base.document, document)]
     if any(isinstance(item, ProjectDiagnostic) for item in composed):
         return []
-    return sorted(set(_differing(composed[0].payload, composed[1].payload)) - {""})
+    old, new = composed[0].payload, composed[1].payload
+    paths = set(_differing(old, new))
+    if isinstance(old, dict) and isinstance(new, dict):
+        paths.update(path for path, difference in diff(
+            old, new, keyed_collection=partial(stored_keyed_collection, entry.schema_id),
+        ).items() if isinstance(difference, OrderDocumentMembers))
+    return sorted(paths - {""})
 
 
 def _differing(before, after, at: str = ""):

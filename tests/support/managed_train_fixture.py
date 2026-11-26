@@ -33,14 +33,13 @@ def managed_train_project(*, batches: int = 2, scenario: str = "simple-reaches")
     interior["wires"]["target"]["target"] = {"owner": "component", "component": "cell", "port": "input"}
     model["ports"]["outputs"] = {"command": model["ports"]["outputs"]["command"]}
     objective = example.documents[trial["objective"]["document"]].payload
-    objective["terms"] = [{
-        "id": "command",
+    objective["terms"] = {"command": {
         "measure": {
             "kind": "call", "function": "sqnorm",
             "args": [{"kind": "name", "reference": COMMAND_ADDRESS}],
         },
         "reduction": "last",
-    }]
+    }}
     return Project(
         documents={name: document for name, document in example.documents.items() if name in names},
         steps={"train": step},
@@ -76,10 +75,13 @@ def managed_evaluation_step(subject: str) -> dict:
 def managed_train_spec(*, batches: int = 2):
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
     from feedbax.contracts.train_settings import normalize_train_method
+    from feedbax.contracts.training import lower_stored_trial_documents
     from feedbax.application.composition import load_application
 
     registries = load_application().bundle
+    payload = managed_train_payload(batches=batches)
+    payload["trial_documents"] = lower_stored_trial_documents(payload["trial_documents"])
     spec, _, _ = normalize_train_method(
-        DocumentTrainingRequestSpec.model_validate(managed_train_payload(batches=batches)), registries.training_methods,
+        DocumentTrainingRequestSpec.model_validate(payload), registries.training_methods,
     )
     return spec, registries

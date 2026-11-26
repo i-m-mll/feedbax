@@ -115,8 +115,10 @@ def _target_key(end: Record) -> tuple[str, str | None, str]:
 
 
 def _task_input_reason(owner: Record, item: edits.ModelTaskSignal) -> str | None:
-    if any(port["name"] == item.label for port in owner["ports"]["inputs"]):
+    if any(port["id"] == item.id for port in owner["ports"]["inputs"]):
         return "The task signal already has a Model input"
+    if any(port["id"] == item.id for direction in ("outputs", "physical") for port in owner["ports"][direction]):
+        return "The signal key already names another Model port"
     return None
 
 
@@ -1454,8 +1456,7 @@ def apply_model_edit(
                 owner, _ = edit.graph(primary)
                 if reason := _task_input_reason(owner, item):
                     raise _Refusal(primary, reason)
-                port = {"id": uuid4().hex, "name": item.label, "type": item.type.model_dump(mode="json")}
-                owner["ports"]["inputs"].append(port)
+                port = _new_port(owner, "input", item.label, Port(item.type), key=item.id)
                 left, right = _card("inputs", port["id"]), target.model_dump(mode="json")
                 if operation.grow_target:
                     if right != _card("outputs", _EMPTY_BOUNDARY_PORT):

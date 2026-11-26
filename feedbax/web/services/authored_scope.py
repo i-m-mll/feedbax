@@ -1,12 +1,14 @@
 """Resolve revision-bound authored stores for prepared and direct edits."""
 
 from collections.abc import Collection, Mapping, Sequence
+from functools import partial
 from itertools import chain
 
 from pydantic import JsonValue
 
-from feedbax.contracts.project import Project, base_chain
+from feedbax.contracts.project import Project, RootDocument, base_chain, diff
 from feedbax.contracts.project_resolution import RunKey
+from feedbax.contracts.project_storage import stored_keyed_collection
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.studio_authoring import StudioRunSelection, StudioTrainAuthoringRequest
 from feedbax.contracts.studio_field import TrainFieldRequest
@@ -82,6 +84,12 @@ def edited_authored_rows(before: ProjectPlan, after: ProjectPlan) -> frozenset[R
         new = after.variant_projects.get(variant, empty)
         steps = _changed_names(old.steps, new.steps)
         documents = _changed_names(old.documents, new.documents)
+        documents.update(
+            name for name in (old.documents.keys() & new.documents.keys()) - documents
+            if isinstance(left := old.documents[name], RootDocument) and isinstance(left.payload, dict)
+            and diff(left.payload, new.documents[name].payload,
+                     keyed_collection=partial(stored_keyed_collection, left.schema_id))
+        )
         reached = reached_steps(old, steps) | reached_steps(new, steps)
         if documents:
             documents = documents | {
