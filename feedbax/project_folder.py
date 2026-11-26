@@ -42,8 +42,8 @@ from feedbax.contracts.stored_model import (
     STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, authored_model_payload,
 )
 from feedbax.contracts.project import (
-    BasedDocument, Document, LoadedModelDocument, Project, RootDocument, Sha256,
-    apply_differences, diff, json_pointer_parts, member_name,
+    BasedDocument, Document, LoadedModelDocument, OrderProjectValue, Project, RootDocument, Sha256,
+    apply_differences, apply_document_edit, diff, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_storage import stored_keyed_collection, write_project_file
@@ -310,13 +310,27 @@ class ProjectRevisionConflict(RuntimeError):
 
 
 def _apply_file_edits(entry: dict, file: StudioProjectFilePatch, *, model_operation: bool = False) -> None:
+    original_schema = entry.get("schema")
+    order_only = all(isinstance(patch, OrderProjectValue) for patch in file.patches)
+
     def check_model() -> None:
         if file.address.kind == "document" and not model_operation and entry.get("schema") == STORED_MODEL_DOCUMENT_SCHEMA_ID:
             raise ProjectFolderInvalid("Model documents are edited through addressed operations")
 
-    check_model()
+    if not order_only:
+        check_model()
     for patch in file.patches:
         path = json_pointer_parts(patch.path)
+        if isinstance(patch, OrderProjectValue):
+            if (
+                file.address.kind != "document" or path[:1] != ("payload",)
+                or not isinstance(original_schema, str) or entry.get("schema") != original_schema
+            ):
+                raise ProjectFolderInvalid("An Order edit must name a keyed collection in a document payload")
+            apply_document_edit(
+                entry, patch, None, keyed_collection=lambda parts: stored_keyed_collection(original_schema, parts[1:]),
+            )
+            continue
         if file.address == DECLARATION_ADDRESS and not model_operation:
             if path[0] != "settings":
                 raise ProjectFolderInvalid("Only project settings can be edited through the declaration address")
@@ -326,7 +340,8 @@ def _apply_file_edits(entry: dict, file: StudioProjectFilePatch, *, model_operat
             entry, path, patch.op,
             patch.value if isinstance(patch, SetProjectValue) else None, path=patch.path,
         )
-    check_model()
+    if not order_only:
+        check_model()
 
 
 def _project_file_entry(payload: dict, address: AuthoredFileAddress) -> dict:

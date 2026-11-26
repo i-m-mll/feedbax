@@ -6,28 +6,23 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
+from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, field_validator, model_validator
 
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, check_analysis_labels
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, LOADED_MODEL_SCHEMA_VERSION, ImportedModelSource
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_VERSION, ImportedModelSource
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
-from feedbax.contracts.task_document import (
-    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument,
-)
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_inputs import (
     DocumentReference as DocumentReference, InputBinding, NonemptyText, Pointer as Pointer, ProjectName, RowKey,
 )
 from feedbax.contracts.project_sweep import PatchPath, Sweep, TrialSetField
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
-from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 
 type Payload = dict[str, JsonValue]
 type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
+type KeyedCollectionPath = Callable[[tuple[str, ...]], bool]
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 type StepKind = Literal["train", "synthesize", "evaluate", "analyze", "report"]
 type ProjectModelArchive = Annotated[str, StringConstraints(pattern=r"^models/[A-Za-z0-9_][A-Za-z0-9_-]*\.feedbax-model$")]
@@ -61,7 +56,22 @@ class RemoveProjectValue(StrictModel):
     path: DifferencePointer
 
 
-type ProjectValueEdit = Annotated[SetProjectValue | RemoveProjectValue, Field(discriminator="op")]
+class OrderProjectValue(StrictModel):
+    op: Literal["order"]
+    path: DifferencePointer
+    order: list[NonemptyText]
+
+    @field_validator("order")
+    @classmethod
+    def _unique_keys(cls, order: list[str]) -> list[str]:
+        if len(set(order)) != len(order):
+            raise ValueError("A collection order cannot name a key more than once")
+        return order
+
+
+type ProjectValueEdit = Annotated[
+    SetProjectValue | RemoveProjectValue | OrderProjectValue, Field(discriminator="op")
+]
 
 
 class EnsureDocumentCollection(StrictModel):
@@ -71,14 +81,23 @@ class EnsureDocumentCollection(StrictModel):
 
 
 type DocumentEdit = Annotated[
-    SetProjectValue | RemoveProjectValue | EnsureDocumentCollection, Field(discriminator="op")
+    SetProjectValue | RemoveProjectValue | OrderProjectValue | EnsureDocumentCollection, Field(discriminator="op")
 ]
 
 
-def apply_document_edit(root: dict[str, Any], edit: DocumentEdit, value: Any) -> None:
+def _no_keyed_collections(_parts: tuple[str, ...]) -> bool:
+    return False
+
+
+def apply_document_edit(
+    root: dict[str, Any], edit: DocumentEdit, value: Any, *,
+    keyed_collection: KeyedCollectionPath = _no_keyed_collections,
+) -> None:
     parts = json_pointer_parts(edit.path)
     if isinstance(edit, EnsureDocumentCollection):
         ensure_value_collection(root, parts, value, path=edit.path)
+    elif isinstance(edit, OrderProjectValue):
+        _apply_collection_order(root, parts, edit.order, path=edit.path, keyed_collection=keyed_collection)
     else:
         apply_value_patch_in_place(root, parts, edit.op, value, path=edit.path)
 
@@ -89,9 +108,12 @@ def document_edit_value(edit: DocumentEdit) -> JsonValue:
     return edit.value if isinstance(edit, SetProjectValue) else None
 
 
-def apply_document_edits(root: dict[str, Any], edits: Sequence[DocumentEdit]) -> None:
+def apply_document_edits(
+    root: dict[str, Any], edits: Sequence[DocumentEdit], *,
+    keyed_collection: KeyedCollectionPath = _no_keyed_collections,
+) -> None:
     for edit in edits:
-        apply_document_edit(root, edit, document_edit_value(edit))
+        apply_document_edit(root, edit, document_edit_value(edit), keyed_collection=keyed_collection)
 
 
 class LoadedModelDocument(StrictModel):
@@ -104,27 +126,29 @@ class LoadedModelDocument(StrictModel):
     """The project's portable model file, named at import."""
 
 
-def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
-    if schema_id == MODEL_DOCUMENT_SCHEMA_ID:
-        ModelDocument.model_validate(payload)
-    elif schema_id == TASK_DOCUMENT_SCHEMA_ID:
-        TaskDocument.model_validate(payload)
-    elif schema_id == PYTHON_TASK_SCHEMA_ID:
-        PythonTaskSelection.model_validate(payload)
-    elif schema_id == OBJECTIVE_DOCUMENT_SCHEMA_ID:
-        ObjectiveDocument.model_validate(payload)
-    elif schema_id == TRAINING_DOCUMENT_SCHEMA_ID:
-        TrainingDocument.model_validate(payload)
-    elif schema_id == LOADED_MODEL_SCHEMA_ID:
-        LoadedModelDocument.model_validate(payload)
-    elif schema_id == ANALYSIS_SCHEMA:
-        check_analysis_labels(payload)
-    else:
-        # A Set holds Differences, so its module imports this one.
-        from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
+def check_document_schema(schema_id: str) -> None:
+    from feedbax.contracts.project_storage import stored_document_models
 
-        if schema_id == SET_DOCUMENT_SCHEMA_ID:
-            SetDocument.model_validate(payload)
+    registry = stored_document_models()
+    if schema_id in registry:
+        return
+    family = schema_id.rsplit(".v", 1)[0]
+    successor = next((name for name in registry if name.rsplit(".v", 1)[0] == family), None)
+    if successor is not None:
+        raise ValueError(f"Unsupported document schema {schema_id!r}. Expected {successor!r}.")
+    raise ValueError(f"No registered stored document has schema {schema_id!r}.")
+
+
+def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
+    from feedbax.contracts.project_storage import stored_document_models
+    from feedbax.contracts.report_document import ReportDocument
+
+    check_document_schema(schema_id)
+    if schema_id == ANALYSIS_SCHEMA:
+        check_analysis_labels(payload)
+    elif schema_id not in ("subset", ReportDocument.model_fields["schema_version"].default):
+        if (model := stored_document_models()[schema_id]) is not None:
+            model.model_validate(payload)
 
 
 class RootDocument(StrictModel):
@@ -155,7 +179,6 @@ class OrderDocumentMembers(StrictModel):
 type DocumentDifference = SetDocumentValue | RemoveDocumentValue | OrderDocumentMembers
 type Differences = dict[DifferencePointer, DocumentDifference]
 type EditDifferences = dict[DifferencePointer, SetDocumentValue | RemoveDocumentValue]
-type KeyedCollectionPath = Callable[[tuple[str, ...]], bool]
 
 
 def check_disjoint(differences: Mapping[DifferencePointer, DocumentDifference]) -> None:
@@ -186,6 +209,7 @@ class BasedDocument(StrictModel):
 
     @model_validator(mode="after")
     def _disjoint_differences(self) -> BasedDocument:
+        check_document_schema(self.schema_id)
         check_disjoint(self.differences)
         return self
 
@@ -200,10 +224,6 @@ class DifferenceNotApplied(ValueError):
     def __init__(self, path: str, detail: str):
         self.path = path
         super().__init__(detail)
-
-
-def _no_keyed_collections(_parts: tuple[str, ...]) -> bool:
-    return False
 
 
 def diff(
@@ -244,6 +264,19 @@ def _difference_object(payload: Payload, parts: Sequence[str], path: str) -> Pay
     return value
 
 
+def _apply_collection_order(
+    payload: Payload, parts: tuple[str, ...], order: Sequence[str], *,
+    path: str, keyed_collection: KeyedCollectionPath,
+) -> None:
+    if not keyed_collection(parts):
+        raise DifferenceNotApplied(path, f"the document has no keyed collection at {path}")
+    collection = _difference_object(payload, parts, path)
+    ordered = {key: collection[key] for key in order if key in collection}
+    ordered.update(collection)
+    collection.clear()
+    collection.update(ordered)
+
+
 def apply_differences(
     base: Payload, differences: Mapping[DifferencePointer, DocumentDifference], *,
     keyed_collection: KeyedCollectionPath = _no_keyed_collections,
@@ -262,14 +295,9 @@ def apply_differences(
         else:
             parent.pop(key, None)
     for path, difference in sorted(orders, key=lambda item: item[0].count("/")):
-        parts = json_pointer_parts(path)
-        if not keyed_collection(parts):
-            raise DifferenceNotApplied(path, f"the document has no keyed collection at {path}")
-        collection = _difference_object(result, parts, path)
-        ordered = {key: collection[key] for key in difference.order if key in collection}
-        ordered.update(collection)
-        collection.clear()
-        collection.update(ordered)
+        _apply_collection_order(
+            result, json_pointer_parts(path), difference.order, path=path, keyed_collection=keyed_collection,
+        )
     return result
 
 
