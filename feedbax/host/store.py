@@ -1107,7 +1107,7 @@ class Store:
                     row = self.insert_queued(job)
                     if deferred_reuse is not None:
                         self.deferred.reserve(row, job, deferred_reuse, deferred_projection)
-                    inserted.append((job, item.get("light_definition")))
+                    inserted.append(job)
                     pending_parents[job_id] = tuple(
                         (aliases.get(edge["job_id"], edge["job_id"]), edge.get("authenticated_completion", False))
                         for edge in job["edges"]
@@ -1123,8 +1123,8 @@ class Store:
                         "reason": None,
                     }
                 )
-            for job, definition in inserted:
-                self._bind_edges(job, aliases, definition)
+            for job in inserted:
+                self._bind_edges(job, aliases)
             self._advance_authored_train_plan(record, results)
             response = {"id": uuid4().hex, "token": token, "record": record, "items": results}
             self.db.execute(
@@ -1328,7 +1328,7 @@ class Store:
             roots.add(parent_id)
         return None if missing else frozenset(roots)
 
-    def _bind_edges(self, job: dict, aliases: dict[str, str], light_definition: dict | None = None) -> None:
+    def _bind_edges(self, job: dict, aliases: dict[str, str]) -> None:
         job_id, continues = job["id"], job["continues"]
         payload = job["launch"]["payload"]
         collected = payload.get("collected_resume")
@@ -1364,15 +1364,13 @@ class Store:
                     (job_id, continues),
                 )
         if job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT:
-            from feedbax.contracts.operation import OperationDefinition
-            from feedbax.contracts.synthesis import SynthesisMethodExecution
-            from feedbax.host.light_jobs import validate_light_requirements
+            from feedbax.host.light_jobs import LightDelivery, validate_light_requirements
 
             payload = job["launch"]["payload"]
             try:
                 decoded = self._light_request(job["launch"], job["project"], job["request"])
-                metadata_type = SynthesisMethodExecution if decoded.kind == "synthesize" else OperationDefinition
-                definition = metadata_type.model_validate(light_definition) if light_definition is not None else None
+                declaration = LightDelivery.model_validate(payload).declaration
+                definition = declaration.definition if declaration is not None else None
                 validate_light_requirements(decoded, definition)
                 numerical = definition.numerical if definition is not None else None
                 if job["slot"] != ("compute" if numerical else "light") or (

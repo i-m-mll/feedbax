@@ -242,9 +242,13 @@ class WorkerRecorder:
         self.observe_new_sources()
         self._delivery_started_ns = started
 
-    def bind_project(self, project: Path, *, environment_root: Path | None = None) -> None:
+    def bind_project(self, project: Path, *, environment_root: Path | None) -> None:
+        """Bind the project whose code this worker loads and the uv project whose lock governs its environment.
+
+        ``environment_root`` is None in Studio's own runtime, which has no lock.
+        """
         root = project.resolve(strict=True)
-        lock_root = environment_root.resolve(strict=True) if environment_root is not None else root
+        lock_root = environment_root.resolve(strict=True) if environment_root is not None else None
         if (self.project, self._environment_root) == (root, lock_root):
             return
         if self.held_project is not None:
@@ -494,7 +498,7 @@ class WorkerRecorder:
                 attempt.indeterminate_files.add(path)
 
     def _current_environment(self, *, fresh: bool = False) -> EnvironmentSnapshot:
-        assert self._environment_root is not None
+        assert self.project is not None
         installed = self.installation.versions(fresh=fresh)
         if installed != self.installed:
             changed = [
@@ -503,6 +507,8 @@ class WorkerRecorder:
                 if self.installed.get(name) != installed.get(name)
             ]
             raise EnvironmentMismatch("Installed distributions changed in the live worker: " + ", ".join(changed))
+        if self._environment_root is None:
+            return EnvironmentSnapshot(installed, None)
         return read_environment(self._environment_root, installed=installed, verify_installation=True)
 
     def _verify_environment(self, attempt: _Attempt) -> None:

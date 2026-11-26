@@ -147,7 +147,7 @@ def task_result(tmp_path, monkeypatch):
             roster.enable()
             recorder = WorkerRecorder(roster, boot_ns=time.time_ns())
             with recorder.monitor():
-                recorder.bind_project(project)
+                recorder.bind_project(project, environment_root=project)
                 recorder.start_delivery()
                 with recorder.delivery("earlier", store.root, tmp_path / "scratch"):
                     assert importlib.import_module("v2_unused").earlier() == 1
@@ -256,7 +256,7 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
         with recorder.monitor():
             spec.loader.exec_module(module)
             recorder.observe_new_sources()
-            recorder.bind_project(project)
+            recorder.bind_project(project, environment_root=project)
             registry.add(
                 "example.operation", DistributionSource("example", "example", "1"), module.read_input,
                 None, renamed_from=("example.read",),
@@ -269,7 +269,7 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
             recorder.start_delivery()
             assert _record_execution(
                 {"job_id": "final", "store_root": str(store.root), "project_root": str(project),
-                 "entrypoint": f"{spec.name}:run"},
+                 "environment_root": str(project), "entrypoint": f"{spec.name}:run"},
                 recorder, log, module.run, [execute],
             ) == 0
             stage = ContentObjectRef.model_validate_json(log.with_name(EVIDENCE_FILE).read_bytes())
@@ -342,6 +342,7 @@ def test_reusable_worker_retires_after_edit_to_source_loaded_by_failed_delivery(
         directory.mkdir()
         return {
             "job_id": job, "argv": ["python"], "entrypoint": entrypoint, "project_root": str(project),
+            "environment_root": str(project),
             "store_root": str(tmp_path / "store"), "startup_log": str(startup_log),
             "paths": {name: str(directory / name) for name in (
                 "event_log", "stdout", "stderr", "input", "stop_file", "scratch",
@@ -469,7 +470,7 @@ def test_checkpoint_custody_carries_incremental_observations_to_another_store(tm
         recorder = WorkerRecorder(roster, boot_ns=time.time_ns())
         with recorder.monitor():
             spec.loader.exec_module(module)
-            recorder.bind_project(project)
+            recorder.bind_project(project, environment_root=project)
             registry.add("example.later", DistributionSource("example", "example", "1"), module.later, None)
             with recorder.delivery("attempt", store.root, tmp_path / "scratch"):
                 assert module.first() == 1
@@ -519,8 +520,8 @@ def test_recorder_follows_each_delivery_project_until_it_loads_project_code(tmp_
         project.mkdir()
     (second / "_held_project_source.py").write_text("value = 1\n")
     recorder = WorkerRecorder(SourceRoster(3, "test worker source"), boot_ns=time.time_ns())
-    recorder.bind_project(first)
-    recorder.bind_project(second)
+    recorder.bind_project(first, environment_root=first)
+    recorder.bind_project(second, environment_root=second)
     assert recorder.held_project is None
     monkeypatch.syspath_prepend(str(second))
     monkeypatch.setitem(sys.modules, "_held_project_source", None)
@@ -528,6 +529,6 @@ def test_recorder_follows_each_delivery_project_until_it_loads_project_code(tmp_
     importlib.import_module("_held_project_source")
     recorder.observe_new_sources()
     assert recorder.held_project == second.resolve()
-    recorder.bind_project(second)
+    recorder.bind_project(second, environment_root=second)
     with pytest.raises(ValueError, match="loaded project code"):
-        recorder.bind_project(first)
+        recorder.bind_project(first, environment_root=first)

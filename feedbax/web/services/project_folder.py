@@ -20,6 +20,7 @@ from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import PROJECT_DECLARATION_SUFFIX, TextProject, TextProjectExternalInputs
 from feedbax.contracts.project_resolution import BaseReaders, RunKey
 from feedbax.contracts.studio_project import StudioProjectDocument, StudioProjectSnapshot
+from feedbax.project_environment import PackageAvailability
 from feedbax.project_folder import (
     ProjectFileExists as ProjectFileExists,
     ProjectFolder,
@@ -71,12 +72,13 @@ class ProjectFolderService(ProjectFolder):
         synthesis_methods: SynthesisMethodRegistry | None = None,
         figure_templates: FigureTemplateRegistry | None = None,
         load_examples: Callable[[], Mapping[str, Project]] = dict,
+        packages: PackageAvailability | None = None,
     ) -> None:
         super().__init__(
             root, operations=operations, components=components, functions=functions,
             python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods,
             synthesis_methods=synthesis_methods,
-            load_examples=load_examples,
+            load_examples=load_examples, packages=packages,
         )
         self._model_undo_key = token_bytes(32)
         self.trial_expression_menus = TrialExpressionMenus()

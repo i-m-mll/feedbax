@@ -86,6 +86,8 @@ class Launch:
     warm_entrypoint: str | None = None
     preload: tuple[str, ...] = ()
     project_root: str | None = None
+    environment_root: str | None = None
+    """The uv project whose lock governs the worker's environment; None for Studio's own runtime, which has none."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +133,6 @@ class AdmissionItem:
     terminal_reuse: TerminalReuse | None = None
     deferred_reuse: DeferredReuse | None = None
     force_execution: bool = False
-    light_definition: JsonObject | None = None
 
 
 class AdmissionResult(TypedDict):

@@ -314,7 +314,6 @@ def test_analyze_reads_a_declared_synthesis_dataset(tmp_path, monkeypatch):
     )
     methods.seal()
     registry = replace(load_application().bundle, synthesis_methods=methods)
-    monkeypatch.setattr(light_jobs, "operation_application", lambda: registry)
     monkeypatch.setattr(light_worker, "operation_application", lambda: registry)
 
     raw = synthesis_project()
@@ -346,11 +345,14 @@ def test_analyze_reads_a_declared_synthesis_dataset(tmp_path, monkeypatch):
         return decoded, store_request(store, encode_request(decoded.spec, decoded.inputs))
 
     source, source_object = request(source_id)
-    role, provider = light_jobs.validate_light_request(source)
+    role, provider = light_jobs.validate_light_request(source, registry=light_worker.operation_application())
     with jax.enable_x64():
         products = light_worker._compute_products(store, source, {}, "synthesized", role, provider)
     published = light_jobs.publish_light_success(
-        light_jobs.LightDelivery(project_id="test", manifest_root=store.root, request=source_object).model_dump(mode="json"),
+        light_jobs.LightDelivery(
+            project_id="test", manifest_root=store.root, request=source_object,
+            declaration=light_jobs.AdmittedDeclaration.of(provider),
+        ).model_dump(mode="json"),
         "synthesized", source_id, {}, products, provider=asdict(provider.source),
     )
     assert set(products) == {"model", "diagnostic"}

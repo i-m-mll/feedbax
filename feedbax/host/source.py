@@ -10,8 +10,8 @@ class HostSource(TypedDict):
     sha256: str
 
 
-def host_source() -> HostSource:
-    package = Path(__file__).resolve().parents[1]
+def host_source(package: Path = Path(__file__).resolve().parents[1]) -> HostSource:
+    """Identify the Feedbax package at ``package``, by default the one this process imports."""
     identity = sha256()
     for path in sorted(package.rglob("*")):
         if path.suffix in {".py", ".json", ".yaml", ".yml", ".feedbax", ".sh"} and path.is_file():

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
+import traceback
 from enum import StrEnum
 from functools import lru_cache
 from importlib import import_module, metadata
@@ -101,60 +102,131 @@ def installed_packages() -> tuple[DistributionSource, ...]:
     return ordered
 
 
-def _load_module(name: str, source: DistributionSource) -> ModuleType:
+@dataclass(frozen=True)
+class PackageLoadFailure:
+    """A package whose modules did not all import, so none of its declarations are registered."""
+
+    source: DistributionSource
+    module: str
+    error: str
+    """The exception, with the file and line it was raised at."""
+
+    def bootstrap_error(self) -> BootstrapError:
+        return BootstrapError(
+            BootstrapErrorCode.LOAD,
+            f"Cannot import module {self.module!r} from {self.source.distribution!r} {self.source.version}: {self.error}",
+            plugin_id=self.source.distribution,
+        )
+
+
+class _ImportFailed(Exception):
+    def __init__(self, module: str, error: BaseException):
+        super().__init__(module)
+        self.module = module
+        self.error = error
+
+
+def _described(error: BaseException) -> str:
+    if isinstance(error, SyntaxError):
+        return f"{type(error).__name__}: {error.msg} ({error.filename}, line {error.lineno})"
+    text = "".join(traceback.format_exception_only(error)).strip()
+    frames = traceback.extract_tb(error.__traceback__)
+    return f"{text} ({frames[-1].filename}, line {frames[-1].lineno})" if frames else text
+
+
+def _load_module(name: str) -> ModuleType:
     token = importing_declarations.set(True)
     try:
         return import_module(name)
     except (Exception, SystemExit) as exc:
-        raise BootstrapError(
-            BootstrapErrorCode.LOAD,
-            f"Cannot import module {name!r} from {source.distribution!r} {source.version}: {exc}",
-            plugin_id=source.distribution,
-        ) from exc
+        raise _ImportFailed(name, exc) from exc
     finally:
         importing_declarations.reset(token)
 
 
-def _package_modules(package: ModuleType, source: DistributionSource) -> Iterator[ModuleType]:
+def _package_modules(package: ModuleType) -> Iterator[ModuleType]:
     yield package
     children = iter_modules(package.__path__, package.__name__ + ".")
     for child in sorted(children, key=lambda item: item.name):
-        module = _load_module(child.name, source)
+        module = _load_module(child.name)
         if child.ispkg:
-            yield from _package_modules(module, source)
+            yield from _package_modules(module)
         else:
             yield module
 
 
+@dataclass(frozen=True)
+class PackageScan:
+    packages: tuple[PackageDeclarations, ...]
+    failures: tuple[PackageLoadFailure, ...]
+
+    def require(self) -> tuple[PackageDeclarations, ...]:
+        """The declarations, for a process that must not run with a package missing."""
+        if self.failures:
+            raise self.failures[0].bootstrap_error()
+        return self.packages
+
+
+def _scan(source: DistributionSource) -> PackageDeclarations:
+    root = _load_module(source.package)
+    if not hasattr(root, "__path__"):
+        raise BootstrapError(
+            BootstrapErrorCode.INVALID_REGISTRATION,
+            f"Distribution {source.distribution!r} must name a package, got module {source.package!r}",
+            plugin_id=source.distribution,
+        )
+    classes = []
+    functions = []
+    seen = set()
+    for module in _package_modules(root):
+        for value in tuple(vars(module).values()):
+            if not (isinstance(value, type) or isfunction(value)):
+                continue
+            if value.__module__ != module.__name__ or id(value) in seen:
+                continue
+            seen.add(id(value))
+            if isfunction(value):
+                if (declaration := callable_declaration(value)) is not None:
+                    functions.append((value, declaration))
+            elif not isabstract(value):
+                classes.append(value)
+    return PackageDeclarations(source, tuple(classes), tuple(functions))
+
+
 @lru_cache(maxsize=1)
-def scan_packages(sources: tuple[DistributionSource, ...]) -> tuple[PackageDeclarations, ...]:
+def scan_packages(sources: tuple[DistributionSource, ...]) -> PackageScan:
+    """Scan each package; one whose module fails to import is reported and contributes nothing."""
     scans = []
+    failures = []
     for source in sources:
-        root = _load_module(source.package, source)
-        if not hasattr(root, "__path__"):
-            raise BootstrapError(
-                BootstrapErrorCode.INVALID_REGISTRATION,
-                f"Distribution {source.distribution!r} must name a package, got module {source.package!r}",
-                plugin_id=source.distribution,
-            )
-        classes = []
-        functions = []
-        seen = set()
-        for module in _package_modules(root, source):
-            for value in tuple(vars(module).values()):
-                if not (isinstance(value, type) or isfunction(value)):
-                    continue
-                if value.__module__ != module.__name__ or id(value) in seen:
-                    continue
-                seen.add(id(value))
-                if isfunction(value):
-                    if (declaration := callable_declaration(value)) is not None:
-                        functions.append((value, declaration))
-                elif not isabstract(value):
-                    classes.append(value)
-        scans.append(PackageDeclarations(source, tuple(classes), tuple(functions)))
-    return tuple(scans)
+        try:
+            scans.append(_scan(source))
+        except _ImportFailed as failed:
+            if source.distribution == "feedbax":
+                raise PackageLoadFailure(source, failed.module, _described(failed.error)).bootstrap_error() from failed.error
+            failures.append(PackageLoadFailure(source, failed.module, _described(failed.error)))
+    return PackageScan(tuple(scans), tuple(failures))
+
+
+_tolerating_failures = False
+
+
+def tolerate_package_failures() -> None:
+    """Let this process run without the packages that fail to import, which it reports.
+
+    Studio's backend restarts on every save of a package it serves, so a typo in one module must not stop it.
+    A worker or a command-line process keeps failing on such a package.
+    """
+    global _tolerating_failures
+    _tolerating_failures = True
+
+
+def installed_scan() -> PackageScan:
+    scan = scan_packages(installed_packages())
+    if not _tolerating_failures:
+        scan.require()
+    return scan
 
 
 def installed_declarations() -> tuple[PackageDeclarations, ...]:
-    return scan_packages(installed_packages())
+    return installed_scan().packages

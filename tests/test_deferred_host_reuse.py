@@ -21,7 +21,8 @@ from feedbax.contracts.request_specs import AnalysisRequestSpec, RenderRequestSp
 from feedbax.dataset import Dataset, Variable
 from feedbax.host.protocol import AdmissionItem, DeferredReuse, Edge, Job, Launch, LIGHT_ENTRYPOINT
 from feedbax.host.store import Store
-from feedbax.host.light_jobs import LightDelivery
+from feedbax.host.light_jobs import AdmittedDeclaration, LightDelivery
+from feedbax.plugins.declarations import DistributionSource
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
 from feedbax.persistence.effective_success import SuccessView, store_request
@@ -39,7 +40,8 @@ def test_deferred_reuse_keeps_exact_result_across_reopening(tmp_path, action):
         key="fixture.series", owner="fixture", owner_version="1", label="Series", description="Test input",
         param_schema=[], parameter_json_schema={},
         static_parameters=(), inputs={}, outputs={"series": DatasetOutputPort(schema_ids=(schema,))},
-    ).model_dump(mode="json")
+    )
+    admitted = AdmittedDeclaration(definition=definition, provider=DistributionSource("fixture", "fixture", "1"))
     series = store_request(blobs, encode_request(AnalysisRequestSpec(analysis_type="fixture.series", params={}), {}))
     figures = FigureDocument.model_validate({
         "data": ["series"], "layout": [{"name": "main", "row": 1, "col": 1}],
@@ -73,11 +75,11 @@ def test_deferred_reuse_keeps_exact_result_across_reopening(tmp_path, action):
         sha256=sha256(configuration.read_bytes()).hexdigest(),
     )
 
-    def job(attempt, request, parent=None):
+    def job(attempt, request, parent=None, declaration=None):
         return Job(
             attempt, "project", request.id,
             Launch((sys.executable,), payload=LightDelivery(
-                project_id="project", manifest_root=blobs.root, request=request,
+                project_id="project", manifest_root=blobs.root, request=request, declaration=declaration,
             ).model_dump(mode="json"), warm_entrypoint=LIGHT_ENTRYPOINT, project_root=str(tmp_path)),
             "light", edges=(Edge(parent),) if parent else (),
             data={"manifest_root": str(blobs.root), "run_key": attempt},
@@ -108,18 +110,18 @@ def test_deferred_reuse_keeps_exact_result_across_reopening(tmp_path, action):
             })
         return result.ref
 
-    old_series, old_plot = job("old-series", series), job("old-plot", plot, "old-series")
+    old_series, old_plot = job("old-series", series, declaration=admitted), job("old-plot", plot, "old-series")
     store.admit("initial", [
-        asdict(AdmissionItem("series", old_series, light_definition=definition)),
+        asdict(AdmissionItem("series", old_series)),
         asdict(AdmissionItem("plot", old_plot)),
     ], {})
     upstream = publish(old_series.id, series, series_product, {})
     retained = publish(old_plot.id, plot, figure_product, {series.id: upstream})
 
-    new_series, new_plot = job("new-series", series), job("new-plot", plot, "new-series")
+    new_series, new_plot = job("new-series", series, declaration=admitted), job("new-plot", plot, "new-series")
     dependent = job("report", report, new_plot.id)
     items = [
-        asdict(AdmissionItem("series", new_series, light_definition=definition)),
+        asdict(AdmissionItem("series", new_series)),
         asdict(AdmissionItem("plot", new_plot, deferred_reuse=DeferredReuse(
             old_plot.id, retained.model_dump(mode="json"), "selected", 2.0,
         ))),

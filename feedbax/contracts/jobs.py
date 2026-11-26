@@ -420,6 +420,8 @@ class StudioProjectWindowMapProblem(StrictModel):
     """The producer row a ``blocked_input`` row waits on."""
     span: TextSpan | None = Field(default=None, exclude_if=lambda value: value is None)
     selection_value: SelectedAxisValueProblem | None = Field(default=None, exclude_if=lambda value: value is None)
+    package: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The unavailable package of a ``missing_package`` or ``package_unavailable`` Problem; each package is one Problem."""
 
     @classmethod
     def from_diagnostic(cls, diagnostic: ProjectDiagnostic, *, declaration: str) -> StudioProjectWindowMapProblem:
@@ -435,7 +437,7 @@ class StudioProjectWindowMapProblem(StrictModel):
             subject_name=member_display_name(diagnostic.missing_subject) if diagnostic.missing_subject is not None else None,
             document_path=diagnostic.document_path, address=diagnostic.authored_file or source,
             layer=diagnostic.layer, authored_path=diagnostic.authored_path,
-            span=diagnostic.span, selection_value=diagnostic.selection_value,
+            span=diagnostic.span, selection_value=diagnostic.selection_value, package=diagnostic.package,
             blocked_by=StudioSavedTrainKey.model_validate(diagnostic.blocked_by, from_attributes=True)
             if diagnostic.blocked_by is not None else None,
         )

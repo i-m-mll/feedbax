@@ -102,6 +102,10 @@ class ResolutionCode(StrEnum):
     INVALID_DOCUMENT = "invalid_document"
     UNSUPPORTED_PLAN = "unsupported_plan"
     BLOCKED_INPUT = "blocked_input"
+    MISSING_PACKAGE = "missing_package"
+    """A row names a declaration of a package this process does not have; ``PACKAGE_UNAVAILABLE`` says why."""
+    PACKAGE_UNAVAILABLE = "package_unavailable"
+    """The project-level Problem of one unavailable package, which its ``MISSING_PACKAGE`` rows point at."""
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,10 @@ class ProjectDiagnostic:
     selection_value: SelectedAxisValueProblem | None = None
     element_name: str | None = None
     missing_subject: str | None = None
+    missing_key: str | None = None
+    """The declaration key at ``path`` that no registered declaration provides."""
+    package: str | None = None
+    """The unavailable package of a ``MISSING_PACKAGE`` or ``PACKAGE_UNAVAILABLE`` Problem."""
 
 
 @dataclass(frozen=True)

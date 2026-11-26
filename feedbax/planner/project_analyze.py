@@ -61,7 +61,7 @@ from feedbax.contracts.request_specs import (
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_variation
 from feedbax.contracts.rollout_dataset import common_rollout_port
-from feedbax.plugins.declarations import missing_declaration
+from feedbax.plugins.declarations import UnknownDeclaration, missing_declaration
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
@@ -267,6 +267,7 @@ class _Lowerer:
         *,
         code: ResolutionCode = ResolutionCode.INVALID_PAYLOAD,
         document_path: str | None = None,
+        missing_key: str | None = None,
     ) -> None:
         doc_path = max(
             (base for base in self.document_ids if path == base or path.startswith(base + ".")),
@@ -293,6 +294,7 @@ class _Lowerer:
                 element=element,
                 element_name=self.element_names.get(element) if element is not None else None,
                 document_path=document_path,
+                missing_key=missing_key,
             )
         )
 
@@ -608,10 +610,8 @@ class _Lowerer:
         path = f"payload.operations.{name}"
         try:
             registered = self.operations.resolve(element.operation)
-        except KeyError:
-            self.problem(
-                path + ".operation", missing_declaration("operation", element.operation), name
-            )
+        except UnknownDeclaration as error:
+            self.problem(path + ".operation", str(error.args[0]), name, missing_key=error.key)
             return
         try:
             params = registered.value.parameter_model.model_validate(element.params)
@@ -706,15 +706,12 @@ class _Lowerer:
                 registry = self.figure_templates
                 try:
                     registration = registry.resolve(reference.template) if registry is not None else None
-                except KeyError:
-                    registration = None
+                except UnknownDeclaration as error:
+                    self.problem(figure_path + ".template", str(error.args[0]), name, missing_key=error.key)
+                    return
                 if registration is None:
-                    package = reference.template.partition(".")[0]
                     self.problem(
-                        figure_path + ".template",
-                        f"No installed figure template provides {reference.template!r} "
-                        f"from package {package!r}.",
-                        name,
+                        figure_path + ".template", missing_declaration("figure template", reference.template), name,
                     )
                     return
                 validation_path = figure_path + ".settings"

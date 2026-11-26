@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import ExitStack
 from dataclasses import asdict
-from functools import lru_cache
+from functools import cache, lru_cache
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -20,6 +20,7 @@ from feedbax.contracts.figure_document import PLOTLY_MEDIA_TYPE
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.request_identity import DecodedRequest
+from feedbax.contracts.model_input import read_document_input
 from feedbax.contracts.request_refs import ContentRef
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
@@ -45,7 +46,6 @@ from feedbax.host.light_jobs import (
     light_staging_id,
     light_staging_target,
     report_artifacts,
-    operation_application,
     validate_light_request,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -57,6 +57,7 @@ from feedbax.plot.figure_trial_clock import FigureRecordedDataset
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import RegisteredOperation
+    from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.plugins.declarations import ResolvedDeclaration
 
 
@@ -222,6 +223,14 @@ def figure_source_runs(
     }
 
 
+@cache
+def operation_application() -> ApplicationRegistryBundle:
+    """The registry of the environment this worker runs in."""
+    from feedbax.application.composition import load_application
+
+    return load_application().bundle
+
+
 def _compute(
     store: ImmutableArtifactBlobProvider,
     request: DecodedRequest,
@@ -289,7 +298,7 @@ def check_light_environment(
     """Replay the ordinary operation without publishing a successful receipt."""
     from feedbax.validity.light_products import light_product_matches
 
-    role, operation = validate_light_request(request)
+    role, operation = validate_light_request(request, registry=operation_application())
     candidate = _compute_products(store, request, bindings, attempt, role, operation)
     try:
         return candidate.keys() == products.keys() and all(
@@ -344,7 +353,14 @@ def main(_argv: list[str]) -> int:
     store = ImmutableArtifactBlobProvider(delivery.manifest_root)
     view = SuccessView(store)
     request = view.read_request(delivery.request)
-    role, operation = validate_light_request(request)
+    role, operation = validate_light_request(
+        request, registry=operation_application(), read_document=lambda content: read_document_input(content, store),
+    )
+    if (operation is None) != (delivery.declaration is None):
+        raise ValueError("The delivery's admitted declaration does not match its request.")
+    if operation is not None:
+        assert delivery.declaration is not None
+        delivery.declaration.require_resolved(operation)
     with bind_managed_inputs(
         view, delivery.request, origins=exact.origins, checkpoint_bindings=exact.bindings, project=delivery.project_id,
     ) as (_, bindings, _):
