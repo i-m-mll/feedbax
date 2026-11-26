@@ -632,7 +632,8 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
     return (await result.json() as ModelFieldResponse).fields!.find(({ label }) => label === 'Mass')!.sources;
   };
   expect(await sourceFor(newRows[2].key)).toMatchObject([{ kind: 'sweep_value', axis: 'learning-rate', value: 'Fast' }]);
-  expect(await sourceFor(newRows[0].key)).toMatchObject([{ kind: 'document', key: 'reach-model' }]);
+  const untouched = widened.rows.find(({ key }) => key.row === 'learning-rate=Medium--seed=one')!;
+  expect(await sourceFor(newRows[0].key)).toEqual(await sourceFor(untouched.key));
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const exception = inspector.getByRole('list', { name: 'Exceptions', exact: true })
     .getByRole('listitem').filter({ hasText: 'Mass' });

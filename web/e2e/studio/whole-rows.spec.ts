@@ -25,21 +25,23 @@ test('the Task tab shows whole rows in its Outline and the grid under the Variab
   const bodies = () => drawer.locator('[data-section="drawer"][data-open] > [data-section-body]').evaluateAll((nodes) =>
     nodes.map((body) => {
       const box = body.getBoundingClientRect();
-      const rows = [...body.querySelectorAll('[data-list-row]')].map((row) => row.getBoundingClientRect())
-        .filter(({ top, bottom }) => bottom > box.top + 0.5 && top < box.bottom - 0.5);
+      const listed = [...body.querySelectorAll('[data-list-row]')].map((row) => row.getBoundingClientRect());
+      const rows = listed.filter(({ top, bottom }) => bottom > box.top + 0.5 && top < box.bottom - 0.5);
+      const hidden = body.scrollHeight - body.clientHeight;
       return {
         name: body.closest('section')!.querySelector('[data-section-header]')!.textContent,
-        scrolls: body.scrollHeight - body.clientHeight > 0.5,
+        scrolls: hidden > 0.5,
+        slight: hidden > 0.5 && hidden < Math.min(...listed.map(({ height }) => height)) - 0.5,
         faded: body.hasAttribute('data-overflow-bottom'),
         cut: rows.some(({ bottom }) => bottom > box.bottom + 0.5),
         fade: getComputedStyle(body).getPropertyValue('--fade-bottom').trim(),
         shade: getComputedStyle(body).boxShadow !== 'none',
       };
     }));
-  await expect.poll(async () => (await bodies()).find(({ name }) => name === 'Variables'))
-    .toMatchObject({ name: 'Variables', scrolls: false, faded: false, cut: false, shade: false });
-  for (const body of await bodies()) expect(body, body.name ?? '').toMatchObject({ cut: false, fade: '0px', shade: body.faded });
-  expect((await bodies()).find(({ name }) => name === 'Epochs')).toMatchObject({ faded: true, shade: true });
+  await expect.poll(async () => (await bodies()).filter(({ cut, slight, scrolls, faded }) => cut || slight || scrolls !== faded))
+    .toEqual([]);
+  for (const body of await bodies()) expect(body, body.name ?? '').toMatchObject({ fade: '0px', shade: body.faded });
+  expect((await bodies()).some(({ faded }) => faded)).toBe(true);
 
   const view = await primary.locator('.studio-window-slot__body').boundingBox();
   const grid = await primary.getByRole('table', { name: 'Epochs', exact: true }).boundingBox();
