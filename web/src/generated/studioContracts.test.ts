@@ -73,17 +73,14 @@ it('preserves JSON payloads and reports the nested path for invalid values', () 
   expect(ModelDocumentSchema.safeParse(malformedModel).success).toBe(false);
 });
 
-it('validates an attachment owner, source-end anchor, and retained ID', () => {
+it('addresses an attachment edit by its key, never by a key in its body', () => {
   const owner = { composites: ['controller'], element: { kind: 'wire', id: 'feedback' } };
-  const attachment = { kind: 'intervention', id: 'gain', operation: 'Scale', operands: { factor: { kind: 'value', value: 0.5 } } };
-  const addition = { op: 'add', owner, attachment };
-  expect(AddModelAttachmentSchema.safeParse(addition).success).toBe(false);
-  expect(AddModelAttachmentSchema.safeParse({ ...addition, after: null }).success).toBe(true);
   const address = { ...owner, element: { kind: 'attachment', id: 'gain', parent: owner.element } };
+  const attachment = { kind: 'intervention', operation: 'Scale', operands: { factor: { kind: 'value', value: 0.5 } } };
+  expect(AddModelAttachmentSchema.safeParse({ op: 'add', address, attachment, after: null }).success).toBe(true);
   expect(ChangeModelAttachmentSchema.safeParse({ op: 'change', address, attachment }).success).toBe(true);
-  expect(ChangeModelAttachmentSchema.safeParse({
-    op: 'change', address, attachment: { ...attachment, id: 'another-gain' },
-  }).success).toBe(false);
+  expect(ChangeModelAttachmentSchema.safeParse({ op: 'change', address, attachment: { ...attachment, id: 'gain' } }).success)
+    .toBe(false);
 });
 
 describe('generated component-param array value contracts', () => {

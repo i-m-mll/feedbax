@@ -1,15 +1,14 @@
 import {
-  type ComponentDefinition, type DelayAttachment, type DelayInitialWire, type InterventionAttachment, type JsonValue,
-  type ModelAddress, type ModelDocument, type ModelSignalSource, type ModelTime, type ModelWire,
+  type ComponentDefinition, type DelayInitialWire, type JsonValue, type ModelAddress, type ModelSignalSource, type ModelTime,
+  type StoredDelayAttachment, type StoredInterventionAttachment, type StoredModelDocument,
 } from '@/generated/studioContracts';
 import { studioName, studioReason, studioUnit } from '@/components/activity/studioVocabulary';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { FieldCommit, FieldModel } from '@/components/values/fieldModel';
 import { fromParamSchema } from '@/components/values/adapters/paramSchema';
 import { arrayParts, rawField, type RawChange } from '@/components/values/adapters/raw';
-import type { Component } from './modelGraph';
+import type { Attachment, Component } from './modelGraph';
 
-export type Attachment = NonNullable<ModelWire['attachments']>[number];
 /** Writes a raw value at a path under the element; answers with a reason when the edit is refused. */
 export type FieldChange = (path: string[], value: JsonValue) => Promise<string | undefined>;
 export type AttachmentChange = (item: Attachment) => Promise<string | undefined> | void;
@@ -27,12 +26,12 @@ function duration(raw: string): ModelTime | undefined {
   return value > 0 && (unit === 's' || Number.isInteger(value)) ? { value, unit } : undefined;
 }
 
-export function delayText(delay: DelayAttachment['delay']): string {
+export function delayText(delay: StoredDelayAttachment['delay']): string {
   return 'text' in delay ? delay.text : `${delay.value} ${delay.unit}`;
 }
 
 /** The model's own fields, shown when nothing is selected. */
-export function modelFields(model: ModelDocument, change?: FieldChange): FieldModel[] {
+export function modelFields(model: StoredModelDocument, change?: FieldChange): FieldModel[] {
   const label = studioName('step');
   return [rawField({
     id: 'step_seconds', label, type: { kind: 'string' }, value: typeof model.step_seconds === 'number' ? `${model.step_seconds} ${studioUnit('second')}` : model.step_seconds.text,
@@ -85,8 +84,8 @@ export function attachmentFields(item: Attachment, change?: AttachmentChange,
   if (item.kind === 'probe') {
     const label = studioName('name');
     return [rawField({
-      id: 'name', label, type: { kind: 'string' }, value: item.name,
-      change: change && ((raw) => String(raw).trim() ? write({ ...item, name: String(raw).trim() }) : studioReason('takesText', label)),
+      id: 'name', label, type: { kind: 'string' }, value: item.label,
+      change: change && ((raw) => String(raw).trim() ? write({ ...item, label: String(raw).trim() }) : studioReason('takesText', label)),
     })];
   }
   return [rawField({
@@ -112,7 +111,7 @@ const operationValues = (operation: Operation, width: number): Record<string, Nu
   operation === 'add' ? { value: Array.from({ length: width }, () => 0) } : operationDefaults[operation];
 
 /** An intervention's operation, by its stored name; none for a name no operation has, which the Service refuses. */
-export function operationOf(item: InterventionAttachment): Operation | undefined {
+export function operationOf(item: StoredInterventionAttachment): Operation | undefined {
   const operation = item.operation.toLowerCase();
   return (operations as readonly string[]).includes(operation) ? operation as Operation : undefined;
 }

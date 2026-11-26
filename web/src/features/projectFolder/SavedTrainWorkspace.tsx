@@ -2076,7 +2076,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             };
             const objectiveDocument = value.objective_document ?? step?.id ?? '';
             const termElement = named(objectiveDocument);
-            const term = termElement && value.objective?.terms?.some(({ id }) => id === termElement.id)
+            const term = termElement && !!value.objective?.terms?.[termElement.id]
               ? { term: termElement.id, field: termElement.field } : undefined;
             // An Evaluate of a checkpoint is scored by the Objective of the Train that made it, which it shows unedited.
             const train = value.objective_source?.kind === 'train' ? plan.steps.find(({ id }) => id === value.objective_source!.step) : undefined;
@@ -2119,7 +2119,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 onClick={() => selection.select(selectStep(state, train.id))}>{train.label}</Button>,
               body: withProblem(<FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
                 onFocused={() => setFieldFocus(undefined)}>
-                <TrialObjectiveTable view={value} commit={scoring} selected={term} select={choose(objectiveDocument)} runs={runs} scores={scores} />
+                <TrialObjectiveTable view={value} commit={scoring} addTerm={train ? undefined : trial.addTerm} selected={term} select={choose(objectiveDocument)} runs={runs} scores={scores} />
               </FocusedFields>),
               drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={scoring} selected={term?.term} select={choose(objectiveDocument)} />,
               inspector: termInspector,
@@ -2153,7 +2153,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const first = selectedElements[0];
             // A term the Scene's Relate wrote is selected there, and shown in its Inspector with its Measure focused.
             const term = view === 'scene' && trial.view && first && !isModelAddress(first) && first.document === objectiveDocument &&
-              trial.view.objective?.terms?.some(({ id }) => id === first.element.id) ? first.element : undefined;
+              !!trial.view.objective?.terms?.[first.element.id] ? first.element : undefined;
             const inspector = term && trial.view ? <FocusedFields className="contents"
               request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
               onFocused={() => setFieldFocus(undefined)}>

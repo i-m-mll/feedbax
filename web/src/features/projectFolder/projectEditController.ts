@@ -30,7 +30,7 @@ import {
   type AuthoredProject, type ProjectEditContent,
 } from './authoredEdits';
 import { commandQueue } from './commandQueue';
-import { modelSchema } from './model/modelGraph';
+import { modelDocumentSchemaId } from '@/generated/studioContracts';
 import type { ModelChange } from '@/features/projectWindow/elementSelection';
 
 export interface ProjectEditTransport {
@@ -205,7 +205,7 @@ function authoredFileContent(project: AuthoredProject, { kind, id }: ReplayFile[
     : kind === 'variant' ? project.sweep?.rows : undefined;
   if (!files || !Object.prototype.hasOwnProperty.call(files, id)) return undefined;
   const file = files[id];
-  if (kind === 'document' && project.documents?.[id]?.schema === modelSchema) {
+  if (kind === 'document' && project.documents?.[id]?.schema === modelDocumentSchemaId) {
     // Addressed Model Undo uses canonical JSON for its payload preimage.
     return canonicalJsonV2(file);
   }

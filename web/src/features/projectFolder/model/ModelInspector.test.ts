@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DelayAttachmentSchema, InterventionAttachmentSchema, type ModelAddress } from '@/generated/studioContracts';
-import { attachmentSources, type Attachment, type SourceValue } from './ModelInspector';
+import { StoredDelayAttachmentSchema, StoredInterventionAttachmentSchema, type ModelAddress } from '@/generated/studioContracts';
+import { attachmentSources, type SourceValue } from './ModelInspector';
+import { storedAttachment, type Attachment } from './modelGraph';
 
 const graph: ModelAddress = { composites: ['core'], element: { kind: 'graph' } };
 const output: ModelAddress = { composites: ['core'], element: { kind: 'port', end: { owner: 'component', component: 'enc', port: 'out', direction: 'output' } } };
@@ -22,7 +23,8 @@ describe('attachmentSources', () => {
     for (const item of [delay, add]) {
       for (const port of [output, input]) {
         const written = stored(item, { kind: 'wire', port });
-        expect((item.kind === 'delay' ? DelayAttachmentSchema : InterventionAttachmentSchema).parse(written)).toEqual(written);
+        const kept = storedAttachment(written);
+        expect((item.kind === 'delay' ? StoredDelayAttachmentSchema : StoredInterventionAttachmentSchema).parse(kept)).toEqual(kept);
         const [read] = attachmentSources(written, graph).map((source) => source.read);
         expect(read).toEqual({ kind: 'wire', port });
       }

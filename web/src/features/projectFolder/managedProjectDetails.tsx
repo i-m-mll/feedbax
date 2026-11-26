@@ -17,8 +17,8 @@ import type { PlanStepView, RunAddress } from '@/features/pipeline/planView';
 import type { PipelineSelection } from '@/features/pipeline/selection';
 import { bindStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
-  DocumentReferenceSchema, ModelDocumentSchema,
-  type EvaluateModelRequest, type ModelDocument, type StudioSavedEvaluationRow,
+  DocumentReferenceSchema, StoredModelDocumentSchema,
+  type EvaluateModelRequest, type StoredModelDocument, type StudioSavedEvaluationRow,
   type StudioSavedTrainKey, type StudioProjectWindowMapProblem, type ModelAddress, type TrialRecord,
   type StudioSavedEvaluationReplayRequest, type StudioTrialAuthoring, type TrialMean, type TrialMeanOptions, type TrialMeanSelection,
 } from '@/generated/studioContracts';
@@ -29,7 +29,7 @@ import { useStoredModelView } from './model/ModelView';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { ConfirmRunRemoval } from './runRemoval';
 import type { AskStore } from './storeChoice';
-import { modelSchema } from './model/modelGraph';
+import { modelDocumentSchemaId } from '@/generated/studioContracts';
 import { elementKey, isModelAddress, selectedElement, type ElementAddress, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { useStore } from 'zustand';
 import { usePlayhead, type PlayheadStore, type TrialShowing } from '@/components/timeline/trialClock';
@@ -38,7 +38,7 @@ type DetailName = 'model' | 'scene';
 /** A step kind whose product is a model it determines from its authored Model. */
 const producesModel = (kind: string | undefined) => kind === 'train' || kind === 'synthesize';
 
-export type StoredModel = { id: string; value: ModelDocument };
+export type StoredModel = { id: string; value: StoredModelDocument };
 
 /** A document view's steps: `lit` are those an edit is made for. */
 export interface NamedDocumentScope extends MapDocumentScope {
@@ -309,8 +309,8 @@ export function useStoredModel(editor: ProjectEditController, step: PlanStepView
   const storedDocument = storedId ? saved.project.documents?.[storedId] : undefined;
   const storedPayload = storedId ? documentPayload(saved.project.documents, saved.composed, storedId) : undefined;
   return useMemo((): StoredModel | undefined => {
-    if (!storedId || storedDocument?.schema !== modelSchema) return undefined;
-    const result = ModelDocumentSchema.safeParse(storedPayload);
+    if (!storedId || storedDocument?.schema !== modelDocumentSchemaId) return undefined;
+    const result = StoredModelDocumentSchema.safeParse(storedPayload);
     return result.success ? { id: storedId, value: result.data } : undefined;
   }, [storedId, storedDocument, storedPayload]);
 }

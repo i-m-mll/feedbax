@@ -16,7 +16,7 @@ import { studioRegionIssue, StudioRegion } from '@/components/activity/StudioReg
 import type { SceneTrial } from '@/components/scene/trialScene';
 import { frameAt } from '@/components/timeline/trialClock';
 import type {
-  Problem, StudioSavedEvaluationRow, StudioSavedTrainKey, TaskDocument, TrialMean, TrialRecord,
+  Problem, StudioSavedEvaluationRow, StudioSavedTrainKey, StoredTaskDocument, TrialMean, TrialRecord,
 } from '@/generated/studioContracts';
 import { selectElement, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { showProjectWindowView, type ProjectWindowState, type ProjectWindowView } from '@/features/projectWindow/projectWindowState';
@@ -27,6 +27,7 @@ import { modelRegistry } from './model/modelGraph';
 import { batchRows, meanRows, nominalRows, trialRows, trialTermRows, type ShelfTask } from './task/shelfRows';
 import { shelfTask, taskDocumentOf, useNominalTrial, useTaskBatch, useTaskSamples, type SampledRun } from './task/taskTrials';
 import type { TrialShown, TrialsUnavailable } from './task/trialSample';
+import { hasMember } from './memberKeys';
 
 interface TrialClockInputs {
   readonly windowState: ProjectWindowState;
@@ -52,13 +53,12 @@ interface TrialClockInputs {
 }
 
 /** The element of the task document a Problem is about, as the Task view names it: `variable:<id>`, `epoch:<id>`, `signal:<id>`. */
-function problemElement(task: TaskDocument, problem: Problem): string | undefined {
+function problemElement(task: StoredTaskDocument, problem: Problem): string | undefined {
   if (problem.variable) return `variable:${problem.variable}`;
-  const [group, index] = problem.path ?? [];
-  if (typeof index !== 'number') return undefined;
-  if (group === 'variables') return task.variables[index] && `variable:${task.variables[index].id}`;
-  if (group === 'epochs') return task.epochs[index] && `epoch:${task.epochs[index].id}`;
-  if (group === 'signals') return task.signals[index] && `signal:${task.signals[index].id}`;
+  const [group, key] = (problem.path ?? []).map(String);
+  if (group === 'variables') return hasMember(task.variables, key) ? `variable:${key}` : undefined;
+  if (group === 'epochs') return hasMember(task.epochs, key) ? `epoch:${key}` : undefined;
+  if (group === 'signals') return hasMember(task.signals, key) ? `signal:${key}` : undefined;
   return undefined;
 }
 

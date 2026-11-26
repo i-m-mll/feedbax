@@ -5,7 +5,7 @@ import { elementKey, isModelAddress, type ElementAddress } from '@/features/proj
 import { frameAt } from '@/components/timeline/trialClock';
 import { endedBy } from '@/features/projectFolder/task/trialSample';
 import type {
-  DomainDiagnostic, JsonValue, Marker, ModelAddress, StudioSceneGeometryFrame, TaskDocument, TrialMean, TrialRecord, TrialRelation, ValueType,
+  DomainDiagnostic, JsonValue, Marker, ModelAddress, StoredTaskDocument, StudioSceneGeometryFrame, TrialMean, TrialRecord, TrialRelation, ValueType,
 } from '@/generated/studioContracts';
 import type { ScenePoint } from './planarProjection';
 import { markMarkers } from './sceneView';
@@ -242,7 +242,7 @@ export function termDrawings(record: TrialRecord | undefined, geometry: SceneMod
 /** The task a Scene draws: the document that holds it, and its definition. */
 export interface SceneTask {
   readonly document: string;
-  readonly value: TaskDocument;
+  readonly value: StoredTaskDocument;
 }
 
 /**
@@ -252,7 +252,7 @@ export interface SceneTask {
  */
 export function taskGroup(task: SceneTask, record: TrialRecord | undefined, possible: readonly TrialRecord[], step: number): SceneGroup | undefined {
   const address: ElementAddress = { document: task.document, element: { kind: 'named', id: 'task' } };
-  const starts = new Set(task.value.links?.map((link) => link.variable));
+  const starts = new Set(Object.values(task.value.links ?? {}));
   const element = (kind: 'variable' | 'signal', id: string, name: string,
     place: (record: TrialRecord, id: string, step: number) => ScenePoint | undefined, marker?: Marker | null): SceneElement => {
     const located: ElementAddress = { document: task.document, element: { kind: 'named', id: `${kind}:${id}` } };
@@ -267,10 +267,10 @@ export function taskGroup(task: SceneTask, record: TrialRecord | undefined, poss
     };
   };
   const elements = [
-    ...task.value.variables.filter((variable) => hasPlace(variable.type))
-      .map((variable) => element('variable', variable.id, variable.name, variablePlace, variable.marker)),
-    ...task.value.signals.filter((signal) => hasPlace(signal.type))
-      .map((signal) => element('signal', signal.id, signal.name, signalPlace)),
+    ...Object.entries(task.value.variables).flatMap(([key, variable]) => hasPlace(variable.type)
+      ? [element('variable', key, variable.label, variablePlace, variable.marker)] : []),
+    ...Object.entries(task.value.signals).flatMap(([key, signal]) => hasPlace(signal.type)
+      ? [element('signal', key, signal.label, signalPlace)] : []),
   ];
   return elements.length ? { key: elementKey(address), address, name: studioName('task'), elements } : undefined;
 }

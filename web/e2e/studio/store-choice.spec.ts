@@ -15,7 +15,7 @@ test('renaming a term two Trains read asks at its cell where the name applies, a
         data: { revision, run: { variant: 'default', step, row: 'default' } },
       });
       expect(response.ok(), await response.text()).toBe(true);
-      return (await response.json() as StudioTrialAuthoring).objective?.terms?.[0]?.name ?? null;
+      return Object.values((await response.json() as StudioTrialAuthoring).objective?.terms ?? {})[0]?.label ?? null;
     }));
   };
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');

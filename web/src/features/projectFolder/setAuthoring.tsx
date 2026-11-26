@@ -9,7 +9,9 @@ import type { PlanRunView, PlanStepView } from '@/features/pipeline/planView';
 import { selectSweepValue, selectedRuns, type PipelineSelectionState } from '@/features/pipeline/selection';
 import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
 import { bindStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
-import type { Project, SetDocument, SetVariableOrigin, StudioSetEditRequest, StudioSetEdit } from '@/generated/studioContracts';
+import {
+  setDocumentSchemaId, type Project, type SetDocument, type SetVariableOrigin, type StudioSetEditRequest, type StudioSetEdit,
+} from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { documentPayload } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
@@ -22,7 +24,6 @@ import type { EntryTask, TaskSetVariable, WeightEdit } from './task/taskModel';
 import { labelOf } from './memberLabels';
 import { documentTreeOf } from './useProjectDocuments';
 
-export const setSchema = 'feedbax.set_document.v1';
 
 type SetCommand = StudioSetEditRequest['command'];
 type Perform = (work: () => Promise<void>, refuse?: (reason: string) => Refusal | undefined) => Promise<void> | void;
@@ -156,8 +157,8 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     return {
       key: JSON.stringify([step, axis, entry]),
       label: valueName(step, axis, entry),
-      variables: stored.task_variables ?? [],
-      links: stored.task_links ?? [],
+      variables: stored.task_variables ?? {},
+      links: stored.task_links ?? {},
       write: applies ? (name, change) => editor.command(async () => {
         await store(name, { kind: 'set_entry_task', step, axis, entry, ...change });
         return undefined;
@@ -206,7 +207,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     }], { reviewedRevision: editor.getSnapshot().saved.revision, dependencies: [{ kind: 'document', id: next }] });
     return {
       label: 'setDocument', document, name: labelOf(project.documents, document),
-      documents: documentTreeOf(project, [setSchema]),
+      documents: documentTreeOf(project, [setDocumentSchemaId]),
       choose: applies ? (next) => {
         void perform(async () => {
           const stored = await point(next);
