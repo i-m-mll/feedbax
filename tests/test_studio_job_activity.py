@@ -8,16 +8,52 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Event
+from unittest.mock import Mock
 
 from fastapi.testclient import TestClient
 
 from feedbax.host import HostError
 from feedbax.host.protocol import AdmissionItem
+from feedbax.jobs import ActivityPage, ActivitySnapshot, JobService
 from feedbax.web.app import create_app
+from feedbax.web.services.job_activity import JobActivity
 from tests.support.hang import HANG_SECONDS
 from tests.support.host import HELD_UNTIL_STOPPED, private_host as host_fixture, run_job, wait_until
 
 host = host_fixture
+
+
+def test_advancing_a_studio_write_catches_up_when_the_follower_applies_a_shorter_page():
+    service = Mock(spec=JobService)
+    service.activity_snapshot.return_value = ActivitySnapshot(cursor=0, oldest_cursor=0, rows=())
+    earlier = ActivityPage(head=1, cursor=1, oldest_cursor=0, entries=())
+    latest = ActivityPage(head=2, cursor=2, oldest_cursor=0, entries=())
+    advancing = Event()
+    follower_applied_earlier = Event()
+    allow_follower_catchup = Event()
+
+    def page(*, after, wait):
+        if wait:
+            if after == 0:
+                assert advancing.wait(HANG_SECONDS)
+                return earlier
+            follower_applied_earlier.set()
+            assert allow_follower_catchup.wait(HANG_SECONDS)
+        elif after == 0:
+            advancing.set()
+            assert follower_applied_earlier.wait(HANG_SECONDS)
+        return latest
+
+    service.activity_page.side_effect = page
+    activity = JobActivity(service)
+    try:
+        assert activity.snapshot().cursor == 0
+        activity.advance()
+        assert activity.snapshot().cursor == latest.head
+    finally:
+        advancing.set()
+        allow_follower_catchup.set()
+        activity.close()
 
 
 def _studio_job(name: str, project: str, source: str):

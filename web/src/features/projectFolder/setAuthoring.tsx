@@ -101,7 +101,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
   /**
    * Save Set and Inline Set on a step's authored axis, which convert between its values and the Model differences of a
    * Set and so apply only while the step reads a Model document (`model`); Add Entry on an axis whose Set has no
-   * entries (`empty`), which Duplicate Run cannot copy one of; and To Field on a Train's Set axis, which moves the Set
+   * entries (`empty`), which Duplicate Run cannot copy one of; and To Field on a Train or Evaluate Set axis, which moves the Set
    * into the run's trials.
    */
   function axisCommands(step: string, axis: string, { model, empty }: { model: boolean; empty: boolean }): StudioCommand[] {
@@ -115,10 +115,11 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     }, { subject: axis, instance: JSON.stringify([step, axis]), enabled });
     if ('values' in read) return [command('saveSet', { kind: 'save_set', step, axis }, applies && model)];
     if (!('set' in read)) return [];
+    const kind = project.steps?.[step]?.kind;
     return [
       ...empty ? [command('addEntry', { kind: 'add_set_entry', step, axis })] : [],
       command('inlineSet', { kind: 'inline_set', step, axis }, applies && model),
-      ...project.steps?.[step]?.kind === 'train' ? [command('toField', { kind: 'set_to_field', step, axis })] : [],
+      ...(kind === 'train' || kind === 'evaluate') ? [command('toField', { kind: 'set_to_field', step, axis })] : [],
     ];
   }
 

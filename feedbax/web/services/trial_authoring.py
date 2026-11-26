@@ -109,6 +109,7 @@ class _Projection:
     partial_task: TrialSource | None = None
     epoch_instances: tuple[StudioTrialEpochInstance, ...] = ()
     output_paths: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    set_condition_variables: tuple[Variable, ...] | None = None
 
 
 def _project(
@@ -590,7 +591,7 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
         source = TaskDocument.model_validate(task.payload)
     objective = definition.input_documents.get("objective")
     differences = MODEL_DIFFERENCE_BATCHES.validate_python(definition.payload.get(MODEL_ATTACHMENTS, {}))
-    if differences:
+    if differences and subject.schema_id != LOADED_MODEL_SCHEMA_ID:
         model = resolve_effective_model(
             model, bundle.components, tuple(item for batch in differences.values() for item in batch),
             functions=bundle.expression_functions,
@@ -671,7 +672,10 @@ def _evaluate_documents(plan, key, definition, bundle):
         documents, task, input_bindings=documents.input_bindings | authored_bindings | params.input_bindings,
     )
     paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
-    return documents, replace(paired, task_origins=variant.edit_origins), graph
+    return documents, replace(
+        paired, task_origins=variant.edit_origins,
+        set_condition_variables=variant.task.variables if isinstance(variant.task, TaskDocument) else (),
+    ), graph
 
 
 def _definition(plan, key):
@@ -790,19 +794,20 @@ def _set_variable_edit(project, plan, key, path, change):
     )
 
 def _set_condition_site(definition, projection):
-    task = definition.payload.get("trial_documents", {}).get("task")
-    if task is None:
-        return trial_set_condition_site(())
+    variables = projection.set_condition_variables
+    if variables is None:
+        task = definition.payload.get("trial_documents", {}).get("task")
+        variables = TaskDocument.model_validate(task).variables if task is not None else ()
     resolved = {variable.id: variable for variable in projection.variables}
     return trial_set_condition_site(tuple(
         resolved.get(variable.id) or ScopedValue(id=variable.id, name=variable.name, type=variable.type, level=Level.TRIAL)
-        for variable in TaskDocument.model_validate(task).variables
+        for variable in variables
     ))
 
 
 def _set_condition_edit(expression, path, body, folders, project, settled, key, bundle, definition, projection):
     step = project.steps[key.step]
-    if step.kind != "train" or len(path) != 3 or path[-1] != "condition" or path[1] not in step.set_fields:
+    if step.kind not in {"train", "evaluate"} or len(path) != 3 or path[-1] != "condition" or path[1] not in step.set_fields:
         raise ProjectFolderInvalid("The selected Set condition is unavailable.")
     edit = expression.edit
     if edit.kind != "text" or edit.value_id is not None:
@@ -1539,7 +1544,7 @@ def trial_authoring(
         model_document = definition.document_ids.get("inputs.subject")
         subject = definition.input_documents["subject"]
         if subject.schema_id == LOADED_MODEL_SCHEMA_ID:
-            model_document = LoadedModelDocument.model_validate(subject.payload).model.document
+            model_document = model_document or LoadedModelDocument.model_validate(subject.payload).model.document
         objective_path = "inputs.objective"
         objective_document = definition.document_ids.get(objective_path)
     task_source = None
