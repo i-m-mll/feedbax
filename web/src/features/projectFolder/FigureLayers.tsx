@@ -123,12 +123,7 @@ function freeKey(base: string, taken: (key: string) => boolean) {
 }
 
 /** A new layer of `mark`, reading what the figure's first layer reads, so it draws before any of its fields is edited. */
-function newLayer(mark: AddedMark, figure: Figure): [string, Layer] {
-  const key = freeKey(mark, (key) => key in figure.layers);
-  return [key, layerOf(mark, figure)];
-}
-
-function layerOf(mark: AddedMark, figure: Figure): Layer {
+function newLayer(mark: AddedMark, figure: Figure): Layer {
   const first = Object.values(figure.layers)[0];
   const place = { role: first?.role ?? figure.data[0], panel: first?.panel ?? Object.keys(figure.layout)[0] };
   if (mark === 'rule') return { ...place, mark, encode: { axis: 'y', at: 0 } };
@@ -147,11 +142,15 @@ function layerOf(mark: AddedMark, figure: Figure): Layer {
  * colour scale or a data role, and the chosen row's fields. A layer's field choices are the fields of the data its role
  * is bound to.
  */
-export function FigureLayers({ figure, fields, edit, refusal }: {
+/** Adds a layer as one Undo entry, and gives the key the Service allocated it. */
+export type AddFigureLayer = (label: string, layer: Layer) => Promise<string | undefined>;
+
+export function FigureLayers({ figure, fields, edit, addLayer, refusal }: {
   figure: Figure;
   /** The fields a role's bound data offers, when it is bound to data whose fields are known. */
   fields: (role: string) => RoleFields;
   edit?: FigureEdit;
+  addLayer?: AddFigureLayer;
   /** Why the figure's last layer edit was refused. */
   refusal?: string;
 }) {
@@ -161,10 +160,9 @@ export function FigureLayers({ figure, fields, edit, refusal }: {
   const scale = chosen?.kind === 'scale' ? scales[chosen.name] : undefined;
   const panel = chosen?.kind === 'panel' ? figure.layout[chosen.name] : undefined;
   const change = edit && ((label: string, next: Figure) => edit(label, figureEdits(figure, next)));
-  const add = (mark: AddedMark) => {
-    const [key, next] = newLayer(mark, figure);
-    change?.(studioName(mark), { ...figure, layers: { ...figure.layers, [key]: next } });
-    setChosen({ kind: 'layer', name: key });
+  const add = async (mark: AddedMark) => {
+    const key = await addLayer?.(studioName(mark), newLayer(mark, figure));
+    if (key) setChosen({ kind: 'layer', name: key });
   };
   const addScale = () => {
     const name = freeKey('scale', (name) => name in scales);
@@ -209,7 +207,7 @@ export function FigureLayers({ figure, fields, edit, refusal }: {
       menu={edit ? (node) => removable(partOf(node.id))
         ? <MenuItem onClick={() => remove(partOf(node.id))}>{studioName('remove')}</MenuItem> : undefined : undefined} />
     {edit && <InspectorAddRow label={studioName('addMark')}>
-      {addedMarks.map((mark) => <MenuItem key={mark} glyph={markGlyphs[mark]} onClick={() => add(mark)}>
+      {addedMarks.map((mark) => <MenuItem key={mark} glyph={markGlyphs[mark]} onClick={() => void add(mark)}>
         {studioName(mark)}
       </MenuItem>)}
       <MenuItem glyph={<Palette />} onClick={addScale}>{studioName('colorScale')}</MenuItem>

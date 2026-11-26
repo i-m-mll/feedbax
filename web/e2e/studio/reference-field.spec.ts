@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { Page } from '@playwright/test';
-import { modelDocumentSchemaId, taskDocumentSchemaId, type StudioProjectDocument, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { analysisDocumentSchemaId, modelDocumentSchemaId, taskDocumentSchemaId, type StudioProjectDocument, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
@@ -41,9 +41,9 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'reference-field'));
   const initial = await open(page, project);
   const analysis = {
-    schema: 'feedbax.analysis_document.v1',
+    schema: analysisDocumentSchemaId,
     payload: {
-      schema_version: 'feedbax.analysis_document.v1',
+      schema_version: analysisDocumentSchemaId,
       inputs: { states: { kind: 'dataset' }, policy: { kind: 'model' }, protocol: { kind: 'task' } },
       operations: {}, views: {},
     },

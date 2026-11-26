@@ -1,7 +1,8 @@
 import { expect, test } from './fixtures/studio';
 import { type Page, type Request } from '@playwright/test';
-import type {
-  AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
+import {
+  analysisDocumentSchemaId, type AnalysisDocument, type StoredFigureDocument, type StudioJobSnapshot, type StudioProjectDocument, type StudioProjectSnapshot,
+  type StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { appendManagedFiles, enter, mapStep, runProjectFixture, mapCard } from './fixtures/canonicalTrain';
 import { pick, popupListbox } from './fixtures/controls';
@@ -23,7 +24,7 @@ test('places the installed Speed by trial figure from the Analyze Library under 
   const { snapshot } = await opened.json() as StudioProjectDocument;
   await appendManagedFiles(request, snapshot, [
     { kind: 'document', id: 'analysis', document: {
-      schema: 'feedbax.analysis_document.v1', payload: { inputs: { states: { kind: 'dataset' } } },
+      schema: analysisDocumentSchemaId, payload: { inputs: { states: { kind: 'dataset' } } },
     } },
     { kind: 'step', id: 'analyze', step: {
       kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },
@@ -237,13 +238,14 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   const marked = await edit(() => enter(inspector.getByRole('textbox', { name: 'End', exact: true }), '0.3'));
   expect(graph(marked).views?.['velocity-summary'].figure).toMatchObject({
     data: ['summary', 'data-2'],
-    layers: [
-      { mark: 'band' },
-      { name: 'points', mark: 'points', role: 'data-2', encode: { x: 'peak_time', y: 'mean', error_y: { lower: 'lower', upper: 'upper' } } },
-      { name: 'rule', mark: 'rule', encode: { axis: 'y', at: 0.05 } },
-      { name: 'span', mark: 'span', encode: { axis: 'x', start: 0.1, end: 0.3 } },
-    ],
+    layers: {
+      points: { mark: 'points', role: 'data-2', encode: { x: 'peak_time', y: 'mean', error_y: { lower: 'lower', upper: 'upper' } } },
+      rule: { mark: 'rule', encode: { axis: 'y', at: 0.05 } },
+      span: { mark: 'span', encode: { axis: 'x', start: 0.1, end: 0.3 } },
+    },
   });
+  expect(Object.values((graph(marked).views?.['velocity-summary'].figure as StoredFigureDocument).layers).map(({ mark }) => mark))
+    .toEqual(['band', 'points', 'rule', 'span']);
   expect((await plan(marked.revision)).problems.filter(({ step }) => step === 'analyze')).toEqual([]);
 
   await page.reload();
