@@ -135,7 +135,10 @@ def test_set_variables_carry_the_label_of_their_authored_entry(campaign, step, r
             if (origin := named.get("set_entry")) is not None:
                 key = (origin["axis"], origin["entry"], origin["variable"])
                 assert variables[key] == named["id"]
-                assert named["name"] == authored[origin["entry"]]["task_variables"][origin["variable"]]["label"]
+                variable = next(value for value in view["variables"] if value["id"] == named["id"])
+                assert origin == {key: variable["set_entry"][key] for key in (
+                    "step", "axis", "set", "entry", "variable",
+                )}
 
 
 def test_editing_an_inherited_set_variable_writes_the_set_entry(campaign):

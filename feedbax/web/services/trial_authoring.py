@@ -1,6 +1,7 @@
 """Project and prepare edits for one saved trial pairing."""
 
 
+from collections import Counter
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -1203,16 +1204,30 @@ def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
             except FamilyProblem as error:
                 return (), (family_problem(error, path),)
 
+        def site_names(site, item):
+            def available(name):
+                source = origins.get(name.id)
+                if source is None or not source.scoped:
+                    return True
+                if item is None:
+                    return source.source.over is None  # A plain entry has a durable cross-scope reference.
+                return (item.origin.axis, item.origin.set, item.origin.entry) == (
+                    source.origin.axis, source.origin.set, source.origin.entry,
+                )
+
+            names = tuple(member(name) for name in site.names if available(name))
+            counts = Counter(name.name for name in names)
+            return tuple(
+                name.model_copy(update={"name": stored_set_reference(origin)})
+                if counts[name.name] > 1 and (origin := name.set_entry) is not None else name
+                for name in names
+            )
+
         family_problems = []
         fields = {}
         for path, site in projected.fields.items():
             item = origins.get(path[2]) if path[:2] == ("task", "variables") and len(path) == 4 else None
-            names = tuple(
-                member(name) for name in site.names
-                if (owner := origins.get(name.id)) is None or not owner.scoped
-                or item is not None and item.origin.axis == owner.origin.axis and item.origin.entry == owner.origin.entry
-            )
-            scoped = site.model_copy(update={"names": names})
+            scoped = site.model_copy(update={"names": site_names(site, item)})
             if item is not None and path[-1] in ("value", "count") and item.source.over is not None:
                 names, problems = indices(item.origin.axis, item.origin.set, item.origin.entry)
                 family_problems.extend(problem for problem in problems if problem not in family_problems)
