@@ -2,11 +2,11 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, field_serializer
+from pydantic import Field, JsonValue, field_serializer, model_validator
 
 from feedbax.contracts.project_sweep import SetTrialSampling
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import Expression, Level, NodePath, Problem, ScopedValue, ValueType, WeightPart
+from feedbax.contracts.expression_values import Expression, Level, NodePath, Problem, ScopedValue, SetVariableOrigin, ValueType, WeightPart
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
@@ -17,6 +17,7 @@ from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldSiteTables, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.studio_scene import ScenePoint
 from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.member_family import IndexName, StoredFamilyMember
@@ -219,9 +220,23 @@ class StudioSetEntryParts(StrictModel):
 
 class StudioSetFieldEntry(StoredFamilyMember):
     entry: ProjectName | None
-    label: str
+    label: str | None
     weight: WeightPart | StudioSetEntryParts | None
     member_count: int | None = None
+
+    @model_validator(mode="after")
+    def _entry_label(self):
+        validate_cross_field_refinements("StudioSetFieldEntry", self)
+        return self
+
+
+class StudioSetVariableOrigin(SetVariableOrigin):
+    label: str
+    member_count: int | None
+
+
+class StudioTrialVariable(ScopedValue):
+    set_entry: StudioSetVariableOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioSetField(StrictModel):
@@ -276,7 +291,7 @@ class StudioTrialAuthoring(StudioFieldSiteTables):
     tasks: list[StudioTaskChoice]
     task_problems: list[Problem]
     """Distinct problems referenced by the Task choices."""
-    variables: list[ScopedValue]
+    variables: list[StudioTrialVariable]
     signals: list[ScopedValue]
     epochs: list[StudioTrialEpoch]
     """Authored epochs in editor column order."""

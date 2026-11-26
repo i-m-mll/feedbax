@@ -260,6 +260,7 @@ export interface StudioSavedEvaluationReplayRequest {
   trial?: string | null;
   aggregate?: boolean;
   checkpoint?: number | null;
+  replicate?: number | null;
   mean?: TrialMeanSelection | null;
 }
 
@@ -320,6 +321,7 @@ export interface StudioSavedEvaluationResult {
   request_id?: string | null;
   revision?: string | null;
   trials?: StudioTrialName[] | null;
+  replicates?: number | null;
   receipt: JobReceipt;
   checkpoint_source: StudioTrainCheckpointSource | null;
   loaded_model?: ImportedModelProvenance | null;
@@ -5560,9 +5562,19 @@ export type StudioSetFieldEntry = {
   "over"?: Record<string, IndexRule> | null;
   "combination"?: "cross" | "zip";
   "entry": string | null;
-  "label": string;
+  "label": string | null;
   "weight": WeightPart | StudioSetEntryParts | null;
   "member_count"?: number | null;
+};
+
+export type StudioSetVariableOrigin = {
+  "step": string;
+  "axis": string;
+  "set": string;
+  "entry": string;
+  "variable": string;
+  "label": string;
+  "member_count": number | null;
 };
 
 export type StudioSetsOffered = {
@@ -5737,7 +5749,7 @@ export type StudioTrialAuthoring = {
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
   "task_problems": Array<Problem>;
-  "variables": Array<ScopedValue>;
+  "variables": Array<StudioTrialVariable>;
   "signals": Array<ScopedValue>;
   "epochs": Array<StudioTrialEpoch>;
   "epoch_instances"?: Array<StudioTrialEpochInstance>;
@@ -5889,6 +5901,15 @@ export type StudioTrialStructureEdit = {
 export type StudioTrialUnresolvedLink = {
   "key": string;
   "path": Array<string>;
+};
+
+export type StudioTrialVariable = {
+  "id": string;
+  "name": string;
+  "type": ValueType;
+  "level": Level;
+  "list_count"?: number | null;
+  "set_entry"?: StudioSetVariableOrigin | null;
 };
 
 export type StudioValueStructure = {
@@ -7075,6 +7096,7 @@ export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEval
       "trial": z.string().nullable().optional(),
       "aggregate": z.boolean().optional(),
       "checkpoint": z.number().int().safe().gte(0).nullable().optional(),
+      "replicate": z.number().int().safe().gte(0).nullable().optional(),
       "mean": TrialMeanSelectionSchema.nullable().optional(),
     })
     .strict()
@@ -7167,6 +7189,7 @@ export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationR
       "request_id": z.string().nullable().optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
       "trials": z.array(StudioTrialNameSchema).nullable().optional(),
+      "replicates": z.number().int().safe().gte(1).nullable().optional(),
       "receipt": JobReceiptSchema,
       "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
       "loaded_model": ImportedModelProvenanceSchema.nullable().optional(),
@@ -15105,11 +15128,23 @@ export const StudioSetFieldEntrySchema: z.ZodType<StudioSetFieldEntry> = z.lazy(
     "over": z.union([z.record(IndexNameSchema, IndexRuleSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }), z.null()]).optional(),
     "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
     "entry": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
-    "label": z.string(),
+    "label": z.union([z.string(), z.null()]),
     "weight": z.union([WeightPartSchema, StudioSetEntryPartsSchema, z.null()]),
     "member_count": z.union([z.number().int().safe(), z.null()]).optional(),
-  }).strict()
+  }).strict().superRefine((value, ctx) => { if ((value.entry == null) !== (value.label == null)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A Set entry row must have its label and the none row has no label." }); })
 ) as unknown as z.ZodType<StudioSetFieldEntry>;
+
+export const StudioSetVariableOriginSchema: z.ZodType<StudioSetVariableOrigin> = z.lazy(() =>
+  z.object({
+    "step": z.string(),
+    "axis": z.string(),
+    "set": z.string(),
+    "entry": z.string(),
+    "variable": z.string(),
+    "label": z.string(),
+    "member_count": z.union([z.number().int().safe(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioSetVariableOrigin>;
 
 export const StudioSetsOfferedSchema: z.ZodType<StudioSetsOffered> = z.lazy(() =>
   z.object({
@@ -15326,7 +15361,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),
     "task_problems": z.array(ProblemSchema),
-    "variables": z.array(ScopedValueSchema),
+    "variables": z.array(StudioTrialVariableSchema),
     "signals": z.array(ScopedValueSchema),
     "epochs": z.array(StudioTrialEpochSchema),
     "epoch_instances": z.array(StudioTrialEpochInstanceSchema).optional(),
@@ -15518,6 +15553,17 @@ export const StudioTrialUnresolvedLinkSchema: z.ZodType<StudioTrialUnresolvedLin
     "path": z.array(z.string()),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialUnresolvedLink>;
+
+export const StudioTrialVariableSchema: z.ZodType<StudioTrialVariable> = z.lazy(() =>
+  z.object({
+    "id": z.string().min(1),
+    "name": z.string().min(1),
+    "type": ValueTypeSchema,
+    "level": LevelSchema,
+    "list_count": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
+    "set_entry": z.union([StudioSetVariableOriginSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialVariable>;
 
 export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.lazy(() =>
   z.object({
