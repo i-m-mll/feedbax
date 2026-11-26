@@ -107,8 +107,14 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
 test('Evaluate edits that remove runs ask first and keep the other results', { tag: '@round' }, async ({ page, studio }) => {
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'reference-removal'));
   const initial = await open(page, project);
-  await appendManagedFiles(page.request, initial, [{ kind: 'step', id: 'trials', step: {
-    ...initial.project.steps!.baseline, label: 'Trials', sweep: { axes: { subject: { input: 'subject' } } },
+  // The Evaluate reads a Task of its own with fewer trials than its subject's, so the trials it offers are its own.
+  const task = structuredClone(initial.project.documents!.task) as unknown as { label: string; payload: { validation_trials: Record<string, unknown> } };
+  task.label = 'Short task';
+  task.payload.validation_trials = Object.fromEntries(Object.entries(task.payload.validation_trials).slice(0, 2));
+  const baseline = initial.project.steps!.baseline as { base: { inline: Record<string, unknown> } };
+  await appendManagedFiles(page.request, initial, [{ kind: 'document', id: 'short-task', document: task }, { kind: 'step', id: 'trials', step: {
+    ...baseline, label: 'Trials', sweep: { axes: { subject: { input: 'subject' } } },
+    base: { inline: { ...baseline.base.inline, trial_documents: { task: { document: 'short-task' } } } },
   } }]);
   await page.addInitScript(() => window.localStorage.setItem('feedbax.settings', JSON.stringify({ removalThreshold: 0 })));
   await page.goto('/?project=' + encodeURIComponent(project));
@@ -123,11 +129,21 @@ test('Evaluate edits that remove runs ask first and keep the other results', { t
     ...runs.rows.map(({ key, request_id }) => [key.step + '/' + key.row, request_id]),
     ...(runs.window_map?.evaluations ?? []).map(({ key, request_id }) => [key.step + '/' + key.row, request_id]),
   ]);
-  const before = requests(await plan());
+  const planned = await plan();
+  const before = requests(planned);
+  const conditions = (step: string) => planned.window_map!.rows.find(({ key }) => key.step === step)!.evaluation_conditions!;
+  const own = conditions('trials');
+  expect(own.length, 'The Evaluate plans fewer trials than its subject').toBeLessThan(conditions('train').length);
   const trialSet = page.getByRole('region', { name: 'Trials', exact: true });
   const removal = page.getByRole('dialog', { name: /^Remove \d+ runs?\?$/ });
   const condition = trialSet.getByRole('checkbox').first();
   await pick(trialSet.getByRole('combobox'), 'Selected Conditions');
+  const offered = trialSet.getByRole('checkbox');
+  await expect(offered, 'Selected Conditions offers the trials the Evaluate plans').toHaveCount(own.length);
+  for (const [index, { name }] of own.entries()) {
+    await expect.soft(offered.nth(index), 'Selected Conditions names each trial as the Service does')
+      .toHaveAccessibleName(name ?? `trial ${index + 1} of ${own.length}`);
+  }
   await condition.check();
   await expect(removal).toContainText('Existing results remain on disk but disappear from the project.');
   await removal.getByRole('button', { name: 'Cancel', exact: true }).click();
