@@ -20,8 +20,8 @@ def _dynamics_project():
     task_name = "simple-reaches-task"
     task = project["documents"][task_name]["payload"]
     task["fixed_steps"] = 8
-    task["epochs"][0]["end"]["length"]["value"] = 8
-    task["validation_trials"] = task["validation_trials"][:2]
+    task["epochs"]["move"]["end"]["length"]["value"] = 8
+    task["validation_trials"] = dict(list(task["validation_trials"].items())[:2])
     trained = {"step": "train", "checkpoint": "last"}
     task_binding = {"kind": "task", "source": {"document": task_name}}
     project["steps"] = {
