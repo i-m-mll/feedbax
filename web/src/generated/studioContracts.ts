@@ -3113,7 +3113,7 @@ export type DocumentBase = {
 
 export type DocumentDifference = SetDocumentValue | RemoveDocumentValue | OrderDocumentMembers;
 
-export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
+export type DocumentEdit = SetProjectValue | RemoveProjectValue | OrderProjectValue | EnsureDocumentCollection;
 
 export type DocumentInputReference = InitialModelReference_DocumentReference_ | TaskDocumentReference_DocumentReference_ | ObjectiveDocumentReference_DocumentReference_ | LoadedModelReference;
 
@@ -3664,6 +3664,12 @@ export type OrderDocumentMembers = {
   "order": Array<string>;
 };
 
+export type OrderProjectValue = {
+  "op": "order";
+  "path": DifferencePointer;
+  "order": Array<string>;
+};
+
 export type OrdinalColorScale = {
   "kind": "ordinal";
   "palette"?: "category10" | "plotly" | "dark24";
@@ -3774,7 +3780,7 @@ export type ProjectConfiguration = {
 
 export type ProjectModelArchive = string;
 
-export type ProjectValueEdit = SetProjectValue | RemoveProjectValue;
+export type ProjectValueEdit = SetProjectValue | RemoveProjectValue | OrderProjectValue;
 
 export type PythonTaskSelection = {
   "type": string;
@@ -11744,7 +11750,7 @@ export const DocumentDifferenceSchema: z.ZodType<DocumentDifference> = z.lazy(()
 ) as unknown as z.ZodType<DocumentDifference>;
 
 export const DocumentEditSchema: z.ZodType<DocumentEdit> = z.lazy(() =>
-  z.union([SetProjectValueSchema, RemoveProjectValueSchema, EnsureDocumentCollectionSchema])
+  z.union([SetProjectValueSchema, RemoveProjectValueSchema, OrderProjectValueSchema, EnsureDocumentCollectionSchema])
 ) as unknown as z.ZodType<DocumentEdit>;
 
 export const DocumentInputReferenceSchema: z.ZodType<DocumentInputReference> = z.lazy(() =>
@@ -12488,6 +12494,14 @@ export const OrderDocumentMembersSchema: z.ZodType<OrderDocumentMembers> = z.laz
   }).strict()
 ) as unknown as z.ZodType<OrderDocumentMembers>;
 
+export const OrderProjectValueSchema: z.ZodType<OrderProjectValue> = z.lazy(() =>
+  z.object({
+    "op": z.literal("order"),
+    "path": DifferencePointerSchema,
+    "order": z.array(z.string().min(1)),
+  }).strict()
+) as unknown as z.ZodType<OrderProjectValue>;
+
 export const OrdinalColorScaleSchema: z.ZodType<OrdinalColorScale> = z.lazy(() =>
   z.object({
     "kind": z.literal("ordinal"),
@@ -12639,7 +12653,7 @@ export const ProjectModelArchiveSchema: z.ZodType<ProjectModelArchive> = z.lazy(
 ) as unknown as z.ZodType<ProjectModelArchive>;
 
 export const ProjectValueEditSchema: z.ZodType<ProjectValueEdit> = z.lazy(() =>
-  z.union([SetProjectValueSchema, RemoveProjectValueSchema])
+  z.union([SetProjectValueSchema, RemoveProjectValueSchema, OrderProjectValueSchema])
 ) as unknown as z.ZodType<ProjectValueEdit>;
 
 export const PythonTaskSelectionSchema: z.ZodType<PythonTaskSelection> = z.lazy(() =>

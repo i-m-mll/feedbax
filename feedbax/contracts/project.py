@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
+from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, field_validator, model_validator
 
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, check_analysis_labels
 from feedbax.contracts.base import StrictModel
@@ -28,6 +28,7 @@ from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, Tra
 
 type Payload = dict[str, JsonValue]
 type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
+type KeyedCollectionPath = Callable[[tuple[str, ...]], bool]
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 type StepKind = Literal["train", "synthesize", "evaluate", "analyze", "report"]
 type ProjectModelArchive = Annotated[str, StringConstraints(pattern=r"^models/[A-Za-z0-9_][A-Za-z0-9_-]*\.feedbax-model$")]
@@ -61,7 +62,22 @@ class RemoveProjectValue(StrictModel):
     path: DifferencePointer
 
 
-type ProjectValueEdit = Annotated[SetProjectValue | RemoveProjectValue, Field(discriminator="op")]
+class OrderProjectValue(StrictModel):
+    op: Literal["order"]
+    path: DifferencePointer
+    order: list[NonemptyText]
+
+    @field_validator("order")
+    @classmethod
+    def _unique_keys(cls, order: list[str]) -> list[str]:
+        if len(set(order)) != len(order):
+            raise ValueError("A collection order cannot name a key more than once")
+        return order
+
+
+type ProjectValueEdit = Annotated[
+    SetProjectValue | RemoveProjectValue | OrderProjectValue, Field(discriminator="op")
+]
 
 
 class EnsureDocumentCollection(StrictModel):
@@ -71,14 +87,23 @@ class EnsureDocumentCollection(StrictModel):
 
 
 type DocumentEdit = Annotated[
-    SetProjectValue | RemoveProjectValue | EnsureDocumentCollection, Field(discriminator="op")
+    SetProjectValue | RemoveProjectValue | OrderProjectValue | EnsureDocumentCollection, Field(discriminator="op")
 ]
 
 
-def apply_document_edit(root: dict[str, Any], edit: DocumentEdit, value: Any) -> None:
+def _no_keyed_collections(_parts: tuple[str, ...]) -> bool:
+    return False
+
+
+def apply_document_edit(
+    root: dict[str, Any], edit: DocumentEdit, value: Any, *,
+    keyed_collection: KeyedCollectionPath = _no_keyed_collections,
+) -> None:
     parts = json_pointer_parts(edit.path)
     if isinstance(edit, EnsureDocumentCollection):
         ensure_value_collection(root, parts, value, path=edit.path)
+    elif isinstance(edit, OrderProjectValue):
+        _apply_collection_order(root, parts, edit.order, path=edit.path, keyed_collection=keyed_collection)
     else:
         apply_value_patch_in_place(root, parts, edit.op, value, path=edit.path)
 
@@ -89,9 +114,12 @@ def document_edit_value(edit: DocumentEdit) -> JsonValue:
     return edit.value if isinstance(edit, SetProjectValue) else None
 
 
-def apply_document_edits(root: dict[str, Any], edits: Sequence[DocumentEdit]) -> None:
+def apply_document_edits(
+    root: dict[str, Any], edits: Sequence[DocumentEdit], *,
+    keyed_collection: KeyedCollectionPath = _no_keyed_collections,
+) -> None:
     for edit in edits:
-        apply_document_edit(root, edit, document_edit_value(edit))
+        apply_document_edit(root, edit, document_edit_value(edit), keyed_collection=keyed_collection)
 
 
 class LoadedModelDocument(StrictModel):
@@ -155,7 +183,6 @@ class OrderDocumentMembers(StrictModel):
 type DocumentDifference = SetDocumentValue | RemoveDocumentValue | OrderDocumentMembers
 type Differences = dict[DifferencePointer, DocumentDifference]
 type EditDifferences = dict[DifferencePointer, SetDocumentValue | RemoveDocumentValue]
-type KeyedCollectionPath = Callable[[tuple[str, ...]], bool]
 
 
 def check_disjoint(differences: Mapping[DifferencePointer, DocumentDifference]) -> None:
@@ -202,10 +229,6 @@ class DifferenceNotApplied(ValueError):
         super().__init__(detail)
 
 
-def _no_keyed_collections(_parts: tuple[str, ...]) -> bool:
-    return False
-
-
 def diff(
     base: Payload, content: Payload, *, keyed_collection: KeyedCollectionPath = _no_keyed_collections,
 ) -> Differences:
@@ -244,6 +267,19 @@ def _difference_object(payload: Payload, parts: Sequence[str], path: str) -> Pay
     return value
 
 
+def _apply_collection_order(
+    payload: Payload, parts: tuple[str, ...], order: Sequence[str], *,
+    path: str, keyed_collection: KeyedCollectionPath,
+) -> None:
+    if not keyed_collection(parts):
+        raise DifferenceNotApplied(path, f"the document has no keyed collection at {path}")
+    collection = _difference_object(payload, parts, path)
+    ordered = {key: collection[key] for key in order if key in collection}
+    ordered.update(collection)
+    collection.clear()
+    collection.update(ordered)
+
+
 def apply_differences(
     base: Payload, differences: Mapping[DifferencePointer, DocumentDifference], *,
     keyed_collection: KeyedCollectionPath = _no_keyed_collections,
@@ -262,14 +298,9 @@ def apply_differences(
         else:
             parent.pop(key, None)
     for path, difference in sorted(orders, key=lambda item: item[0].count("/")):
-        parts = json_pointer_parts(path)
-        if not keyed_collection(parts):
-            raise DifferenceNotApplied(path, f"the document has no keyed collection at {path}")
-        collection = _difference_object(result, parts, path)
-        ordered = {key: collection[key] for key in difference.order if key in collection}
-        ordered.update(collection)
-        collection.clear()
-        collection.update(ordered)
+        _apply_collection_order(
+            result, json_pointer_parts(path), difference.order, path=path, keyed_collection=keyed_collection,
+        )
     return result
 
 
