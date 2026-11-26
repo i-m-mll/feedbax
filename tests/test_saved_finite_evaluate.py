@@ -182,10 +182,10 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
             np.testing.assert_array_equal(dataset.data(target)[0], dataset.data(target)[1])
             trajectories.append(dataset.data(position))
             np.testing.assert_array_equal(
-                dataset.select(position, labels={"checkpoint": 4, "trial": settled.evaluations[by_step[name].key].trials[0]})[0],
+                dataset.select(position, labels={"checkpoint": 4, "trial": settled.evaluations[by_step[name].key].trials[0].id})[0],
                 trajectories[-1][coordinates.index(4), 0, 0],
             )
-        trials = settled.evaluations[by_step[name].key].trials
+        trials = [trial.id for trial in settled.evaluations[by_step[name].key].trials]
         with pytest.raises(CannotRun, match="choose a retained checkpoint"):
             result.replay(trials[0])
         with pytest.raises(CannotRun, match="absent from the retained set"):
@@ -399,7 +399,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     assert source.job_id == producer.job_id and source.completed_updates == 3
     with result.open_states() as dataset:
         assert dataset.data("checkpoint").tolist() == [3]
-    trial = settled.evaluations[by_step["exact"].key].trials[0]
+    trial = settled.evaluations[by_step["exact"].key].trials[0].id
     assert result.replay(trial).drawn.trials[0].id == trial
 
     # A Train that finished without update 3: it ran outside the finite gate, which would hold it at 3, before

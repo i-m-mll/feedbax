@@ -471,6 +471,9 @@ class StoredTaskDocument(ValueRecord):
         _check_expression_keys((*self.variables, *self.signals))
         return self
 
+    def validation_trial_labels(self) -> dict[str, str]:
+        return {member.key: member.value.label for member in _expand_validation_trials(self.validation_trials, first=False)}
+
     def validation_trial_families(self) -> dict[str, tuple[str, ...]]:
         """Map each authored family key to its generated trial IDs in execution order."""
         families: dict[str, list[str]] = {}

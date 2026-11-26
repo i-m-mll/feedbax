@@ -648,7 +648,8 @@ def test_saved_window_applies_current_registry_to_canonical_python_selection(tmp
     monkeypatch.setattr(window_service, "decode_request", lambda *args: pytest.fail("Decoded a compiled request"))
     for view, expected in ((before, "window-int-1"), (after, "window-int-2")):
         (row,) = view.window_map(evaluation_tasks=window_tasks).rows
-        assert row.evaluation_conditions == [expected]
+        assert row.evaluation_conditions is not None
+        assert [trial.model_dump() for trial in row.evaluation_conditions] == [{"id": expected, "name": "Trial 1"}]
         (row,) = view.window_map(evaluation_tasks=PythonTaskRegistry()).rows
         assert row.evaluation_conditions is None
 
