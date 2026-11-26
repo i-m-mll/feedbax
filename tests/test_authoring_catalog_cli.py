@@ -3,7 +3,7 @@
 import json
 
 from feedbax.cli import main
-from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID
 
 
 def test_describe_selects_current_registry_and_document_family(capsys):
@@ -12,8 +12,8 @@ def test_describe_selects_current_registry_and_document_family(capsys):
     assert {"feedbax.aligned_velocity", "feedbax.summarize_velocity"} <= {
         item["key"] for item in operations["entries"]
     }
-    assert main(["describe", FIGURE_DOCUMENT_SCHEMA]) == 0
-    assert json.loads(capsys.readouterr().out)["schema_id"] == FIGURE_DOCUMENT_SCHEMA
+    assert main(["describe", STORED_FIGURE_DOCUMENT_SCHEMA_ID]) == 0
+    assert json.loads(capsys.readouterr().out)["schema_id"] == STORED_FIGURE_DOCUMENT_SCHEMA_ID
 
     assert main(["describe", "receipt"]) == 2
     rejected = capsys.readouterr()

@@ -16,10 +16,7 @@ def _project_with_choice(folder, count, *, alternatives=()):
     raw = document_project(authored_documents())
     raw["documents"]["task"]["payload"]["variables"]["width"] = {
         "label": "Width", "type": {"base": "real"},
-        "value": {
-            "kind": "draw", "family": "choice", "per": "trial",
-            "args": [{"kind": "literal", "value": float(index)} for index in range(count)],
-        },
+        "value": "choice(" + ", ".join(map(str, range(count))) + ")",
     }
     for key in alternatives:
         candidate = deepcopy(raw["documents"]["task"])

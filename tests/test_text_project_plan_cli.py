@@ -55,6 +55,8 @@ def _edit(root, files, document, mutate):
 def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
     root = tmp_path / "mixed"
     base = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    model = base["documents"]["point-mass"]["payload"]
+    model["interior"]["components"]["plant"]["fields"]["mass"] = 1.25
     steps = base["steps"]
     train = steps["train"]
     train["base"]["inline"]["seed"] = 0
