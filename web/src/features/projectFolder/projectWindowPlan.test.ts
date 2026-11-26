@@ -10,6 +10,7 @@ it('counts a step\'s chosen runs only, so a step whose chosen runs all succeeded
   const saved: StudioSavedTrainRuns = {
     revision: '0'.repeat(64), rows: [],
     window_map: {
+      document_names: {},
       variants: ['base'],
       steps: [{ variant: 'base', step_id: 'evaluate', label: 'Evaluate', kind: 'evaluate', group: null, document_ids: {}, inputs: [],
         status_counts: { succeeded: 2, not_chosen: 1 } }],

@@ -40,6 +40,7 @@ function evaluateStep(
   const saved: StudioSavedTrainRuns = {
     revision: '0'.repeat(64), rows: [],
     window_map: {
+      document_names: {},
       variants: ['base'],
       steps: [...trains, 'evaluate'].map((step_id) => ({
         variant: 'base', step_id, label: step_id, kind: step_id === 'evaluate' ? 'evaluate' : 'train', group: null, document_ids: {},
@@ -116,6 +117,7 @@ it('lists steps in one order whether or not the plan has been read', () => {
   const saved: StudioSavedTrainRuns = {
     revision: '0'.repeat(64), rows: [],
     window_map: {
+      document_names: {},
       variants: ['base'], rows: [], edges: [], problems: [],
       steps: ['train-10', 'train-2', 'analyze'].map((step_id) => ({
         variant: 'base', step_id, label: step_id, kind: 'train', group: null, document_ids: {}, status_counts: {}, axes: [], inputs: [],

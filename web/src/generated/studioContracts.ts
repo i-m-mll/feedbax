@@ -4715,6 +4715,7 @@ export type StudioProjectSnapshot = {
 
 export type StudioProjectWindowMap = {
   "variants": Array<string>;
+  "document_names": Record<string, Record<string, string>>;
   "steps": Array<StudioProjectWindowMapStep>;
   "rows": Array<StudioProjectWindowMapRow>;
   "edges": Array<StudioProjectWindowMapEdge>;
@@ -13595,6 +13596,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
 export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z.lazy(() =>
   z.object({
     "variants": z.array(z.string()),
+    "document_names": z.record(z.string(), z.record(z.string(), z.string())),
     "steps": z.array(StudioProjectWindowMapStepSchema),
     "rows": z.array(StudioProjectWindowMapRowSchema),
     "edges": z.array(StudioProjectWindowMapEdgeSchema),
