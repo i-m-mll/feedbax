@@ -18,6 +18,7 @@ from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.stored_regions import StoredRegionRegistries
 from feedbax.contracts.studio_project import CreateNamedDocument, PresentationDocument, StudioProjectCreateFiles
 from feedbax.desktop.release import AppPaths
+from feedbax.host import HostClient
 from tests.support.browser_seed_actions import FileSeed, FolderSeed, HomeSeed, NonSeed
 
 
@@ -59,6 +60,14 @@ def _action_cases():
 @pytest.fixture(scope="module")
 def registries():
     return StoredRegionRegistries()
+
+
+@pytest.fixture(autouse=True)
+def offline_seed(monkeypatch):
+    def refuse_host(*args, **kwargs):
+        pytest.fail("Browser seed actions must run without a Host.")
+
+    monkeypatch.setattr(HostClient, "_exchange", refuse_host)
 
 
 def _write(registries: StoredRegionRegistries, text: TextProject) -> dict[str, bytes]:

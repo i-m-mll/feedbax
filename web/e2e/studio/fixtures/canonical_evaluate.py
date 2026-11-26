@@ -23,14 +23,15 @@ from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.persistence.canonical_evaluate import RAW_STATES_SCHEMA, state_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
+from feedbax.contracts.project_sweep import model_field_path
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.support.browser_seed_actions import FileSeed, HomeSeed, NonSeed, print_action
 
 
-_MASS = ModelAddress.model_validate({
+_MASS = model_field_path(ModelAddress.model_validate({
     "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
-}).to_text()
+}))
 
 
 def _evaluation_step(label: str):
