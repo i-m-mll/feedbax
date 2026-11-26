@@ -168,14 +168,20 @@ def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPa
                 key = resolve_segment(payload, part, path="/".join(selection), by_id=False)
                 payload = payload[key] if key is not None else None
 
+        def observe_base(parts: StoredPath) -> None:
+            if owner is not None:
+                document(owner, (*selection, *parts))
+            elif isinstance(base, InlineBase):
+                observe("steps", ancestors[-1], ("base", "inline", *parts))
+
         if owner is not None and any(project.steps[ancestor].deltas for ancestor in ancestors):
             for path, value in _walk(payload):
                 for key in value.keys() & _SCHEMA_KEYS:
-                    document(owner, (*selection, *path, key))
-            for ancestor in ancestors:
-                for delta in project.steps[ancestor].deltas:
-                    for patch in delta.patches:
-                        document(owner, (*selection, *patch.path.split(".")))
+                    observe_base((*path, key))
+        for ancestor in ancestors:
+            for delta in project.steps[ancestor].deltas:
+                for patch in delta.patches:
+                    observe_base(tuple(patch.path.split(".")))
 
         for ancestor in ancestors:
             for path in _sweep_paths(project.steps[ancestor].sweep):
@@ -187,10 +193,10 @@ def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPa
                     continue
                 if target is not None:
                     document(target[0], tuple(target[1].split(".")))
-                elif owner is not None:
-                    document(owner, (*selection, *path.split(".")))
-                elif step.kind == "evaluate" and path.startswith("task."):
-                    compatible(_TASK_SCHEMAS, tuple(path.split(".")[1:]))
+                else:
+                    observe_base(tuple(path.split(".")))
+                    if owner is None and step.kind == "evaluate" and path.startswith("task."):
+                        compatible(_TASK_SCHEMAS, tuple(path.split(".")[1:]))
 
         if step.kind == "evaluate" and isinstance(payload, dict):
             params = payload.get("params")

@@ -35,7 +35,7 @@ from feedbax.contracts.project_sweep import (
     AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
-from feedbax.contracts.stored_model import StoredModelDocument, model_keyed_collection
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, model_keyed_collection
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.project_members import generated_name, numbered_document_label
 from feedbax.project_folder import _free_member_name, document_file
@@ -899,13 +899,17 @@ def _member(payload: Any, parts: Sequence[str]) -> Any:
     return payload
 
 
+def model_content_edits(before: Payload, after: Payload, base: Payload | None = None) -> list[DocumentEdit]:
+    return content_edits(before, _in_form_of(before, after, base), schema_id=STORED_MODEL_DOCUMENT_SCHEMA_ID)
+
+
 def model_document_store(folders, project_id: str, project: Project, body, before: Payload, after: Payload) -> StoredEdit:
     """Store a Model edit of ``body.document`` by the document rule, after the request's step files."""
     head = StoredEdit(list(body.files), reached=frozenset(file.address.id for file in body.files))
     project = preview_authored_files(project, body.files)
     entry = project.documents[body.document]
     base = _composed(project, entry.base.document) if isinstance(entry, BasedDocument) else None
-    edits = content_edits(before, _in_form_of(before, after, base), schema_id=entry.schema_id)
+    edits = model_content_edits(before, after, base)
     if body.step is None:
         return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set()).files)
     plan = folders.read_plan(project_id, revision=body.revision).plan

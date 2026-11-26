@@ -118,14 +118,18 @@ def test_installed_registry_rejects_invalid_authored_fields():
         write_project_file(request)
 
 
-def test_studio_can_repair_an_invalid_file_without_rewriting_other_files(tmp_path):
-    root = tmp_path / "fixture"
-    project = managed_train_project()
+def _save_fixture(root, project):
     configuration = ProjectConfiguration(project="fixture", store="results")
     for relative, raw in dump_text_project(project, configuration).items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
+
+
+def test_studio_can_repair_an_invalid_file_without_rewriting_other_files(tmp_path):
+    root = tmp_path / "fixture"
+    project = managed_train_project()
+    _save_fixture(root, project)
 
     step_file = root / "steps/train.json"
     raw_step = json.loads(step_file.read_bytes())
@@ -158,3 +162,31 @@ def test_studio_can_repair_an_invalid_file_without_rewriting_other_files(tmp_pat
         })
         assert repaired.status_code == 200, repaired.text
         assert json.loads(step_file.read_bytes())["base"]["inline"]["settings"]["grad_clip"] == 2
+
+
+def test_studio_sweeps_a_train_setting_omitted_at_its_default(tmp_path):
+    root = tmp_path / "fixture"
+    project = managed_train_project()
+    project.steps["train"].base.inline["settings"] = {}
+    _save_fixture(root, project)
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+        revision = folders.read("fixture").revision
+        reply = client.post("/api/projects/fixture/authoring/train/train/fields", json={
+            "revision": revision,
+            "field": "/settings/optimizer/learning_rate/value",
+            "edit": {"kind": "text", "text": "0.001, 0.003"},
+        })
+        assert reply.status_code == 200, reply.text
+        response = reply.json()
+        assert not response["problems"] and response["files"], response
+        saved = client.patch("/api/projects/fixture", json={"revision": revision, "files": response["files"]})
+        assert saved.status_code == 200, saved.text
+        assert folders.read("fixture").project.steps["train"].base.inline["settings"] == {}
+        plan = folders.read_plan("fixture", revision=None).plan
+        assert not plan.diagnostics, plan.diagnostics
+        assert len({row.request_id for row in plan.rows}) == 2
+        assert all(row.request_id is not None for row in plan.rows)
+        selected = folders.read_plan("fixture", revision=None, source_runs=tuple(row.key for row in plan.rows)).plan
+        rate = "/payload/settings/optimizer/learning_rate/value"
+        assert all(definition.sources[rate].kind == "sweep_value" for definition in selected.selected_definitions.values())

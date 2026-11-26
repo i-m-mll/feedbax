@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pydantic import JsonValue
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.compiler.model_document import model_tau_seconds
 from feedbax.compiler.model_ports import model_unstored_fields
 from feedbax.contracts.expression_values import (
@@ -17,7 +18,7 @@ from feedbax.contracts.model_document import (
     CompositeComponent, DelayAttachment, DelayInitialTask, DelayInitialValue, InterventionAttachment,
     LeafComponent, ModelDocument,
 )
-from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, authored_model_payload
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, ListedRuns, StepRuns, ModelEditCommand, SetField,
 )
@@ -47,7 +48,7 @@ from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.trial_scope import (
-    evaluation_document_write, scoped_file, selected_value, selection_scope, source_value_file, variant_file,
+    evaluation_document_write, model_content_edits, scoped_file, selected_value, selection_scope, source_value_file, variant_file,
 )
 
 
@@ -633,9 +634,12 @@ def model_fields(
         chosen_steps = {body.run.step, *body.chosen_steps}
         alternatives = []
         if chosen_steps < plan.document_users(variant, owner_name):
-            narrowed = evaluation_document_write(project, plan, owner_name, [
-                SetProjectValue(op="replace", path=pointer(difference.address.stored_path()), value=value),
-            ], chosen_steps, "model", variant)
+            try:
+                changed = resolve_effective_model(model, components, (difference,), functions=functions)
+            except ValueError as error:
+                raise ProjectFolderInvalid(str(error)) from error
+            edits = model_content_edits(document.payload, authored_model_payload(changed))
+            narrowed = evaluation_document_write(project, plan, owner_name, edits, chosen_steps, "model", variant)
             alternatives.append(("selected_readers", "Selected Readers", variant, narrowed))
         return _field_store(
             folders, project_id, project, plan, body,

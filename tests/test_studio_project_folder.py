@@ -748,13 +748,15 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
 def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
     root, client = study
     opened = _read(client)
+    with client:
+        opened = _edit_mass(client, _URL, opened, 1.5)
     service = client.app.state.project_folders
     selected = RunKey("default", "fit", "seed=10")
     entered = Event()
     release = Event()
 
     def pause_old_compile(project, **kwargs):
-        if project.documents[_MODEL].payload["interior"]["components"]["plant"]["fields"]["mass"] == 1:
+        if project.documents[_MODEL].payload["interior"]["components"]["plant"]["fields"]["mass"] == 1.5:
             entered.set()
             assert release.wait(HANG_SECONDS)
         return compile_project(project, **kwargs)
@@ -776,7 +778,7 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
     assert (old.revision, old.semantic_root) == (opened["revision"], opened["semantic_root"])
     assert (
         old.plan.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
-        == 1
+        == 1.5
     )
     assert (
         current.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]

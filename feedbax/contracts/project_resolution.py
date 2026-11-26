@@ -81,11 +81,14 @@ from feedbax.contracts.project_sweep import (
 from feedbax.contracts.run_matrix import CompositionDeltaError, apply_composition_deltas
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.train_settings import train_sweep_basis
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 
 if TYPE_CHECKING:
     from feedbax.contracts.effective_success import TerminalTrainSubject
     from feedbax.contracts.request_refs import RequestId
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+    from feedbax.training.methods import TrainingMethodRegistry
 
 
 class ResolutionCode(StrEnum):
@@ -526,11 +529,13 @@ class _Documents:
         external: Callable[[str], bytes | None] | None = None,
         partial_figures: bool = False,
         row_patches: Mapping[str, tuple[_DocumentRowPatch, ...]] | None = None,
+        training_methods: TrainingMethodRegistry | None = None,
     ):
         self.step = step
         self.variant_sources = variant_sources
         self.read_document = project.documents.get if read_document is None else read_document
         self.row_patches = row_patches or {}
+        self.training_methods = training_methods
         self.used: set[str] = set()
         self.edited: dict[str, JsonValue] = {}
         self.edited_sources: dict[str, Any] = {}
@@ -643,6 +648,8 @@ class _Documents:
                     try:
                         if not isinstance(draft, dict):
                             raise ValueError("A variant writes into an object payload only")
+                        if document.schema_id == TRAINING_DOCUMENT_SCHEMA_ID and item.patch.op == "replace":
+                            draft = train_sweep_basis(draft, item.patch.path, self.training_methods)
                         draft = apply_stored_patch_copy(draft, item.patch)
                     except ValueError as error:
                         problem = _Problem(
@@ -738,7 +745,14 @@ class _Documents:
             )
             for item in patches:
                 assert item.source is not None
-                shape = patch_source(shape, item.patch, source_shape(item.patch.value, item.source, item.override))
+                parts = tuple(item.patch.path.split("."))
+                source = source_shape(item.patch.value, item.source, item.override)
+                if document.schema_id == TRAINING_DOCUMENT_SCHEMA_ID and (
+                    item.patch.op == "replace" and parts[0] == "settings" and source_at(shape, parts) is None
+                ):
+                    shape = place_source(shape, parts, source)
+                else:
+                    shape = patch_source(shape, item.patch, source)
             self.edited_sources[name] = shape
         return source_at(self.edited_sources[name], parts)
 
@@ -908,6 +922,7 @@ class _Resolver:
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
         inline_origin: Callable[[Payload, ValueSource], Any] = source_shape,
+        *, training_methods: TrainingMethodRegistry | None = None,
     ):
         self.project = project
         self.readers = readers
@@ -915,6 +930,7 @@ class _Resolver:
         self.variant_sources = variant_sources
         self.read_document = read_document
         self.inline_origin = inline_origin
+        self.training_methods = training_methods
 
     def documents(self, step: str) -> _Documents:
         return _Documents(self.project, step, self.variant_sources, self.read_document)
@@ -1234,6 +1250,12 @@ class _Resolver:
                 if patch.op != "remove":
                     patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
                 variation = payload["params"]["variation"] if variation_index is not None else None
+                train_setting = (
+                    self.project.steps[name].kind == "train" and patch.op == "replace"
+                    and patch.path.startswith("settings.")
+                )
+                if train_setting:
+                    payload = train_sweep_basis(payload, patch.path, self.training_methods)
                 payload = replay_stored_patch_copy(payload, patch)
                 if origins is not None:
                     author = row.patch_authors.get(authored, name)
@@ -1252,7 +1274,11 @@ class _Resolver:
                         children = [source_at(held, (entry,)) for entry in previous_keys]
                         children[variation_index:variation_index + 1] = [shape]
                         shape = SourceList(getattr(held, "source", None), iter(children), patch.value)
-                    origins = patch_source(origins, patch, shape)
+                    parts = tuple(patch.path.split("."))
+                    if train_setting and source_at(origins, parts) is None:
+                        origins = place_source(origins, parts, shape)
+                    else:
+                        origins = patch_source(origins, patch, shape)
             if fields:
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
@@ -1297,7 +1323,7 @@ class _Resolver:
             self.project, name, self.variant_sources, self.read_document,
             external=self.readers.figure_external if self.project.steps[name].kind == "analyze" else None,
             partial_figures=partial_figures,
-            row_patches=state.row_document_patches,
+            row_patches=state.row_document_patches, training_methods=self.training_methods,
         )
 
     def finish(
@@ -1422,10 +1448,12 @@ class StepComposition:
         readers: BaseReaders = BaseReaders(),
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
+        training_methods: TrainingMethodRegistry | None = None,
     ) -> StepTemplate:
         return StepTemplate(
             self, _Resolver(
-                project, readers, self._state.origins is not None, variant_sources, read_document
+                project, readers, self._state.origins is not None, variant_sources, read_document,
+                training_methods=training_methods,
             )
         )
 

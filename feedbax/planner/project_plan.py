@@ -2644,7 +2644,7 @@ class _Compiler:
             project,
             readers=self.readers,
             variant_sources=self.variant_sources.get(key.variant),
-            read_document=reader,
+            read_document=reader, training_methods=self.training_methods,
         ).resolve(
             row, include_sources=sources, partial_figures=project.steps[key.step].kind == "analyze",
             trial_resolution=trial_resolution,
