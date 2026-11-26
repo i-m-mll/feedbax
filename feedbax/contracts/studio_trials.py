@@ -15,7 +15,7 @@ from feedbax.contracts.model_edit import (
 from feedbax.contracts.objective_document import StoredObjectiveDocument, StoredObjectiveTerm
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
+from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldSiteTables, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scene import ScenePoint
 from feedbax.contracts.studio_scope import StudioStoreChoice
@@ -206,7 +206,7 @@ class StudioSetField(StrictModel):
     entries: list[StudioSetFieldEntry]
 
 
-class StudioTrialAuthoring(StrictModel):
+class StudioTrialAuthoring(StudioFieldSiteTables):
     revision: Sha256
     run: StudioSavedTrainKey
     expression_context: str
