@@ -54,6 +54,8 @@ class TrainSelection:
     """The selected runs as a set of values per sweep of the step, when they are exactly those values' runs."""
     coordinates: tuple[Mapping[str, SweepCoordinate], ...] | None = None
     """The sweep coordinates of the step's selected runs; absent when no run is named."""
+    authored_additions: frozenset[str] = frozenset()
+    """Definition paths added by the selected sweep value's authored patches."""
 
 
 def merged_files(files: list[StudioProjectFilePatch]) -> list[StudioProjectFilePatch]:

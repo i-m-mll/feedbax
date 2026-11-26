@@ -1116,12 +1116,19 @@ def train_selection(
         )) if isinstance(scope, AxisValueRuns)
         else AxisCondition(rule=scope.rule) if isinstance(scope, SweepValuesRuns) else None
     )
+    additions = frozenset()
+    if isinstance(scope, AxisValueRuns) and (sweep := project.steps[step_id].sweep) is not None:
+        axis = sweep.axes.get(scope.axis)
+        if isinstance(axis, NamedAxis) and (entry := axis.values.get(scope.value)) is not None:
+            additions = frozenset(path for path, write in entry.patches.items()
+                                  if isinstance(write, SetValue) and write.op == "add")
     return TrainSelection(
         payloads, next((row for row in plan.rows if row.key == key), None),
         named.payload if isinstance(scope, SweepValuesRuns | AxisValueRuns | ListedRuns)
         and named is not None else None, scoped,
         partial(checked, scope, _scoped_runs(project, plan, key, scope, chosen)), values,
         tuple(row.coordinates for row in plan.rows if row.key in shown and row.key.step == step_id),
+        authored_additions=additions,
     )
 
 
