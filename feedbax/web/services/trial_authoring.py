@@ -1009,6 +1009,39 @@ def _stored_objective_view(plan, key, definition, objective=None) -> StoredObjec
     return StoredObjectiveDocument.from_lowered(objective) if objective is not None else None
 
 
+def _planned_family_problems(plan, key, families, preview):
+    """Use addressed Problems from the full Plan without expanding for authoring."""
+    if not families.families:
+        return ()
+    row = plan.row(key)
+    candidates = [
+        (json_pointer_parts(problem.path), problem.detail, None)
+        for problem in (row.problems if row is not None else ()) if problem.path.startswith("/")
+    ]
+    candidates.extend(
+        (tuple(problem.path.split(".")), problem.detail, problem.span)
+        for problem in plan.diagnostics
+        if (problem.variant, problem.step, problem.row) == (key.variant, key.step, key.row)
+        and problem.path.startswith(("payload.", "inputs."))
+    )
+    held = {(problem.path, problem.reason) for problem in preview}
+    found = []
+    for path, reason, span in candidates:
+        if path[:1] == ("payload",):
+            path = path[1:]
+        if path[:1] in (("trial_documents",), ("inputs",)):
+            path = path[1:]
+        if not is_family_member_path(path) or pointer(path[:3]) not in families.families:
+            continue
+        if (path, reason) not in held:
+            found.append(Problem(code=ProblemCode.STRUCTURE, path=path, reason=reason, span=span))
+            held.add((path, reason))
+        if path[3:4] in (("over",), ("combination",), ("label",)):
+            family = pointer(path[:3])
+            families.families[family] = families.families[family].model_copy(update={"member_count": None})
+    return tuple(found)
+
+
 def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
     if definition is None:
         definition = _definition(plan, key)
@@ -1032,9 +1065,10 @@ def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
             for path, site in projected.fields.items()
             if path[:1] != ("validation_trials",)
         }
+        problems = (*map(families.problem, projected.problems), *families.problems)
         projected = replace(
             projected, fields=fields | {path: authored.site for path, authored in families.fields.items()},
-            problems=(*map(families.problem, projected.problems), *families.problems),
+            problems=(*problems, *_planned_family_problems(plan, key, families, problems)),
             family_editor=families, stored_task=stored_task,
         )
     origins = _set_origins(plan, key, definition, projected)

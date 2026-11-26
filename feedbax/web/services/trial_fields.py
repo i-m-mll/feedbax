@@ -1,6 +1,6 @@
 """The fields of a step's Task and Objective documents, addressed by the ids of the members they lie in."""
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
@@ -20,7 +20,7 @@ from feedbax.contracts.expression_text import ParsedField, print_stored_expressi
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.member_family import (
     ExpandedFamilyMember, FamilyProblem, NamedIndexValue, StoredFamilyMember, expand_family,
-    family_member_count, index_rule_count, named_index_name,
+    family_member_count, family_reason, index_rule_count, named_index_name,
 )
 from feedbax.contracts.matrix_core import prepare_stored_patch
 from feedbax.contracts.objective_document import (
@@ -108,13 +108,6 @@ def family_indices(
 
 def family_problem(error: FamilyProblem, path: FieldPath) -> Problem:
     return Problem(code=ProblemCode.STRUCTURE, path=(*path, *error.path), reason=family_reason(str(error), error.coordinates))
-
-
-def family_reason(reason: str, coordinates: Mapping[str, str]) -> str:
-    if not coordinates:
-        return reason
-    values = ", ".join(f"{name}={value}" for name, value in coordinates.items())
-    return f"{reason} (family {values})"
 
 
 def is_family_member_path(path: FieldPath) -> bool:

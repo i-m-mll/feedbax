@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.web.app import create_app
 from tests.test_canonical_evaluate_admission import _save_project
@@ -210,3 +211,33 @@ def test_validation_trial_family_projects_and_edits_existing_members(tmp_path):
         assert trial["label"] == "Plain trial"
         assert "over" not in trial
         assert "combination" not in trial
+
+
+@pytest.mark.parametrize("role", ["objective", "task"])
+def test_family_problem_from_later_combination_uses_authored_path(tmp_path, role):
+    raw = document_project(authored_documents())
+    if role == "objective":
+        owner = raw["documents"]["objective"]["payload"]["terms"]["effort"]
+        owner.update(weight="1 + k", over={"k": {
+            "passing": 0, "failing": {"value": True, "label": "Later choice"},
+        }})
+        path = "/objective/terms/effort/weight"
+    else:
+        raw["documents"]["task"]["payload"]["validation_trials"] = {"cohort": {
+            "label": "Trial {k}",
+            "over": {"k": {"passing": True, "failing": {"value": 0, "label": "Later choice"}}},
+            "variables": {"catch": "k"},
+        }}
+        path = "/task/validation_trials/cohort/variables/catch"
+    app = create_app(projects_dir=tmp_path)
+    folders = app.state.project_folders
+    _save_project(folders, "families", Project.model_validate(raw))
+    body = {"revision": folders.read("families").revision,
+            "run": {"variant": "default", "step": "train", "row": "default"}}
+    with TestClient(app) as client:
+        view = _post(client, body)
+    problems = _field(view, path)["problems"]
+    assert len(problems) == 1, view["problems"]
+    problem = problems[0]
+    assert pointer(tuple(problem["path"])) == path
+    assert "k=Later choice" in problem["reason"]

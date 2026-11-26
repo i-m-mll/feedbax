@@ -35,7 +35,8 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.model_input import DocumentInput, InitialModelSource, authored_document_input, encode_document_input
-from feedbax.contracts.objective_document import ObjectiveDocument, objective_weight_title
+from feedbax.contracts.member_family import FamilyProblem, StoredFamilyMember, expand_members, family_reason
+from feedbax.contracts.objective_document import ObjectiveDocument, StoredObjectiveDocument, objective_weight_title
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_authoring import InputProducer, InputRole
@@ -1559,6 +1560,72 @@ def _trial_place(problem: Problem) -> tuple[str, tuple[str, ...]]:
     return str(role), tuple(map(str, parts))
 
 
+def _family_origins(
+    members: Mapping[str, StoredFamilyMember], keys: set[str], *, label_placeholders: bool,
+) -> dict[str, tuple[str, Mapping[str, str]]]:
+    if not any(member.over for member in members.values()):
+        return {}
+    origins = {}
+    for member in expand_members(members, label_placeholders=label_placeholders):
+        if member.key in keys:
+            if member.coordinates:
+                origins[member.key] = member.source_key, member.coordinate_names
+            keys.remove(member.key)
+            if not keys:
+                break
+    return origins
+
+
+def _authored_family_problems(
+    problems: tuple[Problem, ...], *, task: object = None, objective: object = None,
+    runtime_task: TaskDocument | PythonTaskSelection | None = None,
+) -> tuple[Problem, ...]:
+    """Relocate generated terms and trials after scientific pairing has returned its Problems."""
+    families = {("task", "validation_trials"): task, ("objective", "terms"): objective}
+    locations = tuple(_trial_place(problem) for problem in problems)
+    origins = {}
+    for (role, collection), authored in families.items():
+        keys = {path[1] for owner, path in locations if owner == role and path[:1] == (collection,) and len(path) > 1}
+        if authored is None or not keys:
+            continue
+        sources = {key: key for key in keys}
+        if role == "task":
+            document = authored if isinstance(authored, StoredTaskDocument) else StoredTaskDocument.model_validate(authored)
+            members = document.validation_trials
+            if isinstance(runtime_task, TaskDocument) and any("=" in key for key in keys):
+                from feedbax.compiler.set_fields import listed_set_validation_choices
+
+                if choices := listed_set_validation_choices(runtime_task):
+                    axis = min(choices)  # axis_values_id writes the crossed suffix in axis order.
+                    sources = {key: key.partition(f"--{axis}=")[0] for key in keys}
+        else:
+            members = StoredObjectiveDocument.model_validate(authored).terms
+        found = _family_origins(members, set(sources.values()), label_placeholders=role == "task")
+        origins[role, collection] = {key: found[source] for key, source in sources.items() if source in found}
+
+    placed = []
+    for problem, (role, path) in zip(problems, locations, strict=True):
+        key = None if len(path) < 2 else origins.get((role, path[0]), {}).get(path[1])
+        if key is not None:
+            source, coordinates = key
+            problem = problem.model_copy(update={
+                "path": (role, path[0], source, *path[2:]), "reason": family_reason(problem.reason, coordinates),
+            })
+        placed.append(problem)
+    return tuple(placed)
+
+
+def _objective_family_problem(
+    key: RunKey, error: FamilyProblem, slot: str, document_ids: Mapping[str, str], document_pointers: Mapping[str, str],
+) -> ProjectDiagnostic:
+    path = ".".join((slot, "terms", error.source_key, *error.path))
+    document, document_path = _payload_document(path, document_ids, document_pointers)
+    return ProjectDiagnostic(
+        ResolutionCode.INVALID_PAYLOAD, path, family_reason(str(error), error.coordinates), key.step,
+        row=key.row, variant=key.variant, document=document, document_path=document_path,
+    )
+
+
 def _trial_problems(
     problems: Iterable[Problem], model: ModelDocument | None, *, initial: bool = False, synthesis: bool = False,
 ) -> tuple[RunProblem, ...]:
@@ -1790,6 +1857,10 @@ def _encode_row(
             return _LoweredRow(None, (_task_draft_problem(
                 key, error, EVALUATION_TASK, document_ids, document_pointers,
             ),), lowering_stamp)
+        except FamilyProblem as error:
+            return _LoweredRow(None, (_objective_family_problem(
+                key, error, "payload.trial_documents.objective", document_ids, document_pointers,
+            ),), lowering_stamp)
         except ValueError as error:
             return _LoweredRow(None, (ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents", str(error), key.step,
@@ -1799,7 +1870,12 @@ def _encode_row(
         if isinstance(prepared, tuple):
             # The Python task does not resolve, or the Model, Task and Objective do not pair: the row is planned and
             # cannot run.
-            pairing_problems = _trial_problems(prepared, authored.model)
+            assert isinstance(stored_trial, dict)
+            problems = _authored_family_problems(
+                prepared, task=stored_trial.get("task"), objective=stored_trial.get("objective"),
+                runtime_task=authored.task_source,
+            )
+            pairing_problems = _trial_problems(problems, authored.model)
             model_source = replace(model_source, unpaired=True)
         else:
             preparation = prepared
@@ -1858,7 +1934,11 @@ def _encode_row(
                 stored_task=(StoredTaskDocument.model_validate(payload["task"]) if documents.task is not None else None),
             )
             if isinstance(prepared, tuple):
-                pairing_problems = _trial_problems(prepared, documents.model, synthesis=True)
+                problems = _authored_family_problems(
+                    prepared, task=payload.get("task"), objective=payload.get("objective"),
+                    runtime_task=documents.task_source,
+                )
+                pairing_problems = _trial_problems(problems, documents.model, synthesis=True)
             else:
                 if (problem := prepared.checkpoint_problem) is not None:
                     checkpoint_problem = replace(problem, path=problem.path.removeprefix("/trial_documents"))
@@ -1942,6 +2022,10 @@ def _encode_row(
     except StoredTaskDraftError as error:
         return _LoweredRow(None, (_task_draft_problem(
             key, error, "payload.task", document_ids, document_pointers,
+        ),), lowering_stamp)
+    except FamilyProblem as error:
+        return _LoweredRow(None, (_objective_family_problem(
+            key, error, "payload.objective", document_ids, document_pointers,
         ),), lowering_stamp)
     except ValueError as error:
         problems = (("", str(error)),)
@@ -3558,7 +3642,7 @@ class _Compiler:
                 python_tasks=tasks, input_bindings=settings.input_bindings, keyed_root_ports=True,
             )
             unpaired = paired if isinstance(paired, tuple) else paired.problems
-            refusals = _trial_problems(unpaired, model, initial=True)
+            refusals = _trial_problems(_authored_family_problems(unpaired, task=stored_task), model, initial=True)
             conditions = evaluation_conditions(task, tasks)
             if not unpaired:
                 assert not isinstance(paired, tuple)
@@ -3576,12 +3660,17 @@ class _Compiler:
                     conditions = evaluation_conditions(variant.task, tasks)
                     if isinstance(paired, tuple) or paired.problems:
                         problems = paired if isinstance(paired, tuple) else paired.problems
+                        authored_problems = _authored_family_problems(
+                            problems, task=authored_task, runtime_task=variant.task,
+                        )
                         refusals = tuple(
                             RunProblem(
-                                _set_condition_placement(problem, condition_origins) or refusal.path,
-                                refusal.reason, problem.model_address,
+                                _set_condition_placement(problem, condition_origins)
+                                or (pointer(("inputs", *authored.path)) if authored is not problem
+                                    else variant.task_refusal(problem).path),
+                                authored.reason, problem.model_address,
                             )
-                            for problem, refusal in ((item, variant.task_refusal(item)) for item in problems)
+                            for problem, authored in zip(problems, authored_problems, strict=True)
                         )
             trials = _plan_trial_ids(raw["trial_set"], conditions, authored_task)
             payload = payload | {"params": {
@@ -3624,6 +3713,10 @@ class _Compiler:
         except StoredTaskDraftError as error:
             return _LoweredRow(None, (_task_draft_problem(
                 key, error, "inputs.task", document_ids, resolved.document_pointers,
+            ),), document_ids=document_ids, document_uses=document_uses), {}
+        except FamilyProblem as error:
+            return _LoweredRow(None, (_objective_family_problem(
+                key, error, "inputs.objective", document_ids, resolved.document_pointers,
             ),), document_ids=document_ids, document_uses=document_uses), {}
         except (KeyError, OSError, ValueError) as error:
             return _LoweredRow(None, (ProjectDiagnostic(
@@ -3764,13 +3857,17 @@ class _Compiler:
                 )
                 problems = pairing if isinstance(pairing, tuple) else pairing.problems
                 if problems:
+                    authored_problems = _authored_family_problems(
+                        problems, task=authored_task, runtime_task=variant.task,
+                    )
                     refusals = tuple(
                         ProjectDiagnostic(
                             ResolutionCode.INVALID_PAYLOAD,
-                            _set_condition_placement(problem, condition_origins) or cannot.path, cannot.reason, key.step,
-                            row=key.row, variant=key.variant, model_address=problem.model_address,
+                            _set_condition_placement(problem, condition_origins)
+                            or (pointer(authored.path) if authored is not problem else variant.task_refusal(problem).path),
+                            authored.reason, key.step, row=key.row, variant=key.variant, model_address=problem.model_address,
                         )
-                        for problem, cannot in ((item, variant.task_refusal(item)) for item in problems)
+                        for problem, authored in zip(problems, authored_problems, strict=True)
                     )
                 else:
                     assert not isinstance(pairing, tuple)

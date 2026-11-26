@@ -92,6 +92,13 @@ def _constant(value: Expression) -> bool:
     )
 
 
+def family_reason(reason: str, coordinates: Mapping[str, str]) -> str:
+    if not coordinates:
+        return reason
+    values = ", ".join(f"{name}={value}" for name, value in coordinates.items())
+    return f"{reason} (family {values})"
+
+
 def named_index_name(key: str, value: Expression | NamedIndexValue) -> str:
     return value.label or key if isinstance(value, NamedIndexValue) else key
 
