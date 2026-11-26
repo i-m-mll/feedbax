@@ -6,11 +6,12 @@ import {
 } from '@/api/studioAuthoring';
 import { shownError } from '@/api/shownErrors';
 import {
-  studioAccessibleName, studioCountOf, studioDefinitionStatus, studioEvaluateValueSource, studioName, evaluateOrigin, type EvaluateOrigin,
+  studioAccessibleName, studioCountOf, studioDefinitionStatus, studioEvaluateValueSource, studioFormat, studioName, evaluateOrigin, type EvaluateOrigin,
 } from '@/components/activity/studioVocabulary';
 import { ChangeMark as ChangedMark } from '@/components/ui/ChangeMark';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { Inspector } from '@/components/ui/Inspector';
+import { Section } from '@/components/ui/Section';
 import { editedElement } from '@/components/ui/ChoiceMenu';
 import { MenuItem } from '@/components/ui/Menu';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
@@ -33,7 +34,7 @@ import { labelOf } from './memberLabels';
 import { partMenuKey } from '@/components/values/partMenu';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
-  JsonValue, ProjectValueEdit, StoredObjectiveDocument, StoredObjectiveTerm, StudioObjectiveTerm, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+  IndexRule, JsonValue, ProjectValueEdit, StoredObjectiveDocument, StoredObjectiveTerm, StudioObjectiveTerm, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
   StudioEvaluateValueSource, StudioTrialField, TrialTermAggregate,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
@@ -48,7 +49,7 @@ import { sendWithStore, type AskStore } from './storeChoice';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
 import { WindowCell, WindowEditor, type WindowEpochChoice, type WindowHost } from './WindowEditor';
-import { FamilyOver, type FamilyIndex } from './FamilyOver';
+import { FamilyCount, FamilyOver, type FamilyIndex } from './FamilyOver';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 type Relation = Extract<Change, { kind: 'relate' }>;
@@ -245,16 +246,18 @@ function outlineReasons(view: StudioTrialAuthoring) {
   const links = 'variables' in view.task ? view.task.links ?? {} : {};
   const reasons = new Map<string, string>();
   for (const { path = [], reason } of view.problems) {
-    const [section, id] = path.map(String);
+    // A draft's Problems are addressed from the Trial view (`task`, …), a compiled Task's from the Task.
+    const [section, id] = (path[0] === 'task' ? path.slice(1) : path).map(String);
     const linked = section === 'links' ? links[id] : undefined;
     const key = linked ? `variables:${linked}`
-      : section === 'variables' || section === 'epochs' || section === 'signals' ? `${section}:${id}` : undefined;
+      : section === 'variables' || section === 'epochs' || section === 'signals' ? `${section}:${id}`
+        : section === 'validation_trials' ? `validationTrials:${id}` : undefined;
     if (key && !reasons.has(key)) reasons.set(key, reason);
   }
   return reasons;
 }
 
-const outlineKinds = { variables: 'variable', epochs: 'epoch', signals: 'signal', modelInputs: 'input' } as const;
+const outlineKinds = { variables: 'variable', epochs: 'epoch', signals: 'signal', validationTrials: 'trial', modelInputs: 'input' } as const;
 
 /**
  * The drawer's Outline of the Task: a task document's variables, epochs and signals, or a Python task's signals, and
@@ -271,6 +274,11 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
     variables: task && entries('variables', task.variables),
     epochs: task && entries('epochs', task.epochs),
     signals: task ? entries('signals', task.signals) : view.signals.map(({ id, name }) => ({ id, name: humanizeLabel(name) })),
+    validationTrials: task && Object.entries(task.validation_trials ?? {}).map(([id, trial]) => {
+      const count = trial.over ? familyFacts(view, 'task', ['validation_trials', id])?.member_count : undefined;
+      return { id, name: trial.label, reason: reasons.get(`validationTrials:${id}`),
+        detail: count == null ? undefined : studioFormat('memberCount', { count }) };
+    }),
     modelInputs: view.inputs.map(({ id, name, address, signal_id }) => {
       const signal = view.signals.find((item) => item.id === signal_id)?.name;
       const reason = view.problems.find(({ model_address }) => model_address && addressKey(model_address) === addressKey(address))?.reason;
@@ -312,6 +320,7 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
     const epoch = view.epochs.find(({ id }) => id === key);
     return epoch ? <Inspector name={epoch.name} type={studioName('epochs')} /> : null;
   }
+  if (kind === 'trial') return <ValidationTrialInspector view={view} commit={commit} id={key} />;
   if (kind !== 'input') return null;
   const input = view.inputs.find(({ id }) => id === key);
   if (!input) return null;
@@ -324,6 +333,36 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
       ] },
       change: commit && ((value) => commit('Bind Task Signal', { kind: 'binding', input_id: input.id, signal_id: String(value) || null })),
     })} />
+  </Inspector>;
+}
+
+/**
+ * The Inspector of a validation trial of a task document: its name, its Over group when it is a family, and the values
+ * it gives the Task's variables and the steps it gives its epochs, each named and projected by the service.
+ */
+function ValidationTrialInspector({ view, commit, id }: { view: TrialView; commit?: Commit; id: string }) {
+  const trial = 'variables' in view.task ? view.task.validation_trials?.[id] : undefined;
+  if (!trial) return null;
+  const member = ['validation_trials', id];
+  const over = familyOver(view, 'task', member, trial, commit);
+  const given = (group: 'variables' | 'epoch_steps') => Object.keys(trial[group] ?? {}).map((key) => {
+    const path = [...member, group, key];
+    const projection = view.fields.find((field) => field.path === authoredPointer(['task', ...path]));
+    if (!projection) throw new Error(`The validation trial field ${authoredPointer(path)} has no projection`);
+    return memberField(view, 'task', path, projection.label, `${authoredPointer(path)}`, commit);
+  });
+  const name = rawField({ id: `${id}:label`, label: studioName('name'), type: { kind: 'string' }, value: trial.label,
+    changed: changedAt(view, 'task', authoredPointer([...member, 'label']), commit),
+    change: commit && ((value: JsonValue) => typeof value === 'string' && value.trim()
+      ? commit(studioAccessibleName('set', studioName('name')), { kind: 'task', edits: [write(authoredPointer([...member, 'label']), value.trim(), true)] })
+      : undefined) });
+  const groups = [['variables', given('variables')], ['epochSteps', given('epoch_steps')]] as const;
+  return <Inspector name={trial.label} type={studioName('validationTrials')}>
+    <ValueField key={trial.label} model={name} />
+    {over && <FamilyOver {...over} />}
+    {groups.map(([group, fields]) => fields.length > 0 && <Section key={group} level="group" name={studioName(group)} bodyClassName="grid gap-1">
+      {fields.map((field) => <ValueField key={field.id + JSON.stringify(field.value ?? field.text)} model={field} />)}
+    </Section>)}
   </Inspector>;
 }
 
@@ -426,30 +465,64 @@ function termFields(view: TrialView, key: string, term: StoredObjectiveTerm, com
 }
 
 /**
- * The Over group of a family member of the step's Task or Objective, stored at `member` in `document`: each text rule as
- * the field the service projects at its `over`, labelled by the index name the member's expressions use, and how the
- * indices combine. Removing the last index makes the member a plain one. A member that is not a family has none.
+ * The field the service projects at `path` of the step's `document`, named `label`, edited as an expression and marked
+ * where it differs from the document's base.
  */
-export function familyOver(view: TrialView, document: 'task' | 'objective', member: readonly string[],
-  family: { readonly over?: StoredObjectiveTerm['over']; readonly combination?: StoredObjectiveTerm['combination'] },
+function memberField(view: TrialView, document: 'task' | 'objective', path: readonly string[], label: string, id: string,
+  commit?: Commit, runs?: TrialRuns): FieldModel {
+  const pointer = authoredPointer([document, ...path]);
+  const projection = view.fields.find((each) => each.path === pointer);
+  if (!projection) throw new Error(`The ${document} field ${pointer} has no projection`);
+  return trialField(view, projection, label, runs, {
+    id, changed: changedAt(view, document, authoredPointer(path), commit),
+    commit: commit && ((edit) => commit(studioAccessibleName('set', label), { kind: 'expression', path: pointer, edit })),
+  });
+}
+
+/** What the service reports of the family stored at `member` of the step's `document`, when it is one. */
+export const familyFacts = (view: StudioTrialAuthoring, document: 'task' | 'objective', member: readonly string[]) =>
+  view.families?.[authoredPointer([document, ...member])];
+
+/** A member that may be a family over indices. */
+interface FamilyMember {
+  readonly over?: Readonly<Record<string, IndexRule>> | null;
+  readonly combination?: 'cross' | 'zip';
+}
+
+/**
+ * The Over group of a family member of the step's Task or Objective, stored at `member` in `document`, labelled by the
+ * index names the member's expressions use: a text rule as the field the service projects at its `over`, and a rule of
+ * named values as each value the service names with the field of its value; then how the indices combine. Removing the
+ * last value removes its index, and removing the last index makes the member a plain one. A plain member has none.
+ */
+export function familyOver(view: TrialView, document: 'task' | 'objective', member: readonly string[], family: FamilyMember,
   commit?: Commit, runs?: TrialRuns): { indices: FamilyIndex[]; combination: FieldModel } | undefined {
   const over = family.over;
   if (!over) return undefined;
   const at = (...field: string[]) => authoredPointer([...member, ...field]);
   const save = (name: string, edits: ProjectValueEdit[]) => commit?.(name, { kind: document, edits });
+  const projected = (field: readonly string[], label: string, id: string) =>
+    memberField(view, document, [...member, ...field], label, id, commit, runs);
+  const facts = familyFacts(view, document, member);
   const names = Object.keys(over);
   const indices = names.map((index): FamilyIndex => {
-    const remove = commit && (() => { void save(studioAccessibleName('remove', index), names.length > 1
+    const remove = commit && (() => void save(studioAccessibleName('remove', index), names.length > 1
       ? [{ op: 'remove', path: at('over', index) }]
-      : [{ op: 'remove', path: at('over') }, ...has(family, 'combination') ? [{ op: 'remove', path: at('combination') } as const] : []]); });
-    if (typeof over[index] !== 'string') return { name: index, remove };
-    const path = authoredPointer([document, ...member, 'over', index]);
-    const projection = view.fields.find((field) => field.path === path);
-    if (!projection) throw new Error(`The ${document} index ${index} at ${at()} has no field`);
-    return { name: index, remove, rule: trialField(view, projection, index, runs, {
-      id: `${at()}:over:${index}`,
-      changed: changedAt(view, document, at('over', index), commit),
-      commit: commit && ((edit) => commit(studioAccessibleName('set', index), { kind: 'expression', path, edit })),
+      : [{ op: 'remove', path: at('over') }, ...has(family, 'combination') ? [{ op: 'remove', path: at('combination') } as const] : []]));
+    const rule = over[index]!;
+    if (typeof rule === 'string') return { name: index, remove, rule: projected(['over', index], index, `${at()}:over:${index}`) };
+    const named = facts?.indices[index]?.values ?? [];
+    return { name: index, remove, values: named.map(({ key, name }) => {
+      const stored = rule[key];
+      return {
+        name,
+        field: projected(['over', index, key], name, `${at()}:over:${index}:${key}`),
+        rename: commit && ((next: string) => void save(studioAccessibleName('rename', name),
+          [write(at('over', index, key, 'label'), next, isRecord(stored) && has(stored, 'label'))])),
+        remove: commit && (named.length > 1
+          ? () => void save(studioAccessibleName('remove', name), [{ op: 'remove', path: at('over', index, key) }])
+          : remove),
+      };
     }) };
   });
   const combination = rawField({ id: `${at()}:combination`, label: studioName('combination'),
@@ -557,6 +630,7 @@ export function TrialObjectiveTable({ view, commit, addTerm, selected, select, r
     <tbody>{Object.entries(terms).map(([key, term], index) => {
       const fields = termFields(view, key, term, commit, runs);
       const name = termName(term, index);
+      const count = term.over && <FamilyCount count={familyFacts(view, 'objective', ['terms', key])?.member_count} />;
       const score = scores && scoreOf(scores, key);
       const cell = (field: TermColumn) => {
         const chosen = selected?.term === key && selected.field === field;
@@ -574,7 +648,8 @@ export function TrialObjectiveTable({ view, commit, addTerm, selected, select, r
             {studioName('remove')}
           </MenuItem>
         </> }}>
-        {!commit ? <TableRowHeader {...cell('name')}>{name}</TableRowHeader> : <TableFieldCell header {...cell('name')}>
+        {!commit ? <TableRowHeader {...cell('name')}><span className="flex items-center gap-1">{name}{count}</span></TableRowHeader>
+          : <TableFieldCell header {...cell('name')}>
           <span className="flex h-full min-w-0 items-center">
             <InlineEdit form="cell" value={term.label ?? ''} empty={name} editing={renaming === key} className="min-w-0 flex-1"
               aria-label={studioAccessibleName('rename', name)}
@@ -584,6 +659,7 @@ export function TrialObjectiveTable({ view, commit, addTerm, selected, select, r
                 if (next.trim() !== term.label) void save(studioAccessibleName('set', studioName('name')),
                   [write(termPath(key, 'label'), next.trim(), has(term, 'label'))]);
               }} />
+            {count}
             <FieldChange change={fields.name.change} id={`${key}-name-change`} />
           </span>
         </TableFieldCell>}
@@ -613,6 +689,7 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
     setError(reasonOf(await commit?.(name, { kind: 'objective', edits: [edit] }, removes)));
   const nodes: TreeNode[] = Object.entries(terms).map(([key, term], index) => ({
     id: key, name: termName(term, index), muted: term.enabled === false,
+    trailing: term.over && <FamilyCount count={familyFacts(view, 'objective', ['terms', key])?.member_count} />,
   }));
   return <Drawer>
     <DrawerSection sections={sections} id="objective.outline" name={studioName('outline')}>

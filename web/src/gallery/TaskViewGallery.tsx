@@ -115,7 +115,7 @@ function outlineGroups(view: TaskDocumentView): Partial<Record<OutlineGroup, Out
   };
 }
 
-const outlineKinds = { variables: 'variable', epochs: 'epoch', signals: 'signal', modelInputs: 'signal' } as const;
+const outlineKinds = { variables: 'variable', epochs: 'epoch', signals: 'signal', validationTrials: 'signal', modelInputs: 'signal' } as const;
 
 function outlineSelection(selected: TaskSelection | undefined) {
   if (!selected || selected.kind === 'repeat') return undefined;

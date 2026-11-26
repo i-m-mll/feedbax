@@ -400,6 +400,8 @@
     "nextPage": "Next Page",
     "previousPage": "Previous Page",
     "signals": "Signals",
+    "validationTrials": "Validation Trials",
+    "epochSteps": "Epoch Steps",
     "modelInputs": "Model Inputs",
     "outputs": "Outputs",
     "addTerm": "Add Term",

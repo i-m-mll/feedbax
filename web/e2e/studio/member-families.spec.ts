@@ -4,53 +4,86 @@ import { enter, fixture, mapStep, seedManagedProject, sweepLabel } from './fixtu
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-type File = { kind: string; id: string; step?: Record<string, unknown>; document?: { payload?: { terms?: Record<string, object> } } };
+type File = { kind: string; id: string; step?: Record<string, unknown>; document?: { payload?: Record<string, unknown> } };
 
-/** The ordinary project, with its Objective's one term a family named Effort over `k` from 0 to 5. */
-async function termFamily() {
+/** Keys the families' seed authors, each of which has a label that the page shows instead. */
+const keys = ['effort-term', 'trial-family', 'side_neg', 'side_pos'];
+
+/**
+ * The ordinary project with its Objective's one term a family named Reach effort over `k` from 0 to 5, and its Task's
+ * validation trials one family over a text rule (`direction`) and a rule of named values (`side`).
+ */
+async function families() {
   const files: File[] = await fixture('ordinary-files', '2');
-  const objective = files.find(({ id }) => id === 'simple-reaches-objective')!.document!.payload!;
-  const [[key, term]] = Object.entries(objective.terms!);
-  objective.terms = { [key]: { ...term, label: 'Effort', over: { k: '0..5' }, weight: 'k + 1' } };
+  const payload = (id: string) => files.find((file) => file.id === id)!.document!.payload!;
+  const objective = payload('simple-reaches-objective');
+  const [term] = Object.values(objective.terms as Record<string, object>);
+  objective.terms = { 'effort-term': { ...term, label: 'Reach effort', over: { k: '0..5' }, weight: 'k + 1' } };
+  payload('simple-reaches-task').validation_trials = { 'trial-family': {
+    label: 'Reach {direction} {side}',
+    over: { direction: '0..3', side: { 'side_neg': { value: -1, label: 'Left' }, 'side_pos': { value: 1, label: 'Right' } } },
+    variables: { start: '[0.1 * side, -0.05]', target: '[0.1 * side + 0.1 * direction, 0.2]' },
+  } };
   return files;
 }
 
-// Catches a family listed as the terms it generates or without its count, an index rule missing from the Inspector, a
-// count that does not follow the rule, an edit of the rule or of the family's Weight that is not stored on the one
-// member, and a reopened project that shows any of them differently.
-test('an Objective term family is one term whose index rule and Weight are edited on it', { tag: '@slow' }, async ({ page, request }) => {
-  const { snapshot } = await seedManagedProject(request, await termFamily());
-  const table = page.locator('[data-slot="primary"]').getByRole('tabpanel').getByRole('table', { name: 'Objective Terms', exact: true });
+// Catches a family listed as the members it generates or without its count, a count that does not follow its rule, an
+// index rule, a named value or its name, or a trial value that cannot be edited on the one member, a reopened project
+// that shows any of them differently, and a member or value key shown in place of its label.
+test('an Objective term family and a validation trial family each read as one member and are edited on it', { tag: '@slow' }, async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await families());
+  const primary = page.locator('[data-slot="primary"]');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const weight = table.getByRole('row').nth(1).getByRole('textbox', { name: 'Weight', exact: true });
-  const index = inspector.getByRole('region', { name: 'Over', exact: true }).getByRole('textbox', { name: 'k', exact: true });
-  const open = async () => {
-    await page.goto(`/?project=${snapshot.project_id}`);
+  const over = inspector.getByRole('region', { name: 'Over', exact: true });
+  const terms = primary.getByRole('tabpanel').getByRole('table', { name: 'Objective Terms', exact: true });
+  const term = terms.getByRole('row').nth(1).getByRole('rowheader');
+  const trials = page.getByRole('complementary', { name: 'Details Drawer' }).getByRole('tree', { name: 'Validation Trials', exact: true });
+  const shownKeys = async () => { const text = await page.locator('body').innerText(); return keys.filter((key) => text.includes(key)); };
+  const open = async (tab: 'Objective' | 'Task') => {
     await mapStep(page, 'train').click();
-    await page.getByRole('tab', { name: 'Objective', exact: true }).click();
-    await weight.click();
+    await page.getByRole('tab', { name: tab, exact: true }).click();
+  };
+  const openTerm = async () => {
+    await open('Objective');
+    await terms.getByRole('row').nth(1).getByRole('textbox', { name: 'Weight', exact: true }).click();
+  };
+  const openTrial = async () => {
+    await open('Task');
+    await trials.getByRole('treeitem').first().click();
   };
 
-  await open();
-  const term = table.getByRole('row').nth(1).getByRole('rowheader');
-  await expect(table.getByRole('row')).toHaveCount(2);
-  await expect(term.getByRole('textbox', { name: /^Rename / })).toHaveValue('Effort');
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await openTerm();
+  await expect(terms.getByRole('row')).toHaveCount(2);
   await expect(term).toContainText('× 6');
-  await expect(weight).toHaveValue('k + 1');
-  await expect(index).toHaveValue('0..5');
-
-  await enter(index, '0..7');
-  await expect(index).toHaveValue('0..7');
+  await expect(over.getByRole('textbox', { name: 'k', exact: true })).toHaveValue('0..5');
+  await enter(over.getByRole('textbox', { name: 'k', exact: true }), '0..7');
   await expect(term).toContainText('× 8');
-  await enter(weight, '2 * k');
-  await expect(weight).toHaveValue('2 * k');
-  await expect(table.getByRole('row')).toHaveCount(2);
+  expect(await shownKeys()).toEqual([]);
 
-  await open();
-  await expect(table.getByRole('row')).toHaveCount(2);
+  await openTrial();
+  await expect(trials.getByRole('treeitem')).toHaveCount(1);
+  await expect(trials.getByRole('treeitem')).toContainText('Reach {direction} {side}');
+  await expect(trials.getByRole('treeitem')).toContainText('× 8');
+  await expect(over.getByRole('textbox', { name: 'direction', exact: true })).toHaveValue('0..3');
+  await enter(over.getByRole('textbox', { name: 'Right', exact: true }), '2');
+  await enter(over.getByRole('textbox', { name: 'Rename Left', exact: true }), 'West');
+  await expect(over.getByRole('textbox', { name: 'West', exact: true })).toHaveValue('-1');
+  const target = inspector.getByRole('region', { name: 'Variables', exact: true }).getByRole('textbox', { name: 'target', exact: true });
+  await enter(target, '[0.1 * side + 0.2 * direction, 0.2]');
+  await expect(target).toHaveValue('[0.1 * side + 0.2 * direction, 0.2]');
+  expect(await shownKeys()).toEqual([]);
+
+  await page.reload();
+  await openTerm();
   await expect(term).toContainText('× 8');
-  await expect(weight).toHaveValue('2 * k');
-  await expect(index).toHaveValue('0..7');
+  await expect(over.getByRole('textbox', { name: 'k', exact: true })).toHaveValue('0..7');
+  await openTrial();
+  await expect(trials.getByRole('treeitem')).toContainText('× 8');
+  await expect(over.getByRole('textbox', { name: 'Right', exact: true })).toHaveValue('2');
+  await expect(over.getByRole('textbox', { name: 'West', exact: true })).toHaveValue('-1');
+  await expect(target).toHaveValue('[0.1 * side + 0.2 * direction, 0.2]');
+  expect(await shownKeys()).toEqual([]);
 });
 
 /** The delayed-reaches files with a Set of a Light entry and a family of three loads, which the Train sweeps. */
