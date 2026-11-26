@@ -44,9 +44,8 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     raw = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task = raw["documents"]["simple-reaches-task"]["payload"]
-    target = next(signal for signal in task["signals"] if signal["id"] == "target_pos")
-    target["name"] = "Requested target"
-    task["validation_trials"] = task["validation_trials"][:1]
+    task["signals"]["target_pos"]["label"] = "Requested target"
+    task["validation_trials"] = {"trial-1": task["validation_trials"]["trial-1"]}
     raw["steps"] = {
         "rollout": {
             "label": "Rollout",
@@ -170,7 +169,7 @@ def test_saved_operation_products_can_be_read_without_a_figure(host, tmp_path, m
     task = shipped["documents"]["simple-reaches-task"]
     del task["payload"]["validation_trials"]
     task["payload"]["fixed_steps"] = 8
-    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"]["value"] = 8
     definition["documents"] = {
         "point-mass": shipped["documents"]["point-mass"], "task": task,
         "velocity-analysis": definition["documents"]["velocity-analysis"],
@@ -268,7 +267,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
     project = "reaching"
     definition = _saved_light_definition()
     model_key = definition["steps"]["train"]["base"]["inline"]["trial_documents"]["model"]["document"]
-    definition["documents"][model_key]["payload"]["interior"]["components"]["plant"]["name"] = "Point mass"
+    definition["documents"][model_key]["payload"]["interior"]["components"]["plant"]["label"] = "Point mass"
     folders = ProjectFolderService(projects)
     _save_project(folders, project, Project.model_validate(definition))
     project_id = folders.open(project).snapshot.project_id
