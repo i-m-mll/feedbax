@@ -251,7 +251,8 @@ class TrialExecution:
     ) -> TrialEvaluation:
         trials = self.task.validation(parameters, key)
         epochs = trials.prepared.epochs if isinstance(trials, PendingTrial) else trials.epochs
-        keys = validation_trial_keys(key, epochs.starts.shape[0])
+        ids = self.task.condition_ids if isinstance(self.task, DocumentTask) else ()
+        keys = validation_trial_keys(key, epochs.starts.shape[0], ids=ids)
         return self.score(
             graph, objective, trials, run_key=key, trial_keys=keys, capture_state=capture_state
         )

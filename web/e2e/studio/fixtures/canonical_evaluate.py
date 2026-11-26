@@ -108,7 +108,8 @@ def seed_sixty_four_trials(home: str, project_id: str):
     for index in range(64):
         cycle, row = divmod(index, len(trials))
         trial = deepcopy(trials[row])
-        trial["variables"]["target"] = [value + 0.001 * cycle for value in trial["variables"]["target"]]
+        target = json.loads(trial["variables"]["target"])
+        trial["variables"]["target"] = json.dumps([value + 0.001 * cycle for value in target])
         scaled[f"trial-{index + 1}"] = trial
     task["validation_trials"] = scaled
     return _seed(home, project_id, raw)

@@ -194,7 +194,7 @@ def fixed_points(
     params: FixedPointSettings,
 ) -> Annotated[Dataset, DatasetOutput("roots", DatasetPort(schema_ids=(FIXED_POINTS,)))]:
     """Find and linearise roots on each condition's hidden-state manifold."""
-    levels = tuple(float(row.variables["conditioning"]) for row in task.validation_trials)
+    levels = tuple(float(row.variables["conditioning"].value) for row in task.validation_trials)
     roots, spectrum = _fixed_point_products(model, levels, params)
     accepted = roots["accepted"]
     spectral_radius = jnp.max(spectrum["magnitude"], axis=(-1, -2))
