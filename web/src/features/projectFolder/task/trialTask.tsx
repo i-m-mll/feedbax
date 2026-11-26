@@ -11,7 +11,7 @@ import { authoredPointer } from '../authoredEdits';
 import { freshKey, hasMember } from '../memberKeys';
 import { addressKey } from '../model/modelGraph';
 import {
-  changedAt, expressionKind, initializesAnchor, startAnchor, trialField, variableAnchor, type Commit, type TrialRuns, type TrialView,
+  changedAt, initializesAnchor, startAnchor, trialField, variableAnchor, type Commit, type TrialRuns, type TrialView,
 } from '../StudioTrialAuthoring';
 import { VariableInspector } from './TaskInspector';
 import { TrialTaskGrid } from './trialGrid';
@@ -150,7 +150,7 @@ function variables(view: TrialView, task: StoredTaskDocument, types: readonly St
     const sweep = projection?.sweep?.id;
     const value: FieldModel = projection ? {
       ...trialField(view, projection, studioName('value'), runs, {
-        id: `value:${key}`, kind: expressionKind(variable.value),
+        id: `value:${key}`,
         changed: changedAt(view, 'task', stored('value'), commit), source: view.origin(view.task_source),
         commit: commit && ((edit) => commit(studioAccessibleName('set', variable.label), { kind: 'expression', path, edit })),
         selectedMembers: sweep ? runs?.values(sweep) : undefined,
@@ -161,7 +161,7 @@ function variables(view: TrialView, task: StoredTaskDocument, types: readonly St
     const countPath = authoredPointer(['task', 'variables', key, 'count']);
     const countProjection = variable.count ? view.fields.find((field) => field.path === countPath) : undefined;
     const count = variable.count ? countProjection ? trialField(view, countProjection, studioName('count'), runs, {
-      id: `count:${key}`, kind: expressionKind(variable.count),
+      id: `count:${key}`,
       changed: changedAt(view, 'task', stored('count'), commit),
       commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('count')), { kind: 'expression', path: countPath, edit })),
     }) : rawField({ id: `count:${key}`, label: studioName('count'), value: '', type: { kind: 'readOnly' } }) : undefined;
@@ -187,7 +187,7 @@ export function variableEdits(task: StoredTaskDocument, commit?: Commit, owned: 
     add: (name) => selected ? selected.write?.(studioName('addVariable'), { task_variables: {
       ...selected.variables,
       [freshKey(name, [...Object.keys(task.variables), ...Object.keys(selected.variables)])]: {
-        label: name, type: { base: 'real', shape: [] }, value: { kind: 'literal', value: 0 },
+        label: name, type: { base: 'real', shape: [] }, value: 0,
       },
     } }) : structure(studioName('addVariable'), { kind: 'structure', changes: [{ op: 'add', member: 'variable', name }] }),
     rename: (id, name) => {
@@ -242,7 +242,7 @@ function setVariables(view: TrialView, weigh?: (axis: string) => TaskSetVariable
     return {
       axis, set, weigh: weigh?.(axis),
       condition: projection && trialField(view, projection, studioName('condition'), runs, {
-        id: `condition:${axis}`, kind: expressionKind(condition ?? undefined),
+        id: `condition:${axis}`,
         commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('condition')), { kind: 'expression', path, edit })),
       }),
       entries: [...entries.filter(({ entry }) => entry !== null), ...entries.filter(({ entry }) => entry === null)]
@@ -292,8 +292,8 @@ export function TrialVariableInspector({ view, commit, runs, entries, id }: {
  */
 export function unfedTasks(view: TrialView): ReadonlyMap<string, string> {
   const inputs = new Map(view.inputs.map(({ address, name }) => [JSON.stringify(address), name]));
-  return new Map(view.tasks.flatMap(({ document, problems }) => {
-    const unfed = problems.find(({ path = [], model_address }) => path[0] === 'model' && path[1] === 'inputs' && model_address);
+  return new Map(view.tasks.flatMap(({ document, problem_indices }) => {
+    const unfed = problem_indices.map((index) => view.task_problems[index]).find(({ path = [], model_address }) => path[0] === 'model' && path[1] === 'inputs' && model_address);
     const name = unfed && inputs.get(JSON.stringify(unfed.model_address));
     return name ? [[document, studioFormat('leavesUnfed', { name })] as const] : [];
   }));

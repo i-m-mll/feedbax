@@ -295,7 +295,7 @@ function useTrainForm(props: Props) {
   const members = (sweepId?: string) => new Set(props.step && sweepId && selection.kind !== 'steps'
     ? selectedRuns(props.step, selection).map((row) => row.values[sweepId]).filter(Boolean) : []);
   const fieldModel = (field: TrainFieldView): FieldModel => ({ ...fromFieldView(field, {
-    id: JSON.stringify([projectId, stepId, props.fieldRows, field.id]),
+    id: JSON.stringify([projectId, stepId, props.fieldRows, field.id]), sites: numeric.fields.data!,
     commit: numeric.edit && ((edit) => numeric.edit!(field.id, edit)),
     changed: field.changed ? changeMark(field.id, numeric.edit && (() => numeric.edit!(field.id, { kind: 'reset' }))) : undefined,
     rowSelection: !!props.fieldRows?.length,

@@ -94,7 +94,7 @@ test('a Set in the trials takes a condition on Task variables, refuses an unknow
   await condition.pressSequentially('ca');
   await expect(page.getByRole('listbox', { name: 'Completions' }).getByRole('option')).toContainText(['catch']);
   await write('not catch');
-  await expect.poll(stored).toMatchObject({ kind: 'call', function: 'not', args: [{ kind: 'name', reference: 'catch' }] });
+  await expect.poll(stored).toBe('not catch');
   await expect(condition).not.toHaveAttribute('aria-invalid', 'true');
 
   await write('not cach');

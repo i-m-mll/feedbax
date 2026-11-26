@@ -2,45 +2,34 @@ import { plainText } from '@/components/ui/ShownText';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { rawField } from '@/components/values/adapters/raw';
 import type { FieldModel } from '@/components/values/fieldModel';
-import type { InterventionAttachment, JsonValue, TimeValue, Window } from '@/generated/studioContracts';
+import type { StoredExpression, StoredWindow } from '@/generated/studioContracts';
 import { windowText, type OffsetSite, type WindowEpochChoice, type WindowHost } from '../WindowEditor';
+import type { Attachment } from './modelGraph';
 
-function offsetAt(window: Window | null | undefined, site: OffsetSite): JsonValue | undefined {
+type Intervention = Extract<Attachment, { kind: 'intervention' }>;
+
+function offsetAt(window: StoredWindow | null | undefined, site: OffsetSite): StoredExpression | null | undefined {
   let node: unknown = window;
   for (const key of site) node = (node as Record<string | number, unknown> | undefined)?.[key];
-  return node as JsonValue | undefined;
+  return node as StoredExpression | null | undefined;
 }
 
-function withOffset(window: Window, site: OffsetSite, offset: TimeValue): Window {
+function withOffset(window: StoredWindow, site: OffsetSite, offset: StoredExpression): StoredWindow {
   const [, index, at] = site;
   return { spans: window.spans.map((span, position) => position !== index ? span
-    : { ...span, [at]: { ...(span as unknown as Record<string, object>)[at], offset } } as Window['spans'][number]) };
+    : { ...span, [at]: { ...(span as unknown as Record<string, object>)[at], offset } } as StoredWindow['spans'][number]) };
 }
 
-/** A duration that may be negative or zero, in seconds or whole steps. */
-function signedDuration(raw: string): TimeValue | undefined {
-  const match = raw.trim().match(/^([-+]?(?:\d+(?:\.\d+)?|\.\d+))\s*(s|st)$/);
-  if (!match) return undefined;
-  const value = Number(match[1]);
-  const unit = match[2] as TimeValue['unit'];
-  return unit === 's' || Number.isInteger(value) ? { value, unit } : undefined;
-}
-
-/** An offset the intervention stores as written: a duration in either unit, or the Task variable it reads. */
-function rawOffset(item: InterventionAttachment, site: OffsetSite, linked: (reference: string) => string,
-  change?: (item: InterventionAttachment) => unknown): FieldModel {
+/** An offset as the intervention stores it, edited as the text the Service reads. */
+function rawOffset(item: Intervention, site: OffsetSite, change?: (item: Intervention) => unknown): FieldModel {
   const label = studioName(site[2]);
   const offset = offsetAt(item.window, site);
-  const reference = offset && typeof offset === 'object' && !Array.isArray(offset) && offset.kind === 'name' ? String(offset.reference) : undefined;
-  const id = site.join('-');
-  if (reference !== undefined) return rawField({ id, label, type: { kind: 'readOnly' }, value: linked(reference) });
-  const time = offset as TimeValue | undefined;
   return rawField({
-    id, label, type: { kind: 'string' }, value: time ? `${time.value} ${time.unit}` : '',
+    id: site.join('-'), label, type: { kind: 'string' }, value: offset == null ? '' : String(offset),
     change: change && item.window ? ((raw) => {
-      const next = signedDuration(String(raw));
-      if (!next) return studioReason('takesDuration', label);
-      void change({ ...item, window: withOffset(item.window!, site, next) });
+      const text = String(raw).trim();
+      if (!text) return studioReason('takesDuration', label);
+      void change({ ...item, window: withOffset(item.window!, site, text) });
     }) : undefined,
   });
 }
@@ -49,16 +38,15 @@ function rawOffset(item: InterventionAttachment, site: OffsetSite, linked: (refe
  * An intervention's Window as the editor hosts it: each offset the field the Service projects for it (`projected`), or
  * else the offset as stored; its structure stored on the intervention, none being the whole trial.
  */
-export function interventionWindow({ item, epochs, projected, linked, change }: {
-  item: InterventionAttachment;
+export function interventionWindow({ item, epochs, projected, change }: {
+  item: Intervention;
   epochs: readonly WindowEpochChoice[];
   projected: (site: OffsetSite) => FieldModel | undefined;
-  linked: (reference: string) => string;
-  change?: (item: InterventionAttachment) => unknown;
+  change?: (item: Intervention) => unknown;
 }): WindowHost {
   return {
     epochs,
-    offset: (site) => projected(site) ?? rawOffset(item, site, linked, change),
+    offset: (site) => projected(site) ?? rawOffset(item, site, change),
     change: change && ((window) => {
       const { window: _whole, ...rest } = item;
       return change(window ? { ...item, window } : rest);
@@ -67,6 +55,6 @@ export function interventionWindow({ item, epochs, projected, linked, change }: 
 }
 
 /** The text of an intervention's Window, the whole trial when it has none. */
-export function windowDescription(item: InterventionAttachment, epochs: readonly WindowEpochChoice[], linked: (reference: string) => string) {
-  return plainText(windowText(item.window, interventionWindow({ item, epochs, projected: () => undefined, linked }))) || studioName('wholeTrial');
+export function windowDescription(item: Intervention, epochs: readonly WindowEpochChoice[]) {
+  return plainText(windowText(item.window, interventionWindow({ item, epochs, projected: () => undefined }))) || studioName('wholeTrial');
 }

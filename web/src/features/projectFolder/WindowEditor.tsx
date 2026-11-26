@@ -11,7 +11,9 @@ import type { ChangeMark } from '@/components/values/fieldModel';
 import type { FieldModel } from '@/components/values/fieldModel';
 import { changeTip, ValueField } from '@/components/values/ValueField';
 import type {
-  Window, WindowEpoch, WindowEpochAnchor, WindowInterval, WindowMoment, WindowPosition, WindowRelativePosition, WindowTrialAnchor,
+  StoredWindow as Window, StoredWindowInterval as WindowInterval, StoredWindowMoment as WindowMoment,
+  StoredWindowPosition as WindowPosition, StoredWindowRelativePosition as WindowRelativePosition, WindowEpoch, WindowEpochAnchor,
+  WindowTrialAnchor,
 } from '@/generated/studioContracts';
 
 type Span = Window['spans'][number];
@@ -39,7 +41,7 @@ export interface WindowHost {
   readonly changed?: ChangeMark;
 }
 
-const zero = { value: 0, unit: 's' } as const;
+const zero = '0 s';
 
 /** An epoch, or one zero-based occurrence of it, by a choice's value. */
 const epochKey = ({ epoch, occurrence }: { epoch: string; occurrence?: number | null }) =>
@@ -94,7 +96,7 @@ function spanOf(kind: Span['kind'], epochs: readonly WindowEpochChoice[], from?:
     }
     case 'interval': return {
       kind: 'interval', start,
-      end: from?.kind === 'moment' ? { offset: { value: 1, unit: 'st' } }
+      end: from?.kind === 'moment' ? { offset: '1 st' }
         : { anchor: start.anchor.kind === 'trial' ? { kind: 'trial', edge: 'end' } : { ...start.anchor, edge: 'end' }, offset: zero },
     };
     case 'moment': return { kind: 'moment', at: start };

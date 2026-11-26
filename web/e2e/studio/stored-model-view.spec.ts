@@ -94,7 +94,7 @@ test('authors and reopens an addressed Model through the project history', { tag
   const wire = wired.changed[0].element;
   if (wire.kind !== 'wire') throw new Error('Connect did not return a wire address');
   expect(Object.values(stored(wired.snapshot).interior.wires?.[wire.id].attachments ?? {})).toMatchObject([
-    { kind: 'delay', delay: { value: 1, unit: 'st' } },
+    { kind: 'delay', delay: '1 st' },
   ]);
   const delay = model.getByRole('button', { name: 'Attachment Delay', exact: true });
   await expect(delay).toHaveAccessibleDescription(/1 st · .+hidden → .+hidden/);
@@ -102,7 +102,7 @@ test('authors and reopens an addressed Model through the project history', { tag
   await expect(inspector.getByRole('button', { name: 'Delay kind: Value' })).toBeVisible();
   await expect(inspector.getByRole('button', { name: 'Initial kind: Value' })).toBeVisible();
   const delayed = await apply(() => enter(inspector.getByRole('textbox', { name: 'Delay', exact: true }), '0.06 s'));
-  expect(firstAttachment(stored(delayed.snapshot), wire.id)).toMatchObject({ delay: { value: 0.06, unit: 's' } });
+  expect(firstAttachment(stored(delayed.snapshot), wire.id)).toMatchObject({ delay: '0.06 s' });
   await expect(inspector.getByText('3 st')).toBeVisible();
   await model.getByRole('button', { name: 'Split Details', exact: true }).click();
   const secondary = page.locator('[data-slot="secondary"]');

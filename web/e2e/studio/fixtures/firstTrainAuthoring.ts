@@ -1,6 +1,6 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import {
-  firstTrainTask, type StoredModelDocument as ModelDocument, type ObjectiveDocument, type StudioProjectSnapshot, type StudioSavedTrainRuns,
+  firstTrainTask, type StoredModelDocument as ModelDocument, type StoredObjectiveDocument, type StudioProjectSnapshot, type StudioSavedTrainRuns,
   type StudioTrialAuthoring, type TaskDocument,
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
@@ -40,7 +40,7 @@ export async function authorFirstTrain(
   const nBatches = inspector.getByRole('textbox', { name: 'Batches', exact: true });
   const batchSize = inspector.getByRole('textbox', { name: 'Batch Size', exact: true });
   const terms = (project: StudioProjectSnapshot['project']) =>
-    (rootPayload(project.documents?.objective) as unknown as ObjectiveDocument | undefined)?.terms ?? [];
+    Object.values((rootPayload(project.documents?.objective) as StoredObjectiveDocument | undefined)?.terms ?? {});
   /** A new Train step reads its training config from the `training` document. */
   const config = (project: StudioProjectSnapshot['project']) => (
     rootPayload(project.documents?.training) as { training_config?: { n_batches?: number; batch_size?: number } } | undefined
@@ -137,8 +137,7 @@ export async function authorFirstTrain(
   await activateMenuItem(page, page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Output', exact: true }));
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
   await setNumber(weight, 2, (project) => {
-    const authored = terms(project)[0]?.weight;
-    return authored && 'value' in authored ? authored.value : undefined;
+    return terms(project)[0]?.weight;
   });
   await page.keyboard.press('Meta+1');
   await setNumber(nBatches, totalUpdates, (project) => config(project)?.n_batches);
@@ -226,15 +225,8 @@ export async function authorFirstTrain(
   });
   const [term] = terms(saved.project);
   expect(terms(saved.project)).toHaveLength(1);
-  expect(term).toMatchObject({
-    id: expect.any(String),
-    measure: { function: 'sqnorm', args: [{ kind: 'name', reference: expect.any(String) }] },
-    weight: { value: 2 },
-  });
-  const measureArgument = 'args' in term.measure ? term.measure.args?.[0] : undefined;
-  expect(JSON.parse(measureArgument && 'reference' in measureArgument ? measureArgument.reference : 'null')).toEqual({
-    composites: [], element: { kind: 'port', end: { owner: 'outputs', port: commandPort } },
-  });
+  // The measure names the Model's command output by its address, quoted when the port's key is not a bare name.
+  expect(term).toMatchObject({ measure: expect.stringMatching(new RegExp(`^sqnorm\\('?outputs\\.${commandPort}'?\\)$`)), weight: 2 });
   const before = await plan(saved.revision);
   expect(before.window_map?.problems).toEqual([]);
   expect(before.rows).toMatchObject([{ key: { variant: 'default', step: 'train', row: 'default' },

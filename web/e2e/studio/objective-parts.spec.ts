@@ -37,14 +37,14 @@ test("a Measure's outer penalty is chosen in its parts, and a kind is left as it
   await expect(page.getByRole('option')).not.toContainText(['sub']);
   await page.getByRole('option', { name: 'huber', exact: true }).click();
   await expect(measure).toHaveValue(`huber(${operand})`);
-  await expect.poll(async () => (await terms())[0].measure).toMatchObject({ function: 'huber', args: [(before.measure as { args: unknown[] }).args[0]] });
+  await expect.poll(async () => (await terms())[0].measure).toBe(String(before.measure).replace(/^sqnorm/, 'huber'));
   const [after] = await terms();
   expect({ ...after, measure: undefined }).toEqual({ ...before, measure: undefined });
 
   const weight = table.getByRole('textbox', { name: 'Weight', exact: true });
   const formula = '2 * 0.5';
   await enter(weight, formula);
-  await expect.poll(async () => (await terms())[0].weight).toMatchObject({ kind: 'call', function: 'mul' });
+  await expect.poll(async () => (await terms())[0].weight).toBe(formula);
   await table.getByRole('button', { name: 'Weight kind: Formula', exact: true }).click();
   await page.getByRole('menuitemradio', { name: 'Draw', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Mean', exact: true })).toHaveValue(formula);

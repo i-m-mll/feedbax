@@ -57,7 +57,6 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
       objective: { document: 'objective' },
     } } },
   });
-  const { links: _templateLinks, ...unlinked } = rootPayload(firstTrainTask) as { links?: unknown };
   expect(saved.project.documents).toMatchObject({
     model: { schema: modelDocumentSchemaId, payload: { ports: {}, interior: {} } },
     'simple-reaches': { ...firstTrainTask, payload: unlinked(rootPayload(firstTrainTask)) },

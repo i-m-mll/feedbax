@@ -6,8 +6,8 @@ import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-const literal = (value: number) => ({ kind: 'literal', value });
-const uniform = (low: number, high: number) => ({ kind: 'draw', family: 'uniform', args: [literal(low), literal(high)] });
+/** A uniform draw's stored text, as the Service writes it. */
+const uniform = (low: number, high: number) => `U(${low}, ${high})`;
 
 /** The ordinary Train project with its Objective's first term weighted by `weight`, open on the Objective view. */
 async function open(page: Page, request: APIRequestContext, weight: unknown) {
@@ -45,7 +45,7 @@ test('a draw in the Inspector shows its parts, and an edit of a part writes its 
   await expect(inspector.getByRole('img', { name: 'Weight density', exact: true })).toBeVisible();
 
   await enter(inspector.getByRole('textbox', { name: 'High', exact: true }), '2');
-  await expect.poll(weightOf).toMatchObject(uniform(0.3, 2));
+  await expect.poll(weightOf).toBe(uniform(0.3, 2));
   await expect(inspector.getByRole('textbox', { name: 'Weight', exact: true })).toHaveValue('U(0.3, 2)');
 
   const written = writes.length;
@@ -56,9 +56,9 @@ test('a draw in the Inspector shows its parts, and an edit of a part writes its 
   await enter(inspector.getByRole('textbox', { name: 'Mean', exact: true }), '1');
   await expect(inspector.getByRole('textbox', { name: 'Mean', exact: true })).toHaveValue('1');
   expect(writes).toHaveLength(written);
-  expect(await weightOf()).toMatchObject(uniform(0.3, 2));
+  expect(await weightOf()).toBe(uniform(0.3, 2));
   await enter(inspector.getByRole('textbox', { name: 'SD', exact: true }), '0.2');
-  await expect.poll(weightOf).toMatchObject({ kind: 'draw', family: 'normal', args: [literal(1), literal(0.2)] });
+  await expect.poll(weightOf).toBe('N(1, 0.2)');
   await expect(inspector.getByRole('textbox', { name: 'Weight', exact: true })).toHaveValue('N(1, 0.2)');
 });
 
@@ -75,6 +75,6 @@ test('selecting a Weight cell that holds a draw shows its parts in the Inspector
   await expect(table.getByRole('img', { name: 'Weight density', exact: true })).toHaveCount(0);
 
   await enter(inspector.getByRole('textbox', { name: 'Low', exact: true }), '1');
-  await expect.poll(weightOf).toMatchObject(uniform(1, 2));
+  await expect.poll(weightOf).toBe(uniform(1, 2));
   await expect(cell).toHaveValue('U(1, 2)');
 });

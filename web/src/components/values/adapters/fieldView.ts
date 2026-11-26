@@ -1,5 +1,6 @@
 import type {
-  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView, StudioPlanReviewSource,
+  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldFunction, StudioFieldSite, StudioFieldView,
+  StudioPlanReviewSource,
 } from '@/generated/studioContracts';
 import {
   studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason, type EvaluateOrigin, type SourceNames,
@@ -22,8 +23,24 @@ export interface SourceNaming {
   readonly exceptions?: ExceptionMentions;
 }
 
+/** The sites and function lists a field response shares among its fields, which name them by key. */
+export interface FieldSites {
+  readonly sites?: Readonly<Record<string, StudioFieldSite>>;
+  readonly function_lists?: Readonly<Record<string, readonly StudioFieldFunction[]>>;
+}
+
+/** The site a field names, with its functions, from the tables of the response that sent it. */
+export function fieldSite(tables: FieldSites, key: string) {
+  const site = tables.sites?.[key];
+  const functions = site && tables.function_lists?.[site.functions];
+  if (!site || !functions) throw new Error(`The field response has no site ${key}.`);
+  return { site, functions };
+}
+
 export interface FieldViewOptions {
   id: string;
+  /** The tables of the response the field came in. */
+  sites: FieldSites;
   commit?: (edit: ProjectedEdit) => Promise<FieldRefusal | undefined>;
   /** The kind of a value that is not a sweep, where the source knows it and the field has no structure to read it from. */
   kind?: FieldKind;
@@ -57,13 +74,14 @@ function origin({ planSources, source, changed }: FieldViewOptions) {
 /** A field the server projects (`StudioFieldView`): the server parses its text and reports refusals. */
 export function fromFieldView(field: StudioFieldView, options: FieldViewOptions): FieldModel {
   const { label, sweep, unit } = field;
+  const { site, functions } = fieldSite(options.sites, field.site);
   const { rowSelection = false, multipleRows = false } = options;
   const project = options.commit;
   const commit = withReset(project && ((edit) => edit.kind === 'add_member' || edit.kind === 'remove_member' || edit.kind === 'reset'
     ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit)), options.changed);
   const readOnly = !commit;
   const rule = readOnly || !field.can_change_axis ? undefined : commit;
-  const kind = sweep ? 'sweep' : field.structure ? valueKind(field.structure.value, field.site.functions) : options.kind ?? 'value';
+  const kind = sweep ? 'sweep' : field.structure ? valueKind(field.structure.value, functions) : options.kind ?? 'value';
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
   /** A member as written: a number in the field's unit, or its own text. */
@@ -115,11 +133,11 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   return {
     id: options.id,
     label,
-    type: { kind: field.site.site.expected.base === 'integer' ? 'integer' : 'number' },
+    type: { kind: site.expected.base === 'integer' ? 'integer' : 'number' },
     unit: unit ?? undefined,
     text,
     kind,
-    kinds: field.site.kinds.map((value) => ({
+    kinds: site.kinds.map((value) => ({
       kind: value,
       // The server says whether the selected rows take a sweep of their own (`can_sweep`) or can end theirs.
       enabled: !(readOnly || rowSelection && value !== kind && value !== 'sweep' && value !== 'value' ||
@@ -138,11 +156,11 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     change,
     revealOrigin: source.reveal,
     structure: field.structure ?? undefined,
-    finest: field.site.site.finest,
-    names: field.site.site.names ?? [],
-    functions: field.site.functions,
-    menus: { kind: 'listed', parts: field.site.parts },
-    namePaths: field.site.name_paths,
+    finest: site.finest,
+    names: site.names ?? [],
+    functions,
+    menus: { kind: 'listed', parts: site.parts },
+    namePaths: site.name_paths,
     commit,
   };
 }

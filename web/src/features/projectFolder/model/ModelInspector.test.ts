@@ -15,8 +15,8 @@ function stored(item: Attachment, value: SourceValue, index = 0) {
 }
 
 describe('attachmentSources', () => {
-  const delay: Attachment = { kind: 'delay', id: 'd', delay: { value: 1, unit: 'st' } };
-  const add: Attachment = { kind: 'intervention', id: 'i', operation: 'add', operands: { value: { kind: 'value', value: [0, 0] } } };
+  const delay: Attachment = { kind: 'delay', id: 'd', delay: '1 st' };
+  const add: Attachment = { kind: 'intervention', id: 'i', operation: 'add', operands: { value: { kind: 'value', value: '[0, 0]' } } };
 
   // Catches: an Initial or an operand picked from a component output or an Input stored as another end, or one the Service refuses.
   it("stores a delay's Initial and an intervention's operand from a wire as the end it reads, and reads it back as the same port", () => {
@@ -36,6 +36,6 @@ describe('attachmentSources', () => {
     const varied = stored(add, { kind: 'task', variable: 'amplitude' });
     expect(attachmentSources(varied, graph)[0].read).toEqual({ kind: 'task', variable: 'amplitude' });
     const source = attachmentSources(varied, graph)[0];
-    expect(stored(varied, { kind: 'value', value: source.unlinked })).toMatchObject({ operands: { value: { kind: 'value', value: [0] } } });
+    expect(stored(varied, { kind: 'value', value: source.unlinked })).toMatchObject({ operands: { value: { kind: 'value', value: '[0]' } } });
   });
 });

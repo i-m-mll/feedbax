@@ -24,7 +24,7 @@ function modelFixture(cards: number): ModelDocument {
     }
   }
   return {
-    step_seconds: 0.01, ports: { inputs: { target: { label: 'reach_target', type: {} } } },
+    step_seconds: '0.01 s', ports: { inputs: { target: { label: 'reach_target', type: {} } } },
     interior: { components, wires },
   };
 }
