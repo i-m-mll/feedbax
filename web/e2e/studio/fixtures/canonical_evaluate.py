@@ -4,7 +4,6 @@ from copy import deepcopy
 from itertools import islice
 import json
 from pathlib import Path
-import sys
 from unittest.mock import patch
 
 import numpy as np
@@ -24,13 +23,15 @@ from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.persistence.canonical_evaluate import RAW_STATES_SCHEMA, state_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
+from feedbax.contracts.project_sweep import model_field_path
 from tests.test_document_train_pair import authored_documents, document_project
+from tests.support.browser_seed_actions import FileSeed, HomeSeed, NonSeed, print_action
 
 
-_MASS = ModelAddress.model_validate({
+_MASS = model_field_path(ModelAddress.model_validate({
     "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
-}).to_text()
+}))
 
 
 def _evaluation_step(label: str):
@@ -377,14 +378,25 @@ def observe(home: str, project: str, revision: str, trial_index: str):
     return observed
 
 
+ACTIONS = {
+    "seed": HomeSeed(seed),
+    "seed-eight-trials": HomeSeed(seed_eight_trials),
+    "seed-sixty-four-trials": HomeSeed(seed_sixty_four_trials),
+    "seed-mean-conditions": HomeSeed(seed_mean_conditions),
+    "seed-mean-figure": HomeSeed(seed_mean_figure),
+    "seed-step-rename": HomeSeed(seed_step_rename),
+    "observe": NonSeed(observe, "reads evaluated trial results from the Host"),
+    "walkthrough-files": FileSeed(walkthrough_files, cases=((), ("2",))),
+    "series-files": FileSeed(series_files),
+    "seed-series-variants": HomeSeed(seed_series_variants, fixed_project="series-variants"),
+    "scoped-series-files": FileSeed(scoped_series_files),
+    "measured-subset-files": FileSeed(measured_subset_files),
+    "grouped-subset-files": FileSeed(grouped_subset_files),
+    "train-measures": NonSeed(train_measures, "reads retained training metrics"),
+    "task-pivot-files": FileSeed(task_pivot_files),
+    "missing-run-files": FileSeed(missing_run_files),
+}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({
-        "seed": seed, "seed-eight-trials": seed_eight_trials, "seed-sixty-four-trials": seed_sixty_four_trials,
-        "seed-mean-conditions": seed_mean_conditions,
-        "seed-mean-figure": seed_mean_figure, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
-        "series-files": series_files, "seed-series-variants": seed_series_variants,
-        "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
-        "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,
-        "task-pivot-files": task_pivot_files, "missing-run-files": missing_run_files,
-    }[action](*args)))
+    print_action(ACTIONS)

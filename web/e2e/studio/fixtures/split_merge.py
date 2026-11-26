@@ -1,8 +1,6 @@
 """Seed an Analyze card of two operations and a figure, with a Report over its figure, for Split and Merge."""
 
-import json
-import sys
-
+from tests.support.browser_seed_actions import HomeSeed, NonSeed, print_action
 from web.e2e.studio.fixtures.canonical_evaluate import _seed
 from web.e2e.studio.fixtures.managed_report import requests
 
@@ -13,6 +11,11 @@ def seed(home: str, project_id: str):
     return _seed(home, project_id, _report_project().model_dump(mode="json", by_alias=True, exclude_unset=True))
 
 
+ACTIONS = {
+    "seed": HomeSeed(seed),
+    "requests": NonSeed(requests, "measures Plan identities after editing the seed"),
+}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed, "requests": requests}[action](*args)))
+    print_action(ACTIONS)

@@ -19,6 +19,14 @@ python_tests(
         "test_managed_derivative_operations.py": {"dependencies": [":derivative_references"]},
         "test_l2_stab10.py": {"dependencies": [":stab10_matrices"]},
         "test_shipped_trial_examples.py": {"dependencies": [":point_mass_reference"]},
+        "test_studio_browser_seeds.py": {
+            "dependencies": [
+                ":support",
+                "web/e2e/studio:fixture_consumers",
+                "web/e2e/studio/fixtures",
+                "web/e2e/studio/fixtures:seed_json",
+            ],
+        },
         "test_project_analyze_plan.py": {
             "dependencies": ["web/e2e/studio/fixtures:velocity_analysis"],
         },

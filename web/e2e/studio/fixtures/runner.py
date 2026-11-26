@@ -25,6 +25,8 @@ import time
 import traceback
 from typing import Iterator
 
+from tests.support.browser_seed_actions import NonSeed
+
 PRELOAD = (
     "web.e2e.studio.fixtures.canonical_evaluate",
     "web.e2e.studio.fixtures.canonical_train",
@@ -106,5 +108,8 @@ def main() -> None:
         replies.flush()
 
 
+ACTIONS = {"serve": NonSeed(main, "transports fixture calls between the browser worker and Python")}
+
+
 if __name__ == "__main__":
-    main()
+    ACTIONS["serve"].command()
