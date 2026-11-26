@@ -29,10 +29,12 @@ from feedbax.web.services.project_plan import ProjectPlanService
 def import_loaded_model(
     folders: ProjectFolderService, project: str, query: StudioLoadedModelImportQuery, raw: bytes,
 ) -> StudioLoadedModelImportResult:
+    from feedbax.compiler.model_document import complete_model_fields
     from feedbax.host.model_archive import UnreadableModelArchive
 
     authored = folders.read_authored_snapshot(project, revision=query.revision)
     read = authored.project.documents.get
+    assert folders.components is not None
     reference = DocumentReference(document=query.model)
     if read(query.name) is not None:
         saved = compose_document(read, query.name)
@@ -44,7 +46,7 @@ def import_loaded_model(
         try:
             model = read_pinned_project_model(
                 authored.root, authored.store_path, existing.lower(),
-                lambda: composed_loaded_model_projection(existing, read),
+                lambda: composed_loaded_model_projection(existing, read, folders.components),
             )
         except (ModelAssetError, ArtifactBlobCustodyError) as error:
             raise ProjectFolderInvalid(str(error)) from error
@@ -56,7 +58,7 @@ def import_loaded_model(
         if composed.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
             raise ProjectFolderInvalid("Choose a Model document to fit the archive.")
         model = StoredModelDocument.model_validate(composed.payload).lower().with_keyed_root_ports()
-    assert folders.components is not None
+        model = complete_model_fields(model, folders.components)
     with stage_project_archive(raw, model, folders.components) as (staging, staged):
         if isinstance(staged, ModelFitReport):
             if existing is not None:

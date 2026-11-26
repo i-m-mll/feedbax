@@ -395,7 +395,10 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         assert evaluated_task.task.params == {"x": 0.22, "y": 0.0, "n_steps": 12}
         assert [epoch.id for epoch in evaluated_task.epochs] == ["move"]
         scope = {"kind": "rows", "rows": ["seed=test"]}
-        choices = {choice.document: choice.problems for choice in evaluated_task.tasks}
+        choices = {
+            choice.document: [evaluated_task.task_problems[index] for index in choice.problem_indices]
+            for choice in evaluated_task.tasks
+        }
         assert not choices["probe-task"]
         assert any("reach_target" in problem.reason for problem in choices["unbound-task"])
         incompatible = author(revision, {"kind": "select_document", "role": "task", "document": "unbound-task"},

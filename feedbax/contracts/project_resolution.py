@@ -85,6 +85,7 @@ from feedbax.contracts.train_settings import train_sweep_basis
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 
 if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.effective_success import TerminalTrainSubject
     from feedbax.contracts.request_refs import RequestId
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
@@ -508,7 +509,7 @@ def compose_document(read_document: Callable[[str], Document | None], name: str)
 
 
 def composed_loaded_model_projection(
-    loaded: LoadedModelDocument, read_document: Callable[[str], Document | None],
+    loaded: LoadedModelDocument, read_document: Callable[[str], Document | None], components: ComponentRegistry,
 ) -> bytes | None:
     """Encode the currently composed navigation Model as a candidate for exact verification."""
     nav = loaded.model
@@ -517,10 +518,11 @@ def composed_loaded_model_projection(
     document = compose_document(read_document, nav.document)
     if isinstance(document, ProjectDiagnostic) or document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
         return None
+    from feedbax.compiler.model_document import complete_model_fields
+
     try:
-        return encode_imported_model_document(
-            StoredModelDocument.model_validate(document.payload).lower().with_keyed_root_ports(),
-        )
+        model = StoredModelDocument.model_validate(document.payload).lower().with_keyed_root_ports()
+        return encode_imported_model_document(complete_model_fields(model, components))
     except ValueError:
         return None  # The pin may still be readable from the Store or its projection file.
 

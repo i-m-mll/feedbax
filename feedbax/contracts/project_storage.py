@@ -115,7 +115,7 @@ def _schema_inventory(extra_models: tuple[Any, ...] = ()) -> tuple[tuple[type[Ba
     roots = (RootDocument, BasedDocument, Project, Step, TextProjectManifest, StudioProjectFile, PresentationDocument)
     models: set[type[BaseModel]] = set()
     seen: set[Any] = set()
-    tags: dict[type[BaseModel], set[str]] = defaultdict(set, {OverridePatch: {"op"}})
+    tags: dict[type[BaseModel], set[str]] = defaultdict(set)
 
     def variants(annotation: Any) -> Iterator[type[BaseModel]]:
         if isinstance(annotation, TypeAliasType):
@@ -244,7 +244,10 @@ def _projected_file(
     def project_region(region: StoredRegion, child: dict, path: StoredPath, *, inline=False) -> JsonValue:
         context = {key: value for key, value in child.items() if key in region.contextual}
         declared = {key: value for key, value in child.items() if key not in context}
-        typed, encoded = typed_region(region, declared, inline=inline)
+        typed, encoded, complete = typed_region(region, declared, inline=inline)
+        if not complete and not inline:
+            remember_reals(child, path)
+            return child
         cls = type(typed)
         if cls not in registered_here:
             registered_here.add(cls)

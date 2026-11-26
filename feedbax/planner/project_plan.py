@@ -1812,7 +1812,15 @@ def _encode_row(
                 )) from error
         if isinstance(spec, EvaluationRequestSpec) and spec.evaluation_type == ROLLOUT_TYPE and "trials" in spec.params:
             settings = RolloutParameters.model_validate(spec.params)
-            params = settings.model_dump(mode="json", include={"trial_policy", "variation"}) | spec.params
+
+            def patch_value(edit: OverridePatch) -> Payload:
+                return edit.model_dump(mode="json", exclude={"value"} if edit.op == "remove" else None)
+
+            variation = (
+                {name: patch_value(edit) for name, edit in settings.variation.items()}
+                if isinstance(settings.variation, dict) else [patch_value(edit) for edit in settings.variation]
+            )
+            params = spec.params | {"trial_policy": settings.trial_policy, "variation": variation}
             if settings.retention == RolloutSettings.model_fields["retention"].default:
                 params.pop("retention", None)
             if not settings.input_bindings:
@@ -3045,6 +3053,7 @@ class _Compiler:
         )
 
     def prepare_train_trial(self, authored: TrialDocuments) -> _TrainPreparation | tuple[Problem, ...]:
+        from feedbax.compiler.model_document import complete_model_fields
         from feedbax.execution.trial_resolution import resolve_trial_execution
 
         identity = to_json(
@@ -3055,7 +3064,7 @@ class _Compiler:
         components = self.components or _builtin_model_registry()
         # The plan needs the resolved graph, source addresses and conditions, never a constructed model.
         paired = resolve_trial_execution(
-            authored.model, authored.task_source,
+            complete_model_fields(authored.model, components), authored.task_source,
             components, self.functions or _builtin_expression_registry(),
             python_tasks=self.python_tasks, objective=authored.objective, input_bindings=authored.input_bindings,
             keyed_root_ports=True,
@@ -3279,7 +3288,7 @@ class _Compiler:
     def lower_initial_evaluate(
         self, template: StepComposition, key: RunKey, row: ExpandedRow,
     ) -> tuple[_LoweredRow, dict[str, PlannedInput]]:
-        from feedbax.compiler.model_document import ModelCompilationProblem
+        from feedbax.compiler.model_document import ModelCompilationProblem, complete_model_fields
         from feedbax.compiler.set_fields import SetFieldProblem
         from feedbax.execution.trial_resolution import evaluation_conditions, model_compilation_problems, pair_trial_source
         from feedbax.contracts.rollout import CannotRun
@@ -3389,8 +3398,9 @@ class _Compiler:
                 condition_origins = attached.condition_origins
                 raw = payload["params"]
             settings = authored_rollout_settings(raw)
+            runtime_model = complete_model_fields(model, components).with_keyed_root_ports()
             paired = pair_trial_source(
-                model, task, components, functions,
+                runtime_model, task, components, functions,
                 python_tasks=tasks, input_bindings=settings.input_bindings, keyed_root_ports=True,
             )
             unpaired = paired if isinstance(paired, tuple) else paired.problems
@@ -3405,7 +3415,7 @@ class _Compiler:
                     variant = _restore_evaluation_task_origins(variant, task_origins)
                 if variant.task != task or variant.graph != paired.lowered.graph:
                     paired = pair_trial_source(
-                        model, variant.task, components, functions,
+                        runtime_model, variant.task, components, functions,
                         python_tasks=tasks, input_bindings=settings.input_bindings, graph_override=variant.graph,
                         keyed_root_ports=True,
                     )

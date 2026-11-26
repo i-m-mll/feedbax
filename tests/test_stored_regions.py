@@ -73,11 +73,16 @@ def test_analysis_operation_and_python_task_use_the_installed_models():
         "label": "Velocity",
         "inputs": {"states": {"input": "states"}},
     }
-    default_params = {"variable": "parallel_velocity", "bounds_scale": 1}
+    default_params = {"variable": "parallel_velocity", "bounds_scale": 1, "ddof": 0}
     explicit = _document(ANALYSIS_SCHEMA, {"operations": {"summary": operation | {"params": default_params}}})
-    implicit = _document(ANALYSIS_SCHEMA, {"operations": {"summary": operation}})
+    implicit = _document(ANALYSIS_SCHEMA, {"operations": {"summary": operation | {"params": {"ddof": 0}}}})
     assert write_project_file(explicit) == write_project_file(implicit)
-    assert "params" not in json.loads(write_project_file(explicit))["payload"]["operations"]["summary"]
+    assert json.loads(write_project_file(explicit))["payload"]["operations"]["summary"]["params"] == {"ddof": 0}
+
+    incomplete = _document(ANALYSIS_SCHEMA, {
+        "operations": {"summary": operation | {"params": {"bounds_scale": 1}}},
+    })
+    assert json.loads(write_project_file(incomplete))["payload"]["operations"]["summary"]["params"] == {"bounds_scale": 1}
 
     registries = StoredRegionRegistries(python_tasks=load_application().bundle.python_tasks)
     explicit = _document(PYTHON_TASK_SCHEMA_ID, {"type": REACHING_TASK, "params": {"x": 0.15}})

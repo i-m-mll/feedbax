@@ -189,7 +189,7 @@ def _field_adapter(model: type[BaseModel], name: str) -> TypeAdapter:
 
 def typed_region(
     region: StoredRegion, raw: dict[str, Any], *, inline: bool = False,
-) -> tuple[BaseModel, dict[str, Any]]:
+) -> tuple[BaseModel, dict[str, Any], bool]:
     """Validate local values without completing a step fragment or resolving deferred authored values."""
     model = region.model
     assert model is not None
@@ -199,7 +199,7 @@ def typed_region(
         if not inline and not _deferred(raw) and any(item["type"] != "missing" for item in error.errors()):
             raise
     else:
-        return typed, typed.model_dump(mode="json", by_alias=True)
+        return typed, typed.model_dump(mode="json", by_alias=True), True
 
     # Missing fields may be supplied by a delta or a sweep, and a document pointer's value is only available in Plan.
     names = {
@@ -223,4 +223,4 @@ def typed_region(
         values[name] = parsed
         field = model.model_fields[name]
         encoded[field.serialization_alias or field.alias or name] = to_jsonable_python(parsed, by_alias=True)
-    return model.model_construct(_fields_set=set(values), **values), encoded
+    return model.model_construct(_fields_set=set(values), **values), encoded, False

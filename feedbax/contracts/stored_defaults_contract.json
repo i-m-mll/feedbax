@@ -726,7 +726,8 @@
   },
   "feedbax.contracts.loaded_model.LoadedModelAsset": {},
   "feedbax.contracts.manifest.OverridePatch": {
-    "value": null
+    "value": null,
+    "op": "replace"
   },
   "feedbax.contracts.model_address.AttachmentElement": {},
   "feedbax.contracts.model_address.ComponentElement": {},

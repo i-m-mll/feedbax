@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 import pytest
 
+from feedbax.compiler.model_document import complete_model_fields
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.loaded_model import encode_imported_model_document
@@ -106,7 +107,7 @@ def test_copied_project_runs_loaded_evaluate_and_train_from_exact_portable_asset
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     host.policy(compute=1, light=1)
-    model, _, _, _, archive, checkpoint = archive_bundle
+    model, components, _, _, archive, checkpoint = archive_bundle
     with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
         folders = client.app.state.project_folders
         _seed(folders, "original")
@@ -123,7 +124,7 @@ def test_copied_project_runs_loaded_evaluate_and_train_from_exact_portable_asset
         assert set(json.loads(authored)["payload"]) == {"model", "model_revision", "weights", "encoding_sha256"}
         for pin in (source.model.sha256, source.weights.descriptor.sha256, source.encoding.descriptor_sha256):
             assert authored.count(pin.encode()) == 1
-        assert (original / projection).read_bytes() == encode_imported_model_document(model)
+        assert (original / projection).read_bytes() == encode_imported_model_document(complete_model_fields(model.with_keyed_root_ports(), components))
         warm = _check_plan(folders, "original")
 
         cold = _clone(tmp_path, "clone")
@@ -180,7 +181,7 @@ def test_same_name_load_reuses_pins_and_repairs_missing_assets_at_the_checked_re
         projection.unlink()
         rmtree(root / "results")
         restored = _expect(_load(client, "original", archive, revision=current), 201)
-        assert _loaded(restored) == loaded and projection.read_bytes() == encode_imported_model_document(model)
+        assert _loaded(restored) == loaded and projection.read_bytes() == encode_imported_model_document(complete_model_fields(model.with_keyed_root_ports(), components))
 
         authored = deepcopy(folders.read("original").project)
         authored.documents["point-mass"].payload["step_seconds"] = 0.02
@@ -199,7 +200,7 @@ def test_same_name_load_reuses_pins_and_repairs_missing_assets_at_the_checked_re
         repaired = _expect(_load(client, "original", archive, revision=latest), 201)
         assert repaired["snapshot"]["revision"] == latest
         assert _loaded(repaired) == loaded and asset.read_bytes() == archive
-        assert store.get_object(loaded.lower().model) == encode_imported_model_document(model)
+        assert store.get_object(loaded.lower().model) == encode_imported_model_document(complete_model_fields(model.with_keyed_root_ports(), components))
         assert len(read_active_roots(store, (_root_id(loaded),))) == 1
 
 

@@ -20,8 +20,8 @@ from feedbax.contracts.operation import (
     require_dataset_port,
 )
 from feedbax.contracts.project import (
-    DocumentReference, DocumentEdit, LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue,
-    base_chain, member_name,
+    DocumentReference, DocumentEdit, LoadedModelDocument, Payload, Project, RemoveProjectValue, SetProjectValue,
+    base_chain, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_inputs import StepReference
@@ -218,6 +218,44 @@ def _review_wire(
             raise ValueError(problem.detail)
 
 
+def _parameter_edits(payload: Payload, edits: list[DocumentEdit], registry: OperationRegistry) -> list[DocumentEdit]:
+    """Give the first parameter write a container when its defaults were omitted."""
+    operations = payload.get("operations", {})
+    if not isinstance(operations, dict):
+        return edits
+    operations = dict(operations)
+    present = {key for key, value in operations.items() if isinstance(value, dict) and "params" in value}
+    adapted = []
+    for edit in edits:
+        match json_pointer_parts(edit.path):
+            case ("operations", key):
+                if isinstance(edit, SetProjectValue) and isinstance(edit.value, dict):
+                    operations[key] = edit.value
+                    present.discard(key)
+                    if "params" in edit.value:
+                        present.add(key)
+                elif isinstance(edit, RemoveProjectValue):
+                    operations.pop(key, None)
+                    present.discard(key)
+            case ("operations", key, "params"):
+                if isinstance(edit, SetProjectValue):
+                    present.add(key)
+                elif isinstance(edit, RemoveProjectValue):
+                    present.discard(key)
+            case ("operations", key, "params", *_):
+                operation = operations.get(key)
+                if isinstance(edit, SetProjectValue) and key not in present and isinstance(operation, dict):
+                    try:
+                        registry.resolve(operation["operation"])
+                    except KeyError:
+                        pass
+                    else:
+                        adapted.append(SetProjectValue(op="add", path=pointer(("operations", key, "params")), value={}))
+                        present.add(key)
+        adapted.append(edit)
+    return adapted
+
+
 def analyze_edit(
     project: Project,
     plan: ProjectPlan,
@@ -253,7 +291,9 @@ def analyze_edit(
         edits = _removal(_analysis(project, document), change.element)
     else:
         edits = base_value_edits(project, document, change.paths)
-    stored = document_write(project, document, edits, chosen, users)
+    stored = document_write(
+        project, document, edits, chosen, users, adapt=lambda payload: _parameter_edits(payload, edits, registry),
+    )
     if not (stored.files or stored.created):
         return stored, plan
     candidate = preview_stored(project, stored)
