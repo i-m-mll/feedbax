@@ -294,7 +294,9 @@ def _missing_sweep_target(studio):
 
 def _set_project():
     raw = _data()
-    raw["documents"]["draft"] = {"label": "Draft", "schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}}}}
+    raw["documents"]["draft"] = {
+        "label": "Draft", "schema": "feedbax.set_document.v2", "payload": {"entries": {"one": {"label": "One"}}},
+    }
     raw["steps"]["fee"]["sweep"] = {"axes": {"draft": {"set": "draft"}}}
     return raw
 

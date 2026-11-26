@@ -401,7 +401,7 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         raw["documents"][bank] = {
             "label": "Document",
             "schema": SET_DOCUMENT_SCHEMA_ID,
-            "payload": {"entries": {"shift": {"task_variables": [{
+            "payload": {"entries": {"shift": {"label": "Shift", "task_variables": [{
                 "id": "amount", "name": "Amount", "type": {"base": "real"},
                 "value": {"kind": "literal", "value": value},
             }]}}},
@@ -451,7 +451,8 @@ def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
     }
     raw["documents"]["entry-set"] = {
         "label": "Entry set",
-        "schema": SET_DOCUMENT_SCHEMA_ID, "payload": {"entries": {"ordinary": {}, "pulse": {"task_variables": [variable]}}},
+        "schema": SET_DOCUMENT_SCHEMA_ID,
+        "payload": {"entries": {"ordinary": {"label": "Ordinary"}, "pulse": {"label": "Pulse", "task_variables": [variable]}}},
     }
     raw["steps"]["baseline"]["sweep"] = {"axes": {"window": {"set": "entry-set"}}}
     with TestClient(create_app(projects_dir=tmp_path)) as client:
@@ -529,8 +530,8 @@ def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, sub
         step["base"]["inline"]["params"]["input_bindings"] = train["input_bindings"]
     raw["documents"]["loads"] = {
         "label": "Loads",
-        "schema": "feedbax.set_document.v1",
-        "payload": {"entries": {"pulse": {"differences": {
+        "schema": "feedbax.set_document.v2",
+        "payload": {"entries": {"pulse": {"label": "Pulse", "differences": {
             "/interior/wires/effector-wire/attachments": {"value": [{
                 "id": "pulse", "kind": "intervention", "operation": "Add",
                 "operands": {"value": {"kind": "value", "value": [2, 0]}},
@@ -587,7 +588,9 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
         "id": "is_catch", "name": "is_catch", "type": {"base": "boolean"},
         "value": {"kind": "literal", "value": False},
     })
-    raw["documents"]["loads"] = {"label": "Loads", "schema": "feedbax.set_document.v1", "payload": {"entries": {"heavy": {}}}}
+    raw["documents"]["loads"] = {
+        "label": "Loads", "schema": "feedbax.set_document.v2", "payload": {"entries": {"heavy": {"label": "Heavy"}}},
+    }
     raw["steps"]["train"]["set_fields"] = {
         "load": {"axis": {"set": "loads"}, "sampling": {"kind": "weighted"}},
         "listed": {
@@ -671,7 +674,7 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
     raw = document_project(authored_documents())
     raw["documents"]["loads"] = {
         "label": "Loads",
-        "schema": "feedbax.set_document.v1", "payload": {"entries": {"heavy": {}, "nominal": {}}},
+        "schema": "feedbax.set_document.v2", "payload": {"entries": {"heavy": {"label": "Heavy"}, "nominal": {"label": "Nominal"}}},
     }
     raw["steps"]["train"]["set_fields"] = {"load": {"axis": {"set": "loads"}, "sampling": sampling}}
     raw["steps"]["other"] = deepcopy(raw["steps"]["train"])
@@ -704,7 +707,9 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
 
 def test_required_set_can_be_emptied_and_repaired(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
-    raw["documents"]["draft"] = {"label": "Draft", "schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}}}}
+    raw["documents"]["draft"] = {
+        "label": "Draft", "schema": "feedbax.set_document.v2", "payload": {"entries": {"one": {"label": "One"}}},
+    }
     raw["steps"]["train"]["sweep"] = {"axes": {"draft": {"set": "draft"}}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, PROJECT, Project.model_validate(raw))
@@ -719,13 +724,15 @@ def test_required_set_can_be_emptied_and_repaired(tmp_path):
                    for problem in folders.read_plan(PROJECT, revision=None).plan.diagnostics)
         repaired = _set_edit(folders, client, {"kind": "add_set_entry", "step": "train", "axis": "draft"})
         assert repaired["files"] and not repaired["problems"] and _runs(folders, "train")
+        entry, = folders.read(PROJECT).project.documents["draft"].payload["entries"].values()
+        assert entry["label"] == "Run 2"
 
 
 def test_applying_an_inapplicable_set_stores_the_reference_and_marks_the_difference(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     pointer = "/interior/components/removed/fields/mass"
-    raw["documents"]["draft"] = {"label": "Draft", "schema": "feedbax.set_document.v1", "payload": {
-        "entries": {"heavy": {"differences": {pointer: {"value": 2.0}}}},
+    raw["documents"]["draft"] = {"label": "Draft", "schema": "feedbax.set_document.v2", "payload": {
+        "entries": {"heavy": {"label": "Heavy", "differences": {pointer: {"value": 2.0}}}},
     }}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, PROJECT, Project.model_validate(raw))

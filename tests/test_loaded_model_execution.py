@@ -136,8 +136,8 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
         short_task = raw["documents"]["shorter"]["payload"]
         short_task["fixed_steps"] = 7
         short_task["epochs"][0]["end"]["length"]["value"] = 7
-        raw["documents"]["loads"] = {"label": "Loads", "schema": "feedbax.set_document.v1", "payload": {"entries": {
-            "pulse": {"task_variables": [{
+        raw["documents"]["loads"] = {"label": "Loads", "schema": "feedbax.set_document.v2", "payload": {"entries": {
+            "pulse": {"label": "Pulse", "task_variables": [{
                 "id": "amplitude", "name": "Amplitude", "type": {"base": "real", "shape": [2]},
                 "value": {"kind": "call", "function": "vector", "args": [
                     {"kind": "literal", "value": 1.0}, {"kind": "literal", "value": 0.0},

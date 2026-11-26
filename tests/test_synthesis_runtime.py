@@ -87,7 +87,10 @@ def test_synthesize_resolves_model_sweeps_and_trial_set_fields():
         name: {"value": value, "patches": {mass.to_text(): {"value": value}}}
         for name, value in (("light", 1.0), ("heavy", 1.5))
     }}}}
-    raw["documents"]["bank"] = {"label": "Bank", "schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}, "two": {}}}}
+    raw["documents"]["bank"] = {
+        "label": "Bank", "schema": "feedbax.set_document.v2",
+        "payload": {"entries": {"one": {"label": "One"}, "two": {"label": "Two"}}},
+    }
     step["set_fields"] = {"bank": {"axis": {"set": "bank"}, "sampling": {"kind": "weighted", "none": 0}}}
     plan = compile_project(Project.model_validate(raw))
     assert not plan.diagnostics, plan.diagnostics

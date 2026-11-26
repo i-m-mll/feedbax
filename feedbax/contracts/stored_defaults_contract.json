@@ -405,7 +405,6 @@
   "feedbax.contracts.set_document.SetEntry": {
     "task_variables": [],
     "task_links": [],
-    "label": null,
     "differences": {}
   },
   "feedbax.contracts.studio_project.DocumentPresentation": {

@@ -46,7 +46,7 @@ _DOCUMENT_FIXTURES = {
                    "weights": {"tree_id": f"content-tree://sha256/{_SHA}", "descriptor": _OBJECT},
                    "encoding": {"descriptor_sha256": _SHA}},
     },
-    "feedbax.set_document.v1": {"entries": {"nominal": {"label": "Nominal", "differences": {}}}},
+    "feedbax.set_document.v2": {"entries": {"nominal": {"label": "Nominal", "differences": {}}}},
     "feedbax.analysis_document.v1": {
         "inputs": {"states": {"kind": "dataset", "cardinality": "many"}},
         "operations": {"align": {

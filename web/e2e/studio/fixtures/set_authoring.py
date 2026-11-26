@@ -37,7 +37,8 @@ def seed_entries(home: str, project_id: str):
     for name in ("velocity-analysis", "velocity-figure", "velocity-report"):
         raw["documents"].pop(name, None)
     raw["documents"]["set"] = {
-        "schema": "feedbax.set_document.v1", "label": "Set", "payload": {"entries": {"light": {}, "heavy": {}}},
+        "schema": "feedbax.set_document.v2", "label": "Set",
+        "payload": {"entries": {"light": {"label": "Light"}, "heavy": {"label": "Heavy"}}},
     }
     raw["steps"]["train"]["sweep"] = {"axes": {"set": {"set": "set"}}}
     return _seed(home, project_id, raw)
@@ -49,11 +50,12 @@ def seed_window(home: str, project_id: str):
 
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["documents"]["pulses"] = {
-        "schema": "feedbax.set_document.v1",
+        "schema": "feedbax.set_document.v2",
         "label": "Pulses",
         "payload": {"entries": {
-            "nominal": {},
+            "nominal": {"label": "Nominal"},
             "force": {
+                "label": "Force",
                 "task_variables": [{
                     "id": "onset", "name": "Onset",
                     "type": {"base": "real", "dimensions": {"time": 1}},

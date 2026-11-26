@@ -13,22 +13,22 @@ from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
     SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts,
 )
-from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, ProjectName, StepReference
+from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, NonemptyText, ProjectName, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolvedStep, compose_document, compose_step
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
     AxisCondition, AxisValue, NamedAxis, RemoveValue, SetAxis, SetValue, Sweep, SweepExpansionCode,
-    SweepExpansionError,
+    SweepCoordinate, SweepExpansionError, sweep_value_labels,
 )
 from feedbax.contracts.task_document import TaskAdditions
 
-SET_DOCUMENT_SCHEMA_ID = "feedbax.set_document.v1"
+SET_DOCUMENT_SCHEMA_ID = "feedbax.set_document.v2"
 MODEL_SLOT = "payload.trial_documents.model"
 """Where a Train or Evaluate step reads its Model document."""
 
 
 class SetEntry(TaskAdditions):
-    label: str | None = None
+    label: NonemptyText
     differences: Differences = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -100,17 +100,17 @@ def axis_from_set(
             )
             for path, difference in entry.differences.items()
         }
-        label = {"label": entry.label} if entry.label is not None else {}
-        values[key] = AxisValue(patches=patches, task_variables=entry.task_variables, task_links=entry.task_links, **label)
+        values[key] = AxisValue(
+            label=entry.label, patches=patches, task_variables=entry.task_variables, task_links=entry.task_links,
+        )
     return NamedAxis(values=values) if where is None else NamedAxis(values=values, where=where)
 
 
 def set_from_axis(axis: NamedAxis, model: str) -> SetDocument:
     """The Set document holding an inline axis's patches into ``model``'s payload as differences."""
     entries = {}
-    for key, value in axis.values.items():
-        if value is None:
-            continue
+    values = ((key, value) for key, value in axis.values.items() if value is not None)
+    for number, (key, value) in enumerate(values, 1):
         if value.value is not None:
             raise ValueError(f"value {key!r} carries a coordinate value a set entry cannot hold")
         differences: Differences = {
@@ -119,8 +119,10 @@ def set_from_axis(axis: NamedAxis, model: str) -> SetDocument:
             )
             for target, write in value.patches.items() if write is not None
         }
+        coordinate = SweepCoordinate(key, value.label, number=number, explicit_null="value" in value.model_fields_set)
+        _, label = sweep_value_labels(coordinate)
         entries[key] = SetEntry(
-            label=value.label, differences=differences, task_variables=value.task_variables, task_links=value.task_links,
+            label=label, differences=differences, task_variables=value.task_variables, task_links=value.task_links,
         )
     return SetDocument(entries=entries)
 

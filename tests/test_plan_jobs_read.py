@@ -103,7 +103,7 @@ def test_window_map_names_axes_with_problems_before_they_have_values(host, tmp_p
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     data = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     data["documents"]["empty"] = {
-        "schema": "feedbax.set_document.v1", "label": "Noise conditions", "payload": {"entries": {}},
+        "schema": "feedbax.set_document.v2", "label": "Noise conditions", "payload": {"entries": {}},
     }
     original = data["steps"].pop("train")
     for name, axis in (

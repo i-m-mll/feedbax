@@ -350,7 +350,8 @@ def _insert_set_entry(project: Project, axis: str, name: str) -> tuple[StoredEdi
     content = _composed(project, name)
     entries = content["entries"]
     value = generated_name(axis, lambda key: key == axis or key in entries)
-    edits = content_edits(content, content | {"entries": entries | {value: {"differences": {}}}})
+    entry = {"label": _next_run_name(entries), "differences": {}}
+    edits = content_edits(content, content | {"entries": entries | {value: entry}})
     return set_document_write(project, name, edits, set_readers(project, name)), StudioAxisValue(axis=axis, value=value)
 
 

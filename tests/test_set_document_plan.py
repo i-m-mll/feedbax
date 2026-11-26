@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 import pytest
+from pydantic import ValidationError
 
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import compile_project
@@ -87,6 +88,15 @@ def test_equal_entries_share_a_request_and_each_is_listed():
     for step in ("train", "baseline"):
         assert requests[step, "alteration=scaled"] == requests[step, "alteration=heavy"]
         assert requests[step, "alteration=gain"] != requests[step, "alteration=heavy"]
+
+
+def test_a_saved_set_has_names_for_every_authored_entry():
+    with pytest.raises(ValidationError, match="label"):
+        SetDocument.model_validate({"entries": {"unlabelled": {}}})
+
+    inline = NamedAxis.model_validate({"values": {"removed": None, "first": {}, "second": {"label": "Heavy"}}})
+    saved = set_from_axis(inline, "reach-model")
+    assert [entry.label for entry in saved.entries.values()] == ["Value 1", "Heavy"]
 
 
 def test_an_inline_axis_and_its_set_plan_the_same_requests():
