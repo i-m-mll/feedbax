@@ -65,7 +65,8 @@ def test_relate_uses_the_root_output_and_edits_only_the_objective(project):
     prior = snapshot["project"]["documents"]["simple-reaches-objective"]["payload"]["terms"]
     existing = StoredObjectiveTerm.model_validate(prior["effector_position"])
     assert hand == existing.measure.args[0].args[0]
-    assert not ModelAddress.from_text(hand.reference).composites
+    assert hand.reference == "outputs.effector.pos"
+    assert not ModelAddress.from_authored_text(hand.reference).composites
     assert target.reference == "target"
     assert related_term.weight == LiteralValue(value=1)
     assert related_term.window is None
@@ -91,7 +92,7 @@ def test_term_added_from_a_component_port_uses_its_root_output(project):
     term = StoredObjectiveTerm.model_validate(terms[change["created_term"]])
     root_port = {"kind": "port", "end": {"owner": "outputs", "port": "effector"}}
     root = ModelAddress.model_validate({"composites": [], "element": field | {"parent": root_port}})
-    assert term.measure == CallValue(function="sqnorm", args=(NameValue(reference=root.to_text()),))
+    assert term.measure == CallValue(function="sqnorm", args=(NameValue(reference=root.to_authored_text()),))
 
 
 def test_recorded_relation_uses_the_drawn_anchor_and_computed_point(project, tmp_path):
@@ -103,7 +104,7 @@ def test_recorded_relation_uses_the_drawn_anchor_and_computed_point(project, tmp
     assert isinstance(pairing.task, StoredTaskDocument) and pairing.objective is not None
     task = pairing.task.lower()
     source = pairing.objective.lower()
-    hand = pairing.objective.terms["effector_position"].measure.args[0].args[0]
+    hand = next(term for term in source.terms if term.id == "effector_position").measure.args[0].args[0]
     position = (0.14, -0.21)
     point = CallValue(function="point", args=tuple(LiteralValue(value=x, unit="m") for x in position))
     first, second = (NameValue(reference="target"), point)

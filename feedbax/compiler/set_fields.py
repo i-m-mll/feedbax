@@ -14,6 +14,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.stored_members import scoped_set_member_id
 from feedbax.contracts.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_storage import lower_expression
 from feedbax.contracts.expression_text import ParsedField, resolve_expression
 from feedbax.contracts.expression_values import (
     CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, Site,
@@ -28,12 +29,12 @@ from feedbax.contracts.model_document import (
     CompositeComponent, DelayInitialTask, DelayInitialWire, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
     SignalInput, SignalType,
 )
-from feedbax.contracts.project import Document, apply_differences
+from feedbax.contracts.project import Document, SetDocumentValue, apply_differences
 from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField
 from feedbax.contracts.set_document import SetEntry, read_set
-from feedbax.contracts.stored_model import StoredModelDocument, authored_model_payload
+from feedbax.contracts.stored_model import StoredModelDocument, authored_model_payload, model_keyed_collection
 from feedbax.contracts.task_document import (
-    Cell, Link, SetVariableChoices, Signal, TaskDocument, ValidationTrial, Variable, add_to_task,
+    Cell, Link, SetVariableChoices, Signal, TaskAdditions, TaskDocument, ValidationTrial, Variable, add_to_task,
 )
 from feedbax.contracts.window import Window
 
@@ -108,16 +109,19 @@ def _entry_label(entry: str, variable: str) -> str:
     return f"{entry} · {variable}"
 
 
-def _entry_scope(axis: str, entry: str, source: SetEntry, shared_labels: frozenset[str]) -> SetEntry:
-    refs = {key: scoped_set_member_id(axis, entry, key) for key in source.task_variables}
-    renamed = rename_entry_references(source.model_dump(mode="json"), refs)
-    variables = {}
-    for id, variable in renamed.get("task_variables", {}).items():
-        label = _entry_label(entry, variable["label"])
-        variables[refs[id]] = variable | {"label": f"{axis} · {label}" if label in shared_labels else label}
-    renamed["task_variables"] = variables
-    renamed["task_links"] = {field: refs.get(id, id) for field, id in source.task_links.items()}
-    return SetEntry.model_validate(renamed)
+def _entry_scope(
+    axis: str, entry: str, source: SetEntry, shared_labels: frozenset[str],
+) -> tuple[TaskAdditions, dict[str, str]]:
+    additions = source.lower()
+    refs = {variable.id: scoped_set_member_id(axis, entry, variable.id) for variable in additions.task_variables}
+    renamed = rename_entry_references(additions.model_dump(mode="json"), refs)
+    for variable in renamed.get("task_variables", ()):
+        variable["id"] = refs[variable["id"]]
+        label = _entry_label(entry, variable["name"])
+        variable["name"] = f"{axis} · {label}" if label in shared_labels else label
+    for link in renamed.get("task_links", ()):
+        link["variable"] = refs.get(link["variable"], link["variable"])
+    return TaskAdditions.model_validate(renamed), refs
 
 
 def _attachment_links(
@@ -181,7 +185,7 @@ class _Union:
 
     @cached_property
     def _authored_model(self) -> dict[str, JsonValue]:
-        return authored_model_payload(self.model)
+        return authored_model_payload(self.model, self.registry)
 
     def variable(
         self, id: str, value_type: ValueType, value: Expression, *, choices: SetVariableChoices | None = None,
@@ -246,13 +250,17 @@ class _Union:
         set_name = placement.axis.set
         cooccurring = isinstance(placement.sampling, CooccurringSetTrials)
         try:
-            source = _entry_scope(axis, entry, authored, self.shared_entry_labels)
+            additions, refs = _entry_scope(axis, entry, authored, self.shared_entry_labels)
             variant = self.model
-            if source.differences:
+            if authored.differences:
+                differences = {
+                    path: difference.model_copy(update={"value": rename_entry_references(difference.value, refs)})
+                    if isinstance(difference, SetDocumentValue) else difference
+                    for path, difference in authored.differences.items()
+                }
                 variant = StoredModelDocument.model_validate(
-                    apply_differences(self._authored_model, source.differences),
-                ).lower()
-            additions = source.lower()
+                    apply_differences(self._authored_model, differences, keyed_collection=model_keyed_collection),
+                ).lower(self.registry)
             variant, links = _attachment_links(variant, additions.task_links, self.registry)
             task = add_to_task(
                 self.task.model_copy(update={"variables": tuple(self.variables), "links": tuple(self.links)}),
@@ -318,7 +326,9 @@ class _Union:
             ScopedValue(id=var.id, name=var.name, type=var.type, level=Level.TRIAL)
             for var in self.task.variables
         )
-        parsed = resolve_trial_set_condition(placement.condition, placement.sampling, trial_set_condition_site(scope), functions)
+        parsed = resolve_trial_set_condition(
+            lower_expression(placement.condition), placement.sampling, trial_set_condition_site(scope), functions,
+        )
         if isinstance(parsed, tuple):
             raise refused(parsed[0].reason)
         try:

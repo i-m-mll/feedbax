@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from functools import partial
 from typing import TypeGuard
 
 from pydantic import BaseModel
@@ -13,14 +14,18 @@ from feedbax.contracts.expression_values import (
     SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.expression_site import read_field
-from feedbax.contracts.expression_text import ParsedField
-from feedbax.contracts.objective_document import objective_weight_title
-from feedbax.contracts.project import BasedDocument, Payload, Project, RootDocument, SetProjectValue, Step, json_pointer_parts
-from feedbax.contracts.project_sources import ValueSource, pointer
+from feedbax.contracts.expression_text import ParsedField, print_stored_expression
+from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.matrix_core import prepare_stored_patch
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, objective_weight_title
+from feedbax.contracts.project import Payload, SetProjectValue, Step
+from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.project_storage import stored_expression_site
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.time_units import TimeUse, TimeValue, time_steps
-from feedbax.contracts.window import WindowPosition, store_window_offset, window_offset_expression
+from feedbax.contracts.window import window_offset_expression
 from feedbax.studio.authoring_sweeps import FieldSweeps, SweepTarget
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field
 from feedbax.studio.selection import StoredEdit
@@ -73,62 +78,6 @@ def is_window_offset(role: str, path: FieldPath) -> bool:
         and path[2:4] == ("window", "spans") and path[4].isdigit()
         and path[5] in {"start", "end", "at"} and path[6] == "offset"
     )
-
-
-def held_expression_file(
-    project: Project, origin: ValueSource, held: UnresolvedValue,
-) -> tuple[AuthoredFileAddress, str] | None:
-    """Locate the whole held value in the file that contributed its text."""
-    parts = json_pointer_parts(origin.path)
-    if parts[-1:] != ("text",):
-        return None
-    parts = parts[:-1]
-    if origin.kind == "document":
-        document = project.documents.get(origin.name)
-        if isinstance(document, RootDocument):
-            location = ("payload", *parts)
-        elif isinstance(document, BasedDocument):
-            ancestor = next((
-                (path, parent) for path in document.differences
-                if parts[:len(parent := json_pointer_parts(path))] == parent
-            ), None)
-            if ancestor is None:
-                return None
-            path, parent = ancestor
-            location = ("differences", path, "value", *parts[len(parent):])
-        else:
-            return None
-        address = AuthoredFileAddress(kind="document", id=origin.name)
-        raw = document.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    elif origin.kind == "variant":
-        variant = project.sweep.rows.get(origin.name) if project.sweep else None
-        if variant is None:
-            return None
-        patch = next((
-            (path, parent) for path in variant.patches
-            if parts[:len(parent := tuple(path.split(".")))] == parent
-        ), None)
-        if patch is None:
-            return None
-        path, parent = patch
-        location = ("patches", path, "value", *parts[len(parent):])
-        address = AuthoredFileAddress(kind="variant", id=origin.name)
-        raw = variant.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    elif origin.step in project.steps and origin.kind != "upstream":
-        location = parts
-        address = AuthoredFileAddress(kind="step", id=origin.step)
-        raw = project.steps[origin.step].model_dump(mode="json", by_alias=True, exclude_unset=True)
-    else:
-        return None
-    current = raw
-    for part in location:
-        if isinstance(current, list) and part.isdigit() and int(part) < len(current):
-            current = current[int(part)]
-        elif isinstance(current, dict):
-            current = current.get(part)
-        else:
-            return None
-    return (address, pointer(location)) if current == held.model_dump(mode="json") else None
 
 
 def index_pointer(raw: object, path: FieldPath) -> str | None:
@@ -186,7 +135,7 @@ class TrialFieldSweep:
     stored: bool
     """The document stores the number, rather than leaving its field to a default."""
     write: FieldPath
-    """Where the number's literal is written in the document when it is stored."""
+    """The owning scalar or text field, including when the literal is nested in its expression."""
 
 
 def trial_field_sweep(
@@ -197,10 +146,9 @@ def trial_field_sweep(
     ``payload`` retains the authored key presence and ``site`` describes the enclosing expression.
     """
     node = site_expression(parsed, path)
-    if node is None and is_window_offset(role, path) and isinstance(at(parsed, path[:-1]), WindowPosition):
-        node = window_offset_expression(None)
     if not _numeric(node):
         return None
+    write = next(path[:end] for end in range(1, len(path) + 1) if site_expression(parsed, path[:end]) is not None)
     time_use = trial_time_use(role, path) if node.unit in {"s", "st"} else None
     def validate(value):
         if time_use == "offset" and node.unit == "st":
@@ -225,7 +173,7 @@ def trial_field_sweep(
             step, target, weight or label, named, integer=node.unit == "st" and time_use in {"length", "offset"},
             derived_label=weight is not None,
         ),
-        at(payload, path) is not None, path,
+        index_pointer(payload, write) is not None, write,
     )
 
 
@@ -281,23 +229,24 @@ def trial_field_sweep_edit(
             [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=list(result))],
             reached=frozenset({step_id}),
         )
-        kept = [patch.value for patch in prepared.keep if patch.op != "remove"]
+        kept = next((swept.field.literal(patch.value) for patch in reversed(prepared.keep) if patch.op != "remove"), None)
     else:
         stored = StoredEdit([])
-        kept = [result.value if isinstance(result, LiteralValue) else result]
-    edits = []
-    if not swept.stored:
-        parent = index_pointer(raw, swept.write[:-1])
-        if parent is None:
-            raise ProjectFolderInvalid("The swept field's document has changed.")
-        literal = swept.field.literal(swept.field.value)
-        value = store_window_offset(literal) if is_window_offset(swept.role, swept.write) else literal
-        path = index_pointer(raw, swept.write)
-        edits.append(SetProjectValue(
-            op="replace" if path else "add", path=path or parent + pointer(swept.write[-1:]),
-            value=value.model_dump(mode="json", exclude_none=True),
-        ))
-    if kept:
-        written = index_pointer(raw, swept.write) or edits[0].path
-        edits.append(SetProjectValue(op="replace", path=written + "/value", value=kept[-1]))
-    return write_document(edits) + stored if edits else stored
+        kept = result if isinstance(result, LiteralValue) else swept.field.literal(result)
+    if kept is None and swept.stored:
+        return stored
+    if kept is None:
+        kept = swept.field.literal(swept.field.value)
+    path = index_pointer(raw, swept.write)
+    parent = index_pointer(raw, swept.write[:-1])
+    if parent is None:
+        raise ProjectFolderInvalid("The swept field's document has changed.")
+    value = print_stored_expression(kept)
+    if swept.write != swept.path:
+        schema_id = STORED_TASK_DOCUMENT_SCHEMA_ID if swept.role == "task" else STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+        node = OverridePatch(path=".".join(swept.path), op="replace", value=value)
+        physical, expression = prepare_stored_patch(raw, node, expression_site=partial(stored_expression_site, schema_id))
+        assert expression is not None
+        value = physical.value
+    edit = SetProjectValue(op="replace" if path else "add", path=path or parent + pointer(swept.write[-1:]), value=value)
+    return write_document([edit]) + stored
