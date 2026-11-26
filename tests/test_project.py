@@ -426,11 +426,16 @@ def test_document_base_follows_root_alias_before_deltas():
     assert project.documents["condition"].payload == {"gain": 3}
 
 
-def test_selected_row_sources_follow_list_edits_inherited_rows_and_document_paths():
+def test_selected_row_sources_follow_expression_edits_inherited_rows_and_document_paths():
     project = Project.model_validate(
         {
             "documents": {
-                "settings": {"label": "Settings", "schema": "settings", "payload": {"values": [2, 4], "limit": 10}},
+                "settings": {"label": "Settings", "schema": "settings", "payload": {
+                    "value": {"kind": "call", "function": "vector", "args": [
+                        {"kind": "literal", "value": 2}, {"kind": "literal", "value": 4},
+                    ]},
+                    "limit": 10,
+                }},
             },
             "steps": {
                 "fit": {
@@ -440,7 +445,9 @@ def test_selected_row_sources_follow_list_edits_inherited_rows_and_document_path
                     "deltas": [
                         {
                             "layer_id": "insert",
-                            "patches": [{"path": "values.0", "op": "add", "value": 1}],
+                            "patches": [{
+                                "path": "value.args.0", "op": "add", "value": {"kind": "literal", "value": 1},
+                            }],
                         },
                     ],
                     "sweep": {
@@ -464,26 +471,27 @@ def test_selected_row_sources_follow_list_edits_inherited_rows_and_document_path
     assert not isinstance(template, ProjectDiagnostic)
     result = template.resolve(include_sources=True)
     assert isinstance(result, ResolvedStep)
-    assert result.payload == {"values": [1, 2, 4], "limit": 12}
+    assert [argument["value"] for argument in result.payload["value"]["args"]] == [1, 2, 4]
+    assert result.payload["limit"] == 12
     assert result.sources is not None
-    assert result.sources["/values/0"].path == "/deltas/0/patches/0/value"
-    assert result.sources["/values/1"].path == "/values/0"
-    assert result.sources["/values/2"].path == "/values/1"
+    assert result.sources["/value/args/0/value"].path == "/deltas/0/patches/0/value/value"
+    assert result.sources["/value/args/1/value"].path == "/value/args/0/value"
+    assert result.sources["/value/args/2/value"].path == "/value/args/1/value"
     assert (result.sources["/limit"].kind, result.sources["/limit"].name) == ("exception", "raise")
 
 
-def test_selected_sibling_rows_keep_original_sources_after_list_writes():
+def test_selected_sibling_rows_keep_original_sources_after_member_writes():
     project = Project.model_validate({
         "documents": {"shared": {"label": "Shared", "schema": "data", "payload": {"a/b": {"~key": 5}}}},
         "steps": {"fit": {
             "label": "Fit",
             "kind": "train",
-            "base": {"inline": {"items": [
-                {"document": "shared", "pointer": "/a~1b"}, {"native": []},
-            ]}},
+            "base": {"inline": {"items": {
+                "shared": {"document": "shared", "pointer": "/a~1b"}, "native": [],
+            }}},
             "sweep": {"rows": {
-                "inserted": {"patches": {"items.0": {"op": "add", "value": 7}}},
-                "removed": {"patches": {"items.0": {"op": "remove"}}},
+                "inserted": {"patches": {"items.inserted": {"op": "add", "value": 7}}},
+                "removed": {"patches": {"items.shared": {"op": "remove"}}},
                 "original": {},
             }},
         }},
@@ -496,11 +504,44 @@ def test_selected_sibling_rows_keep_original_sources_after_list_writes():
     assert isinstance(inserted, ResolvedStep) and inserted.sources is not None
     assert isinstance(removed, ResolvedStep) and removed.sources is not None
     assert isinstance(original, ResolvedStep) and original.sources is not None
-    assert inserted.payload["items"] == [7, {"~key": 5}, {"native": []}]
-    assert removed.payload["items"] == [{"native": []}]
-    assert original.payload["items"] == [{"~key": 5}, {"native": []}]
-    assert inserted.sources["/items/0"].path == "/sweep/rows/inserted/patches/items.0/value"
-    assert inserted.sources["/items/1/~0key"] == original.sources["/items/0/~0key"]
-    assert original.sources["/items/0/~0key"].path == "/a~1b/~0key"
-    assert removed.sources["/items/0/native"] == inserted.sources["/items/2/native"]
-    assert removed.sources["/items/0/native"].path == "/base/inline/items/1/native"
+    assert list(inserted.payload["items"].items()) == [("shared", {"~key": 5}), ("native", []), ("inserted", 7)]
+    assert removed.payload["items"] == {"native": []}
+    assert original.payload["items"] == {"shared": {"~key": 5}, "native": []}
+    assert inserted.sources["/items/inserted"].path == "/sweep/rows/inserted/patches/items.inserted/value"
+    assert inserted.sources["/items/shared/~0key"] == original.sources["/items/shared/~0key"]
+    assert original.sources["/items/shared/~0key"].path == "/a~1b/~0key"
+    assert removed.sources["/items/native"] == inserted.sources["/items/native"]
+    assert removed.sources["/items/native"].path == "/base/inline/items/native"
+
+
+def test_sweep_routes_reject_arrays_and_remove_absent_fields_in_referenced_documents():
+    project = Project.model_validate({
+        "documents": {
+            "shared": {"label": "Shared", "schema": "data", "payload": {"weights": [1], "amount": 2}},
+        },
+        "steps": {"fit": {
+            "label": "Fit",
+            "kind": "train",
+            "base": {"inline": {
+                "settings": {"document": "shared"},
+                "aliases": [{"id": "first", "ref": {"document": "shared"}}],
+            }},
+            "sweep": {"rows": {
+                "remove-absent": {"patches": {"settings.defaulted": {"op": "remove"}}},
+                "array-in-document": {"patches": {"settings.weights.0": {"value": 3}}},
+                "array-before-reference": {"patches": {"aliases.first.ref.amount": {"value": 3}}},
+            }},
+        }},
+    })
+    template = compose_step(project, "fit", track_sources=True)
+    assert not isinstance(template, ProjectDiagnostic)
+    resolved, indexed, redirected = (
+        template.resolve(row, include_sources=True) for row in expand_sweep(template.sweep)
+    )
+
+    assert isinstance(resolved, ResolvedStep) and resolved.sources is not None
+    assert resolved.payload["settings"] == {"weights": [1], "amount": 2}
+    assert resolved.sources["/settings/amount"].name == "shared"
+    for problem in (indexed, redirected):
+        assert isinstance(problem, ProjectDiagnostic) and problem.code == ResolutionCode.INVALID_SWEEP
+        assert "cannot traverse an array" in problem.detail

@@ -18,7 +18,10 @@ from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.loaded_model import encode_imported_model_document
-from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
+from feedbax.contracts.matrix_core import (
+    apply_stored_patch_copy, apply_stored_patch_in_place, replay_stored_patch_copy, resolve_segment,
+    validate_stored_patch_path,
+)
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
 from feedbax.contracts.project_storage import stored_keyed_collection
@@ -417,6 +420,8 @@ def subject_task_write(payload: Any, patch: OverridePatch) -> tuple[OverridePatc
     slots = payload.get("trial_documents") if isinstance(payload, dict) else None
     if isinstance(slots, dict) and "task" in slots:
         return None
+    if len(parts) > 3 and parts[2] == "links":
+        raise ValueError(f"Link members require a JSON pointer: {patch.path!r}")
     params = payload.get("params") if isinstance(payload, dict) else None
     variation = params.get("variation") if isinstance(params, dict) else None
     if not isinstance(variation, (dict, list)):
@@ -630,7 +635,7 @@ class _Documents:
                     try:
                         if not isinstance(draft, dict):
                             raise ValueError("A variant writes into an object payload only")
-                        draft = apply_override_patch_copy(draft, item.patch)
+                        draft = apply_stored_patch_copy(draft, item.patch)
                     except ValueError as error:
                         problem = _Problem(
                             ResolutionCode.INVALID_SWEEP, item.patch.path, str(error),
@@ -995,6 +1000,7 @@ class _Resolver:
                     payload,
                     [layer.model_copy(update={"patches": patches})],
                     ancestor_written_paths=written,
+                    apply_patch=apply_stored_patch_in_place,
                 )
             except CompositionDeltaError as error:
                 raise _Problem(
@@ -1184,6 +1190,7 @@ class _Resolver:
                     fields.append((path, patch))
                     continue
                 authored = patch.path
+                validate_stored_patch_path(payload, authored)
                 if authored.split(".")[0] == "inputs" and not (isinstance(payload, dict) and "inputs" in payload):
                     raise ValueError("An input is narrowed by its Runs rule and Checkpoint, not swept")
                 reordered = False
@@ -1219,7 +1226,7 @@ class _Resolver:
                 if patch.op != "remove":
                     patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
                 variation = payload["params"]["variation"] if reordered else None
-                payload = apply_override_patch_copy(payload, patch)
+                payload = replay_stored_patch_copy(payload, patch)
                 if origins is not None:
                     author = row.patch_authors.get(authored, name)
                     source, override = self.row_source(author, row, authored)
