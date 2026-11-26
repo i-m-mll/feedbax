@@ -17,6 +17,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.combinations import (
     DEFAULT_COMBINATION_LIMIT, Dimension, cross_dimension, select_combinations, zip_dimension,
 )
+from feedbax.contracts.expression_sequence import real_range
 from feedbax.contracts.expression_storage import StoredExpression
 from feedbax.contracts.expression_values import DrawValue, TextSpan, WeightPart
 from feedbax.contracts.manifest import OverridePatch
@@ -915,21 +916,7 @@ def _recorded_draws(name: str, axis: SampledAxis) -> Mapping[str, JsonValue]:
 
 
 def _range_values(spec: RangeValues) -> Iterator[float]:
-    start, stop = float(spec.start), float(spec.stop)
-    if not math.isfinite(start) or not math.isfinite(stop):
-        raise ValueError("range bounds must be finite")
-    yield start
-    if spec.count == 1:
-        return
-    if spec.scale == "log":
-        first, last = math.log10(start), math.log10(stop)
-        for index in range(1, spec.count - 1):
-            yield 10 ** (first + (last - first) * index / (spec.count - 1))
-    else:
-        for index in range(1, spec.count - 1):
-            fraction = index / (spec.count - 1)
-            yield start * (1 - fraction) + stop * fraction
-    yield stop
+    return real_range(float(spec.start), float(spec.stop), spec.count, logarithmic=spec.scale == "log")
 
 
 def _integer_range(spec: RangeValues) -> tuple[int, ...]:
