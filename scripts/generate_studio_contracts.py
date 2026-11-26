@@ -19,7 +19,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from feedbax.contracts.task_document import BLANK_STORED_TASK, BLANK_TASK
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, ImportedModelProvenance, ModelFitReport
 from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_inputs import LoadedModelReference
@@ -447,14 +446,21 @@ from feedbax.contracts.studio_project import (
 from feedbax.contracts.studio_loaded_model import (
     StudioLoadedModelExportRequest, StudioLoadedModelImportQuery, StudioLoadedModelImportResult,
 )
-from feedbax.contracts.objective_document import ObjectiveDocument, StoredObjectiveDocument
-from feedbax.contracts.set_document import SetDocument, SetEntry
-from feedbax.contracts.stored_model import StoredModelDocument
+from feedbax.contracts.objective_document import (
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, StoredObjectiveDocument,
+)
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument, SetEntry
+from feedbax.contracts.stored_model import (
+    STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredGraphInterior, StoredModelDocument, StoredModelPorts,
+)
 from feedbax.contracts.window import Window
 from feedbax.contracts.training_document import TrainingDocument
 from feedbax.contracts.request_specs import DocumentTrainingConfig, SynthesisRequestSpec, TrainContinuation, TrialDocuments
 from feedbax.contracts.synthesis import SynthesisStepPayload
-from feedbax.contracts.task_document import PythonTaskSelection, StoredTaskDocument, TaskDocument
+from feedbax.contracts.task_document import (
+    BLANK_STORED_TASK, BLANK_TASK, STORED_TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, StoredTaskDocument,
+    TaskDocument,
+)
 from feedbax.contracts.studio_trials import (
     StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest,
     StudioTrialExpressionMenuRequest, StudioTrialRelate,
@@ -1457,6 +1463,10 @@ def generate() -> str:
     interfaces = "\n\n".join(emit_interface(model) for model in MODEL_TYPES)
     schemas = "\n\n".join(emit_schema(model) for model in MODEL_TYPES)
     authored_types, authored_schemas = emit_authored_contracts(AUTHORED_CONTRACT_MODELS, MODEL_TYPES)
+    blank_stored_model = StoredModelDocument(
+        step_seconds=0.01, ports=StoredModelPorts(), interior=StoredGraphInterior(),
+    )
+    blank_stored_objective = StoredObjectiveDocument(id="objective")
     acausal_report_defaults = {
         model.__name__: {
             name: field.get_default(call_default_factory=True)
@@ -1510,7 +1520,13 @@ def generate() -> str:
         f"{authored_types}\n\n"
         f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
         f"export const blankTask = {json.dumps(BLANK_TASK.model_dump(mode='json'), indent=2)};\n"
-        f"export const blankStoredTask = {json.dumps(BLANK_STORED_TASK.model_dump(mode='json', exclude_unset=True), indent=2)};\n\n"
+        f"export const blankStoredModel = {json.dumps(blank_stored_model.model_dump(mode='json', exclude_unset=True), indent=2)};\n"
+        f"export const blankStoredTask = {json.dumps(BLANK_STORED_TASK.model_dump(mode='json', exclude_unset=True), indent=2)};\n"
+        f"export const blankStoredObjective = {json.dumps(blank_stored_objective.model_dump(mode='json', exclude_unset=True), indent=2)};\n\n"
+        f"export const modelDocumentSchemaId = {json.dumps(STORED_MODEL_DOCUMENT_SCHEMA_ID)};\n"
+        f"export const taskDocumentSchemaId = {json.dumps(STORED_TASK_DOCUMENT_SCHEMA_ID)};\n"
+        f"export const objectiveDocumentSchemaId = {json.dumps(STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID)};\n"
+        f"export const setDocumentSchemaId = {json.dumps(SET_DOCUMENT_SCHEMA_ID)};\n"
         f"export const loadedModelDocumentSchemaId = {json.dumps(LOADED_MODEL_SCHEMA_ID)};\n\n"
         f"export const firstTrainTask: Document = {json.dumps(first_train_task().model_dump(mode='json', by_alias=True), indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"

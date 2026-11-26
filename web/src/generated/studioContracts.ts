@@ -752,7 +752,7 @@ export interface ModelPosition {
 export interface AddComponent {
   op: "add_component";
   graph: ModelAddress;
-  component: LeafComponent | CompositeComponent | RegisteredComponent;
+  component: StoredLeafComponent | StoredCompositeComponent | RegisteredComponent;
   position: ModelPosition;
   id?: string | null;
   connect_from?: ComponentPortEnd | InputBoundaryEnd | null;
@@ -947,7 +947,7 @@ export interface FlipComponent {
 export interface InsertComponentOnWire {
   op: "insert_component";
   address: ModelAddress;
-  component: LeafComponent | CompositeComponent | RegisteredComponent;
+  component: StoredLeafComponent | StoredCompositeComponent | RegisteredComponent;
   input_port: string;
   output_port: string;
   position: ModelPosition;
@@ -958,7 +958,7 @@ export interface InsertComponentOnWire {
 export interface InsertComponentOnPhysicalConnection {
   op: "insert_physical_component";
   address: ModelAddress;
-  component: LeafComponent | CompositeComponent;
+  component: StoredLeafComponent | StoredCompositeComponent;
   a_port: string;
   b_port: string;
   position: ModelPosition;
@@ -1124,16 +1124,16 @@ export interface ModelAddedElement {
 export interface ModelRemovedElement {
   change: "removed";
   address: ModelAddress;
-  definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | DelayAttachment | HoldAttachment | InterventionAttachment | ProbeAttachment;
+  definition: StoredLeafComponent | StoredCompositeComponent | StoredModelWire | ModelPhysicalConnection | StoredDelayAttachment | StoredHoldAttachment | StoredInterventionAttachment | StoredProbeAttachment;
   position?: ModelPosition | null;
-  wires?: Record<string, ModelWire>;
+  wires?: Record<string, StoredModelWire>;
   connections?: Record<string, ModelPhysicalConnection>;
 }
 
 export interface ModelRewiredElement {
   change: "rewired";
   address: ModelAddress;
-  previous: ModelWire | ModelPhysicalConnection;
+  previous: StoredModelWire | ModelPhysicalConnection;
 }
 
 export interface ModelProjection {
@@ -5432,7 +5432,7 @@ export type StudioTrialAuthoring = {
   "resets": Array<StudioTrialReset>;
   "fields": Array<StudioTrialField>;
   "problems": Array<Problem>;
-  "related_term"?: string | null;
+  "created_term"?: string | null;
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "store_choices"?: Array<StudioStoreChoice> | null;
@@ -5441,7 +5441,7 @@ export type StudioTrialAuthoring = {
 export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
-  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | StudioTrialStructureEdit | StudioTrialRelate | null;
+  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | StudioTrialStructureEdit | StudioTrialRelate | StudioTrialObjectiveTermAdd | null;
   "store_choice"?: Sha256 | null;
   "scope"?: StudioTrialStepScope | AxisValueRuns | ListedRuns | null;
 };
@@ -5522,6 +5522,11 @@ export type StudioTrialInput = {
 export type StudioTrialObjectiveSource = {
   "kind": "train" | "synthesize" | "own";
   "step": string;
+};
+
+export type StudioTrialObjectiveTermAdd = {
+  "kind": "add_objective_term";
+  "term": StoredObjectiveTerm;
 };
 
 export type StudioTrialOutput = {
@@ -5620,9 +5625,9 @@ export type SynthesisRequestSpec = {
 };
 
 export type SynthesisStepPayload = {
-  "model": DocumentReference | ModelDocument;
-  "task": DocumentReference | TaskDocument | PythonTaskSelection;
-  "objective": DocumentReference | ObjectiveDocument;
+  "model": DocumentReference | StoredModelDocument;
+  "task": DocumentReference | StoredTaskDocument | PythonTaskSelection;
+  "objective": DocumentReference | StoredObjectiveDocument;
   "input_bindings"?: Record<string, string | null>;
   "method": string;
   "settings"?: Record<string, JsonValue>;
@@ -5950,6 +5955,11 @@ export const blankTask = {
     }
   ]
 };
+export const blankStoredModel = {
+  "step_seconds": 0.01,
+  "ports": {},
+  "interior": {}
+};
 export const blankStoredTask = {
   "id": "task",
   "variables": {},
@@ -5966,18 +5976,24 @@ export const blankStoredTask = {
   },
   "signals": {}
 };
+export const blankStoredObjective = {
+  "id": "objective"
+};
 
+export const modelDocumentSchemaId = "feedbax.spec.model.v2";
+export const taskDocumentSchemaId = "feedbax.spec.task_document.v2";
+export const objectiveDocumentSchemaId = "feedbax.spec.objective_document.v2";
+export const setDocumentSchemaId = "feedbax.set_document.v2";
 export const loadedModelDocumentSchemaId = "feedbax.spec.loaded_model";
 
 export const firstTrainTask: Document = {
-  "schema": "feedbax.spec.task_document",
+  "schema": "feedbax.spec.task_document.v2",
   "label": "Simple reaches",
   "payload": {
     "id": "simple-reaches",
-    "variables": [
-      {
-        "id": "start",
-        "name": "start",
+    "variables": {
+      "start": {
+        "label": "start",
         "type": {
           "base": "real",
           "shape": [
@@ -6023,9 +6039,8 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
-        "id": "target",
-        "name": "target",
+      "target": {
+        "label": "target",
         "type": {
           "base": "real",
           "shape": [
@@ -6085,11 +6100,10 @@ export const firstTrainTask: Document = {
           ]
         }
       }
-    ],
-    "epochs": [
-      {
-        "id": "move",
-        "name": "move",
+    },
+    "epochs": {
+      "move": {
+        "label": "move",
         "end": {
           "kind": "length",
           "length": {
@@ -6099,11 +6113,10 @@ export const firstTrainTask: Document = {
           }
         }
       }
-    ],
-    "signals": [
-      {
-        "id": "target_pos",
-        "name": "target position",
+    },
+    "signals": {
+      "target_pos": {
+        "label": "target position",
         "type": {
           "base": "real",
           "shape": [
@@ -6114,9 +6127,8 @@ export const firstTrainTask: Document = {
           },
           "space": "point"
         },
-        "cells": [
-          {
-            "id": "move",
+        "cells": {
+          "move": {
             "first_epoch": "move",
             "last_epoch": "move",
             "value": {
@@ -6124,11 +6136,10 @@ export const firstTrainTask: Document = {
               "reference": "target"
             }
           }
-        ]
+        }
       },
-      {
-        "id": "target_vel",
-        "name": "target velocity",
+      "target_vel": {
+        "label": "target velocity",
         "type": {
           "base": "real",
           "shape": [
@@ -6140,9 +6151,8 @@ export const firstTrainTask: Document = {
           },
           "space": "free"
         },
-        "cells": [
-          {
-            "id": "move",
+        "cells": {
+          "move": {
             "first_epoch": "move",
             "last_epoch": "move",
             "value": {
@@ -6160,11 +6170,10 @@ export const firstTrainTask: Document = {
               ]
             }
           }
-        ]
+        }
       },
-      {
-        "id": "goal",
-        "name": "goal",
+      "goal": {
+        "label": "goal",
         "type": {
           "base": "real",
           "shape": [
@@ -6175,9 +6184,8 @@ export const firstTrainTask: Document = {
           },
           "space": "point"
         },
-        "cells": [
-          {
-            "id": "move",
+        "cells": {
+          "move": {
             "first_epoch": "move",
             "last_epoch": "move",
             "value": {
@@ -6185,18 +6193,15 @@ export const firstTrainTask: Document = {
               "reference": "target"
             }
           }
-        ]
+        }
       }
-    ],
-    "links": [
-      {
-        "model_field": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"state\",\"effector/position\"]}}",
-        "variable": "start"
-      }
-    ],
+    },
+    "links": {
+      "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"state\",\"effector/position\"]}}": "start"
+    },
     "fixed_steps": 80,
-    "validation_trials": [
-      {
+    "validation_trials": {
+      "trial-1": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6208,7 +6213,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-2": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6220,7 +6225,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-3": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6232,7 +6237,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-4": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6244,7 +6249,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-5": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6256,7 +6261,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-6": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6268,7 +6273,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-7": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6280,7 +6285,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-8": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6292,7 +6297,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-9": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6304,7 +6309,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-10": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6316,7 +6321,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-11": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6328,7 +6333,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-12": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6340,7 +6345,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-13": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6352,7 +6357,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-14": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6364,7 +6369,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-15": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6376,7 +6381,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-16": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6388,7 +6393,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-17": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6400,7 +6405,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-18": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6412,7 +6417,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-19": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6424,7 +6429,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-20": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6436,7 +6441,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-21": {
         "variables": {
           "start": [
             -0.10000002384185791,
@@ -6448,7 +6453,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-22": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6460,7 +6465,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-23": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6472,7 +6477,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-24": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6484,7 +6489,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-25": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6496,7 +6501,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-26": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6508,7 +6513,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-27": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6520,7 +6525,7 @@ export const firstTrainTask: Document = {
           ]
         }
       },
-      {
+      "trial-28": {
         "variables": {
           "start": [
             0.19999995827674866,
@@ -6532,7 +6537,7 @@ export const firstTrainTask: Document = {
           ]
         }
       }
-    ]
+    }
   }
 };
 
@@ -7822,7 +7827,7 @@ export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
     .object({
       "op": z.literal("add_component"),
       "graph": ModelAddressSchema,
-      "component": z.union([LeafComponentSchema, CompositeComponentSchema, RegisteredComponentSchema]),
+      "component": z.union([z.union([StoredLeafComponentSchema, StoredCompositeComponentSchema]), RegisteredComponentSchema]),
       "position": ModelPositionSchema,
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
       "connect_from": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]).nullable().optional(),
@@ -8177,7 +8182,7 @@ export const InsertComponentOnWireSchema: z.ZodType<InsertComponentOnWire> = z.l
     .object({
       "op": z.literal("insert_component"),
       "address": ModelAddressSchema,
-      "component": z.union([LeafComponentSchema, CompositeComponentSchema, RegisteredComponentSchema]),
+      "component": z.union([z.union([StoredLeafComponentSchema, StoredCompositeComponentSchema]), RegisteredComponentSchema]),
       "input_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "output_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "position": ModelPositionSchema,
@@ -8192,7 +8197,7 @@ export const InsertComponentOnPhysicalConnectionSchema: z.ZodType<InsertComponen
     .object({
       "op": z.literal("insert_physical_component"),
       "address": ModelAddressSchema,
-      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "component": z.union([StoredLeafComponentSchema, StoredCompositeComponentSchema]),
       "a_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "b_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "position": ModelPositionSchema,
@@ -8471,9 +8476,9 @@ export const ModelRemovedElementSchema: z.ZodType<ModelRemovedElement> = z.lazy(
     .object({
       "change": z.literal("removed"),
       "address": ModelAddressSchema,
-      "definition": z.union([LeafComponentSchema, CompositeComponentSchema, ModelWireSchema, ModelPhysicalConnectionSchema, z.union([DelayAttachmentSchema, HoldAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])]),
+      "definition": z.union([z.union([StoredLeafComponentSchema, StoredCompositeComponentSchema]), StoredModelWireSchema, ModelPhysicalConnectionSchema, z.union([StoredDelayAttachmentSchema, StoredHoldAttachmentSchema, StoredInterventionAttachmentSchema, StoredProbeAttachmentSchema])]),
       "position": ModelPositionSchema.nullable().optional(),
-      "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema).optional(),
+      "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), StoredModelWireSchema).optional(),
       "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema).optional(),
     })
     .strict()
@@ -8484,7 +8489,7 @@ export const ModelRewiredElementSchema: z.ZodType<ModelRewiredElement> = z.lazy(
     .object({
       "change": z.literal("rewired"),
       "address": ModelAddressSchema,
-      "previous": z.union([ModelWireSchema, ModelPhysicalConnectionSchema]),
+      "previous": z.union([StoredModelWireSchema, ModelPhysicalConnectionSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelRewiredElement>;
@@ -14835,7 +14840,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "resets": z.array(StudioTrialResetSchema),
     "fields": z.array(StudioTrialFieldSchema),
     "problems": z.array(ProblemSchema),
-    "related_term": z.union([z.string(), z.null()]).optional(),
+    "created_term": z.union([z.string(), z.null()]).optional(),
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "store_choices": z.union([z.array(StudioStoreChoiceSchema).min(1), z.null()]).optional(),
@@ -14846,7 +14851,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
   z.object({
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
-    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema, StudioTrialStructureEditSchema, StudioTrialRelateSchema]), z.null()]).optional(),
+    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema, StudioTrialStructureEditSchema, StudioTrialRelateSchema, StudioTrialObjectiveTermAddSchema]), z.null()]).optional(),
     "store_choice": z.union([Sha256Schema, z.null()]).optional(),
     "scope": z.union([z.union([StudioTrialStepScopeSchema, AxisValueRunsSchema, ListedRunsSchema]), z.null()]).optional(),
   }).strict()
@@ -14949,6 +14954,13 @@ export const StudioTrialObjectiveSourceSchema: z.ZodType<StudioTrialObjectiveSou
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialObjectiveSource>;
+
+export const StudioTrialObjectiveTermAddSchema: z.ZodType<StudioTrialObjectiveTermAdd> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("add_objective_term"),
+    "term": StoredObjectiveTermSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioTrialObjectiveTermAdd>;
 
 export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =>
   z.object({
@@ -15079,9 +15091,9 @@ export const SynthesisRequestSpecSchema: z.ZodType<SynthesisRequestSpec> = z.laz
 
 export const SynthesisStepPayloadSchema: z.ZodType<SynthesisStepPayload> = z.lazy(() =>
   z.object({
-    "model": z.union([DocumentReferenceSchema, ModelDocumentSchema]),
-    "task": z.union([DocumentReferenceSchema, TaskDocumentSchema, PythonTaskSelectionSchema]),
-    "objective": z.union([DocumentReferenceSchema, ObjectiveDocumentSchema]),
+    "model": z.union([DocumentReferenceSchema, StoredModelDocumentSchema]),
+    "task": z.union([DocumentReferenceSchema, StoredTaskDocumentSchema, PythonTaskSelectionSchema]),
+    "objective": z.union([DocumentReferenceSchema, StoredObjectiveDocumentSchema]),
     "input_bindings": z.record(z.string(), z.union([z.string(), z.null()])).optional(),
     "method": z.string(),
     "settings": z.record(z.string(), jsonValueSchema).optional(),
