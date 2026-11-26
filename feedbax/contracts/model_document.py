@@ -36,6 +36,13 @@ class ModelTime(TimeValue):
     value: PositivePeriod
 
 
+ModelDelay = Annotated[ModelTime | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
+ModelStepSeconds = Annotated[PositivePeriod | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
+ModelSubsteps = Annotated[Annotated[int, Field(ge=1)] | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
+ComponentRevision = Annotated[int, Field(strict=True, ge=1)]
+ComponentPortCount = Annotated[int, Field(ge=0)]
+
+
 class DelayInitialValue(StrictModel):
     kind: Literal["value"]
     value: Annotated[FiniteNumber | tuple[FiniteNumber, ...] | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
@@ -54,11 +61,15 @@ class DelayInitialWire(StrictModel):
 type ModelSignalSource = Annotated[DelayInitialValue | DelayInitialTask | DelayInitialWire, Field(discriminator="kind")]
 
 
+def default_delay_initial_source() -> DelayInitialValue:
+    return DelayInitialValue(kind="value", value=0.0)
+
+
 class DelayAttachment(StrictModel):
     kind: Literal["delay"]
     id: ModelElementId
-    delay: Annotated[ModelTime | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
-    initial_source: ModelSignalSource = Field(default_factory=lambda: DelayInitialValue(kind="value", value=0.0))
+    delay: ModelDelay
+    initial_source: ModelSignalSource = Field(default_factory=default_delay_initial_source)
 
 
 class HoldAttachment(StrictModel):
@@ -145,9 +156,9 @@ class LeafComponent(StrictModel):
     kind: Literal["leaf"]
     name: ModelName
     type: ModelName
-    revision: Annotated[int, Field(strict=True, ge=1)] | None = None
+    revision: ComponentRevision | None = None
     fields: dict[str, JsonValue] = Field(default_factory=dict)
-    port_counts: dict[ModelElementId, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
+    port_counts: dict[ModelElementId, ComponentPortCount] = Field(default_factory=dict)
     attachments: ModelPortAttachments = Field(default_factory=ModelPortAttachments)
 
 
@@ -156,7 +167,7 @@ class CompositeComponent(StrictModel):
     name: ModelName
     ports: ModelPorts
     interior: GraphInterior | PhysicalInterior
-    substeps: Annotated[Annotated[int, Field(ge=1)] | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)] = 1
+    substeps: ModelSubsteps = 1
     attachments: ModelPortAttachments = Field(default_factory=ModelPortAttachments)
 
     @model_validator(mode="after")
@@ -211,7 +222,7 @@ class ModelDocument(StrictModel):
     model_config = ConfigDict(allow_inf_nan=False)
 
     schema_version: Literal[MODEL_DOCUMENT_SCHEMA_VERSION] = MODEL_DOCUMENT_SCHEMA_VERSION
-    step_seconds: Annotated[PositivePeriod | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
+    step_seconds: ModelStepSeconds
     ports: ModelPorts
     interior: GraphInterior
     world: ModelWorld | None = None

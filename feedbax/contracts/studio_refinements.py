@@ -32,6 +32,39 @@ _INTERIOR_IDS = CrossFieldRefinement(
 )
 
 
+def _duplicate_port_ids(value: Any) -> bool:
+    ids = [
+        identifier
+        for ports in (value.inputs, value.outputs, value.physical)
+        for identifier in (ports if isinstance(ports, dict) else (port.id for port in ports))
+    ]
+    return len(ids) != len(set(ids))
+
+
+_PORT_IDS = CrossFieldRefinement(
+    "model-ports.unique-ids",
+    "port IDs must be unique within a port list",
+    _duplicate_port_ids,
+    """(() => {
+      const ids = [value.inputs, value.outputs, value.physical]
+        .flatMap((ports) => Array.isArray(ports) ? ports.map((port) => port.id) : Object.keys(ports ?? {}));
+      return new Set(ids).size !== ids.length;
+    })()""",
+)
+_COMPOSITE_PHYSICAL_INTERFACE = CrossFieldRefinement(
+    "model-composite.physical-interface",
+    "physical ports require an Equations or Mechanics interior",
+    lambda value: value.interior.physical_domain is None and bool(value.ports.physical),
+    "value.interior.physical_domain == null && Object.keys(value.ports.physical ?? {}).length > 0",
+)
+_ROOT_SIGNAL_INTERFACE = CrossFieldRefinement(
+    "model-root.signal-interface",
+    "the model root has signal ports only",
+    lambda value: bool(value.ports.physical),
+    "Object.keys(value.ports.physical ?? {}).length > 0",
+)
+
+
 _ONE_TRIAL_SOURCE = CrossFieldRefinement(
     "trial-source.exclusive",
     "Select one Task document or registered Python task.",
@@ -81,36 +114,16 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
             'value.address.element.kind !== "attachment"',
         ),
     ),
-    "ModelPorts": (
-        CrossFieldRefinement(
-            "model-ports.unique-ids",
-            "port IDs must be unique within a port list",
-            lambda value: len(value.inputs) + len(value.outputs) + len(value.physical)
-            != len({port.id for port in (*value.inputs, *value.outputs, *value.physical)}),
-            """(() => {
-              const ports = [...(value.inputs ?? []), ...(value.outputs ?? []), ...(value.physical ?? [])];
-              return new Set(ports.map((port) => port.id)).size !== ports.length;
-            })()""",
-        ),
-    ),
+    "ModelPorts": (_PORT_IDS,),
+    "StoredModelPorts": (_PORT_IDS,),
     "GraphInterior": (_INTERIOR_IDS,),
     "PhysicalInterior": (_INTERIOR_IDS,),
-    "CompositeComponent": (
-        CrossFieldRefinement(
-            "model-composite.physical-interface",
-            "physical ports require an Equations or Mechanics interior",
-            lambda value: value.interior.physical_domain is None and bool(value.ports.physical),
-            "value.interior.physical_domain == null && (value.ports.physical?.length ?? 0) > 0",
-        ),
-    ),
-    "ModelDocument": (
-        CrossFieldRefinement(
-            "model-root.signal-interface",
-            "the model root has signal ports only",
-            lambda value: bool(value.ports.physical),
-            "(value.ports.physical?.length ?? 0) > 0",
-        ),
-    ),
+    "StoredGraphInterior": (_INTERIOR_IDS,),
+    "StoredPhysicalInterior": (_INTERIOR_IDS,),
+    "CompositeComponent": (_COMPOSITE_PHYSICAL_INTERFACE,),
+    "StoredCompositeComponent": (_COMPOSITE_PHYSICAL_INTERFACE,),
+    "ModelDocument": (_ROOT_SIGNAL_INTERFACE,),
+    "StoredModelDocument": (_ROOT_SIGNAL_INTERFACE,),
     "AdditiveGraphChannelTargetSpec": (
         CrossFieldRefinement(
             "additive-target.edge-source",
@@ -516,10 +529,15 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     "ChangeModelAttachment": frozenset({"_attachment", "_id"}),
     "RemoveModelAttachment": frozenset({"_attachment"}),
     "ModelPorts": frozenset({"_unique_ports"}),
+    "StoredModelPorts": frozenset({"_unique_ports"}),
     "GraphInterior": frozenset({"_unique_elements"}),
     "PhysicalInterior": frozenset({"_unique_elements"}),
+    "StoredGraphInterior": frozenset({"_unique_elements"}),
+    "StoredPhysicalInterior": frozenset({"_unique_elements"}),
     "CompositeComponent": frozenset({"_physical_interface"}),
+    "StoredCompositeComponent": frozenset({"_physical_interface"}),
     "ModelDocument": frozenset({"_physical_interface"}),
+    "StoredModelDocument": frozenset({"_physical_interface"}),
     "SparseCooArrayValueSpec": frozenset({"validate_entries"}),
     "ConstantArrayValueSpec": frozenset({"validate_value"}),
     "AcausalConnectionSpec": frozenset({"validate_and_canonicalize"}),
