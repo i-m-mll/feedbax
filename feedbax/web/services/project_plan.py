@@ -441,8 +441,26 @@ class ProjectPlanRead:
                 element=element, product=PLOTLY_FIGURE_ROLE,
             )
 
+        problems = [
+            *(StudioProjectWindowMapProblem.from_diagnostic(
+                problem, declaration=project_declaration_name(self.settled.configuration.project),
+            ) for problem in plan.diagnostics if includes(problem.variant)),
+            *row_problems(plan, variants),
+            *(problem for problem in self.evaluation_problems if includes(problem.variant)),
+        ]
+        document_names = {
+            variant: {name: member_display_name(name, document.label) for name, document in project.documents.items()}
+            for variant, project in plan.variant_projects.items() if includes(variant)
+        }
+        for problem in problems:
+            if document := getattr(problem.place, "document", None):
+                scopes = (problem.variant,) if problem.variant is not None else tuple(document_names)
+                for variant in scopes:
+                    document_names.setdefault(variant, {}).setdefault(document, member_display_name(document))
+
         return StudioProjectWindowMap(
             variants=[variant for variant in plan.variants if includes(variant)],
+            document_names=document_names,
             steps=[
                 StudioProjectWindowMapStep(
                     variant=variant, step_id=step_id, label=member_display_name(step_id, step.label),
@@ -500,14 +518,7 @@ class ProjectPlanRead:
                 )
                 for producer, consumer in edge_keys if includes(consumer.variant)
             ],
-            problems=[
-                *(StudioProjectWindowMapProblem.from_diagnostic(
-                    problem, declaration=project_declaration_name(self.settled.configuration.project),
-                )
-                  for problem in plan.diagnostics if includes(problem.variant)),
-                *row_problems(plan, variants),
-                *(problem for problem in self.evaluation_problems if includes(problem.variant)),
-            ],
+            problems=problems,
             requests=[
                 StudioPlanRequest(**plan_request_address(request.key), request_id=request.request_id)
                 for request in chain(plan.runs, elements)

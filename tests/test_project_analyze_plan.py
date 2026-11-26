@@ -196,6 +196,7 @@ def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp
     figure = _decode(plan, "profile")
     assert figure.spec.names["condition"] == {condition: "plant.mass=2"}
     assert figure.inputs["speed"][0].reference == ProductRef(request_id=_decode(plan, "speed").id, role="speed")
+    project.documents["velocity-analysis"].label = "Movement analysis"
     root = tmp_path / "reach"
     for name, content in dump_text_project(project, ProjectConfiguration(project="reach", store="results")).items():
         path = root / name
@@ -206,7 +207,11 @@ def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp
         revision = client.get("/api/projects/reach").json()["revision"]
         response = client.get("/api/projects/reach/train-runs", params={"revision": revision, "window_map": True})
         assert response.status_code == 200, response.text
-        elements = {item["name"]: item for item in response.json()["window_map"]["analysis_elements"]}
+        window = response.json()["window_map"]
+        names = window["document_names"]["default"]
+        assert names["velocity-analysis"] == "Movement analysis"
+        assert names["velocity-figure"] == "Velocity figure"
+        elements = {item["name"]: item for item in window["analysis_elements"]}
         assert [request["request_id"] for request in elements["profile"]["requests"]] == [figure.id]
 
 
