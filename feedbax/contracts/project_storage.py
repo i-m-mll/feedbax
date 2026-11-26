@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 from functools import cache, lru_cache
 from types import MappingProxyType, UnionType
-from typing import Annotated, Any, TypeAliasType, Union, get_args, get_origin
+from typing import Annotated, Any, TYPE_CHECKING, TypeAliasType, Union, get_args, get_origin
 
 import rfc8785
 from pydantic import BaseModel, JsonValue, ValidationError
@@ -22,6 +22,10 @@ from feedbax.contracts.project import InlineBase, RootDocument, SetDocumentValue
 from feedbax.contracts.project_sweep import AxisValue, NamedAxis, SetValue, Sweep, SweepException
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.stored_members import StoredAddressedMembers, StoredMembers
+
+
+if TYPE_CHECKING:
+    from feedbax.contracts.stored_regions import StoredRegionRegistries
 
 
 type StoredPath = tuple[str, ...]
@@ -165,9 +169,11 @@ def _key(name: str, field: FieldInfo) -> str:
 
 def stored_defaults_manifest() -> dict[str, JsonValue]:
     """Declare every constant default reachable through a stored model."""
+    from feedbax.contracts.stored_regions import StoredRegionRegistries, inline_models
     from feedbax.training.optimizers import OptimizerSpec, ScheduleSpec
 
-    models, tags = _schema_inventory((OptimizerSpec, ScheduleSpec))
+    installed = StoredRegionRegistries().feedbax_models()
+    models, tags = _schema_inventory((OptimizerSpec, ScheduleSpec, *inline_models(), *installed))
     return {
         _model_name(model): {
             _key(name, field): _field_default(model, name)
@@ -214,11 +220,32 @@ def _same_stored_value(left: JsonValue, right: JsonValue, *, real_site: bool) ->
 
 def _projected_file(
     model: BaseModel, exclude: set[str] | None, protected: Iterable[StoredPath],
-    *, keep_explicit: bool = False,
+    *, keep_explicit: bool = False, registries: StoredRegionRegistries | None = None,
 ) -> tuple[JsonValue, set[StoredPath]]:
+    from feedbax.contracts.stored_regions import StoredRegion, StoredRegionRegistries, step_inline_model, typed_region
+
+    registries = registries if registries is not None else StoredRegionRegistries()
     real_tokens: set[StoredPath] = set()
     prefixes = {path[:end] for path in protected for end in range(1, len(path) + 1)}
-    _, tags = _schema_inventory()
+    _, base_tags = _schema_inventory()
+    tags = {model: set(fields) for model, fields in base_tags.items()}
+    registered_here: set[type[BaseModel]] = set()
+
+    def project_region(region: StoredRegion, child: dict, path: StoredPath, *, inline=False) -> JsonValue:
+        context = {key: value for key, value in child.items() if key in region.contextual}
+        declared = {key: value for key, value in child.items() if key not in context}
+        typed, encoded = typed_region(region, declared, inline=inline)
+        cls = type(typed)
+        if cls not in registered_here:
+            registered_here.add(cls)
+            _, found = _schema_inventory((cls,))
+            for owner, fields in found.items():
+                tags.setdefault(owner, set()).update(fields)
+        projected = project(typed, encoded, path) | context
+        if inline:
+            known = {_key(name, field) for name, field in cls.model_fields.items()}
+            return projected | {key: value for key, value in encoded.items() if key not in known}
+        return projected
 
     def remember_reals(value: JsonValue, path: StoredPath) -> None:
         if type(value) is float:
@@ -255,13 +282,20 @@ def _projected_file(
                     or isinstance(value, OverridePatch) and name == "value"
                     or keep_explicit and key in encoded
                 )
-                raw = getattr(value, name)
-                if key in encoded:
-                    child = encoded[key]
-                elif observed:
-                    child = to_jsonable_python(raw, by_alias=True)
-                else:
+                if key not in encoded and not observed:
                     continue
+                raw = getattr(value, name)
+                child = encoded[key] if key in encoded else to_jsonable_python(raw, by_alias=True)
+                region = registries.region(value, name) if isinstance(child, dict) and (explicit or child) else None
+                if region is not None:
+                    if region.model is None:
+                        remember_reals(child, child_path)
+                        if child or required or observed:
+                            result[key] = child
+                        continue
+                    if not (isinstance(child.get("document"), str) and child.keys() <= {"document", "pointer", "unresolved"}):
+                        child = project_region(region, child, child_path)
+                        raw = child
                 if not (required or observed) and (
                     isinstance(value, _REFINEMENTS) or _same_stored_value(
                         child, _field_default(cls, name),
@@ -278,8 +312,14 @@ def _projected_file(
                         child = typed.model_dump(mode="json", by_alias=True)
                 if isinstance(value, _REAL_TOKEN_VALUES) and name == "value":
                     remember_reals(child, child_path)
-                elif isinstance(value, Step) and value.kind == "evaluate" and name == "base" and isinstance(raw, InlineBase):
-                    remember_variation(raw.inline, (*child_path, "inline"))
+                elif isinstance(value, Step) and name == "base" and isinstance(raw, InlineBase):
+                    body_path = (*child_path, "inline")
+                    if value.kind == "evaluate":
+                        remember_variation(raw.inline, body_path)
+                    result[key] = {"inline": project_region(
+                        StoredRegion(step_inline_model(value.kind, raw.inline)), raw.inline, body_path, inline=True,
+                    )}
+                    continue
                 result[key] = project(raw, child, child_path)
             return result
         if isinstance(value, (tuple, list)) and isinstance(encoded, list):
@@ -387,8 +427,9 @@ class _Layout:
 
 def write_project_file(
     model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
+    registries: StoredRegionRegistries | None = None,
 ) -> bytes:
     """Encode one typed authored file with canonical numbers and 100-column layout."""
-    value, real_tokens = _projected_file(model, exclude, protected)
+    value, real_tokens = _projected_file(model, exclude, protected, registries=registries)
     validate_canonical_json_v2(value)
     return ("\n".join(_Layout(real_tokens).lines(value, 0, "", "", ())) + "\n").encode("utf-8")

@@ -47,6 +47,7 @@ from feedbax.contracts.project import (
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_storage import stored_keyed_collection, write_project_file
+from feedbax.contracts.stored_regions import StoredRegionRegistries
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     ProjectReadError,
@@ -947,10 +948,11 @@ def write_new_project_folder(
     project: Project,
     configuration: ProjectConfiguration,
     presentation: PresentationDocument,
+    *, registries: StoredRegionRegistries | None = None,
 ) -> None:
     """Publish the ordinary authored folder and presentation in one exclusive rename."""
     root = destination.parent.resolve(strict=True)
-    files = dump_text_project(project, configuration)
+    files = dump_text_project(project, configuration, registries=registries)
     files[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(presentation)
     with TemporaryDirectory(prefix=".studio-project-", dir=root) as staged:
         staging = Path(staged)
@@ -1016,6 +1018,10 @@ class ProjectFolder:
         self.python_tasks = python_tasks
         self.training_methods = training_methods
         self.synthesis_methods = synthesis_methods
+        self._stored_regions = StoredRegionRegistries(
+            training_methods=training_methods, synthesis_methods=synthesis_methods,
+            operations=operations, python_tasks=python_tasks, components=components,
+        )
         self._load_examples = load_examples
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: SavedPlanMemo())
         self._known_locations: dict[str, ProjectFolderLocation] = {}
@@ -1271,7 +1277,9 @@ class ProjectFolder:
         self.root.mkdir(parents=True, exist_ok=True)
         destination = self.root / name
         try:
-            write_new_project_folder(destination, project, configuration, PresentationDocument())
+            write_new_project_folder(
+                destination, project, configuration, PresentationDocument(), registries=self._stored_regions,
+            )
         except FileExistsError as error:
             raise ProjectFileExists(name) from error
         except OSError as error:
@@ -1339,7 +1347,7 @@ class ProjectFolder:
             else:
                 steps[file.id] = file.step
         project = Project(documents=documents, steps=steps, sweep=text.project.sweep)
-        encoded = dump_text_project(project, text.configuration)
+        encoded = dump_text_project(project, text.configuration, registries=self._stored_regions)
         _check_file_spellings(root, encoded)
 
         def guard() -> None:
@@ -1625,8 +1633,8 @@ class ProjectFolder:
                 presentation = PresentationDocument.model_validate(shown)
             except ValueError as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            original = dump_text_project(text.project, text.configuration)
-            encoded = dump_text_project(validated, text.configuration)
+            original = dump_text_project(text.project, text.configuration, registries=self._stored_regions)
+            encoded = dump_text_project(validated, text.configuration, registries=self._stored_regions)
             pending = []
             for relative in sorted(original.keys() | encoded.keys()):
                 if original.get(relative) == encoded.get(relative):
@@ -1808,7 +1816,7 @@ class ProjectFolder:
             text = self._load(root)
             check_revision("project", body.revision, text.revision)
             files, created = (body.files, body.created) if isinstance(body, StudioProjectPatchBatch) else ([body], [])
-            original = dump_text_project(text.project, text.configuration)
+            original = dump_text_project(text.project, text.configuration, registries=self._stored_regions)
             payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             configuration = text.configuration.model_dump(mode="json")
             addresses = {}
@@ -1856,7 +1864,7 @@ class ProjectFolder:
                         entry = _project_file_entry(payload, file.address)
                     _apply_file_edits(entry, file, model_operation=model_operation)
                 project = Project.model_validate(payload)
-                encoded = dump_text_project(project, text.configuration)
+                encoded = dump_text_project(project, text.configuration, registries=self._stored_regions)
                 if declaration_settings:
                     settings = ProjectConfiguration.model_validate(configuration).settings
                     original[text.declaration] = text_project_settings_edit(text.manifest, text.configuration.settings)

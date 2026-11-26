@@ -345,7 +345,14 @@ def plan_document_input(
     return _plan_document_content(authored_document_input(reference, document, python_tasks=python_tasks), objects)
 
 
-def _plan_document_content(value: DocumentInput, objects: MutableMapping[str, bytes]) -> PlannedInput:
+def _plan_document_content(
+    value: DocumentInput, objects: MutableMapping[str, bytes], *, components: ComponentRegistry | None = None,
+) -> PlannedInput:
+    if isinstance(value, InitialModelSource):
+        from feedbax.compiler.model_document import complete_model_fields
+
+        model = complete_model_fields(value.document, components or _builtin_model_registry())
+        value = value.model_copy(update={"document": model})
     content, raw = encode_document_input(value)
     objects[content.sha256] = raw
     return PlannedInput(None, InputMember(key=DEFAULT_SWEEP_ROW, reference=content))
@@ -1789,6 +1796,12 @@ def _encode_row(
                     (".".join(("settings", *map(str, failure["loc"]))), failure["msg"])
                     for failure in error.errors(include_url=False, include_input=False)
                 )) from error
+        if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)):
+            from feedbax.compiler.model_document import complete_model_fields
+
+            documents = spec.trial_documents
+            model = complete_model_fields(documents.model, components or _builtin_model_registry())
+            spec = spec.model_copy(update={"trial_documents": documents.model_copy(update={"model": model})})
         if (
             previous is not None and previous.request is not None
             and previous.lowering_stamp is not None and lowering_stamp is not None
@@ -3374,7 +3387,7 @@ class _Compiler:
                 **{name: value for name, value in raw.items() if name != "trial_set"},
                 "trials": list(trials),
             }}
-            inputs = {role: _plan_document_content(value, self.documents) for role, value in sources.items()}
+            inputs = {role: _plan_document_content(value, self.documents, components=self.components) for role, value in sources.items()}
             narrowed = _encode_row(
                 key, "evaluate", payload, inputs, None, self.work.request_documents,
                 self.prepare_train_trial, document_ids, self.python_tasks,
@@ -4321,7 +4334,9 @@ class _Compiler:
                         ids = self.read_imported_model(variant, reference, resolved.input_documents[role]).replica_ids
                     elif isinstance(reference, InitialModelReference):
                         ids = ("0",)
-                    binding = replace(_plan_document_content(source, self.documents), model_replicas=ids)
+                    binding = replace(
+                        _plan_document_content(source, self.documents, components=self.components), model_replicas=ids,
+                    )
                 except (OSError, ValueError) as error:
                     problem(f"inputs.{role}", str(error), row.id)
                     continue

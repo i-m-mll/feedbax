@@ -94,9 +94,9 @@ def authored_variation(edits: VariationEdits) -> Iterator[tuple[str, OverridePat
 
 class RolloutSettings(StrictModel):
     seed: int = Field(strict=True, ge=0, lt=2**32)
-    trial_policy: Literal["paired"]
+    trial_policy: Literal["paired"] = "paired"
     retention: Literal["raw_states", "observations"] = "raw_states"
-    variation: VariationEdits
+    variation: VariationEdits = ()
     input_bindings: dict[str, str | None] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
     @field_validator("variation")

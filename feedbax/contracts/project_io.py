@@ -10,7 +10,7 @@ from os.path import lexists
 from pathlib import Path
 import stat
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
 from pydantic import Field, TypeAdapter, ValidationError
 
@@ -30,6 +30,10 @@ from feedbax.contracts.project_storage import write_project_file
 from feedbax.contracts.project_storage_dependencies import protected_project_fields
 from feedbax.contracts.project_sweep import Row, Sweep
 from feedbax.contracts.strict_json import strict_json_loads
+
+if TYPE_CHECKING:
+    from feedbax.contracts.stored_regions import StoredRegionRegistries
+
 
 PROJECT_SCHEMA_VERSION = "feedbax.project.v1"
 PROJECT_DECLARATION_SUFFIX = ".feedbax"
@@ -383,14 +387,14 @@ def _revision_bytes(model: StrictModel, *, exclude: set[str] | None = None) -> b
     ).encode("utf-8")
 
 
-def dump_studio_project(project_file: StudioProjectFile) -> bytes:
+def dump_studio_project(project_file: StudioProjectFile, *, registries: StoredRegionRegistries | None = None) -> bytes:
     """Serialize the semantic model beside its presentation."""
     protected = (
         ("project", family, name, *path)
         for (family, name), paths in protected_project_fields(project_file.project).items()
         for path in paths
     )
-    return write_project_file(project_file, protected=protected)
+    return write_project_file(project_file, protected=protected, registries=registries)
 
 
 def project_semantic_root(project: Project) -> str:
@@ -398,7 +402,9 @@ def project_semantic_root(project: Project) -> str:
     return sha256_bytes(_revision_bytes(project))
 
 
-def dump_text_project(project: Project, configuration: ProjectConfiguration) -> dict[str, bytes]:
+def dump_text_project(
+    project: Project, configuration: ProjectConfiguration, *, registries: StoredRegionRegistries | None = None,
+) -> dict[str, bytes]:
     """Produce the complete set of relative paths and bytes for a text project."""
     sweep = project.sweep
     rows = sweep.rows if sweep is not None else {}
@@ -415,11 +421,15 @@ def dump_text_project(project: Project, configuration: ProjectConfiguration) -> 
     return {
         project_declaration_name(configuration.project): write_project_file(manifest),
         **{
-            f"documents/{name}.json": write_project_file(document, protected=protected.get(("documents", name), ()))
+            f"documents/{name}.json": write_project_file(
+                document, protected=protected.get(("documents", name), ()), registries=registries,
+            )
             for name, document in project.documents.items()
         },
         **{
-            f"steps/{name}.json": write_project_file(step, protected=protected.get(("steps", name), ()))
+            f"steps/{name}.json": write_project_file(
+                step, protected=protected.get(("steps", name), ()), registries=registries,
+            )
             for name, step in project.steps.items()
         },
         **{f"variants/{name}.json": write_project_file(row) for name, row in rows.items() if row is not None},

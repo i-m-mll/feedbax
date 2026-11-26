@@ -425,11 +425,15 @@ def subject_task_write(payload: Any, patch: OverridePatch) -> tuple[OverridePatc
     if len(parts) > 3 and parts[2] == "links":
         raise ValueError(f"Link members require a JSON pointer: {patch.path!r}")
     params = payload.get("params") if isinstance(payload, dict) else None
-    variation = params.get("variation") if isinstance(params, dict) else None
-    if not isinstance(variation, (dict, list)):
-        raise ValueError("A Task field write requires the Evaluate's variation")
+    if not isinstance(params, dict):
+        raise ValueError("A Task field write requires the Evaluate's params")
     target = ".".join(("task", *parts[2:]))
     edit = {"op": patch.op, "path": target, **({"value": patch.value} if patch.op != "remove" else {})}
+    if "variation" not in params:
+        return OverridePatch(op="add", path="params.variation", value={_variation_name(target): edit}), None
+    variation = params["variation"]
+    if not isinstance(variation, (dict, list)):
+        raise ValueError("An Evaluate variation must be an object or an array")
     entries = list(variation.items()) if isinstance(variation, dict) else list(enumerate(variation))
     paths = {name: entry.get("path") for name, entry in entries if isinstance(entry, dict)}
     same = next((name for name, path in paths.items() if path == target), None)
@@ -1234,7 +1238,7 @@ class _Resolver:
                 if origins is not None:
                     author = row.patch_authors.get(authored, name)
                     source, override = self.row_source(author, row, authored)
-                    if authored == patch.path:
+                    if authored == patch.path or patch.path == "params.variation" and variation_index is None:
                         shape = source_shape(patch.value, source, override)
                     else:
                         edit = patch.value[variation_index] if variation_index is not None else patch.value
