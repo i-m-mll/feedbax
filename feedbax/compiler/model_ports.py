@@ -17,6 +17,21 @@ from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.compiler.model_edit import Direction, Port, Record, model_graph_problems
 
 
+# These vector components read their input width from the signal on the input port.
+WIRED_VECTOR_INPUT_TYPES = frozenset({
+    "feedbax.Linear", "feedbax.MLP", "feedbax.GRU", "feedbax.LSTM", "feedbax.VanillaRNN",
+})
+
+
+def derives_input_width(type_id: str, port: str) -> bool:
+    return type_id in WIRED_VECTOR_INPUT_TYPES and port == "input"
+
+
+def model_unstored_fields(type_id: str) -> frozenset[str]:
+    periods = frozenset({"dt", "control_dt"})
+    return periods | {"input_size"} if type_id in WIRED_VECTOR_INPUT_TYPES else periods
+
+
 BOUNDARY_PORT_PLACEMENT_REASON = "Declare conserving interfaces on the composite port list"
 
 
@@ -126,7 +141,10 @@ class ModelRegistryPorts:
                 dimension = _component_port_dimension(
                     component_type=type_id, node_params=params, port=port, direction=direction,
                 )
-                shape = dimension["shape"] if dimension is not None else spec.shape if spec else None
+                if direction == "input" and derives_input_width(type_id, port):
+                    shape = (None,)
+                else:
+                    shape = dimension["shape"] if dimension is not None else spec.shape if spec else None
                 result[direction, port] = Port(
                     SignalType(
                         base=spec.dtype if spec else None,

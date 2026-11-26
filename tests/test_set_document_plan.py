@@ -30,7 +30,7 @@ def _entries():
             }},
         }},
         "scaled": {"label": "Scaled force", "differences": {"/interior/wires/plant-wire/attachments": {"value": [
-            {"kind": "intervention", "id": "scale", "operation": "Scale", "fields": {"factor": 0.5}},
+            {"kind": "intervention", "id": "scale", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
         ]}}},
         "heavy": {"label": "Heavy", "differences": {"/interior/components/plant/fields/mass": {"value": 2.0}}},
     }
@@ -64,7 +64,7 @@ def test_a_set_plans_one_labelled_run_per_entry_on_train_and_evaluate():
     assert not plan.diagnostics
     labels = {(run.key.step, run.label) for run in plan.runs if run.key.step != "plain"}
     assert labels == {
-        (step, f"alteration={label}") for step in ("train", "baseline") for label in ("Gain", "Scaled force", "Heavy")
+        (step, label) for step in ("train", "baseline") for label in ("Gain", "Scaled force", "Heavy")
     }
     before = _requests(plan)
     plain = before[("plain", "default")]

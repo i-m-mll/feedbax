@@ -10,6 +10,7 @@ from tests.test_document_task_parity import _model_payload, _pair_model, example
 from feedbax.contracts.expression_values import LENGTH, CallValue, NameValue, ValueBase, ValueType
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
+from feedbax.contracts.window import Window, WindowEpoch
 from feedbax.expression_builtins import register_builtins
 from feedbax.contracts.expression_registry import FunctionRegistry
 
@@ -79,6 +80,68 @@ def test_aggregate_of_delayed_reaches_shares_the_drawn_epoch(client, expression_
     assert (catch["least"], catch["greatest"]) == (False, True)
 
 
+def test_preview_returns_active_samples_at_the_source_intervention_address(client, expression_functions):
+    payload = authored_preview("delayed", expression_functions) | {"nominal": True}
+    owner = {"kind": "port", "end": {"owner": "inputs", "port": "task-input"}}
+    address = ModelAddress.model_validate({
+        "composites": [], "element": {"kind": "attachment", "id": "pulse", "parent": owner},
+    }).to_text()
+    payload["model"]["interior"]["attachments"] = {"sources": {"task-input": [{
+        "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.1, 0.0]}},
+        "window": {"spans": [{
+            "kind": "interval", "start": {
+                "anchor": {"kind": "epoch", "epoch": "move", "edge": "start"},
+                "offset": {"value": 2, "unit": "st"},
+            }, "end": {"offset": {"value": 0.03, "unit": "s"}},
+        }]},
+    }]}}
+    response = client.post("/api/execution/task-trials/sample", json=payload)
+    assert response.status_code == 200, response.text
+    (trial,) = response.json()["drawn"]["trials"]
+    first = next(epoch["start"] for epoch in trial["timeline"] if epoch["epoch"] == "move") + 2
+    assert np.flatnonzero(trial["intervention_windows"][address]).tolist() == list(range(first, first + 3))
+
+
+def test_a_saved_evaluate_sample_uses_its_own_window(tmp_path):
+    from feedbax.application.bundle import new_application_registry_bundle
+    from feedbax.contracts.project import Project
+    from feedbax.web.services.project_folder import ProjectFolderService
+    from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
+    from tests.support.model_documents import read_changed_model
+    from tests.test_canonical_evaluate_admission import _save_project
+
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["late"] = managed_evaluation_step("train")
+    owner = {"composites": [], "element": {"kind": "wire", "id": "drive"}}
+    read_changed_model(raw, "late", [{
+        "op": "add", "owner": owner, "after": None,
+        "attachment": {
+            "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+            "window": {"spans": [{
+                "kind": "interval",
+                "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 0.2, "unit": "s"}},
+                "end": {"offset": {"value": 2, "unit": "st"}},
+            }]},
+        },
+    }], base="point-mass", components=new_application_registry_bundle().components)
+    _save_project(ProjectFolderService(tmp_path), "timed", Project.model_validate(raw))
+    with TestClient(create_app(projects_dir=tmp_path)) as studio:
+        revision = studio.get("/api/projects/timed").json()["revision"]
+        body = {
+            "project_id": "timed", "revision": revision,
+            "run": {"variant": "default", "step": "late", "row": "default"}, "nominal": True,
+        }
+        route = "/api/execution/task-trials/sample"
+        sampled = studio.post(route, json=body)
+        assert sampled.status_code == 200, sampled.text
+        assert studio.post(route, json=body | {"revision": "0" * 64}).status_code == 409
+    trial, = sampled.json()["drawn"]["trials"]
+    address = ModelAddress.model_validate(owner | {
+        "element": {"kind": "attachment", "id": "pulse", "parent": owner["element"]},
+    }).to_text()
+    assert np.flatnonzero(trial["intervention_windows"][address]).tolist() == [20, 21]
+
+
 def test_a_binding_problem_does_not_hide_the_trial(client, expression_functions):
     payload = authored_preview("simple", expression_functions)
     payload["input_bindings"] = {"task-input": "target_vel"}
@@ -117,8 +180,8 @@ def test_delayed_reaches_term_applies_where_move_and_target_overlap(client, expr
     measure = CallValue(function="sqnorm", args=(NameValue(reference="target_pos"),))
     measure_type = ValueType(base=ValueBase.REAL, dimensions=LENGTH.raised(2))
     payload["objective"] = ObjectiveDocument(id="reach", terms=(
-        ObjectiveTerm(id="target", measure=measure, measure_type=measure_type, epochs=("move",)),
-        ObjectiveTerm(id="absent", measure=measure, measure_type=measure_type, epochs=("hold",)),
+        ObjectiveTerm(id="target", measure=measure, measure_type=measure_type, window=Window(spans=(WindowEpoch(kind="epoch", epoch="move"),))),
+        ObjectiveTerm(id="absent", measure=measure, measure_type=measure_type, window=Window(spans=(WindowEpoch(kind="epoch", epoch="hold"),))),
     )).model_dump(mode="json")
     response = client.post("/api/execution/task-trials/sample", json=payload)
     assert response.status_code == 200, response.text
@@ -145,7 +208,7 @@ def test_nominal_trial_uses_representative_values_and_the_same_task_timeline(cli
     assert trial["variables"]["start"] == pytest.approx([0.05, 0.075])
     assert trial["variables"]["catch"] is False
     assert [(cue["epoch"], cue["start"], cue["end"]) for cue in trial["timeline"]] == [
-        ("hold", 0, 10), ("cue", 10, 24), ("move", 24, 80),
+        ("hold", 0, 10), ("cue", 10, 25), ("move", 25, 80),
     ]
     assert trial["present"]["target_pos"] == [False] * 10 + [True] * 70
 
@@ -157,6 +220,7 @@ def test_shipped_nominal_reach_has_a_target_apart_from_the_hand(client, kind):
     response = client.post("/api/execution/task-trials/sample", json={
         "model": documents["point-mass"].payload,
         "task": documents[f"{kind}-task"].payload,
+        "input_bindings": {"target_pos": "target_pos"},
         "nominal": True, "seed": 0, "count": 1,
     })
     assert response.status_code == 200, response.text
@@ -172,9 +236,9 @@ def test_term_preview_distinguishes_compile_problem_from_empty_window(client, ex
     payload = authored_preview("delayed", expression_functions) | {"count": 2}
     measure = CallValue(function="sqnorm", args=(NameValue(reference="target_pos"),))
     payload["objective"] = ObjectiveDocument(id="reach", terms=(
-        ObjectiveTerm(id="bad-measure", measure=measure, epochs=("move",)),
+        ObjectiveTerm(id="bad-measure", measure=measure, window=Window(spans=(WindowEpoch(kind="epoch", epoch="move"),))),
         ObjectiveTerm(
-            id="valid-without-coverage", measure=measure, epochs=("hold",),
+            id="valid-without-coverage", measure=measure, window=Window(spans=(WindowEpoch(kind="epoch", epoch="hold"),)),
             measure_type=ValueType(base=ValueBase.REAL, dimensions=LENGTH.raised(2)),
         ),
     )).model_dump(mode="json")

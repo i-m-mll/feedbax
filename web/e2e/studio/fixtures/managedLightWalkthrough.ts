@@ -3,9 +3,10 @@ import type {
   StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
-import { authorLearningRateSweep, chooseSweepValue, mapStep, runName } from './canonicalTrain';
+import { authorLearningRateSweep, chooseSweepValue, mapStep, runName, shownRunLabel, mapCard } from './canonicalTrain';
 import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, openView, palette, submitOption, tabTo } from './studioKeyboard';
 import { applyTo, outlineRow, pick } from './controls';
+import { mapName } from './members';
 
 type Walkthrough = {
   page: Page;
@@ -32,7 +33,7 @@ const pane = (page: Page) => page.getByRole('tabpanel', { name: 'Runs', exact: t
 const table = (page: Page) => pane(page).getByRole('table', { name: 'Runs', exact: true });
 const drawer = (page: Page) => page.getByRole('complementary', { name: 'Details Drawer', exact: true });
 const stepInspector = (page: Page) => page.getByRole('complementary', { name: 'Inspector', exact: true });
-const train = (page: Page) => page.getByRole('article', { name: 'Train train', exact: true });
+const train = (page: Page) => mapCard(page, 'train');
 const variant = (page: Page) => page.getByRole('combobox', { name: 'Variant', exact: true });
 
 async function openRuns(page: Page, step: string) {
@@ -135,7 +136,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const inspector = stepInspector(page);
   const used = inspector.getByRole('button', { name: /^Select Used By / });
-  const sourceRow = (index: number) => table(page).getByRole('button', { name: runName(prefix[index].label) });
+  const sourceRow = (index: number) => table(page).getByRole('button', { name: runName(shownRunLabel(prefix[index])) });
 
   async function selectTwo() {
     await openRuns(page, 'train');
@@ -147,7 +148,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   async function addSuccessor(kind: 'Train' | 'Evaluate', id: string, producer = 'train') {
     const saved = page.waitForResponse((response) => response.request().method() === 'POST' &&
       new URL(response.url()).pathname === context.projectPath + '/files' && response.request().postDataJSON().file.id === id);
-    const card = page.getByRole('article', { name: 'Train ' + producer, exact: true });
+    const card = mapCard(page, producer);
     await activate(page, card.locator('button[data-command-id="newStep"]'));
     await chooseStepKind(page, kind, true);
     const response = await saved;
@@ -171,15 +172,15 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   if (!await outline.isVisible()) await palette(page, 'showSteps', 'Show Steps');
   await activate(page, sourceRow(2));
   await expect(used).toHaveCount(0);
-  await expect(page.getByRole('article', { name: 'Report report', exact: true })).not.toHaveAttribute('data-map-related', /.+/);
+  await expect(mapCard(page, 'report')).not.toHaveAttribute('data-map-related', /.+/);
   await activate(page, sourceRow(0));
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
   // The inspector is titled by the run's step and its sweep values.
-  expect(prefix[0].label).toBe('learning-rate=0.001');
-  await expect(inspector.getByRole('heading', { name: 'train · learning-rate 0.001', exact: true })).toBeVisible();
+  expect(prefix[0].label).toBe('Learning rate 0.001');
+  await expect(inspector.getByRole('heading', { name: 'Train · Learning rate 0.001', exact: true })).toBeVisible();
   for (const [step, kind, count] of [[pairedStep, 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
     await expect(used.filter({ hasText: step })).toHaveCount(1);
-    await expect(outline.getByRole('treeitem', { name: new RegExp(`^${step}\\b`) })).toHaveAccessibleDescription(count);
+    await expect(outline.getByRole('treeitem', { name: new RegExp(`^${step}\\b`, 'i') })).toHaveAccessibleDescription(count);
     await expect(mapStep(page, step)).toHaveAccessibleDescription(new RegExp(count));
   }
 
@@ -203,7 +204,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
   await rule.click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
-  for (const value of ['0.001', '0.002', '0.003']) await chooseSweepValue(page.getByRole('article', { name: 'Train train', exact: true }), 'learning-rate', value);
+  for (const value of ['0.001', '0.002', '0.003']) await chooseSweepValue(mapCard(page, 'train'), 'Learning rate', value);
   await expect(ruleRow).toContainText('3/3');
   const edited = mutation(context, 'PATCH');
   await page.keyboard.press('Enter');
@@ -273,7 +274,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       },
       progress: { completed_updates: childUpdates, total_updates: childUpdates },
     })]);
-    await activate(page, table(page).getByRole('button', { name: runName(producer.label) }));
+    await activate(page, table(page).getByRole('button', { name: runName(shownRunLabel(producer)) }));
     if (index === 0) {
       await palette(page, 'splitDetails', 'Split Details');
       await openView(page, 'results');
@@ -281,7 +282,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
     const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
     await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('polyline')).toHaveCount(1);
     await expect(results.getByRole('list', { name: 'Train steps' }).getByRole('listitem')).toHaveText([
-      `train 1–${sourceUpdates}`, `${child} ${sourceUpdates + 1}–${childUpdates}`,
+      `${await mapName(page, 'train')} 1–${sourceUpdates}`, `${await mapName(page, child)} ${sourceUpdates + 1}–${childUpdates}`,
     ]);
   }
 
@@ -295,7 +296,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
 
   const producer = children[0];
   const producerTable = await openFocusedRuns(child);
-  await activate(page, producerTable.getByRole('rowheader', { name: runName(producer.label) }).getByRole('button'));
+  await activate(page, producerTable.getByRole('rowheader', { name: runName(shownRunLabel(producer)) }).getByRole('button'));
   const nested = 'train-3';
   await addSuccessor('Train', nested, child);
   const nestedTable = await openFocusedRuns(nested);

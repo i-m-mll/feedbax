@@ -65,13 +65,13 @@ test('Load reports every problem of a model file at the Model picker, and shows 
 
   fits = true;
   await load();
-  await expect(page.getByRole('button', { name: 'Loaded Model reach-baseline' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Loaded Model Reach baseline' })).toBeVisible();
   const loaded = page.getByRole('complementary', { name: 'Inspector' });
-  await expect(loaded.getByRole('region', { name: 'reach-baseline', exact: true }).getByText('Point mass', { exact: true })).toBeVisible();
+  await expect(loaded.getByRole('region', { name: 'Reach baseline', exact: true }).getByText('Point mass', { exact: true })).toBeVisible();
   await expect(loaded.getByRole('region', { name: 'Point mass', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Loaded Model reach-baseline' }).click();
+  await page.getByRole('button', { name: 'Loaded Model Reach baseline' }).click();
   const items = page.getByRole('menu', { name: 'Loaded Model' }).getByRole('menuitemradio');
-  await expect(items).toHaveText(['Point mass', 'reach-baseline']);
+  await expect(items).toHaveText(['Point mass', 'Reach baseline']);
   await page.keyboard.press('Escape');
 
   // A loaded model is read-only: no Library to place from, and a component's kind marks open nothing.

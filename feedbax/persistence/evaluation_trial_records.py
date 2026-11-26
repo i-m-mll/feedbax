@@ -17,7 +17,7 @@ from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanOptions
 from feedbax.contracts.trial_record import TaskTimelineCue, TrialRecord, TrialStateTrack, TrialTerm
 from feedbax.execution.trial_clock import TrialClockRecord
 from feedbax.execution.trial_places import BoundTermPlaces, TrialPlacePlan, finite_points, project_term_places
-from feedbax.execution.trial_record import trial_weight_values
+from feedbax.execution.trial_record import intervention_windows, trial_weight_values
 
 if TYPE_CHECKING:
     from feedbax.contracts.task_document import TaskDocument
@@ -113,6 +113,8 @@ def trial_dataset_fields(
         put(_task_field("variable", key), value, axes)
     for key, value in (trial.variable_defined or {}).items():
         put(_task_field("variable_defined", key), value, transition_axes)
+    for address, mask in intervention_windows(trial.inputs, document).items():
+        put(_task_field("intervention_window", address), mask, transition_axes)
     for name, trace in (evaluated.term_traces or {}).items():
         put(_term_field("steps", name), trace.steps, transition_axes)
         if trace.values is not None:
@@ -128,8 +130,8 @@ def trial_dataset_fields(
             put(_point_field(name, index, "values"), values, transition_axes, point=True)
             put(_point_field(name, index, "defined"), defined, transition_axes)
     raw_states = {
-        model_state_address(value.key).to_text(): value.key for value in layout.values
-        if value.key.startswith("/v1/model/state/")
+        model_state_address(value.field.key).to_text(): value.field.key for value in layout.values
+        if value.field.key.startswith("/v1/model/state/")
     }
     observations = {}
     for operand, origin in observation_origins:
@@ -154,8 +156,8 @@ def trial_dataset_fields(
         choices.update(document.validation_trials[0].variables)
     return fields, coords, RecordedTrialLayout(
         epochs=tuple((epoch, labels.get(epoch, epoch)) for epoch in task.epochs),
-        positions=tuple(value.key for value in layout.values if value.position),
-        configurations=tuple(value.key for value in layout.values if value.configuration),
+        positions=tuple(value.field.key for value in layout.values if value.field.position),
+        configurations=tuple(value.field.key for value in layout.values if value.field.configuration),
         discrete_variables=tuple(
             TrialClockChoice(id=value.id, label=value.name)
             for value in task.interface.variables
@@ -243,6 +245,7 @@ def read_trial_record(
         present=groups.get("presence", {}), variables=groups.get("variable", {}),
         variable_defined=groups.get("variable_defined", {}), timeline=read_trial_timeline(dataset, selection, layout),
         terms=terms,
+        intervention_windows=groups.get("intervention_window", {}),
         states={
             model_state_address(name).to_text(): read_position_track(dataset, name, selection)
             for name in layout.positions

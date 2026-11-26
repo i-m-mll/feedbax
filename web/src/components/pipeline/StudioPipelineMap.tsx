@@ -422,6 +422,7 @@ export const StepCard = memo(function StepCard({
         {related > 0 && <span aria-hidden="true" className="block border-t-[1.5px] border-dotted border-shell-foreground"
           style={{ width: `${100 * related / step.runs.length}%` }} />}
       </div> : <>
+      {step.method && <p className="-mt-1 truncate px-3 pb-1 text-xs text-shell-muted">{step.method}</p>}
       <div className="space-y-2 px-3 pb-2 empty:hidden">
         <PipelineRunMarks
           step={step}

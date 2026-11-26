@@ -22,6 +22,7 @@ from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTe
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_site import FieldKind, field_kind, project_site, read_field
 from feedbax.contracts.expression_text import ParsedField, print_field
+from feedbax.contracts.time_units import TimeUse, TimeValue, length_steps, literal_time, paired_time, time_steps
 from feedbax.studio.authoring_sweeps import FieldSweeps, drop_axis, named_axis
 from feedbax.studio.value_structure import value_structure
 
@@ -38,7 +39,11 @@ class NumericField:
     stored: bool
     validate: Callable[[int | float], int | float]
     unit: str | None = None
-    duration: bool = False
+    time_use: TimeUse | None = None
+
+    @property
+    def duration(self) -> bool:
+        return self.time_use is not None
 
     def literal(self, value: int | float) -> LiteralValue:
         return LiteralValue(value=value, unit=self.unit)
@@ -47,7 +52,7 @@ class NumericField:
         if not isinstance(node, LiteralValue) or type(node.value) not in (int, float):
             raise ValueError(f"{self.label} requires a numeric Value in this editor.")
         if self.duration:
-            duration = self.duration_value(node)
+            duration = self.duration_value(node, period)
             if duration.unit != self.unit:
                 raise ValueError(f"{self.label} sweep values are in {self.unit}.")
             return duration.value
@@ -62,7 +67,7 @@ class NumericField:
             raise ValueError(f"{self.label} requires a finite representable number.")
         return self.validate(value)
 
-    def duration_value(self, node: object) -> LiteralValue:
+    def duration_value(self, node: object, period: float | None) -> LiteralValue:
         if not isinstance(node, LiteralValue) or type(node.value) not in (int, float):
             raise ValueError(f"{self.label} requires a duration.")
         unit = node.unit or self.unit
@@ -71,7 +76,12 @@ class NumericField:
         if unit != "st":
             magnitude *= UNITS[unit].scale
             unit = "s"
-        return LiteralValue(value=self.validate(magnitude), unit=unit)
+        magnitude = self.validate(magnitude)
+        if self.time_use == "length" and (period is not None or unit == "st"):
+            length_steps(TimeValue(value=magnitude, unit=unit), period or 1)
+        elif self.time_use == "offset" and (period is not None or unit == "st"):
+            time_steps(TimeValue(value=magnitude, unit=unit), period or 1)
+        return LiteralValue(value=magnitude, unit=unit)
 
 
 def _list_axis(sweep: FieldSweeps, values: list[int | float]) -> NamedAxis:
@@ -123,7 +133,7 @@ def _sample_axis(value: SweepSample, field: NumericField, functions: FunctionReg
 
         def with_saved_unit(node):
             if isinstance(node, LiteralValue):
-                literal = field.duration_value(node)
+                literal = field.duration_value(node, period)
                 if literal.unit != field.unit:
                     raise ValueError(f"{field.label} sample bounds must use {field.unit}.")
                 return literal
@@ -159,7 +169,8 @@ def _sample_axis(value: SweepSample, field: NumericField, functions: FunctionReg
 def project_numeric_field[View: StudioFieldView](
     view_type: type[View], field: NumericField, axis: FieldSweeps | None,
     functions: FunctionRegistry, selected: PlannedRow | None, effective: object, *, held: Sequence[object] = (),
-    period: float | None = None, scoped: bool = False, **address,
+    period: float | None = None, effective_unit: str | None = None, scoped: bool = False,
+    defer_parts: bool = False, **address,
 ) -> View:
     """The field as the selected runs have it; ``scoped`` says they are not the whole step, as for the edit.
 
@@ -167,7 +178,7 @@ def project_numeric_field[View: StudioFieldView](
     those values as its members.
     """
     own = not scoped or bool(axis and axis.for_selection)
-    site = project_site(field.site, functions)
+    site = project_site(field.site, functions, defer_parts=defer_parts)
     site = site.model_copy(update={"kinds": tuple(kind for kind in site.kinds if kind in _STORED_KINDS)})
     view = axis.view() if axis else None
     coordinate = selected.coordinates.get(view.id) if selected and view else None
@@ -193,12 +204,15 @@ def project_numeric_field[View: StudioFieldView](
             StudioSweepValue(id=f"value-{index + 1}", value=value, label=None)
             for index, value in enumerate(held) if type(value) in (float, int)
         ]
+    current = LiteralValue(value=effective, unit=effective_unit or field.unit) if type(effective) in (int, float) else None
     return view_type(
         **address, label=field.label, text=print_field(shown, field.site), unit=field.unit,
         structure=value_structure(shown, field.site, functions),
-        conversion=_conversion(field, period) if source is None else None,
-        effective=print_field(field.literal(effective), field.site)
-        if type(effective) in (int, float) and effective != field.value else None,
+        conversion=time_conversion(
+            current or shown, period, field.time_use,
+        ) if source is None else None,
+        effective=print_field(current, field.site) if current is not None
+        and (current.value != field.value or current.unit != field.unit) else None,
         mixed=len(held) > 1,
         site=site, sweep=view, selected_value=coordinate.value_id if coordinate else None,
         can_sweep=bool(own and axis and axis.can_sweep and field.stored and not isinstance(field.value, UnresolvedValue)),
@@ -209,12 +223,18 @@ def project_numeric_field[View: StudioFieldView](
     )
 
 
-def _conversion(field: NumericField, period: float | None) -> str | None:
-    if not field.duration or period is None or type(field.value) not in (int, float):
+def time_conversion(value: FieldValue | None, period: float | None, use: TimeUse | None) -> TimeValue | None:
+    if (
+        use is None or period is None or not isinstance(value, LiteralValue)
+        or value.unit not in ("s", "st") and (value.unit not in UNITS or UNITS[value.unit].dimensions != UNITS["s"].dimensions)
+        or type(value.value) not in (int, float)
+    ):
         return None
-    if field.unit == "s":
-        return f"{round(field.value / period)} st"
-    return f"{float(f'{field.value * period:.8g}'):g} s"
+    try:
+        return paired_time(literal_time(value), period, use)
+    except ValueError:
+        # Pairing owns the addressed Problem. An invalid conversion has no number to show.
+        return None
 
 
 @dataclass(frozen=True)
@@ -367,5 +387,5 @@ def _prepare(
         kept = number(value)
         return _Rewrite([drop_axis(covered[0][0])], kept=kept, keep=axis.keep(kept))
     if field.duration and not scoped:
-        return field.duration_value(value)
+        return field.duration_value(value, period)
     return number(value)

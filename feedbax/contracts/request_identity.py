@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import cache
@@ -32,6 +32,7 @@ from feedbax.contracts.request_refs import (
     EffectiveBindingId,
     EffectiveInputs,
     InputMember,
+    ProductRef,
     RequestId,
     RequestInputs,
     RequestKind,
@@ -43,6 +44,7 @@ from feedbax.contracts.request_specs import (
     RenderRequestSpec,
     ReportRequestSpec,
     RequestSpec,
+    SynthesisRequestSpec,
     TrialDocuments,
 )
 from feedbax.contracts.strict_json import strict_json_loads
@@ -68,6 +70,7 @@ DOCUMENT_TRAIN_REQUEST = RequestDescriptor(
 
 REQUEST_KINDS: Mapping[RequestKind, RequestDescriptor] = {
     "train": DOCUMENT_TRAIN_REQUEST,
+    "synthesize": RequestDescriptor(SynthesisRequestSpec, ("settings",)),
     "evaluate": RequestDescriptor(EvaluationRequestSpec),
     "analyze": RequestDescriptor(AnalysisRequestSpec),
     "render": RequestDescriptor(RenderRequestSpec),
@@ -296,7 +299,7 @@ def encode_request(
     if match is None:
         raise ValueError(f"Unknown request spec model: {type(spec).__name__}")
     kind, descriptor = match
-    if isinstance(spec, DocumentTrainingRequestSpec):
+    if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)):
         canonical_trial = spec.trial_documents.without_signal_labels()
         if canonical_trial is not spec.trial_documents:
             spec = spec.model_copy(update={"trial_documents": canonical_trial})
@@ -326,9 +329,9 @@ def encode_request(
         spec, descriptor.spec_type, pins, projected_fields=projected_fields,
     )
     train_task = None
+    if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)) and trial is None:
+        omit_model_display_names(projection["trial_documents"]["model"])
     if descriptor is DOCUMENT_TRAIN_REQUEST:
-        if trial is None:
-            omit_model_display_names(projection["trial_documents"]["model"])
         if capture_train_task:
             train_task = _encoded_train_task(projection) if trial is None else (
                 trial.task if not _may_spell_unsafe_integer(projection) else None
@@ -424,11 +427,11 @@ def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> Decode
         if sha256_bytes(document) != digest:
             raise ValueError(f"Invalid request document bytes for {name}")
         spec_payload[name] = _read_object(document)
-    if descriptor is DOCUMENT_TRAIN_REQUEST:
+    if descriptor.spec_type in (DocumentTrainingRequestSpec, SynthesisRequestSpec):
         try:
             restore_model_display_names(spec_payload["trial_documents"]["model"])
         except (AttributeError, KeyError, TypeError) as error:
-            raise ValueError("Invalid stored managed Train model projection") from error
+            raise ValueError("Invalid stored managed model projection") from error
     restored = decode(spec_payload, descriptor.spec_type, fields)
     spec = descriptor.spec_type.model_validate_json(json.dumps(restored))
     encoded = encode_request(spec, inputs)
@@ -437,12 +440,30 @@ def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> Decode
     return DecodedRequest(kind=kind, spec=spec, inputs=inputs, id=encoded.id)
 
 
-def effective_binding_id(request: DecodedRequest, inputs: EffectiveInputs) -> EffectiveBindingId:
+def retained_request_inputs(
+    request: DecodedRequest, excluded: Mapping[str, Collection[str]],
+) -> RequestInputs:
+    """Keep authored order while projecting a proved absence out of a gathered input."""
+    if not excluded.keys() <= request.inputs.keys():
+        raise ValueError("Excluded inputs must name authored roles")
+    retained = {}
+    for role, members in request.inputs.items():
+        absent = set(excluded.get(role, ()))
+        if not absent <= {member.key for member in members if isinstance(member.reference, ProductRef)}:
+            raise ValueError(f"Excluded members must name producer products for {role!r}")
+        retained[role] = tuple(member for member in members if member.key not in absent)
+    return retained
+
+
+def effective_binding_id(
+    request: DecodedRequest, inputs: EffectiveInputs, *, excluded: Mapping[str, Collection[str]] | None = None,
+) -> EffectiveBindingId:
     """Project verified bindings to a separately scoped successful-result lookup key."""
-    if inputs.keys() != request.inputs.keys():
+    retained = retained_request_inputs(request, excluded) if excluded else request.inputs
+    if inputs.keys() != retained.keys():
         raise ValueError("Effective inputs must cover the authored input roles")
     for role, members in inputs.items():
-        authored = request.inputs[role]
+        authored = retained[role]
         if tuple(member.key for member in members) != tuple(member.key for member in authored):
             raise ValueError(f"Effective inputs must preserve authored member order for {role!r}")
         for bound, source in zip(members, authored, strict=True):
@@ -464,7 +485,7 @@ def effective_binding_id(request: DecodedRequest, inputs: EffectiveInputs) -> Ef
                     "descriptor": member.descriptor,
                     **_member_labels(source),
                 }
-                for member, source in zip(members, request.inputs[role], strict=True)
+                for member, source in zip(members, retained[role], strict=True)
             ]
             for role, members in inputs.items()
         },

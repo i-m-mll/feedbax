@@ -15,7 +15,7 @@ from feedbax.contracts.operation import (
     DatasetPort,
     OperationDefinition,
     WholeDimensions,
-    require_dataset_fields,
+    operation_input_port, require_dataset_fields,
     require_dataset_port,
 )
 from feedbax.contracts.project import (
@@ -94,10 +94,10 @@ def _sources(
         except KeyError:
             continue
         operations[name] = definition
-        if row is not None and (requests := row.requests(name)):
+        if row is not None:
             ports.extend(
                 (OperationDataset(element=name, product=product), port)
-                for product, port in requests[0].datasets.items()
+                for product, port in row.dataset_outputs.get(name, {}).items()
             )
 
     sources: dict[str, dict[str, list[DatasetSource]]] = {name: {} for name in analysis.operations | analysis.views}
@@ -180,7 +180,7 @@ def _wire_edit(
 
 def _review_wire(
     plan: ProjectPlan, key: RunKey, analysis: AnalysisDocument, family: str, wire: StudioAnalyzeWire,
-    registry: OperationRegistry, states: DatasetPort | None,
+    states: DatasetPort | None,
 ) -> None:
     """Refuse a wire the plan of ``proposal`` cannot resolve on ``key``'s run."""
     problems = [
@@ -192,15 +192,22 @@ def _review_wire(
         row = next((row for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)), None)
         figure = row.figures.get(wire.element) if row is not None else None
         label = member_name(analysis.views, wire.element)
-        if figure is None:
+        if figure is None or row is None:
             problem = next((problem for problem in problems if problem.element == wire.element), None)
             raise ValueError(problem.detail if problem is not None else f"Cannot resolve figure {label}.")
         if wire.role not in figure.data:
             raise ValueError(f"{label} has no input {wire.role!r}.")
         inputs = analysis.views[wire.element].inputs | {wire.role: wire.source}
-        validate_figure_bindings(
-            figure, {role: _port(binding, analysis, registry, states) for role, binding in inputs.items()},
-        )
+        schemas = {}
+        for role, binding in inputs.items():
+            if isinstance(binding, StepInput):
+                port = states if binding.input == "states" else row.dataset_inputs.get(binding.input)
+            else:
+                port = row.dataset_outputs.get(binding.element, {}).get(binding.product)
+            if port is None:
+                raise ValueError(f"No dataset can be read for figure input {role!r}.")
+            schemas[role] = port
+        validate_figure_bindings(figure, schemas)
     for problem in problems:
         if problem.path in {f"{path}.inputs", f"{path}.inputs.{wire.role}"}:
             raise ValueError(problem.detail)
@@ -247,7 +254,7 @@ def analyze_edit(
     candidate = preview_stored(project, stored)
     reviewed = compile_candidate(candidate) if compile_candidate is not None else compile_project(candidate, operations=registry)
     if family is not None:
-        _review_wire(reviewed, key, analysis, family, change, registry, states)
+        _review_wire(reviewed, key, analysis, family, change, states)
     return stored, reviewed
 
 
@@ -262,9 +269,10 @@ def _variable_choices(
             choices[port.takes.parameter] = dimensions
         if states is None or not isinstance(port, DatasetPort) or states.schema_ids[0] not in port.schema_ids:
             continue
-        for parameter, required in port.selected_variables.items():
+        actual_port = operation_input_port(states, port)
+        for parameter, required in port.for_dimensions(actual_port.dimensions).selected_variables.items():
             matching = []
-            for name, actual in states.variables.items():
+            for name, actual in actual_port.variables.items():
                 try:
                     require_dataset_fields({name: actual}, {name: required})
                 except ValueError:
@@ -295,7 +303,11 @@ def _states_port(
     none when the step has no ``states`` input."""
     if not bound or row is None:
         return None
-    members = [binding.producer for binding in row.inputs.get("states", ())]
+    bindings = row.inputs.get("states", ())
+    planned = row.dataset_inputs.get("states")
+    if any(binding.producer_element is not None for binding in bindings):
+        return planned
+    members = [binding.producer for binding in bindings]
     if not members or any(member is None or member.variant != key.variant for member in members):
         return None
     states = None
@@ -326,7 +338,9 @@ def _states_port(
                 coordinates=_common_fields(states.coordinates, descriptor.coords),
             )
     assert states is not None
-    return states
+    return states.model_copy(update={
+        "coordinates": planned.coordinates | states.coordinates,
+    }) if planned is not None else states
 
 
 def _state_models(project: Project, plan: ProjectPlan, row: PlannedAnalyzeRun) -> list[ModelDocument]:
@@ -471,6 +485,7 @@ def analyze_authoring(
         document=saved_document,
         operations=definitions,
         states=states,
+        operation_outputs={name: dict(ports) for name, ports in row.dataset_outputs.items()} if row is not None else {},
         sources=sources,
         variables=variables,
         variable_names=_variable_names(variables, states, models, task_names),

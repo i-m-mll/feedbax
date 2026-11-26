@@ -10,15 +10,20 @@ from feedbax.contracts.effective_success import (
 )
 from feedbax.contracts.base import ParentRef, Provenance
 from feedbax.contracts.manifest import EvaluationRunManifest, EvaluationRunSpec, TrainingRunManifest, load_manifest_bytes, training_run_manifest_id
+from feedbax.contracts.model_origin import SynthesizedModelOrigin
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, InputMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import (
+    BatchMember, BatchSetMember, BestRank, ConditionalProduct, ContentRef, InputMember, LastMember, ProductRef, RequestId, UpdateSeriesMember,
+    is_synthesized_model_product,
+)
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.persistence.canonical_evaluate import (
+    SynthesizedSubjectBinding,
     decode_evaluation_manifest, evaluation_manifest_id, initial_evaluation_references, states_product, states_ref,
-    verified_imported_subject, verify_initial_rollout,
+    verified_imported_subject, verify_initial_rollout, verify_synthesized_rollout,
 )
 from feedbax.persistence.array_container import open_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -26,6 +31,7 @@ from feedbax.persistence.checkpoint_publication import model_product, read_retai
 from feedbax.persistence.method_checkpoint import parse_method_checkpoint_manifest
 from feedbax.persistence.receipt_content import ClosureVisitors, success_content_objects, verify_success_content
 from feedbax.persistence.best_selection import rank_train_metric
+from feedbax.persistence.train_metrics import passes_final_metric_condition
 
 
 def read_terminal_train_subject(
@@ -174,6 +180,16 @@ def evaluation_subject_objects(
         raise ValueError("Fixed Evaluate subject contains Best evidence")
     if not isinstance(reference, ProductRef) or reference.role != "checkpoint" or source.producer.id != reference.request_id:
         raise ValueError("Evaluate receipt names a different Train request")
+    if isinstance(reference, ConditionalProduct):
+        metric_source = source.terminal_receipt if source.terminal_checkpoint is not None else source.metric_producer
+        if metric_source is None:
+            raise ValueError("Conditional Evaluate has no final Train result evidence")
+        metric_producer = read_success_object(metric_source, store.get_object)
+        if metric_producer.request != source.producer or not passes_final_metric_condition(store, metric_producer, reference):
+            raise ValueError("Evaluate subject's final metrics do not meet the rule")
+        objects.extend((metric_source, *success_content_objects(store, metric_producer.products["metrics"][0], visitors=visitors)))
+    elif source.metric_producer is not None:
+        raise ValueError("Unconditional Evaluate has metric condition evidence")
     if visitors is not None:
         for ref in objects:
             visitors.object(ref)
@@ -342,6 +358,16 @@ def verify_evaluation_success_evidence(
                 visitors.object(item)
         return ref, *imported
     (bound,) = success.inputs["subject"]
+    if is_synthesized_model_product(subject):
+        if (
+            bound.selection is None or not isinstance(origin := manifest.model_origin, SynthesizedModelOrigin)
+            or success.products != {"states": (states_product(manifest),)}
+            or manifest.metadata["canonical_request"] != success.request.object.model_dump(mode="json")
+        ):
+            raise ValueError("Accepted Synthesize rollout differs from its Store success")
+        binding = SynthesizedSubjectBinding(receipt=bound.selection.receipt, key=origin.key)
+        verify_synthesized_rollout(store, manifest, subject, binding)
+        return (ref,)
     source = bound.evaluation_subject
     assert source is not None
     value = EvaluationSubjectValue.model_validate(bound.descriptor)

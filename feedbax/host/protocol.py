@@ -11,6 +11,7 @@ type ShutdownMode = Literal["defer", "checkpoint", "force", "interrupt"]
 type State = Literal[
     "queued",
     "blocked",
+    "not_chosen",
     "assigned",
     "running",
     "stopping",
@@ -34,7 +35,7 @@ MANAGED_ENTRYPOINTS = frozenset({LIGHT_ENTRYPOINT, TRAINING_ENTRYPOINT, EVALUATE
 VERSION = 1
 MAX_RPC_BYTES = 32 * 1024 * 1024
 LIVE_STATES = ("queued", "assigned", "running", "stopping")
-TERMINAL_STATES = ("succeeded", "reused", "stopped", "failed", "interrupted", "blocked")
+TERMINAL_STATES = ("succeeded", "reused", "stopped", "failed", "interrupted", "blocked", "not_chosen")
 
 
 def can_resume_attempt(state: str, checkpoint: object, delivery: int) -> bool:

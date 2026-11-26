@@ -19,18 +19,18 @@ it('reports the pending Train update and shows overhead only for a measured over
     },
   };
   const onReplay = vi.fn();
-  const { rerender } = render(<StudioEvaluationResults evaluation={evaluation} onReplay={onReplay} />);
+  const { rerender } = render(<StudioEvaluationResults stepName={(step) => step} evaluation={evaluation} onReplay={onReplay} />);
   expect(screen.getByText('From saved checkpoints')).toBeDefined();
   expect(screen.getByText('Waiting for train-main update 14.')).toBeDefined();
   expect(screen.queryByText(/Over budget/)).toBeNull();
 
   const attempt = evaluation.checkpoint_attempt!;
-  rerender(<StudioEvaluationResults evaluation={{ ...evaluation, checkpoint_attempt: {
+  rerender(<StudioEvaluationResults stepName={(step) => step} evaluation={{ ...evaluation, checkpoint_attempt: {
     ...attempt, placement: { location: 'ordinary', reason: 'over_budget', predicted_update_fraction: 0.14 },
   } }} onReplay={onReplay} />);
   expect(screen.getByText('Over budget · Every 7 updates · 14% of a training update')).toBeDefined();
 
-  rerender(<StudioEvaluationResults evaluation={{ ...evaluation, checkpoint_attempt: {
+  rerender(<StudioEvaluationResults stepName={(step) => step} evaluation={{ ...evaluation, checkpoint_attempt: {
     ...attempt, placement: { location: 'live', reason: 'within_budget' },
     points: [{
       job_id: 'training', request_id: 'train:main', completed_updates: 7,

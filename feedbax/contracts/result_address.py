@@ -119,16 +119,31 @@ class ResultTarget:
 @dataclass(frozen=True)
 class AddressProblem:
     detail: str
+    missing_subject: str | None = None
+
+
+def analysis_elements(payload: JsonValue) -> dict[str, JsonValue]:
+    """The operation and figure members of an Analysis payload."""
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        key: member for family in ELEMENT_FAMILIES
+        if isinstance(members := payload.get(family), dict) for key, member in members.items()
+    }
 
 
 def payload_elements(payload: JsonValue) -> frozenset[str]:
-    """The operation and figure keys of an Analysis payload."""
-    if not isinstance(payload, dict):
-        return frozenset()
-    return frozenset(
-        key for family in ELEMENT_FAMILIES
-        if isinstance(members := payload.get(family), dict) for key in members
-    )
+    return frozenset(analysis_elements(payload))
+
+
+def authored_analysis_payload(project: Project, card: str) -> JsonValue:
+    template = compose_step(project, card)
+    if isinstance(template, ProjectDiagnostic):
+        return None
+    try:
+        return template.authored_payload()
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -155,7 +170,7 @@ class ElementHolders:
             case (holder,):
                 return holder
             case ():
-                return AddressProblem(f"No card holds {element!r}.")
+                return AddressProblem(f"No card holds {element!r}.", missing_subject=element)
             case holders:
                 return AddressProblem(f"{element!r} is held by {', '.join(holders)}; qualify it by its card.")
 
@@ -170,17 +185,7 @@ class ElementHolders:
 
 def project_holders(project: Project) -> ElementHolders:
     """The element holders of ``project``'s Analyze cards, composed without external readers."""
-
-    def elements_of(card: str) -> frozenset[str]:
-        template = compose_step(project, card)
-        if isinstance(template, ProjectDiagnostic):
-            return frozenset()
-        try:
-            return payload_elements(template.authored_payload())
-        except ValueError:
-            return frozenset()
-
-    return ElementHolders(analyze_cards(project), elements_of)
+    return ElementHolders(analyze_cards(project), lambda card: payload_elements(authored_analysis_payload(project, card)))
 
 
 def analyze_cards(project: Project) -> tuple[str, ...]:

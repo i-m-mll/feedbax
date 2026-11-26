@@ -81,7 +81,7 @@ export async function authorFirstTrain(
   function setLinearSize(name: string, field: string) {
     return setNumber(inspector.getByRole('textbox', { name, exact: true }), 2, (project) => linearField(project, field));
   }
-  await setLinearSize('Input size', 'input_size');
+  await expect(inspector.getByRole('textbox', { name: 'Input size', exact: true })).toHaveCount(0);
   await setLinearSize('Output size', 'output_size');
   if (forceComparison) {
     const activation = inspector.getByRole('combobox', { name: 'Activation', exact: true });
@@ -198,11 +198,11 @@ export async function authorFirstTrain(
   const savedModel = rootPayload(saved.project.documents?.model) as unknown as ModelDocument;
   expect(savedModel.interior.components).toMatchObject({
     [linearId!]: { kind: 'leaf', type: 'feedbax.Linear', fields: {
-      input_size: 2, output_size: 2, ...(forceComparison && { activation: forceComparison.activation }),
+      output_size: 2, ...(forceComparison && { activation: forceComparison.activation }),
     } },
     [plantId!]: { kind: 'leaf', type: 'feedbax.PointMass' },
   });
-  const reachPort = savedModel.ports.inputs?.find(({ name }) => name === 'target_pos');
+  const reachPort = savedModel.ports.inputs?.find(({ name }) => name === 'target position');
   const commandPort = savedModel.ports.outputs?.find(({ name }) => name === 'output');
   expect(reachPort?.id).toBeTruthy();
   expect(commandPort?.id).toBeTruthy();

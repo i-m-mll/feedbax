@@ -7,24 +7,27 @@ from collections.abc import Callable, Mapping
 from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
-    DifferenceNotApplied, Differences, Document, Payload, Project, RemoveDocumentValue,
+    DifferenceNotApplied, Differences, Document, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
     SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts, member_display_name,
 )
-from feedbax.contracts.project_inputs import ProjectName, StepReference
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document, compose_step
+from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, ProjectName, StepReference
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolvedStep, compose_document, compose_step
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
     AxisCondition, AxisValue, NamedAxis, RemoveValue, SetAxis, SetValue, Sweep, SweepExpansionCode,
     SweepExpansionError,
 )
+from feedbax.contracts.task_document import TaskAdditions
 
 SET_DOCUMENT_SCHEMA_ID = "feedbax.set_document.v1"
 MODEL_SLOT = "payload.trial_documents.model"
 """Where a Train or Evaluate step reads its Model document."""
 
 
-class SetEntry(StrictModel):
+class SetEntry(TaskAdditions):
     label: str | None = None
     differences: Differences = Field(default_factory=dict)
 
@@ -97,7 +100,8 @@ def axis_from_set(
             )
             for path, difference in entry.differences.items()
         }
-        values[key] = AxisValue(patches=patches) if entry.label is None else AxisValue(label=entry.label, patches=patches)
+        label = {"label": entry.label} if entry.label is not None else {}
+        values[key] = AxisValue(patches=patches, task_variables=entry.task_variables, task_links=entry.task_links, **label)
     return NamedAxis(values=values) if where is None else NamedAxis(values=values, where=where)
 
 
@@ -115,7 +119,9 @@ def set_from_axis(axis: NamedAxis, model: str) -> SetDocument:
             )
             for target, write in value.patches.items() if write is not None
         }
-        entries[key] = SetEntry(label=value.label, differences=differences)
+        entries[key] = SetEntry(
+            label=value.label, differences=differences, task_variables=value.task_variables, task_links=value.task_links,
+        )
     return SetDocument(entries=entries)
 
 
@@ -169,36 +175,71 @@ def resolve_set_axes(
     return resolved
 
 
+def document_subject_model(
+    resolved: ResolvedStep, read_document: Callable[[str], Document | None],
+) -> tuple[str, Payload] | None:
+    """The Model document address of an Evaluate with a document subject."""
+    subject = resolved.inputs.get("subject")
+    authored = resolved.input_documents.get("subject")
+    if authored is None or not isinstance(subject, InitialModelReference | LoadedModelReference):
+        return None
+    if isinstance(subject, InitialModelReference):
+        if subject.source.pointer is None and authored.schema_id == MODEL_DOCUMENT_SCHEMA_ID and isinstance(authored.payload, dict):
+            return subject.source.document, authored.payload
+        return None
+    if authored.schema_id != LOADED_MODEL_SCHEMA_ID:
+        return None
+    model = LoadedModelDocument.model_validate(authored.payload).model
+    if model.pointer is not None or model.unresolved:
+        return None
+    root = compose_document(read_document, model.document)
+    if not isinstance(root, ProjectDiagnostic) and root.schema_id == MODEL_DOCUMENT_SCHEMA_ID and isinstance(root.payload, dict):
+        return model.document, root.payload
+    return None
+
+
 def step_model(project: Project, step: str) -> tuple[str, Payload] | None:
-    """The Model document a Train or Evaluate step's default row reads, with its composed payload: an Evaluate that
-    names no Model of its own reads its subject step's."""
-    if (authored := project.steps.get(step)) is None or authored.kind not in ("train", "evaluate"):
-        return None
-    template = compose_step(project, step)
-    resolved = template if isinstance(template, ProjectDiagnostic) else template.resolve()
-    if isinstance(resolved, ProjectDiagnostic):
-        return None
-    model = model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
-    subject = authored.inputs.get("subject")
-    if model is None and authored.kind == "evaluate" and isinstance(subject, StepReference) and subject.step != step:
-        return step_model(project, subject.step)
-    return model
+    """The authored Model document a Train or Evaluate step's default row reads."""
+    active = set()
+    while step not in active:
+        active.add(step)
+        authored = project.steps.get(step)
+        if authored is None or authored.kind not in ("train", "evaluate"):
+            return None
+        template = compose_step(project, step)
+        resolved = template if isinstance(template, ProjectDiagnostic) else template.resolve()
+        if isinstance(resolved, ProjectDiagnostic):
+            return None
+        model = model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
+        if model is not None or authored.kind != "evaluate":
+            return model
+        subject = resolved.inputs.get("subject")
+        if not isinstance(subject, StepReference):
+            return document_subject_model(resolved, project.documents.get)
+        step = subject.step
+    return None
 
 
 def model_slot(
     payload: Payload, document_ids: Mapping[str, str], document_pointers: Mapping[str, str],
 ) -> tuple[str, Payload] | None:
     """The whole Model document a resolved step payload reads, with its content."""
-    name = document_ids.get(MODEL_SLOT)
-    slots = payload.get("trial_documents")
+    path = "payload." + ".".join(trial_model_path(payload))
+    name = document_ids.get(path)
+    slots = payload.get("trial_documents", payload)
     content = slots.get("model") if isinstance(slots, dict) else None
-    if name is None or MODEL_SLOT in document_pointers or not isinstance(content, dict):
+    if name is None or path in document_pointers or not isinstance(content, dict):
         return None
     return name, content
 
 
+def trial_model_path(payload: Payload) -> tuple[str, ...]:
+    """The Model slot of a Train or Synthesize payload."""
+    return ("model",) if "trial_documents" not in payload and "model" in payload else ("trial_documents", "model")
+
+
 def sets_offered(project: Project, step: str) -> tuple[str, ...]:
     """The existing Sets an addressable Train or Evaluate sweep may reference."""
-    if project.steps[step].kind not in ("train", "evaluate"):
+    if project.steps[step].kind not in ("train", "evaluate", "synthesize"):
         return ()
     return tuple(sorted(name for name, document in project.documents.items() if document.schema_id == SET_DOCUMENT_SCHEMA_ID))

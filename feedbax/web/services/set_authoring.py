@@ -3,23 +3,26 @@
 from __future__ import annotations
 
 import re
+from itertools import count
 from typing import Any
 
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
-from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase, member_name
+from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase, member_display_name, member_name
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
 from feedbax.planner.project_plan import RunKey, _sweep_problem
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_ROW, CooccurringSetTrials, ListedSetTrials, ManualCombination, NamedAxis, SetAxis,
-    SetEntryParts, SweepExpansionError, TrialSetField, WeightedSetTrials,
+    SetEntryParts, SweepExpansionError, TrialSetField, WeightedSetTrials, numbered_run_name,
 )
 from feedbax.contracts.set_document import (
-    SET_DOCUMENT_SCHEMA_ID, SetMisfit, axis_from_set, check_fit, entry_pointer, read_set, resolve_set_axes, set_from_axis, sets_offered, step_model,
+    SET_DOCUMENT_SCHEMA_ID, SetMisfit, SetEntry, axis_from_set, check_fit, entry_pointer,
+    read_set, resolve_set_axes, set_from_axis, sets_offered, step_model,
 )
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_sets import (
-    AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetFieldWeight, SetToField, SetToSweep,
+    AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetEntryTask,
+    SetFieldWeight, SetToField, SetToSweep,
     StudioAxisValue, StudioSetEdit, StudioSetEditRequest,
     StudioSetsOffered, StudioSetsOfferedRequest,
 )
@@ -55,7 +58,9 @@ def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
             else:
                 weight = sampling.weights.get(id, 1.0)
             rows.append(StudioSetFieldEntry(entry=id, label=entry.label, weight=weight))
-        fields.append(StudioSetField(axis=axis, set=field.axis.set, sampling=sampling, entries=rows))
+        fields.append(StudioSetField(
+            axis=axis, set=field.axis.set, sampling=sampling, condition=field.condition, entries=rows,
+        ))
     return fields
 
 
@@ -88,6 +93,8 @@ def set_edit(folders, project_id: str, body: StudioSetEditRequest) -> StudioSetE
         stored = _set_field_weight(project, command)
     elif isinstance(command, AddSetEntry):
         stored, selected = _add_set_entry(project, command)
+    elif isinstance(command, SetEntryTask):
+        stored = _set_entry_task(project, command)
     else:
         stored = _remove_value(project, command)
     result = _set_store(folders, project_id, project, step, body, stored)
@@ -194,6 +201,11 @@ def _copy_key(value: str, taken) -> str:
     return generated_name(base, lambda key: key == base or taken(key))
 
 
+def _next_run_name(values: dict[str, Any]) -> str:
+    used = {member_display_name(key, entry.get("label")) for key, entry in values.items() if entry is not None}
+    return next(name for number in count(2) if (name := numbered_run_name(number)) not in used)
+
+
 def _divided(row: str, axis: str, value: str) -> str:
     """The id of the row an optional axis adds beside ``row`` for ``value``."""
     parts = [] if row == DEFAULT_SWEEP_ROW else row.split("--")
@@ -280,7 +292,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
         content = _composed(project, named.set)
         entries = content["entries"]
         copy = _copy_key(named.value, entries.__contains__)
-        entry = {name: item for name, item in entries[named.value].items() if name != "label"}
+        entry = entries[named.value] | {"label": _next_run_name(entries)}
         edits = content_edits(content, content | {"entries": entries | {copy: entry}})
         readers = set_readers(project, named.set)
         stored = set_document_write(project, named.set, edits, readers)
@@ -289,7 +301,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
     if named is not None:
         values = axes[named.axis]["values"]
         copy = _copy_key(named.value, values.__contains__)
-        value = {name: item for name, item in values[named.value].items() if name != "label"}
+        value = values[named.value] | {"label": _next_run_name(values)}
         copies = {row: _recolumned(row, named.axis, named.value, copy) for row in selected}
         updated = sweep | {"axes": axes | {named.axis: axes[named.axis] | {"values": values | {copy: value}}}}
         return StoredEdit([_with_sweep(address, raw, updated, copies)]), StudioAxisValue(axis=named.axis, value=copy)
@@ -301,7 +313,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
             return _optional_value_added(project, address, raw, name, axis, selected)
     name = generated_name("run", axes.__contains__)
     value = generated_name(name, name.__eq__)
-    axis: dict[str, Any] = {"values": {value: {}}, "optional": True}
+    axis: dict[str, Any] = {"values": {value: {"label": numbered_run_name(2)}}, "optional": True}
     if isinstance(scope, SweepValuesRuns):
         axis["where"] = {"rule": scope.rule}
         values = axis_values(rows)
@@ -328,7 +340,8 @@ def _optional_value_added(project: Project, address, raw, name: str, axis, kept:
         return _insert_set_entry(project, name, axis.set)
     values = sweep["axes"][name]["values"]
     value = generated_name(name, lambda key: key == name or key in values)
-    updated = sweep | {"axes": sweep["axes"] | {name: sweep["axes"][name] | {"values": values | {value: {}}}}}
+    added = values | {value: {"label": _next_run_name(values)}}
+    updated = sweep | {"axes": sweep["axes"] | {name: sweep["axes"][name] | {"values": added}}}
     copies = {row: _divided(row, name, value) for row in kept}
     return StoredEdit([_with_sweep(address, raw, updated, copies)]), StudioAxisValue(axis=name, value=value)
 
@@ -346,6 +359,27 @@ def _add_set_entry(project: Project, command: AddSetEntry) -> tuple[StoredEdit, 
     if not isinstance(axis, SetAxis):
         raise ProjectFolderInvalid(f"{command.axis} reads no Set.")
     return _insert_set_entry(project, command.axis, axis.set)
+
+
+def _set_entry_task(project: Project, command: SetEntryTask) -> StoredEdit:
+    field = project.steps[command.step].set_fields.get(command.axis)
+    axis = field.axis if field is not None else _authored_axis(project, command.step, command.axis)
+    if not isinstance(axis, SetAxis):
+        raise ProjectFolderInvalid(f"{command.axis} reads no Set.")
+    return prepare_set_entry_task(project, axis.set, command)
+
+
+def prepare_set_entry_task(project: Project, name: str, command: SetEntryTask, chosen=None) -> StoredEdit:
+    content = _composed(project, name)
+    entries = content["entries"]
+    if command.entry not in entries:
+        raise ProjectFolderInvalid("That Set entry is no longer available.")
+    additions = command.model_dump(mode="json", include={"task_variables", "task_links"}, exclude_none=True)
+    entry = SetEntry.model_validate(entries[command.entry] | additions)
+    changed = content | {"entries": entries | {command.entry: entry.model_dump(mode="json", exclude_unset=True)}}
+    return set_document_write(
+        project, name, content_edits(content, changed), set_readers(project, name) if chosen is None else chosen,
+    )
 
 
 def _save_set(project: Project, command: SaveSet) -> StoredEdit:
@@ -419,8 +453,8 @@ def _move_set(project: Project, command: SetToField | SetToSweep) -> StoredEdit:
     axes = dict((raw.get("sweep") or {}).get("axes", {}))
     if isinstance(command, SetToField):
         axis = _authored_axis(project, command.step, command.axis)
-        if step.kind != "train" or not isinstance(axis, SetAxis):
-            raise ProjectFolderInvalid("To Field needs a Train's Set axis.")
+        if step.kind not in {"train", "evaluate"} or not isinstance(axis, SetAxis):
+            raise ProjectFolderInvalid("To Field needs a Train or Evaluate Set axis.")
         if command.axis in field_sets:
             raise ProjectFolderInvalid(f"{command.axis} already has a Set field.")
         sweep = step.sweep
@@ -456,7 +490,7 @@ def _move_set(project: Project, command: SetToField | SetToSweep) -> StoredEdit:
 def _set_field_weight(project: Project, command: SetFieldWeight) -> StoredEdit:
     step = project.steps[command.step]
     field = step.set_fields.get(command.axis)
-    if step.kind != "train" or field is None:
+    if step.kind not in {"train", "evaluate"} or field is None:
         raise ProjectFolderInvalid(f"{command.axis} is not a Set field of {member_name(project.steps, command.step)}.")
     entry, part, weight = command.entry, command.part, command.weight
     if entry is not None:

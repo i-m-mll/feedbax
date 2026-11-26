@@ -256,6 +256,12 @@ def _operation(op: str, _context: CallContext, *args, **kwargs):
     return getattr(jnp, op)(*args, **kwargs)
 
 
+def _power(_context: CallContext, base, exponent):
+    import jax.numpy as jnp
+
+    return jnp.power(jnp.asarray(base, dtype=jnp.result_type(base, 1.0)), exponent)
+
+
 def _stack(_context: CallContext, *args):
     import jax.numpy as jnp
 
@@ -318,8 +324,8 @@ def _nominal_sample(family: str, context: CallContext, *args, weights=None):
 
     match family:
         case "uniform" if context.discrete_uniform:
-            low, high = (jnp.rint(arg / context.period_seconds) for arg in args)
-            return jnp.rint((low + high) / 2) * context.period_seconds
+            low, high = args
+            return (low + high + 1) // 2
         case "uniform":
             low, high = args
             return low + (high - low) / 2
@@ -352,8 +358,8 @@ def _sample(family: str, context: CallContext, *args, weights=None):
     key = context.key
     match family:
         case "uniform" if context.discrete_uniform:
-            low, high = (jnp.rint(arg / context.period_seconds).astype(int) for arg in args)
-            return random.randint(key, (), low, high + 1) * context.period_seconds
+            low, high = args
+            return random.randint(key, (), low, high + 1)
         case "uniform" | "loguniform":
             lo, hi = args
             shape = jnp.broadcast_shapes(jnp.shape(lo), jnp.shape(hi))
@@ -426,10 +432,13 @@ def _choose(context: CallContext, condition, yes, no):
 def _held_value(context: CallContext, condition, duration):
     import jax.numpy as jnp
 
+    from feedbax.runtime.timing import runtime_time_steps
+
     condition = condition & context.defined[0] & context.defined[1]
     start = jnp.where(condition, jnp.where(context.state < 0, context.step, context.state), -1)
-    elapsed = (context.step - start) * context.period_seconds
-    return condition & (elapsed >= duration), start
+    steps = runtime_time_steps(duration, context.period_seconds)
+    valid = (duration == 0) | ((duration > 0) & (steps > 0) & jnp.isfinite(duration))
+    return condition & valid & (context.step - start >= steps), start
 
 
 def _filtered(ou: bool, context: CallContext, value, tau, *, nominal=False):
@@ -525,6 +534,43 @@ def _bind_difference(derivative, function, node):
         argument_context=partial(_difference_context, order, derivative),
         result_dimensions=partial(_difference_dimensions, order, derivative),
     ), node.model_copy(update={"args": node.args[:1], "kwargs": {}})
+
+
+def _lag_state(steps, value_type):
+    import jax.numpy as jnp
+
+    dtype = {_BOOL: bool, _INT: int, _REAL: float}[value_type.base]
+    return jnp.zeros((steps, *value_type.shape), dtype=dtype), jnp.zeros(steps, dtype=bool)
+
+
+def _lag(context, value):
+    import jax.numpy as jnp
+
+    history, present = context.state
+    value = jnp.asarray(value, dtype=history.dtype)
+    state = (
+        jnp.concatenate((history[1:], value[None])),
+        jnp.concatenate((present[1:], jnp.all(jnp.asarray(context.defined[0]))[None])),
+    )
+    return Evaluation(history[0], present[0]), state
+
+
+def _bind_lag(function, node):
+    steps = node.args[1]
+    if (
+        not isinstance(steps, LiteralValue)
+        or type(steps.value) is not int
+        or steps.value < 1
+        or steps.unit is not None
+    ):
+        return SignatureError(
+            ProblemCode.STRUCTURE,
+            "Lag steps must be a positive integer literal.",
+            ("args", 1),
+        )
+    return replace(
+        function, initial_state=partial(_lag_state, steps.value)
+    ), node.model_copy(update={"args": node.args[:1]})
 
 
 def _pulse_type(args, kwargs):
@@ -785,6 +831,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         result_dimensions=_known_result,
         reset=StateReset.TRIAL,
         bind=None,
+        binding_value_argument=None,
         label=None,
         parameters=(),
         density=None,
@@ -817,6 +864,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
                 bind,
                 density,
                 nominal,
+                binding_value_argument,
             )
         )
 
@@ -853,6 +901,15 @@ def register_builtins(registry: FunctionRegistry) -> None:
                 else _known_result
             ),
         )
+    add(
+        "pow",
+        "base, exponent",
+        2,
+        partial(_elementwise, base=_REAL, dimensions="dimensionless"),
+        _power,
+        argument_context=partial(_operand_context, base=_REAL, dimensionless=True),
+        result_dimensions=lambda _: DIMENSIONLESS,
+    )
     for name, operator in (("eq", "equal"), ("ne", "not_equal")):
         add(
             name,
@@ -974,6 +1031,17 @@ def register_builtins(registry: FunctionRegistry) -> None:
             requires_period=derivative,
             bind=partial(_bind_difference, derivative),
         )
+    add(
+        "lag",
+        "signal, steps",
+        2,
+        lambda args, _: args[0],
+        _lag,
+        level=Level.STEP,
+        initial_state=partial(_lag_state, 1),
+        bind=_bind_lag,
+        binding_value_argument=0,
+    )
     time = ValueType(base=_REAL, dimensions=TIME)
     add(
         "pulse",

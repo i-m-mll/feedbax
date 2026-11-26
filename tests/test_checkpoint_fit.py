@@ -46,7 +46,6 @@ def _problem(data):
 
 def _hidden(components, size=8):
     components["cell"]["fields"]["hidden_size"] = size
-    components["readout"]["fields"]["input_size"] = size
 
 
 def test_a_changed_layer_size_reads_cant_run_on_the_component():

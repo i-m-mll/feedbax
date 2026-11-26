@@ -2,12 +2,19 @@ import { expect, it } from 'vitest';
 import { mapAxes, mapRunCells, orderedMapSweeps } from '@/components/pipeline/pipelineMapLayout';
 import { runColumns } from '@/components/pipeline/StudioRunTable';
 import type { Project, StudioProjectWindowMapRow, StudioSavedTrainRuns } from '@/generated/studioContracts';
+import type { ProjectNames } from './memberNames';
 import { projectWindowPlan } from './projectWindowPlan';
+
+/** The names a snapshot gives the steps `ids`, as authored and in the base variant. */
+function named(ids: readonly string[]): ProjectNames {
+  const names = { documents: {}, steps: Object.fromEntries(ids.map((id) => [id, id])), elements: {} };
+  return { names, variant_names: { base: names } };
+}
 
 type Row = StudioProjectWindowMapRow;
 const seed = (value: number): Row['coordinates'] => ({ seed: { value_id: String(value), label: null, value, axis_value: String(value) } });
 const row = (step: string, name: string, fields: Partial<Row> = {}): Row => ({
-  key: { variant: 'base', step, row: name }, label: name, status: 'not_run', coordinates: {}, ...fields,
+  key: { variant: 'base', step, row: name }, name, label: name, status: 'not_run', coordinates: {}, ...fields,
 });
 const trainRows = (step: string, seeds: readonly number[]) => seeds.map((value) => row(step, `seed=${value}`, { coordinates: seed(value) }));
 /** An Evaluate row reading `train`'s run at `value`, carrying its seed as the planner sends it. */
@@ -24,7 +31,7 @@ function axes(rows: readonly Row[]) {
     }
   }
   return [...values].map(([id, entries]) => ({
-    id, values: [...entries].map(([value, label]) => ({ id: value, label, rule: value })),
+    id, label: id, values: [...entries].map(([value, label]) => ({ id: value, label, value_label: label, rule: value })),
   }));
 }
 
@@ -42,7 +49,7 @@ function evaluateStep(
     window_map: {
       variants: ['base'],
       steps: [...trains, 'evaluate'].map((step_id) => ({
-        variant: 'base', step_id, kind: step_id === 'evaluate' ? 'evaluate' : 'train', group: null, document_ids: {},
+        variant: 'base', step_id, label: step_id, kind: step_id === 'evaluate' ? 'evaluate' : 'train', group: null, document_ids: {},
         status_counts: {}, axes: step_id === 'evaluate' ? evaluateAxes : axes(mapRows.filter(({ key }) => key.step === step_id)),
         inputs: step_id === 'evaluate'
           ? trains.map((source, index) => ({ id: trains.length > 1 ? `subject.${index}` : 'subject', source_step_id: source, subset: null }))
@@ -53,7 +60,7 @@ function evaluateStep(
       problems: [],
     },
   };
-  return projectWindowPlan(project, saved, 'base').steps.find(({ id }) => id === 'evaluate')!;
+  return projectWindowPlan(project, named([...trains, 'evaluate']), saved, 'base').steps.find(({ id }) => id === 'evaluate')!;
 }
 
 it('draws an Evaluate step reading a seed sweep as one seed axis, its runs in one line', () => {
@@ -98,11 +105,11 @@ it('draws the seeds of an Evaluate reading two Train steps once each, in order, 
     from_key: { variant: 'base', step: to.key.row.slice(0, 7), row: `seed=${to.coordinates.seed.value}` }, to_key: to.key,
   }));
   const step = evaluateStep(['train-a', 'train-b'], readings, edges, [
-    { id: 'seed', values: [0, 1, 2, 3].map((value) => ({ id: gathered[value], label: String(value), rule: String(value) })) },
-    { id: 'subject', values: readings.map(({ input_axes }) => ({ id: input_axes!.subject.axis_value, label: '', rule: '' })) },
+    { id: 'seed', label: 'Seed', values: [0, 1, 2, 3].map((value) => ({ id: gathered[value], label: `Seed ${value}`, value_label: String(value), rule: String(value) })) },
+    { id: 'subject', label: 'Subject', values: readings.map(({ input_axes }) => ({ id: input_axes!.subject.axis_value, label: '', value_label: '', rule: '' })) },
   ]);
   const seed = step.sweeps.find(({ id }) => id === 'seed')!;
-  expect(seed.values.map(({ label }) => label)).toEqual(['0', '1', '2', '3']);
+  expect(seed.values.map(({ valueLabel }) => valueLabel)).toEqual(['0', '1', '2', '3']);
   const { cells } = mapRunCells(step.runs, mapAxes(orderedMapSweeps(step, {})));
   const column = (run: string) => cells.find(({ mark }) => mark.kind === 'run' && mark.run.label.endsWith(run))?.column;
   expect([column('train-a-0'), column('train-b-0')]).toEqual([0, 0]);
@@ -118,11 +125,12 @@ it('lists steps in one order whether or not the plan has been read', () => {
     window_map: {
       variants: ['base'], rows: [], edges: [], problems: [],
       steps: ['train-10', 'train-2', 'analyze'].map((step_id) => ({
-        variant: 'base', step_id, kind: 'train', group: null, document_ids: {}, status_counts: {}, axes: [], inputs: [],
+        variant: 'base', step_id, label: step_id, kind: 'train', group: null, document_ids: {}, status_counts: {}, axes: [], inputs: [],
       })),
     },
   };
-  const order = (read?: StudioSavedTrainRuns) => projectWindowPlan(project, read, 'base').steps.map(({ id }) => id);
+  const order = (read?: StudioSavedTrainRuns) =>
+    projectWindowPlan(project, named(['train-10', 'train-2', 'analyze']), read, 'base').steps.map(({ id }) => id);
   expect(order(saved)).toEqual(['analyze', 'train-2', 'train-10']);
   expect(order(undefined)).toEqual(order(saved));
 });

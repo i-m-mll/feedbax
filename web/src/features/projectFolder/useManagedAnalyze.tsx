@@ -30,8 +30,9 @@ import { ManagedDocumentCanvas, type CanvasNode } from './ManagedDocumentCanvas'
 import {
   choosePick, useNamedSelection, usePick, type ElementSelectionStore,
 } from '@/features/projectWindow/elementSelection';
-import { shownName, type PlanStepView } from '@/features/pipeline/planView';
+import { outputName, type PlanStepView } from '@/features/pipeline/planView';
 import { heldElements } from './analysisElements';
+import { documentNames, nameOf } from './memberNames';
 import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
 import { SelectionRule } from './SelectionRule';
@@ -44,6 +45,8 @@ import { savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, placedField, type Reveal } from './projectWindowProblems';
 import { ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
+import { FigureLayers, offeredFields, type RoleFields } from './FigureLayers';
+import { holdsProducts, OperationProducts } from './OperationProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName, keyOfLabel } from './generatedName';
 import type { GestureFailures } from './refusals';
@@ -65,6 +68,8 @@ type RefusalPlace = 'dialog' | readonly [string, string] | { readonly key: strin
 
 const operationCarry = carryKind<LibraryItem>('operation');
 const figureItem = 'velocity_summary';
+/** Where a refused edit of a figure's layers or data lands: beside its layers. */
+const layersPlace = '/figure/layers';
 const summaryTemplate = 'feedbax.VelocitySummary';
 
 export function useManagedAnalyze({
@@ -159,7 +164,7 @@ export function useManagedAnalyze({
   const roles = selectedFigure ? selectedFigure.data.map((name) => ({ name, kind: 'dataset' as const }))
     : Object.entries(definition?.inputs ?? {}).map(([name, port]) => ({ name, kind: port.kind ?? 'dataset' }));
   const outputs = Object.entries(operations).map(([name, value]) => ({
-    element: name, name: shownName(name, value), products: Object.keys(definitions.get(value.operation)?.outputs ?? {}),
+    element: name, name: nameOf(key && saved.names.elements[key.step], name, value), products: Object.keys(definitions.get(value.operation)?.outputs ?? {}),
   }));
   /** The Analysis document a card reads, when it reads one of its own. */
   function cardAnalysis(card: string) {
@@ -172,7 +177,7 @@ export function useManagedAnalyze({
   const cardOutputs = steps.filter((other) => other.kind === 'analyze' && other.id !== key?.step).flatMap((card) =>
     Object.entries(cardAnalysis(card.id)?.operations ?? {}).flatMap(([element, value]) =>
       Object.keys(definitions.get(value.operation)?.outputs ?? {}).map((product) => ({
-        step: card.id, element, product, name: `${card.label}/${shownName(element, value)}.${product}`,
+        step: card.id, element, product, name: outputName(card.label, nameOf(saved.names.elements[card.id], element, value), product),
       }))));
   /** A role bound to another card's operation output is shown by the card and the output. */
   function boundName(role: string) {
@@ -180,8 +185,9 @@ export function useManagedAnalyze({
     if (!bound || Array.isArray(bound) || typeof bound !== 'object' || !('element' in bound) || !('step' in bound)) return role;
     const { step: card, element: source, product } = bound as { step: string; element?: string | null; product?: string | null };
     if (!source || !product) return role;
-    const shownCard = steps.find(({ id }) => id === card)?.label ?? card;
-    return `${shownCard}/${shownName(source, cardAnalysis(card)?.operations?.[source])}.${product}`;
+    const shownCard = steps.find(({ id }) => id === card);
+    if (!shownCard) throw new Error(`The plan has no step ${card}.`);
+    return outputName(shownCard.label, nameOf(saved.names.elements[card], source, cardAnalysis(card)?.operations?.[source]), product);
   }
   const selectedInput = selected ? declarations[selected] : undefined;
   const authoringCatalog = useAuthoringCatalog().data;
@@ -260,7 +266,7 @@ export function useManagedAnalyze({
     const pointer = authoredPointer(path);
     const base = baseOf(saved.project.documents, document);
     if (!changedPaths.has(pointer) || base === undefined) return undefined;
-    return { from: { kind: 'base', document: base }, reset: canEdit ? async () => {
+    return { from: { kind: 'base', name: nameOf(saved.names.documents, base) }, reset: canEdit ? async () => {
       try { await editor.command((current) => save(current, studioName('reset'), { kind: 'reset', paths: [pointer] })); return undefined; }
       catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
     } : undefined };
@@ -268,11 +274,10 @@ export function useManagedAnalyze({
   /** Places an element named as the Library names what it is made from, numbered while another element shows that name. */
   function add(kind: 'operations' | 'views', named: string, value: Readonly<Record<string, JsonValue>>, point?: PresentationPosition) {
     void perform(async (current) => {
-      const held = heldElements(editor.getSnapshot().draft.documents, current.composed);
-      const shownNames = new Set(held.values());
-      const label = generatedName(named, (label) => shownNames.has(label), ' ');
+      const held = heldElements(editor.getSnapshot().draft.documents, current.composed, current.names);
+      const label = generatedName(named, (label) => held.names.has(label), ' ');
       const name = generatedName(keyOfLabel(label) || kind,
-        (name) => name === 'states' || name in declarations || held.has(name));
+        (name) => name === 'states' || name in declarations || held.keys.has(name));
       await save(current, studioName(kind === 'operations' ? 'addOperation' : 'addFigure'), set([kind, name], { ...value, label }));
       setDialog(undefined);
       if (liveScope.current === scope) {
@@ -315,7 +320,7 @@ export function useManagedAnalyze({
     if (selected) void perform((current) => save(current, studioName('modelRemove'), { kind: 'remove', element: selected }));
   }, { enabled: editApplies && !!(operation || figure) });
 
-  const shown = (name: string) => shownName(name, operations[name] ?? figures[name]);
+  const shown = (name: string) => nameOf(key && saved.names.elements[key.step], name, operations[name] ?? figures[name]);
   const nameApplies = bindApplies && !!analysis && !!document;
   const canName = nameApplies;
   const namingNow = naming?.scope === scope ? naming : undefined;
@@ -348,7 +353,7 @@ export function useManagedAnalyze({
           { kind: 'split', member: key.step, elements: [...elements] }, editor.getSnapshot().saved);
         if (liveScope.current === scope) selectElement(null);
       }, canName);
-    }, { subject: key && shownName(key.step, draft.steps?.[key.step]), enabled: nameApplies && !!key && !refused && elements.length > 0 && elements.length < elementKeys.length });
+    }, { subject: key && nameOf(saved.names.steps, key.step, draft.steps?.[key.step]), enabled: nameApplies && !!key && !refused && elements.length > 0 && elements.length < elementKeys.length });
   }
   /** The commands on an operation or figure: its context menu, and the palette's for the selected one. */
   const elementCommands = (name: string) => [
@@ -414,22 +419,41 @@ export function useManagedAnalyze({
   const shownFigure = figure ? selected : Object.keys(figures)[0];
   const shownPlan = shownFigure && planOf(shownFigure, shownFigure === selected ? chosenMember : undefined);
   const shownStatus = selectedPlan ?? selectedElement;
+  /** Each operation's request the Results read: the chosen one of the selected mapped operation, else its first with products. */
+  const operationResults = Object.keys(operations).flatMap((name) => {
+    const history = planOf(name, name === selected ? chosenMember : undefined) ?? planned.get(name)?.requests.find(holdsProducts);
+    return history && holdsProducts(history) ? [{ name, label: shown(name), history }] : [];
+  });
   function writeParameter(path: readonly string[], value: JsonValue) {
     if (!operation || !selected) return;
     const [name, ...rest] = path;
     const next = setIn(operation.params?.[name], rest, value);
     void perform((current) => save(current, humanizeLabel(name), set(['operations', selected, 'params', name], next)));
   }
-  const inspector = selected && (operation || figure || selectedInput) && <Inspector name={shown(selected)}
-    type={operation ? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}>
+  /** The fields the data bound to the selected figure's `role` offers. */
+  function roleFields(role: string): RoleFields {
+    const source = figure?.inputs[role];
+    const port = !source ? undefined : 'input' in source ? source.input === 'states' ? catalog?.states ?? undefined : undefined
+      : source.product ? catalog?.operation_outputs?.[source.element]?.[source.product] : undefined;
+    return port ? offeredFields(port) : {};
+  }
+  const authoredFigure = figure && 'data' in figure.figure ? figure.figure : undefined;
+  const layers = selected && authoredFigure && <FigureLayers key={JSON.stringify([scope, selected])}
+    figure={authoredFigure} fields={roleFields} refusal={roleRefusal(selected, layersPlace)}
+    edit={canEdit ? (label, next) => void perform(
+      (current) => save(current, label, set(['views', selected, 'figure'], next as JsonValue)), canEdit, [selected, layersPlace],
+    ) : undefined} />;
+  const inspector = selected && (operation || figure || selectedInput) && <Inspector name={operation || figure ? shown(selected) : boundName(selected)}
+    type={operation ? definition?.label ?? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}
+    attachments={layers}>
     {(operation || figure) && <KeyField value={selected} name={shown(selected)}
       editing={namingNow?.field === 'key' && namingNow.element === selected}
       onEditingChange={(editing) => setNaming(editing ? { scope, element: selected, field: 'key' } : undefined)}
       onCommit={(key) => changeElementKey(selected, key)}
-      unavailable={(key) => keyUnavailable(key, (key) => heldElements(draft.documents, saved.composed).has(key))}
+      unavailable={(key) => keyUnavailable(key, (key) => heldElements(draft.documents, saved.composed, saved.names).keys.has(key))}
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
     {selected && selectedInput && key && inputRole && <InputEditor label={humanizeLabel(selected)} role={inputRole}
-      binding={step?.inputs?.[selected]} self={key.step} project={saved.project} steps={steps} picking={selection}
+      binding={step?.inputs?.[selected]} self={key.step} project={saved.project} documentNames={documentNames({ saved, draft })} steps={steps} picking={selection}
       refusal={roleRefusal(selected, selected)} outputs={cardOutputs} onReveal={selectStep}
       selection={(index, reference) => {
         const binding = step?.inputs?.[selected];
@@ -448,7 +472,7 @@ export function useManagedAnalyze({
             scope={{ project: saved.project_id, revision: projection.revision, variant: key.variant }} source={source}
             terms={where} planned={subset} picking={selection}
             disabled={!canBind} problem={problems.rule}
-            pick={{ rows: stepSourceRows(projection, source.id, key.variant) }} onCommit={write} />,
+            pick={stepSourceRows(projection, source.id, key.variant)} onCommit={write} />,
         };
       }}
       onChange={canBind ? (gesture) => {
@@ -535,7 +559,7 @@ export function useManagedAnalyze({
     const caption = figureDefinition(name, view.figure)?.caption;
     const result = planned.get(name);
     return <li key={name} className="flex items-center gap-2">
-      <Button pressed={shownFigure === name} onClick={() => selectElement(name)}>{shown(name)}</Button>
+      <Button pressed={shownFigure === name} data-element={name} onClick={() => selectElement(name)}>{shown(name)}</Button>
       {caption && <span>{caption}</span>}
       {result && <span>{studioRunStatus(result.status)}</span>}
     </li>;
@@ -556,8 +580,10 @@ export function useManagedAnalyze({
     },
     figures: { body: <>{figureList}
       {shownFigure && shownPlan && <SavedFigureResult key={JSON.stringify([scope, shownFigure])}
-        history={shownPlan} name={shownFigure} project={saved.project_id} revision={saved.revision} mean={mean} />}
+        history={shownPlan} name={shown(shownFigure)} project={saved.project_id} revision={saved.revision} mean={mean} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
+    results: operationResults.length > 0 ? { body: <OperationProducts operations={operationResults} />, drawer,
+      inspector: libraryInspector || (operation ? inspector : undefined) } : undefined,
     commands: document && focusedView === 'analysis' ? [addCommand, removeCommand, ...selectedCommands, ...viewport]
       : document && focusedView === 'figures' ? [addCommand, removeCommand, ...selectedCommands] : [],
     overlay: opened && <Dialog ariaLabel={studioName('addOperation')}

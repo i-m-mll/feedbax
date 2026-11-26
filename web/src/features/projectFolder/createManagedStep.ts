@@ -28,7 +28,7 @@ async function createManagedStep(
   const left = Object.keys(documents).find((name) => !read(name) && containsCreatedFile(saved.project,
     { kind: 'document', id: name, document: { ...document, label: documents[name].label } as typeof document }));
   const file: CreateNamedDocument = left === undefined
-    ? { kind: 'document', ...namedDocument(documents, document) as Pick<CreateNamedDocument, 'id' | 'document'> }
+    ? { kind: 'document', ...namedDocument(documents, saved.names.documents, document) as Pick<CreateNamedDocument, 'id' | 'document'> }
     : { kind: 'document', id: left, document: documents[left] as typeof document };
   const documentId = file.id;
   const acknowledged = left !== undefined ? saved : (await editor.createFile(file, revision)).snapshot;

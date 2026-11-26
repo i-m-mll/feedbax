@@ -16,6 +16,7 @@ from feedbax.contracts.execution_target import (
     TargetRunKind,
     UnreachableTarget,
 )
+from feedbax.orchestration.project_packages import ProjectPackagePin
 from feedbax.orchestration.session import SessionError, SessionProvider, SessionRequest, session_capability_problem
 
 
@@ -81,10 +82,13 @@ class TargetRegistry:
             raise SessionError(reason)
         return profile.model_copy(deep=True)
 
-    def session_request(self, target: str, *, session_id: UUID, environment: str) -> SessionRequest:
+    def session_request(
+        self, target: str, *, session_id: UUID, environment: str, project_packages: tuple[ProjectPackagePin, ...] = (),
+    ) -> SessionRequest:
         """Resolve the exact profile before requesting existing session authorization."""
         profile = self.require_session(target)
         return SessionRequest(
             id=session_id, target=profile.driver, profile=profile.id, resources=profile.resources,
             environment=environment, lifecycle=profile.lifecycle, maximum_microusd=profile.maximum_microusd,
+            project_packages=project_packages,
         )

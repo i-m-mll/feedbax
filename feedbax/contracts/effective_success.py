@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, Field, JsonValue, model_validator
@@ -159,6 +159,7 @@ class EvaluationSubjectSource(ReferenceValue):
         default=None, exclude_if=lambda value: value is None,
     )
     ranked_candidates: tuple[BestCandidateEvidence, ...] = Field(default=(), exclude_if=lambda items: not items)
+    metric_producer: ContentObjectRef | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class CheckpointModelSourceEvidence(ReferenceValue):
@@ -183,6 +184,40 @@ class BoundMember(EffectiveInputMember):
 
 
 type Bindings = dict[Name, tuple[BoundMember, ...]]
+
+
+class MetricExclusion(ReferenceValue):
+    kind: Literal["metric"] = "metric"
+    train: ContentObjectRef
+
+
+class EmptyInputExclusion(ReferenceValue):
+    kind: Literal["empty_input"] = "empty_input"
+    role: Name
+    members: dict[Name, ExcludedProduct] = Field(min_length=1)
+
+
+class ExcludedProduct(ReferenceValue):
+    """Why an exact producer could not supply a product for a gather."""
+
+    request: RequestObject
+    cause: Annotated[MetricExclusion | EmptyInputExclusion, Field(discriminator="kind")]
+
+
+type ExcludedInputs = dict[Name, dict[Name, ExcludedProduct]]
+type LightOrigins = dict[RequestId, ContentObjectRef | ExcludedProduct]
+
+
+def excluded_inputs(request: DecodedRequest, origins: Mapping[RequestId, ContentObjectRef | ExcludedProduct]) -> ExcludedInputs:
+    return {
+        role: excluded
+        for role, members in request.inputs.items()
+        if (excluded := {
+            member.key: absence for member in members
+            if isinstance(member.reference, ProductRef)
+            and isinstance(absence := origins.get(member.reference.request_id), ExcludedProduct)
+        })
+    }
 
 
 def exact_model_checkpoint_input(
@@ -211,6 +246,7 @@ class Success(ReferenceValue):
     target: AttemptTarget
     effective: EffectiveBindingId
     inputs: Bindings
+    excluded: ExcludedInputs = Field(default_factory=dict, exclude_if=lambda value: not value)
     products: Products = Field(min_length=1)
     supersedes: ContentObjectRef | None
     trace: CodeTrace | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -238,6 +274,9 @@ class Success(ReferenceValue):
             inputs = self.inputs
             subject = inputs.get("subject", ())
             initial = len(subject) == 1 and subject[0].content.media_type in {INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE}
+            synthesized = (
+                len(subject) == 1 and subject[0].content.media_type == MODEL_TREE_MEDIA_TYPE and subject[0].content.tree
+            )
             roles = {"subject": subject[0].content.media_type, "task": TASK_INPUT_MEDIA_TYPE} if initial else {}
             if "objective" in inputs:
                 roles["objective"] = OBJECTIVE_INPUT_MEDIA_TYPE
@@ -246,6 +285,11 @@ class Success(ReferenceValue):
                     len(inputs[role]) == 1 and inputs[role][0].content.media_type == media_type
                     and not inputs[role][0].content.tree and inputs[role][0].selection is None
                     for role, media_type in roles.items()
+                )
+            elif synthesized:
+                valid = (
+                    not projected and inputs.keys() == {"subject"}
+                    and subject[0].selection is not None and subject[0].selection.member == "model"
                 )
             else:
                 valid = projected == ["subject"] and inputs.keys() == {"subject"} and len(subject) == 1
@@ -367,7 +411,7 @@ def read_effective_request(
     receipt: Success, read_object: Callable[[ContentObjectRef], bytes]
 ) -> DecodedRequest:
     decoded = read_success_request(receipt.request, read_object)
-    if effective_binding_id(decoded, receipt.inputs) != receipt.effective:
+    if effective_binding_id(decoded, receipt.inputs, excluded=receipt.excluded) != receipt.effective:
         raise ValueError("Receipt effective identity differs from its recorded bindings")
     return decoded
 

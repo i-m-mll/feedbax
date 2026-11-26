@@ -10,12 +10,12 @@ from pydantic import TypeAdapter, ValidationError
 from feedbax.contracts.expression_values import Problem
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
-from feedbax.contracts.model_attachment import is_generated_attachment_node
+from feedbax.contracts.model_attachment import is_generated_attachment_node, is_trial_binding
 from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.rollout import VariationEdits, authored_variation
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.model_values import component_model_facts, model_owner_problem
+from feedbax.contracts.model_values import component_model_facts, is_finite_source_scalar, model_owner_problem
 from feedbax.contracts.rollout import CannotRun
 
 if TYPE_CHECKING:
@@ -105,13 +105,8 @@ def validate_evaluation_source(graph: GraphSpec, components: ComponentRegistry) 
         raise CannotRun(pointer(("inputs", "subject", *problem.path)), problem.reason)
 
 
-def _finite_float32(value: object) -> bool:
-    limit = 3.4028234663852886e38
-    return type(value) in (int, float) and -limit <= value <= limit
-
-
-
-
+def _public_input_ports(ports):
+    return [name for name in ports if not is_trial_binding(name)]
 
 
 def _replacement_task(patch, path):
@@ -201,6 +196,19 @@ def resolve_evaluation_variant(
                         or not all(isinstance(part, str) for part in patch.value)
                     ):
                         raise ValueError("output binding requires a node and port")
+                case ["input_ports"], "replace":
+                    if (
+                        not isinstance(patch.value, list) or not all(isinstance(name, str) for name in patch.value)
+                        or _public_input_ports(patch.value) != _public_input_ports(current.input_ports)
+                    ):
+                        raise ValueError("Only generated intervention inputs can change.")
+                case ["input_bindings", name], ("add" | "replace" | "remove") if is_trial_binding(name):
+                    if patch.op != "remove" and (
+                        not isinstance(patch.value, (list, tuple)) or len(patch.value) != 2
+                        or not all(isinstance(part, str) for part in patch.value)
+                        or not patch.value[0].startswith("_model_input_") or patch.value[1] != "input"
+                    ):
+                        raise ValueError("An intervention input requires its generated relay.")
                 case ["nodes", name], "add":
                     if name in raw["nodes"]:
                         raise ValueError("cannot replace a retained owner with an addition")
@@ -216,6 +224,14 @@ def resolve_evaluation_variant(
                         target = ComponentSpec.model_validate(patch.value)
                         if target.type != node.type or target.revision not in {None, node.revision}:
                             raise ValueError("An attachment field edit must retain its component type and revision")
+                case ["nodes", name, "input_ports"], "replace":
+                    node = current.nodes.get(name)
+                    if (
+                        node is None or node.type != "feedbax.Subgraph" or not isinstance(patch.value, list)
+                        or not all(isinstance(port, str) for port in patch.value)
+                        or _public_input_ports(node.input_ports) != _public_input_ports(patch.value)
+                    ):
+                        raise ValueError("Only generated inputs of a retained composite can change.")
                 case ["nodes", name, "params", parameter], ("replace" | "add"):
                     node = current.nodes.get(name)
                     if node is None:
@@ -225,10 +241,13 @@ def resolve_evaluation_variant(
                         raise ValueError(f"retained owner {node.type!r} has no qualified declaration")
                     declared = next((value for value in owner.values if value.symbol == parameter), None)
                     if declared is not None:
-                        if declared.kind == "learned":
+                        if declared.kind == "parameter":
                             raise ValueError("M2 Evaluate preserves retained learned values")
-                        if not _finite_float32(patch.value):
+                        if not is_finite_source_scalar(patch.value):
                             raise ValueError("expected a finite scalar for a declared source value")
+                        if patch.op == "add" and parameter in node.params:
+                            # Compilation materializes a default absent from the authored Model.
+                            patch = patch.model_copy(update={"op": "replace"})
                         overrides[semantic_key("model", "value", (*owners, name), parameter)] = float(patch.value)
                 case _:
                     raise ValueError("patch is outside the qualified task and graph variation profile")
@@ -250,4 +269,8 @@ def resolve_evaluation_variant(
         tokens = ("graph", *map(str, first["loc"]))
         location = _edit_location(tokens, wire_ids, edit_origins) or "/inputs/subject" + pointer(tokens)
         raise CannotRun(location, first["msg"]) from error
+    required = {name for name in variant.input_bindings.keys() - graph.input_bindings.keys() if is_trial_binding(name)}
+    present = {signal.id for signal in replacement.signals} if isinstance(replacement, TaskDocument) else set()
+    if required - present:
+        raise CannotRun("/params/variation", "A generated intervention input has no bound Task signal.")
     return EvaluationVariant(variant, replacement, overrides, edit_origins)

@@ -19,6 +19,7 @@ type Fill = 'solid' | 'hollow';
 
 const marks = {
   not_run: ['text-shell-status-idle', 'solid', 'M3 6h6'],
+  not_chosen: ['text-shell-status-idle', 'hollow', 'M3 6h6'],
   cannot_run: ['text-shell-status-failure', 'solid', 'M6 2v5m0 2v1'],
   stale: ['text-shell-status-warning', 'solid', 'M3 7a3 3 0 1 0 1-3m-1-2v3h3'],
   queued: ['text-shell-status-neutral', 'solid', 'M2 4h8M2 8h8'],
@@ -87,6 +88,17 @@ export function StatusMark({ status, label, tip, className, ...props }: StatusMa
     </span>
   );
 }
+
+/**
+ * Whether a run counts among its step's: a row whose input's metric condition its producer's result failed is Not
+ * chosen, which is no outcome of the run, so it is drawn muted and counted nowhere.
+ */
+export function statusCounted(status: ResultStatus) {
+  return status !== 'not_chosen';
+}
+
+/** How a run's row, mark or card is drawn when it does not count. */
+export const uncountedRun = 'opacity-50';
 
 /** Statuses from the one that most needs attention to the one that needs none. */
 const severity: readonly ResultStatus[] = [

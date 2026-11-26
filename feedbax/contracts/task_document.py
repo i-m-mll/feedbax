@@ -1,14 +1,19 @@
 """Stored task document values."""
 
+from enum import IntEnum
+from collections.abc import Iterable
 from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue
 
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import (
     ANGLE, LENGTH, TIME, Expression, LiteralValue, Scalar, ValueBase, ValueRecord, ValueType,
 )
 
+from feedbax.contracts.time_units import TimeValue
+from feedbax.contracts.window import Window
 
 TASK_DOCUMENT_SCHEMA_ID = "feedbax.spec.task_document"
 
@@ -20,6 +25,13 @@ class SetVariableChoices(ValueRecord):
     entries: tuple[str | None, ...]
 
 
+class Marker(ValueRecord):
+    """The Scene mark for a Task point."""
+
+    shape: Literal["circle", "square", "triangle"]
+    filled: bool
+
+
 class Variable(ValueRecord):
     id: str
     name: str
@@ -27,6 +39,7 @@ class Variable(ValueRecord):
     value: Expression
     count: Expression | None = Field(default=None, exclude_if=lambda value: value is None)
     set_choices: SetVariableChoices | None = Field(default=None, exclude_if=lambda value: value is None)
+    marker: Marker | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class Length(ValueRecord):
@@ -43,7 +56,22 @@ class Rest(ValueRecord):
     kind: Literal["rest"] = "rest"
 
 
-type End = Annotated[Length | Rest, Field(discriminator="kind")]
+class Until(ValueRecord):
+    """Test a Boolean condition on entry and each step, up to a required time limit."""
+
+    kind: Literal["until"] = "until"
+    condition: Expression
+    limit: TimeValue
+
+
+type End = Annotated[Length | Rest | Until, Field(discriminator="kind")]
+
+
+class EpochEnd(IntEnum):
+    UNREACHED = 0
+    LENGTH = 1
+    CONDITION = 2
+    LIMIT = 3
 
 
 class Epoch(ValueRecord):
@@ -82,11 +110,21 @@ class Signal(ValueRecord):
     type: ValueType
     cells: tuple[Cell, ...]
     absent: Expression | None = None
+    window: Window | None = Field(default=None, exclude_if=lambda value: value is None)
+    intervention: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The canonical Model address of the intervention this generated signal gates."""
 
 
 class Link(ValueRecord):
     model_field: str
     variable: str
+
+
+class TaskAdditions(StrictModel):
+    """Task variables and links that are in effect with a Set entry."""
+
+    task_variables: tuple[Variable, ...] = Field(default=(), exclude_if=lambda value: not value)
+    task_links: tuple[Link, ...] = Field(default=(), exclude_if=lambda value: not value)
 
 
 type ValidationValue = Scalar | tuple[ValidationValue, ...]
@@ -109,6 +147,24 @@ class TaskDocument(ValueRecord):
         default=(ValidationTrial(),), min_length=1
     )
 
+    def without_markers(self) -> "TaskDocument":
+        """The computational Task, with its Scene-only metadata removed."""
+        if not any(variable.marker is not None for variable in self.variables):
+            return self
+        return self.model_copy(update={"variables": tuple(
+            variable if variable.marker is None else variable.model_copy(update={"marker": None})
+            for variable in self.variables
+        )})
+
+    def with_signal_ids_as_names(self) -> "TaskDocument":
+        """Represent Task signals by their stable IDs."""
+        if all(signal.name == signal.id for signal in self.signals):
+            return self
+        return self.model_copy(update={"signals": tuple(
+            signal if signal.name == signal.id else signal.model_copy(update={"name": signal.id})
+            for signal in self.signals
+        )})
+
     @property
     def condition_ids(self) -> tuple[str, ...]:
         """Identify a fixed cohort by the variables that define each condition."""
@@ -116,6 +172,27 @@ class TaskDocument(ValueRecord):
         if len(rows) == 1 and not rows[0].variables and not rows[0].epoch_steps:
             return ()
         return tuple(canonical_json_v2_bytes(row.model_dump(mode="json")["variables"]).decode() for row in rows)
+
+
+def add_to_task(task: TaskDocument, additions: Iterable[TaskAdditions]) -> TaskDocument:
+    """Add selected entry variables and links once, rejecting competing definitions."""
+    variables = {variable.id: variable for variable in task.variables}
+    names = {variable.name: variable.id for variable in task.variables}
+    links = {link.model_field: link for link in task.links}
+    for entry in additions:
+        for variable in entry.task_variables:
+            if (
+                variable.id in variables and variables[variable.id] != variable
+                or variable.name in names and names[variable.name] != variable.id
+            ):
+                raise ValueError(f"Set Task variable {variable.name!r} has a competing definition.")
+            variables[variable.id] = variable
+            names[variable.name] = variable.id
+        for link in entry.task_links:
+            if link.model_field in links and links[link.model_field] != link:
+                raise ValueError(f"Set links compete for Model field {link.model_field}.")
+            links[link.model_field] = link
+    return task.model_copy(update={"variables": tuple(variables.values()), "links": tuple(links.values())})
 
 
 BLANK_TASK = TaskDocument(

@@ -1,5 +1,5 @@
 import type { ChangeMark, FieldModel } from '@/components/values/fieldModel';
-import type { ValueType } from '@/generated/studioContracts';
+import type { Link, ValueType, Variable } from '@/generated/studioContracts';
 
 /**
  * How often a variable's value is read again: once per trial, or every step when it reads `time` or the model. A
@@ -61,6 +61,19 @@ export interface TaskVariable {
   readonly level: VariableLevel;
   readonly value: FieldModel;
   readonly initializes?: VariableInitializes;
+  /** The label of the Set entry that adds the variable, where one does. */
+  readonly entry?: string;
+}
+
+/** A Set entry the step's trials read: its own Task variables and links, and the store of new ones. */
+export interface EntryTask {
+  /** Which entry of which axis of which step, one key per entry. */
+  readonly key: string;
+  readonly label: string;
+  readonly variables: readonly Variable[];
+  readonly links: readonly Link[];
+  /** Stores the entry's variables or links, each kept as authored where omitted; resolves to a refusal's reason. */
+  readonly write?: (name: string, change: { task_variables?: Variable[]; task_links?: Link[] }) => Promise<string | undefined>;
 }
 
 /** Which part of a co-occurring entry's weight: of trials that receive it, or of those that do not. */
@@ -81,6 +94,8 @@ export interface TaskSetVariable {
   readonly entries: readonly { readonly id: string | null; readonly label: string; readonly weight?: SetEntryWeight }[];
   /** Sets one part of an entry's weight (`side` where entries co-occur). */
   readonly weigh?: (entry: string | null, side: WeightSide | undefined, weight: number) => Promise<WeightEdit>;
+  /** The condition on Task variables a trial meets to receive an entry; a trial that fails it receives None. */
+  readonly condition?: FieldModel;
 }
 
 /**

@@ -42,7 +42,7 @@ test('a step\'s context menu opens on its card, its drawer row and its name in R
 
   await page.goto(`/?project=${encodeURIComponent(projectId)}`);
   const card = page.locator('[data-map-step="train"]');
-  const cardRename = card.getByRole('textbox', { name: 'Rename train', exact: true });
+  const cardRename = card.getByRole('textbox', { name: 'Rename Train', exact: true });
 
   await mapStep(page, 'train').click({ button: 'right' });
   await expectStepMenu(page);
@@ -64,7 +64,7 @@ test('a step\'s context menu opens on its card, its drawer row and its name in R
   await duplicates('baseline');
 
   const drawer = page.getByRole('navigation', { name: 'Steps', exact: true });
-  const row = drawer.getByRole('treeitem', { name: /^train\b/ });
+  const row = drawer.getByRole('treeitem', { name: /^Train\b/ });
   if (!await row.isVisible()) {
     await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
     await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Show Steps\b/ }).click();
@@ -80,7 +80,7 @@ test('a step\'s context menu opens on its card, its drawer row and its name in R
 
   await mapStep(page, 'train').click();
   await page.getByRole('tablist', { name: 'Details' }).getByRole('tab', { name: 'Runs', exact: true }).click();
-  const title = page.getByRole('heading', { name: 'train', exact: true, level: 3 });
+  const title = page.getByRole('heading', { name: 'Train', exact: true, level: 3 });
   await title.click({ button: 'right' });
   await expectStepMenu(page);
   await choose('Rename Step');

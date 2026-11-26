@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 from pydantic import Field, JsonValue
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.dataset import FieldDescriptor
+from feedbax.contracts.dataset import REPLICATE_DIM, FieldDescriptor, replicate_axis_index
 from feedbax.contracts.graph import ParamSchema
 
 
@@ -20,14 +20,49 @@ class DatasetPort(StrictModel):
     optional_dimensions: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
     """Declared scientific axes preserved when present in the bound dataset."""
 
+    @property
+    def dimensions(self) -> frozenset[str]:
+        return frozenset(
+            dimension for fields in (self.variables, self.coordinates)
+            for field in fields.values() for dimension in field.dims
+        )
+
+    @property
+    def uses_replicate_axis(self) -> bool:
+        return REPLICATE_DIM in self.dimensions or any(
+            REPLICATE_DIM in field.dims for field in self.selected_variables.values()
+        )
+
+    def with_replicate_axis(
+        self, coordinate: FieldDescriptor, *, after: str | None = None,
+    ) -> "DatasetPort":
+        if self.uses_replicate_axis or REPLICATE_DIM in self.variables or REPLICATE_DIM in self.coordinates:
+            raise ValueError("Mapped results must describe a single replicate")
+
+        def replicate(field: FieldDescriptor) -> FieldDescriptor:
+            dims = field.dims
+            axis = replicate_axis_index(dims, after)
+            return field.model_copy(update={
+                "dims": (*dims[:axis], REPLICATE_DIM, *dims[axis:]), "inline_values": None,
+            })
+
+        return self.model_copy(update={
+            "variables": {name: replicate(field) for name, field in self.variables.items()},
+            "coordinates": {REPLICATE_DIM: coordinate, **self.coordinates},
+        })
+
     def for_dimensions(self, dimensions: Collection[str]) -> "DatasetPort":
-        absent = set(self.optional_dimensions) - set(dimensions)
+        return self._without_dimensions(set(self.optional_dimensions) - set(dimensions))
+
+    def _without_dimensions(self, absent: set[str]) -> "DatasetPort":
         if not absent:
             return self
 
         def fitted(fields: dict[str, FieldDescriptor]) -> dict[str, FieldDescriptor]:
             return {
-                name: field.model_copy(update={"dims": tuple(dim for dim in field.dims if dim not in absent)})
+                name: field.model_copy(update={
+                    "dims": tuple(dim for dim in field.dims if dim not in absent), "inline_values": None,
+                }) if absent.intersection(field.dims) else field
                 for name, field in fields.items()
             }
 
@@ -104,12 +139,22 @@ class OperationDefinition(StrictModel):
     outputs: dict[str, DatasetOutputPort]
     numerical: JaxOperation | None = None
 
-def require_dataset_port(actual: DatasetPort, expected: DatasetPort, *, fields: bool = True) -> None:
+def operation_input_port(actual: DatasetPort, expected: DatasetPort) -> DatasetPort:
+    """The input visible to one invocation after any implicit replica mapping."""
+    if not actual.uses_replicate_axis or expected.uses_replicate_axis:
+        return actual
+    return actual._without_dimensions({REPLICATE_DIM})
+
+
+def require_dataset_port(actual: DatasetPort, expected: DatasetPort, *, fields: bool = True) -> DatasetPort:
     if not set(actual.schema_ids) <= set(expected.schema_ids):
         raise ValueError(f"Requires dataset schemas {expected.schema_ids}, got {actual.schema_ids}.")
+    actual = operation_input_port(actual, expected)
     if fields:
+        expected = expected.for_dimensions(actual.dimensions)
         require_dataset_fields(actual.variables, expected.variables)
         require_dataset_fields(actual.coordinates, expected.coordinates)
+    return actual
 
 
 def require_dataset_fields(

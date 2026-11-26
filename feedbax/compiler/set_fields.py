@@ -2,32 +2,44 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from itertools import product
 
+from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.contracts.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_text import ParsedField, resolve_expression
 from feedbax.contracts.expression_values import (
-    TIME, CallValue, DrawValue, Expression, LiteralValue, NameValue, ValueBase, ValueType,
+    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, Site,
+    ValueBase, ValueType, walk,
 )
 from feedbax.contracts.model_address import (
-    ComponentElement, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress, SignalSource,
+    AttachmentElement, AttachmentOwner, ComponentElement, ComponentPortAddress, ComponentPortEnd, FieldElement,
+    InputBoundaryEnd, ModelAddress, PortElement, SignalSource, WireElement,
 )
+from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.model_document import (
-    InterventionAttachment, InterventionWindow, LeafComponent, ModelDocument, ModelWire, SignalInput, SignalType,
+    CompositeComponent, DelayInitialTask, DelayInitialWire, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
+    SignalInput, SignalType,
 )
 from feedbax.contracts.project import Document, apply_differences
-from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, TrialSetField
-from feedbax.contracts.set_document import read_set
-from feedbax.contracts.task_document import Cell, Link, SetVariableChoices, Signal, TaskDocument, ValidationTrial, Variable
+from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField
+from feedbax.contracts.set_document import SetEntry, read_set
+from feedbax.contracts.task_document import (
+    Cell, Link, SetVariableChoices, Signal, TaskAdditions, TaskDocument, ValidationTrial, Variable, add_to_task,
+)
+from feedbax.contracts.window import Window
 
 
 class SetFieldProblem(ValueError):
-    def __init__(self, axis: str, set_name: str, entry: str | None, reason: str):
+    def __init__(self, axis: str, set_name: str, entry: str | None, reason: str, *, condition: bool = False):
         self.axis = axis
         self.set_name = set_name
         self.entry = entry
+        self.condition = condition
         super().__init__(reason)
 
 
@@ -45,7 +57,93 @@ def _component_port(component: str, port: str) -> ComponentPortEnd:
 
 _BOOL = ValueType(base=ValueBase.BOOLEAN)
 _INT = ValueType(base=ValueBase.INTEGER)
-_DURATION = ValueType(base=ValueBase.REAL, dimensions=TIME)
+
+
+def entry_variable_id(axis: str, entry: str, variable: str) -> str:
+    return _id(axis, entry, variable)
+
+
+def rename_entry_references(value, refs: Mapping[str, str]):
+    if isinstance(value, dict):
+        if value.get("kind") == "name" and isinstance(reference := value.get("reference"), str) and reference in refs:
+            return value | {"reference": refs[reference]}
+        if value.get("kind") == "task" and isinstance(variable := value.get("variable"), str) and variable in refs:
+            return value | {"variable": refs[variable]}
+        return {key: rename_entry_references(item, refs) for key, item in value.items()}
+    if isinstance(value, list):
+        return [rename_entry_references(item, refs) for item in value]
+    return value
+
+
+def trial_set_condition_site(variables: tuple[ScopedValue, ...]) -> Site:
+    return Site(expected=_BOOL, finest=Level.TRIAL, names=variables, structural=True)
+
+
+def resolve_trial_set_condition(
+    expression: Expression, sampling: SetTrialSampling, site: Site, functions: FunctionRegistry,
+) -> ParsedField[Expression] | tuple[Problem, ...]:
+    if isinstance(sampling, ListedSetTrials):
+        return (Problem(code=ProblemCode.STRUCTURE, reason="A trial condition needs Weighted or Co-occurring sampling."),)
+    parsed = resolve_expression(expression, site, functions)
+    if isinstance(parsed, tuple):
+        return parsed
+    names = {item.id for item in site.names}
+    problems = []
+    for path, node in walk(parsed.value):
+        if isinstance(node, NameValue) and node.reference not in names:
+            problems.append(Problem(
+                code=ProblemCode.UNKNOWN_NAME, reason=f"Task variable {node.reference!r} is not in scope for this condition.",
+                path=path, span=parsed.spans.get(path),
+            ))
+        elif isinstance(node, DrawValue) or (
+            isinstance(node, CallValue) and (function := functions.resolve(node.function)) and function.info.random
+        ):
+            problems.append(Problem(
+                code=ProblemCode.OUT_OF_SCOPE,
+                reason="A trial condition can read sampled Task variables and cannot make its own draw.",
+                path=path, span=parsed.spans.get(path),
+            ))
+    return tuple(problems) if problems else parsed
+
+
+def _entry_label(entry: str, variable: str) -> str:
+    return f"{entry} · {variable}"
+
+
+def _entry_scope(axis: str, entry: str, source: SetEntry, shared_labels: frozenset[str]) -> SetEntry:
+    refs = {variable.id: entry_variable_id(axis, entry, variable.id) for variable in source.task_variables}
+    renamed = rename_entry_references(source.model_dump(mode="json"), refs)
+    for variable in renamed.get("task_variables", ()):
+        variable["id"] = refs[variable["id"]]
+        label = _entry_label(entry, variable["name"])
+        variable["name"] = f"{axis} · {label}" if label in shared_labels else label
+    for link in renamed.get("task_links", ()):
+        link["variable"] = refs.get(link["variable"], link["variable"])
+    return SetEntry.model_validate(renamed)
+
+
+def _attachment_links(
+    model: ModelDocument, links: tuple[Link, ...], components: ComponentRegistry,
+) -> tuple[ModelDocument, tuple[Link, ...]]:
+    writes, remaining = [], []
+    for link in links:
+        try:
+            address = ModelAddress.from_text(link.model_field)
+        except ValueError:
+            remaining.append(link)
+            continue
+        at = address.element
+        if isinstance(at, FieldElement) and isinstance(at.parent, AttachmentElement):
+            if at.path[0] == "operands":
+                address = address.model_copy(update={"element": at.model_copy(update={"path": at.path[:2]})})
+                writes.append(SetField(op="set_field", address=address, value={"kind": "task", "variable": link.variable}))
+                continue
+            if at.path[0] == "window":
+                value = NameValue(reference=link.variable).model_dump(mode="json")
+                writes.append(SetField(op="set_field", address=address, value=value))
+                continue
+        remaining.append(link)
+    return resolve_effective_model(model, components, tuple(writes)), tuple(remaining)
 
 
 @dataclass(frozen=True)
@@ -62,18 +160,26 @@ class _Alternative:
 
 
 class _Union:
-    def __init__(self, model: ModelDocument, task: TaskDocument):
+    def __init__(
+        self, model: ModelDocument, task: TaskDocument, registry: ComponentRegistry, *,
+        scope: tuple[str, ...] = (), shared_entry_labels: frozenset[str] = frozenset(),
+    ):
         self.model = model
         self.task = task
+        self.registry = registry
+        self.scope = scope
+        self.shared_entry_labels = shared_entry_labels
         self.variables = list(task.variables)
         self.signals = list(task.signals)
+        self.links = list(task.links)
         self.inputs = list(model.ports.inputs)
         self.components = dict(model.interior.components)
         self.wires = dict(model.interior.wires)
+        self.port_attachments = model.interior.attachments
         self.alternatives: dict[str, list[_Alternative]] = defaultdict(list)
         self.conditions: list[tuple[dict[str, int], ...]] = []
+        self.condition_origins: dict[str, str] = {}
         self.curl_activation: dict[str, tuple[bool, list[Expression]]] = {}
-        self.window_offsets: dict[str, NameValue] = {}
 
     def variable(
         self, id: str, value_type: ValueType, value: Expression, *, choices: SetVariableChoices | None = None,
@@ -84,32 +190,37 @@ class _Union:
         return NameValue(reference=id)
 
     def gate(
-        self, alt: _Alternative, gate_id: str, window: InterventionWindow | None, window_key: str | None,
+        self, alt: _Alternative, gate_id: str, window: Window | None, address: ModelAddress | None,
     ) -> InputBoundaryEnd:
-        selector = alt.predicate
         first, last = self.task.epochs[0].id, self.task.epochs[-1].id
-        if window is not None:
-            if window.epoch not in {epoch.id for epoch in self.task.epochs}:
-                raise alt.problem(f"Intervention names missing epoch {window.epoch!r}.")
-            first = window.epoch
-            assert window_key is not None
-            period = self.model.step_seconds
-            if window_key not in self.window_offsets:
-                self.window_offsets[window_key] = self.variable(window_key, _DURATION, DrawValue(
-                    family="choice", args=tuple(LiteralValue(value=x * period, unit="s") for x in window.offsets),
-                ))
-            offset = self.window_offsets[window_key]
-            time = NameValue(reference="t")
-            # A half-step boundary avoids rounding a sample off its exact edge.
-            start = _call("sub", offset, LiteralValue(value=0.5 * period, unit="s"))
-            stop = _call("add", start, LiteralValue(value=window.duration * period, unit="s"))
-            selector = _call("and", selector, _call("and", _call("ge", time, start), _call("lt", time, stop)))
         self.signals.append(Signal(
-            id=gate_id, name=gate_id, type=_BOOL, absent=LiteralValue(value=False),
-            cells=(Cell(id=gate_id, first_epoch=first, last_epoch=last, value=selector),),
+            id=gate_id, name=gate_id, type=_BOOL, absent=LiteralValue(value=False), window=window,
+            intervention=address.to_text() if window is not None and address is not None else None,
+            cells=(Cell(id=gate_id, first_epoch=first, last_epoch=last, value=alt.predicate),),
         ))
         self.inputs.append(SignalInput(id=gate_id, name=gate_id, type=SignalType(base="bool", shape=())))
         return InputBoundaryEnd(owner="inputs", port=gate_id)
+
+    def operands(self, attachment: InterventionAttachment, context: str) -> InterventionAttachment:
+        operands = dict(attachment.operands)
+        for key, operand in operands.items():
+            if not isinstance(operand, DelayInitialTask):
+                continue
+            reference = operand.variable
+            variable = next((variable for variable in self.variables if variable.id == reference), None)
+            if variable is None:
+                raise ValueError(f"Intervention {attachment.id!r} links to missing Task variable {reference!r}.")
+            id = _id(*self.scope, context, attachment.id, key)
+            self.signals.append(Signal(
+                id=id, name=id, type=variable.type,
+                cells=(Cell(id=id, first_epoch=self.task.epochs[0].id, last_epoch=self.task.epochs[-1].id,
+                            value=NameValue(reference=reference)),),
+            ))
+            self.inputs.append(SignalInput(
+                id=id, name=id, type=SignalType(base=variable.type.base.value, shape=variable.type.shape),
+            ))
+            operands[key] = DelayInitialWire(kind="wire", source=InputBoundaryEnd(owner="inputs", port=id))
+        return attachment.model_copy(update={"operands": operands}) if operands != attachment.operands else attachment
 
     def added_components(self, alt: _Alternative, model: ModelDocument, added_wires: set[str]):
         nominal = self.model.interior
@@ -129,11 +240,21 @@ class _Union:
                 raise alt.problem(f"Added wire {id!r} conflicts with another entry.")
             self.wires[id] = wire
 
-    def entry(self, axis: str, placement: TrialSetField, entry: str, predicate: Expression, differences) -> None:
+    def entry(self, axis: str, placement: TrialSetField, entry: str, predicate: Expression, authored: SetEntry) -> None:
         set_name = placement.axis.set
         cooccurring = isinstance(placement.sampling, CooccurringSetTrials)
         try:
-            variant = ModelDocument.model_validate(apply_differences(self.model.model_dump(mode="json"), differences))
+            source = _entry_scope(axis, entry, authored, self.shared_entry_labels)
+            variant = ModelDocument.model_validate(
+                apply_differences(self.model.model_dump(mode="json"), source.differences),
+            )
+            variant, links = _attachment_links(variant, source.task_links, self.registry)
+            task = add_to_task(
+                self.task.model_copy(update={"variables": tuple(self.variables), "links": tuple(self.links)}),
+                (TaskAdditions(task_variables=source.task_variables, task_links=links),),
+            )
+            self.variables = list(task.variables)
+            self.links = list(task.links)
         except ValueError as error:
             raise SetFieldProblem(axis, set_name, entry, str(error)) from error
         before, after = self.model.interior, variant.interior
@@ -181,9 +302,43 @@ class _Union:
         selectors.append(predicate)
         return True
 
-    def placement(self, axis: str, placement: TrialSetField, read: Callable[[str], Document | None]):
+    def eligibility(self, axis: str, placement: TrialSetField, functions: FunctionRegistry) -> NameValue | None:
+        if placement.condition is None:
+            return None
+
+        def refused(reason: str) -> SetFieldProblem:
+            return SetFieldProblem(axis, placement.axis.set, None, reason, condition=True)
+
+        scope = tuple(
+            ScopedValue(id=var.id, name=var.name, type=var.type, level=Level.TRIAL)
+            for var in self.task.variables
+        )
+        parsed = resolve_trial_set_condition(placement.condition, placement.sampling, trial_set_condition_site(scope), functions)
+        if isinstance(parsed, tuple):
+            raise refused(parsed[0].reason)
         try:
-            entries = read_set(read, placement.axis.set).entries
+            id = _id("eligibility", axis, "condition")
+            eligible = self.variable(id, _BOOL, parsed.value)
+        except ValueError as error:
+            raise refused(str(error)) from error
+        self.condition_origins[id] = axis
+        return eligible
+
+    def placement(
+        self, axis: str, placement: TrialSetField, entries: Mapping[str, SetEntry], functions: FunctionRegistry,
+    ):
+        eligible = self.eligibility(axis, placement, functions)
+
+        def select(
+            id: str, kind: ValueType, draw: DrawValue, none: bool | int, entries: tuple[str | None, ...],
+        ) -> NameValue:
+            value: Expression = draw
+            if eligible is not None:
+                value = _call("where", eligible, draw, LiteralValue(value=none))
+                self.condition_origins[id] = axis
+            return self.variable(id, kind, value, choices=SetVariableChoices(set=placement.axis.set, entries=entries))
+
+        try:
             sample = placement.sampling
             by_id = tuple(entries)
             if isinstance(sample, ListedSetTrials):
@@ -202,16 +357,18 @@ class _Union:
                     parts = sample.weights.get(entry, SetEntryParts())
                     if not (parts.off or parts.on):
                         raise SetFieldProblem(axis, placement.axis.set, entry, "The switch has zero total parts.")
-                    gates.append(self.variable(_id(axis, entry), _BOOL, DrawValue(
+                    draw = DrawValue(
                         family="choice", args=(LiteralValue(value=False), LiteralValue(value=True)),
                         weights=(parts.off, parts.on),
-                    ), choices=SetVariableChoices(set=placement.axis.set, entries=(None, entry))))
+                    )
+                    gates.append(select(_id(axis, entry), _BOOL, draw, False, (None, entry)))
             else:
                 if not any(weights):
                     raise ValueError("The choice has zero total parts.")
-                selected = self.variable(axis, _INT, DrawValue(
+                draw = DrawValue(
                     family="choice", args=tuple(LiteralValue(value=value) for value in choices), weights=weights,
-                ), choices=SetVariableChoices(set=placement.axis.set, entries=(None, *by_id)))
+                )
+                selected = select(axis, _INT, draw, 0, (None, *by_id))
                 if isinstance(sample, ListedSetTrials):
                     self.conditions.append(tuple({selected.reference: value} for value in choices))
                 gates = [_call("eq", selected, LiteralValue(value=index)) for index in range(1, len(by_id) + 1)]
@@ -220,11 +377,11 @@ class _Union:
         except ValueError as error:
             raise SetFieldProblem(axis, placement.axis.set, None, str(error)) from error
         for entry, gate in zip(by_id, gates, strict=True):
-            self.entry(axis, placement, entry, gate, entries[entry].differences)
+            self.entry(axis, placement, entry, gate, entries[entry])
 
     def route(
         self, id: str, source: SignalSource, chain, active_source: SignalSource, active_chain,
-        alt: _Alternative, window: InterventionWindow | None = None, window_key: str | None = None,
+        alt: _Alternative, window: Window | None = None, address: ModelAddress | None = None,
     ) -> ComponentPortEnd:
         switch_id = _id(id, alt.axis, alt.entry)
         gate_id = _id(switch_id, "gate")
@@ -236,25 +393,94 @@ class _Union:
             source=active_source, target=_component_port(switch_id, "true_input"), attachments=active_chain,
         )
         self.wires[_id(switch_id, "control")] = ModelWire(
-            source=self.gate(alt, gate_id, window, window_key), target=_component_port(switch_id, "condition"),
+            source=self.gate(alt, gate_id, window, address), target=_component_port(switch_id, "condition"),
         )
         return _component_port(switch_id, "output")
 
-    def attach(self, id: str, source, chain, attachment: InterventionAttachment, alt: _Alternative):
-        context = _id(id, alt.axis, alt.entry, attachment.id)
+    def attach(
+        self, id: str, source, chain, attachment: InterventionAttachment, alt: _Alternative,
+        owner: AttachmentOwner | None = None,
+    ):
+        context = _id(*self.scope, id, alt.axis, alt.entry, attachment.id)
         if chain:
             stem = _id(context, "stem")
             self.components[stem] = LeafComponent(kind="leaf", name=stem, type="feedbax.Input")
             self.wires[stem] = ModelWire(source=source, target=_component_port(stem, "input"), attachments=chain)
             source = _component_port(stem, "output")
-        window = attachment.window
-        window_key = _id(id, attachment.id, window.model_dump_json()) if window is not None else None
-        segment = attachment.model_copy(update={"window": None})
-        return self.route(context, source, (), source, (segment,), alt, window, window_key)
+        segment = self.operands(attachment, context).model_copy(update={"window": None})
+        address = ModelAddress(composites=self.scope, element=AttachmentElement(
+            kind="attachment", parent=owner or WireElement(kind="wire", id=id), id=attachment.id,
+        ))
+        return self.route(context, source, (), source, (segment,), alt, attachment.window, address)
+
+    def source_chain(self, end: SignalSource, attachments):
+        if not _needs_task(attachments):
+            return attachments
+        owner = _id(end.owner, getattr(end, "component", ""), end.port)
+        end_address = end if isinstance(end, InputBoundaryEnd) else ComponentPortAddress(
+            owner="component", component=end.component, port=end.port, direction="output",
+        )
+        port = PortElement(kind="port", end=end_address)
+        affected = tuple(id for id, wire in self.wires.items() if wire.source == end)
+        source, chain = end, ()
+        for attachment in attachments:
+            if isinstance(attachment, InterventionAttachment) and attachment.window is not None:
+                representative = ModelWire(source=end, target=_component_port(owner, "input"))
+                alt = _Alternative("", "", attachment.id, LiteralValue(value=True), False, representative)
+                source = self.attach(owner, source, chain, attachment, alt, port)
+                chain = ()
+            else:
+                if isinstance(attachment, InterventionAttachment):
+                    attachment = self.operands(attachment, owner)
+                chain = (*chain, attachment)
+        if source == end:
+            return chain
+        if chain:
+            out = _id(*self.scope, owner, "source")
+            self.components[out] = LeafComponent(kind="leaf", name=out, type="feedbax.Input")
+            self.wires[out] = ModelWire(source=source, target=_component_port(out, "input"), attachments=chain)
+            source = _component_port(out, "output")
+        for key in affected:
+            self.wires[key] = self.wires[key].model_copy(update={"source": source})
+        return ()
+
+    def source_ports(self):
+        for name, child in tuple(self.components.items()):
+            if child.attachments.sources:
+                chains = {
+                    port: self.source_chain(_component_port(name, port), chain)
+                    for port, chain in child.attachments.sources.items()
+                }
+                self.components[name] = child.model_copy(update={
+                    "attachments": child.attachments.model_copy(update={"sources": chains}),
+                })
+        if self.port_attachments.sources:
+            chains = {
+                port: self.source_chain(InputBoundaryEnd(owner="inputs", port=port), chain)
+                for port, chain in self.port_attachments.sources.items()
+            }
+            self.port_attachments = self.port_attachments.model_copy(update={"sources": chains})
+
+    def child_graphs(self):
+        for name, child in tuple(self.components.items()):
+            if not isinstance(child, CompositeComponent) or not isinstance(child.interior, GraphInterior):
+                continue
+            if not _has_interventions(child):
+                continue
+            branch = self.model.model_copy(update={"interior": child.interior, "ports": child.ports})
+            task = self.task.model_copy(update={"variables": tuple(self.variables), "signals": tuple(self.signals)})
+            model, task = _Union(branch, task, self.registry, scope=(*self.scope, name)).finish()
+            self.signals = list(task.signals)
+            self.components[name] = child.model_copy(update={"interior": model.interior, "ports": model.ports})
+            for port in model.ports.inputs[len(child.ports.inputs):]:
+                self.inputs.append(port)
+                self.wires[_id(*self.scope, name, port.id)] = ModelWire(
+                    source=InputBoundaryEnd(owner="inputs", port=port.id), target=_component_port(name, port.id),
+                )
 
     def finish(self) -> tuple[ModelDocument, TaskDocument]:
         for id in sorted(self.alternatives.keys() | {
-            id for id, wire in self.model.interior.wires.items() if _has_window(wire)
+            id for id, wire in self.model.interior.wires.items() if _needs_task(wire.attachments)
         }):
             alternatives = self.alternatives[id]
             base = self.model.interior.wires[id]
@@ -277,6 +503,8 @@ class _Union:
                             source = self.attach(id, source, chain, attachment, alt)
                             chain = ()
                         else:
+                            if isinstance(attachment, InterventionAttachment):
+                                attachment = self.operands(attachment, id)
                             chain = (*chain, attachment)
             else:
                 if len(alternatives) > 1 and (
@@ -289,9 +517,13 @@ class _Union:
                     source = self.route(id, source, chain, alt.wire.source, alt.wire.attachments, alt)
                     chain = ()
             self.wires[id] = base.model_copy(update={"source": source, "attachments": chain})
+        self.source_ports()
+        self.child_graphs()
         model = self.model.model_copy(update={
             "ports": self.model.ports.model_copy(update={"inputs": tuple(self.inputs)}),
-            "interior": self.model.interior.model_copy(update={"components": self.components, "wires": self.wires}),
+            "interior": self.model.interior.model_copy(update={
+                "components": self.components, "wires": self.wires, "attachments": self.port_attachments,
+            }),
         })
         cohort = self.task.validation_trials
         if self.conditions:
@@ -299,7 +531,7 @@ class _Union:
                 ValidationTrial(variables=row.variables | _combine_conditions(selected), epoch_steps=row.epoch_steps)
                 for row in cohort for selected in product(*self.conditions)
             )
-        links = list(self.task.links)
+        links = self.links
         for node, (base, selectors) in self.curl_activation.items():
             enabled = selectors[0]
             for selector in selectors[1:]:
@@ -328,8 +560,48 @@ def _has_window(wire: ModelWire) -> bool:
     return any(isinstance(item, InterventionAttachment) and item.window is not None for item in wire.attachments)
 
 
-def has_trial_windows(model: ModelDocument) -> bool:
-    return any(_has_window(wire) for wire in model.interior.wires.values())
+def _needs_task(attachments) -> bool:
+    return any(
+        isinstance(attachment, InterventionAttachment)
+        and (attachment.window is not None or any(isinstance(operand, DelayInitialTask) for operand in attachment.operands.values()))
+        for attachment in attachments
+    )
+
+
+def model_interventions(
+    model: ModelDocument | CompositeComponent, scope: tuple[str, ...] = (),
+):
+    """The attachment addresses and operations authored on wires and source ports."""
+    for name, wire in model.interior.wires.items():
+        for item in wire.attachments:
+            if isinstance(item, InterventionAttachment):
+                yield ModelAddress(composites=scope, element=AttachmentElement(
+                    kind="attachment", id=item.id, parent=WireElement(kind="wire", id=name),
+                )), item
+    for port, chain in model.interior.attachments.sources.items():
+        for item in chain:
+            if isinstance(item, InterventionAttachment):
+                yield ModelAddress(composites=scope, element=AttachmentElement(
+                    kind="attachment", id=item.id,
+                    parent=PortElement(kind="port", end=InputBoundaryEnd(owner="inputs", port=port)),
+                )), item
+    for name, component in model.interior.components.items():
+        for port, chain in component.attachments.sources.items():
+            for item in chain:
+                if isinstance(item, InterventionAttachment):
+                    yield ModelAddress(composites=scope, element=AttachmentElement(
+                        kind="attachment", id=item.id, parent=PortElement(
+                            kind="port", end=ComponentPortAddress(
+                                owner="component", component=name, direction="output", port=port,
+                            ),
+                        ),
+                    )), item
+        if isinstance(component, CompositeComponent):
+            yield from model_interventions(component, (*scope, name))
+
+
+def _has_interventions(model: ModelDocument | CompositeComponent) -> bool:
+    return any(_needs_task((item,)) for _, item in model_interventions(model))
 
 
 def _insertions(base: ModelWire, variant: ModelWire) -> list[tuple[int, InterventionAttachment]] | None:
@@ -349,11 +621,36 @@ def _insertions(base: ModelWire, variant: ModelWire) -> list[tuple[int, Interven
 
 def lower_trial_sets(
     model: ModelDocument, task: TaskDocument, fields: Mapping[str, TrialSetField],
-    read: Callable[[str], Document | None],
-) -> tuple[ModelDocument, TaskDocument]:
-    union = _Union(model, task)
+    read: Callable[[str], Document | None], components: ComponentRegistry, *, functions: FunctionRegistry,
+) -> tuple[ModelDocument, TaskDocument, dict[str, str]]:
+    model, links = _attachment_links(model, task.links, components)
+    task = task.model_copy(update={"links": links}) if links != task.links else task
+    placements = []
+    names = Counter(variable.name for variable in task.variables)
     for axis, placement in sorted(fields.items()):
         if placement.axis.where is not None:
             raise SetFieldProblem(axis, placement.axis.set, None, "Trial Set placements apply to all runs of the step.")
-        union.placement(axis, placement, read)
-    return union.finish()
+        try:
+            entries = read_set(read, placement.axis.set).entries
+        except ValueError as error:
+            raise SetFieldProblem(axis, placement.axis.set, None, str(error)) from error
+        placements.append((axis, placement, entries))
+        names.update(_entry_label(entry, variable.name) for entry, source in entries.items()
+                     for variable in source.task_variables)
+
+    union = _Union(model, task, components, shared_entry_labels=frozenset(name for name, count in names.items() if count > 1))
+    for axis, placement, entries in placements:
+        union.placement(axis, placement, entries, functions)
+    compiled_model, compiled_task = union.finish()
+    return compiled_model, compiled_task, union.condition_origins
+
+
+
+def lower_trial_interventions(
+    model: ModelDocument, task: TaskDocument, components: ComponentRegistry,
+) -> tuple[ModelDocument, TaskDocument]:
+    base, links = _attachment_links(model, task.links, components)
+    if not _has_interventions(base):
+        return model, task
+    paired = task.model_copy(update={"links": links}) if links != task.links else task
+    return _Union(base, paired, components).finish()

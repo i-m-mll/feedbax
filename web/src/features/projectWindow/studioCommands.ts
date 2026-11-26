@@ -75,14 +75,14 @@ const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
   'check' | 'accept' | 'newStep' | 'newSweep' | 'duplicateStep' | 'duplicateRun' | 'export' | 'removeValue' | 'addEntry' | 'split' | 'merge' | 'saveSet' | 'inlineSet' | 'toField' | 'toSweep' | 'changeKey' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
   'pivot' | 'pin' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
-  'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
+  'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addHold' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
   'fitView' | 'zoomIn' | 'zoomOut' | 'rename' | 'projects';
 
 const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'check', 'accept', 'newStep', 'newSweep', 'pivot',
   'addComponent', 'connectPorts', 'exposeOutput', 'addText', 'addFigure', 'moveEarlier', 'moveLater', 'remove',
-  'flip', 'enter', 'leave', 'collapseAll', 'lock', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
+  'flip', 'enter', 'leave', 'collapseAll', 'lock', 'addDelay', 'addHold', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
   'renameStep', 'renameElement', 'changeKey', 'duplicateStep', 'duplicateRun', 'split', 'merge', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
   'modelCopy', 'modelCut', 'modelPaste',
 ]);
@@ -131,6 +131,8 @@ export interface StudioCommand {
   readonly reason?: string;
   readonly selectionScoped: boolean;
   readonly shortcut?: Shortcut;
+  /** The object it acts on, such as a step's key, when it acts on one. */
+  readonly instance?: string;
   /** Runs the command, or holds it until the workspace settles and runs it then if it still applies. */
   invoke(): void;
 }
@@ -159,7 +161,7 @@ function studioCommand<Id extends StudioCommandId>(
   const label = studioAccessibleName(name, subject);
   const command: StudioCommand & { readonly id: Id } = {
     id, name, enabled, reason, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
-    title: studioName(name), label, glyph,
+    title: studioName(name), label, glyph, instance: instance || undefined,
     invoke: () => invokeGesture(command),
   };
   const key = bound ? JSON.stringify([id, name, instance || label]) : '';
@@ -200,6 +202,7 @@ export function commandAttributes(command: StudioCommand, placement?: 'bottom' |
   const label = command.reason === undefined ? studioName(command.name) : studioReasonedName(command.name, command.reason);
   return {
     'data-command-id': command.id,
+    'data-command-instance': command.instance,
     'aria-label': command.label,
     'aria-keyshortcuts': command.shortcut && ariaShortcut(command.shortcut),
     'aria-description': command.reason,

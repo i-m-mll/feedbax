@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from feedbax.component_registry import ComponentRegistry
@@ -11,10 +12,13 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import AttachmentElement, FieldElement, ModelAddress, WireElement
 from feedbax.contracts.model_attachment import (
     AddModelAttachment, AddModelComponent, ChangeModelAttachment, ModelAttachmentDifference, ModelDifference,
-    ModelWireDifference, SetField, is_generated_attachment_node,
+    ModelWireDifference, SetField, is_generated_attachment_node, is_trial_binding,
 )
 from feedbax.contracts.model_document import ModelDocument, ModelWire
 from feedbax.contracts.model_edit import ModelEditState
+from feedbax.contracts.project import Document
+from feedbax.contracts.project_sweep import TrialSetField
+from feedbax.contracts.task_document import TaskDocument
 from feedbax.compiler.model_edit import ModelEditDraft
 from feedbax.compiler.model_ports import ModelRegistryPorts
 
@@ -159,8 +163,8 @@ def resolve_effective_model(
                     )
                 continue
             if isinstance(difference, SetField):
-                if not isinstance(element, FieldElement) or any(not isinstance(part, str) for part in element.path):
-                    raise ValueError("A Model difference must name a field using named parts")
+                if not isinstance(element, FieldElement):
+                    raise ValueError("A Model difference must name a field")
                 attachment = None
                 if isinstance(element.parent, AttachmentElement):
                     attachment = chain_for(element.parent, address).items.get(element.parent.id)
@@ -191,12 +195,17 @@ def resolve_effective_model(
 
 
 def _graph_edits(before: GraphSpec, after: GraphSpec, path=("graph",)):
-    projected = {"nodes", "wires", "output_bindings", "subgraphs"}
+    def public(graph: GraphSpec):
+        return tuple((name, graph.input_bindings.get(name)) for name in graph.input_ports if not is_trial_binding(name))
+
+    projected = {"nodes", "wires", "output_bindings", "input_bindings", "input_ports", "subgraphs"}
     if any(
         getattr(before, field) != getattr(after, field) for field in type(before).model_fields.keys() - projected
-    ):
+    ) or public(before) != public(after):
         raise ValueError("This Model field changes the trained graph interface or clock")
-    for member in ("nodes", "wires", "output_bindings"):
+    if before.input_ports != after.input_ports:
+        yield OverridePatch(path=".".join((*path, "input_ports")), op="replace", value=after.input_ports)
+    for member in ("nodes", "wires", "output_bindings", "input_bindings"):
         old = getattr(before, member)
         new = getattr(after, member)
         if member == "wires":
@@ -207,6 +216,13 @@ def _graph_edits(before: GraphSpec, after: GraphSpec, path=("graph",)):
             if previous == current:
                 continue
             target = ".".join((*path, member, name))
+            if (
+                member == "nodes" and previous is not None and current is not None
+                and previous.type == "feedbax.Subgraph"
+                and previous.model_copy(update={"input_ports": current.input_ports}) == current
+            ):
+                yield OverridePatch(path=f"{target}.input_ports", op="replace", value=current.input_ports)
+                continue
             if (
                 member == "nodes" and previous is not None and current is not None
                 and not is_generated_attachment_node(name, previous.type)
@@ -237,15 +253,28 @@ def _graph_edits(before: GraphSpec, after: GraphSpec, path=("graph",)):
         yield from _graph_edits(child, new_child, (*path, "subgraphs", name))
 
 
+@dataclass(frozen=True)
+class LoweredEvaluateAttachments:
+    before: LoweredModelDocument
+    after: LoweredModelDocument
+    edits: tuple[OverridePatch, ...]
+    model: ModelDocument
+    task: TaskDocument | None
+    condition_origins: dict[str, str]
+
+
 def lower_evaluate_attachments(
     trained: ModelDocument, evaluated: ModelDocument, binding: StudioTaskBindingSpec | None,
     components: ComponentRegistry, differences: tuple[ModelDifference, ...], *, functions=None,
-) -> tuple[LoweredModelDocument, LoweredModelDocument, tuple[OverridePatch, ...]]:
+    trained_task: TaskDocument | None = None, evaluated_task: TaskDocument | None = None,
+    sets: tuple[Mapping[str, TrialSetField], Callable[[str], Document | None]] | None = None,
+) -> LoweredEvaluateAttachments:
     """Derive the scoped wire/port variation that turns ``trained`` into ``evaluated`` with ``differences``.
 
     Raises ValueError when the change alters the trained graph's interface and no difference names it.
     """
-    before = lower_model_document(trained, components, binding)
+    from feedbax.compiler.set_fields import lower_trial_interventions, lower_trial_sets
+
     resolved = resolve_effective_model(evaluated, components, differences, functions=functions)
     trained_names = {port.id: port.name for port in trained.ports.inputs}
     inputs = tuple(
@@ -254,6 +283,18 @@ def lower_evaluate_attachments(
     )
     # A checkpoint keeps the runtime names it trained with. The authored IDs still identify these inputs.
     resolved = resolved.model_copy(update={"ports": resolved.ports.model_copy(update={"inputs": inputs})})
+    if trained_task is not None:
+        trained, _ = lower_trial_interventions(trained, trained_task, components)
+    condition_origins = {}
+    if sets is not None:
+        fields, read_document = sets
+        assert evaluated_task is not None and functions is not None
+        resolved, evaluated_task, condition_origins = lower_trial_sets(
+            resolved, evaluated_task, fields, read_document, components, functions=functions,
+        )
+    elif evaluated_task is not None:
+        resolved, evaluated_task = lower_trial_interventions(resolved, evaluated_task, components)
+    before = lower_model_document(trained, components, binding)
     after = lower_model_document(resolved, components, binding)
     try:
         derived = tuple(sorted(_graph_edits(before.graph, after.graph), key=lambda edit: edit.path))
@@ -261,4 +302,4 @@ def lower_evaluate_attachments(
         if not differences:
             raise
         raise ModelCompilationProblem(differences[-1].address, str(error)) from error
-    return before, after, derived
+    return LoweredEvaluateAttachments(before, after, derived, resolved, evaluated_task, condition_origins)

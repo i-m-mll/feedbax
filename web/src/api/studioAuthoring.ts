@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { asApiRequestError, requestJson, sentBody } from '@/api/request';
+import { asApiRequestError, isHttpConflict, requestJson, sentBody } from '@/api/request';
 import type { CatalogEntry } from '@/components/ui/CatalogPicker';
 import {
   parseContract,
+  type ExpressionPartSite,
   type StudioAuthoringCatalog,
   type StudioCheckpointRuleRequest,
   type StudioRemovedRunsRequest,
@@ -12,10 +13,11 @@ import {
   type StudioSubsetToRowsRequest,
   type StudioTrialAuthoring,
   type StudioTrialAuthoringRequest,
+  type StudioTrialExpressionMenuRequest,
   type StudioTrainAuthoring,
   type StudioTrainAuthoringRequest,
   type StudioTrainStartRequest,
-  type TaskTrialSampleRequest,
+  type StudioRunTaskTrialSampleRequest,
   type TaskTrialSampleResponse,
   type TrainFieldRequest,
   type TrainFieldResponse,
@@ -160,6 +162,28 @@ export async function readStudioTrialAuthoring(
   }
 }
 
+/** The functions and names that fit at one part of an expression of a trial authoring view. */
+export async function readTrialExpressionMenu(
+  projectId: string, body: StudioTrialExpressionMenuRequest, signal: AbortSignal,
+): Promise<ExpressionPartSite> {
+  const path = '/api/projects/' + encodeURIComponent(projectId) + '/authoring/trials/expression-menu';
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: sentBody('StudioTrialExpressionMenuRequest', body, path), cache: 'no-store', signal,
+    });
+    const site = parseContract('ExpressionPartSite', response);
+    if (JSON.stringify(site.path) !== JSON.stringify(body.part)) throw new Error('The expression menu is not of the requested part');
+    return site;
+  } catch (error) {
+    throw asApiRequestError(error, path);
+  }
+}
+
+/** The trial authoring view a menu was asked of is no longer held by the service. */
+export const isExpiredExpressionContext = (error: unknown) => isHttpConflict(error) &&
+  typeof error.detail === 'object' && error.detail !== null && 'code' in error.detail &&
+  error.detail.code === 'trial_expression_context_unavailable';
+
 export async function readAuthoringCatalog(signal: AbortSignal): Promise<StudioAuthoringCatalog> {
   const path = '/api/projects/authoring/catalog';
   try {
@@ -177,12 +201,14 @@ export function catalogEntries(catalog: StudioAuthoringCatalog | undefined, fami
 }
 
 /** The registries of declarations, read once per session. */
+export const authoringCatalogQuery = {
+  queryKey: ['authoring-catalog'],
+  queryFn: ({ signal }: { signal: AbortSignal }) => readAuthoringCatalog(signal),
+  staleTime: Infinity,
+} as const;
+
 export function useAuthoringCatalog() {
-  return useQuery({
-    queryKey: ['authoring-catalog'],
-    queryFn: ({ signal }) => readAuthoringCatalog(signal),
-    staleTime: Infinity,
-  });
+  return useQuery(authoringCatalogQuery);
 }
 
 /** What a run rule being written chooses among the runs of the step it reads, or why it is refused. */
@@ -198,12 +224,12 @@ export async function checkRunRule(projectId: string, body: StudioRunRuleRequest
   }
 }
 
-/** Trials drawn from a task without a model, through the function that draws training trials. */
-export async function sampleTaskTrials(body: TaskTrialSampleRequest, signal: AbortSignal): Promise<TaskTrialSampleResponse> {
+/** Trials drawn from a saved run's documents, through the function that draws training trials. */
+export async function sampleTaskTrials(body: StudioRunTaskTrialSampleRequest, signal: AbortSignal): Promise<TaskTrialSampleResponse> {
   const path = '/api/execution/task-trials/sample';
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: sentBody('TaskTrialSampleRequest', body, path), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('StudioRunTaskTrialSampleRequest', body, path), cache: 'no-store', signal,
     });
     return parseContract('TaskTrialSampleResponse', response);
   } catch (error) {

@@ -151,7 +151,7 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     assert figure.spec.document == FigureDocument.model_validate(project.documents["velocity-figure"].payload)
     rollout = decode_request(plan.requests[evaluate.request_id], plan.documents.__getitem__)
     condition = RolloutParameters.model_validate(rollout.spec.params).condition_id()
-    assert figure.spec.names["condition"] == {condition: "default"}
+    assert figure.spec.names["condition"] == {condition: "Baseline"}
     source = plan.sources[_KEY]["/payload/operations/summarize/params/bounds_scale"]
     assert (source.kind, source.name, source.path) == (
         "document",
@@ -196,6 +196,7 @@ def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp
     figure = _decode(plan, "profile")
     assert figure.spec.names["condition"] == {condition: "plant.mass=2"}
     assert figure.inputs["speed"][0].reference == ProductRef(request_id=_decode(plan, "speed").id, role="speed")
+    project.documents["velocity-analysis"].label = "Movement analysis"
     root = tmp_path / "reach"
     for name, content in dump_text_project(project, ProjectConfiguration(project="reach", store="results")).items():
         path = root / name
@@ -203,11 +204,76 @@ def test_speed_template_plans_in_studio_and_labels_evaluate_conditions(host, tmp
         path.write_bytes(content)
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
-        revision = client.get("/api/projects/reach").json()["revision"]
-        response = client.get("/api/projects/reach/train-runs", params={"revision": revision, "window_map": True})
+        snapshot = client.get("/api/projects/reach").json()
+        assert snapshot["names"]["documents"]["velocity-analysis"] == "Movement analysis"
+        assert snapshot["names"]["documents"]["velocity-figure"] == "Velocity figure"
+        assert snapshot["names"]["steps"]["train"] == "Train"
+        assert snapshot["names"]["elements"]["analyze"] == {"speed": "Speed", "profile": "Profile"}
+        assert snapshot["variant_names"]["default"] == snapshot["names"]
+        response = client.get("/api/projects/reach/train-runs", params={"revision": snapshot["revision"], "window_map": True})
         assert response.status_code == 200, response.text
-        elements = {item["name"]: item for item in response.json()["window_map"]["analysis_elements"]}
+        saved = response.json()
+        window = saved["window_map"]
+        assert "document_names" not in window
+        assert saved["rows"][0]["name"] == "Train"
+        assert next(row for row in window["rows"] if row["key"]["step"] == "train")["name"] == "Train"
+        elements = {item["name"]: item for item in window["analysis_elements"]}
         assert [request["request_id"] for request in elements["profile"]["requests"]] == [figure.id]
+
+
+def test_one_unlabelled_run_has_its_steps_display_name():
+    project = _project()
+    project.steps["train"].label = "Controller training"
+    project.steps["train"].sweep = Sweep.model_validate({"rows": {"solo": {}}})
+    plan = compile_project(project)
+    row = plan.row(RunKey("default", "train", "solo"))
+    assert row.label is None
+    assert row.name == "Controller training"
+    assert next(run for run in plan.runs if run.key == row.key) is row
+
+
+def test_snapshot_names_follow_authored_edits_and_variant_overrides(tmp_path):
+    from feedbax.contracts.studio_project import StudioProjectPatch
+    from feedbax.web.services.project_folder import ProjectFolderService
+
+    project = _project()
+    project.steps["analyze"].label = "Movement"
+    project.documents["velocity-analysis"].label = "Analysis"
+    project.documents["velocity-analysis"].payload["operations"]["align"]["label"] = "Align velocity"
+    project.documents["broken-document"] = BasedDocument(
+        schema="feedbax.figure_document.v1", base={"document": "absent-figure"},
+    )
+    project.sweep = Sweep.model_validate({"rows": {
+        "baseline": {},
+        "compare": {"patches": {
+            "steps.analyze.label": {"value": "Compare"},
+            "documents.velocity-analysis.label": {"value": "Comparison analysis"},
+            "documents.velocity-analysis.payload.operations.align.label": {"value": "Align comparison"},
+        }},
+    }})
+    for name, content in dump_text_project(project, ProjectConfiguration(project="reach", store="results")).items():
+        path = tmp_path / "reach" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    folders = ProjectFolderService(tmp_path)
+    before = folders.read("reach")
+    assert before.names.steps["analyze"] == "Movement"
+    assert before.names.elements["analyze"]["align"] == "Align velocity"
+    assert before.variant_names["compare"].steps["analyze"] == "Compare"
+    assert before.variant_names["compare"].documents["velocity-analysis"] == "Comparison analysis"
+    assert before.variant_names["compare"].elements["analyze"]["align"] == "Align comparison"
+    problem, = before.problems
+    assert problem.subject_name == "Absent figure"
+
+    after = folders.patch("reach", StudioProjectPatch.model_validate({
+        "revision": before.revision,
+        "address": {"kind": "document", "id": "velocity-analysis"},
+        "patches": [{"op": "replace", "path": "/label", "value": "New name"}],
+    }))
+    assert after.names.documents["velocity-analysis"] == "New name"
+    assert after.variant_names["baseline"].documents["velocity-analysis"] == "New name"
+    assert after.variant_names["compare"].documents["velocity-analysis"] == "Comparison analysis"
 
 
 def test_analyze_authoring_returns_the_sources_and_changes_of_a_narrowed_edit(host, tmp_path, monkeypatch):
@@ -696,7 +762,7 @@ def test_diagonal_axis_clauses_widen_and_keep_their_other_matches():
     assert problem.path == "inputs.states.where.clauses.1.mass.0"
     assert problem.selection_value.model_dump() == {
         "clause_index": 1, "axis": "mass", "missing": {"id": "b", "label": "Heavy"},
-        "remaining": [{"id": "a", "label": "1"}],
+        "remaining": [{"id": "a", "label": "Mass 1"}],
     }
     assert len(producers(broken)) == 3
     assert {(row["mass"].value_id, row["seed"].value_id) for row in producers(broken)} == {("a", "1")}

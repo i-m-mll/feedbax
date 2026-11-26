@@ -110,6 +110,8 @@ class Function:
     density: Callable[..., Density | None] | None = None
     nominal: Callable[..., Any] | None = None
     """A randomized function's representative value for a nominal trial."""
+    binding_value_argument: int | None = None
+    """A typed argument that the binder preserves without reading its authored syntax."""
 
     @property
     def positional_names(self) -> tuple[str, ...]:

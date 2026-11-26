@@ -12,6 +12,7 @@ from pydantic import JsonValue, ValidationError
 
 from feedbax.contracts.analysis_document import (
     AnalysisDocument,
+    AnalyzeDatasetInput,
     AnalyzeInput,
     DatasetSource,
     FigureElement,
@@ -31,10 +32,11 @@ from feedbax.contracts.figure_document import (
     layer_encodings,
     validate_figure_bindings,
 )
-from feedbax.contracts.dataset import FieldDescriptor
-from feedbax.contracts.member_stack import labelled_members, stack_layout
+from feedbax.contracts.dataset import REPLICATE_DIM, FieldDescriptor, replica_coordinate
+from feedbax.contracts.member_stack import MEMBER, labelled_members, stack_layout
 from feedbax.contracts.operation import (
-    DatasetInputPort, DatasetOutputPort, DatasetPort, WholeDimensions, require_dataset_fields, require_dataset_port,
+    DatasetInputPort, DatasetOutputPort, DatasetPort, ModelPort, OperationDefinition, WholeDimensions,
+    operation_input_port, require_dataset_fields, require_dataset_port,
 )
 from feedbax.contracts.project import Document, Payload, json_pointer_parts
 from feedbax.planner.project_plan import (
@@ -48,13 +50,14 @@ from feedbax.planner.project_plan import (
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
 from feedbax.contracts.request_identity import EncodedRequest, encode_request
-from feedbax.contracts.project_sweep import SweepInputMember
+from feedbax.contracts.project_sweep import SweepInputMember, sweep_value_name
 from feedbax.contracts.request_refs import InputMember, MemberLabel, ProductRef
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
     EvaluationRequestSpec,
     RenderRequestSpec,
     RequestSpec,
+    SynthesisRequestSpec,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_variation
 from feedbax.contracts.rollout_dataset import common_rollout_port
@@ -114,8 +117,10 @@ def _printed_labels(figure: FigureDocument) -> set[str]:
     used = set()
     for layer in figure.layers:
         used.update(layer.group, layer.select)
-        for _, encoding in layer_encodings(layer):
+        for channel, encoding in layer_encodings(layer):
             used.update(getattr(encoding, "select", {}))
+            if channel == "color":
+                used.add(encoding if isinstance(encoding, str) else encoding.variable)
     return used
 
 
@@ -193,10 +198,11 @@ def _member_ids(requests: list[Mapping[str, MemberLabel]], names: LabelNames) ->
 
 
 @dataclass(frozen=True)
-class EvaluateSource:
+class DatasetStepSource:
     spec: RequestSpec
     name: LabelName
-    port: DatasetPort | None
+    ports: Mapping[str, DatasetPort]
+    step_label: str
 
 
 class _Lowerer:
@@ -207,7 +213,7 @@ class _Lowerer:
         document_pointers: Mapping[str, str],
         documents: Mapping[str, Document],
         step_inputs: Mapping[str, tuple[PlannedInput, ...]],
-        evaluations: Mapping[RunKey, EvaluateSource],
+        datasets: Mapping[RunKey, DatasetStepSource],
         upstream: Mapping[ElementKey, PlannedElement],
         operations: OperationRegistry,
         figure_templates: FigureTemplateRegistry | None,
@@ -217,7 +223,7 @@ class _Lowerer:
         self.document_pointers = document_pointers
         self.documents = documents
         self.step_inputs = step_inputs
-        self.evaluations = evaluations
+        self.datasets = datasets
         self.upstream = upstream
         self.operations = operations
         self.declarations: Mapping[str, AnalyzeInput] = {}
@@ -231,6 +237,27 @@ class _Lowerer:
     @property
     def planned(self) -> dict[ElementKey, PlannedElement]:
         return {element.key: element for requests in self.elements.values() for element in requests}
+
+    def dataset_ports(self) -> tuple[dict[str, DatasetPort], dict[str, dict[str, DatasetPort]]]:
+        """Resolve the sources an author can bind to, with the same stack fields as a figure wire."""
+        inputs = {}
+        for name, declaration in self.declarations.items():
+            if isinstance(declaration, AnalyzeDatasetInput):
+                try:
+                    _, inputs[name], _ = self._input(StepInput(input=name), f"inputs.{name}")
+                except _ElementIssue:
+                    # The step input's own diagnostics explain a binding which does not resolve.
+                    continue
+        outputs: dict[str, dict[str, DatasetPort]] = {}
+        for name, requests in self.elements.items():
+            for product in requests[0].datasets:
+                try:
+                    _, port, _ = self._input(OperationDataset(element=name, product=product), f"{name}.{product}")
+                except _ElementIssue:
+                    # An operation may run even when its datasets cannot be read as one stack.
+                    continue
+                outputs.setdefault(name, {})[product] = port
+        return inputs, outputs
 
     def problem(
         self,
@@ -309,8 +336,13 @@ class _Lowerer:
         for binding in inputs:
             reference = binding.member.reference
             assert isinstance(reference, ProductRef) and binding.producer is not None
-            producer = self.evaluations[binding.producer]
+            producer = self.datasets[binding.producer]
             evaluation = producer.spec
+            if isinstance(evaluation, SynthesisRequestSpec):
+                if (port := producer.ports.get(reference.role)) is None:
+                    raise _ElementIssue(path, f"{producer.step_label} declares no Dataset product {reference.role!r}.")
+                ports.append(port)
+                continue
             if (
                 not isinstance(evaluation, EvaluationRequestSpec)
                 or evaluation.evaluation_type != ROLLOUT_TYPE
@@ -322,10 +354,10 @@ class _Lowerer:
                 schema = RolloutParameters.model_validate(evaluation.params).states_schema
             except ValidationError as error:
                 raise _ElementIssue(path, f"Invalid saved Evaluate parameters: {error}") from error
-            ports.append(producer.port or DatasetPort(schema_ids=(schema,)))
+            ports.append(producer.ports.get(reference.role) or DatasetPort(schema_ids=(schema,)))
         port = common_rollout_port(ports)
         if len(port.schema_ids) != 1:
-            raise _ElementIssue(path, "Selected Evaluate states must use the same dataset schema.")
+            raise _ElementIssue(path, "Selected datasets must use the same dataset schema.")
         entries = self._entries(inputs, path)
         return inputs, port.model_copy(update={"coordinates": _fields(entries, path) | port.coordinates}), entries
 
@@ -421,14 +453,19 @@ class _Lowerer:
         ), _names(inputs))
         for bindings in inputs.values():
             for binding in bindings:
-                if binding.producer is None or (evaluation := self.evaluations.get(binding.producer)) is None:
+                for axis, coord in binding.coordinates.items():
+                    names.setdefault(axis, {}).setdefault(
+                        coord.value_id, LabelName(coord.value_id, sweep_value_name(axis, coord), kind="row"),
+                    )
+                if binding.producer is None or (evaluation := self.datasets.get(binding.producer)) is None:
                     continue
                 spec, name = evaluation.spec, evaluation.name
                 if isinstance(spec, EvaluationRequestSpec) and spec.evaluation_type == ROLLOUT_TYPE:
                     params = RolloutParameters.model_validate(spec.params)
                     if name.label is None:
-                        name = replace(name, label=_condition_label(params))
+                        name = replace(name, label=_condition_label(params) or evaluation.step_label)
                     names.setdefault("condition", {}).setdefault(params.condition_id(), name)
+                names.setdefault(MEMBER, {}).setdefault(binding.member.key, name)
         return names
 
     def _record(
@@ -536,6 +573,37 @@ class _Lowerer:
             raise _ElementIssue(path, "Mapped inputs do not pair one to one by their shared labels.")
         return combinations
 
+    def _operation_ports(
+        self, definition: OperationDefinition, inputs: Mapping[str, tuple[PlannedInput, ...]],
+        schemas: Mapping[str, DatasetPort],
+    ) -> dict[str, DatasetPort]:
+        replica = next((
+            replica_coordinate(inputs[role][0].model_replicas)
+            for role, expected in definition.inputs.items() if isinstance(expected, ModelPort)
+        ), None)
+        dimensions = set()
+        for role, actual in schemas.items():
+            expected = definition.inputs[role]
+            assert isinstance(expected, DatasetPort)
+            dimensions.update(operation_input_port(actual, expected).dimensions)
+            if expected.uses_replicate_axis or REPLICATE_DIM not in actual.dimensions:
+                continue
+            coordinate = actual.coordinates.get(REPLICATE_DIM)
+            if coordinate is None or coordinate.dims != (REPLICATE_DIM,):
+                raise _ElementIssue(f"inputs.{role}", "Replicated data requires a one-dimensional replicate coordinate.")
+            if replica is None:
+                replica = coordinate
+            elif replica.inline_values is not None and coordinate.inline_values is not None and (
+                set(replica.inline_values) != set(coordinate.inline_values)
+            ):
+                raise _ElementIssue(f"inputs.{role}", "Replicate IDs differ from the other operation inputs.")
+
+        outputs = {}
+        for role, port in definition.outputs.items():
+            fitted = port.for_dimensions(dimensions) if schemas or replica is not None else port
+            outputs[role] = fitted.with_replicate_axis(replica) if replica is not None else fitted
+        return outputs
+
     def operation(self, name: str, element: OperationElement) -> None:
         path = f"payload.operations.{name}"
         try:
@@ -557,6 +625,7 @@ class _Lowerer:
             self._check_roles(element.inputs, set(definition.inputs))
             inputs = {}
             entries: dict[str, _Entries] = {}
+            schemas = {}
             for role, expected in definition.inputs.items():
                 source = element.inputs[role]
                 wire_path = f"inputs.{role}"
@@ -564,16 +633,16 @@ class _Lowerer:
                     inputs[role] = self._step_input(source, expected.kind, wire_path)
                     continue
                 inputs[role], actual, entries[role] = self._input(source, wire_path)
-                outputs = any(binding.producer_element is not None for binding in inputs[role])
+                schemas[role] = actual
+                operation_output = any(binding.producer_element is not None for binding in inputs[role])
                 try:
-                    require_dataset_port(actual, expected, fields=outputs)
-                    if outputs:
-                        for parameter, requirement in expected.selected_variables.items():
-                            require_dataset_fields(
-                                actual.variables, {getattr(params, parameter): requirement}
-                            )
+                    fitted = require_dataset_port(actual, expected, fields=operation_output)
+                    if operation_output:
+                        for parameter, requirement in expected.for_dimensions(fitted.dimensions).selected_variables.items():
+                            require_dataset_fields(fitted.variables, {getattr(params, parameter): requirement})
                 except ValueError as error:
                     raise _ElementIssue(wire_path, str(error)) from error
+            outputs = self._operation_ports(definition, inputs, schemas)
             ports = {role: port for role, port in definition.inputs.items() if isinstance(port, DatasetInputPort)}
             groups = {
                 role: grouped for role, port in ports.items()
@@ -583,8 +652,8 @@ class _Lowerer:
             spec = AnalysisRequestSpec(analysis_type=registered.key, params=params.model_dump(mode="json"))
             if not groups:
                 self._record(
-                    name, spec, inputs, definition.outputs, element.label, names,
-                    entries=_carried(entries, definition.outputs),
+                    name, spec, inputs, outputs, element.label, names,
+                    entries=_carried(entries, outputs),
                 )
                 return
             requests = []
@@ -600,7 +669,7 @@ class _Lowerer:
                     for role, bindings in inputs.items()
                 }
                 inner = _carried(
-                    {role: self._entries(request[role], f"inputs.{role}") for role in entries}, definition.outputs,
+                    {role: self._entries(request[role], f"inputs.{role}") for role in entries}, outputs,
                 )
                 requests.append((mapped, request, inner))
             members = _member_ids([mapped for mapped, *_ in requests], names)
@@ -608,7 +677,7 @@ class _Lowerer:
                 raise _ElementIssue("inputs", "Mapped requests repeat one combination of labels.")
             for member, (mapped, request, inner) in zip(members, requests, strict=True):
                 self._record(
-                    name, spec, request, definition.outputs, element.label, names,
+                    name, spec, request, outputs, element.label, names,
                     member=member, mapped=mapped, entries=inner,
                 )
         except _ElementIssue as error:
@@ -696,16 +765,17 @@ def lower_analyze(
     documents: Mapping[str, Document],
     document_problems: tuple[ProjectDiagnostic, ...],
     step_inputs: Mapping[str, tuple[PlannedInput, ...]],
-    evaluations: Mapping[RunKey, EvaluateSource],
+    datasets: Mapping[RunKey, DatasetStepSource],
     upstream: Mapping[ElementKey, PlannedElement],
     operations: OperationRegistry,
     *,
     figure_templates: FigureTemplateRegistry | None = None,
 ) -> tuple[
-    dict[ElementKey, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
+    dict[ElementKey, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument],
+    dict[str, DatasetPort], dict[str, dict[str, DatasetPort]],
 ]:
     lower = _Lowerer(
-        key, document_ids, document_pointers, documents, step_inputs, evaluations, upstream, operations,
+        key, document_ids, document_pointers, documents, step_inputs, datasets, upstream, operations,
         figure_templates,
     )
     lower.problems.extend(document_problems)
@@ -721,7 +791,7 @@ def lower_analyze(
                 else None
             )
             lower.problem(".".join(map(str, ("payload", *location))), item["msg"], element)
-        return lower.planned, lower.encoded, lower.problems, lower.figures
+        return lower.planned, lower.encoded, lower.problems, lower.figures, {}, {}
 
     lower.declarations = document.inputs
     lower.element_names = {
@@ -769,4 +839,5 @@ def lower_analyze(
     for name, element in sorted(document.views.items()):
         if name not in refused:
             lower.view(name, element)
-    return lower.planned, lower.encoded, lower.problems, lower.figures
+    inputs, outputs = lower.dataset_ports()
+    return lower.planned, lower.encoded, lower.problems, lower.figures, inputs, outputs

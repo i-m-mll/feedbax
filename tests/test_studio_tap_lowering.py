@@ -148,7 +148,6 @@ def test_serialized_recurrent_tap_preserves_owned_state_reset_and_distinguishes_
                 "plant",
                 "sink",
                 "state",
-                temporality="recurrent",
                 recurrent_initializer={"kind": "state_output"},
             )
         ],
@@ -238,7 +237,7 @@ def test_unsupported_serialized_tap_fails_at_authored_tap(tap, message):
 )
 def test_unsupported_recurrent_edit_fails_closed(parameters, initializer, message):
     spec = _fanout()
-    spec["wires"][0].update(temporality="recurrent", recurrent_initializer=initializer)
+    spec["wires"][0].update(recurrent_initializer=initializer)
     spec["taps"] = [
         _tap(
             "recurrent_carry",

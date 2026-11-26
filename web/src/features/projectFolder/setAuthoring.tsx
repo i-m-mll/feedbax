@@ -5,11 +5,11 @@ import { studioAccessibleName, studioName } from '@/components/activity/studioVo
 import type { BarControl } from '@/components/ui/CommandBar';
 import { MenuGroup, MenuGroupLabel, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator } from '@/components/ui/Menu';
 import { Select } from '@/components/ui/Select';
-import { shownName, type PlanRunView, type PlanStepView } from '@/features/pipeline/planView';
+import type { PlanRunView, PlanStepView } from '@/features/pipeline/planView';
 import { selectSweepValue, selectedRuns, type PipelineSelectionState } from '@/features/pipeline/selection';
 import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
 import { bindStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
-import type { Project, StudioSetEditRequest, StudioSetEdit } from '@/generated/studioContracts';
+import type { Project, SetDocument, SetVariableOrigin, StudioSetEditRequest, StudioSetEdit } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { documentPayload } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
@@ -18,7 +18,8 @@ import type { Refusal } from './refusals';
 import { sendWithStore, type AskStore } from './storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
-import type { TaskSetVariable, WeightEdit } from './task/taskModel';
+import type { EntryTask, TaskSetVariable, WeightEdit } from './task/taskModel';
+import { nameOf, type DocumentNames } from './memberNames';
 import { documentTreeOf } from './useProjectDocuments';
 
 export const setSchema = 'feedbax.set_document.v1';
@@ -29,6 +30,7 @@ type Perform = (work: () => Promise<void>, refuse?: (reason: string) => Refusal 
 export interface SetAuthoringInputs {
   readonly editor: ProjectEditController;
   readonly project: Project;
+  readonly documentNames: DocumentNames;
   /** Whether its commands and controls apply; an edit made while the workspace saves waits for it. */
   readonly applies: boolean;
   readonly perform: Perform;
@@ -50,7 +52,7 @@ function runKey(run: PlanRunView) {
   return { variant, step, row };
 }
 
-export function setAuthoring({ editor, project, applies, perform, state, select, confirmRemoval, ask }: SetAuthoringInputs) {
+export function setAuthoring({ editor, project, documentNames, applies, perform, state, select, confirmRemoval, ask }: SetAuthoringInputs) {
   const refuseStep = (step: string) => (reason: string): Refusal => ({ kind: 'step', step, reason });
 
   /** Stores the edit `command` makes; one that removes runs first asks when some of them cost a confirmation. */
@@ -101,7 +103,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
   /**
    * Save Set and Inline Set on a step's authored axis, which convert between its values and the Model differences of a
    * Set and so apply only while the step reads a Model document (`model`); Add Entry on an axis whose Set has no
-   * entries (`empty`), which Duplicate Run cannot copy one of; and To Field on a Train's Set axis, which moves the Set
+   * entries (`empty`), which Duplicate Run cannot copy one of; and To Field on a Train or Evaluate Set axis, which moves the Set
    * into the run's trials.
    */
   function axisCommands(step: string, axis: string, { model, empty }: { model: boolean; empty: boolean }): StudioCommand[] {
@@ -115,10 +117,11 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     }, { subject: axis, instance: JSON.stringify([step, axis]), enabled });
     if ('values' in read) return [command('saveSet', { kind: 'save_set', step, axis }, applies && model)];
     if (!('set' in read)) return [];
+    const kind = project.steps?.[step]?.kind;
     return [
       ...empty ? [command('addEntry', { kind: 'add_set_entry', step, axis })] : [],
       command('inlineSet', { kind: 'inline_set', step, axis }, applies && model),
-      ...project.steps?.[step]?.kind === 'train' ? [command('toField', { kind: 'set_to_field', step, axis })] : [],
+      ...(kind === 'train' || kind === 'evaluate') ? [command('toField', { kind: 'set_to_field', step, axis })] : [],
     ];
   }
 
@@ -143,6 +146,34 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
       });
       return { kind: stored ? 'stored' : 'kept' };
     }).catch((error: unknown) => ({ kind: 'refused', reason: shownError(error) }));
+  }
+
+  /** The entry `entry` of the Set `set` that the step's axis `axis` reads, with its own Task variables and links. */
+  function entryTask({ step, axis, set, entry }: Omit<SetVariableOrigin, 'variable'>): EntryTask | undefined {
+    const stored = (documentPayload(project.documents, editor.getSnapshot().saved.composed, set) as SetDocument | undefined)?.entries[entry];
+    if (!stored) return undefined;
+    return {
+      key: JSON.stringify([step, axis, entry]),
+      label: stored.label || entry,
+      variables: stored.task_variables ?? [],
+      links: stored.task_links ?? [],
+      write: applies ? (name, change) => editor.command(async () => {
+        await store(name, { kind: 'set_entry_task', step, axis, entry, ...change });
+        return undefined;
+      }).catch((error: unknown) => shownError(error)) : undefined,
+    };
+  }
+
+  /** The one entry of a Set its sweep authors that the selected runs of `step` read; none unless exactly one is. */
+  function selectedEntry(step: PlanStepView): EntryTask | undefined {
+    const runs = selectedRuns(step, state().selection);
+    const chosen = Object.entries(project.steps?.[step.id]?.sweep?.axes ?? {}).flatMap(([axis, read]) => {
+      if (!read || !('set' in read)) return [];
+      const entries = new Set(runs.map((run) => run.values[axis]));
+      const [entry] = entries;
+      return entries.size === 1 && entry !== undefined && entry !== unvalued ? [{ step: step.id, axis, set: read.set, entry }] : [];
+    });
+    return chosen.length === 1 ? entryTask(chosen[0]) : undefined;
   }
 
   /**
@@ -173,8 +204,8 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
       patches: [{ op: 'replace', path: authoredPointer(['sweep', 'axes', axis, 'set']), value: next }],
     }], { reviewedRevision: editor.getSnapshot().saved.revision, dependencies: [{ kind: 'document', id: next }] });
     return {
-      label: 'setDocument', document, name: shownName(document, project.documents?.[document]),
-      documents: documentTreeOf(project, [setSchema]),
+      label: 'setDocument', document, name: nameOf(documentNames, document),
+      documents: documentTreeOf(project, documentNames, [setSchema]),
       choose: applies ? (next) => {
         void perform(async () => {
           const stored = await point(next);
@@ -256,7 +287,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     };
   }
 
-  return { duplicateRun, axisCommands, toSweep, fieldWeight, removeValue, axisPicker, applySet, combination };
+  return { duplicateRun, axisCommands, toSweep, fieldWeight, entryTask, selectedEntry, removeValue, axisPicker, applySet, combination };
 }
 
 export type SetAuthoring = ReturnType<typeof setAuthoring>;
@@ -273,6 +304,6 @@ export function OfferedSets({ editor, step, choose }: {
   if (!offered.data?.length) return null;
   return <>
     <MenuSeparator />
-    {offered.data.map((set) => <MenuItem key={set} onClick={() => choose(set)}>{set}</MenuItem>)}
+    {offered.data.map((set) => <MenuItem key={set} onClick={() => choose(set)}>{nameOf(saved.names.documents, set)}</MenuItem>)}
   </>;
 }

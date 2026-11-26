@@ -6,7 +6,6 @@ import { shownError } from '@/api/shownErrors';
 import {
   studioAccessibleName, studioName, type StudioNameId,
 } from '@/components/activity/studioVocabulary';
-import { shownName } from '@/features/pipeline/planView';
 import type { DocumentPickerModel, PickerTemplate } from '@/features/projectWindow/DocumentPicker';
 import { LoadedModelDocumentSchema, blankTask, loadedModelDocumentSchemaId } from '@/generated/studioContracts';
 import type {
@@ -16,6 +15,7 @@ import type { ProjectEditController } from './projectEditController';
 import { baseOf, documentPayload } from './documentPayload';
 import { generatedName, holds, keyOfLabel } from './generatedName';
 import { importProblems } from './loadedModels';
+import { nameOf, type DocumentNames } from './memberNames';
 
 export type DocumentRole = 'model' | 'loaded_model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
 /** The roles whose documents are written in Studio, as opposed to imported. */
@@ -65,6 +65,8 @@ const labels: Record<DocumentRole, StudioNameId> = {
 
 export interface ProjectDocumentInputs {
   readonly editor: ProjectEditController;
+  /** The names of the documents the workspace shows. */
+  readonly documentNames: DocumentNames;
   readonly stepId?: string;
   /** The row whose definition a Train or Evaluate step's document choice is resolved against. */
   readonly run?: StudioSavedTrainKey;
@@ -83,14 +85,15 @@ export function roleOf(document: Document) {
 }
 
 /**
- * `document` as a file of a project that holds `documents`: labelled with its own label, or its role's name, numbered
- * while another document of its role shows that label, and keyed by that label.
+ * `document` as a file of a project that holds `documents`, named by `names`: labelled with its own label, or its role's
+ * name, numbered while another document of its role has that name, and keyed by that label.
  */
-export function namedDocument(documents: Readonly<Record<string, Document>> | null | undefined, document: Document) {
+export function namedDocument(documents: Readonly<Record<string, Document>> | null | undefined, names: DocumentNames,
+  document: Document) {
   const role = roleOf(document);
   if (!role) throw new Error(`No role reads documents of schema ${document.schema}.`);
   const all = documents ?? {};
-  const shown = new Set(documentsOfRole({ documents: all }, role).map((key) => shownName(key, all[key])));
+  const shown = new Set(documentsOfRole({ documents: all }, role).map((key) => nameOf(names, key)));
   const label = generatedName(document.label ?? studioName(role), (label) => shown.has(label), ' ');
   const id = generatedName(keyOfLabel(label) || role, holds(all));
   return { id, document: { ...document, label } as Document };
@@ -130,20 +133,22 @@ export function fittedModel(document: Document | undefined) {
  * The documents of `role`, each followed by the documents based on it, with its depth below its root. A Model is also
  * followed by the Loaded Models that fit it.
  */
-export function documentTree(project: { documents?: Readonly<Record<string, Document>> | null }, role: DocumentRole) {
-  return documentTreeOf(project, role === 'model' ? [...schemas.model, ...schemas.loaded_model] : schemas[role]);
+export function documentTree(project: { documents?: Readonly<Record<string, Document>> | null }, names: DocumentNames,
+  role: DocumentRole) {
+  return documentTreeOf(project, names, role === 'model' ? [...schemas.model, ...schemas.loaded_model] : schemas[role]);
 }
 
 /**
  * The documents of the `schemas`, each followed by the documents based on it, or that fit it, with its depth below its
  * root.
  */
-export function documentTreeOf(project: { documents?: Readonly<Record<string, Document>> | null }, schemas: readonly string[]) {
+export function documentTreeOf(project: { documents?: Readonly<Record<string, Document>> | null }, documentNames: DocumentNames,
+  schemas: readonly string[]) {
   const all = project.documents ?? {};
-  /** Ordered by the name each is shown by, as its key is hidden behind its label. */
+  const named = (key: string) => nameOf(documentNames, key);
+  /** Ordered by the name each is shown by, as its key is hidden behind its name. */
   const names = Object.keys(all).filter((id) => schemas.includes(all[id].schema))
-    .sort((left, right) => shownName(left, all[left]).localeCompare(shownName(right, all[right]), undefined, { numeric: true })
-      || left.localeCompare(right));
+    .sort((left, right) => named(left).localeCompare(named(right), undefined, { numeric: true }) || left.localeCompare(right));
   const parent = (name: string) => {
     const base = baseOf(all, name) ?? fittedModel(all[name]);
     return base !== undefined && names.includes(base) ? base : undefined;
@@ -152,7 +157,7 @@ export function documentTreeOf(project: { documents?: Readonly<Record<string, Do
   const visit = (name: string, depth: number) => {
     const { schema } = all[name];
     tree.push({
-      key: name, name: shownName(name, all[name]), depth, python: schema === pythonTask || undefined,
+      key: name, name: named(name), depth, python: schema === pythonTask || undefined,
       loaded: schema === loadedModelDocumentSchemaId || undefined,
     });
     for (const child of names) if (parent(child) === name) visit(child, depth + 1);
@@ -161,7 +166,7 @@ export function documentTreeOf(project: { documents?: Readonly<Record<string, Do
   return tree;
 }
 
-export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, onError, onLoaded }: ProjectDocumentInputs) {
+export function useProjectDocuments({ editor, documentNames: named, stepId, run, scope, selectable, editable, onError, onLoaded }: ProjectDocumentInputs) {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const projectId = saved.project_id;
   const catalog = useAuthoringCatalog().data;
@@ -234,9 +239,11 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
   }
 
   return (role: DocumentRole, document: string | undefined, sharing?: { lit: ReadonlySet<string>; users: ReadonlySet<string> }): DocumentPickerModel | undefined => {
-    if (!document) return undefined;
+    // A view still showing a revision the workspace has moved past can read a document no shown revision names; it gets
+    // its picker once it shows the current one.
+    if (!document || !(document in named)) return undefined;
     const count = sharing && { lit: sharing.lit.size, users: sharing.users.size };
-    const documents = documentTree(saved.project, role);
+    const documents = documentTree(saved.project, named, role);
     const based = 'base' in (saved.project.documents?.[document] ?? {});
     /** Duplicate and Detach write the document's composed content, which a base chain that does not compose lacks. */
     const composes = documentPayload(saved.project.documents, saved.composed, document) !== undefined;
@@ -246,7 +253,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const repoint = editable && !!stepId && selectable.has(role);
     const model = fitted ?? document;
     return {
-      label: labels[shownRole], document, name: shownName(document, saved.project.documents?.[document]), documents, count,
+      label: labels[shownRole], document, name: nameOf(named, document), documents, count,
       refusal: refused?.step === stepId && refused?.role === role ? refused.reason : undefined,
       load: role === 'model' && editable ? (archive) => { void load(model, archive); } : undefined,
       unfit: unfit?.model === model ? { problems: unfit.problems, dismiss: () => setUnfit(undefined) } : undefined,
@@ -254,7 +261,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
       templates: role === 'task' ? [...taskTemplates.values()].map(({ template }) => template) : undefined,
       create: repoint && role !== 'loaded_model' ? (template) => attempt(role, async () => {
         const { saved } = editor.getSnapshot();
-        const { id, document } = namedDocument(saved.project.documents,
+        const { id, document } = namedDocument(saved.project.documents, saved.names.documents,
           (template && taskTemplates.get(template)?.document) || blankDocuments[role]);
         await editor.createFiles(studioAccessibleName('new', kind), [{ kind: 'document', id, document }],
           saved.revision, (snapshot) => use(role, id, snapshot.revision));

@@ -43,7 +43,9 @@ if TYPE_CHECKING:
     )
     from feedbax.contracts.expression_registry import FunctionRegistry
     from feedbax.tasks.registry import PythonTaskRegistry
+from feedbax.synthesis.methods import SynthesisMethodRegistry
 from feedbax.training.methods import TrainingMethodRegistry
+from feedbax.web.services.trial_expression_menus import TrialExpressionMenus
 
 
 class _ModelInverse(StrictModel):
@@ -66,15 +68,18 @@ class ProjectFolderService(ProjectFolder):
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
         training_methods: TrainingMethodRegistry | None = None,
+        synthesis_methods: SynthesisMethodRegistry | None = None,
         figure_templates: FigureTemplateRegistry | None = None,
         load_examples: Callable[[], Mapping[str, Project]] = dict,
     ) -> None:
         super().__init__(
             root, operations=operations, components=components, functions=functions,
             python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods,
+            synthesis_methods=synthesis_methods,
             load_examples=load_examples,
         )
         self._model_undo_key = token_bytes(32)
+        self.trial_expression_menus = TrialExpressionMenus()
 
     def open_selected_folder(self, folder: Path) -> StudioProjectDocument:
         """Open a folder selected through the private native control socket."""
@@ -128,16 +133,18 @@ class ProjectFolderService(ProjectFolder):
         from feedbax.compiler.model_document import inspect_model_signals
         from feedbax.contracts.model_document import ModelDocument
         from feedbax.contracts.model_edit import TaskSignalSource
+        from feedbax.contracts.task_document import TaskDocument
         from feedbax.compiler.model_edit import review_model_connections
         from feedbax.compiler.model_ports import ModelRegistryPorts
-        from feedbax.project_model_selection import matched_task_inputs, selected_model_and_task, task_signal
+        from feedbax.application.task_signals import matched_task_inputs
+        from feedbax.project_model_selection import selected_model_and_task, task_signal
         from feedbax.web.services.model_projection import evaluate_projection
         from feedbax.web.services.trial_scope import selection_scope
 
         snapshot = self.read(project_id, revision=body.revision)
         payload, _ = model_edit_source(snapshot, body.document)
         model = ModelDocument.model_validate(payload)
-        task, overrides = (), {}
+        task, overrides, source = (), {}, None
         components = bundle.components
         task_source = body.source if isinstance(body.source, TaskSignalSource) else None
         try:
@@ -148,7 +155,7 @@ class ProjectFolderService(ProjectFolder):
                 selection = body.model_copy(update={"run": run})
                 step = snapshot.project.steps.get(run.step)
                 if step is not None and step.kind == "evaluate":
-                    resolved, task, _, overrides = evaluate_projection(self, project_id, selection, bundle)
+                    resolved, task, _, overrides, source = evaluate_projection(self, project_id, selection, bundle)
                     if resolved is None:
                         raise ProjectFolderInvalid("The selected Evaluate has no readable Model.")
                     model = resolved
@@ -163,7 +170,7 @@ class ProjectFolderService(ProjectFolder):
                     if definition is not None:
                         paired = selected_model_and_task(self, project_id, selection, definition=definition)
                         if paired is not None:
-                            model, task, _, overrides = paired
+                            model, task, _, overrides, source = paired
             authority = ModelRegistryPorts(components)
             offered = None
             if task_source is not None:
@@ -181,7 +188,9 @@ class ProjectFolderService(ProjectFolder):
                 model, body, layout=authority.layout, next_input=authority.next_input,
                 library=library, task_signal=task_signal(offered) if offered is not None else None,
                 task_type=offered.type if offered is not None else None,
-                signals=inspect_model_signals(model, components, supplied),
+                signals=inspect_model_signals(
+                    model, components, supplied, task=source if isinstance(source, TaskDocument) else None,
+                ),
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error

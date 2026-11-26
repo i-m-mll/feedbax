@@ -7,8 +7,12 @@ from feedbax.compiler.model_document import inspect_model_signals
 from feedbax.compiler.model_edit import conserving_port_type, model_ungroup_eligibility
 from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf
-from feedbax.contracts.model_address import ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement
-from feedbax.contracts.model_document import ModelDocument, PhysicalPortType, SignalType
+from feedbax.contracts.model_address import (
+    AttachmentElement, ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement, WireElement,
+)
+from feedbax.contracts.model_document import DelayAttachment, ModelDocument, ModelTime, PhysicalPortType, SignalType
+from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.time_units import length_steps
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, ModelPhysicalPortProjection, ModelPortProjection, ModelProjection, ModelTaskInput, StepRuns,
@@ -17,8 +21,9 @@ from feedbax.contracts.expression_check import references
 from feedbax.contracts.project import BasedDocument
 from feedbax.planner.project_plan import RunKey
 from feedbax.project_folder import ProjectFolderInvalid, model_edit_source
+from feedbax.application.task_signals import matched_task_inputs, model_task_signals
 from feedbax.project_model_selection import (
-    matched_task_inputs, model_task_signals, selected_model as selected_model, selected_model_and_task, task_signal,
+    selected_model as selected_model, selected_model_and_task, task_signal,
 )
 from feedbax.compiler.model_differences import structural_differences
 from feedbax.web.services.trial_scope import runs_scope, selected_value, value_model
@@ -37,6 +42,26 @@ def _boundary_port(composites, direction, port):
         "composites": composites,
         "element": {"kind": "port", "end": {"owner": "boundary" if direction == "physical" else direction + "s", "port": port}},
     })
+
+
+def _delay_steps(owner, period: float | None, scope: tuple[str, ...] = ()):
+    for wire_id, wire in owner.interior.wires.items():
+        for item in wire.attachments:
+            if not isinstance(item, DelayAttachment):
+                continue
+            address = ModelAddress(composites=scope, element=AttachmentElement(
+                kind="attachment", parent=WireElement(kind="wire", id=wire_id), id=item.id,
+            ))
+            steps = None
+            if period is not None and isinstance(item.delay, ModelTime):
+                try:
+                    steps = length_steps(item.delay, period)
+                except ValueError:
+                    pass
+            yield address.to_text(), steps
+    for component_id, component in owner.interior.components.items():
+        if component.kind == "composite":
+            yield from _delay_steps(component, period, (*scope, component_id))
 
 
 def _declared_ports(authority: ModelRegistryPorts, owner, scope=()):
@@ -145,14 +170,15 @@ def evaluate_projection(folders, project_id, body, bundle):
     model = reading.state.resolved_model
     definition = plan.selected_definitions.get(key)
     if definition is None:
-        return model, (), None, {}
+        return model, (), None, {}, None
     try:
         documents, _, _ = _pairing(plan, key, bundle, definition=definition)
     except ValueError:
-        return model, (), None, {}
+        return model, (), None, {}, None
     if definition.document_ids.get("inputs.subject") == body.document:
         model = documents.model
-    return model, model_task_signals(folders, documents.task_source), documents.objective, documents.input_bindings
+    source = documents.task_source
+    return model, model_task_signals(source, folders.python_tasks), documents.objective, documents.input_bindings, source
 
 
 def model_projection(folders, project_id, body, bundle):
@@ -168,13 +194,15 @@ def model_projection(folders, project_id, body, bundle):
         raise ProjectFolderInvalid("Choose an Evaluate run for this Model selection.")
     elif body.run is not None:
         selected = selected_model_and_task(folders, project_id, body)
-    model, task, objective, overrides = selected or (authored, (), None, {})
+    model, task, objective, overrides, source = selected or (authored, (), None, {}, None)
     model = model or authored
     task_signals = tuple(task_signal(item) for item in task)
     bound = matched_task_inputs(model, task, overrides)
     supplied = {port.name: signal.type for port, signal in bound}
     authority = ModelRegistryPorts(bundle.components)
-    table = inspect_model_signals(model, bundle.components, supplied)
+    table = inspect_model_signals(
+        model, bundle.components, supplied, task=source if isinstance(source, TaskDocument) else None,
+    )
     readers = _objective_readers(objective, table)
     ports: list[ModelPortProjection] = []
     physical_ports: list[ModelPhysicalPortProjection] = []
@@ -197,6 +225,7 @@ def model_projection(folders, project_id, body, bundle):
             ))
     return ModelProjection(
         ports=tuple(ports), physical_ports=tuple(physical_ports), problems=table.problems, task_signals=task_signals,
+        delay_steps=dict(_delay_steps(model, model.step_seconds if isinstance(model.step_seconds, float) else None)),
         task_inputs=tuple(
             ModelTaskInput(composites=(), element=_boundary_port((), "input", port.id).element, signal_id=signal.id)
             for port, signal in bound

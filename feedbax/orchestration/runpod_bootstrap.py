@@ -6,11 +6,17 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from typing import Protocol
+
+
+class _JsonReader(Protocol):
+    def __call__(self, data: bytes, *, ref: str) -> dict: ...
 
 
 def _private(path: Path) -> None:
@@ -125,10 +131,110 @@ print(json.dumps({"jax": jax.__version__, "backend": backend, "devices": devices
 """
 
 
-def _install(root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str, int]]) -> None:
+_PACKAGE_VERSIONS = """
+from importlib.metadata import distributions
+
+for distribution in distributions():
+    print(f"{distribution.name}=={distribution.version}")
+"""
+
+
+_PACKAGE_VERIFY = """
+from importlib.metadata import distribution
+from pathlib import Path
+import sys
+from urllib.parse import unquote, urlsplit
+from feedbax.contracts.strict_json import strict_json_loads
+
+for pin, source in strict_json_loads(sys.argv[1], ref="project package pins"):
+    installed = distribution(pin["distribution"])
+    metadata = strict_json_loads(installed.read_text("direct_url.json") or "{}", ref="installed direct_url.json")
+    direct = urlsplit(metadata.get("url", ""))
+    if (
+        installed.version != pin["version"] or direct.scheme != "file" or direct.netloc
+        or Path(unquote(direct.path)).resolve() != Path(source).resolve()
+        or not any(entry.group == "feedbax.plugins" for entry in installed.entry_points)
+    ):
+        raise ValueError(f"Installed project package differs from its approved source: {pin['distribution']}")
+"""
+
+
+def _package_copies(root: Path, packages: list[dict]) -> list[str]:
+    if not packages:
+        return []
+    directory = root / "project-packages"
+    _private(directory)
+    missing = []
+    for digest in sorted({pin["snapshot"]["content_sha256"] for pin in packages}):
+        if not re.fullmatch(r"[a-f0-9]{64}", digest):
+            raise ValueError("Project package has an invalid snapshot digest.")
+        if not (directory / digest).exists():
+            _private(directory / (digest + ".incoming"))
+            missing.append(digest)
+    return missing
+
+
+def _install_project_packages(root, settings, verify_tree, uv, python, env) -> None:
+    packages = settings.get("project_packages", [])
+    if not packages:
+        return
+    with tempfile.TemporaryDirectory(prefix="build-packages-", dir=root) as temporary:
+        build_root = Path(temporary)
+        sources = []
+        for pin in packages:
+            snapshot = pin["snapshot"]
+            digest = snapshot["content_sha256"]
+            sealed = root / "project-packages" / digest
+            if not sealed.exists():
+                incoming = sealed.with_suffix(".incoming")
+                if verify_tree(incoming) != (digest, snapshot["file_count"]):
+                    raise ValueError(f"Transferred project package differs from its approved snapshot: {pin['distribution']}")
+                os.rename(incoming, sealed)
+            elif verify_tree(sealed) != (digest, snapshot["file_count"]):
+                raise ValueError(f"Staged project package differs from its approved snapshot: {pin['distribution']}")
+            build = build_root / digest
+            if not build.exists():
+                shutil.copytree(sealed, build, symlinks=True)
+                for directory, _, _ in os.walk(build):
+                    Path(directory).chmod(0o700)
+            sources.append((pin, str(build / pin["project_dir"])))
+        constraints = build_root / "constraints.txt"
+        constraints.write_bytes(subprocess.check_output(
+            [str(python), "-I", "-B", "-c", _PACKAGE_VERSIONS], env=env, timeout=10,
+        ))
+        command = [uv, "pip", "install", "--python", str(python), "--constraint", str(constraints)]
+        for pin, _ in sources:
+            command.extend(("--reinstall-package", pin["distribution"]))
+        command.extend(source for _, source in sources)
+        subprocess.run(command, cwd=build_root, env=env, stdout=sys.stderr, check=True, timeout=settings["timeout"])
+        subprocess.run(
+            [str(python), "-I", "-B", "-c", _PACKAGE_VERIFY, json.dumps(sources)],
+            env=env, check=True, timeout=10,
+        )
+
+    environment = root / "environment"
+    _private(environment)
+    encoded_pins = json.dumps(packages, sort_keys=True)
+    lines = ["version = 1", f"project-package-pins = {json.dumps(encoded_pins)}"]
+    installed = subprocess.check_output(
+        [str(python), "-I", "-B", "-c", _PACKAGE_VERSIONS], env=env, text=True, timeout=10,
+    )
+    for requirement in sorted(installed.splitlines()):
+        name, version = requirement.split("==", 1)
+        lines.extend(("", "[[package]]", f"name = {json.dumps(name)}", f"version = {json.dumps(version)}"))
+    _publish(environment / "uv.lock", ("\n".join(lines) + "\n").encode())
+
+
+def _install(
+    root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str, int]], read_json: _JsonReader,
+) -> None:
     cached_probe = root / "probe.json"
+    packages = settings.get("project_packages", [])
     if cached_probe.exists():
-        sys.stdout.buffer.write(cached_probe.read_bytes())
+        probe = cached_probe.read_bytes()
+        if read_json(probe, ref=str(cached_probe)).get("project_packages", []) != packages:
+            raise ValueError("The completed install identifies different project packages.")
+        sys.stdout.buffer.write(probe)
         return
 
     incoming, repo = root / "incoming", root / "repo"
@@ -154,10 +260,13 @@ def _install(root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str
         command.extend(("--extra", extra))
     subprocess.run(command, cwd=repo, env=env, stdout=sys.stderr, check=True, timeout=settings["timeout"])
     python = root / "venv" / "bin" / "python"
+    _install_project_packages(root, settings, verify_tree, uv, python, env)
     probe = subprocess.check_output(
         [str(python), "-I", "-B", "-c", _PROBE, str(repo), settings["backend"]],
         cwd=repo, env=env, timeout=30,
     )
+    if packages:
+        probe = json.dumps(read_json(probe, ref="RunPod environment probe") | {"project_packages": packages}).encode()
     _publish(cached_probe, probe)
     sys.stdout.buffer.write(probe)
 
@@ -175,7 +284,7 @@ def _complete(root: Path, settings: dict) -> None:
     _publish(root / "ready", b"")
 
 
-def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
+def bootstrap(verify_tree: Callable[[Path], tuple[str, int]], read_json: _JsonReader) -> None:
     action, location, *arguments = sys.argv[1:]
     if len(arguments) != (1 if action == "stage-uv" else 0):
         raise ValueError("Unexpected RunPod bootstrap arguments.")
@@ -187,7 +296,7 @@ def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
             pass
         return
     _private(root)
-    settings = json.load(sys.stdin.buffer) if action != "stage-uv" else {}
+    settings = read_json(sys.stdin.buffer.read(), ref="RunPod bootstrap settings") if action != "stage-uv" else {}
     with (root / "setup.lock").open("ab") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if action == "close-opening":
@@ -212,9 +321,10 @@ def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
                     _verified_uv(root, digest)
                 except FileNotFoundError:
                     send_uv = True
-            print(json.dumps({"send": not (root / "repo").exists(), "send_uv": send_uv}))
+            send_packages = _package_copies(root, settings.get("project_packages", []))
+            print(json.dumps({"send": not (root / "repo").exists(), "send_uv": send_uv, "send_packages": send_packages}))
         elif action == "install":
-            _install(root, settings, verify_tree)
+            _install(root, settings, verify_tree, read_json)
         elif action == "complete":
             _complete(root, settings)
         else:

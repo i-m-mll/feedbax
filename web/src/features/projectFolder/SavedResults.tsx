@@ -4,7 +4,7 @@ import { StudioTrainResults, type TrainMetricResult } from '@/components/activit
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Section } from '@/components/ui/Section';
-import type { StudioSavedTrainRuns } from '@/generated/studioContracts';
+import type { ModelOrigin, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { savedRunId, type SavedTrainRow as SavedRow } from './projectWindowPlan';
 import { StudioEvaluationResults } from './StudioEvaluationResults';
 
@@ -71,11 +71,25 @@ function TrainResults({ row, attempt, ...plot }: Omit<Parameters<typeof StudioTr
   );
 }
 
+/** How the model an evaluation rolled out was made, and the step that made it. */
+function ModelOriginHeader({ origin, stepLabel, onShowStep }: {
+  origin: ModelOrigin;
+  stepLabel(step: string): string;
+  onShowStep(step: string): void;
+}) {
+  const step = 'key' in origin ? origin.key.step : undefined;
+  return <p className="flex gap-1 text-sm">
+    <span>{studioName(origin.kind)}</span>
+    {step && <>{'·'}<Button variant="bare" size="content" className="underline-offset-2 hover:underline"
+      onClick={() => onShowStep(step)}>{stepLabel(step)}</Button></>}
+  </p>;
+}
+
 /**
  * The Results of the focused run in the plan on screen. Until a plan has been read they are loading; after that they
  * keep the plan on screen, marked pending while the shown revision's plan is read.
  */
-export function SavedResults({ shown, current, failure, result, project, stopped, onReplay }: {
+export function SavedResults({ shown, current, failure, result, project, stopped, onReplay, stepLabel, onShowStep }: {
   /** The plan on screen, which is of an earlier revision while the shown revision's plan is read. */
   shown: StudioSavedTrainRuns | undefined;
   /** Whether `shown` is the plan of the shown revision. */
@@ -86,19 +100,25 @@ export function SavedResults({ shown, current, failure, result, project, stopped
   project: string;
   stopped?: ReactNode;
   onReplay(update: number): void;
+  stepLabel(step: string): string;
+  onShowStep(step: string): void;
 }) {
   const region = useRegionPending(!!shown && !current);
   if (failure) return <StudioRegion state={failure} />;
   if (!shown) return <StudioRegion state={{ kind: 'loading' }} />;
   const { row, attempt, evaluation } = result;
+  const origin = evaluation?.result?.origin;
+  const header = origin && <ModelOriginHeader origin={origin} stepLabel={stepLabel} onShowStep={onShowStep} />;
   if (evaluation?.checkpoint_series) return <div {...region}>
-    <StudioEvaluationResults evaluation={evaluation} onReplay={onReplay} />
+    {header}
+    <StudioEvaluationResults evaluation={evaluation} stepName={stepLabel} onReplay={onReplay} />
   </div>;
+  if (header) return <div {...region}>{header}</div>;
   if (!row) return null;
   return <div {...region}>
     {stopped}
     <TrainResults key={savedRunId(row.key)} project={project} revision={shown.revision}
       evaluations={shown.window_map?.evaluations ?? []} mapRows={shown.window_map?.rows ?? []}
-      rows={shown.rows} row={row} attempt={attempt} />
+      rows={shown.rows} row={row} attempt={attempt} stepName={stepLabel} />
   </div>;
 }

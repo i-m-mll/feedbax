@@ -82,10 +82,27 @@ def read_evaluate_model(
 
     if definition is not None and definition.pinned_model is not None:
         loaded = LoadedModelDocument.model_validate(definition.input_documents["subject"].payload)
-        if model_document is not None and loaded.model.document != model_document:
+        subject = loaded.model.document
+        read = definition.document_ids.get(EVALUATION_MODEL, subject)
+        if model_document is not None and read != model_document:
             raise ProjectFolderInvalid("The selected run does not use this Model.")
-        resolved = definition.pinned_model
-        editable = False
+        authored = selected_model(definition, read)
+        changed = _document_changes(snapshot.project, subject, read, authored)
+        if isinstance(changed, ProjectDiagnostic):
+            problems.append(located(changed))
+        else:
+            shared, changes = changed
+            try:
+                resolved = resolve_effective_model(
+                    ModelDocument.model_validate(apply_differences(definition.pinned_model.model_dump(mode="json"), changes)),
+                    components or folders.components, differences, functions=folders.functions,
+                )
+            except (DifferenceNotApplied, ModelCompilationProblem) as error:
+                problems.append(located(ProjectDiagnostic(
+                    ResolutionCode.INVALID_DOCUMENT, EVALUATION_MODEL, str(error), document=read,
+                    model_address=error.address if isinstance(error, ModelCompilationProblem) else None,
+                )))
+        editable &= not loaded.model.unresolved and loaded.model.pointer is None and read in snapshot.project.documents
     elif upstream := evaluate_subject(definition):
         producer, provenance = upstream
         source = evaluate_value_source(provenance)
@@ -115,14 +132,15 @@ def read_evaluate_model(
                             ResolutionCode.INVALID_DOCUMENT, EVALUATION_MODEL, str(error), document=read,
                             model_address=error.address if isinstance(error, ModelCompilationProblem) else None,
                         )))
-                for batch, records in effective.items():
-                    for index, record in enumerate(records):
-                        site = ("payload", MODEL_ATTACHMENTS, batch, str(index))
-                        origin = definition.sources.get(pointer((*site, "value"))) or definition.sources.get(
-                            pointer((*site, "op")),
-                        )
-                        if origin is not None:
-                            field_sources[record.address.to_text()] = evaluate_value_source(origin, evaluate_step=key.step)
+    if definition is not None:
+        for batch, records in effective.items():
+            for index, record in enumerate(records):
+                site = ("payload", MODEL_ATTACHMENTS, batch, str(index))
+                origin = definition.sources.get(pointer((*site, "value"))) or definition.sources.get(
+                    pointer((*site, "op")),
+                )
+                if origin is not None:
+                    field_sources[record.address.to_text()] = evaluate_value_source(origin, evaluate_step=key.step)
     return EvaluateReading(EvaluateModelState(
         revision=body.revision,
         editable=editable,

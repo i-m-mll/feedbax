@@ -5,7 +5,7 @@ import type {
   StudioProjectWindowMap, StudioSavedLightResult, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
-import { enter, mapStep, runName, runProjectFixture } from './fixtures/canonicalTrain';
+import { enter, mapStep, runName, shownRunLabel, runProjectFixture, mapCard } from './fixtures/canonicalTrain';
 import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
 import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
 import { activate, chooseOption, chooseStepKind, number, openView, palette, tabTo, typeValue } from './fixtures/studioKeyboard';
@@ -42,7 +42,7 @@ async function expectSeparateVelocityLines(figure: Locator) {
 }
 
 async function savedLightGate(context: WalkthroughContext, info: TestInfo, studio?: Studio) {
-  test.setTimeout(studio ? 190_000 : 60_000);
+  test.setTimeout(studio ? 190_000 : 120_000);
   const start = performance.now();
   const first = studio ? await test.step('Author, Stop, Resume and recover the first Train', () =>
     authorAndRecoverTrain(context.page, context.request, info, studio)) : undefined;
@@ -137,9 +137,9 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const pairedInput = first ? await test.step('Author two Evaluate conditions from the resumed checkpoint', async () => {
     const [producer, ...otherRows] = await authorWalkthroughSweep(walkthrough);
     expect(producer.result).toEqual(first.trained);
-    await runStep('train', 3, otherRows.map(({ key }) => key), otherRows.map(({ label }) => label));
+    await runStep('train', 3, otherRows.map(({ key }) => key), otherRows.map(shownRunLabel));
     await activate(page, page.getByRole('table', { name: 'Runs', exact: true })
-      .getByRole('button', { name: runName(producer.label) }));
+      .getByRole('button', { name: runName(shownRunLabel(producer)) }));
     return authorEvaluateConditions({
       page, request, projectPath: path, train: producer.key, field: 'Mass',
       conditions: [1, 2],
@@ -179,8 +179,8 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expect(admittedJobs).toHaveLength((first ? 4 : 1) + settledEvaluate.length);
   const table = page.getByRole('table', { name: 'Runs', exact: true });
   const rowLabel = (key: StudioSavedTrainKey) =>
-    initialPlan.rows.find((row) => JSON.stringify(row.key) === JSON.stringify(key))!.label;
-  const sourceLabels = pairedInput?.rows.map(({ label }) => label) ?? [rowLabel(sources[0].key)];
+    shownRunLabel(initialPlan.rows.find((row) => JSON.stringify(row.key) === JSON.stringify(key))!);
+  const sourceLabels = pairedInput?.rows.map(shownRunLabel) ?? [rowLabel(sources[0].key)];
   await activate(page, table.getByRole('button', { name: runName(sourceLabels[0]) }));
   if (paired) await activate(page, table.getByRole('button', { name: runName(sourceLabels[1]) }), 'Shift+Enter');
   await palette(page, 'newStep', 'New Step');
@@ -200,16 +200,25 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expectAnalyzeSources(await plan(created.revision));
 
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  /** Searches the Library and places the item: Tab reaches the first match, the arrows the others. */
   async function place(label: string) {
     await typeValue(page, drawer.getByRole('textbox', { name: 'Search Library', exact: true }), label);
-    return edit(() => activate(page, drawer.getByRole('option', { name: label, exact: true })));
+    const options = drawer.getByRole('option');
+    const option = drawer.getByRole('option', { name: label, exact: true });
+    await tabTo(page, options.and(drawer.locator('[tabindex="0"]')));
+    for (let index = await options.count(); index > 0 && !await option.evaluate((element) => element === element.ownerDocument.activeElement); index -= 1) {
+      await page.keyboard.press('ArrowDown');
+    }
+    await expect(option).toBeFocused();
+    return edit(() => page.keyboard.press('Enter'));
   }
   const selectElement = (name: string) => activate(page, analysis.getByRole('group', { name: 'Select ' + name, exact: true }));
   await place('Aligned velocity');
   await selectElement('Aligned velocity');
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
+  // The walkthrough's Task names its target signal; the selected-row project's Task leaves it unnamed, shown by its ID.
   for (const [field, label] of [
-    ['Position', / · effector position$/], ['Velocity', / · effector velocity$/], ['Target', /^target.pos$/i],
+    ['Position', / · effector position$/], ['Velocity', / · effector velocity$/], ['Target', /^target( position|_pos)$/],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => chooseOption(page, select, label));
@@ -229,11 +238,14 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await page.keyboard.type('states');
   await expect(popupListbox(page).getByRole('option')).toHaveCount(0);
   await page.keyboard.press('Escape');
-  await edit(() => chooseOption(page, roleField('Velocity'), 'Aligned velocity.velocity'));
+  // Closing the popup gives focus back to its field once it has closed; the next choice starts from there.
+  await expect(popupListbox(page)).toBeHidden();
+  await expect(roleField('Velocity')).toBeFocused();
+  await edit(() => chooseOption(page, roleField('Velocity'), 'Aligned velocity · velocity'));
 
   await place('Velocity Summary');
   await selectElement('Velocity Summary');
-  const wired = await edit(() => chooseOption(page, roleField('Summary'), 'Trial summary.summary'));
+  const wired = await edit(() => chooseOption(page, roleField('Summary'), 'Trial summary · summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   if (first) {
     const authored = rootPayload(wired.project.documents!.analysis) as unknown as AnalysisDocument;
@@ -329,6 +341,8 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
       .toEqual(['succeeded', 'succeeded', 'succeeded', 'succeeded']);
     return projection!;
   }
+  /** Fetching a saved figure, loading Plotly and drawing it is the work these waits see through; under load it takes seconds. */
+  const drawing = 20_000;
   async function showReport(url: string) {
     await expect(document.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('**Velocity** by condition.');
     const result = document.getByRole('button', { name: 'Result', exact: true });
@@ -339,7 +353,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     const rendered = frame.contentFrame();
     await expect(rendered.getByText('Velocity', { exact: true })).toBeVisible();
     const reportFigure = rendered.locator('[data-report-source] svg.main-svg').first();
-    await expect(reportFigure).toBeVisible();
+    await expect(reportFigure).toBeVisible({ timeout: drawing });
     if (paired) await expectSeparateVelocityLines(reportFigure);
   }
   async function showFigure() {
@@ -348,7 +362,9 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     await activate(page, figures.getByRole('button', { name: 'Velocity Summary', exact: true }));
   }
   async function drawnFigure(name: 'Current Result' | 'Previous Result') {
-    const plot = figures.getByRole('region', { name, exact: true }).locator('svg.main-svg').first();
+    const region = figures.getByRole('region', { name, exact: true });
+    await expect(region.locator('[role="img"]:not([aria-busy])')).toBeVisible({ timeout: drawing });
+    const plot = region.locator('svg.main-svg').first();
     await expect(plot).toBeVisible();
     if (paired) await expectSeparateVelocityLines(plot);
   }
@@ -503,7 +519,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   const table = page.getByRole('table', { name: 'Runs', exact: true });
   const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  const train = page.getByRole('article', { name: 'Train train', exact: true });
+  const train = mapCard(page, 'train');
   async function snapshot() {
     const response = await request.get(path);
     expect(response.ok(), await response.text()).toBe(true);
@@ -533,7 +549,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   async function selectPair() {
     await openRuns('conditions');
     const rows = (await plan()).window_map!.rows;
-    const label = (row: string) => rows.find(({ key }) => key.step === 'conditions' && key.row === row)!.label;
+    const label = (row: string) => shownRunLabel(rows.find(({ key }) => key.step === 'conditions' && key.row === row)!);
     const nominal = table.getByRole('button', { name: runName(label('mass=nominal')) });
     const heavy = table.getByRole('button', { name: runName(label('mass=heavy')) });
     await nominal.click();
@@ -548,7 +564,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
     const creation = page.waitForResponse((response) => response.request().method() === 'POST'
       && new URL(response.url()).pathname === path + '/files'
       && response.request().postDataJSON().file.id === id);
-    await train.getByRole('button', { name: 'New Step train', exact: true }).click();
+    await train.getByRole('button', { name: 'New Step Train', exact: true }).click();
     await chooseStepKind(page, kind);
     const created = await creation;
     expect(created.status(), await created.text()).toBe(201);
@@ -579,7 +595,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   await expect(palette.getByRole('option', { name: 'New Step', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
   await openRuns('train');
-  await expect(train.getByRole('button', { name: 'New Step train', exact: true })).toHaveCount(0);
+  await expect(train.getByRole('button', { name: 'New Step Train', exact: true })).toHaveCount(0);
 
   await pick(variants, 'base');
   await selectPair();

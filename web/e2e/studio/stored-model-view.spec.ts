@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
-import { chooseSweepValue, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseSweepValue, enter, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { modelEdit, outlineRow, pick, placeFromLibrary } from './fixtures/controls';
 import { rootPayload } from './fixtures/rootPayload';
@@ -92,7 +92,7 @@ test('authors and reopens an addressed Model through the project history', async
   const wire = wired.changed[0].element;
   if (wire.kind !== 'wire') throw new Error('Connect did not return a wire address');
   expect(stored(wired.snapshot).interior.wires?.[wire.id].attachments).toMatchObject([
-    { kind: 'delay', delay: { value: 1, unit: 'st' }, initial: 0 },
+    { kind: 'delay', delay: { value: 1, unit: 'st' }, initial_source: { kind: 'value', value: 0 } },
   ]);
   const delay = model.getByRole('button', { name: 'Attachment Delay', exact: true });
   await expect(delay).toHaveAccessibleDescription(/1 st · .+hidden → .+hidden/);
@@ -115,15 +115,15 @@ test('authors and reopens an addressed Model through the project history', async
     await otherHidden.click();
   });
   expect(stored(linked.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({
-    initial: { kind: 'name', reference: expect.stringContaining(component.id) },
+    initial_source: { kind: 'wire', source: { owner: 'component', component: component.id, port: 'hidden' } },
   });
   await model.focus();
   const undone = await apply(() => page.keyboard.press('Meta+Z'), 'undo');
-  expect(stored(undone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({ initial: 0 });
+  expect(stored(undone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({ initial_source: { kind: 'value', value: 0 } });
   await model.focus();
   const redone = await apply(() => page.keyboard.press('Meta+Shift+Z'), 'undo');
   expect(stored(redone.snapshot).interior.wires?.[wire.id].attachments?.[0]).toMatchObject({
-    initial: { kind: 'name', reference: expect.stringContaining(component.id) },
+    initial_source: { kind: 'wire', source: { owner: 'component', component: component.id, port: 'hidden' } },
   });
 
   const before = await cell.evaluate((node) => node.style.transform);
@@ -232,12 +232,12 @@ test('an Evaluate attachment for the step is stored in a document based on the s
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('0.5');
-  const evaluation = page.getByRole('article', { name: 'Evaluate baseline' });
-  await chooseSweepValue(evaluation, 'seed', 'control');
+  const evaluation = mapCard(page, 'baseline');
+  await chooseSweepValue(evaluation, 'Seed', 'Control');
   await outlineRow(page, 'Cell.output → Readout.input').click();
   await addIntervention(page, projectPath, { rows: ['seed=control'], axes: { seed: ['control'] } });
   await mapStep(page, 'baseline').click();
-  await evaluation.locator('.studio-map-run-mark').and(evaluation.getByRole('button', { name: /^Select seed comparison/ })).click();
+  await evaluation.locator('.studio-map-run-mark').and(evaluation.getByRole('button', { name: /^Select Comparison/ })).click();
   await outlineRow(page, 'Cell.output → Readout.input').click();
   await addIntervention(page, projectPath, { rows: ['seed=comparison'] });
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toHaveCount(2);

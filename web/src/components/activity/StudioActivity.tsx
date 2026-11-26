@@ -1,7 +1,9 @@
+import clsx from 'clsx';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/features/projectWindow/studioCommands';
 import { holdWhile } from '@/features/projectWindow/heldGestures';
 import { useId, useState, type PropsWithChildren } from 'react';
 import { closeStudioMachine } from '@/api/jobs';
+import { statusCounted, uncountedRun } from '@/components/ui/StatusMark';
 import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioContracts';
 import { StudioJobsProvider, useStudioJobActions, useStudioJobs, useStudioJobsProject, useStudioUnreadableJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
@@ -18,6 +20,7 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { X } from 'lucide-react';
 import { Section } from '@/components/ui/Section';
 
+
 const liveStatuses = new Set<StudioRunStatusId>([
   'queued',
   'awaiting_authorization',
@@ -32,10 +35,6 @@ function isLive(job: StudioActivityJob) {
 }
 
 const activityTime = (job: StudioActivityJob) => job.ended_at_ms ?? job.submitted_at_ms;
-
-function coordinateValue(value: unknown) {
-  return typeof value === 'string' ? value : JSON.stringify(value);
-}
 
 function ActivityRun({
   job,
@@ -57,7 +56,6 @@ function ActivityRun({
   const [failure, setFailure] = useState<string | null>(null);
   const { Icon, tint, name } = studioStep(job.kind);
   const live = isLive(job);
-  const coordinates = Object.entries(job.coordinates);
   /** Who submitted the run, when it was not this Studio: a run from the command line says so. */
   const client = job.actor?.client === 'studio' ? undefined : job.actor ?? undefined;
   /** When the run ended, or while it is live, when it was submitted. */
@@ -96,7 +94,10 @@ function ActivityRun({
 
   return (
     <li
-      className="space-y-2 rounded-md border border-l-4 bg-shell-surface p-3 shadow-sm"
+      data-job={job.job_id}
+      data-run-key={job.run_key}
+      className={clsx('space-y-2 rounded-md border border-l-4 bg-shell-surface p-3 shadow-sm',
+        !statusCounted(resultState ?? job.status) && uncountedRun)}
       style={{ borderLeftColor: tint }}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -122,15 +123,9 @@ function ActivityRun({
       <time className="block text-xs tabular-nums text-shell-muted" dateTime={new Date(time).toISOString()}>
         {studioDateTime(time)}
       </time>
-      {(coordinates.length > 0 || client || machine) && (
+      {(client || machine) && (
         <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-shell-muted">
           {machine && <div className="flex gap-1"><dt>{studioName('machine')}</dt><dd>{machine}</dd></div>}
-          {coordinates.map(([axis, value]) => (
-            <div key={axis} className="flex gap-1">
-              <dt>{axis}</dt>
-              <dd className="tabular-nums">{coordinateValue(value)}</dd>
-            </div>
-          ))}
           {client && <div className="flex gap-1">
             <dt>{studioName('client')}</dt>
             <dd>{studioName(client.client)}</dd>

@@ -7,6 +7,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const views = ['Runs', 'Model', 'Task', 'Objective', 'Training', 'Scene', 'Results', 'Analysis', 'Figures', 'Document'];
 const rail = (page: Page) => page.getByRole('navigation', { name: 'Details', exact: true });
+const mapToolbar = (page: Page) => page.getByRole('toolbar', { name: 'Pipeline Map', exact: true });
 const drawer = (page: Page) => page.getByRole('complementary', { name: 'Map Drawer', exact: true });
 const menu = (page: Page) => page.getByRole('menu');
 
@@ -55,7 +56,7 @@ async function expectMenuBeside(page: Page, opener: { x: number; y: number; widt
   const box = (await menu(page).boundingBox())!;
   expect(Math.abs(box.y - (opener.y + opener.height))).toBeLessThan(12);
   expect(Math.abs(box.x - opener.x)).toBeLessThan(12);
-  await expect(menu(page).getByRole('menuitem')).toHaveText(['Train', 'Evaluate', 'Analyze', 'Report']);
+  await expect(menu(page).getByRole('menuitem')).toHaveText(['Train', 'Synthesize', 'Evaluate', 'Analyze', 'Report']);
 }
 
 test('an empty project draws only the bar, the map with its drawer, the rail and the bottom bar', async ({ page, request }) => {
@@ -78,7 +79,7 @@ test('an empty project draws only the bar, the map with its drawer, the rail and
   const { line, bottom } = await separator(page);
   expect(line).toBeCloseTo(bottom, 0);
   for (const name of ['Fit View', 'Zoom In', 'Zoom Out']) {
-    await expect(rail(page).getByRole('button', { name, exact: true })).toHaveAttribute('aria-disabled', 'true');
+    await expect(mapToolbar(page).getByRole('button', { name, exact: true })).toBeDisabled();
   }
 
   await expect(add).toBeEnabled();
@@ -144,23 +145,23 @@ test('the rail separator follows the divider and every view keeps its place', as
     for (const offset of (await glyphOffsets(page)).values()) expect(offset).toBeGreaterThanOrEqual(0);
   }
 
-  const zoomOut = (await rail(page).getByRole('button', { name: 'Zoom Out', exact: true }).boundingBox())!;
+  const zoomOut = (await mapToolbar(page).getByRole('button', { name: 'Zoom Out', exact: true }).boundingBox())!;
   const { line } = await separator(page);
   expect(line - (zoomOut.y + zoomOut.height)).toBeGreaterThanOrEqual(0);
   expect(line - (zoomOut.y + zoomOut.height)).toBeLessThan(12);
   const transform = () => page.locator('[data-map-canvas] .react-flow__viewport').evaluate((element) => getComputedStyle(element).transform);
   const before = await transform();
-  await rail(page).getByRole('button', { name: 'Zoom In', exact: true }).click();
+  await mapToolbar(page).getByRole('button', { name: 'Zoom In', exact: true }).click();
   await expect.poll(transform).not.toBe(before);
 
   const trainOffsets = await glyphOffsets(page);
   const pitch = trainOffsets.get('Model')! - trainOffsets.get('Runs')!;
   expect(pitch).toBeGreaterThan(0);
   expectFixedPlaces(trainOffsets, pitch);
-  for (const [kind, absent] of [['evaluate', ['Training', 'Results', 'Analysis', 'Figures', 'Document']],
-    ['analyze', ['Model', 'Task', 'Objective', 'Training', 'Scene', 'Results', 'Document']]] as const) {
+  for (const [kind, step, absent] of [['evaluate', 'Baseline', ['Training', 'Results', 'Analysis', 'Figures', 'Document']],
+    ['analyze', 'Analyze', ['Model', 'Task', 'Objective', 'Training', 'Scene', 'Results', 'Document']]] as const) {
     // The zoomed canvas can carry a card under the window bar, so the step is chosen from the drawer.
-    await page.getByRole('tree', { name: 'Steps', exact: true }).getByRole('treeitem', { name: new RegExp(`^${stepOf(kind)}\\b`) }).click();
+    await page.getByRole('tree', { name: 'Steps', exact: true }).getByRole('treeitem', { name: new RegExp(`^${step}\\b`) }).click();
     for (const name of views) {
       const tab = rail(page).getByRole('tab', { name, exact: true });
       if ((absent as readonly string[]).includes(name)) {
@@ -180,7 +181,7 @@ test('the rail separator follows the divider and every view keeps its place', as
     for (const [name, offset] of offsets) if (trainOffsets.has(name)) expect(offset).toBeCloseTo(trainOffsets.get(name)!, 0);
   }
 
-  await rail(page).getByRole('button', { name: 'Fit View', exact: true }).click();
+  await mapToolbar(page).getByRole('button', { name: 'Fit View', exact: true }).click();
   await mapStep(page, stepOf('train')).click();
   const trainCard = page.locator(`[data-map-step="${stepOf('train')}"]`).getByRole('button', { name: /^New Step/ });
   await trainCard.click();

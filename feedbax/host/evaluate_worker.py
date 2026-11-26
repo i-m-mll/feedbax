@@ -29,24 +29,26 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.loaded_model import ImportedModelSource, decode_imported_model_document
-from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, read_document_input
+from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, SynthesizedModelSource, read_document_input
+from feedbax.contracts.model_origin import InitialModelOrigin, LoadedModelOrigin, SynthesizedModelOrigin
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.project_sources import pointer as json_pointer
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef, UpdateSeriesMember
+from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef, UpdateSeriesMember, is_synthesized_model_product
 from feedbax.contracts.rollout import (
-    ResolvedInitialRollout, ResolvedRolloutBinding, ResolvedRolloutMember, rollout_objective_sha256, rollout_semantics,
+    ResolvedInitialRollout, ResolvedRolloutBinding, ResolvedRolloutMember, ResolvedSynthesizedRollout,
+    rollout_objective_sha256, rollout_semantics,
 )
 from feedbax.contracts.rollout_dataset import UpdateAxis, rollout_coordinates, rollout_leading, rollout_update_axis
 from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-from feedbax.persistence.completion import CompletionFileError
+from feedbax.persistence.completion import CompletionFileError, read_completion_bindings
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance
 from feedbax.application.composition import load_application
-from feedbax.host.model_input import prepare_model_task, reconstruct_model
+from feedbax.host.model_input import ImportedModelWeights, prepare_model_task, reconstruct_model
 from feedbax.persistence.canonical_evaluate import (
     ROLLOUT_TYPE,
     ROLLOUT_JAX_BACKEND,
@@ -54,6 +56,7 @@ from feedbax.persistence.canonical_evaluate import (
     STATES_MEDIA_TYPE,
     BoundEvaluationJobInput,
     RolloutParameters,
+    SynthesizedSubjectBinding,
     decode_rollout_request,
     evaluation_checkpoint_coordinates,
     exact_evaluation_subject,
@@ -63,6 +66,7 @@ from feedbax.persistence.canonical_evaluate import (
     initial_evaluation_references,
     verified_imported_subject,
 )
+from feedbax.persistence.model_input import read_synthesized_model
 from feedbax.contracts.rollout import CannotRun
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.host.training_worker import _Events, _Result, _error
@@ -103,7 +107,7 @@ class PreparedRollout:
     layout: RawStateLayout
     scorer: RolloutScorer
     slot: SemanticModelSlot | None
-    member: ResolvedRolloutMember | ResolvedInitialRollout
+    member: ResolvedRolloutMember | ResolvedInitialRollout | ResolvedSynthesizedRollout
     objective: str | None
     varied: bool
     replicas: tuple[tuple[str, Graph], ...] = ()
@@ -236,13 +240,16 @@ def _prepare_weighted_rollout(
     objective: ObjectiveDocument | None, input_bindings: dict[str, str | None],
     params: RolloutParameters, slot: SemanticModelSlot, *, registry: ApplicationRegistryBundle,
     coordinate: int | None = None, imported_subject_sha256: str | None = None,
+    synthesized_source: SynthesizedModelSource | None = None,
 ) -> PreparedRollout:
+    imported = imported_subject_sha256 is not None
     resolved = resolve_rollout(
-        initial, task_source, objective, slot.graph, params, registry=registry,
+        initial, task_source, objective, None if imported else slot.graph, params, registry=registry,
         model_assets=slot.provider, input_bindings=input_bindings,
     )
     paired, variant, source_pair = resolved.paired, resolved.variant, resolved.source_pair
-    source = CheckpointModelSource(tree=slot.tree, encoding=slot.encoding, initial=initial)
+    source_type = ImportedModelWeights if imported else CheckpointModelSource
+    source = synthesized_source or source_type(tree=slot.tree, encoding=slot.encoding, initial=initial)
     restored = reconstruct_model(
         source, registry=registry, artifacts=slot.provider, template=source_pair.resolution,
         variant=None if paired is source_pair else paired.resolution, source_overrides=variant.source_overrides,
@@ -251,7 +258,7 @@ def _prepare_weighted_rollout(
     if isinstance(restored, tuple):
         problem = restored[0]
         subject_path = (
-            ("inputs", "subject", "checkpoint") if imported_subject_sha256 is None else ("inputs", "subject")
+            ("inputs", "subject", "checkpoint") if coordinate is not None else ("inputs", "subject")
         )
         raise CannotRun(json_pointer((*subject_path, *problem.path)), problem.reason)
     model, task = rollout_semantics(
@@ -265,6 +272,10 @@ def _prepare_weighted_rollout(
         member = ResolvedInitialRollout(
             initial_model=imported_subject_sha256, model=model, task=task, trials=params.trials,
             replica_ids=restored.replica_ids,
+        )
+    elif synthesized_source is not None:
+        member = ResolvedSynthesizedRollout(
+            model_tree=source.tree.descriptor.sha256, model=model, task=task, trials=params.trials,
         )
     else:
         assert coordinate is not None
@@ -315,7 +326,8 @@ def _prepare_initial_rollout(
 
 
 def _prepared_rollout(
-    resolved: ResolvedRollout, graph: Graph, member: ResolvedRolloutMember | ResolvedInitialRollout,
+    resolved: ResolvedRollout, graph: Graph,
+    member: ResolvedRolloutMember | ResolvedInitialRollout | ResolvedSynthesizedRollout,
     objective: ObjectiveDocument | None, *, slot: SemanticModelSlot | None = None,
     replicas: tuple[tuple[str, Graph], ...] = (),
 ) -> PreparedRollout:
@@ -346,6 +358,19 @@ def _prepare_stored_rollout(
         store, tree, SemanticModelEncoding.model_validate(model.descriptor), components=registry.components,
     )
     return _prepare_model_rollout(documents, params, slot, coordinate, seed=seed, registry=registry)
+
+
+def _prepare_synthesized_rollout(
+    store: ImmutableArtifactBlobProvider, source: SynthesizedModelSource, documents: TrialDocuments,
+    params: RolloutParameters, *, registry: ApplicationRegistryBundle,
+) -> PreparedRollout:
+    from feedbax.host.model_checkpoint import SemanticModelSlot
+
+    slot = SemanticModelSlot.open_store(store, source.tree, source.encoding, components=registry.components)
+    return _prepare_weighted_rollout(
+        source.initial, documents.task_source, documents.objective, documents.input_bindings, params, slot,
+        registry=registry, synthesized_source=source,
+    )
 
 
 def rollout_dataset(
@@ -384,6 +409,7 @@ def rollout_dataset(
             variables["objective/terms" + path] = Variable(expand(term.value), leading)
             variables["objective/coverage" + path] = Variable(expand(term.covered), leading)
         variables["objective/total"] = Variable(expand(evaluated.objective.loss), leading)
+        variables["objective/trial_loss"] = Variable(expand(evaluated.objective.trial_losses), (*leading, "trial"))
     document = variant.task if isinstance(variant.task, TaskDocument) else None
     labels = {epoch.id: epoch.name for epoch in document.epochs} if document is not None else {}
     trial_fields, trial_coordinates, record_layout = trial_dataset_fields(
@@ -645,6 +671,12 @@ def _replay_preparations(
         yield _prepare_initial_rollout(refs, params, registry=registry, store=store)
         return
     (bound,) = receipt.inputs["subject"]
+    if is_synthesized_model_product(subject):
+        if bound.selection is None:
+            raise ValueError("Evaluate receipt lacks its exact Synthesize model selection.")
+        synthesized, producer, _ = read_synthesized_model(store, bound.selection.receipt, subject)
+        yield _prepare_synthesized_rollout(store, synthesized, producer.trial_documents, params, registry=registry)
+        return
     source = bound.evaluation_subject
     if source is None:
         raise ValueError("Evaluate receipt lacks its exact retained checkpoint subject")
@@ -735,13 +767,26 @@ def main(argv: Sequence[str]) -> int:
         launch = request.canonical_request
         registry = load_application().bundle
         loaded_model = None
+        model_origin = None
         if isinstance(subject, ContentRef):
             binding = {}
             decoded = decode_request(store.get_object(launch.request), store.get_object)
             refs = initial_evaluation_references(decoded)
             loaded_model, _ = verified_imported_subject(store, subject)
+            model_origin = LoadedModelOrigin(kind="loaded") if loaded_model is not None else InitialModelOrigin(kind="initial")
             members = ((None, partial(_prepare_initial_rollout, refs, params, registry=registry, store=store)),)
             train, provenance = [], initial_evaluation_provenance(refs)
+        elif is_synthesized_model_product(subject):
+            binding = read_completion_bindings()
+            anchored = SynthesizedSubjectBinding.model_validate(binding["model_subject"])
+            source, producer, success = read_synthesized_model(store, anchored.receipt, subject)
+            model_origin = SynthesizedModelOrigin(
+                kind="synthesized", key=anchored.key, job_id=success.attempt, request_id=subject.request_id,
+            )
+            members = ((None, partial(
+                _prepare_synthesized_rollout, store, source, producer.trial_documents, params, registry=registry,
+            )),)
+            train, provenance = [], anchored.provenance(model_origin)
         elif launch.terminal is not None or "terminal" in (binding := read_host_completion_binding()):
             if not isinstance(subject, ProductRef) or not isinstance(subject.select, LastMember):
                 raise ValueError("Store terminal subject requires an authored last checkpoint")
@@ -795,6 +840,7 @@ def main(argv: Sequence[str]) -> int:
                     ),
                     input_training_runs=train,
                     loaded_model=loaded_model,
+                    model_origin=model_origin,
                     provenance=provenance,
                     artifacts=[
                         ArtifactRef(

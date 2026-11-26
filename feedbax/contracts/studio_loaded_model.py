@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field, RootModel
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.model_origin import ModelProductKey
 from feedbax.contracts.loaded_model import ModelFitReport
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.request_refs import BatchCoordinate, Name, Sha256
@@ -20,9 +20,9 @@ class StudioLoadedModelImportQuery(StrictModel):
 
 class StudioLoadedModelExportRequest(StrictModel):
     revision: Sha256
-    key: StudioSavedTrainKey
+    key: ModelProductKey
     job_id: NonemptyText
-    completed_updates: BatchCoordinate
+    completed_updates: BatchCoordinate | None = None
 
 
 class StudioLoadedModelImported(StrictModel):

@@ -31,6 +31,7 @@ from feedbax.contracts.execution_target import (
     LOCAL_RUN_KINDS, LOCAL_TARGET, LOCAL_TARGET_ID, AttemptTarget, ExecutionTargets,
     SessionTarget, SessionTargetProfile, TargetRunKind, attempt_target,
 )
+from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     JobError,
@@ -56,6 +57,7 @@ from feedbax.contracts.jobs import (
     StudioVenueStream,
 )
 from feedbax.contracts.loaded_model import ImportedModelProvenance
+from feedbax.contracts.model_origin import ModelOrigin
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT, LiveEvaluationObservation
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
@@ -71,9 +73,12 @@ from feedbax.planner.project_plan import (
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.receipt_validity import CodeDifference, InputDifference, ReceiptValidity, ValidityJudgement
-from feedbax.contracts.effective_success import EvaluationSubjectValue, TerminalTrainSubject
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.contracts.effective_success import EvaluationSubjectValue, ExcludedProduct, MetricExclusion, TerminalTrainSubject
+from feedbax.contracts.request_refs import (
+    BatchMember, BatchSetMember, BestCandidate, BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember,
+    is_synthesized_model_product,
+)
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, SynthesisRequestSpec
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
@@ -105,6 +110,10 @@ if TYPE_CHECKING:
     from feedbax.project_folder import ProjectFolder, SavedProjectPlans, SettledProjectPlan
 
 
+type AutomaticRun = Literal["all", "no_train", "off"]
+
+DEFAULT_AUTOMATIC_RUN: AutomaticRun = "no_train"
+
 _LIVE_STATES = frozenset({"queued", "assigned", "running", "stopping"})
 _HOST_ONLY_EVENTS = frozenset({"dependency_bound", "dependency_rejected", "continued"})
 _CHECKPOINT_ACTIVITY_EVENTS = frozenset({LIVE_EVALUATE_POINT, DELEGATION_EVENT})
@@ -128,7 +137,7 @@ _ACTIVE_PLAN_STATUSES = frozenset({
     JobStatus.RUNNING, JobStatus.STOPPING, JobStatus.COLLECTING,
 })
 EVALUATION_SUBJECT_REQUIRED = "select an unambiguous admitted Train subject"
-_LIGHT_KINDS = frozenset({"analyze", "render", "report"})
+_LIGHT_KINDS = frozenset({"analyze", "render", "report", "synthesize"})
 
 
 _log = logging.getLogger(__name__)
@@ -236,6 +245,7 @@ class PlanJobAttempt:
     revision: str | None = None
     trials: tuple[str, ...] = ()
     loaded_model: ImportedModelProvenance | None = None
+    model_origin: ModelOrigin | None = None
 
 
 @dataclass(frozen=True)
@@ -265,6 +275,7 @@ class _VerifiedEvaluation:
     bound_subject: StudioBoundBestSubject | None = None
     trials: tuple[str, ...] = ()
     loaded_model: ImportedModelProvenance | None = None
+    model_origin: ModelOrigin | None = None
 
 
 @dataclass(frozen=True)
@@ -302,11 +313,9 @@ class PlanJobReader:
             raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
         _, params, checkpoint = decode_rollout_request(run.request_id, plan.requests[run.request_id])
         if isinstance(checkpoint, ProductRef) and (source := plan.requests.get(checkpoint.request_id)) is not None:
-            from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-
             spec = decode_request(source, plan.documents.__getitem__).spec
-            if not isinstance(spec, DocumentTrainingRequestSpec):
-                raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
+            if not isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)):
+                raise CannotRun("/inputs/subject", "Managed Evaluate needs a model product from resolved trial documents.")
         return params, checkpoint
 
     @inspect_without_recording()
@@ -449,6 +458,7 @@ class PlanJobReader:
                 request_id=request_id, revision=job["data"].get("revision"),
                 trials=result.trials if result is not None else (),
                 loaded_model=result.loaded_model if result is not None else None,
+                model_origin=result.model_origin if result is not None else None,
             )
             attempts.setdefault(request_id, []).append(attempt)
             for address in known:
@@ -491,7 +501,7 @@ class JobService(PlanJobReader):
         live_validation_qualifications: Sequence[ValidationQualification] = (),
         targets: TargetRegistry | None = None,
         submit_session: SessionSubmission | None = None,
-        automatic_run: Literal["all", "no_train", "off"] = "all",
+        automatic_run: AutomaticRun = DEFAULT_AUTOMATIC_RUN,
         quick_duration: timedelta = QUICK_RECEIPT_DURATION,
     ) -> None:
         super().__init__(host, components=registries.components, registries=registries)
@@ -623,6 +633,7 @@ class JobService(PlanJobReader):
         items = {}
         runs = {}
         checkpoints = {}
+        synthesized: dict[str, tuple[RunKey | None, RequestId]] = {}
         names_by_key = {key: name for name, key in selected.items()}
         reviewed_catalogs = _planned_checkpoint_catalogs(reviewed.plan) if train else {}
         with folders.admission_plan(project) as current:
@@ -672,7 +683,9 @@ class JobService(PlanJobReader):
                     except (ValueError, KeyError, OSError) as error:
                         items[name] = _rejected(name, f"cannot_run {error}")
                         continue
-                    if terminal is None and not isinstance(checkpoint, ContentRef):
+                    if is_synthesized_model_product(checkpoint):
+                        synthesized[name] = planned.producer, checkpoint.request_id
+                    elif terminal is None and not isinstance(checkpoint, ContentRef):
                         checkpoints[name] = (
                             tuple(
                                 (key, candidate.reference.request_id)
@@ -788,6 +801,22 @@ class JobService(PlanJobReader):
                     items[name] = item
                     assert item.job is not None
                     runs[name] = item.job.data | {"request_id": node.request_id}
+            synthesis_predecessors = set()
+            for name, (producer, request) in synthesized.items():
+                candidate_name = plan_attempt_key(producer) if producer is not None else None
+                candidate = items.get(candidate_name) if candidate_name is not None else None
+                anchor = self._product_anchor(project, store, request, candidate)
+                item = items[name]
+                assert item.job is not None
+                if anchor is None:
+                    items[name] = _rejected(name, "cannot_run /inputs/subject: run the selected Synthesize first.")
+                    runs.pop(name)
+                else:
+                    items[name] = replace(item, job=replace(item.job, edges=(Edge(anchor),)))
+                    if candidate is not None:
+                        synthesis_predecessors.add(candidate_name)
+            if synthesis_predecessors:
+                order.sort(key=lambda name: name not in synthesis_predecessors)
             record = {
                 "project": project, "continues": None, "runs": runs, "command": command,
                 "actor": actor.model_dump(mode="json"),
@@ -833,6 +862,17 @@ class JobService(PlanJobReader):
     def _checkpoint_producer(self, project: str, root: Path, request: RequestId) -> str | None:
         return self.host.checkpoint_producer(project=project, manifest_root=str(root), request=request)
 
+    def _product_anchor(
+        self, project: str, store: ImmutableArtifactBlobProvider, request: RequestId, candidate: AdmissionItem | None,
+    ) -> str | None:
+        if candidate is not None:
+            return candidate.job.id if candidate.job is not None and candidate.job.request == request else None
+        anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=request))
+        return next((job["id"] for job in reversed(anchors) if (
+            job["data"].get("manifest_root") == str(store.root)
+            and (job["state"] in _LIVE_STATES | {"not_chosen"} or (job["state"] == "succeeded" and self._receipt_matches(job)))
+        )), None)
+
     def _light_item(
         self, project: str, plan: ProjectPlan, store: ImmutableArtifactBlobProvider,
         row: PlannedRow, node: PlannedRun | PlannedElement, items: Mapping[str, AdmissionItem],
@@ -855,6 +895,7 @@ class JobService(PlanJobReader):
         if encoded.id != node.request_id or encoded.data != raw:
             raise ValueError("The saved request bytes do not match the Plan identity.")
         parents = {}
+        excluded = {}
         for role, bindings in planned_input_groups(node).items():
             for binding in bindings:
                 reference = binding.member.reference
@@ -865,19 +906,16 @@ class JobService(PlanJobReader):
                 exact_checkpoint = reference.role == "checkpoint" and isinstance(reference.select, BatchMember)
                 if candidate is None and exact_checkpoint:
                     anchor = self._checkpoint_producer(project, store.root, reference.request_id)
-                elif candidate is None:
-                    anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=reference.request_id))
-                    anchor = next((job["id"] for job in reversed(anchors) if (
-                        job["data"].get("manifest_root") == str(store.root)
-                        and (job["state"] in _LIVE_STATES or (job["state"] == "succeeded" and self._receipt_matches(job)))
-                    )), None)
                 else:
-                    anchor = (
-                        candidate.job.id
-                        if candidate.job is not None and candidate.job.request == reference.request_id else None
-                    )
+                    anchor = self._product_anchor(project, store, reference.request_id, candidate)
                 if anchor is None:
-                    raise ValueError(f"/inputs/{role}: no admitted exact producer for {reference.request_id}.")
+                    absent = excluded.get(reference.request_id)
+                    if absent is None and not exact_checkpoint:
+                        absent = self._planned_metric_exclusion(plan, store, reference.request_id)
+                    if absent is None:
+                        raise ValueError(f"/inputs/{role}: no admitted exact producer for {reference.request_id}.")
+                    excluded[reference.request_id] = absent
+                    continue
                 parents.setdefault(reference.request_id, Edge(anchor, authenticated_completion=exact_checkpoint))
 
         name = plan_attempt_key(node.key)
@@ -886,7 +924,7 @@ class JobService(PlanJobReader):
             data["label"] = f"{data['label']} · {node.label or node.key.name}"
         store_document_inputs(store, decoded.inputs, plan.documents.__getitem__)
         payload = LightDelivery(
-            project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded),
+            project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded), excluded=excluded,
         )
         profile = self._light_worker
         slot = "light"
@@ -903,6 +941,36 @@ class JobService(PlanJobReader):
             edges=tuple(parents.values()),
             data=data | {"manifest_root": str(store.root), "runtime": launch.argv[0]},
         ))
+
+    @staticmethod
+    def _planned_metric_exclusion(
+        plan: ProjectPlan, store: ImmutableArtifactBlobProvider, request_id: RequestId,
+    ) -> ExcludedProduct | None:
+        """A settled false condition supplies evidence without an Evaluate attempt."""
+        from feedbax.persistence.effective_success import SuccessView, store_request
+        from feedbax.persistence.train_metrics import passes_final_metric_condition
+
+        raw = plan.requests.get(request_id)
+        if raw is None or not request_id.startswith(("train:", "evaluate:")):
+            return None
+        decoded = decode_request(raw, plan.documents.__getitem__)
+        conditions = [
+            member.reference for members in decoded.inputs.values() for member in members
+            if isinstance(member.reference, ConditionalProduct)
+        ]
+        if len(conditions) != 1:
+            return None
+        (condition,) = conditions
+        view = SuccessView(store)
+        held = view.authored(condition.request_id)
+        if held is None or passes_final_metric_condition(store, held.receipt, condition):
+            return None
+        encoded = encode_request(decoded.spec, decoded.inputs)
+        if encoded.id != request_id or encoded.data != raw:
+            raise ValueError("The excluded producer differs from the saved request.")
+        return ExcludedProduct(
+            request=store_request(store, encoded), cause=MetricExclusion(train=held.ref),
+        )
 
     def _evaluation_item(
         self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
@@ -925,13 +993,17 @@ class JobService(PlanJobReader):
             manifest_root=root,
             canonical_request=EvaluationRequestBinding(
                 request=store.store_rooted_object(raw, namespace="studio-evaluate-request"),
-                checkpoint=subject if not isinstance(subject, ContentRef) else None,
+                checkpoint=subject if not isinstance(subject, ContentRef) and not is_synthesized_model_product(subject) else None,
+                model=subject if is_synthesized_model_product(subject) else None,
                 initial_model=subject if isinstance(subject, ContentRef) else None,
                 terminal=terminal,
             ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
-        if isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember) and not params.variation:
+        if (
+            isinstance(subject, ProductRef) and not isinstance(subject, ConditionalProduct)
+            and isinstance(subject.select, UpdateSeriesMember) and not params.variation
+        ):
             qualification = self._live_validation_qualifications.get((subject.request_id, request_id))
             if qualification is not None:
                 data = data | {"validation_qualification": qualification.model_dump(mode="json")}
@@ -1651,7 +1723,8 @@ class JobService(PlanJobReader):
             project_id=project, request_id=request_id, manifest_root=Path(destination.root),
             canonical_request=EvaluationRequestBinding(
                 request=success.request.object,
-                checkpoint=subject if not isinstance(subject, ContentRef) else None,
+                checkpoint=subject if not isinstance(subject, ContentRef) and not is_synthesized_model_product(subject) else None,
+                model=subject if is_synthesized_model_product(subject) else None,
                 initial_model=subject if isinstance(subject, ContentRef) else None,
             ),
         )
@@ -1928,12 +2001,15 @@ class JobService(PlanJobReader):
             (parent := attempts.get(edge.job_id)) is None or parent["state"] in _LIVE_STATES
             for edge in candidate.edges
         )
-        origins = {}
+        origins = {key: ExcludedProduct.model_validate(value)
+                   for key, value in candidate.launch.payload.get("excluded", {}).items()}
         for edge in parents:
             if (parent := attempts.get(edge.job_id)) is not None and parent["state"] == "reused":
                 parent = attempts.get(parent["outcome"]["retained_attempt"])
             if parent is not None and parent["state"] == "succeeded" and (ref := view.attempt_ref(parent["id"])) is not None:
                 origins[parent["request"]] = ref
+            elif parent is not None and parent["state"] == "not_chosen":
+                origins[parent["request"]] = ExcludedProduct.model_validate(parent["outcome"]["excluded_product"])
         for job in reversed(jobs):
             if job["state"] in _LIVE_STATES:
                 return None
@@ -1951,7 +2027,7 @@ class JobService(PlanJobReader):
             old_parents = {edge["job_id"] for edge in job["edges"] if not edge.get("authenticated_completion")}
             if (
                 terminal_receipt is None and old_parents != parent_ids
-                and (not _is_light_request(candidate.request) or len(origins) != len(parents))
+                and (not _is_light_request(candidate.request) or len(origins) < len(parents))
             ):
                 return None
             retained = view.read_receipt(ref)
@@ -2120,13 +2196,16 @@ def _planned_light_runs(
 
 def _plan_run_data(name: str, plan: ProjectPlan, run: PlannedRow) -> dict[str, Any]:
     """What a job records of its run at submission; ``label`` is the run's name as Studio showed it then."""
-    step = plan.steps[run.key.variant, run.key.step].label or run.key.step
+    step = member_display_name(run.key.step, plan.steps[run.key.variant, run.key.step].label)
     return {
         "run_key": name,
         "stage_id": run.key.step,
         "scenario_id": run.key.variant,
         "label": f"{step} · {run.label}" if run.label else step,
-        "coordinates": {axis: coordinate.value for axis, coordinate in run.coordinates.items()},
+        "coordinates": {
+            axis: coordinate.value for axis, coordinate in run.coordinates.items()
+            if coordinate.value is not None or coordinate.explicit_null
+        },
     }
 
 
@@ -2383,10 +2462,10 @@ def _verify_stored_evaluation(
     manifest, subject = decode_evaluation_manifest(
         store, store.get_object(manifest_object), manifest_object, success.attempt, success.request.id, receipt,
     )
-    if isinstance(subject, ContentRef):
+    if isinstance(subject, ContentRef) or is_synthesized_model_product(subject):
         return _VerifiedEvaluation(
             receipt, states_ref(manifest).content.size, None, "ordinary", manifest_object,
-            trials=_evaluation_trials(manifest), loaded_model=manifest.loaded_model,
+            trials=_evaluation_trials(manifest), loaded_model=manifest.loaded_model, model_origin=manifest.model_origin,
         )
     (bound,) = success.inputs["subject"]
     source = bound.evaluation_subject
@@ -2584,7 +2663,7 @@ def _job_status(
 ) -> tuple[JobStatus, str | None]:
     state = job["state"]
     outcome = job.get("outcome") or {}
-    reason = (outcome.get("error") or {}).get("message")
+    reason = outcome.get("reason") or (outcome.get("error") or {}).get("message")
     kind = job["request"].partition(":")[0]
     evaluate = kind == "evaluate"
     if state == "succeeded" and not receipt_intact:
@@ -2637,6 +2716,8 @@ def saved_request_status(
         return live.status, live.reason
     if attempts:
         latest = attempts[-1]
+        if latest.status is JobStatus.NOT_CHOSEN:
+            return latest.status, latest.reason
         if success is not None and latest.status is not JobStatus.CORRUPT:
             notice = None
             if latest != success:

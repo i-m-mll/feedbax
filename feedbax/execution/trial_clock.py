@@ -20,6 +20,8 @@ from feedbax.contracts.trial_clock import (
     TrialMeanEpoch,
     TrialMeanOptions,
     TrialMeanSelection,
+    TrialMeanShelf,
+    TrialMeanTermShare,
     TrialSeriesSummary,
 )
 from feedbax.contracts.trial_record import TaskTimelineCue, TrialRecord
@@ -150,13 +152,62 @@ def _mean_epochs(trials: Sequence[AlignedTrial]) -> list[TrialMeanEpoch]:
     ]
 
 
+def _mean_shelf(trials: Sequence[AlignedTrial], records: Mapping[str, TrialRecord]) -> TrialMeanShelf:
+    if not trials:
+        return TrialMeanShelf(times=[], epochs=[], signals={}, terms={})
+
+    axes = [trial.times(trial.record.state_time) for trial in trials]
+    span = TrialClockSpan(
+        start=min(trial.alignment.span.start for trial in trials),
+        end=max(trial.alignment.span.end for trial in trials),
+    )
+    time = aligned_sample_times(axes, span=span)
+    # Evaluate masks inside each half-open interval. Nearly coincident boundaries can
+    # differ by a few ulps when trials shift from different epochs.
+    inside = time[:-1] + np.diff(time) / 2
+    indices = [np.searchsorted(axis, inside, side="right") - 1 for axis in axes]
+    active = [
+        (inside >= trial.alignment.span.start) & (inside < trial.alignment.span.end)
+        for trial in trials
+    ]
+    ordered = [records[trial.record.id] for trial in trials]
+
+    def shares(masks) -> list[float]:
+        total = np.zeros(inside.shape, dtype=int)
+        for mask, index, valid in zip(masks, indices, active, strict=True):
+            samples = np.asarray(mask, dtype=bool)
+            kept = valid & (index >= 0) & (index < len(samples))
+            total[kept] += samples[index[kept]]
+        return (total / len(trials)).tolist()
+
+    signals = dict.fromkeys(name for record in ordered for name in record.present)
+    terms = dict.fromkeys(name for record in ordered for name in record.terms)
+    interventions = dict.fromkeys(address for record in ordered for address in record.intervention_windows)
+    return TrialMeanShelf(
+        times=time.tolist(), epochs=_mean_epochs(trials),
+        signals={name: shares(record.present.get(name, []) for record in ordered) for name in signals},
+        interventions={
+            address: shares(record.intervention_windows.get(address, []) for record in ordered)
+            for address in interventions
+        },
+        terms={
+            name: TrialMeanTermShare(
+                steps=shares(record.terms[name].steps if name in record.terms else [] for record in ordered),
+                problems=[problem for record in ordered if name in record.terms for problem in record.terms[name].problems],
+            )
+            for name in terms
+        },
+    )
+
+
 def mean_trial_paths(
     records: Sequence[TrialRecord], state_time: np.ndarray, options: TrialMeanOptions, selection: TrialMeanSelection,
 ) -> TrialMean:
     by_id = {record.id: record for record in records}
     clocks = [TrialClockRecord(record.id, record.variables, record.timeline, state_time) for record in records]
     conditions = []
-    for group in align_trials(clocks, options, selection):
+    groups = align_trials(clocks, options, selection)
+    for group in groups:
         span = common_span(trial.alignment.span for trial in group.trials)
         aligned_times = [trial.times(state_time) for trial in group.trials]
         time = np.array([], dtype=float)
@@ -174,4 +225,5 @@ def mean_trial_paths(
             values=group.values, trials={trial.record.id: trial.alignment for trial in group.trials},
             span=span, time=time.tolist(), states=summaries, epochs=_mean_epochs(group.trials),
         ))
-    return TrialMean(selection=selection, conditions=conditions)
+    shelf = _mean_shelf([trial for group in groups for trial in group.trials], by_id)
+    return TrialMean(selection=selection, conditions=conditions, shelf=shelf)

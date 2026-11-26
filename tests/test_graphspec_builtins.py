@@ -220,7 +220,8 @@ def test_registered_intervention_rollout_preserves_signal_dtype_and_gradients(
             result = outputs[output_port]
             return (result.astype(jnp.float32) * weights).sum(), result
 
-        scale = jnp.float32(0.5)
+        # Reset-slot parameters follow process precision independently of the signal.
+        scale = jnp.asarray(0.5, dtype=float)
         (_, result), (signal_grad, scale_grad) = jax.value_and_grad(
             loss, argnums=(0, 1), has_aux=True
         )(signal, scale)
@@ -650,7 +651,6 @@ def _point_mass_feedback_spec(paths: list[str], **channel_params: Any) -> GraphS
                 source_port="state",
                 target_node="feedback",
                 target_port="mechanics",
-                temporality="recurrent",
                 recurrent_initializer={"kind": "state_output", "state_slot": "mechanics"},
             )
         ],
@@ -798,7 +798,7 @@ def _feedback_reset_graph(component_type):
         "subgraphs": {},
         "wires": [*feedback.wires, WireSpec(
             source_node="mechanics", source_port="state", target_node="select", target_port="state",
-            temporality="recurrent", recurrent_initializer={"kind": "state_output", "seed_channel_history": True},
+            recurrent_initializer={"kind": "state_output", "seed_channel_history": True},
         )],
         "output_bindings": nested.output_bindings | feedback.output_bindings,
     })
@@ -1155,16 +1155,17 @@ def test_force_field_output_prototypes_passthrough_force(
 
 
 @pytest.mark.parametrize(
-    ("component_type", "input_ports"),
+    ("component_type", "input_ports", "required"),
     [
-        ("feedbax.FixedField", ["force", "params_override"]),
-        ("feedbax.CurlField", ["effector", "force", "params_override"]),
-        ("feedbax.DynamicsMatrixPerturb", ["effector", "force", "params_override"]),
+        ("feedbax.FixedField", ["force", "params_override"], "input prototype 'force'"),
+        ("feedbax.CurlField", ["effector", "force", "params_override"], "effector velocity"),
+        ("feedbax.DynamicsMatrixPerturb", ["effector", "force", "params_override"], "input prototype 'force'"),
     ],
 )
-def test_force_field_output_prototypes_require_force_input(
+def test_force_field_output_prototypes_require_an_input(
     component_type: str,
     input_ports: list[str],
+    required: str,
 ) -> None:
     registry = ComponentRegistry()
     node_spec = ComponentSpec(
@@ -1174,7 +1175,7 @@ def test_force_field_output_prototypes_require_force_input(
         output_ports=["force"],
     )
 
-    with pytest.raises(ValueError, match="input prototype 'force'"):
+    with pytest.raises(ValueError, match=required):
         output_prototypes_for_node("field", node_spec, {}, {}, registry)
 
 

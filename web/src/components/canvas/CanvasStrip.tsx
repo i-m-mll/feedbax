@@ -5,18 +5,19 @@ import { commandAttributes } from '@/features/projectWindow/studioCommands';
 import type { CanvasViewportCommand } from './StudioCanvas';
 import './canvasStrip.css';
 
-export const canvasViewportIcons: Record<CanvasViewportCommand['id'], LucideIcon> = {
+const canvasViewportIcons: Record<CanvasViewportCommand['id'], LucideIcon> = {
   fitView: Scan, zoomIn: ZoomIn, zoomOut: ZoomOut,
 };
 
 /** A canvas with its control strip: the view's tools at the top, the viewport at the bottom. */
-export function CanvasStrip({ tools, viewport, children }: {
+export function CanvasStrip({ label, tools, viewport, children }: {
+  label?: string;
   tools?: ReactNode;
   viewport: readonly CanvasViewportCommand[];
   children: ReactNode;
 }) {
   return <div className="studio-canvas">
-    <div role="toolbar" aria-orientation="vertical" className="studio-canvas-strip">
+    <div role="toolbar" aria-label={label} aria-orientation="vertical" className="studio-canvas-strip">
       {tools}
       <div className="studio-canvas-strip__gap" />
       {viewport.map((command) => {

@@ -4,13 +4,13 @@ a selection of runs by their values."""
 from types import SimpleNamespace
 
 from feedbax.contracts.project_sweep import SweepCoordinate
-from feedbax.planner.project_plan import RunKey
+from feedbax.planner.project_plan import PlannedRow, RunKey
 from feedbax.web.services.axis_values import gather_axes
 from feedbax.web.services.trial_scope import SweepValuesRuns, runs_scope
 
 
 def _row(step, row, **coordinates):
-    return SimpleNamespace(key=RunKey("base", step, row), coordinates=coordinates, input_axes={})
+    return PlannedRow(RunKey("base", step, row), "evaluate", None, coordinates)
 
 
 def _seeds(train, seeds):
@@ -24,8 +24,11 @@ def _seeds(train, seeds):
 def test_runs_of_one_seed_from_two_producers_share_a_value_and_seeds_are_in_order():
     rows = [*_seeds("train", [0, 2, 3]), *_seeds("train-2", [0, 1, 2, 3])]
     (axis,), values = gather_axes(rows)
-    assert [value.label for value in axis.values] == ["0", "1", "2", "3"]
-    ids = {value.label: value.id for value in axis.values}
+    assert axis.label == "Seed"
+    assert [(value.label, value.value_label) for value in axis.values] == [
+        ("Seed 0", "0"), ("Seed 1", "1"), ("Seed 2", "2"), ("Seed 3", "3"),
+    ]
+    ids = {value.value_label: value.id for value in axis.values}
     assert values[RunKey("base", "evaluate", "train-0"), "seed"] == values[RunKey("base", "evaluate", "train-2-0"), "seed"] == ids["0"]
     assert values[RunKey("base", "evaluate", "train-2"), "seed"] == values[RunKey("base", "evaluate", "train-2-2"), "seed"] == ids["2"]
     assert len(set(ids.values())) == 4
@@ -44,7 +47,7 @@ def test_set_entries_with_one_key_and_different_names_stay_apart():
 def test_a_seed_of_an_evaluate_reading_two_producers_is_selected_as_a_rule():
     rows = [*_seeds("train", [0, 2, 3]), *_seeds("train-2", [0, 1, 2, 3])]
     (axis,), _ = gather_axes(rows)
-    two = next(value.id for value in axis.values if value.label == "2")
+    two = next(value.id for value in axis.values if value.value_label == "2")
     project = SimpleNamespace(steps={"evaluate": SimpleNamespace(sweep=None)})
     scope = runs_scope(
         project, SimpleNamespace(rows=rows), RunKey("base", "evaluate", "train-2"), ("train-2", "train-2-2"),

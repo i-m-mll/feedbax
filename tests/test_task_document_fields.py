@@ -17,7 +17,7 @@ def _author(project, step, change=None, **body):
 def _save(project, view):
     for created in view.created:
         response = project.client.post(f"{_URL}/files", json={
-            "revision": project.snapshot()["revision"], "file": created.model_dump(mode="json"),
+            "revision": project.snapshot()["revision"], "file": created.model_dump(mode="json", by_alias=True),
         })
         assert response.status_code == 201, response.text
     response = project.client.patch(_URL, json={

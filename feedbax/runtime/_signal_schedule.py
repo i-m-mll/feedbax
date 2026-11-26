@@ -58,10 +58,12 @@ class SignalSchedule:
 class SignalScheduleError(ValueError):
     def __init__(
         self, message: str, authored_path: str, *, issue_type: str = "invalid_signal_route",
+        cycle: tuple[ScopedWire, ...] = (),
     ):
         super().__init__(message)
         self.authored_path = authored_path
         self.issue_type = issue_type
+        self.cycle = cycle
 
 
 def needs_signal_schedule(graph: GraphSpec) -> bool:
@@ -73,7 +75,7 @@ def needs_signal_schedule(graph: GraphSpec) -> bool:
         return False
     adjacency: dict[str, set[str]] = {node: set() for node in graph.nodes}
     for wire in graph.wires:
-        if wire.temporality == "instant" and wire.source_node in adjacency:
+        if not wire.is_recurrent and wire.source_node in adjacency:
             adjacency[wire.source_node].add(wire.target_node)
     _, back_edges = detect_cycles_and_sort(adjacency)
     return bool(back_edges) or any(needs_signal_schedule(child) for child in children)
@@ -146,25 +148,25 @@ def resolve_signal_schedule(graph: GraphSpec) -> SignalSchedule:
                     f"Multiple drivers for input {target!r}", reference.authored_path,
                 )
             drivers.add(target)
-            if wire.temporality == "recurrent" and (
+            if wire.is_recurrent and (
                 (wire.recurrent_initializer or {}).get("kind") in {"graph-input", "node-output"}
             ):
                 raise SignalScheduleError(
                     "Trial-input and node-output resets require a contiguous composite schedule",
                     reference.authored_path,
                 )
-            routes.append(SignalRoute(source, target, reference, wire.temporality))
-            if wire.temporality == "instant":
+            routes.append(SignalRoute(source, target, reference, "recurrent" if wire.is_recurrent else "instant"))
+            if not wire.is_recurrent:
                 adjacency[source.node].add(target.node)
                 dependencies.setdefault((source.node, target.node), reference)
 
     order, back_edges = detect_cycles_and_sort(adjacency)
     if back_edges:
         source, target = back_edges[0]
+        cycle = _cycle_wires(adjacency, dependencies, source, target)
         raise SignalScheduleError(
             f"Instant signal wires contain a same-step cycle at {source!r} → {target!r}",
-            dependencies[source, target].authored_path,
-            issue_type="instant_cycle",
+            cycle[0].authored_path, issue_type="instant_cycle", cycle=cycle,
         )
     output_aliases = tuple(
         (ScopedPort(owner, port), resolve(
@@ -181,3 +183,22 @@ def resolve_signal_schedule(graph: GraphSpec) -> SignalSchedule:
         for port in sorted(interior.input_bindings)
     )
     return SignalSchedule(tuple(order), tuple(routes), inputs, input_aliases, outputs, output_aliases)
+
+
+def _cycle_wires(
+    adjacency: dict[Scope, set[Scope]], dependencies: dict[tuple[Scope, Scope], ScopedWire],
+    source: Scope, target: Scope,
+) -> tuple[ScopedWire, ...]:
+    previous: dict[Scope, Scope | None] = {target: None}
+    pending = [target]
+    while source not in previous:
+        current = pending.pop()
+        for following in sorted(adjacency[current] - previous.keys()):
+            previous[following] = current
+            pending.append(following)
+    cycle = []
+    current = source
+    while (parent := previous[current]) is not None:
+        cycle.append(dependencies[parent, current])
+        current = parent
+    return (dependencies[source, target], *reversed(cycle))

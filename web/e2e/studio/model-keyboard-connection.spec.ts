@@ -60,7 +60,8 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   }
   await expectVisibleFocus(input);
   await expect(input).toHaveRole('button');
-  await expect(input).toHaveAccessibleDescription('Input · real [2]');
+  // A GRU's input width is its wire's, so an unwired one names no type, and the connection gives it the signal's.
+  await expect(input).toHaveAccessibleDescription('Input');
   const edit = post('edit');
   await page.keyboard.press('Space');
   const applied = await edit;
@@ -68,11 +69,13 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   expect(applied.ok(), JSON.stringify(result)).toBe(true);
   if (result.status !== 'applied') throw new Error(JSON.stringify(result));
   const saved = rootPayload(result.snapshot.project.documents![modelFile.id]) as unknown as ModelDocument;
-  const taskPort = saved.ports.inputs?.find(({ name }) => name === signal);
+  // The new input takes the name of the Task signal it reads.
+  const taskPort = saved.ports.inputs?.find(({ name }) => name === 'target position');
   expect(taskPort).toBeDefined();
   expect(Object.values(saved.interior.wires ?? {})).toContainEqual(expect.objectContaining({
     source: { owner: 'inputs', port: taskPort?.id }, target: firstWire.target,
   }));
+  await expect(input).toHaveAccessibleDescription('Input · Point m real [2]');
 });
 
 test('a wire drawn to an occupied input of another type replaces its wire, keeping its attachment and waypoint', async ({ page, request }) => {
@@ -83,7 +86,7 @@ test('a wire drawn to an occupied input of another type replaces its wire, keepi
   definition.ports.outputs![0].type = { shape: [2], unit: 's' };
   const drive = definition.interior.wires!.command;
   const original = drive.source;
-  drive.attachments = [{ id: 'gain', kind: 'intervention', operation: 'scale', fields: { factor: 2 } }];
+  drive.attachments = [{ id: 'gain', kind: 'intervention', operation: 'scale', operands: { factor: { kind: 'value', value: 2 } } }];
   const seeded = await seedManagedProject(request, files);
   const { projectPath } = seeded;
   const wire = { composites: [], element: { kind: 'wire', id: 'command' } } as const;
@@ -133,7 +136,7 @@ test('a wire drawn to an occupied input of another type replaces its wire, keepi
   await expect(force.locator('..')).toHaveAttribute('data-verdict', 'marked');
   await expect(edge).toHaveAttribute('data-preview', 'kept');
   await expect(edge.locator('.react-flow__edge-path')).toHaveAttribute('d', new RegExp(`${waypoint.x},${waypoint.y}`));
-  await expect(model.getByRole('button', { name: /^Attachment / })).toHaveAccessibleDescription(/Inputs\.target_pos →/);
+  await expect(model.getByRole('button', { name: /^Attachment / })).toHaveAccessibleDescription(/Inputs\.target position →/);
   const edited = post('edit');
   await page.mouse.up();
   const replaced = storedDrive(await (await edited).json() as ModelEditResponse);

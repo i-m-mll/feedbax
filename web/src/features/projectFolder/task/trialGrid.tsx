@@ -1,6 +1,6 @@
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
-import { reasonOf, type FieldModel } from '@/components/values/fieldModel';
+import { reasonOf, untilText, type FieldModel } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
 import type { StudioNamedValueType, TaskDocument, ValueType } from '@/generated/studioContracts';
 import { authoredPointer } from '../authoredEdits';
@@ -8,6 +8,7 @@ import { changedAt, expressionKind, trialField, type Commit, type TrialRuns, typ
 import { TaskGrid, type GridEdits } from './TaskGrid';
 import { TaskInspector } from './TaskInspector';
 import type { TrialShown } from './trialSample';
+import { endsBy } from './taskTrials';
 import { selectionKey, selectionOf, type TaskCell, type TaskDocumentView, type TaskEpoch, type TaskRepeat, type TaskSignal } from './taskModel';
 
 type Structure = Extract<Parameters<Commit>[1], { kind: 'structure' }>['changes'][number];
@@ -23,28 +24,42 @@ function projected(view: TrialView, parts: readonly string[], stored: string, op
   const projection = view.fields.find((field) => field.path === path);
   if (!projection) return rawField({ id: options.id, label: options.label, value: '', type: { kind: 'readOnly' } });
   const { commit, runs } = options;
-  return trialField(projection, options.label, runs, {
+  return trialField(view, projection, options.label, runs, {
     id: options.id, kind: expressionKind(options.value as never), changed: changedAt(view, 'task', stored, commit),
     commit: commit && ((edit) => commit(studioAccessibleName('set', options.name), { kind: 'expression', path, edit })),
   });
 }
 
 /**
- * An epoch's End: its length's field, with Rest among its kinds. A Rest End's field shows Rest; committing `rest`
- * makes an End Rest, and a length's text makes a Rest End that length, each in one edit the service makes.
+ * An epoch's End: its length's field, with Until and Rest among its kinds. A Rest End's field shows Rest; an Until
+ * End's shows its condition and limit as one text, with each as its own part. Committing `rest`, a length's text or
+ * `<condition> ≤ <limit>` makes the End that kind, in one edit the service makes.
  */
 function endField(view: TrialView, task: TaskDocument, index: number, commit?: Commit): FieldModel {
   const epoch = task.epochs[index];
   const label = studioName('end');
   const end = epoch.end;
-  const rest = !('length' in end);
-  const length = projected(view, ['epochs', epoch.id, 'end', 'length'], `/epochs/${index}/end/length`,
-    { id: `end:${epoch.id}`, label, value: rest ? undefined : end.length, commit, name: `${epoch.name} ${label}` });
-  return {
-    ...length,
-    ...rest ? { kind: 'rest', text: 'rest', structure: undefined } : {},
-    kinds: [...length.kinds.filter(({ kind }) => !rest || kind !== 'sweep'), { kind: 'rest', enabled: !!length.commit }],
-  };
+  const at = (part: 'length' | 'condition' | 'limit', partLabel: string, value?: unknown) =>
+    projected(view, ['epochs', epoch.id, 'end', part], `/epochs/${index}/end/${part}`,
+      { id: `end:${epoch.id}${part === 'length' ? '' : `.${part}`}`, label: partLabel, value, commit, name: `${epoch.name} ${partLabel}` });
+  const length = at('length', label, 'length' in end ? end.length : undefined);
+  const condition = at('condition', studioName('condition'), 'condition' in end ? end.condition : undefined);
+  const kinds = [
+    ...length.kinds.filter(({ kind }) => 'length' in end || kind !== 'sweep'),
+    { kind: 'until' as const, enabled: !!length.commit, names: [
+      ...condition.names, ...length.names.filter(({ id }) => !condition.names.some((name) => name.id === id)),
+    ] },
+    { kind: 'rest' as const, enabled: !!length.commit },
+  ];
+  if ('length' in end) return { ...length, kinds };
+  if ('condition' in end) {
+    const limit = at('limit', studioName('limit'));
+    return {
+      ...length, kind: 'until', text: untilText(condition.text ?? '', limit.text ?? ''), structure: undefined, kinds,
+      parts: [condition, limit],
+    };
+  }
+  return { ...length, kind: 'rest', text: 'rest', structure: undefined, kinds };
 }
 
 const sameType = (a: ValueType, b: ValueType) => studioValueType(a) === studioValueType(b);
@@ -57,7 +72,7 @@ function grid(view: TrialView, task: TaskDocument, types: readonly StudioNamedVa
     return {
       id: epoch.id, name: epoch.name, end: endField(view, task, index, commit),
       bounds: {
-        id: epoch.id, name: epoch.name, ends: !('length' in epoch.end) ? 'rest' : steps && steps.least !== steps.greatest ? 'drawn' : 'length',
+        id: epoch.id, name: epoch.name, ends: endsBy(epoch.end, steps),
         least: steps && period != null ? steps.least * period : 0,
         nominal: steps && period != null ? steps.nominal * period : 0,
         greatest: steps && period != null ? steps.greatest * period : 0,

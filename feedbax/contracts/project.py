@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-import re
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.display_names import member_display_name as member_display_name
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, LOADED_MODEL_SCHEMA_VERSION, ImportedModelSource
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
@@ -29,16 +29,13 @@ from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, Tra
 type Payload = dict[str, JsonValue]
 type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
-type StepKind = Literal["train", "evaluate", "analyze", "report"]
+type StepKind = Literal["train", "synthesize", "evaluate", "analyze", "report"]
+type ProjectModelArchive = Annotated[str, StringConstraints(pattern=r"^models/[A-Za-z0-9_][A-Za-z0-9_-]*\.feedbax-model$")]
 
 
 class _LabelledMember(Protocol):
     @property
     def label(self) -> str | None: ...
-
-
-def member_display_name(key: str, label: str | None = None) -> str:
-    return label or re.sub(r"[-_]+", " ", key).capitalize()
 
 
 def member_name(members: Mapping[str, _LabelledMember], key: str) -> str:
@@ -103,6 +100,8 @@ class LoadedModelDocument(StrictModel):
     """The Model's project address for navigation. Its pinned revision is in ``source``."""
 
     source: ImportedModelSource
+    archive: ProjectModelArchive | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The project's portable model file, named at import."""
 
 
 def check_typed_payload(schema_id: str, payload: JsonValue) -> None:

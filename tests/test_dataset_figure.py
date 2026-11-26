@@ -19,7 +19,7 @@ from feedbax.contracts.figure_document import (
     PlotlyFigureProduct,
     validate_figure_bindings,
 )
-from feedbax.contracts.project_sweep import SweepInputMember
+from feedbax.contracts.project_sweep import SweepCoordinate, SweepInputMember
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, ProductRef
@@ -81,6 +81,10 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
         f"plant.mass=2 · Trial {trial} · Run {run}" for run in (1, 2) for trial in (1, 2)
     ]
     assert len({trace.legendgroup for trace in duplicate.data}) == 4
+    named = render(document, {"speed": stacked}, names=names | {"member": {"original": "Run 1", "duplicate": "Run 2"}})
+    assert [trace.name for trace in named.data] == [
+        f"Run {run} · Trial {trial}" for run in (1, 2) for trial in (1, 2)
+    ]
 
     layer, = document.layers
     selected = layer.model_copy(update={"select": layer.select | {"trial": trials[1]}})
@@ -307,3 +311,187 @@ def test_sparse_panels_keep_authored_positions_and_share_their_rendered_range():
     assert figure.layout.xaxis.range == (-1, 9)
     assert figure.layout.yaxis.range == figure.layout.yaxis3.range == (0, 12)
     assert figure.layout.legend.x == pytest.approx(1.1)
+
+
+def test_points_rules_and_spans_draw_at_their_authored_positions():
+    """Catches error bars drawn as offsets instead of bounds, and references drawn on the wrong axis."""
+    time = np.array([0.0, 0.02, 0.04])
+    summary = Dataset.from_arrays(
+        {
+            "mean": Variable(np.array([[0.0, 0.3, 0.5], [0.0, 0.2, 0.4]]), ("condition", "state_time"), units="m/s"),
+            "lower": Variable(np.array([[0.0, 0.25, 0.4], [0.0, 0.1, 0.3]]), ("condition", "state_time"), units="m/s"),
+            "upper": Variable(np.array([[0.0, 0.4, 0.6], [0.0, 0.3, 0.45]]), ("condition", "state_time"), units="m/s"),
+            "onset": Variable(np.array([0.01, 0.015]), ("condition",), units="s"),
+        },
+        coords={
+            "condition": Variable(np.array(["light", "heavy"]), ("condition",)),
+            "state_time": Variable(time, ("state_time",), units="s", trial_time=TrialFigureTime()),
+        },
+    )
+    document = FigureDocument.model_validate({
+        "data": ["summary"],
+        "layout": [{"name": "velocity", "row": 1, "col": 2}, {"name": "spare", "row": 1, "col": 1}],
+        "layers": [
+            {
+                "name": "peak", "mark": "points", "panel": "velocity", "role": "summary",
+                "select": {"state_time": {"index": 2}}, "group": ["condition"],
+                "encode": {"x": "condition", "y": "mean", "error_y": {"lower": "lower", "upper": "upper"}},
+                "style": {"label": "{condition}", "marker_size": 9},
+            },
+            {"name": "target", "mark": "rule", "panel": "velocity", "role": "summary", "encode": {"axis": "y", "at": 0.5}},
+            {
+                "name": "onset", "mark": "rule", "panel": "velocity", "role": "summary", "group": ["condition"],
+                "encode": {"axis": "x", "at": "onset"},
+            },
+            {
+                "name": "window", "mark": "span", "panel": "velocity", "role": "summary",
+                "encode": {"axis": "x", "start": 0.02, "end": 0.04}, "style": {"color": "#000000", "fill_alpha": 0.25},
+            },
+        ],
+    })
+    figure = render(document, {"summary": summary})
+
+    assert [(trace.name, list(trace.x), list(trace.y)) for trace in figure.data] == [
+        ("light", ["light"], [0.5]), ("heavy", ["heavy"], [0.4]),
+    ]
+    for trace, (lower, upper) in zip(figure.data, ((0.4, 0.6), (0.3, 0.45)), strict=True):
+        assert trace.mode == "markers" and trace.xaxis == "x2"
+        np.testing.assert_allclose(trace.y[0] + trace.error_y.array[0], upper)
+        np.testing.assert_allclose(trace.y[0] - trace.error_y.arrayminus[0], lower)
+
+    target, light, heavy, window = figure.layout.shapes
+    assert (target.type, target.yref, target.y0, target.y1, target.xref, target.x0, target.x1) == (
+        "line", "y2", 0.5, 0.5, "x2 domain", 0, 1,
+    )
+    assert [(shape.xref, shape.x0, shape.yref) for shape in (light, heavy)] == [
+        ("x2", 0.01, "y2 domain"), ("x2", 0.015, "y2 domain"),
+    ]
+    assert (window.type, window.x0, window.x1, window.yref, window.fillcolor) == (
+        "rect", 0.02, 0.04, "y2 domain", "rgba(0, 0, 0, 0.25)",
+    )
+    assert [shape.showlegend for shape in figure.layout.shapes] == [True, True, False, True]
+
+
+def test_missing_group_value_leaves_no_gap_in_trace_or_reference_label():
+    dataset = Dataset.from_arrays(
+        {"value": Variable(np.array([[1.0, 2.0], [3.0, 4.0]]), ("case", "time"))},
+        coords={
+            "case": Variable(np.array(["nominal", "swept"]), ("case",)),
+            "rate": Variable(np.array([None, 0.25], dtype=object), ("case",)),
+            "time": Variable(np.array([0.0, 1.0]), ("time",)),
+        },
+    )
+    common = {
+        "role": "values", "panel": "profile", "group": ["case", "rate"],
+        "style": {"label": "{case} {rate:.2f} Mass 1"},
+    }
+    document = FigureDocument.model_validate({
+        "data": ["values"], "layout": [{"name": "profile", "row": 1, "col": 1}],
+        "layers": [
+            common | {"name": "path", "mark": "line", "encode": {"x": "time", "y": "value"}},
+            common | {"name": "reference", "mark": "rule", "encode": {"axis": "x", "at": 0.0}},
+        ],
+    })
+    figure = render(document, {"values": dataset}, names={"case": {"nominal": "Conditions Train", "swept": "Swept Train"}})
+    expected = ["Conditions Train Mass 1", "Swept Train 0.25 Mass 1"]
+    assert [trace.name for trace in figure.data] == expected
+    assert [shape.name for shape in figure.layout.shapes] == expected
+
+
+def test_error_bounds_that_exclude_their_point_are_refused():
+    """Catches bounds given as offsets (or swapped), which would otherwise draw inverted bars."""
+    values = Dataset.from_arrays(
+        {name: Variable(np.array([value]), ("condition",), units="m/s")
+         for name, value in (("mean", 3.0), ("lower", 0.5), ("upper", 2.0))},
+        coords={"condition": Variable(np.array(["control"]), ("condition",))},
+    )
+    document = FigureDocument.model_validate({
+        "data": ["summary"], "layout": [{"name": "panel", "row": 1, "col": 1}],
+        "layers": [{
+            "name": "estimate", "role": "summary", "panel": "panel", "mark": "points", "group": ["condition"],
+            "encode": {"x": "condition", "y": "mean", "error_y": {"lower": "lower", "upper": "upper"}},
+        }],
+    })
+    with pytest.raises(ValueError, match="enclose their point"):
+        render(document, {"summary": values})
+
+
+def test_trajectory_scales_preserve_spatial_samples_and_group_values():
+    hand = np.array([[[0, 0], [1, 2], [2, 5]], [[0, 0], [2, 2], [3, 6]]])
+    pca = np.array([[[0, 1, 2], [3, 4, 5], [6, 7, 8]], [[10, 20, 30], [9, 8, 7], [5, 3, 1]]])
+    data = stack_dataset_members([
+        (
+            SweepInputMember(name, {"mass": SweepCoordinate(name, value=mass)}),
+            Dataset.from_arrays(
+                {
+                    "hand": Variable(hand[index], ("sample", "xy"), units="m"),
+                    "embedding": Variable(pca[index], ("sample", "pc")),
+                },
+                coords={
+                    "xy": Variable(np.array(["x", "y"]), ("xy",)),
+                    "pc": Variable(np.array(["PC 1", "PC 2", "PC 3"]), ("pc",)),
+                    "time": Variable(np.array([0, 0.01, 0.02]), ("sample",), trial_time=TrialFigureTime()),
+                },
+            ),
+        )
+        for index, (name, mass) in enumerate((("nominal", 0.5), ("loaded", 2.0)))
+    ])
+    document = FigureDocument.model_validate({
+        "data": ["trials"],
+        "layout": [
+            {"name": "hand", "row": 1, "col": 1},
+            {"name": "pca", "row": 1, "col": 2, "z_axis": {"range": [-1, 31]},
+             "axes_labels": {"x": "PC 1", "y": "PC 2", "z": "PC 3"}},
+        ],
+        "color_scales": {
+            "mass": {"kind": "continuous", "palette": "cividis", "title": "Arm mass (kg)"},
+            "condition": {"kind": "ordinal", "palette": "category10", "domain": ["loaded", "nominal"]},
+        },
+        "layers": [
+            {"name": "reach", "role": "trials", "panel": "hand", "group": ["member"], "mark": "trajectory",
+             "encode": {
+                 "x": {"variable": "hand", "select": {"xy": "x"}},
+                 "y": {"variable": "hand", "select": {"xy": "y"}},
+                 "color": {"field": "mass.value", "scale": "mass"},
+             }},
+            {"name": "hidden", "role": "trials", "panel": "pca", "group": ["member"], "mark": "trajectory",
+             "encode": {
+                 **{axis: {"variable": "embedding", "select": {"pc": name}}
+                    for axis, name in zip("xyz", ("PC 1", "PC 2", "PC 3"), strict=True)},
+                 "color": {"field": "member", "scale": "condition"},
+             }},
+        ],
+    })
+    result = render(document, {"trials": data}, names={"member": {"nominal": "Nominal", "loaded": "Loaded"}})
+    hand_traces, pca_traces, guides = result.data[:2], result.data[2:4], result.data[4:]
+    assert [trace.type for trace in (*hand_traces, *pca_traces)] == ["scatter", "scatter", "scatter3d", "scatter3d"]
+    for index, (reach, hidden) in enumerate(zip(hand_traces, pca_traces, strict=True)):
+        np.testing.assert_array_equal(reach.x, hand[index, :, 0])
+        np.testing.assert_array_equal(reach.y, hand[index, :, 1])
+        for component, axis in enumerate("xyz"):
+            np.testing.assert_array_equal(getattr(hidden, axis), pca[index, :, component])
+    assert hand_traces[0].line.color != hand_traces[1].line.color
+    assert pca_traces[0].line.color != pca_traces[1].line.color
+    assert result.layout.coloraxis.colorbar.title.text == "Arm mass (kg)"
+    assert (result.layout.coloraxis.cmin, result.layout.coloraxis.cmax) == (0.5, 2.0)
+    assert result.layout.coloraxis2.colorbar.ticktext == ("Loaded", "Nominal")
+    assert [trace.marker.coloraxis for trace in guides] == ["coloraxis", "coloraxis2"]
+    assert result.layout.scene.zaxis.range == (-1.0, 31.0)
+    assert result.layout.scene.zaxis.title.text == "PC 3"
+    product = FigureProduct.model_validate_json(result.to_json())
+    assert product.layout.meta.panels["pca"].z_axis == "scene.zaxis"
+    assert product.layout.meta.panels["hand"].time is None
+
+    titled = document.model_dump(mode="json")
+    titled["layers"][1]["encode"]["color"]["field"] = "mass"
+    titled["color_scales"]["condition"]["title"] = "Mass"
+    legends = render(
+        FigureDocument.model_validate(titled), {"trials": data},
+        names={"mass": {"nominal": "Mass 0.5 kg", "loaded": "Mass 2 kg"}},
+    )
+    assert legends.layout.coloraxis2.colorbar.ticktext == ("2 kg", "0.5 kg")
+
+    wrong = document.model_dump(mode="json")
+    wrong["layers"][0]["encode"]["color"]["field"] = "time"
+    with pytest.raises(ValueError, match="one scalar value per plotted group"):
+        render(FigureDocument.model_validate(wrong), {"trials": data})

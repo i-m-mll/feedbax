@@ -28,7 +28,7 @@ it('updates mounted Train Results in place from live points to their retained at
     progress: { completed_updates: 2, total_updates: 6 }, successful_receipt: null,
   };
   const row: StudioSavedTrainRow = {
-    key: trainKey, label: 'train', request_id: 'train:source', status: 'running', reason: null, attempts: [attempt],
+    key: trainKey, name: 'train', label: 'train', request_id: 'train:source', status: 'running', reason: null, attempts: [attempt],
     result: null, previous: null, change: null,
   };
   function point(update: number) {
@@ -59,7 +59,7 @@ it('updates mounted Train Results in place from live points to their retained at
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   function plot(value: StudioSavedEvaluationRow) {
     return <QueryClientProvider client={client}>
-      <StudioTrainResults project="project" revision={digest} evaluations={[value]} mapRows={[]}
+      <StudioTrainResults stepName={(step) => step} project="project" revision={digest} evaluations={[value]} mapRows={[]}
         rows={[row]} row={row} selection={{ kind: 'attempt', attempt }} />
     </QueryClientProvider>;
   }

@@ -10,6 +10,7 @@ import jax.tree_util as jtu
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.graph_schema import _component_port_dimension
+from feedbax.compiler.model_ports import derives_input_width
 from feedbax.compiler.resolution import GraphParameterResolution
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.expression_units import UNITS
@@ -101,6 +102,8 @@ class ModelSignalTable:
         if not offered:
             offered = {(): _Facts.from_value(provided) if isinstance(provided, ValueType) else _Facts.from_claim(provided)}
         for path, facts in offered.items():
+            if not path and not _shape_accepts(required.shape, facts.shape):
+                return f"Signal type does not fit: expected shape {required.shape}, received {facts.shape}"
             if (claim := expected.get(path)) is not None and (reason := claim.conflict(facts)):
                 return f"Signal type does not fit: {reason}"
         return None
@@ -152,6 +155,8 @@ def model_measure_scope(model: ModelDocument, signals: ModelSignalTable) -> Mode
         owner = owner_at(scope)
         prefix = labels[scope]
         if isinstance(end, ComponentPortAddress):
+            if end.component not in owner.interior.components:
+                continue
             prefix = (*prefix, owner.interior.components[end.component].name)
         elif scope:
             prefix = (*prefix, "Outputs")
@@ -480,7 +485,7 @@ class _Resolve:
                     selected = {path[1:]: item for path, item in declarations.items() if path[0] == port}
                     registered = SignalType(base=spec.dtype, shape=tuple(spec.shape) if spec.shape is not None else None) if spec else SignalType()
                     prototype = prototypes.get((name, port))
-                    if direction == "input":
+                    if direction == "input" and not derives_input_width(node.type, port):
                         dimension = _component_port_dimension(
                             component_type=node.type, node_params=node.params, port=port, direction="input",
                         )

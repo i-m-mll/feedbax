@@ -100,8 +100,8 @@ test('splits an Analyze card into three and merges it back, recomputing nothing'
   await reportShowsFigure();
 
   // Split the downstream operation and figure off, then the figure off the new card.
-  const middle = await split('analyze', ['summarize', 'profile']);
-  const last = await split(middle, ['profile']);
+  const middle = await split('analyze', ['Summarize', 'Profile']);
+  const last = await split(middle, ['Profile']);
   const three = await settled();
   expect(three.requests).toEqual(initial.requests);
   expect(three.statuses).toEqual(['succeeded']);
@@ -116,10 +116,12 @@ test('splits an Analyze card into three and merges it back, recomputing nothing'
   // The input bound across cards reads as the source card's operation output.
   await mapStep(page, last).click();
   await tab(page, 'Analysis').click();
-  await element(`${middle}/summarize.summary`).click();
+  // The source card reads by its step's name, as the Service names a split card (`analyze-2` reads `Analyze 2`).
+  const bound = 'Analyze 2 · Summarize · summary';
+  await element(bound).click();
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
-  await expect(inspector.getByRole('combobox', { name: 'Summary', exact: true })).toHaveText(`${middle}/summarize.summary`);
+  await expect(inspector.getByRole('combobox', { name: 'Summary', exact: true })).toHaveText(bound);
   await reportShowsFigure();
 
   // Merge the three cards back into the first.
@@ -143,6 +145,6 @@ test('splits an Analyze card into three and merges it back, recomputing nothing'
   await expect.poll(async () => (await windowMap()).regroup_refused).toContain('analyze');
   await mapStep(page, 'analyze').click();
   await tab(page, 'Analysis').click();
-  await element('profile').click({ button: 'right' });
+  await element('Profile').click({ button: 'right' });
   await expect(page.getByRole('menuitem', { name: 'Split', exact: true })).toBeDisabled();
 });

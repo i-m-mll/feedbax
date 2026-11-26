@@ -49,6 +49,29 @@ export function trialPicker(page: Page) {
     .getByRole('button', { name: /^Trial / });
 }
 
+/** The trial picker's popup, which chooses One, All or Mean and what each is of. */
+export function trialPopup(page: Page) {
+  return page.getByRole('dialog', { name: 'Trial', exact: true });
+}
+
+/** Shows the clock's trials as `kind` from the trial picker's popup, and closes it. */
+export async function showTrials(page: Page, kind: 'One' | 'All' | 'Mean') {
+  await trialPicker(page).click();
+  await trialPopup(page).getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: kind, exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(trialPopup(page)).toBeHidden();
+}
+
+/** Aligns Mean to the epoch `label` names from the trial picker's popup, and closes it. */
+export async function alignMean(page: Page, label: string) {
+  await trialPicker(page).click();
+  const align = trialPopup(page).getByRole('radiogroup', { name: 'Align', exact: true }).getByRole('radio', { name: label, exact: true });
+  await align.click();
+  await expect(align).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Escape');
+  await expect(trialPopup(page)).toBeHidden();
+}
+
 /** Picks the `index`-th trial the selected run recorded (from 0) from the clock's trial picker. */
 export async function pickRecordedTrial(page: Page, index: number) {
   const picker = trialPicker(page);

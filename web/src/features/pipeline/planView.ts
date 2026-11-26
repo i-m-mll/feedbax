@@ -1,6 +1,6 @@
 import type { StudioResultState, StudioRunStatusId } from "@/components/activity/studioVocabulary";
 import type {
-  ReceiptValidity, StudioActivityJob, StudioDefinitionChange, StudioProjectWindowMapProblem, StudioSavedTrainChange,
+  ReceiptValidity, StepKind, StudioActivityJob, StudioDefinitionChange, StudioProjectWindowMapProblem, StudioSavedTrainChange,
 } from "@/generated/studioContracts";
 
 export interface RunAddress {
@@ -15,7 +15,10 @@ export interface PlanRunEdge {
 
 export interface PlanSweepValueView {
   readonly id: string;
+  /** The value's full name, which names its axis. */
   readonly label: string;
+  /** The value's name where its axis is already named, as under a sweep's title. */
+  readonly valueLabel: string;
 }
 
 export interface PlanSweepView {
@@ -76,9 +79,11 @@ export interface PlanInputView {
 export interface PlanStepView {
   /** The step's key. */
   readonly id: string;
-  /** The step's shown name, `shownName` of its key. */
+  /** The step's name, as the project snapshot names it. */
   readonly label: string;
-  readonly kind: "train" | "evaluate" | "analyze" | "report";
+  readonly kind: StepKind;
+  /** The label of the method a Synthesize step determines its model by. */
+  readonly method?: string;
   readonly group?: string | null;
   readonly sweeps: readonly PlanSweepView[];
   readonly runs: readonly PlanRunView[];
@@ -88,8 +93,6 @@ export interface PlanStepView {
   readonly statusCounts: Readonly<Partial<Record<StudioResultState, number>>>;
   /** How a run rule reading the step writes each of its axes' values, by axis and value id. */
   readonly ruleAxes?: Readonly<Record<string, Readonly<Record<string, string>>>>;
-  /** The result names of the step's finished runs, which a lowest or highest term ranks by. */
-  readonly ruleMetrics?: readonly string[];
   /** Why the last gesture on the step was refused; its problem mark carries it. */
   readonly refusal?: string;
   /** A step being added: drawn from the gesture until the plan that has it is read, and taking no gestures. */
@@ -103,9 +106,9 @@ export interface PlanView {
   readonly edges: readonly PlanRunEdge[];
 }
 
-/** What Studio calls a document, step, operation or figure: its label, or its key when it has none. */
-export function shownName(key: string, labelled?: { readonly label?: string | null } | null) {
-  return labelled?.label ?? key;
+/** An output's name: its card (when another card's), its operation's name, and its product. */
+export function outputName(...parts: readonly string[]) {
+  return parts.join(' · ');
 }
 
 const settled = new Set<StudioRunStatusId>(["succeeded", "stale"]);

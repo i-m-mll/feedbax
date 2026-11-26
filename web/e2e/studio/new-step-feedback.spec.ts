@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { Route } from '@playwright/test';
-import { seedManagedProject } from './fixtures/canonicalTrain';
+import { seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -22,6 +22,6 @@ test('a chosen step is drawn on the map before the Service has saved it', async 
 
   await page.unroute(files);
   for (const route of held) await route.fallback();
-  await expect(page.getByRole('article', { name: 'Train train', exact: true })).toBeVisible();
+  await expect(mapCard(page, 'train')).toBeVisible();
   await expect(adding).toHaveCount(0);
 });

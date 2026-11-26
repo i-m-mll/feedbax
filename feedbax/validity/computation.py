@@ -52,6 +52,7 @@ from feedbax.persistence.array_container import decode_array_container, encode_a
 from feedbax.persistence.semantic_fingerprint import (
     UnsupportedSemanticValue,
     fingerprint_semantic_values,
+    project_pytree,
 )
 
 if TYPE_CHECKING:
@@ -124,6 +125,8 @@ def _project_argument_metadata(value: object) -> object:
         return value.idx
     if isinstance(value, (jax.tree_util.DictKey, jax.tree_util.FlattenedIndexKey)):
         return value.key
+    if isinstance(value, jax.tree_util.PyTreeDef):
+        return project_pytree(value, lambda: ("leaf",))
     if isinstance(value, np.dtype):
         return str(value)
     if isinstance(value, type):
@@ -183,18 +186,14 @@ def pytree_operands(value: object) -> tuple[tuple[Operand, ...], JsonValue]:
     cursor = iter(leaves)
     arrays = []
 
-    def encode_node(tree: jax.tree_util.PyTreeDef) -> object:
-        node = tree.node_data()
-        if node is None:
-            leaf = next(cursor)
-            if isinstance(leaf, (jax.Array, np.ndarray)):
-                arrays.append(leaf)
-                return ("operand",)
-            return ("static", leaf)
-        cls, metadata = node
-        return ("node", _type_name(cls), metadata, tuple(map(encode_node, tree.children())))
+    def encode_leaf() -> object:
+        leaf = next(cursor)
+        if isinstance(leaf, (jax.Array, np.ndarray)):
+            arrays.append(leaf)
+            return ("operand",)
+        return ("static", leaf)
 
-    static = _static_fingerprint(encode_node(structure))
+    static = _static_fingerprint(project_pytree(structure, encode_leaf))
     return tuple(arrays), static
 
 

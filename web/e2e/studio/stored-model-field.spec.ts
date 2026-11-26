@@ -81,7 +81,7 @@ test('edits and reopens a stored Model field sweep through project history', asy
   await expect.poll(async () => JSON.stringify(axis(await saved()))).toContain('"value":100');
   expect(Object.keys((axis(await saved()) as { values: object }).values)).toEqual(ids);
 
-  const select = page.getByRole('button', { name: /Select hidden-size/ }).first();
+  const select = page.getByRole('button', { name: /Select Hidden size/ }).first();
   await select.click();
   await expect(hidden).toHaveValue('64, 100, 128');
   await mapStep(page, 'train').click();

@@ -8,7 +8,8 @@ import { useAxisWithin, type TimeAxisStore } from './timeAxis';
 
 /**
  * A named span of a row, in seconds: an epoch of one trial. `spread` is where its end may fall over trials, drawn as a
- * whisker; `dashedFrom` is where a remainder the trial may not reach begins, drawn dashed.
+ * whisker; `dashedFrom` is where a remainder the trial may not reach begins, drawn dashed. `ended` is how an epoch that
+ * ends on a condition ended in this trial: at its condition, its end edge drawn heavy, or at its limit, drawn dashed.
  */
 export interface ShelfSegment {
   readonly key: string;
@@ -18,6 +19,7 @@ export interface ShelfSegment {
   readonly selects?: ElementAddress;
   readonly spread?: { readonly least: number; readonly greatest: number };
   readonly dashedFrom?: number;
+  readonly ended?: 'condition' | 'limit';
 }
 
 /**
@@ -96,11 +98,12 @@ const elementOf = (address: ElementAddress) =>
   elementKey(isModelAddress(address) ? address : { ...address, element: { kind: 'named', id: address.element.id } });
 
 function Segment({ segment, origin, duration, chosen }: { segment: ShelfSegment; origin: number; duration: number; chosen: boolean }) {
-  const { key, name, start, end, spread, dashedFrom, selects } = segment;
+  const { key, name, start, end, spread, dashedFrom, ended, selects } = segment;
   const width = end - start;
   return <>
-    <span role={selects ? 'button' : undefined} tabIndex={selects ? -1 : undefined} aria-label={name}
-      aria-pressed={selects ? chosen : undefined} {...{ [markAttribute]: key }} data-start={start} data-end={end}
+    <span role={selects ? 'button' : undefined} tabIndex={selects ? -1 : undefined}
+      aria-label={ended ? `${name}, ${studioName(ended)}` : name}
+      aria-pressed={selects ? chosen : undefined} {...{ [markAttribute]: key }} data-start={start} data-end={end} data-ended={ended}
       className={clsx('absolute inset-y-0 flex min-w-0 items-center overflow-hidden rounded-sm border px-1 text-xs',
         chosen ? 'border-shell-foreground' : 'border-shell-control', dashedFrom === undefined && 'bg-shell-field')}
       style={{ left: percent(start - origin, duration), width: percent(width, duration) }}>
@@ -109,6 +112,8 @@ function Segment({ segment, origin, duration, chosen }: { segment: ShelfSegment;
         <span aria-hidden="true" className="absolute inset-y-[-1px] right-[-1px] rounded-r-sm border border-dashed border-shell-muted"
           style={{ left: percent(dashedFrom - start, width) }} />
       </>}
+      {ended && <span aria-hidden="true" className={clsx('absolute inset-y-0 right-0 border-r-2 border-shell-foreground',
+        ended === 'limit' && 'border-dashed')} />}
       <span className="relative truncate">{name}</span>
     </span>
     {spread && spread.greatest > spread.least && <span role="img"

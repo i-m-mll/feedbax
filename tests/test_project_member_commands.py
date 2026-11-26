@@ -32,14 +32,8 @@ def studio(tmp_path):
         raw["steps"]["train-b"] = deepcopy(raw["steps"]["train"])
         model = raw["documents"]["reach-model"]["payload"]
         controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
-        reset = ModelAddress.model_validate({
-            "composites": ["wrapper", "controller"],
-            "element": {"kind": "port", "end": {
-                "owner": "component", "component": "cell", "port": "hidden", "direction": "output",
-            }},
-        })
-        controller["interior"]["wires"]["carry"]["attachments"][0]["initial"] = {
-            "kind": "name", "reference": reset.to_text(),
+        controller["interior"]["wires"]["carry"]["attachments"][0]["initial_source"] = {
+            "kind": "wire", "source": {"owner": "component", "component": "cell", "port": "hidden"},
         }
         _save_project(folders, PROJECT, Project.model_validate(raw))
         (folders.root / PROJECT / "presentation.json").write_text(json.dumps({

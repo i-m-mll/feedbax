@@ -284,7 +284,8 @@ class ModelEditDraft:
             owner, graph, source, target, output, replacing=key,
         ):
             attachments.append({
-                "kind": "delay", "id": uuid4().hex, "delay": {"value": 1, "unit": "st"}, "initial": 0,
+                "kind": "delay", "id": uuid4().hex, "delay": {"value": 1, "unit": "st"},
+                "initial_source": {"kind": "value", "value": 0},
             })
         graph["wires"][key] = _signal(source, target, attachments)
         self.changed.append(_address(address.composites, "wire", id=key))
@@ -335,30 +336,48 @@ class ModelEditDraft:
     ) -> bool:
         if port.reads_state_only or "component" not in source or "component" not in target:
             return False
-        pending = [target["component"]]
-        seen = set()
-        while pending:
-            current = pending.pop()
-            if current == source["component"]:
-                return True
-            if current in seen:
-                continue
-            seen.add(current)
-            for key, wire in graph["wires"].items():
-                if key == replacing:
-                    continue
-                a, b = wire["source"], wire["target"]
-                if a.get("component") != current or "component" not in b:
-                    continue
+
+        def reaches(
+            branch: Record, interior: Record, entry: Record, *,
+            output: Record | None = None, exit: Record | None = None, exclude: str | None = None,
+        ) -> bool:
+            def feeds(incoming: Record, outgoing: Record) -> bool:
+                if incoming["owner"] == "inputs":
+                    return incoming == outgoing
+                name = incoming.get("component")
+                if name is None or outgoing.get("component") != name:
+                    return False
                 try:
-                    declaration = self.port(owner, graph, a, "output")
+                    declaration = self.port(branch, interior, outgoing, "output")
                 except ValueError:
-                    continue
-                if declaration and not declaration.reads_state_only and not any(
-                    item["kind"] == "delay" for item in wire["attachments"]
-                ):
-                    pending.append(b["component"])
-        return False
+                    return False
+                if declaration is None or declaration.reads_state_only:
+                    return False
+                component = interior["components"][name]
+                if component["kind"] == "leaf" or component["interior"]["physical_domain"] is not None:
+                    return True
+                return reaches(
+                    component, component["interior"], _card("inputs", incoming["port"]),
+                    exit=_card("outputs", outgoing["port"]),
+                )
+
+            pending = [entry]
+            seen = set()
+            wires = tuple(
+                wire for key, wire in interior["wires"].items()
+                if key != exclude and not any(item["kind"] == "delay" for item in wire["attachments"])
+            )
+            while pending:
+                current = pending.pop()
+                if current == exit or output is not None and feeds(current, output):
+                    return True
+                key = _target_key(current)
+                if key not in seen:
+                    seen.add(key)
+                    pending.extend(wire["target"] for wire in wires if feeds(current, wire["source"]))
+            return False
+
+        return reaches(owner, graph, target, output=source, exclude=replacing)
 
     def physical(self, address: ModelAddress, connection: Record) -> None:
         owner, graph = self.graph(address)
@@ -641,8 +660,8 @@ class ModelEditDraft:
                 item = next((entry for entry in chain if entry["id"] == parent.id), None)
             else:
                 item = attachment
-            allowed = {"fields", "window", "operation", "initial", "delay", "name"}
-            if item is not None and len(path) > 1 and path[0] == "fields" and path[1] not in item.get("fields", {}):
+            allowed = {"operands", "window", "operation", "initial_source", "delay", "name"}
+            if item is not None and len(path) > 1 and path[0] == "operands" and path[1] not in item.get("operands", {}):
                 raise _Refusal(address, "the addressed attachment field no longer exists")
         elif parent.kind == "port":
             port_address = _address(address.composites, "port", end=parent.end.model_dump(mode="json"))
@@ -666,6 +685,25 @@ class ModelEditDraft:
             return False
         return True
 
+    def field_unit(self, address: ModelAddress, *, functions=None) -> str | None:
+        """Read the unit a scalar edit at this authored field would retain."""
+        try:
+            item, key = self.field_slot(address, functions=functions)
+        except _Refusal:
+            return None
+        value = item[key] if isinstance(item, list) else item.get(key)
+        if isinstance(value, dict) and isinstance(unit := value.get("unit"), str):
+            return unit
+        path = address.element.path
+        if address.element.parent.kind == "graph" and path == ("step_seconds",):
+            return "s"
+        if path[:2] == ("window", "spans") and path[-1] == "offset":
+            if value is None:
+                return "st"
+            if isinstance(value, dict) and value.get("kind") == "literal":
+                return "s"
+        return None
+
     def set_field(self, address: ModelAddress, value: Any, *, functions=None, attachment=None) -> None:
         item, key = self.field_slot(address, functions=functions, attachment=attachment)
         prior = item[key] if isinstance(item, list) else item.get(key)
@@ -674,6 +712,11 @@ class ModelEditDraft:
             and type(value) in {int, float, bool}
         ):
             value = prior | {"value": value}
+        elif (
+            prior is None and address.element.path[:2] == ("window", "spans")
+            and address.element.path[-1] == "offset" and type(value) in {int, float}
+        ):
+            value = {"value": value, "unit": "st"}
         item[key] = value
         self.changed.append(address)
 

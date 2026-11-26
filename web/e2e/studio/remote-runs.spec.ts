@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type {
   StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioMachineApprovalReceipt, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { fixture, mapStep, runName, shownRunLabel, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick, popupListbox } from './fixtures/controls';
 
 test.use({ studioBackend: 'remote' });
@@ -147,7 +147,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   expect(events.every(({ venue }) => venue?.stream_id === source!.stream_id)).toBe(true);
   await page.reload();
   await mapStep(page, 'train').click();
-  await runs.getByRole('rowheader', { name: runName('train') }).getByRole('button').click();
+  await runs.getByRole('rowheader', { name: runName('Train') }).getByRole('button').click();
   await page.getByRole('button', { name: 'Open Run', exact: true }).click();
   await expect(page.getByRole('img', { name: 'Metric train_loss', exact: true }).locator(`line[data-attempt="${attempt.job_id}"]`).first())
     .toBeAttached();
@@ -173,8 +173,8 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
     return (await response.json() as StudioJobSnapshot).jobs;
   };
   const job = async (id: string) => (await jobs()).find(({ job_id }) => job_id === id);
-  const rowName = (activity: StudioActivityJob) => rows.find(({ key }) =>
-    JSON.stringify([key.variant, key.step, key.row]) === activity.run_key)!.label;
+  const rowName = (activity: StudioActivityJob) => shownRunLabel(rows.find(({ key }) =>
+    JSON.stringify([key.variant, key.step, key.row]) === activity.run_key)!);
   const row = (activity: StudioActivityJob) => runs.getByRole('row').filter({
     has: page.getByRole('rowheader', { name: runName(rowName(activity)) }),
   });

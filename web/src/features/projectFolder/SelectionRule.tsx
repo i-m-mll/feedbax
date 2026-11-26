@@ -5,8 +5,8 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import { RuleField, type RuleFieldCommand, type RuleFieldProblem } from '@/components/values/RuleField';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
-import type { StudioProjectWindowMapRow, StudioRunRuleRequest, SubsetTerms } from '@/generated/studioContracts';
-import { clauseRuns, clauseText, pinnedSelectionLabels, savedRunId, selectedRowTerms } from './projectWindowPlan';
+import type { StudioRunRuleRequest, SubsetTerms } from '@/generated/studioContracts';
+import { clauseRuns, clauseText, pinnedSelectionLabels, savedRunId, selectedRowTerms, type SourceRows } from './projectWindowPlan';
 import { replacedAxisValue, type RuleProblem } from './selectionEdits';
 
 /** Where a rule is checked: the saved revision and variant whose plan holds the producer's runs. */
@@ -16,8 +16,8 @@ export interface RuleScope {
   readonly variant: string;
 }
 
-const check = (scope: RuleScope, step: string, rule: string, ranked: boolean) => ({
-  queryKey: ['run-rule', scope.project, scope.revision, scope.variant, step, rule, ranked] as const,
+const check = (scope: RuleScope, step: string, rule: string, ranked: boolean, results: readonly string[]) => ({
+  queryKey: ['run-rule', scope.project, scope.revision, scope.variant, step, rule, ranked, results] as const,
   queryFn: ({ signal }: { signal: AbortSignal }) => checkRunRule(scope.project, {
     revision: scope.revision, variant: scope.variant, step, rule, ranked,
   } satisfies StudioRunRuleRequest, signal),
@@ -36,7 +36,7 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
   source: PlanStepView;
   /** The saved selection: its rule, and the rows or axis values pinned beside it. */
   terms: SubsetTerms;
-  /** The plan's count of the saved rule, of its candidates; an empty rule counts every run of `source`. */
+  /** The plan's count of the saved rule; an empty rule counts every run of `source`. */
   planned?: { readonly count: number; readonly total: number };
   ranked?: boolean;
   label?: string;
@@ -46,15 +46,19 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
   problem?: RuleProblem;
   onToRows?: () => void;
   /** Where runs can be picked on `source`'s card for the selection: its rows. */
-  pick?: { readonly rows: readonly StudioProjectWindowMapRow[] };
+  pick?: SourceRows;
   /** Saves the selection: the rule as written, what was picked, or a value offered in place of a missing one. */
   onCommit(terms: SubsetTerms): void;
 }) {
   const rule = terms.rule ?? '';
   const pinned = pinnedSelectionLabels(terms);
   const [draft, setDraft] = useState<string | null>(null);
+  const results = ranked ? source.runs.flatMap((run) => run.status === 'succeeded'
+    ? [run.id, ...run.results.map(({ jobId }) => jobId)]
+    : []) : [];
   const checked = useQuery({
-    ...check(scope, source.id, draft?.trim() ?? '', ranked), enabled: draft !== null, placeholderData: keepPreviousData,
+    ...check(scope, source.id, draft?.trim() ?? '', ranked, results),
+    enabled: draft !== null, placeholderData: keepPreviousData,
   });
   const result = checked.data?.result;
   const runs = useMemo(() => result?.kind === 'chosen'
@@ -67,7 +71,7 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
   // Keyed by the runs themselves: the rows and terms arrive as new objects on every render.
   const savedRuns = useMemo(() => savedKey === undefined ? undefined : new Set<string>(JSON.parse(savedKey)), [savedKey]);
   const boxed = constrained && (draft ?? '').trim() === rule.trim() ? savedRuns : runs;
-  const pickedWrites = useMemo(() => picked && pick && selectedRowTerms(pick.rows, picked), [picked, pick?.rows]);
+  const pickedWrites = useMemo(() => picked && pick && selectedRowTerms(pick, picked), [picked, pick]);
   useEffect(() => {
     if (!picking) return;
     picking.setState({ choosing: picked ? {
@@ -118,7 +122,7 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
   ];
   return <RuleField label={label} value={rule} disabled={disabled} count={count} pinned={pinned} clauses={lines}
     vocabulary={{ axes: Object.fromEntries(Object.entries(source.ruleAxes ?? {}).map(([axis, values]) => [axis, Object.values(values)])),
-      metrics: ranked ? source.ruleMetrics ?? [] : undefined }}
+      metrics: ranked ? checked.data?.metric_names ?? [] : undefined }}
     problem={shownProblem} picked={shownPicks}
     commands={commands} onPickEnd={endPick} onDraft={setDraft} onCommit={(written) => {
       const { rule: _written, clauses: saved, ...rest } = terms;

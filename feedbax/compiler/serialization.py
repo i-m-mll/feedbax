@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from hashlib import sha256
 import json
-from typing import Any, Literal, Mapping, Sequence, cast
+from typing import Any, Mapping, Sequence
 
 from jaxtyping import PRNGKeyArray
 from feedbax.contracts.acausal import AcausalGraphSpec
@@ -55,6 +55,7 @@ from feedbax.compiler.domain_compilers import get_domain_compiler
 from feedbax.compiler.resolution import GraphParameterResolution
 from feedbax.compiler.prototypes import (
     prototypes_from_task_bindings,
+    shape_from_proto,
 )
 from feedbax.component_registry import builtin_domain_registry
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
@@ -260,8 +261,10 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
                 source_port=wire.source_port,
                 target_node=wire.target_node,
                 target_port=wire.target_port,
-                temporality=cast(Literal["instant", "recurrent"], wire.temporality),
-                recurrent_initializer=wire.recurrent_initializer,
+                recurrent_initializer=(
+                    (wire.recurrent_initializer or {"kind": "state_output"})
+                    if wire.is_recurrent else None
+                ),
             )
             for wire in graph.wires
         ],
@@ -533,9 +536,10 @@ def _instantiate_graph(
             wire.source_port,
             wire.target_node,
             wire.target_port,
-            wire.temporality,
+            "recurrent" if wire.is_recurrent else "instant",
             wire.recurrent_initializer,
             id=wire.id,
+            delay_layout=resolution.delay_layouts.get((wire.target_node, wire.target_port)),
         )
         for wire in spec.wires
     )
@@ -556,6 +560,11 @@ def _instantiate_graph(
         output_ports=tuple(spec.output_ports),
         input_bindings=input_bindings,
         output_bindings=output_bindings,
+        input_arrays={
+            port: (tuple(shape), str(prototype.dtype))
+            for port, binding in input_bindings.items()
+            if (shape := shape_from_proto(prototype := resolution.node_inputs.get(binding))) is not None
+        },
         parameter_constraints=normalize_parameter_constraints(spec.parameter_constraints),
         component_bindings=component_bindings,
         state_consistency_fn=trial_history_plan(nodes, wires),

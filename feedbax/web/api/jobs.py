@@ -11,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Re
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
+from feedbax.contracts.dataset import DatasetDescriptor
 from feedbax.contracts.execution_target import ExecutionTargets, LOCAL_TARGET_ID, TargetRunKind
 from feedbax.contracts.jobs import (
     StudioActivityJob,
@@ -37,6 +38,7 @@ from feedbax.contracts.jobs import (
 )
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.studio_analyze import MAX_OPERATION_DATASET_PAGE, StudioOperationDatasetPage
 from feedbax.contracts.studio_project import StudioProjectPlanChanged
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
@@ -173,7 +175,7 @@ def quote_saved_run(
 
     def quote() -> StudioMachineQuote:
         reviewed = request.app.state.project_folders.read_plan(project_id, revision=body.revision)
-        return remote.quote(reviewed, body)
+        return remote.quote(reviewed, body, methods=request.app.state.bootstrap_state.bundle.training_methods)
 
     try:
         return _project_response(response, quote)
@@ -240,6 +242,37 @@ def saved_light_product(
     if product.content_security_policy is not None:
         headers["Content-Security-Policy"] = product.content_security_policy
     return Response(product.content, media_type=product.media_type, headers=headers)
+
+
+def _operation_product_response[Result](response: Response, read: Callable[[], Result]) -> Result:
+    try:
+        return _project_response(response, read)
+    except JobNotFound as exc:
+        raise HTTPException(404, detail="Data is absent from the saved operation product.") from exc
+    except JobConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except HostError as exc:
+        raise _host_error(exc) from exc
+
+
+@router.get("/projects/{project_id}/operation-products/{revision}/{job_id}/{role}", response_model_exclude_none=True)
+def saved_operation_dataset(
+    project_id: ProjectName, revision: Sha256, job_id: str, role: str, request: Request, response: Response,
+) -> DatasetDescriptor:
+    return _operation_product_response(response, lambda: request.app.state.project_plan.operation_dataset(
+        project_id, revision, job_id, role,
+    ))
+
+
+@router.get("/projects/{project_id}/operation-products/{revision}/{job_id}/{role}/values")
+def saved_operation_dataset_page(
+    project_id: ProjectName, revision: Sha256, job_id: str, role: str, request: Request, response: Response,
+    field: Annotated[str, Query(min_length=1)], offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=MAX_OPERATION_DATASET_PAGE)] = 128,
+) -> StudioOperationDatasetPage:
+    return _operation_product_response(response, lambda: request.app.state.project_plan.operation_dataset_page(
+        project_id, revision, job_id, role, field=field, offset=offset, limit=limit,
+    ))
 
 
 @router.post("/projects/{project_id}/figures/mean")

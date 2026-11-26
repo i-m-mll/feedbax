@@ -38,16 +38,91 @@ class VariableBinding(StrictModel):
 
 
 Encoding = Name | VariableBinding
+PaletteNumber = Annotated[StrictFloat, Field(allow_inf_nan=False)]
+PaletteValue = StrictStr | StrictBool | StrictInt | PaletteNumber
+
+
+class ColorEncoding(StrictModel):
+    """One field value per plotted group, drawn on a named figure scale."""
+
+    field: Encoding
+    scale: Name
+
+
+class ContinuousColorScale(StrictModel):
+    kind: Literal["continuous"]
+    palette: Literal["viridis", "cividis", "plasma", "turbo"] = "viridis"
+    domain: tuple[PaletteNumber, PaletteNumber] | None = None
+    title: str | None = None
+    legend: bool = True
+
+    @model_validator(mode="after")
+    def _check_domain(self) -> ContinuousColorScale:
+        if self.domain is not None and self.domain[0] >= self.domain[1]:
+            raise ValueError("A continuous color domain needs increasing bounds.")
+        return self
+
+
+class OrdinalColorScale(StrictModel):
+    kind: Literal["ordinal"]
+    palette: Literal["category10", "plotly", "dark24"] = "category10"
+    domain: Annotated[tuple[PaletteValue, ...], Field(min_length=1)] | None = None
+    title: str | None = None
+    legend: bool = True
+
+    @model_validator(mode="after")
+    def _check_domain(self) -> OrdinalColorScale:
+        if self.domain is not None and len({ordinal_key(value) for value in self.domain}) != len(self.domain):
+            raise ValueError("An ordinal color domain needs distinct values.")
+        return self
+
+
+ColorScale = Annotated[ContinuousColorScale | OrdinalColorScale, Field(discriminator="kind")]
+
+
+def ordinal_key(value: PaletteValue) -> tuple[bool, PaletteValue]:
+    """A Boolean category is distinct from a numerical one."""
+    return isinstance(value, bool), value
 
 
 class LineEncodings(StrictModel):
     x: Encoding
     y: Encoding
+    color: ColorEncoding | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class TrajectoryEncodings(LineEncodings):
+    z: Encoding | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class BandEncodings(LineEncodings):
     lower: Encoding
     upper: Encoding
+
+
+class ErrorBounds(StrictModel):
+    """Absolute bounds of the error bar around a point's y sample."""
+
+    lower: Encoding
+    upper: Encoding
+
+
+class PointsEncodings(LineEncodings):
+    error_y: ErrorBounds | None = None
+
+
+ReferenceValue = Encoding | Annotated[StrictFloat, Field(allow_inf_nan=False)]
+
+
+class RuleEncodings(StrictModel):
+    axis: Literal["x", "y"]
+    at: ReferenceValue
+
+
+class SpanEncodings(StrictModel):
+    axis: Literal["x", "y"]
+    start: ReferenceValue
+    end: ReferenceValue
 
 
 class LineStyle(StrictModel):
@@ -60,6 +135,14 @@ class LineStyle(StrictModel):
 
 class BandStyle(LineStyle):
     band_alpha: float = Field(default=0.2, ge=0, le=1, allow_inf_nan=False)
+
+
+class PointsStyle(LineStyle):
+    marker_size: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
+class SpanStyle(LineStyle):
+    fill_alpha: float = Field(default=0.15, ge=0, le=1, allow_inf_nan=False)
 
 
 class _Layer(StrictModel):
@@ -77,13 +160,53 @@ class LineLayer(_Layer):
     style: LineStyle = Field(default_factory=LineStyle)
 
 
+class TrajectoryLayer(_Layer):
+    """A two-dimensional path or a three-dimensional path when z is encoded."""
+
+    mark: Literal["trajectory"]
+    encode: TrajectoryEncodings
+    style: LineStyle = Field(default_factory=LineStyle)
+
+
 class BandLayer(_Layer):
     mark: Literal["band"]
     encode: BandEncodings
     style: BandStyle = Field(default_factory=BandStyle)
 
 
-FigureLayer = Annotated[LineLayer | BandLayer, Field(discriminator="mark")]
+class PointsLayer(_Layer):
+    mark: Literal["points"]
+    encode: PointsEncodings
+    style: PointsStyle = Field(default_factory=PointsStyle)
+
+
+class RuleLayer(_Layer):
+    """One reference position across the other axis of its panel."""
+
+    mark: Literal["rule"]
+    encode: RuleEncodings
+    style: LineStyle = Field(default_factory=LineStyle)
+
+
+class SpanLayer(_Layer):
+    """One shaded interval across the other axis of its panel."""
+
+    mark: Literal["span"]
+    encode: SpanEncodings
+    style: SpanStyle = Field(default_factory=SpanStyle)
+
+
+FigureLayer = Annotated[
+    LineLayer | TrajectoryLayer | BandLayer | PointsLayer | RuleLayer | SpanLayer, Field(discriminator="mark"),
+]
+
+
+def is_spatial_layer(layer: FigureLayer) -> bool:
+    return isinstance(layer, TrajectoryLayer) and layer.encode.z is not None
+
+
+def color_encoding(layer: FigureLayer) -> ColorEncoding | None:
+    return layer.encode.color if isinstance(layer.encode, LineEncodings) else None
 
 
 class FigurePanel(StrictModel):
@@ -94,12 +217,7 @@ class FigurePanel(StrictModel):
     axes_labels: AxisLabels | None = None
     x_axis: PanelAxis | None = None
     y_axis: PanelAxis | None = None
-
-    @model_validator(mode="after")
-    def _check_cartesian_axes(self) -> FigurePanel:
-        if self.axes_labels is not None and self.axes_labels.z is not None:
-            raise ValueError("Cartesian panels accept x and y axis labels.")
-        return self
+    z_axis: PanelAxis | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class FigureDocumentView(FigureView, ComparisonGridParams):
@@ -114,6 +232,7 @@ class FigureDocument(StrictModel):
     layout: tuple[FigurePanel, ...] = Field(min_length=1)
     layers: tuple[FigureLayer, ...] = Field(min_length=1)
     theme: Name = "plotly_white"
+    color_scales: dict[Name, ColorScale] = Field(default_factory=dict, exclude_if=lambda value: not value)
     view: FigureDocumentView = Field(default_factory=FigureDocumentView)
     caption: str | None = None
 
@@ -127,11 +246,22 @@ class FigureDocument(StrictModel):
             raise ValueError("Figure data roles must be distinct.")
         if len({layer.name for layer in self.layers}) != len(self.layers):
             raise ValueError("Figure layer names must be distinct.")
+        spatial = {layer.panel for layer in self.layers if is_spatial_layer(layer)}
+        for panel in self.layout:
+            if panel.name not in spatial and (panel.z_axis is not None or getattr(panel.axes_labels, "z", None) is not None):
+                raise ValueError(f"Panel {panel.name!r} needs a trajectory with z to use a z axis.")
         for layer in self.layers:
             if layer.panel not in panels or layer.role not in self.data:
                 raise ValueError(f"Layer {layer.name!r} requires a declared panel and data role.")
             if len(set(layer.group)) != len(layer.group):
                 raise ValueError(f"Layer {layer.name!r} repeats a group coordinate.")
+            if layer.panel in spatial and not is_spatial_layer(layer):
+                raise ValueError(f"Layer {layer.name!r} must be a trajectory with z in its 3D panel.")
+            if (color := color_encoding(layer)) is not None:
+                if color.scale not in self.color_scales:
+                    raise ValueError(f"Layer {layer.name!r} names unknown color scale {color.scale!r}.")
+                if layer.style.color is not None:
+                    raise ValueError(f"Layer {layer.name!r} cannot set a fixed color and a color encoding.")
         return self
 
 
@@ -182,9 +312,31 @@ class PlotlyFigureProduct(StrictModel):
         return self
 
 
-def layer_encodings(layer: FigureLayer) -> tuple[tuple[str, Encoding], ...]:
-    """Read each mark's declared channels in order."""
-    return tuple((name, getattr(layer.encode, name)) for name in type(layer.encode).model_fields)
+def position_encodings(layer: FigureLayer) -> tuple[tuple[str, ReferenceValue], ...]:
+    """Read the data channels that locate a mark, preserving paths for diagnostics."""
+    match layer:
+        case PointsLayer(encode=encoding):
+            channels = (("x", encoding.x), ("y", encoding.y))
+            if (bounds := encoding.error_y) is not None:
+                return (*channels, ("error_y.lower", bounds.lower), ("error_y.upper", bounds.upper))
+            return channels
+        case RuleLayer(encode=encoding):
+            return (("at", encoding.at),)
+        case SpanLayer(encode=encoding):
+            return (("start", encoding.start), ("end", encoding.end))
+        case LineLayer(encode=encoding):
+            return (("x", encoding.x), ("y", encoding.y))
+        case TrajectoryLayer(encode=encoding):
+            channels = (("x", encoding.x), ("y", encoding.y))
+            return (*channels, ("z", encoding.z)) if encoding.z is not None else channels
+        case BandLayer(encode=encoding):
+            return (("x", encoding.x), ("y", encoding.y), ("lower", encoding.lower), ("upper", encoding.upper))
+
+
+def layer_encodings(layer: FigureLayer) -> tuple[tuple[str, ReferenceValue], ...]:
+    channels = position_encodings(layer)
+    color = color_encoding(layer)
+    return (*channels, ("color.field", color.field)) if color is not None else channels
 
 
 class FigureBindingError(ValueError):
@@ -216,6 +368,8 @@ def validate_figure_bindings(
                 for name, field in coords.items()
             }
         for channel, encoding in layer_encodings(layer):
+            if isinstance(encoding, float):
+                continue
             variable = encoding if isinstance(encoding, str) else encoding.variable
             if variable not in fields:
                 raise FigureBindingError(

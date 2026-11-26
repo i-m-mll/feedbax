@@ -7,13 +7,14 @@ import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
 import { TextArea, TextField } from '@/components/ui/TextField';
 import { bindStudioCommand, commandAttributes, type StudioCommand, type StudioCommandId } from '@/features/projectWindow/studioCommands';
-import type { PlanView } from '@/features/pipeline/planView';
+import { outputName, type PlanView } from '@/features/pipeline/planView';
 import {
   ProjectValueEditSchema, ReportDocumentSchema, StepReferenceSchema, type ReportDocument, type StudioProjectFilePatch,
   type StepReference, type StudioSavedTrainKey, type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { isReportFigureSource, reportFigureRole, type ReportFigureSource } from './createManagedStep';
 import type { ProjectEditController, ProjectEditSnapshot } from './projectEditController';
+import { memberNames, nameOf, type ProjectNames } from './memberNames';
 import { savedRunId } from './projectWindowPlan';
 import { SavedReportResult } from './SavedLightProducts';
 import type { GestureFailures } from './refusals';
@@ -21,9 +22,18 @@ import type { GestureFailures } from './refusals';
 type Block = ReportDocument['blocks'][number];
 type BlockAction = Extract<StudioCommandId, 'moveEarlier' | 'moveLater' | 'remove'>;
 
-function figureLabel(source: ReportFigureSource) {
-  const { step, row } = source.key;
-  return step + ' · ' + source.name + (row === 'default' ? '' : ' · ' + row);
+/**
+ * A figure a Report can take, named by the plan's revision: its step (unless `withStep` is false), its own name, and
+ * its run when the step has several.
+ */
+export function figureName(names: ProjectNames, plan: PlanView, { key, name }: ReportFigureSource, withStep = true) {
+  const named = memberNames(names, key.variant);
+  const step = plan.steps.find(({ id }) => id === key.step);
+  if (!step) throw new Error(`The plan has no step ${key.step}.`);
+  const run = step.runs.length > 1 ? step.runs.find(({ id }) => id === savedRunId(key)) : undefined;
+  if (step.runs.length > 1 && !run) throw new Error(`The plan has no run ${savedRunId(key)}.`);
+  return outputName(...withStep ? [nameOf(named.steps, key.step)] : [], nameOf(named.elements[key.step], name),
+    ...run ? [run.label] : []);
 }
 
 function figureAddress({ key, name, figure }: ReportFigureSource) {
@@ -52,13 +62,15 @@ export function stepReport({ draft, saved }: Pick<ProjectEditSnapshot, 'draft' |
 }
 
 export function useManagedReport({
-  editor, snapshot, plan, projection, variant, stepId, run, wholeStep, focused, failures,
+  editor, snapshot, plan, names, projection, variant, stepId, run, wholeStep, focused, failures,
 }: {
   editor: ProjectEditController;
   /** Where the step's refused gestures land. */
   failures: GestureFailures;
   snapshot: ProjectEditSnapshot;
   plan: PlanView;
+  /** The names of the members of the shown plan's revision. */
+  names: ProjectNames;
   projection?: StudioSavedTrainRuns;
   variant: string | null;
   stepId?: string;
@@ -88,6 +100,9 @@ export function useManagedReport({
   const inputs = step?.inputs ?? {};
   const opened = dialog?.scope === scope && dialog.revision === saved.revision && focused ? dialog.kind : undefined;
   const selected = selection?.scope === scope ? selection.index : undefined;
+  /** A figure input's source; an unresolved one names no member, and reads by its spelling. */
+  const referenceName = (step: string, element: string, unresolved?: true | null) => unresolved ? outputName(step, element)
+    : outputName(nameOf(saved.names.steps, step), nameOf(saved.names.elements[step], element));
 
   function save(name: string, at: Place, patches: StudioProjectFilePatch['patches'], nextInputs?: typeof inputs) {
     if (!editable || !stepId || !document) return false;
@@ -255,7 +270,7 @@ export function useManagedReport({
               }} />
           </label> : <>
             <span className="font-medium">{reference?.success && reference.data.element
-              ? reference.data.step + ' · ' + reference.data.element : block.figure}</span>
+              ? referenceName(reference.data.step, reference.data.element, reference.data.unresolved) : block.figure}</span>
             <label className="grid gap-1">{studioName('caption')}
               <TextField defaultValue={block.caption ?? ''} key={block.caption ?? ''} disabled={!editable}
                 onBlur={({ currentTarget }) => {
@@ -281,7 +296,7 @@ export function useManagedReport({
         <TextArea name="block" required data-dialog-autofocus />
       </label> : <label className="grid gap-1">{studioName('figures')}
         <Select aria-label={studioName('figures')} value={figureChoice} onValueChange={setFigureChoice}
-          items={figures.map((source) => ({ value: figureAddress(source), label: figureLabel(source) }))} />
+          items={figures.map((source) => ({ value: figureAddress(source), label: figureName(names, plan, source) }))} />
       </label>}
       <Button type="submit" className="justify-self-end"
         disabled={!editable || opened === 'figure' && (!addFigure.enabled || figureChoice === null)}>

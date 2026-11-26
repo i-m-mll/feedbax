@@ -346,7 +346,6 @@ def _graph_input_recurrent_spec() -> GraphSpec:
                 source_port="output",
                 target_node="gain",
                 target_port="input",
-                temporality="recurrent",
                 recurrent_initializer=recurrent_graph_input_initializer(
                     "seed",
                     state_slot="input",
@@ -381,7 +380,6 @@ def _node_output_recurrent_spec() -> GraphSpec:
                 source_port="output",
                 target_node="gain",
                 target_port="input",
-                temporality="recurrent",
                 recurrent_initializer=recurrent_node_output_initializer(
                     "encoder",
                     "output",
@@ -439,7 +437,6 @@ def test_compiled_nested_recurrent_rollout_seeds_from_parent_wire() -> None:
                 source_port="output",
                 target_node="linear",
                 target_port="input",
-                temporality="recurrent",
                 recurrent_initializer=recurrent_graph_input_initializer("seed", state_slot="input"),
             ),
             WireSpec(
@@ -624,7 +621,6 @@ def _constant_recurrent_spec() -> GraphSpec:
                 source_port="output",
                 target_node="gain",
                 target_port="input",
-                temporality="recurrent",
                 recurrent_initializer={
                     "kind": "constant",
                     "scope": "trial",
@@ -663,7 +659,7 @@ def test_constant_recurrent_initializer_dtype_preserved_end_to_end(enable_jax_x6
         ComponentRegistry(),
     )
 
-    wire = next(w for w in graph.wires if w.temporality == "recurrent")
+    wire = next(w for w in graph.wires if w.is_recurrent)
     value = graph._initial_value_from_recurrent_initializer(wire)
 
     assert value.dtype == jnp.float32
@@ -703,7 +699,7 @@ def test_recurrent_controller_template_is_explicit_plain_graph() -> None:
         and wire.source_port == "hidden"
         and wire.target_node == "cell"
         and wire.target_port == "hidden"
-        and wire.temporality == "recurrent"
+        and wire.is_recurrent
         for wire in subgraph.wires
     )
 

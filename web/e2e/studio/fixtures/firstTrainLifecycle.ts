@@ -40,7 +40,7 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   const selectRun = async () => {
     await activate(page, mapStep(page, 'train'));
     await page.keyboard.press('Meta+1');
-    await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(drawnRunLabel(settled.rows, row.key)) }));
+    await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(drawnRunLabel(settled.window_map!, row.key)) }));
   };
   const openRun = async () => {
     await expect(runs.getByRole('button', { name: 'Open Run', exact: true })).toBeEnabled();

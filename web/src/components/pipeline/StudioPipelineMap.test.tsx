@@ -34,20 +34,20 @@ const rate = {
   id: 'rate',
   label: 'rate',
   values: [
-    { id: 'low', label: '0.001' },
-    { id: 'mid', label: '0.003' },
-    { id: 'high', label: '0.009' },
+    { id: 'low', label: 'rate 0.001', valueLabel: '0.001' },
+    { id: 'mid', label: 'rate 0.003', valueLabel: '0.003' },
+    { id: 'high', label: 'rate 0.009', valueLabel: '0.009' },
   ],
 };
 const seed = {
   id: 'seed',
   label: 'seed',
-  values: [{ id: 'first', label: '1' }, { id: 'second', label: '2' }],
+  values: [{ id: 'first', label: 'seed 1', valueLabel: '1' }, { id: 'second', label: 'seed 2', valueLabel: '2' }],
 };
 const curl = {
   id: 'curl',
   label: 'curl',
-  values: [{ id: 'plain', label: '0' }, { id: 'perturbed', label: '1' }],
+  values: [{ id: 'plain', label: 'curl 0', valueLabel: '0' }, { id: 'perturbed', label: 'curl 1', valueLabel: '1' }],
 };
 
 const train: PlanStepView = {
@@ -57,7 +57,7 @@ const train: PlanStepView = {
   sweeps: [rate, seed],
   runs: rate.values.flatMap((r) => seed.values.map((s): PlanRunView => ({
     id: `${r.id}-${s.id}`,
-    label: `${r.label}/${s.label}`,
+    label: `${s.label} · ${r.label}`,
     values: { rate: r.id, seed: s.id },
     status: 'not_run',
     state: 'not_run',
@@ -335,7 +335,7 @@ it('marks a drawer row with its worst state, and choosing the mark selects those
 });
 
 it('lights the lineage of every selected run, not only the last one clicked', () => {
-  const probe = { id: 'probe', label: 'probe', values: [{ id: 'x', label: 'x' }, { id: 'y', label: 'y' }] };
+  const probe = { id: 'probe', label: 'probe', values: [{ id: 'x', label: 'probe x', valueLabel: 'x' }, { id: 'y', label: 'probe y', valueLabel: 'y' }] };
   const evaluate: PlanStepView = {
     id: 'probes', label: 'probes', kind: 'evaluate', sweeps: [probe],
     runs: probe.values.map((value): PlanRunView => ({

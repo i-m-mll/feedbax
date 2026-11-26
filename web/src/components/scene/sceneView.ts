@@ -1,6 +1,6 @@
 import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
 import type { ElementAddress } from '@/features/projectWindow/elementSelection';
-import type { TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace } from '@/generated/studioContracts';
+import type { Marker, TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace } from '@/generated/studioContracts';
 import type { ScenePoint } from './planarProjection';
 
 /** A class of element the Scene draws, in Layers' order; Layers shows or hides each. */
@@ -31,10 +31,21 @@ export interface SceneElement {
   readonly possible?: readonly ScenePoint[];
   readonly values: readonly SceneValue[];
   /** Which end of the trial a task element marks: the start the Model is placed at, or a goal. */
-  readonly mark?: 'start' | 'goal';
+  readonly mark?: SceneMark;
+  /** How a task element is drawn: its variable's marker, or its mark's. */
+  readonly marker?: Marker;
   /** Why the element is not drawn as authored, marked on it. */
   readonly problem?: string;
 }
+
+/** Which end of the trial a task element marks. */
+export type SceneMark = 'start' | 'goal';
+
+/** The marker of a task element whose variable chooses none. */
+export const markMarkers: Readonly<Record<SceneMark, Marker>> = {
+  start: { shape: 'square', filled: false },
+  goal: { shape: 'circle', filled: false },
+};
 
 /** A mechanism, or the task, with the elements of it the Scene draws. */
 export interface SceneGroup {
@@ -97,13 +108,27 @@ export interface SceneMeanPath {
 
 /**
  * A recorded world-frame track: its whole path, how many of its points are drawn (all of them, or those up to the
- * playhead under Trails), where it is at the playhead, and whether it is the picked trial's, drawn heavier.
+ * playhead under Trails), where it is at the playhead, and whether it is the picked trial's, drawn heavier, with where
+ * its epochs ended on a condition.
  */
 export interface SceneTrack {
   readonly points: readonly ScenePoint[];
   readonly drawn: number;
   readonly head?: ScenePoint;
   readonly picked: boolean;
+  /** Where the picked trial's epochs that end on a condition ended on the track, and how; under Trails, those passed. */
+  readonly ended: readonly SceneEnded[];
+}
+
+/**
+ * Where on a track an epoch that ends on a condition ended, drawn as a tick across the track: at its condition, or at
+ * its limit. `toward` is the nearest other point of the track, which gives the track's direction there; a track that
+ * stays at one point has none.
+ */
+export interface SceneEnded {
+  readonly point: ScenePoint;
+  readonly toward?: ScenePoint;
+  readonly by: 'condition' | 'limit';
 }
 
 export const emptyScene: Scene = { groups: [], rest: [], tracks: [], means: [], ends: [], relations: [], places: [] };

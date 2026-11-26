@@ -29,15 +29,18 @@ from feedbax._secure_fs import (
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
+from feedbax.synthesis.methods import SynthesisMethodRegistry
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
+from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
-    BasedDocument, Document, Project, RootDocument, Sha256, diff, json_pointer_parts, member_name, same_json,
+    BasedDocument, Document, LoadedModelDocument, Project, RootDocument, Sha256, diff, json_pointer_parts, member_name, same_json,
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
@@ -62,11 +65,16 @@ from feedbax.contracts.project_io import (
     text_project_fingerprint,
     text_project_settings_edit,
 )
-from feedbax.planner.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project, compiler_authority
+from feedbax.planner.project_plan import (
+    ProjectPlan, ProjectPlanMemo, RunKey, _builtin_model_registry, compile_project, compiler_authority, project_variants,
+)
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
-from feedbax.persistence.project_subject import imported_model_reader, terminal_train_reader
+from feedbax.persistence.project_subject import terminal_train_reader
+from feedbax.project_model_assets import (
+    ModelAssetError, model_archive_path, portable_model_reader, publish_project_model, write_model_assets,
+)
 from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
     change_member_key, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
@@ -80,6 +88,7 @@ from feedbax.contracts.studio_project import (
     AuthoredFileAddress,
     CreateNamedDocument,
     MemberFamily,
+    NamedFileCreation,
     PresentationDocument,
     ReplayDeclarationAddress,
     ReplayFileAddress,
@@ -100,11 +109,13 @@ from feedbax.contracts.studio_project import (
     StudioProjectPatchBatch,
     StudioProjectRename,
     StudioProjectReplay,
+    StudioProjectMemberNames,
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
 
 if TYPE_CHECKING:
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.analysis.operations import OperationRegistry
     from feedbax.plot.templates import FigureTemplateRegistry
     from feedbax.component_registry import ComponentRegistry
@@ -409,7 +420,7 @@ class SavedProjectPlans(Protocol):
 class _SavedCompilation:
     stamp: tuple[object, ...]
     plan: SettledProjectPlan
-    observations: dict[str, dict[str, object]]
+    observations: dict[str, dict[object, object]]
 
 
 class SavedPlanMemo(ProjectPlanMemo):
@@ -421,7 +432,7 @@ class SavedPlanMemo(ProjectPlanMemo):
         self.saved: _SavedCompilation | None = None
 
 
-def _observe_plan_input[T](reader: Callable[[str], T], observations: dict[str, object], name: str) -> T:
+def _observe_plan_input[Key, T](reader: Callable[[Key], T], observations: dict[Key, object], name: Key) -> T:
     try:
         value = reader(name)
     except (OSError, ValueError) as error:
@@ -431,12 +442,12 @@ def _observe_plan_input[T](reader: Callable[[str], T], observations: dict[str, o
     return value
 
 
-def _same_plan_inputs(readers: BaseReaders, expected: dict[str, dict[str, object]]) -> bool:
+def _same_plan_inputs(readers: BaseReaders, expected: dict[str, dict[object, object]]) -> bool:
     for kind, observed in expected.items():
         reader = getattr(readers, kind)
         if reader is None:
             return False
-        current: dict[str, object] = {}
+        current: dict[object, object] = {}
         for name in observed:
             try:
                 _observe_plan_input(reader, current, name)
@@ -454,17 +465,21 @@ def compile_saved_project(
     figure_templates: FigureTemplateRegistry | None = None,
     source_runs: Iterable[RunKey] = (), memo: SavedPlanMemo | None = None,
     training_methods: TrainingMethodRegistry | None = None,
+    synthesis_methods: SynthesisMethodRegistry | None = None,
 ) -> SettledProjectPlan:
     """Compile exact authored bytes and reuse them only with matching input authority."""
-    readers = replace(readers, terminal_train=terminal_train_reader(store), imported_model=imported_model_reader(store))
+    readers = replace(
+        readers, terminal_train=terminal_train_reader(store),
+        imported_model=portable_model_reader(text.root, store, components or _builtin_model_registry()),
+    )
     semantic_root = project_semantic_root(text.project)
     source_runs = frozenset(source_runs)
     stamp = (
         project_id, text.revision, semantic_root, text.root, store, source_runs,
-        compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates),
+        compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods),
         readers.figure_external is not None,
     )
-    observations: dict[str, dict[str, object]] = {}
+    observations: dict[str, dict[object, object]] = {}
     observed_readers = {}
     for kind in ("terminal_train", "imported_model", "figure_external"):
         if (reader := getattr(readers, kind)) is not None:
@@ -482,7 +497,7 @@ def compile_saved_project(
         plan = compile_project(
             text.project, source_runs=source_runs, memo=memo,
             operations=operations, components=components, functions=functions, python_tasks=python_tasks,
-            figure_templates=figure_templates, training_methods=training_methods,
+            figure_templates=figure_templates, training_methods=training_methods, synthesis_methods=synthesis_methods,
             readers=replace(readers, **observed_readers),
         )
         settled = SettledProjectPlan(
@@ -931,6 +946,7 @@ class ProjectFolder:
         figure_templates: FigureTemplateRegistry | None = None,
         local_folder: ProjectFolderLocation | None = None,
         training_methods: TrainingMethodRegistry | None = None,
+        synthesis_methods: SynthesisMethodRegistry | None = None,
         load_examples: Callable[[], Mapping[str, Project]] = dict,
     ) -> None:
         self.root = root.resolve()
@@ -941,6 +957,7 @@ class ProjectFolder:
         self.functions = functions
         self.python_tasks = python_tasks
         self.training_methods = training_methods
+        self.synthesis_methods = synthesis_methods
         self._load_examples = load_examples
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: SavedPlanMemo())
         self._known_locations: dict[str, ProjectFolderLocation] = {}
@@ -1027,8 +1044,18 @@ class ProjectFolder:
                     ))
                 else:
                     composed[name] = entry.payload
+        names = StudioProjectMemberNames.from_project(text.project)
+        variants = project_variants(
+            text.project, components=self.components, functions=self.functions, python_tasks=self.python_tasks,
+            training_methods=self.training_methods,
+        )
         return StudioProjectSnapshot(
             project_id=location.project_id,
+            names=names,
+            variant_names={
+                key: names if project is text.project else StudioProjectMemberNames.from_project(project)
+                for key, project in variants.items()
+            },
             composed=composed,
             problems=problems,
             revision=text.revision,
@@ -1155,6 +1182,7 @@ class ProjectFolder:
             source_runs=source_runs, memo=self._plan_memo(project_id),
             operations=self.operations, components=self.components, functions=self.functions,
             python_tasks=self.python_tasks, figure_templates=self.figure_templates, training_methods=self.training_methods,
+            synthesis_methods=self.synthesis_methods,
         )
 
     def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:
@@ -1230,34 +1258,86 @@ class ProjectFolder:
     ) -> StudioProjectDocument:
         files = [body.file] if isinstance(body, StudioProjectCreateFile) else body.files
         with self._locked_folder(project_id) as folder:
-            root = folder.path
-            text = self._load(root)
+            text = self._load(folder.path)
             check_revision("project", body.revision, text.revision)
-            documents = dict(text.project.documents)
-            steps = dict(text.project.steps)
-            additions = {}
-            for file in files:
-                address = AuthoredFileAddress(kind=file.kind, id=file.id)
-                relative = _relative_file(address)
-                if relative in text.files or relative in additions:
-                    raise ProjectFileExists(relative)
-                additions[relative] = address
-                if isinstance(file, CreateNamedDocument):
-                    documents[file.id] = file.document
-                else:
-                    steps[file.id] = file.step
-            project = Project(documents=documents, steps=steps, sweep=text.project.sweep)
-            encoded = dump_text_project(project, text.configuration)
-            _check_file_spellings(root, encoded)
+            return self._create_files(folder, text, files)
 
-            def guard() -> None:
-                check_revision("project", text.revision, self._load(root).revision)
+    def _create_files(
+        self, folder: _LockedProjectFolder, text: TextProject, files: Sequence[NamedFileCreation],
+        *, before_create: Callable[[], None] | None = None,
+    ) -> StudioProjectDocument:
+        root = folder.path
+        documents = dict(text.project.documents)
+        steps = dict(text.project.steps)
+        additions = {}
+        for file in files:
+            address = AuthoredFileAddress(kind=file.kind, id=file.id)
+            relative = _relative_file(address)
+            if relative in text.files or relative in additions:
+                raise ProjectFileExists(relative)
+            additions[relative] = address
+            if isinstance(file, CreateNamedDocument):
+                documents[file.id] = file.document
+            else:
+                steps[file.id] = file.step
+        project = Project(documents=documents, steps=steps, sweep=text.project.sweep)
+        encoded = dump_text_project(project, text.configuration)
+        _check_file_spellings(root, encoded)
 
-            _publish_patch(folder, [
-                _PendingFile(address=address, before=None, data=encoded[relative].decode())
-                for relative, address in additions.items()
-            ], guard)
-            return self._document(folder.location, self._load(root))
+        def guard() -> None:
+            check_revision("project", text.revision, self._load(root).revision)
+
+        if before_create is not None:
+            before_create()
+        _publish_patch(folder, [
+            _PendingFile(address=address, before=None, data=encoded[relative].decode())
+            for relative, address in additions.items()
+        ], guard)
+        return self._document(folder.location, self._load(root))
+
+    def publish_loaded_model(
+        self, project_id: str, *, revision: str, name: str, model: LoadedModelDocument,
+        staging: ImmutableArtifactBlobProvider, raw_archive: bytes,
+    ) -> StudioProjectSnapshot:
+        """Commit one checked Load after its exact project assets and Store root are durable."""
+        with self._locked_folder(project_id) as folder:
+            text = self._load(folder.path)
+            check_revision("project", revision, text.revision)
+            existing = name in text.project.documents
+            if existing:
+                document = compose_document(text.project.documents.get, name)
+                if isinstance(document, ProjectDiagnostic) or document.schema_id != LOADED_MODEL_SCHEMA_ID:
+                    raise ProjectFileExists(f"documents/{name}.json")
+                saved = LoadedModelDocument.model_validate(document.payload)
+                if saved.source != model.source or saved.model != model.model:
+                    raise ProjectFileExists(f"documents/{name}.json")
+                model = saved
+            archive = model_archive_path(name, model)
+
+            def check() -> None:
+                folder.check()
+                check_revision("project", revision, self._load(folder.path).revision)
+
+            def publish() -> None:
+                try:
+                    write_model_assets(
+                        folder.path, folder.location.identity, archive, raw_archive, model.source,
+                        staging.get_object(model.source.model), check=check,
+                    )
+                    publish_project_model(text.store_path, staging, model.source)
+                except FileExistsError as error:
+                    raise ProjectFileExists(*error.args) from error
+                except (ModelAssetError, ArtifactBlobCustodyError) as error:
+                    raise ProjectFolderInvalid(str(error)) from error
+
+            if existing:
+                publish()
+                check()
+                return self._snapshot(folder.location, text)
+            file = CreateNamedDocument(kind="document", id=name, document=RootDocument(
+                schema=LOADED_MODEL_SCHEMA_ID, payload=model.model_dump(mode="json"),
+            ))
+            return self._create_files(folder, text, [file], before_create=publish).snapshot
 
     def revision(self, project_id: str) -> StudioProjectRevision:
         with self._locked_folder(project_id, write=False) as folder:

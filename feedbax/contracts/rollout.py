@@ -156,11 +156,23 @@ class ResolvedInitialRollout(StrictModel):
     replica_ids: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
 
 
+class ResolvedSynthesizedRollout(StrictModel):
+    model_tree: Sha256
+    model: Sha256
+    task: Sha256
+    trials: tuple[str, ...]
+    replica_ids: tuple[()] = ()
+
+
 def rollout_semantics(
     graph: GraphSpec, schedule: GraphKeySchedule, task_source: TaskDocument | PythonTaskSelection,
     input_bindings: Mapping[str, str | None] | tuple[tuple[str, str], ...], source_overrides: Mapping[str, float],
 ) -> tuple[str, str]:
     """Identify the resolved model and task without using their numerical state."""
+    from feedbax.contracts.task_document import TaskDocument
+
+    if isinstance(task_source, TaskDocument):
+        task_source = task_source.without_markers()
     model = sha256_bytes(canonical_json_v2_bytes({
         "graph": graph.model_dump(mode="json"),
         "key_schedule": schedule.model_dump(mode="json"),
@@ -177,7 +189,10 @@ class ResolvedRolloutBinding(StrictModel):
     """Scientific inputs bound by the worker before starting the paired rollout."""
 
     schema_id: Literal["feedbax.evaluate.binding.v1"] = "feedbax.evaluate.binding.v1"
-    members: Annotated[tuple[ResolvedRolloutMember, ...], Field(min_length=1)] | tuple[ResolvedInitialRollout]
+    members: (
+        Annotated[tuple[ResolvedRolloutMember, ...], Field(min_length=1)]
+        | tuple[ResolvedInitialRollout] | tuple[ResolvedSynthesizedRollout]
+    )
     objective: Sha256 | None = Field(default=None, exclude_if=lambda value: value is None)
     seed: int
     trial_policy: Literal["paired"]

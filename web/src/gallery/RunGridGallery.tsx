@@ -9,7 +9,7 @@ type Axis = [label: string, values: number | readonly string[]];
 
 function sweep([label, values]: Axis): PlanSweepView {
   const labels = typeof values === 'number' ? Array.from({ length: values }, (_, index) => String(index + 1)) : values;
-  return { id: label, label, values: labels.map((value, index) => ({ id: `${label}-${index}`, label: value })) };
+  return { id: label, label, values: labels.map((value, index) => ({ id: `${label}-${index}`, label: `${label} ${value}`, valueLabel: value })) };
 }
 
 const states = ['succeeded', 'succeeded', 'succeeded', 'running', 'failed', 'not_run', 'stale'] as const;

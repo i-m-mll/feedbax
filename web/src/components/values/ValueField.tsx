@@ -21,7 +21,7 @@ import { Section } from '@/components/ui/Section';
 import { popupItem, popupSurface, primaryText, secondaryText } from '@/components/ui/styles';
 import { TextField, type TextTerm } from '@/components/ui/TextField';
 import {
-  callOf, callText, completions, drawCentre, drawOf, hasMark, kindEdit, kindOffers, shapeFrom, valueKind,
+  callOf, callText, completions, drawCentre, drawOf, hasMark, kindEdit, kindOffers, shapeFrom, untilText, valueKind,
   type ChangeMark as FieldChangeMark, type ChangeSource, type Completion, type FieldEdit, type FieldModel, type FieldOption,
   type FieldRefusal, type ValueKind,
 } from './fieldModel';
@@ -49,10 +49,10 @@ function Origin({ id, text, reveal }: { id: string; text: string; reveal?: () =>
 /** What a changed value differs from, as its mark's tip. */
 export function changeTip(from: ChangeSource) {
   switch (from.kind) {
-    case 'base': return studioFormat('changedFrom', { name: from.document });
+    case 'base': return studioFormat('changedFrom', { name: from.name });
     case 'value': return studioFormat('changedFrom', { name: from.text });
     case 'selected': return studioFormat('fieldSource', { kind: studioName('selectedValue'), name: from.text });
-    case 'evaluate': return studioEvaluateValueSource({ kind: 'evaluate', step: from.step });
+    case 'evaluate': return studioFormat('evaluateChangedValue', { step: from.name });
   }
 }
 
@@ -164,12 +164,13 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   const reasonId = useId();
   const originId = useId();
   const changeId = useId();
+  const pairedId = useId();
   const { reason, refusal, setReason, submit, sent } = useSubmit(model);
   const value = sent ? sent.value : model.value;
   const readOnly = !model.commit;
   const shownReason = reason ?? model.reason;
   const term = shownReason ? problemTerm(model, refusal) : undefined;
-  const describedBy = [model.change && changeId, model.origin && originId, shownReason && reasonId]
+  const describedBy = [model.paired && pairedId, model.change && changeId, model.origin && originId, shownReason && reasonId]
     .filter(Boolean).join(' ') || undefined;
   // A problem about one term is drawn on the term; its reason still describes the control.
   const problem = shownReason && (term ? <FieldProblemReason reason={shownReason} id={reasonId} />
@@ -199,7 +200,7 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
         const index = optionIndex(type.options, value);
         return <Select aria-labelledby={labelId} aria-describedby={describedBy} className="w-full" disabled={readOnly}
           value={index < 0 ? null : String(index)} placeholder={model.text === null ? studioName('mixed') : undefined}
-          trailing={problem || change}
+          trailing={problem || change} onOpenChange={model.listOpen}
           items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
           onValueChange={(position) => void submit({ kind: 'set', value: type.options[Number(position)].value })} />;
       }
@@ -215,7 +216,7 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
       default:
         return <ValueText model={model} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!shownReason}
           term={term && shownReason ? { ...term, reason: shownReason } : undefined}
-          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind} changeMark={marks} />;
+          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind} changeMark={marks} pairedId={pairedId} />;
     }
   })();
 
@@ -352,7 +353,7 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   </section>;
 }
 
-function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, clearReason, chooseKind, changeMark, end, parameterOf }: {
+function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, clearReason, chooseKind, changeMark, end, parameterOf, pairedId }: {
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
   /** The term of a text the problem is about; drawn while the field shows that text. */
   term?: TextTerm & { readonly text: string };
@@ -363,6 +364,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   end?: ReactNode;
   /** The field and parameter whose names make the input's accessible name, for a chosen class's only parameter. */
   parameterOf?: readonly [field: string, parameter: string];
+  /** The id of the value in the other time unit, which describes the control; it is drawn while no draft replaces the value. */
+  pairedId?: string;
 }) {
   const { label } = model;
   const input = useRef<HTMLInputElement>(null);
@@ -379,8 +382,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   const [pending, setPending] = useState<ValueKind>();
   function enter(kind: ValueKind) {
     setPending(kind);
-    const end = input.current?.value.length ?? 0;
-    input.current?.setSelectionRange(end, end);
+    const at = kind === 'until' ? 0 : input.current?.value.length ?? 0;
+    input.current?.setSelectionRange(at, at);
   }
   useEffect(() => {
     if (intent && intent.target === model.anchor) enter(intent.kind);
@@ -392,8 +395,9 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   const shownKind = pending ?? drafted?.kind ?? model.kind;
   /**
    * Replaces the value with `kind`'s form made from it: a Draw around it, a Formula holding its text with the caret in
-   * it, a Shape of it, a Link's choice opened, a Draw's centre as the Value. Sweep and Until are made by the text the
-   * field commits, Rest by its text, a sweep's Value by its own edit.
+   * it, a Shape of it, a Link's choice opened, a Draw's centre as the Value. Sweep is made by the text the field
+   * commits; Until by its text drafted with a Value's length as the limit and the caret where the condition goes; Rest
+   * by its text; a sweep's Value by its own edit.
    */
   function choose(kind: ValueKind) {
     if (kind === shownKind) return;
@@ -407,7 +411,11 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
       setPending(undefined);
     }
     switch (kind) {
-      case 'sweep': case 'until': chosen.current = kind; return;
+      case 'sweep': chosen.current = kind; return;
+      case 'until':
+        setDraft(untilText('', model.kind === 'value' ? text : ''));
+        chosen.current = kind;
+        return;
       case 'rest': void submit({ kind: 'text', text: 'rest' }); return;
       case 'draw': startDraw(model, present); return;
       case 'link': setPartDraft(model.id, { kind: 'link' }); return;
@@ -430,7 +438,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     }
   }
   const offered = draft !== undefined && !dismissed && caret !== undefined
-    ? completions(model, text.slice(0, caret)) : { token: '', items: [] };
+    ? completions({ ...model, names: model.kinds.find(({ kind }) => kind === shownKind)?.names ?? model.names }, text.slice(0, caret))
+    : { token: '', items: [] };
   const open = offered.items.length > 0;
   const mark = hasMark(model);
   const offers = kindOffers(model);
@@ -498,6 +507,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   return <>
     <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={changeMark} end={end} className="min-w-0"
       term={term && term.text === text ? term : undefined}
+      after={model.paired && pairedId && draft === undefined ? { text: model.paired, id: pairedId } : undefined}
       aria-label={parameterOf ? studioParameterLabel(...parameterOf) : undefined} size={end ? Math.max(6, text.length + 1) : undefined}
       placeholder={model.text === null && draft === undefined ? studioName('mixed') : undefined}
       readOnly={readOnly || model.type.kind === 'readOnly'} invalid={invalid}

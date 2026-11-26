@@ -1,20 +1,21 @@
 import clsx from 'clsx';
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
-import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
+import {
+  catalogEntries, isExpiredExpressionContext, readStudioTrialAuthoring, readTrialExpressionMenu, useAuthoringCatalog,
+} from '@/api/studioAuthoring';
 import { shownError } from '@/api/shownErrors';
 import {
   studioAccessibleName, studioCountOf, studioDefinitionStatus, studioEvaluateValueSource, studioName,
 } from '@/components/activity/studioVocabulary';
 import { ChangeMark as ChangedMark } from '@/components/ui/ChangeMark';
-import { Combobox } from '@/components/ui/Combobox';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { Inspector } from '@/components/ui/Inspector';
 import { editedElement } from '@/components/ui/ChoiceMenu';
 import { MenuItem } from '@/components/ui/Menu';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import {
-  evaluateChange, reasonOf, type ChangeMark, type ChangeSource, type FieldModel, type FieldRefusal,
+  evaluateChange, reasonOf, type ChangeMark, type ChangeSource, type FieldModel, type FieldRefusal, type PartMenus,
 } from '@/components/values/fieldModel';
 import { Drawer, DrawerSection, focusField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import {
@@ -28,6 +29,8 @@ import { changeTip, FieldChange, ValueField } from '@/components/values/ValueFie
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { isRecord, rawField } from '@/components/values/adapters/raw';
 import { fromFieldView, type FieldViewOptions } from '@/components/values/adapters/fieldView';
+import { nameOf } from './memberNames';
+import { partMenuKey } from '@/components/values/partMenu';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
   FieldKind, JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
@@ -43,6 +46,7 @@ import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import { sendWithStore, type AskStore } from './storeChoice';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
+import { WindowCell, WindowEditor, type WindowEpochChoice, type WindowHost } from './WindowEditor';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 type Relation = Extract<Change, { kind: 'relate' }>;
@@ -57,6 +61,8 @@ export type Commit = (name: string, change: Change, removes?: boolean) => Promis
 /** A step's Trial authoring, with what the changed values of its Task and Objective documents differ from. */
 export type TrialView = StudioTrialAuthoring & {
   readonly changedFrom: { readonly task?: ChangeSource; readonly objective?: ChangeSource };
+  /** The menus of the parts of the expression at a field's path, which the service sends as each opens. */
+  menus(field: string): PartMenus;
 };
 
 const has = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
@@ -82,11 +88,12 @@ export function expressionKind(value: JsonValue | undefined): FieldKind {
 }
 
 /** A field the service projects in a step's Task or Objective, marked with its first stored Problem. */
-export function trialField(projection: StudioTrialField, label: string, runs: TrialRuns | undefined, options: FieldViewOptions): FieldModel {
+export function trialField(view: TrialView, projection: StudioTrialField, label: string, runs: TrialRuns | undefined,
+  options: FieldViewOptions): FieldModel {
   const [problem] = projection.problems ?? [];
   return {
     ...fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, options),
-    reason: problem?.reason, span: problem?.span ?? undefined,
+    reason: problem?.reason, span: problem?.span ?? undefined, menus: view.menus(projection.path),
   };
 }
 
@@ -107,18 +114,38 @@ export function useTrialAuthoring(
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === project &&
       JSON.stringify(previousQuery.queryKey[3]) === JSON.stringify(run) ? previous : undefined,
   });
-  const { project: authored } = useSyncExternalStore(editor.subscribe, editor.getSnapshot).saved;
+  const { project: authored, names } = useSyncExternalStore(editor.subscribe, editor.getSnapshot).saved;
   const data = query.data;
   /** An Evaluate step's documents change the values it reads; another step's differ from their documents' bases. */
   const view: TrialView | undefined = useMemo(() => {
     if (!data || !run) return undefined;
     const from = (document: string | null): ChangeSource | undefined => {
-      if (authored.steps?.[run.step]?.kind === 'evaluate') return { kind: 'evaluate', step: run.step };
+      if (authored.steps?.[run.step]?.kind === 'evaluate') return { kind: 'evaluate', name: nameOf(names.steps, run.step) };
       const base = baseOf(authored.documents, document);
-      return base === undefined ? undefined : { kind: 'base', document: base };
+      return base === undefined ? undefined : { kind: 'base', name: nameOf(names.documents, base) };
     };
-    return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) } };
-  }, [data, authored, run]);
+    const menuKey = (context: string, field: string) => [project, context, field];
+    /** Reads a menu of this view; once the service no longer holds it, reads the view again and asks that one. */
+    const menus = (field: string): PartMenus => ({
+      kind: 'served', key: menuKey(data.expression_context, field),
+      read: async (part, signal) => {
+        const ask = (expression_context: string, signal: AbortSignal) =>
+          readTrialExpressionMenu(project, { revision: data.revision, run, expression_context, field, part }, signal);
+        try {
+          return await ask(data.expression_context, signal);
+        } catch (error) {
+          if (!isExpiredExpressionContext(error)) throw error;
+          const fresh = await queryClient.fetchQuery({ ...trialAuthoringQuery(project, data.revision, run), staleTime: 0 });
+          // The reloaded view's own read of this menu, which its field may already have started, is this one.
+          return queryClient.fetchQuery({
+            queryKey: partMenuKey(menuKey(fresh.expression_context, field), part),
+            queryFn: ({ signal: own }) => ask(fresh.expression_context, own), staleTime: Infinity,
+          });
+        }
+      },
+    });
+    return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) }, menus };
+  }, [data, authored, run, project, queryClient]);
   /** Stores a change, answering with what the service made of it, or why the write was refused. */
   const send = editable && run && query.data ? (name: string, change: Change, removes?: boolean) => {
     const committedFrom = document.activeElement;
@@ -293,7 +320,7 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
   </Inspector>;
 }
 
-/** A term's fields that are values, by the column that shows them; its Window is a choice of epochs. */
+/** A term's fields that are values, by the column that shows them; its Window has its own editor. */
 type TermField = 'name' | 'enabled' | 'measure' | 'weight' | 'reduction';
 type TermColumn = 'name' | 'measure' | 'window' | 'weight' | 'value' | 'covered' | 'enabled';
 const authoredColumns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermColumn[];
@@ -356,7 +383,7 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
     if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
     const kind = expressionKind(term[field] as JsonValue | undefined);
     const sweep = projection.sweep?.id;
-    const model = trialField(projection, label, runs, {
+    const model = trialField(view, projection, label, runs, {
       id: term.id + field, kind, changed: changed(field),
       commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', path: projection.path, edit })),
       selectedMembers: sweep ? runs?.values(sweep) : undefined,
@@ -380,23 +407,37 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
   };
 }
 
-/** A term's Window: the epochs it applies in, as tokens; none checked is the whole trial. */
-function TermWindow({ view, term, index, commit, labelId }: {
-  view: TrialView; term: ObjectiveTerm; index: number; commit?: Commit; labelId?: string;
-}) {
-  const epochs = term.epochs ?? [];
-  const path = termPath(index) + '/epochs';
-  const changed = changedAt(view, 'objective', path, commit);
-  return <Combobox className="w-full" aria-labelledby={labelId} aria-label={labelId ? undefined : studioName('window')}
-    items={view.epochs.map(({ id, name }) => ({ value: id, label: name }))}
-    checked={epochs} text="" tokens disabled={!commit}
-    trailing={changed && <ChangedMark tip={changeTip(changed.from)} reset={changed.reset && (() => { void changed.reset!(); })} />}
-    onToggle={(epoch) => {
-      const next = view.epochs.map(({ id }) => id)
-        .filter((id) => id === epoch ? !epochs.includes(id) : epochs.includes(id));
-      void commit?.(studioAccessibleName('set', studioName('window')),
-        { kind: 'objective', edits: [write(path, next, has(term, 'epochs'))] });
-    }} />;
+/** The epochs a window can name, each with the occurrences the nominal trial has of it. */
+export function windowEpochs(view: StudioTrialAuthoring): WindowEpochChoice[] {
+  return view.epochs.map(({ id, name }) => ({
+    id, name, occurrences: (view.epoch_instances ?? []).filter((instance) => instance.id === id).length,
+  }));
+}
+
+/** A term's Window: its structure stored at the term's `window`, each offset the field the service projects for it. */
+function termWindow(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs?: TrialRuns): WindowHost {
+  const path = termPath(index) + '/window';
+  return {
+    epochs: windowEpochs(view),
+    offset: (site) => {
+      const pointer = authoredPointer(['objective', 'terms', term.id, 'window', ...site]);
+      const projection = view.fields.find((field) => field.path === pointer);
+      if (!projection) throw new Error(`The Objective's window offset ${pointer} has no field`);
+      const label = studioName(site[2]);
+      return trialField(view, projection, label, runs, {
+        id: term.id + site.join('-'), kind: expressionKind(valueAt(term.window, site)),
+        changed: changedAt(view, 'objective', path + '/' + site.join('/'), commit),
+        commit: commit && ((edit) => commit(studioAccessibleName('set', label), { kind: 'expression', path: projection.path, edit })),
+      });
+    },
+    change: commit && ((value) => commit(studioAccessibleName('set', studioName('window')),
+      { kind: 'objective', edits: [write(path, value as unknown as JsonValue, has(term, 'window'))] })),
+    changed: changedAt(view, 'objective', path, commit),
+  };
+}
+
+function valueAt(root: unknown, path: readonly (string | number)[]): JsonValue | undefined {
+  return path.reduce<unknown>((node, key) => isRecord(node) || Array.isArray(node) ? (node as Record<string | number, unknown>)[key] : undefined, root) as JsonValue | undefined;
 }
 
 /** A term, and the field of it whose cell is selected. */
@@ -419,7 +460,7 @@ function newTerm(chosen: ReturnType<typeof measured>[number]) {
     measure_type: { base: 'real', dimensions: Object.fromEntries(
       Object.entries(chosen.type.dimensions ?? {}).map(([name, exponent]) => [name, exponent * 2]),
     ) },
-    weight: { kind: 'literal', value: 1 }, epochs: [], enabled: true,
+    weight: { kind: 'literal', value: 1 }, enabled: true,
   } satisfies JsonValue;
 }
 
@@ -503,7 +544,7 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs, scor
         </TableFieldCell>}
         {commit ? <TableFieldCell {...cell('measure')}><ValueField model={fields.measure} form="cell" /></TableFieldCell>
           : <TableCell {...cell('measure')}>{fields.measure.text}</TableCell>}
-        <TableFieldCell {...cell('window')}><TermWindow view={view} term={term} index={index} commit={commit} /></TableFieldCell>
+        <TableFieldCell {...cell('window')}><WindowCell window={term.window} host={termWindow(view, term, index, commit, runs)} /></TableFieldCell>
         {commit ? <TableFieldCell {...cell('weight')}><ValueField model={fields.weight} form="cell" /></TableFieldCell>
           : <TableCell {...cell('weight')}>{fields.weight.text}</TableCell>}
         {score && <>
@@ -567,6 +608,7 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
   const term = view.objective?.terms?.[index];
   if (!term) return null;
   const fields = termFields(view, term, index, commit, runs, shown);
+  const windowHost = termWindow(view, term, index, commit, runs);
   const order: (TermField | 'window')[] = ['name', 'measure', 'window', 'weight', 'enabled', 'reduction'];
   const name = term.name ?? studioAccessibleName('term', index + 1);
   const period = view.period_seconds;
@@ -575,8 +617,9 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
       <TermTrace label={name} term={term.id} shown={shown} stepSeconds={period} />
     </section>}
     {order.map((field) => field === 'window'
-      ? <FieldRow key="window" label={studioName('window')} labelId={windowLabel}>
-        <TermWindow view={view} term={term} index={index} commit={commit} labelId={windowLabel} />
+      ? <FieldRow key="window" label={studioName('window')} labelId={windowLabel} actions={windowHost.changed && <ChangedMark
+        tip={changeTip(windowHost.changed.from)} reset={windowHost.changed.reset && (() => { void windowHost.changed!.reset!(); })} />}>
+        <WindowEditor window={term.window} host={windowHost} labelId={windowLabel} />
       </FieldRow>
       : <ValueField key={term.id + field + JSON.stringify(fields[field].value ?? fields[field].text)} model={fields[field]} />)}
   </Inspector>;

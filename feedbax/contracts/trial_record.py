@@ -8,6 +8,7 @@ from feedbax.contracts.expression_values import Problem
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.studio_scene import ScenePoint
+from feedbax.contracts.task_document import EpochEnd
 from feedbax.contracts.trial_clock import TrialMean, TrialMeanOptions
 
 
@@ -16,7 +17,7 @@ class TaskTimelineCue(BaseModel):
     label: str
     start: int
     end: int
-    outcome: int
+    outcome: EpochEnd
 
 
 class TrialAnchorPlace(BaseModel):
@@ -81,6 +82,8 @@ class TrialRecord(BaseModel):
     variable_defined: dict[str, JsonValue]
     timeline: list[TaskTimelineCue]
     terms: dict[str, TrialTerm] = Field(default_factory=dict)
+    intervention_windows: dict[str, list[bool]] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    """Active samples for each intervention, keyed by its Model address."""
     states: dict[str, TrialStateTrack] = Field(default_factory=dict)
     """Recorded world-frame state tracks, keyed by state Model address."""
     configurations: dict[str, JsonValue] = Field(default_factory=dict)
@@ -135,6 +138,8 @@ class TrialAggregate(BaseModel):
     signals: dict[str, TaskSignalAggregate]
     variables: dict[str, TaskVariableRange]
     terms: dict[str, TrialTermAggregate] = Field(default_factory=dict)
+    interventions: dict[str, list[float]] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    """Per step, the share of trials in which each intervention is active, keyed by its Model address."""
 
 
 class TrialUnavailable(BaseModel):

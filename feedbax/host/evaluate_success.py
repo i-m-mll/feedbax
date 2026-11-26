@@ -13,7 +13,7 @@ from feedbax.contracts.live_evaluate import (
     BoundLiveEvaluationPoint, ScoredEvaluationPoint, require_evaluation_coverage, rollout_slot,
 )
 from feedbax.contracts.manifest import canonical_manifest_path
-from feedbax.contracts.request_refs import ContentRef, ProductRef, UpdateSeriesMember
+from feedbax.contracts.request_refs import ContentRef, ProductRef, UpdateSeriesMember, is_synthesized_model_product
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.persistence.checkpoint_selection import verify_dependency_files
 from feedbax.host.model_checkpoint_input import checkpoint_producer, retain_checkpoint, retain_checkpoint_model
@@ -89,6 +89,18 @@ def publish_evaluate_success(
             replicas = manifest.loaded_model.replicas if manifest.loaded_model else ("0",)
             require_evaluation_coverage(computation, tuple(rollout_slot(None, replica) for replica in replicas))
             _, bindings = view.bind(request, origins={})
+            return view.publish_bound(
+                request, attempt=attempt, products={"states": (product,)}, bindings=bindings,
+                evaluation_manifest=manifest_object, target=target,
+                execution_evidence=execution_evidence,
+            ).ref
+
+        if is_synthesized_model_product(subject):
+            from feedbax.persistence.canonical_evaluate import SynthesizedSubjectBinding
+
+            source = SynthesizedSubjectBinding.model_validate(binding["model_subject"])
+            require_evaluation_coverage(computation, (rollout_slot(None, "0"),))
+            _, bindings = view.bind(request, origins={subject.request_id: source.receipt})
             return view.publish_bound(
                 request, attempt=attempt, products={"states": (product,)}, bindings=bindings,
                 evaluation_manifest=manifest_object, target=target,
@@ -206,6 +218,8 @@ def publish_evaluate_success(
                 producer=producer, checkpoints=tuple(checkpoints), closure=closure,
                 terminal_receipt=terminal_receipt, terminal_checkpoint=terminal_checkpoint,
                 ranked_candidates=tuple(ranked_candidates),
+                metric_producer=ContentObjectRef.model_validate(binding["metric_producer"])
+                if terminal_checkpoint is None and "metric_producer" in binding else None,
             ),
         )
         result = view.publish_bound(

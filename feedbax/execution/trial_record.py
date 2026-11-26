@@ -13,6 +13,7 @@ from feedbax.contracts.trial_record import (
     TrialTerm, TrialTermAggregate,
 )
 if TYPE_CHECKING:
+    from feedbax.contracts.task_document import TaskDocument
     from feedbax.tasks.document import Trial
 
 
@@ -22,6 +23,7 @@ _PERCENTILES = (5, 25, 50, 75, 95)
 def trial_record(
     trial: Trial, *, id: str, epoch_ids: Sequence[str], epoch_labels: Mapping[str, str],
     terms: dict[str, TrialTerm],
+    document: TaskDocument | None = None,
 ) -> TrialRecord:
     timeline = [
         TaskTimelineCue(epoch=epoch, label=epoch_labels.get(epoch, epoch),
@@ -37,7 +39,20 @@ def trial_record(
         variable_defined={key: np.asarray(value).tolist() for key, value in (trial.variable_defined or {}).items()},
         timeline=timeline,
         terms=terms,
+        intervention_windows={address: mask.tolist() for address, mask in intervention_windows(trial.inputs, document).items()},
     )
+
+
+def intervention_windows(inputs: Mapping[str, object], document: TaskDocument | None) -> dict[str, np.ndarray]:
+    windows = {}
+    if document is not None:
+        for signal in document.signals:
+            if signal.intervention is None or signal.id not in inputs:
+                continue
+            address = signal.intervention
+            active = np.asarray(inputs[signal.id], dtype=bool)
+            windows[address] = active | windows.get(address, False)
+    return windows
 
 
 def trial_weight_values(values: np.ndarray, defined: np.ndarray) -> list[float | None]:
@@ -90,6 +105,8 @@ def aggregate_trials(trials: Sequence[TrialRecord], n_steps: int) -> TrialAggreg
         ends = np.asarray([cue.end for cue in cues])[:, None]
         inside = (steps >= starts) & (steps < ends)
         epochs.append(TaskEpochShare(epoch=first.epoch, label=first.label, share=inside.mean(axis=0).tolist()))
+    interventions = dict.fromkeys(address for trial in trials for address in trial.intervention_windows)
+    inactive = np.zeros(n_steps, dtype=bool)
     return TrialAggregate(
         kind="aggregate",
         epochs=epochs,
@@ -106,5 +123,9 @@ def aggregate_trials(trials: Sequence[TrialRecord], n_steps: int) -> TrialAggreg
         terms={
             name: _aggregate_term([trial.terms[name] for trial in trials])
             for name in trials[0].terms
+        },
+        interventions={
+            address: np.mean([trial.intervention_windows.get(address, inactive) for trial in trials], axis=0).tolist()
+            for address in interventions
         },
     )

@@ -99,12 +99,26 @@ MODEL_ATTACHMENT_BATCHES = TypeAdapter(dict[ProjectName, list[ModelAttachmentDif
 MODEL_DIFFERENCE_BATCHES = TypeAdapter(dict[ProjectName, list[ModelDifference]])
 
 
+def is_trial_binding(name: str) -> bool:
+    """Name reserved for a generated Set or intervention input."""
+    token = name.removeprefix("set-")
+    return token != name and len(token) == 28 and all(char in "0123456789abcdef" for char in token)
+
+
 def is_generated_attachment_node(name: str, type_id: str) -> bool:
     """Recognize stateless occurrences owned by attachment lowering."""
+    if is_trial_binding(name):
+        return type_id in {"feedbax.Input", "feedbax.Switch"}
     for prefix, types in (
-        ("_model_attachment_", {"feedbax.Scale", "feedbax.Saturation", "feedbax.ConstantInput"}),
+        ("_model_attachment_", {
+            "feedbax.Scale", "feedbax.Saturation", "feedbax.ConstantInput",
+            "feedbax.Sum", "feedbax.Multiply", "feedbax.Clamp",
+        }),
+        ("_model_intervention_constant_", {"feedbax.Constant"}),
+        ("_model_hold_", {"feedbax.Input"}),
         ("_model_delay_", {"feedbax.Input"}),
         ("_model_output_", {"feedbax.Input"}),
+        ("_model_input_", {"feedbax.Input"}),
     ):
         if name.startswith(prefix):
             token = name.removeprefix(prefix)

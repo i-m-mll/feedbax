@@ -42,7 +42,7 @@ test('a Scene pinned on an Evaluate stays beside its Analyze\'s figures and foll
   await tab(page, 'Figures').click();
   await expect(panel(page, 'Figures')).toBeVisible();
   await expect(scene.getByRole('button', { name: 'Unpin', exact: true })).toBeVisible();
-  await expect(scene.getByText('baseline', { exact: true })).toBeVisible();
+  await expect(scene.getByText('Baseline', { exact: true })).toBeVisible();
 
   await expect(trialPicker(page)).toHaveText('nominal');
   const target = scene.getByRole('button', { name: 'Select target_pos', exact: true });
@@ -52,6 +52,6 @@ test('a Scene pinned on an Evaluate stays beside its Analyze\'s figures and foll
 
   await page.reload();
   await expect(panel(page, 'Figures')).toBeVisible();
-  await expect(scene.getByText('baseline', { exact: true })).toBeVisible();
+  await expect(scene.getByText('Baseline', { exact: true })).toBeVisible();
   await expect(scene.getByRole('group', { name: 'Scene', exact: true })).toBeVisible();
 });

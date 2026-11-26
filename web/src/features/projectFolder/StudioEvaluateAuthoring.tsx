@@ -17,13 +17,14 @@ import {
 } from './evaluateAuthoring';
 import type { AuthoredProject } from './authoredEdits';
 import { chosenDocument, documentChoice, documentGroup } from './referenceChoices';
+import type { DocumentNames } from './memberNames';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import '@/components/values/valueField.css';
 
 type Choice = { id: string; label: string };
 
 /** The inspector fields of a step an edit can be refused on: its input, a selection's Checkpoint or Runs by index, and Trials. */
-export type StepField = 'input' | 'checkpoint' | `subset.${number}` | 'trials';
+export type StepField = 'input' | 'checkpoint' | `subset.${number}` | 'trials' | 'method';
 
 /** A field group's members, one step in; no space at all when the group's control is all there is. */
 const members = 'value-field-parts grid gap-1 empty:hidden';
@@ -199,15 +200,16 @@ export function TrialsEditor({ initial, domain, disabled, refusal, count: savedC
 }
 
 /** The Task and Objective an initial Model subject declares; a checkpoint subject reads them from its Train step. */
-export function SubjectDocuments({ subject, project, onChoose }: {
+export function SubjectDocuments({ subject, project, documentNames, onChoose }: {
   subject: { task?: string; objective?: string };
   project: AuthoredProject;
+  documentNames: DocumentNames;
   onChoose?: (kind: 'task' | 'objective', document: string) => void;
 }) {
   const labels = useId();
   return <>{(['task', 'objective'] as const).map((kind) => <FieldRow key={kind} label={studioName(kind)} labelId={`${labels}-${kind}`}>
-    <ReferenceField label={studioName(kind)} aria-labelledby={`${labels}-${kind}`} groups={[documentGroup(project, kind)]}
-      value={subject[kind] === undefined ? null : documentChoice(project, kind, subject[kind]!)}
+    <ReferenceField label={studioName(kind)} aria-labelledby={`${labels}-${kind}`} groups={[documentGroup(project, documentNames, kind)]}
+      value={subject[kind] === undefined ? null : documentChoice(documentNames, kind, subject[kind]!)}
       onChoose={onChoose && ((choice) => { const document = chosenDocument(choice); if (document) onChoose(kind, document); })} />
   </FieldRow>)}</>;
 }

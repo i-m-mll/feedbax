@@ -176,6 +176,9 @@ class LinearStateSpace(Component):
     once per call. The disturbance input ``epsilon`` is optional at execution
     time and defaults to zeros with the width of ``B_w``.
 
+    Model feedback wires read the state and effector at the start of the step.
+    The step returns the advanced state and the effector with the applied force.
+
     Args:
         A: Discrete state matrix, shape ``[n_state, n_state]``.
         B: Input matrix, shape ``[n_state, n_input]``.
@@ -194,7 +197,11 @@ class LinearStateSpace(Component):
         outputs={"effector": PortType(dtype="state"), "state": PortType(dtype="vector")},
     )
     config_bindings = (ConfigBinding(path="state_index.init.vector", name="initial_state"),)
-    component_options = ComponentOptions(output_prototype_fn=linear_state_space_output_prototype)
+    component_options = ComponentOptions(
+        output_prototype_fn=linear_state_space_output_prototype,
+        state_only_outputs=("effector", "state"),
+        reset_outputs=("effector", "state"),
+    )
 
     A: Array
     B: Array

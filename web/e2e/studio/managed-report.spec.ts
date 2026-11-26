@@ -4,6 +4,7 @@ import type {
 } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
+import { figureButton } from './fixtures/members';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 
@@ -52,7 +53,9 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   async function addFigure(name: string) {
     await document.getByRole('button', { name: 'Add Figure', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Add Figure', exact: true });
-    await pick(dialog.getByRole('combobox', { name: 'Figures' }), 'analyze · ' + name);
+    // The picker names a figure by its step and its own name, as the snapshot names them.
+    const { names } = await snapshot();
+    await pick(dialog.getByRole('combobox', { name: 'Figures' }), `${names.steps.analyze} · ${names.elements.analyze[name]}`);
     return edit(() => dialog.getByRole('button', { name: 'Add Figure', exact: true }).click());
   }
 
@@ -62,10 +65,10 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   await mapStep(page, 'analyze').click();
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
   await expect(figures.getByText('Reach-aligned velocity', { exact: true })).toBeVisible();
-  await figures.getByRole('button', { name: 'profile', exact: true }).click();
+  await figureButton(figures, 'profile').click();
   await palette('New Step');
   await chooseStepKind(page, 'Report', true);
-  await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');
+  await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Velocity profile');
   const created = await snapshot();
   expect(report(created)).toMatchObject({ completeness: 'complete', blocks: [{ figure: 'figure-profile' }] });
   expect(inputs(created)).toMatchObject({ 'figure-profile': profile });
@@ -87,7 +90,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   await pick(variants, 'compare');
   await mapStep(page, 'report').click();
   await page.getByRole('tab', { name: 'Document', exact: true }).click();
-  await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');
+  await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Velocity profile');
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toBeDisabled();
   await pick(variants, 'base');
   await mapStep(page, 'report').click();

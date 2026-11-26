@@ -136,6 +136,9 @@
       }
     },
     "feedbax.contracts.figure_document.BandEncodings": {
+      "color": {
+        "absent": null
+      },
       "lower": {},
       "upper": {},
       "x": {},
@@ -189,15 +192,59 @@
         "absent": null
       }
     },
+    "feedbax.contracts.figure_document.ColorEncoding": {
+      "field": {},
+      "scale": {}
+    },
+    "feedbax.contracts.figure_document.ContinuousColorScale": {
+      "domain": {
+        "absent": null
+      },
+      "kind": {
+        "values": [
+          "continuous"
+        ]
+      },
+      "legend": {
+        "absent": true
+      },
+      "palette": {
+        "absent": "viridis",
+        "values": [
+          "cividis",
+          "plasma",
+          "turbo",
+          "viridis"
+        ]
+      },
+      "title": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.ErrorBounds": {
+      "lower": {},
+      "upper": {}
+    },
     "feedbax.contracts.figure_document.FigureDocument": {
       "caption": {
         "absent": null
+      },
+      "color_scales": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.figure_document.ContinuousColorScale",
+          "feedbax.contracts.figure_document.OrdinalColorScale"
+        ]
       },
       "data": {},
       "layers": {
         "families": [
           "feedbax.contracts.figure_document.BandLayer",
-          "feedbax.contracts.figure_document.LineLayer"
+          "feedbax.contracts.figure_document.LineLayer",
+          "feedbax.contracts.figure_document.PointsLayer",
+          "feedbax.contracts.figure_document.RuleLayer",
+          "feedbax.contracts.figure_document.SpanLayer",
+          "feedbax.contracts.figure_document.TrajectoryLayer"
         ]
       },
       "layout": {},
@@ -290,12 +337,18 @@
       },
       "y_axis": {
         "absent": null
+      },
+      "z_axis": {
+        "absent": null
       }
     },
     "feedbax.contracts.figure_document.IndexSelection": {
       "index": {}
     },
     "feedbax.contracts.figure_document.LineEncodings": {
+      "color": {
+        "absent": null
+      },
       "x": {},
       "y": {}
     },
@@ -342,6 +395,205 @@
       },
       "showlegend": {
         "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.OrdinalColorScale": {
+      "domain": {
+        "absent": null
+      },
+      "kind": {
+        "values": [
+          "ordinal"
+        ]
+      },
+      "legend": {
+        "absent": true
+      },
+      "palette": {
+        "absent": "category10",
+        "values": [
+          "category10",
+          "dark24",
+          "plotly"
+        ]
+      },
+      "title": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.PointsEncodings": {
+      "color": {
+        "absent": null
+      },
+      "error_y": {
+        "absent": null
+      },
+      "x": {},
+      "y": {}
+    },
+    "feedbax.contracts.figure_document.PointsLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "points"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.PointsStyle": {
+      "color": {
+        "absent": null
+      },
+      "label": {
+        "absent": null
+      },
+      "line_dash": {
+        "absent": null,
+        "values": [
+          "dash",
+          "dashdot",
+          "dot",
+          "longdash",
+          "longdashdot",
+          "solid"
+        ]
+      },
+      "line_width": {
+        "absent": null
+      },
+      "marker_size": {
+        "absent": null
+      },
+      "showlegend": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.RuleEncodings": {
+      "at": {},
+      "axis": {
+        "values": [
+          "x",
+          "y"
+        ]
+      }
+    },
+    "feedbax.contracts.figure_document.RuleLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "rule"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.SpanEncodings": {
+      "axis": {
+        "values": [
+          "x",
+          "y"
+        ]
+      },
+      "end": {},
+      "start": {}
+    },
+    "feedbax.contracts.figure_document.SpanLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "span"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.SpanStyle": {
+      "color": {
+        "absent": null
+      },
+      "fill_alpha": {
+        "absent": 0.15
+      },
+      "label": {
+        "absent": null
+      },
+      "line_dash": {
+        "absent": null,
+        "values": [
+          "dash",
+          "dashdot",
+          "dot",
+          "longdash",
+          "longdashdot",
+          "solid"
+        ]
+      },
+      "line_width": {
+        "absent": null
+      },
+      "showlegend": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.TrajectoryEncodings": {
+      "color": {
+        "absent": null
+      },
+      "x": {},
+      "y": {},
+      "z": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.TrajectoryLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "trajectory"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
       }
     },
     "feedbax.contracts.figure_document.VariableBinding": {
@@ -409,6 +661,44 @@
         "absent": null
       }
     },
+    "feedbax.contracts.model_address.AttachmentElement": {
+      "id": {},
+      "kind": {
+        "values": [
+          "attachment"
+        ]
+      },
+      "parent": {
+        "families": [
+          "feedbax.contracts.model_address.PortElement",
+          "feedbax.contracts.model_address.WireElement"
+        ]
+      }
+    },
+    "feedbax.contracts.model_address.ComponentElement": {
+      "id": {},
+      "kind": {
+        "values": [
+          "component"
+        ]
+      }
+    },
+    "feedbax.contracts.model_address.ComponentPortAddress": {
+      "component": {},
+      "direction": {
+        "values": [
+          "input",
+          "output",
+          "physical"
+        ]
+      },
+      "owner": {
+        "values": [
+          "component"
+        ]
+      },
+      "port": {}
+    },
     "feedbax.contracts.model_address.ComponentPortEnd": {
       "component": {},
       "owner": {
@@ -418,6 +708,31 @@
       },
       "port": {}
     },
+    "feedbax.contracts.model_address.FieldElement": {
+      "kind": {
+        "values": [
+          "field"
+        ]
+      },
+      "parent": {
+        "families": [
+          "feedbax.contracts.model_address.AttachmentElement",
+          "feedbax.contracts.model_address.ComponentElement",
+          "feedbax.contracts.model_address.GraphElement",
+          "feedbax.contracts.model_address.PhysicalConnectionElement",
+          "feedbax.contracts.model_address.PortElement",
+          "feedbax.contracts.model_address.WireElement"
+        ]
+      },
+      "path": {}
+    },
+    "feedbax.contracts.model_address.GraphElement": {
+      "kind": {
+        "values": [
+          "graph"
+        ]
+      }
+    },
     "feedbax.contracts.model_address.InputBoundaryEnd": {
       "owner": {
         "values": [
@@ -425,6 +740,29 @@
         ]
       },
       "port": {}
+    },
+    "feedbax.contracts.model_address.InputsElement": {
+      "kind": {
+        "values": [
+          "inputs"
+        ]
+      }
+    },
+    "feedbax.contracts.model_address.ModelAddress": {
+      "composites": {},
+      "element": {
+        "families": [
+          "feedbax.contracts.model_address.AttachmentElement",
+          "feedbax.contracts.model_address.ComponentElement",
+          "feedbax.contracts.model_address.FieldElement",
+          "feedbax.contracts.model_address.GraphElement",
+          "feedbax.contracts.model_address.InputsElement",
+          "feedbax.contracts.model_address.OutputsElement",
+          "feedbax.contracts.model_address.PhysicalConnectionElement",
+          "feedbax.contracts.model_address.PortElement",
+          "feedbax.contracts.model_address.WireElement"
+        ]
+      }
     },
     "feedbax.contracts.model_address.OutputBoundaryEnd": {
       "owner": {
@@ -434,6 +772,13 @@
       },
       "port": {}
     },
+    "feedbax.contracts.model_address.OutputsElement": {
+      "kind": {
+        "values": [
+          "outputs"
+        ]
+      }
+    },
     "feedbax.contracts.model_address.PhysicalBoundaryEnd": {
       "owner": {
         "values": [
@@ -441,6 +786,37 @@
         ]
       },
       "port": {}
+    },
+    "feedbax.contracts.model_address.PhysicalConnectionElement": {
+      "id": {},
+      "kind": {
+        "values": [
+          "physical_connection"
+        ]
+      }
+    },
+    "feedbax.contracts.model_address.PortElement": {
+      "end": {
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortAddress",
+          "feedbax.contracts.model_address.InputBoundaryEnd",
+          "feedbax.contracts.model_address.OutputBoundaryEnd",
+          "feedbax.contracts.model_address.PhysicalBoundaryEnd"
+        ]
+      },
+      "kind": {
+        "values": [
+          "port"
+        ]
+      }
+    },
+    "feedbax.contracts.model_address.WireElement": {
+      "id": {},
+      "kind": {
+        "values": [
+          "wire"
+        ]
+      }
     },
     "feedbax.contracts.model_document.CompositeComponent": {
       "attachments": {
@@ -466,12 +842,51 @@
     "feedbax.contracts.model_document.DelayAttachment": {
       "delay": {},
       "id": {},
-      "initial": {
-        "absent": 0
+      "initial_source": {
+        "absent": {
+          "$family": "feedbax.contracts.model_document.DelayInitialValue",
+          "kind": "value",
+          "value": 0.0
+        },
+        "families": [
+          "feedbax.contracts.model_document.DelayInitialTask",
+          "feedbax.contracts.model_document.DelayInitialValue",
+          "feedbax.contracts.model_document.DelayInitialWire"
+        ]
       },
       "kind": {
         "values": [
           "delay"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.DelayInitialTask": {
+      "kind": {
+        "values": [
+          "task"
+        ]
+      },
+      "variable": {}
+    },
+    "feedbax.contracts.model_document.DelayInitialValue": {
+      "kind": {
+        "values": [
+          "value"
+        ]
+      },
+      "value": {}
+    },
+    "feedbax.contracts.model_document.DelayInitialWire": {
+      "kind": {
+        "values": [
+          "wire"
+        ]
+      },
+      "source": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortEnd",
+          "feedbax.contracts.model_address.InputBoundaryEnd"
         ]
       }
     },
@@ -493,28 +908,36 @@
         "absent": {}
       }
     },
+    "feedbax.contracts.model_document.HoldAttachment": {
+      "id": {},
+      "kind": {
+        "values": [
+          "hold"
+        ]
+      }
+    },
     "feedbax.contracts.model_document.InputDefault": {
       "value": {}
     },
     "feedbax.contracts.model_document.InterventionAttachment": {
-      "fields": {
-        "absent": {}
-      },
       "id": {},
       "kind": {
         "values": [
           "intervention"
         ]
       },
+      "operands": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.model_document.DelayInitialTask",
+          "feedbax.contracts.model_document.DelayInitialValue",
+          "feedbax.contracts.model_document.DelayInitialWire"
+        ]
+      },
       "operation": {},
       "window": {
         "absent": null
       }
-    },
-    "feedbax.contracts.model_document.InterventionWindow": {
-      "duration": {},
-      "epoch": {},
-      "offsets": {}
     },
     "feedbax.contracts.model_document.LeafComponent": {
       "attachments": {
@@ -596,6 +1019,7 @@
         "absent": [],
         "families": [
           "feedbax.contracts.model_document.DelayAttachment",
+          "feedbax.contracts.model_document.HoldAttachment",
           "feedbax.contracts.model_document.InterventionAttachment",
           "feedbax.contracts.model_document.ProbeAttachment"
         ]
@@ -703,9 +1127,6 @@
       "enabled": {
         "absent": true
       },
-      "epochs": {
-        "absent": []
-      },
       "id": {},
       "measure": {
         "families": [
@@ -742,6 +1163,9 @@
           "feedbax.contracts.expression_values.NameValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
+      },
+      "window": {
+        "absent": null
       }
     },
     "feedbax.contracts.report_document.ReportDocument": {
@@ -839,6 +1263,38 @@
       "every_k": {},
       "through": {}
     },
+    "feedbax.contracts.request_refs.ConditionalProduct": {
+      "conditions": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
+      "kind": {
+        "absent": "conditional",
+        "values": [
+          "conditional"
+        ]
+      },
+      "request_id": {},
+      "role": {},
+      "select": {
+        "absent": null,
+        "families": [
+          "barrier",
+          "batch",
+          "batch_set",
+          "best_by",
+          "last",
+          "member",
+          "slot",
+          "update_series"
+        ]
+      }
+    },
     "feedbax.contracts.request_refs.ContentRef": {
       "media_type": {
         "absent": null
@@ -857,6 +1313,7 @@
       "reference": {
         "families": [
           "best_rank",
+          "conditional",
           "content",
           "product"
         ]
@@ -1021,6 +1478,25 @@
         "absent": {}
       }
     },
+    "feedbax.contracts.request_specs.SynthesisRequestSpec": {
+      "method": {},
+      "numerical_settings": {
+        "absent": {
+          "floating_point_bits": 64
+        }
+      },
+      "settings": {},
+      "target": {
+        "absent": {
+          "composites": [],
+          "element": {
+            "$family": "feedbax.contracts.model_address.GraphElement",
+            "kind": "graph"
+          }
+        }
+      },
+      "trial_documents": {}
+    },
     "feedbax.contracts.request_specs.TrainContinuation": {
       "mode": {
         "absent": "continue_from",
@@ -1066,7 +1542,8 @@
       "end": {
         "families": [
           "feedbax.contracts.task_document.Length",
-          "feedbax.contracts.task_document.Rest"
+          "feedbax.contracts.task_document.Rest",
+          "feedbax.contracts.task_document.Until"
         ]
       },
       "id": {},
@@ -1141,8 +1618,14 @@
       },
       "cells": {},
       "id": {},
+      "intervention": {
+        "absent": null
+      },
       "name": {},
-      "type": {}
+      "type": {},
+      "window": {
+        "absent": null
+      }
     },
     "feedbax.contracts.task_document.TaskDocument": {
       "epochs": {},
@@ -1163,6 +1646,24 @@
         ]
       },
       "variables": {}
+    },
+    "feedbax.contracts.task_document.Until": {
+      "condition": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
+      "kind": {
+        "absent": "until",
+        "values": [
+          "until"
+        ]
+      },
+      "limit": {}
     },
     "feedbax.contracts.task_document.ValidationTrial": {
       "epoch_steps": {
@@ -1199,6 +1700,15 @@
         ]
       }
     },
+    "feedbax.contracts.time_units.TimeValue": {
+      "unit": {
+        "values": [
+          "s",
+          "st"
+        ]
+      },
+      "value": {}
+    },
     "feedbax.contracts.training.TrialDocuments": {
       "input_bindings": {
         "absent": {}
@@ -1209,10 +1719,116 @@
         "absent": null
       },
       "task": {}
+    },
+    "feedbax.contracts.window.Window": {
+      "spans": {
+        "families": [
+          "feedbax.contracts.window.WindowEpoch",
+          "feedbax.contracts.window.WindowInterval",
+          "feedbax.contracts.window.WindowMoment"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowEpoch": {
+      "epoch": {},
+      "kind": {
+        "values": [
+          "epoch"
+        ]
+      },
+      "occurrence": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.window.WindowEpochAnchor": {
+      "edge": {
+        "values": [
+          "end",
+          "start"
+        ]
+      },
+      "epoch": {},
+      "kind": {
+        "values": [
+          "epoch"
+        ]
+      },
+      "occurrence": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.window.WindowInterval": {
+      "end": {
+        "families": [
+          "feedbax.contracts.window.WindowPosition",
+          "feedbax.contracts.window.WindowRelativePosition"
+        ]
+      },
+      "kind": {
+        "values": [
+          "interval"
+        ]
+      },
+      "start": {}
+    },
+    "feedbax.contracts.window.WindowMoment": {
+      "at": {},
+      "kind": {
+        "values": [
+          "moment"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowPosition": {
+      "anchor": {
+        "families": [
+          "feedbax.contracts.window.WindowEpochAnchor",
+          "feedbax.contracts.window.WindowTrialAnchor"
+        ]
+      },
+      "offset": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue",
+          "feedbax.contracts.time_units.TimeValue"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowRelativePosition": {
+      "offset": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue",
+          "feedbax.contracts.time_units.TimeValue"
+        ]
+      }
+    },
+    "feedbax.contracts.window.WindowTrialAnchor": {
+      "edge": {
+        "values": [
+          "end",
+          "start"
+        ]
+      },
+      "kind": {
+        "values": [
+          "trial"
+        ]
+      }
     }
   },
   "retired": {
     "fields": [
+      {
+        "field": "fields",
+        "migration": "typed-intervention-operands",
+        "model": "feedbax.contracts.model_document.InterventionAttachment"
+      },
       {
         "field": "a",
         "migration": "m2-train-v1-retirement",
@@ -3642,6 +4258,31 @@
         "field": "input_overrides",
         "migration": "stable-task-input-bindings",
         "model": "feedbax.contracts.training.TrialDocuments"
+      },
+      {
+        "field": "duration",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.model_document.InterventionWindow"
+      },
+      {
+        "field": "epoch",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.model_document.InterventionWindow"
+      },
+      {
+        "field": "offsets",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.model_document.InterventionWindow"
+      },
+      {
+        "field": "epochs",
+        "migration": "shared-trial-windows",
+        "model": "feedbax.contracts.objective_document.ObjectiveTerm"
+      },
+      {
+        "field": "initial",
+        "migration": "typed-delay-initial",
+        "model": "feedbax.contracts.model_document.DelayAttachment"
       }
     ],
     "values": [

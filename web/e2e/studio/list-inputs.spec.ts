@@ -75,7 +75,7 @@ test('binds lists of selections to an Evaluate subject and an Analyze dataset ro
   const subject = inspector.getByRole('list', { name: 'Subject', exact: true });
   expect(Object.keys(await requests('conditions'))).toHaveLength(2);
   await inspector.getByRole('button', { name: 'Add Subject', exact: true }).click();
-  const listed = await edit(() => pick(subject.getByRole('combobox', { name: 'Subject', exact: true }).last(), 'train_b'));
+  const listed = await edit(() => pick(subject.getByRole('combobox', { name: 'Subject', exact: true }).last(), 'Train b'));
   expect(listed.steps!.conditions.inputs!.subject).toEqual([
     { step: 'train', checkpoint: 'last' }, { step: 'train_b', checkpoint: 'last' },
   ]);
@@ -83,12 +83,12 @@ test('binds lists of selections to an Evaluate subject and an Analyze dataset ro
   const gathered = await requests('conditions');
   expect(Object.keys(gathered)).toHaveLength(6);
   await expect(runs.getByRole('row')).toHaveCount(7);
-  await expect(runs.getByRole('columnheader', { name: 'model', exact: true })).toBeVisible();
-  await expect(runs.getByRole('cell', { name: 'train', exact: true })).toHaveCount(2);
-  await expect(runs.getByRole('cell', { name: 'train_b', exact: true })).toHaveCount(4);
+  await expect(runs.getByRole('columnheader', { name: 'Model', exact: true })).toBeVisible();
+  await expect(runs.getByRole('cell', { name: 'Train', exact: true })).toHaveCount(2);
+  await expect(runs.getByRole('cell', { name: 'Train b', exact: true })).toHaveCount(4);
 
   // Removing the second selection leaves the first one's requests as they were.
-  const removed = await edit(() => subject.getByRole('button', { name: 'Remove train_b', exact: true }).click());
+  const removed = await edit(() => subject.getByRole('button', { name: 'Remove Train b', exact: true }).click());
   expect(removed.steps!.conditions.inputs!.subject).toEqual({ step: 'train', checkpoint: 'last' });
   const kept = Object.values(await requests('conditions'));
   expect(kept).toHaveLength(2);
@@ -107,7 +107,7 @@ test('binds lists of selections to an Evaluate subject and an Analyze dataset ro
   await page.getByRole('tabpanel', { name: 'Analysis', exact: true }).getByRole('group', { name: 'Select states', exact: true }).click();
   const states = inspector.getByRole('list', { name: 'States', exact: true });
   await inspector.getByRole('button', { name: 'Add States', exact: true }).click();
-  const analyzed = await edit(() => pick(states.getByRole('combobox', { name: 'States', exact: true }).last(), 'conditions_b'));
+  const analyzed = await edit(() => pick(states.getByRole('combobox', { name: 'States', exact: true }).last(), 'Conditions b'));
   expect(analyzed.steps!.analyze.inputs!.states).toEqual([{ step: 'conditions' }, { step: 'conditions_b' }]);
   await expect(states.getByRole('listitem')).toHaveCount(2);
   expect((await plan()).problems.filter(({ step }) => step === 'analyze')).toEqual([]);
@@ -118,8 +118,13 @@ test('binds lists of selections to an Evaluate subject and an Analyze dataset ro
   await activate(page, mapStep(page, 'analyze'));
   await openView(page, 'figures');
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
-  await activate(page, figures.getByRole('button', { name: 'profile', exact: true }));
+  await activate(page, figures.getByRole('button', { name: 'Profile', exact: true }));
   const legend = figures.locator('svg.main-svg text.legendtext');
-  await expect(legend.filter({ hasText: /^conditions / }).first()).toBeVisible({ timeout: 20_000 });
-  await expect(legend.filter({ hasText: /^conditions_b / }).first()).toBeVisible();
+  await expect(legend.filter({ hasText: /^Conditions (?!b )/ }).first()).toBeVisible({ timeout: 20_000 });
+  await expect(legend.filter({ hasText: /^Conditions b / }).first()).toBeVisible();
+  // Each trace is a distinct run and condition, so no two legend entries share a name, and a run with no value
+  // on a grouped label names none.
+  const names = await legend.allTextContents();
+  expect(names.length - new Set(names).size, names.join(' | ')).toBe(0);
+  expect(names.filter((name) => /\bNone\b|\s{2}|\s$/.test(name))).toEqual([]);
 });

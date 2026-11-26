@@ -7,6 +7,7 @@ import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedPro
 import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 import { applyTo } from './fixtures/controls';
+import { figureButton } from './fixtures/members';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -61,7 +62,7 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   async function renameStep(step: string, label: string) {
     await mapStep(page, step).click();
     await mapStep(page, step).press('F2');
-    const name = page.locator(`[data-map-step="${step}"]`).getByRole('textbox', { name: `Rename ${step}`, exact: true });
+    const name = page.locator(`[data-map-step="${step}"]`).getByRole('textbox', { name: /^Rename / });
     await name.fill(label);
     const sent = submitted(page, `${projectPath}/members/command`);
     await name.press('Enter');
@@ -70,7 +71,7 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await run('train');
-  await renameStep('sibling', 'Sibling');
+  await renameStep('sibling', 'Sibling reach');
   await run('sibling');
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
@@ -87,8 +88,8 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true })
     .getByRole('region', { name: configuration.project, exact: true });
-  await expect(activity.getByRole('button', { name: 'Train train', exact: true })).toBeVisible();
-  await expect(activity.getByRole('button', { name: 'Train Sibling', exact: true })).toBeVisible();
+  await expect(activity.getByRole('button', { name: 'Train Train', exact: true })).toBeVisible();
+  await expect(activity.getByRole('button', { name: 'Train Sibling reach', exact: true })).toBeVisible();
   await expect(activity.getByRole('button', { name: 'Train Reach', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
 
@@ -250,13 +251,13 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
     await expect(picker('Model')).toHaveText(created);
     await expect.poll(async () => {
       const key = await model();
-      return key && ((await saved()).project.documents?.[key]?.label ?? key);
+      return key && (await saved()).names.documents[key];
     }).toBe(created);
     const { status, details } = await trainProblems();
     if (choice === 'New') {
       expect(status).toBe('cannot_run');
       expect(details.length).toBeGreaterThan(0);
-      for (const detail of details) expect(detail).toMatch(/is linked to a field the Model does not have|is not in scope here/);
+      for (const detail of details) expect(detail).toMatch(/is linked to a field the Model does not have|is not in scope here|is not an input of the Model/);
       await expect(page.getByRole('button', { name: /^Problems \d+$/ })).toBeVisible();
     } else {
       // Model addresses are relative to their document, so a copy's links and measures resolve as the original's.
@@ -304,7 +305,7 @@ test('New in the Document header gives an empty report that cannot run', async (
   await page.goto('/?project=' + encodeURIComponent(project));
   await mapStep(page, 'analyze').click();
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
-  await page.getByRole('tabpanel', { name: 'Figures', exact: true }).getByRole('button', { name: 'profile', exact: true }).click();
+  await figureButton(page.getByRole('tabpanel', { name: 'Figures', exact: true }), 'profile').click();
   await palette(page, 'newStep', 'New Step');
   await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('listitem')).toHaveCount(1);
@@ -389,7 +390,7 @@ test('a narrowed edit in the Training view makes a document based on the shown o
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
-  await expect(picker('Training')).toHaveText('training');
+  await expect(picker('Training')).toHaveText('Training');
   const initial = await requests();
   const edited = await setBatches('7');
   expect(edited.train).not.toBe(initial.train);
@@ -397,22 +398,22 @@ test('a narrowed edit in the Training view makes a document based on the shown o
   expect(rootPayload(await document('training'))).toMatchObject({ training_config: { n_batches: 7 } });
 
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
-  await expect(picker('Training')).toHaveText('training1 of 2');
+  await expect(picker('Training')).toHaveText('Training1 of 2');
   const files = (await saved()).project;
   const alone = await setBatches('9');
   expect(alone.train).not.toBe(edited.train);
   expect(alone.sibling).toBe(edited.sibling);
   expect(await document('training')).toEqual(files.documents?.training);
   expect(await document('training-2')).toMatchObject({ base: { document: 'training' } });
-  await expect(picker('Training')).toHaveText('training 2');
+  await expect(picker('Training')).toHaveText('Training 2');
   await expect(batches).toHaveValue('9');
-  expect(await indent('training')).toBe('0px');
-  expect(await indent('training 2')).not.toBe('0px');
+  expect(await indent('Training')).toBe('0px');
+  expect(await indent('Training 2')).not.toBe('0px');
 
   await primary.focus();
   await page.keyboard.press('Meta+Z');
   await expect.poll(async () => (await saved()).project).toEqual(files);
-  await expect(picker('Training')).toHaveText('training1 of 2');
+  await expect(picker('Training')).toHaveText('Training1 of 2');
 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   const objective = picker('Objective');
@@ -446,11 +447,11 @@ test('a continuation taken out keeps its runs, and Detach cuts a based document 
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   await mapStep(page, 'train-2').click({ modifiers: ['Shift'] });
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
-  await expect(picker('Training')).toHaveText('training1 of 3');
+  await expect(picker('Training')).toHaveText('Training1 of 3');
   const before = await requests();
   await batches.fill('9');
   await batches.press('Enter');
-  await expect(picker('Training')).toHaveText('training 2');
+  await expect(picker('Training')).toHaveText('Training 2');
   const after = await requests();
   expect(after.train).not.toBe(before.train);
   expect(after['train-2']).toBe(before['train-2']);
@@ -459,7 +460,7 @@ test('a continuation taken out keeps its runs, and Detach cuts a based document 
   await picker('Training').click();
   await menu.getByRole('menuitem', { name: 'Detach', exact: true }).click();
   await expect.poll(async () => 'base' in ((await saved()).project.documents?.['training-2'] ?? {})).toBe(false);
-  expect(await indent('training 2')).toBe('0px');
+  expect(await indent('Training 2')).toBe('0px');
   expect(await requests()).toEqual(after);
   await picker('Training').click();
   await expect(menu.getByRole('menuitem', { name: 'Detach', exact: true })).toHaveCount(0);

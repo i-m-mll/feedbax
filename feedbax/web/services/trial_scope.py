@@ -21,9 +21,7 @@ from feedbax.contracts.project import (
     apply_document_edit, based_on, diff,
     document_edit_value, json_pointer_parts, member_name, same_json,
 )
-from feedbax.contracts.project_inputs import SweepExceptionTerms
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.project_inputs import ObjectiveDocumentReference, SweepExceptionTerms, TaskDocumentReference
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import (
@@ -35,7 +33,7 @@ from feedbax.contracts.project_sweep import (
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
-from feedbax.project_members import generated_name
+from feedbax.project_members import generated_name, numbered_document_label
 from feedbax.project_folder import _free_member_name, document_file
 from feedbax.studio.selection import StoredEdit, TrainSelection, merged_files
 from feedbax.studio.step_differences import normalized_patches
@@ -408,8 +406,10 @@ def _document_stores(
         elif direct := frozenset(readers(name)) & chosen:
             variant = _document_name(project, name, taken)
             taken.add(variant)
+            named = {**documents, **{item.id: item.document for item in stores.created}}
+            label = numbered_document_label(named, document.schema_id, member_name(documents, name))
             stores.created.append(CreateNamedDocument(kind="document", id=variant, document=BasedDocument(
-                schema=document.schema_id, label=_copy_label(documents, stores.created, name),
+                schema=document.schema_id, label=label,
                 base=DocumentBase(document=name), differences=diff(old(name), content),
             )))
             for step in direct:
@@ -419,20 +419,6 @@ def _document_stores(
 
     visit(shown, ())
     return stores
-
-
-def _copy_label(documents: Mapping[str, Document], created: Sequence[CreateNamedDocument], name: str) -> str:
-    document = documents[name]
-    task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
-    schemas = task_schemas if document.schema_id in task_schemas else {document.schema_id}
-    default = {
-        TASK_DOCUMENT_SCHEMA_ID: "Task",
-        PYTHON_TASK_SCHEMA_ID: "Task",
-        OBJECTIVE_DOCUMENT_SCHEMA_ID: "Objective",
-    }.get(document.schema_id, name)
-    labels = {item.label or key for key, item in documents.items() if item.schema_id in schemas}
-    labels.update(label for item in created if item.document.schema_id in schemas and (label := item.document.label))
-    return generated_name(document.label or default, labels.__contains__, separator=" ")
 
 
 def _document_name(project: Project, name: str, taken: Collection[str]) -> str:
@@ -527,6 +513,24 @@ class _Store:
             step: current.model_copy(update={"base": current.base.model_copy(update={"document": document})}),
         }})
 
+    def input_document(self, step: str, role: str, document: str) -> None:
+        """Repoint a step's typed Task or Objective input to its edited document."""
+        current = self.view.steps[step]
+        path = ("inputs", role, "source", "document")
+        if self.variant is None:
+            raw = current.model_dump(mode="json", by_alias=True, exclude_unset=True)
+            file = file_value(AuthoredFileAddress(kind="step", id=step), raw, path, document)
+            self.files.append(file)
+            self.view = preview_authored_files(self.view, [file])
+            return
+        self.row.append(OverridePatch(path=".".join(("steps", step, *path)), op="replace", value=document))
+        reference = current.inputs[role]
+        assert isinstance(reference, TaskDocumentReference | ObjectiveDocumentReference)
+        updated = reference.model_copy(update={"source": reference.source.model_copy(update={"document": document})})
+        self.view = self.view.model_copy(update={"steps": self.view.steps | {
+            step: current.model_copy(update={"inputs": current.inputs | {role: updated}}),
+        }})
+
     def step(self, step: str, writes: Sequence[OverridePatch]) -> None:
         """Store ``writes``, paths in ``step``'s payload: in its file, or in the row. The row writes the step's own
         definition when its file holds one alone, and otherwise a layer it appends to the step's deltas."""
@@ -583,9 +587,19 @@ class _Store:
             step: mapping[base.document] for step, mapping in pointing.items()
             if isinstance(base := before.steps[step].base, DocumentReference) and base.document in mapping
         }
+        inputs = {
+            step: changed for step, mapping in pointing.items()
+            if (changed := {
+                role: mapping[ref.source.document] for role, ref in before.steps[step].inputs.items()
+                if isinstance(ref, TaskDocumentReference | ObjectiveDocumentReference) and ref.source.document in mapping
+            })
+        }
         for step, document in bases.items():
             self.base(step, document)
-        if missing := set(pointing) - desired.keys() - slots.keys() - bases.keys():
+        for step, roles in inputs.items():
+            for role, document in roles.items():
+                self.input_document(step, role, document)
+        if missing := set(pointing) - desired.keys() - slots.keys() - bases.keys() - inputs.keys():
             if len(missing) == 1:
                 raise ProjectFolderInvalid(f"{member_name(before.steps, next(iter(missing)))} reads the document only through its sweep.")
             names = ", ".join(member_name(before.steps, step) for step in sorted(missing))
@@ -1084,11 +1098,11 @@ def selected_value(project: Project, step: str, scope: RunScope) -> SelectedValu
 
 def set_readers(project: Project, name: str) -> frozenset[str]:
     """The steps whose sweep has an axis reading the Set document ``name``, and the steps based on them."""
-    direct = {
-        step for step, authored in project.steps.items() if authored.sweep is not None and any(
-            isinstance(axis, SetAxis) and axis.set == name for axis in authored.sweep.axes.values()
-        )
-    }
+    direct = {step for step, authored in project.steps.items() if
+              any(field.axis.set == name for field in authored.set_fields.values())
+              or authored.sweep is not None and any(
+                  isinstance(axis, SetAxis) and axis.set == name for axis in authored.sweep.axes.values()
+              )}
     return frozenset(direct) | base_descendants(project, direct)
 
 
@@ -1261,9 +1275,17 @@ def set_document_write(project: Project, name: str, edits: Sequence[DocumentEdit
             for axis, read in (sweep.axes.items() if sweep else ())
             if isinstance(read, SetAxis) and read.set in mapping
         }
-        if not axes:
+        fields = {
+            axis: field.model_copy(update={"axis": field.axis.model_copy(update={"set": mapping[field.axis.set]})})
+            .model_dump(mode="json", exclude_unset=True)
+            for axis, field in authored.set_fields.items() if field.axis.set in mapping
+        }
+        if not axes and not fields:
             raise ProjectFolderInvalid(f"{member_name(project.steps, step)} no longer reads this Set.")
         address = AuthoredFileAddress(kind="step", id=step)
         local = raw.get("sweep") or {}
-        files.append(file_value(address, raw, ("sweep",), local | {"axes": local.get("axes", {}) | axes}))
+        if axes:
+            files.append(file_value(address, raw, ("sweep",), local | {"axes": local.get("axes", {}) | axes}))
+        if fields:
+            files.append(file_value(address, raw, ("set_fields",), raw.get("set_fields", {}) | fields))
     return StoredEdit(merged_files(files), tuple(stores.created), chosen | set_readers(project, name))

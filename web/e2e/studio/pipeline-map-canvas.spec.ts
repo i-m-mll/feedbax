@@ -43,7 +43,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   const source = card('train');
   const child = card('successor');
   const mark = (row: typeof included) => source.getByRole('button', {
-    name: new RegExp(`^Select seed ${row.coordinates.seed.label ?? row.coordinates.seed.value_id} · `),
+    name: new RegExp(`^Select ${row.coordinates.seed.label} · `),
   });
 
   await page.keyboard.press('Control+Meta+1');
@@ -51,6 +51,11 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   await page.keyboard.press('Shift+F6');
   await page.keyboard.press('F6');
   await expect(region).toBeFocused();
+  const toolbar = page.getByRole('toolbar', { name: 'Pipeline Map', exact: true });
+  await page.keyboard.press('Tab');
+  await expect(toolbar.getByRole('button', { name: 'Fit View', exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
   await page.keyboard.press('Tab');
   await expect(mapStep(page, 'train')).toBeFocused();
   await page.keyboard.press('ArrowRight');
@@ -81,8 +86,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   await mark(excluded).press('Escape');
   await expect(mark(excluded)).toHaveAttribute('aria-pressed', 'true');
 
-  const rail = page.getByRole('navigation', { name: 'Details', exact: true });
-  const fitMap = () => rail.getByRole('button', { name: 'Fit View', exact: true }).click();
+  const fitMap = () => toolbar.getByRole('button', { name: 'Fit View', exact: true }).click();
   const paneControl = canvas.locator('.react-flow__pane');
   const motion = [];
   for (const reducedMotion of ['no-preference', 'reduce'] as const) {
@@ -90,21 +94,23 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
     await fitMap();
     const before = await camera();
     const bounds = (await paneControl.boundingBox())!;
-    const point = { x: bounds.width - 80, y: bounds.height - 40 };
-    const samples = viewport.evaluate((node) => new Promise<number[]>((resolve) => {
-      node.ownerDocument.addEventListener('dblclick', () => {
+    const samples = viewport.evaluate((node) => new Promise<{ frames: number[]; point: { x: number; y: number } }>((resolve) => {
+      node.ownerDocument.addEventListener('dblclick', (event) => {
+        const pane = (event.target as HTMLElement).getBoundingClientRect();
+        const point = { x: event.clientX - pane.left, y: event.clientY - pane.top };
         const start = performance.now();
         const frames: number[] = [];
         const sample = () => {
           frames.push(new DOMMatrixReadOnly(getComputedStyle(node).transform).a);
           if (performance.now() - start < 350) requestAnimationFrame(sample);
-          else resolve(frames);
+          else resolve({ frames, point });
         };
         sample();
       }, { capture: true, once: true });
     }));
-    await paneControl.dblclick({ position: point });
-    const frames = await samples;
+    // The pane can have a fractional size, while the browser delivers the pointer at whole pixels.
+    await paneControl.dblclick({ position: { x: bounds.width - 80, y: bounds.height - 40 } });
+    const { frames, point } = await samples;
     const after = await camera();
     expect(after.zoom).toBeCloseTo(before.zoom * 2);
     expect((point.x - after.x) / after.zoom).toBeCloseTo((point.x - before.x) / before.zoom);
@@ -119,7 +125,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   await info.attach('pipeline-zoom-motion', { body: JSON.stringify(motion), contentType: 'application/json' });
 
   const initial = await camera();
-  await rail.getByRole('button', { name: 'Zoom In', exact: true }).click();
+  await toolbar.getByRole('button', { name: 'Zoom In', exact: true }).click();
   await expect.poll(async () => (await camera()).zoom).toBeGreaterThan(initial.zoom);
   const zoomed = await camera();
   const pane = await canvas.locator('.react-flow__pane').boundingBox();
@@ -139,7 +145,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   await expect.poll(async () => (await camera()).zoom).toBe(zoomed.zoom);
   await page.keyboard.press('Control+Meta+3');
   await expect(canvas).toBeHidden();
-  await expect(region.getByRole('button', { name: 'Select train Train', exact: true })).toBeVisible();
+  await expect(region.getByRole('button', { name: 'Select Train Train', exact: true })).toBeVisible();
   await page.keyboard.press('Control+Meta+2');
   await page.setViewportSize({ width: 540, height: 850 });
   await expect(child).toHaveAttribute('data-map-density', 'compact');
@@ -179,7 +185,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   await expect(idlePath).toHaveCSS('stroke', 'rgb(255, 255, 255)');
   expect(await donePath.getAttribute('d')).not.toBe(await idlePath.getAttribute('d'));
   await expect(child.getByRole('button', { name: / · Not run$/ })).toHaveCount(2);
-  await expect(page.getByRole('log', { name: 'Status' }).getByText(/^Train · train · seed=.+: Done$/)).toHaveCount(1);
+  await expect(page.getByRole('log', { name: 'Status' }).getByText(`Train · Train · ${included.label}: Done`, { exact: true })).toHaveCount(1);
   const vision = await page.context().newCDPSession(page);
   try {
     await vision.send('Emulation.setEmulatedVisionDeficiency', { type: 'achromatopsia' });

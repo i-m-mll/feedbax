@@ -4,11 +4,8 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from feedbax.contracts.dataset import DatasetDescriptor
+from feedbax.contracts.dataset import REPLICATE_DIM, DatasetDescriptor, replicate_axis_index
 from feedbax.dataset import Dataset, Index, Variable
-
-
-REPLICATE_DIM = "replicate"
 
 
 def replicate_ids(dataset: Dataset) -> tuple[str, ...] | None:
@@ -89,7 +86,7 @@ def stack_replicates(ids: tuple[str, ...], datasets: Sequence[Dataset], *, after
             raise ValueError(f"Replicate results have inconsistent metadata or dtype for {name!r}")
         if coordinate and all(np.array_equal(arrays[0], array) for array in arrays[1:]):
             return Variable.from_field(arrays[0], field, field.dims)
-        axis = field.dims.index(after) + 1 if after in field.dims else 0
+        axis = replicate_axis_index(field.dims, after)
         dims = (*field.dims[:axis], REPLICATE_DIM, *field.dims[axis:])
         return Variable.from_field(np.stack(arrays, axis=axis), field, dims)
 

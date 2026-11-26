@@ -338,6 +338,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
             aria-level={depth + 1}
             aria-setsize={level.length}
             aria-posinset={level.findIndex((sibling) => sibling.id === node.id) + 1}
+            data-node={node.id}
             data-parent={parent ?? undefined}
             tabIndex={node.id === current ? 0 : -1}
             depth={depth}

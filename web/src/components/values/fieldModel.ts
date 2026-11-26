@@ -1,5 +1,5 @@
 import type {
-  ExpressionPartSite, FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FieldValue, FunctionInfo, JsonValue, Level, ScopedValue,
+  ExpressionPartSite, FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FieldValue, FunctionInfo, JsonValue, Level, NodePath, ScopedValue,
   StudioEvaluateValueSource, StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, TextSpan, ValueType,
 } from '@/generated/studioContracts';
 
@@ -37,10 +37,10 @@ export const reasonOf = (refusal: FieldRefusal | undefined) => typeof refusal ==
  * document's value marks the selected runs' other one (`selected`).
  */
 export type ChangeSource =
-  | { readonly kind: 'base'; readonly document: string }
+  | { readonly kind: 'base'; readonly name: string }
   | { readonly kind: 'value'; readonly text: string }
   | { readonly kind: 'selected'; readonly text: string }
-  | { readonly kind: 'evaluate'; readonly step: string };
+  | { readonly kind: 'evaluate'; readonly name: string };
 
 /** The changed mark of a value: what it differs from, and the Reset that gives the value the inherited one. */
 export interface ChangeMark {
@@ -50,7 +50,7 @@ export interface ChangeMark {
 
 /** The mark of a value an Evaluate step changes; a value it trains is not a change, and is its origin. */
 export function evaluateChange(source: StudioEvaluateValueSource | undefined): ChangeMark | undefined {
-  return source?.kind === 'evaluate' ? { from: { kind: 'evaluate', step: source.step } } : undefined;
+  return source?.kind === 'evaluate' ? { from: { kind: 'evaluate', name: source.step } } : undefined;
 }
 
 /** `commit`, with Reset going to `change`'s reset. A field that takes no edit takes no Reset. */
@@ -63,9 +63,14 @@ export function withReset(commit: FieldCommit | undefined, change: ChangeMark | 
 /** A field's kind: one its site offers, or an epoch End's Until or Rest, which only an End's site offers. */
 export type ValueKind = FieldKind | 'until' | 'rest';
 
+/** The text of an epoch End that is Until: its condition, then its limit. */
+export const untilText = (condition: string, limit: string) => `${condition} ≤ ${limit}`;
+
 export interface FieldKindOffer {
   readonly kind: ValueKind;
   readonly enabled: boolean;
+  /** The names a value of this kind reads, where they are not the field's: an Until's condition reads the Model's outputs. */
+  readonly names?: readonly ScopedValue[];
 }
 
 /** One value of a swept field. Its text is the value; a member is never drawn by its id. */
@@ -110,6 +115,8 @@ export interface FieldModel {
   readonly parts?: readonly FieldModel[];
   /** The sweep may be turned into its listed values. */
   readonly canList?: boolean;
+  /** The value in the other time unit under the Model's Step, as `30 st` beside `0.3 s`. */
+  readonly paired?: string;
   /** Where the value comes from, when that is not a change. */
   readonly origin?: string;
   /** The value differs from what it inherits, or the selected runs hold another than the document's. */
@@ -131,11 +138,27 @@ export interface FieldModel {
   readonly names: readonly ScopedValue[];
   readonly functions: readonly FunctionInfo[];
   /** The functions and names that fit at each node of the value: its root, `['args', 0]` and so on. */
-  readonly sites?: readonly ExpressionPartSite[];
+  readonly menus?: PartMenus;
   /** The levels of a name that belongs to a tree (a Model's states under its components), by the name's id. */
   readonly namePaths?: Readonly<Record<string, readonly string[]>>;
   readonly commit?: FieldCommit;
+  /** Told as a choice's list opens and closes. */
+  readonly listOpen?: (open: boolean) => void;
 }
+
+/**
+ * Where the functions and names that fit at a node of the value come from: the list the view sent, or the service when
+ * the node's menu opens. `key` names what a served menu reads, so a menu of another view is never shown as this one's.
+ */
+export type PartMenus =
+  | { readonly kind: 'listed'; readonly parts: readonly ExpressionPartSite[] }
+  | { readonly kind: 'served'; readonly key: readonly unknown[]; read(part: NodePath, signal: AbortSignal): Promise<ExpressionPartSite> };
+
+/** A node's menu: its site once read, none while it is read, or why it could not be. */
+export type PartMenu =
+  | { readonly kind: 'read'; readonly site: ExpressionPartSite | undefined }
+  | { readonly kind: 'reading' }
+  | { readonly kind: 'failed'; readonly reason: string };
 
 export function hasMark(model: FieldModel) {
   return model.kinds.length > 1 || model.kinds.some(({ kind }) => kind !== 'value');
@@ -296,12 +319,14 @@ export function callText(model: FieldModel, draft: CallDraft) {
   return `${draft.function}(${draft.args.map((arg) => arg!.trim()).join(', ')}${tail}`;
 }
 
+const siteOf = (menu: PartMenu) => menu.kind === 'read' ? menu.site : undefined;
+
 /**
- * The functions a Formula's root may be: `shown`, and those that fit where the stored value's root is; only penalties
- * where the stored function is one.
+ * The functions a Formula's root may be: `shown`, and those that fit where the stored value's root is, by its `menu`;
+ * only penalties where the stored function is one.
  */
-export function rootFunctions(model: FieldModel, shown: string) {
-  const root = model.sites?.find(({ path }) => !path.length);
+export function rootFunctions(model: FieldModel, shown: string, menu: PartMenu) {
+  const root = siteOf(menu);
   const stored = callOf(model)?.function ?? shown;
   const fitting = model.functions.filter(({ id, display_class }) => id === shown || id === stored ||
     root?.functions.includes(id) && display_class !== 'draw' && display_class !== 'shape' && display_class !== 'sweep_rule');
@@ -318,10 +343,10 @@ export function shapeFrom(model: FieldModel, text: string): CallDraft | undefine
   return shape && withFunction({ function: shape.id, args: text.trim() ? [text] : [] }, shape);
 }
 
-/** The names a Link may read: those that fit at the value's root. */
-export function linkNames(model: FieldModel) {
-  const root = model.sites?.find(({ path }) => !path.length);
-  return root ? model.names.filter(({ id }) => root.names.includes(id)) : model.names;
+/** The names a Link may read: `reference`, and those that fit at the value's root, by its `menu`. */
+export function linkNames(model: FieldModel, reference: string | undefined, menu: PartMenu) {
+  const root = siteOf(menu);
+  return model.names.filter(({ id }) => id === reference || root?.names.includes(id));
 }
 
 /** A name as text: an identifier as itself, another name quoted. */

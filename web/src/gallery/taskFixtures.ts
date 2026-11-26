@@ -3,7 +3,7 @@
  * document as shipped, the three-reach task of issue 7f0c01f's acceptance 8 (an Until End, a × 3 repeat, a list
  * variable, `targets[i]` cells), the stabilization document (which leaves the model's input unfed), and a Python task.
  */
-import type { Expression, FunctionInfo, JsonValue, Repeat, ScopedValue, TextSpan, TrialAggregate, TrialRecord, ValueType } from '@/generated/studioContracts';
+import type { Expression, FunctionInfo, JsonValue, Repeat, ScopedValue, TaskTimelineCue, TextSpan, TrialAggregate, TrialRecord, ValueType } from '@/generated/studioContracts';
 import type { ChangeMark, FieldModel, ValueKind } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
 import type {
@@ -195,7 +195,7 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
   const scope = names(spec);
   const text = (id: string, authored: string) => texts[id] || authored;
   const changed = (from?: string): ChangeMark | undefined => from === undefined ? undefined
-    : { from: { kind: 'base', document: spec.base ?? '' }, reset: async () => undefined };
+    : { from: { kind: 'base', name: spec.base ?? '' }, reset: async () => undefined };
   const bounds = epochBounds({ ...spec, epochs: spec.epochs.map((epoch) => ({ ...epoch, end: text(`end:${epoch.id}`, epoch.end) })) });
   const variables: TaskVariable[] = spec.variables.map((variable) => ({
     id: variable.id, name: variable.name, type: variable.type, valueType: types[variable.type],
@@ -234,7 +234,7 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
 }
 
 export function pythonView(spec: PythonSpec): TaskPythonView {
-  const changed: ChangeMark = { from: { kind: 'base', document: 'perturbed-reaches' }, reset: async () => undefined };
+  const changed: ChangeMark = { from: { kind: 'base', name: 'Perturbed reaches' }, reset: async () => undefined };
   return {
     kind: 'python',
     parameters: [
@@ -265,8 +265,8 @@ function random(seed: number) {
   };
 }
 
-/** An epoch instance of a fixture trial, in seconds. */
-interface EpochInterval { id: string; name: string; start: number; end: number }
+/** An epoch instance of a fixture trial, in seconds, and how it ended where that is not at its length. */
+interface EpochInterval { id: string; name: string; start: number; end: number; outcome?: TaskTimelineCue['outcome'] }
 
 /** A fixture trial before it is written as the record the sampling route returns; signals and variables by name. */
 interface Drawn {
@@ -280,7 +280,7 @@ function asRecord(drawn: Drawn, step: number, index: number): TrialRecord {
   const at = (seconds: number) => Math.round(seconds / step);
   return {
     id: `trial:${index}`, inits: {}, variable_defined: {}, variables: drawn.variables,
-    timeline: drawn.intervals.map(({ id, name, start, end }) => ({ epoch: id, label: name, start: at(start), end: at(end), outcome: 0 })),
+    timeline: drawn.intervals.map(({ id, name, start, end, outcome = 1 }) => ({ epoch: id, label: name, start: at(start), end: at(end), outcome })),
     inputs: Object.fromEntries(Object.entries(drawn.signals).map(([name, steps]) => {
       const absent = Array<number>(steps.find(Boolean)?.length ?? 1).fill(0);
       return [name, steps.map((value) => [...value ?? absent])];
@@ -344,8 +344,9 @@ function threeReachTrials(seed: number, count: number): Drawn[] {
     const intervals: EpochInterval[] = [{ id: 'fixate', name: 'fixate', start: 0, end: 0.3 }];
     let time = 0.3;
     for (let reach = 0; reach < 3; reach += 1) {
-      const move = Math.round((0.35 + next() * 0.45) / step) * step;
-      intervals.push({ id: 'move', name: `move ${reach + 1}`, start: time, end: time + move });
+      const reached = Math.round((0.35 + next() * 0.8) / step) * step;
+      const move = Math.min(reached, 1);
+      intervals.push({ id: 'move', name: `move ${reach + 1}`, start: time, end: time + move, outcome: reached > 1 ? 3 : 2 });
       intervals.push({ id: 'hold', name: `hold ${reach + 1}`, start: time + move, end: time + move + 0.2 });
       time += move + 0.2;
     }

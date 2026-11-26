@@ -38,27 +38,27 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
   await expect.poll(async () => (await task())?.epochs.map(({ name }) => name)).toEqual(['hold', 'cue', 'move']);
 
   // target_on is absent in hold, where it reads its absent value 0; its cell over cue and move is given 0.
-  await enter(cells('target_on').nth(1).getByRole('textbox'), '0');
-  await expect(cells('target_on').nth(1).getByRole('textbox')).toHaveValue('0');
-  const absent = cells('target_on').nth(0).getByRole('textbox', { name: 'Absent 0', exact: true });
+  await enter(cells('target on').nth(1).getByRole('textbox'), '0');
+  await expect(cells('target on').nth(1).getByRole('textbox')).toHaveValue('0');
+  const absent = cells('target on').nth(0).getByRole('textbox', { name: 'Absent 0', exact: true });
   await expect(absent).toHaveAttribute('placeholder', '0');
   await expect(absent).toHaveValue('');
-  await expect(cells('target_on').nth(1).getByRole('textbox', { name: /^Absent/ })).toHaveCount(0);
+  await expect(cells('target on').nth(1).getByRole('textbox', { name: /^Absent/ })).toHaveCount(0);
   const look = (locator: typeof absent) => locator.evaluate((node) => ({ hatch: getComputedStyle(node).backgroundImage }));
   const absentLook = await look(absent);
-  const zeroLook = await look(cells('target_on').nth(1).getByRole('textbox'));
+  const zeroLook = await look(cells('target on').nth(1).getByRole('textbox'));
   expect(absentLook.hatch).toContain('gradient');
   expect(zeroLook.hatch).not.toContain('gradient');
 
   // target_pos is absent in hold and one cell over cue and move: its cells under all three columns merge into one.
-  await cells('target_pos').nth(0).click();
-  await cells('target_pos').nth(1).click({ modifiers: ['Shift'], position: { x: 4, y: 4 } });
-  await page.getByRole('button', { name: 'Cells target_pos', exact: true }).click();
+  await cells('target position').nth(0).click();
+  await cells('target position').nth(1).click({ modifiers: ['Shift'], position: { x: 4, y: 4 } });
+  await page.getByRole('button', { name: 'Cells target position', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Merge', exact: true }).click();
   await expect.poll(async () => (await task())?.signals.find(({ id }) => id === 'target_pos')?.cells
     .map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch])).toEqual([['hold', 'move']]);
-  await expect(cells('target_pos')).toHaveCount(1);
-  await expect(cells('target_pos')).toHaveAttribute('colspan', '3');
+  await expect(cells('target position')).toHaveCount(1);
+  await expect(cells('target position')).toHaveAttribute('colspan', '3');
 
   // Dragging cue's handle onto the leading half of hold puts cue first.
   const hold = await header('hold').boundingBox();
@@ -77,8 +77,8 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
   // Moving cue out of the merged cell leaves it over hold and move, the cell still stored once.
   await page.reload();
   await openTask();
-  await expect(cells('target_pos').locator('xpath=self::*[@colspan="2"]')).toHaveCount(1);
-  await expect(cells('target_pos').getByRole('textbox', { name: 'target_pos', exact: true })).toHaveCount(1);
+  await expect(cells('target position').locator('xpath=self::*[@colspan="2"]')).toHaveCount(1);
+  await expect(cells('target position').getByRole('textbox', { name: 'target position', exact: true })).toHaveCount(1);
   expect((await task())?.signals.find(({ id }) => id === 'target_pos')?.cells
     .map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch])).toEqual([['hold', 'move']]);
   await expect(grid.locator('th[data-epoch]')).toHaveCount(5);
@@ -89,7 +89,7 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
   const columnWidth = (await header('hold').boundingBox())!.width;
   const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
   expect(columnWidth).toBeGreaterThanOrEqual(8 * rem - 1);
-  const name = row('target_pos').locator('th').first();
+  const name = row('target position').locator('th').first();
   const before = (await name.boundingBox())!.x;
   const settle = (await header('settle').boundingBox())!.x;
   await box.evaluate((node) => { node.scrollLeft = node.scrollWidth; });
@@ -116,7 +116,7 @@ test('a Task from an example shows its label, and typing into an absent cell mak
     await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: new RegExp(`^${name}\\b`) }).click();
   }
   const cells = grid.getByRole('row')
-    .filter({ has: page.getByRole('textbox', { name: 'Rename target_pos', exact: true }) }).locator('td[data-cell]');
+    .filter({ has: page.getByRole('textbox', { name: 'Rename target position', exact: true }) }).locator('td[data-cell]');
 
   let readCatalog!: () => void;
   const catalogHeld = new Promise<void>((resolve) => { readCatalog = resolve; });
@@ -153,13 +153,13 @@ test('a Task from an example shows its label, and typing into an absent cell mak
   await page.keyboard.type('start');
   await page.keyboard.press('Enter');
   await expect.poll(spans).toEqual([['hold', 'hold'], ['cue', 'move']]);
-  await expect(cells.nth(0).getByRole('textbox', { name: 'target_pos', exact: true })).toHaveValue('start');
+  await expect(cells.nth(0).getByRole('textbox', { name: 'target position', exact: true })).toHaveValue('start');
   await command('Undo');
   await expect.poll(spans).toEqual([['cue', 'move']]);
   await command('Redo');
   await expect.poll(spans).toEqual([['hold', 'hold'], ['cue', 'move']]);
 
-  const held = cells.nth(0).getByRole('textbox', { name: 'target_pos', exact: true });
+  const held = cells.nth(0).getByRole('textbox', { name: 'target position', exact: true });
   await held.fill('');
   await held.press('Enter');
   await expect.poll(spans).toEqual([['cue', 'move']]);
@@ -174,7 +174,7 @@ test('renaming a signal in the grid keeps the Model input it feeds', async ({ pa
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   const grid = page.locator('[data-slot="primary"]').getByRole('tabpanel').getByRole('table', { name: 'Epochs', exact: true });
-  await enter(grid.getByRole('textbox', { name: 'Rename target_pos', exact: true }), 'aim');
+  await enter(grid.getByRole('textbox', { name: 'Rename target position', exact: true }), 'aim');
   await expect(grid.getByRole('textbox', { name: 'Rename aim', exact: true })).toBeVisible();
   const input = page.getByRole('complementary', { name: 'Details Drawer', exact: true })
     .getByRole('tree', { name: 'Model Inputs', exact: true }).getByRole('treeitem').filter({ hasText: 'target_pos' });
@@ -186,4 +186,30 @@ test('renaming a signal in the grid keeps the Model input it feeds', async ({ pa
     .locator('[data-id="@inputs"] .studio-model-port > span:first-of-type');
   await expect(inputs.filter({ hasText: /^aim$/ })).toHaveCount(1);
   await expect(inputs.filter({ hasText: /^target_pos$/ })).toHaveCount(0);
+});
+
+// Catches a time field that shows only its authored unit, a paired value left from the old Step after Step changes, and
+// a length that rounds to no step taken without its Problem.
+test('an End reads in both units, re-reads when Step changes, and refuses a length that rounds to no step', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const primary = page.locator('[data-slot="primary"]');
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const end = primary.getByRole('tabpanel').getByRole('table', { name: 'Epochs', exact: true })
+    .getByRole('group', { name: 'End field', exact: true });
+  const shown = end.locator('[data-field-box]');
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  await expect(shown).toHaveText('80 st · 0.8 s');
+  await enter(end.getByRole('textbox', { name: 'End', exact: true }), '0.07 s');
+  await expect(shown).toHaveText('0.07 s · 7 st');
+
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await enter(inspector.getByRole('textbox', { name: 'Step', exact: true }), '0.02 s');
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  await expect(shown).toHaveText('0.07 s · 4 st');
+
+  await enter(end.getByRole('textbox', { name: 'End', exact: true }), '0.004 s');
+  await expect(end.getByRole('textbox', { name: 'End', exact: true })).toHaveAttribute('aria-invalid', 'true');
+  await expect(end.locator('[data-field-after]')).toHaveCount(0);
 });

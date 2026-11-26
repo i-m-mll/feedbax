@@ -2,7 +2,7 @@ import clsx from 'clsx';
 import { Check } from 'lucide-react';
 import { memo, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
-import { StatusMark, statusTone } from '@/components/ui/StatusMark';
+import { StatusMark, statusCounted, statusTone, uncountedRun } from '@/components/ui/StatusMark';
 import {
   studioAccessibleName,
   studioCountOf,
@@ -130,7 +130,7 @@ function MapAxisLabel({
       <MenuContent aria-label={studioAccessibleName('sweep', sweep.label)}>
         <ScrollFade axis="y" className="nowheel max-h-60">
           {sweep.values.map((value) => (
-            <MenuItem key={value.id}
+            <MenuItem key={value.id} data-value={value.id}
               glyph={<span className="flex size-[1em] shrink-0 items-center justify-center">{chosen.has(value.id) && <Check />}</span>}
               onKeyDown={(event) => { extendByKey.current = extendsSelection(event); }}
               onClick={(event) => {
@@ -139,7 +139,7 @@ function MapAxisLabel({
                 if (pickRuns) pickRuns(step.runs.filter(({ values }) => values[sweep.id] === value.id).map(({ id }) => id));
                 else applySelection((state) => selectSweepValue(state, step.id, sweep.id, value.id, extend));
               }}>
-              {value.label}
+              {value.valueLabel}
             </MenuItem>
           ))}
         </ScrollFade>
@@ -157,7 +157,7 @@ function MapAxisLabel({
         {(!!authored?.commands.length || !!removals.length) && <MenuSeparator />}
         {!!removals.length && <MenuSubmenu label={studioName(removals[0].command.name)}>
           {removals.map(({ value, command }) => <MenuItem key={value.id} disabled={!command.enabled} onClick={command.invoke}>
-            {value.label}
+            {value.valueLabel}
           </MenuItem>)}
         </MenuSubmenu>}
         {!!authored?.commands.length && <CommandMenuItems commands={() => authored.commands} />}
@@ -265,7 +265,8 @@ function MarkButton({
       data-boxed={boxed ? runs.some(({ id }) => boxed.has(id)) ? '' : undefined
         : selectionKind === 'rows' && selectedCount > 0 ? '' : undefined}
       data-group-member={selectionKind === 'values' && selectedCount > 0 && mark.kind === 'run' ? '' : undefined}
-      className={clsx('studio-map-run-mark relative flex shrink-0', markRadius[size.id])}
+      className={clsx('studio-map-run-mark relative flex shrink-0', markRadius[size.id],
+        !runs.some(({ state }) => statusCounted(state)) && uncountedRun)}
       style={{ width: size.mark, height: size.mark }}
       {...choose}
     >
@@ -364,15 +365,9 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
       (sweep) => [sweep.id, new Map(sweep.values.map(({ id, label }) => [id, label]))],
     ));
     const present = ({ mark }: MarkCell): MarkPresentation => {
-      if (mark.kind === 'run') {
-        const coordinates = sweeps.flatMap((sweep) => {
-          const value = valuesBySweep.get(sweep.id)?.get(mark.run.values[sweep.id]);
-          return value === undefined ? [] : [`${sweep.label} ${value}`];
-        });
-        return { mark, label: coordinates.join(' · ') || mark.run.label, statuses: [[mark.run.state, 1]] };
-      }
+      if (mark.kind === 'run') return { mark, label: mark.run.label, statuses: [[mark.run.state, 1]] };
       const scope = (mark.terms ?? []).map(({ sweepId, valueIds }) =>
-        `${sweeps.find(({ id }) => id === sweepId)?.label} ${valueIds.map((id) => valuesBySweep.get(sweepId)?.get(id) ?? id).join(', ')}`);
+        valueIds.map((id) => valuesBySweep.get(sweepId)?.get(id) ?? id).join(', '));
       const counts = new Map<StudioResultState, number>();
       for (const run of mark.runs) counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
       return { mark, label: [...scope, `${mark.runs.length} ${studioName('runs')}`].join(' · '), statuses: [...counts] };

@@ -37,9 +37,12 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
     model = raw["documents"][model_name]["payload"]
     task = raw["documents"][sources["task"]["document"]]["payload"]
     task["validation_trials"] = task["validation_trials"][:1]
-    component = model["interior"]["components"]["readout"]
+    components = model["interior"]["components"]
+    component = components["readout"]
     owner_type = "entry_point_provider.ObservedReadout"
     component.update(type=owner_type, revision=1)
+    # The registered readout declares its input width. The replaced builtin derives it from the wire.
+    component["fields"]["input_size"] = components["cell"]["fields"]["hidden_size"]
     address = {"composites": []}
     raw["steps"]["evaluate"] = managed_evaluation_step("train")
     read_changed_model(raw, "evaluate", [

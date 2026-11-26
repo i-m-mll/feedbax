@@ -64,7 +64,10 @@ from feedbax.contracts.studio_figure import (
     FigureLayoutMeta, FigurePanelMeta, FigureProduct, FigureRun, FigureTraceMeta, PlotlyLayout, PlotlyTrace,
 )
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
+from feedbax.contracts.dataset import DatasetDescriptor
+from feedbax.contracts.studio_analyze import (
+    StudioAnalyzeAuthoring, StudioAnalyzeRequest, StudioOperationDatasetPage,
+)
 from feedbax.contracts.studio_scene import (
     SceneAnchorGeometry,
     SceneLinkGeometry,
@@ -244,6 +247,10 @@ from feedbax.contracts.model_address import (
 from feedbax.contracts.model_document import (
     CompositeComponent,
     DelayAttachment,
+    DelayInitialTask,
+    DelayInitialValue,
+    DelayInitialWire,
+    HoldAttachment,
     GraphInterior,
     InputDefault,
     InterventionAttachment,
@@ -251,6 +258,7 @@ from feedbax.contracts.model_document import (
     ModelDocument,
     ModelPhysicalConnection,
     ModelPortAttachments,
+    ModelSignalSource,
     ModelPorts,
     ModelTime,
     ModelWire,
@@ -340,6 +348,8 @@ from feedbax.contracts.trial_clock import (
     TrialMean,
     TrialMeanCondition,
     TrialMeanEpoch,
+    TrialMeanShelf,
+    TrialMeanTermShare,
     TrialMeanOptions,
     TrialMeanSelection,
     TrialSeriesSummary,
@@ -363,7 +373,7 @@ from feedbax.contracts.trial_record import (
     TrialTermAggregate,
     TrialUnavailable,
 )
-from feedbax.web.api.execution import TaskTrialSampleRequest, TaskTrialSampleResponse
+from feedbax.web.api.execution import StudioRunTaskTrialSampleRequest, TaskTrialSampleRequest, TaskTrialSampleResponse
 from feedbax.web.models.inspection import (
     CycleAnnotationModel,
     InlineTreescopeRequest,
@@ -391,8 +401,9 @@ from feedbax.web.models.trajectory import (
     TrajectoryMetadata,
 )
 from feedbax.contracts.expression_values import FieldTextResult, Problem
-from feedbax.contracts.expression_site import SiteProjection
+from feedbax.contracts.expression_site import ExpressionPartSite, SiteProjection
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
+from feedbax.contracts.time_units import TimeValue
 from feedbax.contracts.studio_field import (
     FieldKindEdit, FieldNameEdit, FieldResetEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
     StudioFieldView, StudioSweepList, StudioSweepRange, StudioSweepSampler, StudioSweepValue,
@@ -433,11 +444,15 @@ from feedbax.contracts.studio_loaded_model import (
     StudioLoadedModelExportRequest, StudioLoadedModelImportQuery, StudioLoadedModelImportResult,
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.set_document import SetDocument, SetEntry
+from feedbax.contracts.window import Window
 from feedbax.contracts.training_document import TrainingDocument
-from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
+from feedbax.contracts.request_specs import DocumentTrainingConfig, SynthesisRequestSpec, TrainContinuation, TrialDocuments
+from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import (
-    StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialRelate,
+    StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+    StudioTrialExpressionMenuRequest, StudioTrialRelate,
 )
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from feedbax.contracts.studio_subset import (
@@ -510,10 +525,15 @@ AUTHORED_CONTRACT_MODELS = (
     ValidityAcceptance,
     AnalysisDocument,
     TaskDocument,
+    SetDocument,
+    SetEntry,
     PythonTaskSelection,
     ObjectiveDocument,
+    Window,
     TrainingDocument,
     TrialDocuments,
+    SynthesisRequestSpec,
+    SynthesisStepPayload,
     ImportedModelProvenance,
     LoadedModelDocument,
     LoadedModelReference,
@@ -523,6 +543,8 @@ AUTHORED_CONTRACT_MODELS = (
     StudioLoadedModelImportResult,
     StudioTrialAuthoring,
     StudioTrialAuthoringRequest,
+    StudioTrialExpressionMenuRequest,
+    ExpressionPartSite,
     StudioTrialRelate,
     StudioRelatePoint,
     StudioRelatePort,
@@ -545,6 +567,8 @@ AUTHORED_CONTRACT_MODELS = (
     SampleValues,
     SiteProjection,
     StudioAnalyzeAuthoring,
+    DatasetDescriptor,
+    StudioOperationDatasetPage,
     StudioAnalyzeRequest,
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
@@ -598,6 +622,10 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelTime,
     InputDefault,
     DelayAttachment,
+    DelayInitialTask,
+    DelayInitialValue,
+    DelayInitialWire,
+    HoldAttachment,
     InterventionAttachment,
     ProbeAttachment,
     SignalInput,
@@ -688,6 +716,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     StudioSweepList,
     StudioSweepRange,
     StudioSweepSampler,
+    TimeValue,
     StudioFieldView,
     ModelFieldView,
     TrainFieldView,
@@ -803,6 +832,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TrialMean,
     TrialMeanCondition,
     TrialMeanEpoch,
+    TrialMeanShelf,
+    TrialMeanTermShare,
     TrialMeanOptions,
     TrialMeanSelection,
     TrialSeriesSummary,
@@ -831,6 +862,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TaskSignalAggregate,
     TaskVariableRange,
     TrialAggregate,
+    StudioRunTaskTrialSampleRequest,
     TaskTrialSampleRequest,
     TaskTrialSampleResponse,
     ParentRef,
@@ -998,6 +1030,7 @@ CONTRACT_MODEL_NAMES = [
     "InlineTreescopeRequest",
     "TreescopeResponse",
     "InspectionStatusResponse",
+    "StudioRunTaskTrialSampleRequest",
     "TaskTrialSampleRequest",
     "TaskTrialSampleResponse",
 ]
@@ -1074,6 +1107,8 @@ def _unique_metadata(metadata: tuple[Any, ...]) -> tuple[Any, ...]:
 def ts_type(annotation: Any) -> str:
     """Return a TypeScript type expression for a Python annotation."""
 
+    if annotation is ModelSignalSource:
+        return "ModelSignalSource"
     annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "unknown"
@@ -1189,6 +1224,8 @@ def zod_schema(
     annotation_metadata = _annotation_metadata(annotation)
     field_metadata = () if field is None else tuple(field.metadata)
     metadata = _unique_metadata(annotation_metadata + field_metadata)
+    if annotation is ModelSignalSource:
+        return "ModelSignalSourceSchema"
     annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "z.unknown()"

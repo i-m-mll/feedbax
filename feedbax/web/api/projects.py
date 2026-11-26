@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
 
+from feedbax.contracts.expression_site import ExpressionPartSite
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, EvaluateModelState,
     ModelConnectionReview, ModelConnectionReviewRequest,
@@ -46,7 +47,9 @@ from feedbax.contracts.studio_project import (
     StudioProjectSnapshot,
 )
 from feedbax.contracts.studio_sets import StudioSetEdit, StudioSetEditRequest, StudioSetsOffered, StudioSetsOfferedRequest
-from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
+from feedbax.contracts.studio_trials import (
+    StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialExpressionMenuRequest,
+)
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from feedbax.contracts.studio_subset import (
     StudioRunRuleCheck, StudioRunRuleRequest, StudioSubsetToRowsEdit, StudioSubsetToRowsRequest,
@@ -280,6 +283,27 @@ def read_trial_authoring(
     ))
 
 
+@router.post("/{project_id}/authoring/trials/expression-menu")
+def read_trial_expression_menu(
+    project_id: ProjectName, body: StudioTrialExpressionMenuRequest, request: Request, response: Response,
+) -> ExpressionPartSite:
+    def read() -> ExpressionPartSite:
+        folders = request.app.state.project_folders
+        folders.read_authored_snapshot(project_id, revision=body.revision)
+        functions = request.app.state.bootstrap_state.bundle.expression_functions
+        part = folders.trial_expression_menus.menu(project_id, body, functions)
+        if part is None:
+            raise HTTPException(
+                409, detail={
+                    "code": "trial_expression_context_unavailable",
+                    "message": "Reload trial authoring before requesting another expression menu.",
+                }, headers=_NO_STORE,
+            )
+        return part
+
+    return _project_response(response, read)
+
+
 @router.post("/{project_id}/authoring/analyze")
 def read_analyze_authoring(
     project_id: ProjectName, body: StudioAnalyzeRequest, request: Request, response: Response,
@@ -471,7 +495,8 @@ def export_model_archive(
     from feedbax.web.services.loaded_models import export_loaded_model
 
     data = _project_response(response, lambda: export_loaded_model(request.app.state.project_plan, project_id, body))
-    filename = f"{body.key.step}-{body.completed_updates}.feedbax-model"
+    name = body.key.step if body.completed_updates is None else f"{body.key.step}-{body.completed_updates}"
+    filename = f"{name}.feedbax-model"
     return Response(data, media_type="application/octet-stream", headers={
         **_NO_STORE, "Content-Disposition": f'attachment; filename="{filename}"',
     })

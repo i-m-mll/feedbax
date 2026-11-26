@@ -54,7 +54,7 @@ test('Rename labels a step, an operation and a figure; Change Key rewrites the R
 
   await mapStep(page, 'analyze').click();
   await mapStep(page, 'analyze').press('F2');
-  const stepName = page.locator('[data-map-step="analyze"]').getByRole('textbox', { name: 'Rename analyze', exact: true });
+  const stepName = page.locator('[data-map-step="analyze"]').getByRole('textbox', { name: 'Rename Analyze', exact: true });
   const labelled = await member(() => stepName.fill('Velocity').then(() => stepName.press('Enter')));
   expect(labelled.project.steps?.analyze.label).toBe('Velocity');
   expect(Object.keys(labelled.project.steps ?? {}).sort()).toEqual(Object.keys(before.project.steps ?? {}).sort());
@@ -64,8 +64,8 @@ test('Rename labels a step, an operation and a figure; Change Key rewrites the R
 
   await mapStep(page, 'analyze').dblclick();
   await tab(page, 'Analysis').click();
-  await canvasMenu('summarize', 'Rename');
-  const operationName = analysis.getByRole('textbox', { name: 'Rename summarize', exact: true });
+  await canvasMenu('Summarize', 'Rename');
+  const operationName = analysis.getByRole('textbox', { name: 'Rename Summarize', exact: true });
   await expect(operationName).toBeFocused();
   const operation = await member(() => operationName.fill('Summary').then(() => operationName.press('Enter')));
   expect(graph(operation).operations?.summarize.label).toBe('Summary');
@@ -90,8 +90,8 @@ test('Rename labels a step, an operation and a figure; Change Key rewrites the R
   expect(graph(rekeyed).views?.profile.inputs.summary).toEqual({ element: 'summary', product: 'summary' });
   expect(await reportProblems(rekeyed.revision)).toEqual([]);
 
-  await canvasMenu('profile', 'Change Key');
-  const figureKey = inspector.getByRole('textbox', { name: 'Change Key profile', exact: true });
+  await canvasMenu('Profile', 'Change Key');
+  const figureKey = inspector.getByRole('textbox', { name: 'Change Key Profile', exact: true });
   const figure = await member(() => figureKey.fill('velocity-profile').then(() => figureKey.press('Enter')));
   expect(figure.project.steps?.report.inputs?.velocity_summary).toMatchObject({ step: 'analyze', element: 'velocity-profile' });
   expect(await reportProblems(figure.revision)).toEqual([]);

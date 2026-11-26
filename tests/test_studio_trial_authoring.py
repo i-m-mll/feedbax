@@ -17,6 +17,7 @@ from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_projec
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.request_identity import decode_request
 from feedbax.application.composition import application_python_tasks
+from feedbax.examples import load_shipped_projects
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.app import create_app
 from feedbax.web.services import project_plan as window_service
@@ -45,6 +46,33 @@ def _python_project():
     documents.update(task=None, python_task={"document": "task"})
     raw["steps"]["baseline"]["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": 1}
     return raw
+
+
+@pytest.mark.parametrize("competing_label", [False, True])
+def test_task_pairing_prefers_the_matching_signal_id(tmp_path, competing_label):
+    project = load_shipped_projects()["point-mass-reaching"]
+    original = compile_project(project)
+    raw = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    signals = raw["documents"]["simple-reaches-task"]["payload"]["signals"]
+    next(signal for signal in signals if signal["id"] == "target_pos")["name"] = "target position"
+    if competing_label:
+        next(signal for signal in signals if signal["id"] == "target_vel")["name"] = "target_pos"
+    renamed = Project.model_validate(raw)
+    run = RunKey("default", "simple-reaches", "default")
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+        _save_project(folders, "implicit-binding", renamed)
+        snapshot = folders.read("implicit-binding")
+        response = client.post("/api/projects/implicit-binding/authoring/trials", json={
+            "revision": snapshot.revision,
+            "run": {"variant": run.variant, "step": run.step, "row": run.row},
+        })
+        assert response.status_code == 200, response.text
+        view = StudioTrialAuthoring.model_validate(response.json())
+        target = next(port for port in view.inputs if port.id == "target_pos")
+        assert (target.signal_id, target.explicit) == ("target_pos", False)
+        assert not view.problems
+        assert folders.read_plan("implicit-binding", revision=None).plan.row(run).request_id == original.row(run).request_id
 
 
 @pytest.mark.parametrize("rename", ["signal", "root input"])
@@ -305,7 +333,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         term = {"id": "effort", "name": "Control effort", "measure": CallValue(
             kind="call", function="sqnorm", args=(NameValue(kind="name", reference=output.value.id),)
         ).model_dump(mode="json"), "weight": LiteralValue(value=2).model_dump(mode="json")}
-        windowed = term | {"id": "move-effort", "epochs": ["move"]}
+        windowed = term | {"id": "move-effort", "window": {"spans": [{"kind": "epoch", "epoch": "move"}]}}
 
         def squared_target(identifier, source):
             return {
@@ -764,7 +792,7 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
     del task["fixed_steps"]
     objective = raw["documents"]["objective"]["payload"]
     term = objective["terms"][0]
-    for field in ("enabled", "reduction", "epochs"):
+    for field in ("enabled", "reduction", "window"):
         del term[field]
     folders = ProjectFolderService(tmp_path)
     project = "term-defaults"
@@ -785,8 +813,8 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
         assert "fixed_steps" not in view["task"]
         assert view["objective"] == objective
         for op, values in (
-            ("add", {"enabled": False, "reduction": "sum", "epochs": ["move"]}),
-            ("replace", {"enabled": True, "reduction": "mean", "epochs": []}),
+            ("add", {"enabled": False, "reduction": "sum", "window": {"spans": [{"kind": "epoch", "epoch": "move"}]}}),
+            ("replace", {"enabled": True, "reduction": "mean", "window": None}),
         ):
             shown = view["objective"]["terms"][0]
             edits = [
@@ -800,6 +828,135 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
             body["revision"] = saved.json()["revision"]
             view = author()
             assert view["objective"]["terms"][0] == term | values
+
+
+def test_studio_saves_an_objective_ramp_weighted_by_a_delayed_signal(tmp_path):
+    project = "objective-ramp"
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, project, Project.model_validate(document_project(authored_documents())))
+    route = f"/api/projects/{project}"
+    body = {
+        "revision": folders.read(project).revision,
+        "run": {"variant": "default", "step": "train", "row": "default"},
+    }
+    path = "/objective/terms/effort/weight"
+    text = "(t / T) ** 2 * sqnorm(lag(command, 5))"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        edited = client.post(f"{route}/authoring/trials", json=body | {
+            "change": {"kind": "expression", "path": path, "edit": {"kind": "text", "text": text}},
+        })
+        assert edited.status_code == 200, edited.text
+        proposed = edited.json()
+        assert proposed["files"]
+        assert not proposed["problems"], proposed["problems"]
+        saved = client.patch(route, json={"revision": body["revision"], "files": proposed["files"]})
+        assert saved.status_code == 200, saved.text
+        reread = client.post(f"{route}/authoring/trials", json=body | {"revision": saved.json()["revision"]})
+        assert reread.status_code == 200, reread.text
+        assert not reread.json()["problems"], reread.text
+        field = next(field for field in reread.json()["fields"] if field["path"] == path)
+        assert field["text"] == text
+
+
+def test_trial_authoring_shows_authored_fields_for_a_windowed_set_entry(tmp_path):
+    from feedbax.desktop.release import AppPaths
+    from web.e2e.studio.fixtures.set_authoring import seed_window
+
+    project = seed_window(str(tmp_path), "windowed-set")
+    folders = ProjectFolderService(AppPaths.resolve(instance_root=tmp_path).web / "projects")
+    snapshot = folders.read(project)
+    plan = folders.read_plan(project, revision=snapshot.revision).plan
+    assert not plan.diagnostics
+    selected = next(row for row in plan.rows if row.coordinates["pulse"].value_id == "force")
+    body = {
+        "revision": snapshot.revision,
+        "run": {"variant": selected.key.variant, "step": selected.key.step, "row": selected.key.row},
+    }
+    with TestClient(create_app(projects_dir=folders.root)) as client:
+        response = client.post(f"/api/projects/{project}/authoring/trials", json=body)
+        sample = client.post("/api/execution/task-trials/sample", json=body | {"project_id": project, "nominal": True})
+        assert sample.status_code == 200, sample.text
+        trial, = sample.json()["drawn"]["trials"]
+        window, = trial["intervention_windows"].values()
+        assert [index for index, active in enumerate(window) if active] == list(range(10, 15))
+    assert response.status_code == 200, response.text
+    view = response.json()
+    authored_signals = {signal["id"] for signal in view["task"]["signals"]}
+    signal_fields = [field["path"].split("/")[3] for field in view["fields"]
+                     if field["path"].startswith("/task/signals/")]
+    assert signal_fields and set(signal_fields) <= authored_signals
+    assert view["epochs"]
+    assert any(variable["name"].endswith("Onset") for variable in view["variables"])
+
+
+def test_objective_offsets_project_paired_editable_fields(tmp_path):
+    raw = document_project(authored_documents())
+    term = raw["documents"]["objective"]["payload"]["terms"][0]
+    term["window"] = {"spans": [{
+        "kind": "interval",
+        "start": {
+            "anchor": {"kind": "epoch", "epoch": "move", "edge": "start"},
+        },
+        "end": {"offset": {"value": 5, "unit": "st"}},
+    }]}
+    task = raw["documents"]["task"]["payload"]
+    task["variables"].append({
+        "id": "onset", "name": "onset", "type": {"base": "real", "dimensions": {"time": 1}},
+        "value": {"kind": "literal", "value": .1, "unit": "s"},
+    })
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "window", Project.model_validate(raw))
+    route = "/api/projects/window"
+    body = {
+        "revision": folders.read("window").revision,
+        "run": {"variant": "default", "step": "train", "row": "default"},
+    }
+    start = "/objective/terms/effort/window/spans/0/start/offset"
+    end = "/objective/terms/effort/window/spans/0/end/offset"
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        def author(change=None):
+            response = client.post(f"{route}/authoring/trials", json=body | ({"change": change} if change else {}))
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        def edit(path, text):
+            answer = author({"kind": "expression", "path": path, "edit": {"kind": "text", "text": text}})
+            assert not answer["problems"], answer["problems"]
+            response = client.patch(route, json={"revision": body["revision"], "files": answer["files"]})
+            assert response.status_code == 200, response.text
+            body["revision"] = response.json()["revision"]
+            return answer
+
+        def field(view, path):
+            return next(item for item in view["fields"] if item["path"] == path)
+
+        shown = author()
+        assert field(shown, start)["text"] == ""
+        assert field(shown, start)["conversion"] is None
+        assert field(shown, end)["conversion"] == {"value": .05, "unit": "s"}
+        assert field(shown, start)["can_sweep"]
+        assert {"value", "formula", "link", "draw", "sweep"} <= set(field(shown, start)["site"]["kinds"])
+
+        edit(start, "-25 ms")
+        reopened = author()
+        start_offset = reopened["objective"]["terms"][0]["window"]["spans"][0]["start"]["offset"]
+        assert start_offset == {"value": -.025, "unit": "s"}
+        assert field(reopened, start)["conversion"] == {"value": -3, "unit": "st"}
+
+        edit(start, "onset")
+        link = author()["objective"]["terms"][0]["window"]["spans"][0]["start"]["offset"]
+        assert link == {"kind": "name", "reference": "onset"}
+
+        edit(start, "")
+        cleared = author()
+        assert "offset" not in cleared["objective"]["terms"][0]["window"]["spans"][0]["start"]
+        assert field(cleared, start)["text"] == ""
+
+        edit(end, "linspace(3 st, 5 st, 3)")
+        runs = folders.read_plan("window", revision=body["revision"]).plan.runs
+        assert len(runs) == 3 and all(run.admission_problem is None for run in runs)
+        assert len({run.request_id for run in runs}) == 3
 
 
 def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader(tmp_path):
@@ -1038,6 +1195,12 @@ def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):
         project = "initial-evaluate"
         _save_project(folders, project, Project.model_validate(raw))
         revision = folders.read(project).revision
+        planned = folders.read_plan(project, revision=revision).plan
+        hand = "/v1/model/state/plant/effector~1position"
+        for run in planned.runs:
+            port = run.dataset_port
+            assert port.variables[hand].dims == ("condition", "trial", "state_time", "xy")
+            assert "checkpoint" not in port.coordinates and "update" not in port.coordinates
 
         def author(step, change=None):
             response = client.post(f"/api/projects/{project}/authoring/trials", json={
@@ -1061,3 +1224,189 @@ def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):
         assert response.status_code == 200, response.text
         revision = response.json()["revision"]
         assert author("evaluate")["objective"]["terms"][0]["name"] == "Command effort"
+
+
+@pytest.mark.parametrize(("condition", "boundary", "outcome", "weight"), [
+    ("true", 0, 2, 2.0),
+    ("held(dist(effector.pos, point(0.01 m, 0 m)) < 0.00999 m, 0.1 s)", 12, 2, 2.0),
+    ("held(dist(effector.pos, point(1 m, 0 m)) < 0.00999 m, 0.1 s)", 14, 3, 3.0),
+])
+def test_until_scene_ends_at_entry_after_holding_or_at_limit(tmp_path, condition, boundary, outcome, weight):
+    """Euler moves the hand on the second transition; a ten-step hold ends at boundary 12."""
+    model = {
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [{"id": "force", "name": "force", "type": {"shape": [2], "unit": "N"}}],
+            "outputs": [{"id": "effector", "name": "effector", "type": {"base": "state"}}],
+        },
+        "interior": {
+            "components": {"plant": {"kind": "leaf", "name": "Plant", "type": "feedbax.PointMass"}},
+            "wires": {
+                "force": {
+                    "source": {"owner": "inputs", "port": "force"},
+                    "target": {"owner": "component", "component": "plant", "port": "force"},
+                },
+                "effector": {
+                    "source": {"owner": "component", "component": "plant", "port": "effector"},
+                    "target": {"owner": "outputs", "port": "effector"},
+                },
+            },
+        },
+    }
+
+    def expression(text):
+        return {"kind": "unresolved", "text": text}
+
+    task = {
+        "id": "reach",
+        "variables": (),
+        "epochs": [
+            {"id": "reach", "name": "Reach", "end": {
+                "kind": "until",
+                "condition": expression(condition),
+                "limit": {"value": 0.14, "unit": "s"},
+            }},
+            {"id": "exit", "name": "Exit", "end": {
+                "kind": "length", "length": {"kind": "literal", "value": 2, "unit": "st"},
+            }},
+        ],
+        "signals": [{"id": "force", "name": "force", "type": {
+            "base": "real", "shape": [2], "dimensions": {"mass": 1, "length": 1, "time": -2},
+        }, "cells": [
+            {"id": "push", "first_epoch": "reach", "last_epoch": "reach", "value": expression("vector(1 N, 0 N)")},
+        ]}],
+    }
+    objective = {
+        "id": "score",
+        "terms": [{
+            "id": "ending",
+            "measure": expression("1."),
+            "weight": expression("where(epoch.Reach.condition, 2, where(epoch.Reach.limit, 3, 0))"),
+        }],
+    }
+    app = create_app(projects_dir=tmp_path / "projects")
+    with TestClient(app) as client:
+        response = client.post("/api/execution/task-trials/sample", json={
+            "model": model, "task": task, "objective": objective, "nominal": True,
+        })
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["drawn"]["kind"] == "trials", data["drawn"]
+    (trial,) = data["drawn"]["trials"]
+    assert [(cue["start"], cue["end"], cue["outcome"]) for cue in trial["timeline"]] == [
+        (0, boundary, outcome), (boundary, boundary + 2, 1),
+    ]
+    assert trial["present"]["force"] == [True] * boundary + [False] * (16 - boundary)
+    assert trial["terms"]["ending"]["weights"] == [weight] * 16
+
+
+def test_until_authoring_switches_and_refuses_a_limit_that_rounds_to_zero(tmp_path):
+    app = create_app(projects_dir=tmp_path / "projects")
+    raw = document_project(authored_documents())
+    project = "until-expression"
+    folders = app.state.project_folders
+    _save_project(folders, project, Project.model_validate(raw))
+    revision = folders.read(project).revision
+    run = {"variant": "default", "step": "train", "row": "default"}
+    name = raw["documents"]["task"]["payload"]["epochs"][0]["id"]
+    end = f"/task/epochs/{name}/end"
+    with TestClient(app) as client:
+        def author(change=None):
+            response = client.post(f"/api/projects/{project}/authoring/trials", json={
+                "revision": revision, "run": run, "change": change,
+            })
+            assert response.status_code == 200, response.text
+            return StudioTrialAuthoring.model_validate(response.json())
+
+        def change(field, text):
+            return author({"kind": "expression", "path": f"{end}/{field}", "edit": {
+                "kind": "text", "text": text,
+            }})
+
+        def assert_empty_condition(result, kind):
+            assert result.task.epochs[0].end.kind == kind
+            fields = {field.path: field for field in result.fields}
+            assert f"{end}/length" in fields
+            condition = fields[f"{end}/condition"]
+            assert condition.text == ""
+            assert condition.site.site.expected.base == "boolean"
+            assert {value.name for value in condition.site.site.names} >= {"command", "time", "t"}
+
+        assert_empty_condition(author(), "length")
+        offered = change("length", "true ≤ 0.3 s")
+        assert offered.files and not offered.problems
+        assert offered.task.epochs[0].end.kind == "until"
+        assert offered.epochs[0].steps.least == 0
+        assert offered.epochs[0].steps.greatest == offered.epochs[0].steps.nominal == 30
+        fields = {field.path: field for field in offered.fields}
+        assert f"{end}/condition" in fields
+        assert fields[f"{end}/limit"].conversion.model_dump() == {"value": 30, "unit": "st"}
+        response = client.patch(f"/api/projects/{project}", json={
+            "revision": revision, "files": [file.model_dump(mode="json") for file in offered.files],
+        })
+        assert response.status_code == 200, response.text
+        revision = response.json()["revision"]
+        refused = change("limit", "0.001 s")
+        assert not refused.files
+        assert any(problem.path == ("task", "epochs", name, "end", "limit") for problem in refused.problems)
+        restored = change("length", "20 st")
+        assert restored.files and not restored.problems
+        assert restored.task.epochs[0].end.kind == "length"
+        assert_empty_condition(change("length", "rest"), "rest")
+
+
+def test_expression_menu_reuses_the_exact_projected_pairing(tmp_path, monkeypatch):
+    from feedbax.contracts.expression_site import project_site
+
+    app = create_app(projects_dir=tmp_path)
+    project = "expression-menu"
+    _save_project(app.state.project_folders, project, Project.model_validate(document_project(authored_documents())))
+    url = f"/api/projects/{project}/authoring/trials"
+    run = {"variant": "default", "step": "train", "row": "default"}
+    pointer = "/task/variables/target/value"
+
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        revision = folders.read(project).revision
+        request = {"revision": revision, "run": run}
+        authored = client.post(url, json=request)
+        assert authored.status_code == 200, authored.text
+        view = StudioTrialAuthoring.model_validate(authored.json())
+        assert all(not field.site.parts for field in view.fields)
+
+        edit = client.post(url, json=request | {"change": {
+            "kind": "expression", "path": pointer, "edit": {"kind": "text", "text": "start"},
+        }})
+        assert edit.status_code == 200, edit.text
+        preview = StudioTrialAuthoring.model_validate(edit.json())
+        assert preview.files and preview.revision == revision
+        assert preview.expression_context != view.expression_context
+
+        def forbid_plan(*args, **kwargs):
+            pytest.fail("Opening an expression menu attempted to prepare another trial pairing.")
+
+        monkeypatch.setattr(folders, "read_plan", forbid_plan)
+        field = next(field for field in view.fields if field.path == pointer)
+        expression = next(variable.value for variable in view.task.variables if variable.id == "target")
+        functions = app.state.bootstrap_state.bundle.expression_functions
+        expected = project_site(field.site.site, functions, expression).parts
+
+        def menu(**updates):
+            return client.post(url + "/expression-menu", json=(request | {
+                "expression_context": view.expression_context, "field": pointer, "part": ["args", 0],
+            } | updates))
+
+        response = menu()
+        assert response.status_code == 200, response.text
+        assert response.json() == next(part.model_dump(mode="json") for part in expected if part.path == ("args", 0))
+        assert menu(expression_context=preview.expression_context).status_code == 422
+        assert menu(part=["args", 999]).status_code == 422
+        assert menu(field="/unknown").status_code == 422
+        expired = menu(run=run | {"step": "other"})
+        assert expired.status_code == 409
+        assert expired.json() == {"detail": {
+            "code": "trial_expression_context_unavailable",
+            "message": "Reload trial authoring before requesting another expression menu.",
+        }}
+        stale = menu(revision="0" * 64)
+        assert stale.status_code == 409 and stale.json()["detail"]["current"] == revision

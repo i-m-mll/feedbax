@@ -10,7 +10,10 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.contracts.jobs import JobReceipt
-from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanSelection
+from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanOptions, TrialMeanSelection
+from feedbax.contracts.trial_record import TaskTimelineCue, TrialRecord, TrialTerm
+from feedbax.execution.trial_clock import mean_trial_paths
+from feedbax.execution.trial_record import aggregate_trials
 from feedbax.dataset import Dataset, Variable
 from feedbax.persistence.canonical_evaluate import EvaluationResult
 from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout
@@ -79,6 +82,39 @@ def _reference(indices, starts):
         [[min(values) for values in row] for row in rows],
         [[max(values) for values in row] for row in rows],
     )
+
+
+def test_mean_shelf_pools_epoch_rows_and_held_samples_on_the_alignment_clock():
+    def trial(name, start, end, signal, term):
+        return TrialRecord(
+            id=name, inits={}, inputs={"target": [0] * 4}, present={"target": signal},
+            variables={"group": name}, variable_defined={},
+            timeline=[TaskTimelineCue(epoch="move", label="Move", start=start, end=end, outcome=1)],
+            terms={"cost": TrialTerm(steps=term, covered=True)},
+        )
+
+    first = trial("first", 1, 4, [False, True, True, False], [True, False, True, False])
+    second = trial("second", 2, 3, [False, False, True, False], [False, True, True, False])
+    first.intervention_windows["pulse"] = [False, True, True, False]
+    second.intervention_windows["only-second"] = [False, False, True, False]
+    aggregate = aggregate_trials([item.model_copy(update={"variables": {}}) for item in (first, second)], n_steps=4)
+    assert aggregate.interventions == {
+        "pulse": [0, .5, .5, 0], "only-second": [0, 0, .5, 0],
+    }
+    options = TrialMeanOptions(
+        by=[TrialClockChoice(id="group", label="Group")],
+        align=[TrialClockChoice(id="move", label="Move")],
+    )
+    result = mean_trial_paths([first, second], np.arange(5), options, TrialMeanSelection(align="move"))
+    assert len(result.conditions) == 2
+    assert result.shelf.times == [-2, -1, 0, 1, 2, 3]
+    assert result.shelf.signals["target"] == [0, 0, 1, .5, 0]
+    assert result.shelf.terms["cost"].steps == [0, 1, .5, .5, 0]
+    assert result.shelf.interventions == {
+        "pulse": [0, 0, .5, .5, 0], "only-second": [0, 0, .5, 0, 0],
+    }
+    (move,) = result.shelf.epochs
+    assert (move.start.mean, move.end.mean, move.end.lower, move.end.upper) == (0, 2, 1, 3)
 
 
 def test_saved_mean_groups_discrete_values_and_intersects_aligned_times(unequal_epochs, tmp_path, monkeypatch):

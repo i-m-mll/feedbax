@@ -109,7 +109,7 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   }, { axes: { run: ['run-2'] } });
 
   // The original runs gain another copy: an intervention on it.
-  await chooseOriginals('pair', 'run');
+  await chooseOriginals('pair', 'Run');
   await fromMenu(marks('pair').first(), 'Duplicate Run');
   await expect(marks('pair')).toHaveCount(6);
   await saved();
@@ -118,7 +118,7 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   await editModel(() => page.getByRole('menuitem', { name: 'Add Intervention', exact: true }).click(), { axes: { run: ['run-3'] } });
 
   // And once more: a field.
-  await chooseOriginals('pair', 'run');
+  await chooseOriginals('pair', 'Run');
   await fromMenu(marks('pair').first(), 'Duplicate Run');
   await expect(marks('pair')).toHaveCount(8);
   await saved();
@@ -138,16 +138,16 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   // A refused Save Set lands on the axis's label, not on the step.
   const sets = (url: URL) => url.pathname === path + '/authoring/sets';
   await page.route(sets, (route) => route.fulfill({ status: 422, json: { detail: 'The axis holds no values.' } }));
-  await sweepLabel(card('pair'), 'run').click();
+  await sweepLabel(card('pair'), 'Run').click();
   await page.getByRole('menuitem', { name: 'Save Set', exact: true }).click();
-  await expect(sweepLabel(card('pair'), 'run')).toHaveAccessibleDescription('The axis holds no values.');
+  await expect(sweepLabel(card('pair'), 'Run')).toHaveAccessibleDescription('The axis holds no values.');
   await expect(page.locator('[aria-description="The axis holds no values."]')).toHaveCount(1);
   await page.unroute(sets);
 
-  // Save Set: the axis reads the new set `set`.
-  await sweepLabel(card('pair'), 'run').click();
+  // Save Set: the axis reads the new set `set`, named Set.
+  await sweepLabel(card('pair'), 'Run').click();
   await page.getByRole('menuitem', { name: 'Save Set', exact: true }).click();
-  await expect(sweepLabel(card('pair'), 'set')).toBeVisible();
+  await expect(sweepLabel(card('pair'), 'Set')).toBeVisible();
   await saved();
   const stored = (await snapshot()).project;
   expect(stored.steps!.pair.sweep!.axes!.run).toEqual({ set: 'set', optional: true });
@@ -157,14 +157,14 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
 
   // A Train card's Add Sweep offers the set, and has one run per entry.
   await mapStep(page, 'other').click();
-  await card('other').getByRole('button', { name: 'Add Sweep other', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'set', exact: true }).click();
+  await card('other').getByRole('button', { name: 'Add Sweep Other', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Set', exact: true }).click();
   await expect(marks('other')).toHaveCount(3);
   await saved();
   expect(await rows('other')).toEqual(['set=run-2', 'set=run-3', 'set=run-4']);
 
   // An entry edited from the Train card with the Evaluate card taken out makes a set based on `set`.
-  await chooseSweepValue(card('other'), 'set', 'run-4');
+  await chooseSweepValue(card('other'), 'Set', 'Run 4');
   await tab(page, 'Model').click();
   await mapStep(page, 'pair').click({ modifiers: ['Shift'] });
   await outlineRow(page, 'Plant').click();
@@ -180,22 +180,22 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   await editModel(async () => {
     await enter(mass, '4');
     await expect(applyTo(page).getByRole('menuitem', { name: 'Selected Readers', exact: true }))
-      .toHaveAccessibleDescription('other');
+      .toHaveAccessibleDescription('Other');
   }, { chosen_steps: ['other'], axes: { set: ['run-4'] } }, 'Selected Readers');
   const narrowed = (await snapshot()).project;
-  expect(narrowed.documents!['set-2']).toMatchObject({ base: { document: 'set' } });
+  expect(narrowed.documents!['set-2']).toMatchObject({ base: { document: 'set' }, label: 'Set 2' });
   expect(narrowed.steps!.other.sweep!.axes!.set).toEqual({ set: 'set-2' });
   expect(narrowed.steps!.pair.sweep!.axes!.run).toEqual({ set: 'set', optional: true });
-  await sweepLabel(card('other'), 'set-2').click();
+  await sweepLabel(card('other'), 'Set 2').click();
   const listed = page.getByRole('menuitemradio');
-  await expect(listed).toHaveText(['set', 'set 2']);
-  await expect(page.getByRole('menuitemradio', { name: 'set 2', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect(listed).toHaveText(['Set', 'Set 2']);
+  await expect(page.getByRole('menuitemradio', { name: 'Set 2', exact: true })).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Escape');
 
   // Inline Set returns the Evaluate card to an inline axis, and no run is out of date.
-  await sweepLabel(card('pair'), 'set').click();
+  await sweepLabel(card('pair'), 'Set').click();
   await page.getByRole('menuitem', { name: 'Inline Set', exact: true }).click();
-  await expect(sweepLabel(card('pair'), 'run')).toBeVisible();
+  await expect(sweepLabel(card('pair'), 'Run')).toBeVisible();
   await saved();
   expect((await snapshot()).project.steps!.pair.sweep!.axes!.run).toMatchObject({ optional: true, values: expect.any(Object) });
   expect(await evaluations('pair')).toEqual(edited);
@@ -205,7 +205,7 @@ test('a required Set keeps its axis when its last entry is removed, marked until
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.set_authoring', 'seed_entries', studio.home, 'entries'));
   const card = page.locator('[data-map-step="train"]');
   const marks = card.locator('.studio-map-run-mark');
-  const label = () => sweepLabel(card, 'set');
+  const label = () => sweepLabel(card, 'Set');
   // The label's own description, not its accessible one, which a hover tip it showed last can still supply.
   const empty = 'A required Set has no entries.';
   async function entries() {
@@ -223,12 +223,12 @@ test('a required Set keeps its axis when its last entry is removed, marked until
 
   await page.goto('/?project=' + encodeURIComponent(project), { waitUntil: 'domcontentloaded' });
   await expect(marks).toHaveCount(2);
-  await removeEntry('light');
+  await removeEntry('Light');
   await expect(marks).toHaveCount(1);
   await expect(label()).not.toHaveAttribute('aria-description');
 
   // The last entry goes too: the Set is stored empty, and its axis stays on the card with the Problem, after a reload.
-  await removeEntry('heavy');
+  await removeEntry('Heavy');
   await expect(marks).toHaveCount(0);
   expect(await entries()).toEqual([]);
   await page.reload({ waitUntil: 'domcontentloaded' });

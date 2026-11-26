@@ -1,5 +1,5 @@
 import { appTip } from '@window-shell/browser/tooltip';
-import { Activity } from 'lucide-react';
+import { Activity, Layers } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { studioAccessibleName, studioName, studioReason, studioValueType } from '@/components/activity/studioVocabulary';
 import { ChangeMark } from '@/components/ui/ChangeMark';
@@ -41,6 +41,13 @@ export function LevelMark({ variable }: { variable: Pick<TaskVariable, 'level'> 
   if (variable.level !== 'step') return null;
   return <span role="img" aria-label={studioName('perStep')} {...appTip(studioName('perStep'))}
     className="inline-flex shrink-0 text-shell-muted [&_svg]:size-[1em]"><Activity aria-hidden="true" /></span>;
+}
+
+/** The mark of a variable the selected Set entry adds, named by the entry. */
+function EntryMark({ entry }: { entry?: string }) {
+  if (entry === undefined) return null;
+  return <span role="img" aria-label={studioAccessibleName('setEntry', entry)} {...appTip(studioAccessibleName('setEntry', entry))}
+    className="inline-flex shrink-0 text-shell-muted [&_svg]:size-[1em]"><Layers aria-hidden="true" /></span>;
 }
 
 const columns: readonly TableColumn[] = [{ least: '5rem', greatest: '16rem' }, { least: '6rem' }, { least: '8rem' }];
@@ -127,6 +134,7 @@ export function TaskVariables({ variables, sets = [], unstarted = [], selected, 
               onCommit={(name) => { if (edits.rename) settle(variable.id, edits.rename(variable.id, name)); }} />
             {refusal && <FieldProblem reason={refusal} />}
             <LevelMark variable={variable} />
+            <EntryMark entry={variable.entry} />
           </span>
         </TableFieldCell>
         <TableFieldCell {...appTip(studioValueType(variable.valueType))}>
@@ -148,18 +156,23 @@ export function TaskVariables({ variables, sets = [], unstarted = [], selected, 
   </Table>;
 }
 
-/** A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts. */
+/**
+ * A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts on the row's
+ * one line, scrolling within their cell where they are wider than it, and on the row beneath it the condition a trial
+ * meets to receive one.
+ */
 function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: StudioCommand }; drawn: boolean }) {
   const { toSweep, weigh } = set;
-  return <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
+  return <>
+  <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
     <MenuItem disabled={!toSweep.enabled} onClick={() => toSweep.invoke()}>{toSweep.title}</MenuItem> }}>
     <TableRowHeader className="font-mono">{set.set}</TableRowHeader>
     <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
     <TableCell>
-      <ul aria-label={studioAccessibleName('values', set.set)} className="flex h-full min-w-0 flex-wrap items-center gap-x-3">
+      <ul aria-label={studioAccessibleName('values', set.set)} className="flex h-full min-w-0 items-center gap-x-3 overflow-x-auto">
         {set.entries.map(({ id, label, weight }) => {
           const part = (side?: WeightSide) => weigh && ((value: number) => weigh(id, side, value));
-          return <li key={id ?? ''} className="flex h-full items-center gap-1">
+          return <li key={id ?? ''} className="flex h-full shrink-0 items-center gap-1">
             <span>{label}</span>
             {typeof weight === 'number' && <WeightField weight={weight} entry={label} weigh={part()} />}
             {typeof weight === 'object' && <>
@@ -173,7 +186,15 @@ function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: St
     </TableCell>
     {drawn && <TableCell />}
     <TableCell />
-  </TableRow>;
+  </TableRow>
+  {set.condition && <TableRow>
+    <TableRowHeader><span className="sr-only">{set.set}</span></TableRowHeader>
+    <TableCell className="text-shell-muted">{studioName('condition')}</TableCell>
+    <TableFieldCell><ValueField form="cell" model={set.condition} /></TableFieldCell>
+    {drawn && <TableCell />}
+    <TableCell />
+  </TableRow>}
+  </>;
 }
 
 /** An entry's weight in parts, or its `side` where entries co-occur, edited where it is drawn; its refusal is marked beside it. */
@@ -188,8 +209,9 @@ function WeightField({ weight, entry, side, weigh }: {
   const label = side ? `${entry} ${studioName(side)}` : entry;
   if (!weigh) return <span className="font-mono tabular-nums text-shell-muted">{weight}</span>;
   return <span className="flex h-full items-center">
+    <span className="w-12 shrink-0">
     <InlineEdit form="cell" value={String(shown)} editing={editing} onEditingChange={setEditing} aria-label={studioAccessibleName('weight', label)}
-      className="w-12 px-1 font-mono tabular-nums"
+      className="px-1 font-mono tabular-nums"
       unavailable={(text) => Number(text) >= 0 && Number.isFinite(Number(text)) ? undefined : studioReason('takesWeight', studioAccessibleName('weight', label))}
       onCommit={(text) => {
         const to = Number(text);
@@ -202,6 +224,7 @@ function WeightField({ weight, entry, side, weigh }: {
           if (edit.kind === 'refused') setRefusal(edit.reason);
         });
       }} />
+    </span>
     {refusal && <FieldProblem reason={refusal} />}
   </span>;
 }

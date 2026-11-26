@@ -1278,6 +1278,7 @@ class ImmutableArtifactBlobProvider:
         root_kind: Literal["logical-ref", "run", "export", "import", "migration"],
         nonterminal: bool = False,
         restartable: bool = False,
+        additional_targets: tuple[ContentRetentionTarget, ...] = (),
     ) -> tuple[ContentTreeRef, ContentRootRecord]:
         """Store or reuse exact members, then publish and root their complete tree."""
         with self._exclusive_lock():
@@ -1311,7 +1312,7 @@ class ImmutableArtifactBlobProvider:
             root = ContentRootRecord(
                 root_id=root_id,
                 root_kind=root_kind,
-                targets=(ContentRetentionTarget(ref_kind="tree", tree=tree_ref),),
+                targets=(ContentRetentionTarget(ref_kind="tree", tree=tree_ref), *additional_targets),
                 nonterminal=nonterminal,
                 restartable=restartable,
             )

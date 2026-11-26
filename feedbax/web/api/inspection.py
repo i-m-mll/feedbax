@@ -113,7 +113,7 @@ def _render_graph_spec(
 
         adjacency: dict[str, set[str]] = {name: set() for name in graph_spec.nodes.keys()}
         for wire in graph_spec.wires:
-            if wire.temporality == "recurrent":
+            if wire.is_recurrent:
                 cycles.append(
                     CycleAnnotationModel(
                         source=f"{wire.source_node}.{wire.source_port}",

@@ -2,10 +2,11 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from feedbax.contracts.analysis_document import DatasetSource
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.dataset import DimensionSize, Name
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.operation import DatasetPort, OperationDefinition
@@ -63,7 +64,9 @@ class StudioAnalyzeAuthoring(StrictModel):
     document: ProjectName
     operations: list[OperationDefinition]
     states: DatasetPort | None
-    """The port common to the saved states the step's ``states`` input reads; none when it has no such input."""
+    """The port of the step's ``states`` input, including the coordinates of its member stack."""
+    operation_outputs: dict[ProjectName, dict[ProjectName, DatasetPort]] = Field(default_factory=dict)
+    """The ports of the run's operation outputs, by element and product, including carried or mapped stack coordinates."""
     sources: dict[ProjectName, dict[ProjectName, list[DatasetSource]]]
     """Compatible inputs and outputs of plannable operations, by receiving element and role."""
     variables: dict[str, dict[str, list[str]]]
@@ -78,3 +81,16 @@ class StudioAnalyzeAuthoring(StrictModel):
     created: list[CreateNamedDocument] = Field(default_factory=list)
     problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
     """Problems in this run's authoring catalog, with field pointers relative to their analysis elements."""
+
+
+MAX_OPERATION_DATASET_PAGE = 256
+
+
+class StudioOperationDatasetPage(StrictModel):
+    """A bounded page of one field, flattened in the descriptor's dimension order."""
+
+    field: Name
+    offset: DimensionSize
+    total: DimensionSize
+    values: list[JsonValue] = Field(max_length=MAX_OPERATION_DATASET_PAGE)
+    """Nonfinite numbers and wide integers use strings; complex numbers give real and imaginary parts."""

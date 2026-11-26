@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioCollectionProgress, StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import { studioBytes, studioName, studioRunReason, studioRunStatus } from "@/components/activity/studioVocabulary";
-import { StatusMark } from "@/components/ui/StatusMark";
+import { StatusMark, statusCounted, uncountedRun } from "@/components/ui/StatusMark";
 import type { PlanRunView, PlanStepView, PlanSweepView } from "@/features/pipeline/planView";
 import {
   selectionButton,
@@ -50,7 +50,7 @@ function needsNames(rows: readonly PlanRunView[], sweeps: readonly PlanSweepView
 
 function useValueLabels(sweeps: readonly PlanSweepView[]) {
   return useMemo(() => new Map(sweeps.map((sweep) => [
-    sweep.id, new Map(sweep.values.map((value) => [value.id, value.label])),
+    sweep.id, new Map(sweep.values.map((value) => [value.id, value.valueLabel])),
   ])), [sweeps]);
 }
 
@@ -195,6 +195,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   }
                 }}
                 data-index={item.index}
+                data-run={run.id}
                 selected={lit}
                 related={relatedIds?.has(run.id)}
                 aria-rowindex={item.index + 2}
@@ -204,7 +205,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   const control = (event.target as Element).closest(rowControls);
                   if (!event.defaultPrevented && (!control || !event.currentTarget.contains(control))) selectRow.onClick(event);
                 }}
-                className="studio-run-row"
+                className={statusCounted(run.state) ? "studio-run-row" : `studio-run-row ${uncountedRun}`}
               >
                 <TableRowHeader className={gutter}>
                   <Button

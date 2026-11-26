@@ -6,7 +6,8 @@ from pathlib import Path
 
 from feedbax.contracts.loaded_model import ImportedModelProvenance, ImportedModelSource, decode_imported_model_document
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.project_resolution import TerminalTrainSource
+from feedbax.contracts.project import LoadedModelDocument
+from feedbax.contracts.project_resolution import LoadedModelRead, ResolvedImportedModel, TerminalTrainSource
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.model_tree import ModelTree, read_model_tree
 
@@ -36,17 +37,23 @@ def terminal_train_reader(store_path: Path) -> Callable[[str], TerminalTrainSour
     return read
 
 
-def imported_model_reader(store_path: Path) -> Callable[[str], ModelDocument]:
+def imported_model_reader(store_path: Path) -> Callable[[LoadedModelRead], ResolvedImportedModel]:
     @cache
     def provider():
         from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
         return ImmutableArtifactBlobProvider(store_path)
 
-    def read(source_json: str) -> ModelDocument:
-        return read_imported_model(provider(), ImportedModelSource.model_validate_json(source_json))[0]
+    def read(request: LoadedModelRead) -> ResolvedImportedModel:
+        loaded = LoadedModelDocument.model_validate_json(request.authored)
+        return resolve_imported_model(provider(), loaded.source)
 
     return read
+
+
+def resolve_imported_model(store: ImmutableArtifactBlobProvider, source: ImportedModelSource) -> ResolvedImportedModel:
+    model, tree = read_imported_model(store, source)
+    return ResolvedImportedModel(model, tuple(replica.descriptor.id for replica in tree.replicas))
 
 
 def read_imported_model(

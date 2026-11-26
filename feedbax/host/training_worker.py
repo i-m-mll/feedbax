@@ -246,7 +246,7 @@ def _prepare_train(
     from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, read_document_input
     from feedbax.persistence.model_assets import model_artifact_provider
     from feedbax.runtime._graph_key_schedule import model_initialization_key
-    from feedbax.host.model_input import reconstruct_model
+    from feedbax.host.model_input import ImportedModelWeights, reconstruct_model
     from feedbax.host.method_checkpoint import read_method_checkpoint, validate_method_extra
     from feedbax.training.method_runtime import TrainingLoop, initialize_method, stack_replicas
     from feedbax.host.model_checkpoint import SemanticModelSlot, SemanticModelWriter
@@ -263,6 +263,23 @@ def _prepare_train(
     restored = None
     imported = None
     imported_model = None
+    synthesized = None
+    if producer is None and (reference := launch.canonical_request.model) is not None:
+        from feedbax.persistence.canonical_train import _resolve_trial
+        from feedbax.persistence.model_input import read_synthesized_model
+
+        phase("restoring")
+        assert launch.canonical_request.model_receipt is not None
+        store = ImmutableArtifactBlobProvider(launch.manifest_root)
+        synthesized, synthesis, _ = read_synthesized_model(store, launch.canonical_request.model_receipt, reference)
+        with numerical_work():
+            synthesized_slot = SemanticModelSlot.open_store(
+                store, synthesized.tree, synthesized.encoding, components=registries.components,
+            )
+            synthesis_graph = _resolve_trial(synthesis, registries).graph
+        if len(synthesized_slot.replica_ids) != config.replicates:
+            raise ValueError("/training_config/replicates: A Synthesize model contains one replica.")
+        replica_ids = synthesized_slot.replica_ids
     if producer is None and (content := launch.canonical_request.imported_model) is not None:
         phase("restoring")
         if spec.checkpoint_initialization != "initialize_from":
@@ -296,7 +313,9 @@ def _prepare_train(
     phase("building")
     graph = trial.graph.graph
     model_assets = restored.model.provider if restored is not None else (
-        imported_slot.provider if imported is not None else model_artifact_provider(graph)
+        synthesized_slot.provider if synthesized is not None else (
+            imported_slot.provider if imported is not None else model_artifact_provider(graph)
+        )
     )
     paired = []
     for replica_id in replica_ids:
@@ -338,11 +357,22 @@ def _prepare_train(
             problem = reconstructed[0]
             raise ValueError("/inputs/checkpoint/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
         models = reconstructed.graphs
+    elif synthesized is not None:
+        variant = trial.graph if synthesis_graph.graph != trial.graph.graph else None
+        with numerical_work():
+            reconstructed = reconstruct_model(
+                synthesized, registry=registries, artifacts=model_assets, template=synthesis_graph,
+                variant=variant, variant_seed=spec.seed if variant is not None else None, slot=synthesized_slot,
+            )
+        if isinstance(reconstructed, tuple):
+            problem = reconstructed[0]
+            raise ValueError("/inputs/checkpoint/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
+        models = reconstructed.graphs
     elif imported is not None:
         assert imported_model is not None
         with numerical_work():
             reconstructed = reconstruct_model(
-                CheckpointModelSource(
+                ImportedModelWeights(
                     tree=imported.weights, encoding=imported.encoding,
                     initial=InitialModelSource(document=imported_model),
                 ),
@@ -422,6 +452,7 @@ def _run(
     from feedbax.persistence.canonical_train import (
         BoundStudioTrainingJobInput, PinnedTrainCheckpoint, read_collected_train_job, resolve_training_request_binding,
     )
+    from feedbax.execution.trial_execution import sample_trial
     from feedbax.tasks.document import TaskParameters
     from feedbax.host.method_checkpoint import write_method_checkpoint
     from feedbax.training.method_runtime import replica_value
@@ -686,7 +717,7 @@ def _run(
             if completed == last_frame or completed == start_boundary:
                 return
             frame_key = derive_key(observation_key, "trajectory", index=completed)
-            trial_sample = execution.task.ahead(TaskParameters(), frame_key, frame_key)
+            trial_sample = sample_trial(execution.task, TaskParameters(), frame_key, frame_key)
             retained, _ = execution.rollout(replica_value(state.model, 0), trial_sample, frame_key)
             events.append("frame", {"completed_updates": completed, "trajectory": {
                 "n_steps": execution.task.n_steps, "outputs": {name: value.tolist() for name, value in retained.items()},

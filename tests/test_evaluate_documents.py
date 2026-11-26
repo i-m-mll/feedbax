@@ -11,27 +11,28 @@ from tests.support.managed_train_fixture import managed_evaluation_step, managed
 
 # Request identities for the shipped point-mass Task, with its signal labels projected by ID.
 # These witnesses hold the same changes expressed on the Evaluate step or in its Model and Task documents.
-FEE = "train:8d8d2d1fa72a44162040459972acc90a0599ef5ff7d9fb08bc9ecf6c40594b23"
-DEFAULT = "evaluate:a26c3206ad32dd581a8c14d17219d8ba5a90fc92bb12dfb07ec3336196482119"
-FIELD_CHANGED = "evaluate:f4b1e53097d9f25fa2a42123f1eed48acd3927ef527d3f7726fd8653c30689ea"
-ATTACHMENT_ADDED = "evaluate:fc67dc6d375bc60d520ca089daf6140a11307c0c1c4bf4731b6c998d78efad05"
-FEWER_CONDITIONS = "evaluate:29a1c6c556faf512665101434ebb5f2688e1a7f7c99d6bceefd59c150f5c75ab"
+FEE = "train:7ee0aec47e9eb5d0408a91707503e31114c55bf912e95406f206bd654db1bbe4"
+DEFAULT = "evaluate:7c6fad3f13cb972b160877409c34fda69843e13141ffdaf788250959b0289647"
+FIELD_CHANGED = "evaluate:36403904c6fbf41fda182a0997b17ef9afb0bb92f6034ab11ab1217c60775884"
+ATTACHMENT_ADDED = "evaluate:fb014cda6d2da4cb22047330a52f6013a32f812d968fbae93e78d45b5ece424b"
+# The replacement Task now pairs target_pos by stable ID without a generated override.
+FEWER_CONDITIONS = "evaluate:aef41d53a6e65f832f58a1281f33d810626c951e894423d6faf73053a3ecf563"
 SWEPT_PUSHED = (
     ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
-     "evaluate:c54b9af65e38f25d557021b9c449662649d941aead73abb9a85430e96954815c"),
+     "evaluate:dcf3f064b759cc1bfc8cc90b3f6f76b6af6947a432b708e288456a53967fa04a"),
     ("trained==abb0ffe5124ac74b8d431462660c668b987dd969c5bf76fc07a20894a2b46eea",
-     "evaluate:90916c97780df4345b6c20cc96b25def8a427c7b296d86d5c4024c920b2616dd"),
+     "evaluate:26c6ab856a6094343bbcbb74ed40ef5d75fae9d3316a0ecaf3fd4bac061a3216"),
 )
 NEAREST_SHARED = {
-    "fee": "train:3cd016c0ddf2f4077faef9904870609863ceaf1b139c361b7002796c1e9dc93e",
+    "fee": "train:4e5dbd251fb8ae4d207e7a6223b5daec96cdb92517047cbbe3a0b734ed92318b",
     "other": FEE,
-    "check": "evaluate:f5a49797212cddbeda9d826703af3584292e6d59b46dd67d406da994cb75683c",
+    "check": "evaluate:a2dc720dec386e1fd5951caece29c1570d6f7589a5ce512d34fe54676127552c",
 }
 UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
 TASK = "simple-reaches-task"
 MASS = {"composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]}}
-PUSH = {"kind": "intervention", "id": "push", "operation": "Scale", "fields": {"factor": 0.5}}
+PUSH = {"kind": "intervention", "id": "push", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}}
 
 
 def _data():

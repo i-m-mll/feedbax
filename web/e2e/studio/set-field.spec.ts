@@ -17,7 +17,7 @@ async function files() {
 }
 
 // Catches a To Field that leaves the axis's runs on the card or shows no variable for the Set in the Task view, a
-// Value that drops an entry or None, a weight typed at its entry that is not stored at that entry, and a To Sweep that
+// Value that drops an entry or None or cuts one off, a weight typed at its entry that is not stored at that entry, and a To Sweep that
 // does not restore the axis's runs.
 test('To Field moves a Set into the run as a variable of the Task, its weights are edited there, and To Sweep moves it back', async ({ page, request }) => {
   test.setTimeout(60_000);
@@ -31,7 +31,7 @@ test('To Field moves a Set into the run as a variable of the Task, its weights a
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await expect(marks).toHaveCount(3);
-  await sweepLabel(card, 'loads').click();
+  await sweepLabel(card, 'Loads').click();
   await page.getByRole('menuitem', { name: 'To Field', exact: true }).click();
   await expect(marks).toHaveCount(1);
   await expect.poll(async () => Object.keys((await step()).set_fields ?? {})).toEqual(['load']);
@@ -39,8 +39,19 @@ test('To Field moves a Set into the run as a variable of the Task, its weights a
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   await expect(row.getByRole('listitem')).toHaveText(['Light', 'Mid', 'Heavy', 'None']);
-  const weights = () => row.getByRole('textbox').evaluateAll((fields) => fields.map((field) => (field as HTMLInputElement).value));
+  const weights = () => row.getByRole('textbox', { name: /^Weight / }).evaluateAll((fields) => fields.map((field) => (field as HTMLInputElement).value));
   await expect.poll(weights).toEqual(['1', '1', '1', '1']);
+  // Each entry is whole within its cell, on the row's one line, once the list alone is scrolled to it.
+  expect(await row.getByRole('list', { name: 'Values loads', exact: true }).evaluate((list) => {
+    const cell = list.closest('td')!;
+    return [...list.children].map((item) => {
+      list.scrollLeft += item.getBoundingClientRect().left - list.getBoundingClientRect().left;
+      cell.scrollTop = 0;
+      cell.scrollLeft = 0;
+      const [entry, box] = [item.getBoundingClientRect(), cell.getBoundingClientRect()];
+      return entry.top >= box.top && entry.bottom <= box.bottom && entry.left >= box.left && entry.right <= box.right;
+    });
+  })).toEqual([true, true, true, true]);
 
   await row.getByRole('textbox', { name: 'Weight Heavy', exact: true }).fill('3');
   await row.getByRole('textbox', { name: 'Weight Heavy', exact: true }).press('Enter');
@@ -56,4 +67,42 @@ test('To Field moves a Set into the run as a variable of the Task, its weights a
   await expect(marks).toHaveCount(3);
   await expect(row).toHaveCount(0);
   expect((await step()).sweep?.axes?.load).toEqual({ set: 'loads' });
+});
+
+// Catches a Set placed in the trials with no field for its condition, a condition field that does not complete from
+// the Task's variables, a condition that is not stored on the Set field, an unknown name saved without its Problem on
+// the field, and a cleared field that leaves the condition stored.
+test('a Set in the trials takes a condition on Task variables, refuses an unknown name on its field, and clears', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await files());
+  const card = page.locator('[data-map-step="train"]');
+  const condition = page.locator('[data-slot="primary"]').getByRole('table', { name: 'Variables', exact: true })
+    .getByLabel('Condition', { exact: true });
+  const stored = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot)
+    .project.steps!.train.set_fields?.load?.condition;
+  const write = async (text: string) => {
+    await condition.fill(text);
+    await condition.press('Enter');
+  };
+
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await sweepLabel(card, 'Loads').click();
+  await page.getByRole('menuitem', { name: 'To Field', exact: true }).click();
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  await expect(condition).toHaveValue('');
+
+  await condition.fill('not ');
+  await condition.pressSequentially('ca');
+  await expect(page.getByRole('listbox', { name: 'Completions' }).getByRole('option')).toContainText(['catch']);
+  await write('not catch');
+  await expect.poll(stored).toMatchObject({ kind: 'call', function: 'not', args: [{ kind: 'name', reference: 'catch' }] });
+  await expect(condition).not.toHaveAttribute('aria-invalid', 'true');
+
+  await write('not cach');
+  await expect(condition).toHaveAttribute('aria-invalid', 'true');
+  await expect(condition).toHaveValue('not cach');
+
+  await write('');
+  await expect.poll(stored).toBeUndefined();
+  await expect(condition).not.toHaveAttribute('aria-invalid', 'true');
 });

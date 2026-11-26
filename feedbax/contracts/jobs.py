@@ -11,11 +11,14 @@ from pydantic import ConfigDict, Field, FiniteFloat, JsonValue
 from feedbax.contracts.artifact_custody import StoreTransferProgress
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.code_validity import AttemptProvenance
+from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, OpeningObservation, OpeningStep, TargetId
 from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.loaded_model import ImportedModelProvenance
 from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
+from feedbax.contracts.request_refs import RequestKind
+from feedbax.contracts.model_origin import ModelOrigin, ModelProductKey
 from feedbax.contracts.project_inputs import SelectedAxisValueProblem, StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
 from feedbax.contracts.project_sources import SourceKind
@@ -37,6 +40,7 @@ JobAction = Literal["checkpoint", "force", "resume"]
 
 class JobStatus(StrEnum):
     NOT_RUN = "not_run"
+    NOT_CHOSEN = "not_chosen"
     CANNOT_RUN = "cannot_run"
     STALE = "stale"
     QUEUED = "queued"
@@ -88,10 +92,8 @@ class StudioSavedTrainAttempt(StrictModel):
     stopped_checkpoint: int | None = Field(default=None, gt=0, exclude_if=lambda value: value is None)
 
 
-class StudioSavedTrainKey(StrictModel):
-    variant: str
-    step: str
-    row: str
+class StudioSavedTrainKey(ModelProductKey):
+    pass
 
 
 class StudioEvaluationCheckpointGap(StrictModel):
@@ -144,6 +146,7 @@ class StudioSavedEvaluationResult(StrictModel):
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
     loaded_model: ImportedModelProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
+    origin: ModelOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
     size_bytes: int = Field(ge=0)
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
     provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -249,7 +252,8 @@ class StudioSavedTrainChange(StudioDefinitionChange):
 
 class StudioSavedTrainRow(StrictModel):
     key: StudioSavedTrainKey
-    label: str
+    name: str
+    label: str | None
     request_id: str
     attempts: list[StudioSavedTrainAttempt]
     status: JobStatus
@@ -286,6 +290,8 @@ class StudioSavedLightResult(StrictModel):
     revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     products: dict[str, str]
+    """Product URLs by role. An Analyze operation's URL reads the product's DatasetDescriptor."""
+    origin: ModelOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
     provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
 
@@ -298,7 +304,8 @@ class StudioSavedLightHistory(StrictModel):
 
 class StudioProjectWindowMapRow(StrictModel):
     key: StudioSavedTrainKey
-    label: str
+    name: str
+    label: str | None
     coordinates: dict[str, StudioProjectWindowMapCoordinate]
     input_axes: dict[str, StudioProjectWindowMapInputAxis] = Field(
         default_factory=dict, exclude_if=lambda value: not value,
@@ -340,6 +347,8 @@ class StudioProjectWindowMapInput(StrictModel):
     checkpoint: CheckpointRule | None = Field(default=None, exclude_if=lambda value: value is None)
     checkpoint_axis: str | None = Field(default=None, exclude_if=lambda value: value is None)
     can_sweep_checkpoint: bool = Field(default=False, exclude_if=lambda value: not value)
+    metric_names: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
+    """Final scalar metrics declared by every candidate Train method."""
 
 
 class StudioProjectWindowMapException(StrictModel):
@@ -356,6 +365,8 @@ class StudioProjectWindowMapAxisValue(StrictModel):
 
     id: str
     label: str
+    value_label: str
+    """The label under the axis heading, including the value's unit when present."""
     rule: str
     """The value as a run rule writes it."""
 
@@ -364,12 +375,14 @@ class StudioProjectWindowMapAxis(StrictModel):
     """An axis a step's runs carry, with its values in order: numbers by number, other values as the runs give them."""
 
     id: str
+    label: str
     values: list[StudioProjectWindowMapAxisValue]
 
 
 class StudioProjectWindowMapStep(StrictModel):
     variant: str
     step_id: str
+    label: str
     kind: StepKind
     group: str | None
     inputs: list[StudioProjectWindowMapInput]
@@ -396,6 +409,8 @@ class StudioProjectWindowMapProblem(StrictModel):
     step: str | None
     row: str | None
     place: StudioPlace | None
+    subject_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The display name of a reference target that does not exist."""
     document_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     address: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -417,6 +432,7 @@ class StudioProjectWindowMapProblem(StrictModel):
                 element=diagnostic.element, element_name=diagnostic.element_name, member=diagnostic.model_address,
                 variation=lambda _name: diagnostic.variation_target,
             ) if diagnostic.step else None,
+            subject_name=member_display_name(diagnostic.missing_subject) if diagnostic.missing_subject is not None else None,
             document_path=diagnostic.document_path, address=diagnostic.authored_file or source,
             layer=diagnostic.layer, authored_path=diagnostic.authored_path,
             span=diagnostic.span, selection_value=diagnostic.selection_value,
@@ -546,7 +562,7 @@ class StudioMachineApprovalReceipt(StrictModel):
 
 
 class JobOutcome(StrictModel):
-    outcome: Literal["succeeded", "stopped", "failed", "interrupted", "blocked"]
+    outcome: Literal["succeeded", "stopped", "failed", "interrupted", "blocked", "not_chosen"]
     error: JobError | None = None
     receipt: JobReceipt | None = None
     signal: int | None = None
@@ -564,7 +580,7 @@ class StudioActivityJob(StrictModel):
     job_id: str
     project_id: str
     request_id: str
-    kind: Literal["train", "evaluate", "analyze", "render", "report"]
+    kind: RequestKind
     run_key: str
     stage_id: str
     scenario_id: str

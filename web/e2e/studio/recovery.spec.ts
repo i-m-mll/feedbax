@@ -231,7 +231,7 @@ test('reopens the same live run and restores loss after backend and host restart
     );
     if (!row) throw new Error('The reopened Plan does not contain the admitted Train attempt');
     await reopened.locator('[data-slot="primary"]').getByRole('table', { name: 'Runs', exact: true })
-      .getByRole('button', { name: runName(row.key.step) }).click();
+      .getByRole('button', { name: runName('Train') }).click();
     await openResultsSlot(reopened);
     const restored = lossCurve(reopened);
     await expect(restored).toBeVisible();

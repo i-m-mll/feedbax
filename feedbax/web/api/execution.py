@@ -6,35 +6,35 @@ from collections import defaultdict
 
 import jax
 import jax.numpy as jnp
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
+from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.contracts.base import StrictModel
 from feedbax.compiler.model_anchors import anchored_outputs
 from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ValueBase
+from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.request_refs import Sha256
 from feedbax.contracts.rollout import trial_indices
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.trial_record import TrialDisplay, TrialRecords, TrialTerm, TrialUnavailable
-from feedbax.execution.trial_execution import sample_evaluation_trials
+from feedbax.execution.trial_execution import sample_evaluation_trials, sample_trial
 from feedbax.execution.trial_places import TrialPlacePlan, bind_trial_places, project_term_places
 from feedbax.execution.trial_record import aggregate_trials, trial_record, trial_weight_values
-from feedbax.execution.trial_resolution import preview_trial_source
+from feedbax.execution.trial_resolution import preview_trial_source, resolve_trial_execution
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
-from feedbax.runtime._graph_key_schedule import map_trial_samples, sample_training_trials
-from feedbax.tasks.document import TaskParameters
+from feedbax.runtime._graph_key_schedule import map_trial_samples, model_initialization_key, sample_training_trials
+from feedbax.tasks.document import PendingTrial, TaskParameters
 
 router = APIRouter()
 
 
-class TaskTrialSampleRequest(StrictModel):
-    model: ModelDocument | None = None
-    task: TaskDocument | None = None
-    python_task: PythonTaskSelection | None = None
-    input_bindings: dict[str, str | None] = Field(default_factory=dict)
-    objective: ObjectiveDocument | None = None
+class _TrialSampleOptions(StrictModel):
     evaluation_trials: list[str] | None = Field(default=None, min_length=1)
     """Evaluate trial IDs to preview with the same seed schedule as the run."""
     nominal: bool = False
@@ -44,6 +44,23 @@ class TaskTrialSampleRequest(StrictModel):
     """How many trials to draw; Studio offers up to the step's batch size."""
     aggregate: bool = False
     """Whether to return the trials' aggregate instead of the trials."""
+
+class StudioRunTaskTrialSampleRequest(_TrialSampleOptions):
+    """Draw trials from the selected Train or Evaluate pairing at a saved revision."""
+
+    project_id: ProjectName
+    revision: Sha256
+    run: StudioSavedTrainKey
+
+
+class TaskTrialSampleRequest(_TrialSampleOptions):
+    """Draw trials from standalone documents."""
+
+    model: ModelDocument | None = None
+    task: TaskDocument | None = None
+    python_task: PythonTaskSelection | None = None
+    input_bindings: dict[str, str | None] = Field(default_factory=dict)
+    objective: ObjectiveDocument | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -72,11 +89,41 @@ _DTYPES = {ValueBase.BOOLEAN: jnp.bool_, ValueBase.INTEGER: jnp.int32, ValueBase
 
 
 @router.post("/task-trials/sample", response_model=TaskTrialSampleResponse)
-async def sample_task_trials(
-    payload: TaskTrialSampleRequest,
+def sample_task_trials(
+    payload: TaskTrialSampleRequest | StudioRunTaskTrialSampleRequest,
     request: Request,
+    response: Response,
 ) -> TaskTrialSampleResponse:
     bundle = request.app.state.bootstrap_state.bundle
+    if isinstance(payload, TaskTrialSampleRequest):
+        return _sample_trials(payload, bundle)
+
+    from feedbax.planner.project_plan import RunKey
+    from feedbax.web.api.projects import _project_response
+    from feedbax.web.services.trial_authoring import read_run_trial_sample
+
+    def sample_selected() -> TaskTrialSampleResponse:
+        key = RunKey(payload.run.variant, payload.run.step, payload.run.row)
+        documents, graph = read_run_trial_sample(
+            request.app.state.project_folders, payload.project_id, payload.revision, key, bundle,
+        )
+        selected = documents.task_source
+        standalone = TaskTrialSampleRequest(
+            model=documents.model,
+            task=selected if isinstance(selected, TaskDocument) else None,
+            python_task=selected if isinstance(selected, PythonTaskSelection) else None,
+            input_bindings=documents.input_bindings, objective=documents.objective,
+            evaluation_trials=payload.evaluation_trials, nominal=payload.nominal,
+            seed=payload.seed, count=payload.count, aggregate=payload.aggregate,
+        )
+        return _sample_trials(standalone, bundle, graph_override=graph)
+
+    return _project_response(response, sample_selected)
+
+
+def _sample_trials(
+    payload: TaskTrialSampleRequest, bundle: ApplicationRegistryBundle, *, graph_override: GraphSpec | None = None,
+) -> TaskTrialSampleResponse:
     selected = payload.task if payload.task is not None else payload.python_task
     assert selected is not None
     task_id = selected.id if isinstance(selected, TaskDocument) else selected.type
@@ -99,22 +146,34 @@ async def sample_task_trials(
         ))
     preview = preview_trial_source(
         payload.model, selected, bundle.components, bundle.expression_functions,
-        python_tasks=bundle.python_tasks, input_bindings=payload.input_bindings, nominal=payload.nominal,
+        python_tasks=bundle.python_tasks, input_bindings=payload.input_bindings,
+        graph_override=graph_override, nominal=payload.nominal,
     )
     if isinstance(preview, tuple):
         return unavailable(*preview)
     task = preview.task
+    executable = None
     if task.reads_model:
-        return unavailable(Problem(
-            code=ProblemCode.STRUCTURE, path=("task",),
-            reason="This task needs model outputs to produce a trial.",
-        ))
+        resolved = resolve_trial_execution(
+            payload.model, selected, bundle.components, bundle.expression_functions,
+            python_tasks=bundle.python_tasks, input_bindings=payload.input_bindings,
+            objective=payload.objective, objective_use=ObjectiveUse.PREVIEW,
+            graph_override=graph_override, nominal=payload.nominal,
+        )
+        if isinstance(resolved, tuple):
+            return unavailable(*resolved)
+        executable = resolved.realize(initialization_key=model_initialization_key(seed))
+        if isinstance(executable, tuple):
+            return unavailable(*executable)
+        task = executable.execution.task
 
     key = jax.random.PRNGKey(seed)
     parameters = TaskParameters()
     if payload.nominal or payload.evaluation_trials is None:
         ids = ("nominal",) if payload.nominal else tuple(f"trial:{index}" for index in range(count))
-        samples, keys = sample_training_trials(lambda sample: (task.ahead(parameters, key, sample), sample), key, count)
+        samples, keys = sample_training_trials(
+            lambda sample: (sample_trial(task, parameters, key, sample), sample), key, count,
+        )
     else:
         ids = tuple(payload.evaluation_trials)
         try:
@@ -124,6 +183,11 @@ async def sample_task_trials(
                 code=ProblemCode.STRUCTURE, path=("evaluation_trials",), reason=str(error),
             ))
         samples, keys = sample_evaluation_trials(task, parameters, key=key, trial_ids=ids)
+
+    retained = None
+    if isinstance(samples, PendingTrial):
+        assert executable is not None
+        retained, _, samples = executable.execution.execute_batch(executable.executable.graph, samples, keys)
 
     term_traces = {}
     places = TrialPlacePlan()
@@ -148,12 +212,15 @@ async def sample_task_trials(
             anchored_outputs(payload.model, bundle.components, preview.signal_scope.leaves)
             if preview.signal_scope is not None else {}
         )
-        places = bind_trial_places(scorer, task, anchors, unobserved=frozenset(outputs))
+        unobserved = frozenset(outputs) if retained is None else frozenset()
+        if retained is None:
+            retained = jax.tree.map(lambda value: jnp.broadcast_to(value, (count, *value.shape)), outputs)
+        places = bind_trial_places(scorer, task, anchors, unobserved=unobserved)
         term_traces = map_trial_samples(
             lambda item: scorer.trial_terms(
-                outputs, item[0], key, item[1], unobserved=outputs.keys(), observed_points=places.observations,
+                item[2], item[0], key, item[1], unobserved=unobserved, observed_points=places.observations,
             ),
-            (samples, keys), keys,
+            (samples, keys, retained), keys,
         )
 
     samples, term_traces = jax.device_get((samples, term_traces))
@@ -177,6 +244,7 @@ async def sample_task_trials(
             jax.tree.map(lambda values: values[index], samples),
             id=id, epoch_ids=task.epochs, epoch_labels=labels,
             terms={name: term_record(name, trace, index) for name, trace in term_traces.items()},
+            document=preview.document,
         )
         for index, id in enumerate(ids)
     ]

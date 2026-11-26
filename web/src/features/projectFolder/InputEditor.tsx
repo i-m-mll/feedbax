@@ -6,7 +6,7 @@ import { FieldProblem } from '@/components/ui/FieldProblem';
 import { StatusMark } from '@/components/ui/StatusMark';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { ReferenceField, type ReferenceChoice, type ReferenceGroup } from '@/components/values/ReferenceField';
-import type { PlanStepView } from '@/features/pipeline/planView';
+import { outputName, type PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import type { InputBinding, InputRole, StepReference, StudioSavedTrainKey } from '@/generated/studioContracts';
 import type { AuthoredProject } from './authoredEdits';
@@ -16,6 +16,7 @@ import {
 import {
   chosenDocument, documentChoice, documentGroup, documentKind, stepChoice, stepChoiceId, stepGroup, type DocumentKind,
 } from './referenceChoices';
+import type { DocumentNames } from './memberNames';
 import { savedRunId } from './projectWindowPlan';
 import { changedSelections, stepSelections, type SelectionProblems } from './selectionEdits';
 import { CheckpointEditor } from './StudioEvaluateAuthoring';
@@ -71,10 +72,13 @@ function BlockedMark({ blockedBy, steps, onReveal }: {
 }) {
   const [first] = blockedBy;
   const source = steps.find(({ id }) => id === first.step);
-  const step = source?.label ?? first.step;
-  const label = blockedBy.length === 1
-    ? studioFormat('stepRun', { step, run: source?.runs.find(({ id }) => id === savedRunId(first))?.label ?? first.row })
-    : step;
+  if (!source) throw new Error(`The plan has no step ${first.step}.`);
+  const run = () => {
+    const row = source.runs.find(({ id }) => id === savedRunId(first));
+    if (!row) throw new Error(`The plan has no run ${savedRunId(first)} of ${first.step}.`);
+    return row.label;
+  };
+  const label = blockedBy.length === 1 ? studioFormat('stepRun', { step: source.label, run: run() }) : source.label;
   return <span className="inline-flex shrink-0 items-center gap-1.5">
     <StatusMark status="cannot_run" label={studioRunStatus('cannot_run')} />
     {onReveal ? <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
@@ -97,7 +101,7 @@ function unresolvedChoice(spelling: string): ReferenceChoice {
  * selections; a row per selection with its picker; under each its Runs and, for a checkpoint product, its
  * Checkpoint. Add makes an empty row, and nothing is written until its step is chosen.
  */
-export function InputEditor({ label, role, binding, self, steps, project, outputs = [], absent, picking, refusal, selection,
+export function InputEditor({ label, role, binding, self, steps, project, documentNames, outputs = [], absent, picking, refusal, selection,
   checkpoint, onReveal, onChange }: {
   label: string;
   role: InputRole;
@@ -106,6 +110,7 @@ export function InputEditor({ label, role, binding, self, steps, project, output
   self: string;
   steps: readonly PlanStepView[];
   project: AuthoredProject;
+  documentNames: DocumentNames;
   /** Other Analyze cards' operation outputs, which an input that takes them can read. */
   outputs?: readonly CardOutput[];
   /** What the step reads when the input is unbound, offered as the choice that unbinds it. */
@@ -121,14 +126,15 @@ export function InputEditor({ label, role, binding, self, steps, project, output
 }) {
   const labelId = useId();
   const [adding, setAdding] = useState(false);
-  const producer = role.producer;
-  const producers = producer ? steps.filter(({ id, kind }) => kind === producer.kind && id !== self) : [];
-  const offered = producer?.operation_outputs ? outputs : [];
+  const source = (step: string) => role.producers.find(({ kind }) => steps.some(({ id, kind: candidate }) =>
+    id === step && candidate === kind));
+  const producers = steps.filter(({ id, kind }) => id !== self && role.producers.some((entry) => entry.kind === kind));
+  const offered = role.producers.some((entry) => entry.operation_outputs) ? outputs : [];
   const stepGroups: ReferenceGroup[] = [
-    ...producer ? [stepGroup(producers)] : [],
+    ...role.producers.length ? [stepGroup(producers)] : [],
     ...offered.length ? [{ label: studioName('operations'), choices: offered.map(outputChoice) }] : [],
   ];
-  const documentGroups = role.documents.length ? [documentGroup(project, role.documents)] : [];
+  const documentGroups = role.documents.length ? [documentGroup(project, documentNames, role.documents)] : [];
   const selections = stepSelections(binding);
   const document = documentOf(binding);
   const reads = (choice: ReferenceChoice): Pick<StepReference, 'step' | 'element' | 'product'> | undefined => {
@@ -139,18 +145,18 @@ export function InputEditor({ label, role, binding, self, steps, project, output
   };
   const shown = (reference: StepReference): ReferenceChoice => {
     if (reference.unresolved) return unresolvedChoice(reference.element != null && reference.product != null
-      ? `${reference.step}/${reference.element}.${reference.product}` : reference.step);
+      ? outputName(reference.step, reference.element, reference.product) : reference.step);
     if (reference.element != null && reference.product != null) {
       const output = { step: reference.step, element: reference.element, product: reference.product };
       return outputChoice(offered.find((item) => outputChoiceId(item) === outputChoiceId(output))
-        ?? { ...output, name: `${output.step}/${output.element}.${output.product}` });
+        ?? { ...output, name: outputName(output.step, output.element, output.product) });
     }
     const step = steps.find(({ id }) => id === reference.step);
     return step ? stepChoice(step) : { id: stepChoiceId(reference.step), label: reference.step };
   };
-  const readsCheckpoint = producer?.product === 'checkpoint';
-  const added = (reference: Pick<StepReference, 'step' | 'element' | 'product'>): StepReference => readsCheckpoint
-    ? { ...reference, checkpoint: selections?.[0]?.checkpoint ?? 'last' } : reference;
+  const readsCheckpoint = ({ step }: StepReference) => source(step)?.product === 'checkpoint';
+  const added = (reference: Pick<StepReference, 'step' | 'element' | 'product'>): StepReference => readsCheckpoint(reference)
+    ? { ...reference, checkpoint: selections?.find(readsCheckpoint)?.checkpoint ?? 'last' } : reference;
   const choose = (index: number | 'new', choice: ReferenceChoice) => {
     if (!onChange) return;
     if (absent && choice.id === absent.id) return onChange({ kind: 'absent' });
@@ -165,22 +171,25 @@ export function InputEditor({ label, role, binding, self, steps, project, output
       return onChange({ kind: 'select', binding: changedSelections(current, { kind: 'add', reference: added(reference) }) });
     }
     if (!selections) return onChange({ kind: 'select', binding: added(reference) });
-    onChange({ kind: 'select', binding: changedSelections(current, { kind: 'replace', index, reference }) });
+    onChange({ kind: 'select', binding: changedSelections(current, { kind: 'replace', index, reference: added(reference) }) });
   };
   const groups = (only: boolean): ReferenceGroup[] => [
     ...absent ? [{ label: studioName('documents'), choices: [absent] }] : [],
     ...only || !role.gathers ? documentGroups : [],
     ...stepGroups,
   ];
-  const rules: readonly SelectionCheckpoint[] = !readsCheckpoint || !selections ? []
-    : checkpoint?.groups ?? selectionCheckpoints(selections) ?? [];
+  const checkpointSelections = (selections ?? []).flatMap((reference, index) =>
+    readsCheckpoint(reference) ? [{ reference, index }] : []);
+  const rules: readonly SelectionCheckpoint[] = checkpoint?.groups ?? (
+    selectionCheckpoints(checkpointSelections.map(({ reference }) => reference)) ?? []
+  ).map((group) => ({ ...group, selections: group.selections.map((index) => checkpointSelections[index].index) }));
   const sharedRule = selections && selections.length > 1 && rules.length === 1 && rules[0].selections.length === selections.length
     ? rules[0] : undefined;
   const rows: { value: ReferenceChoice | null; reference?: StepReference }[] = selections
     ? selections.map((reference) => ({ value: shown(reference), reference }))
     : role.gathers && !document ? []
       : [{ value: document !== undefined
-        ? documentChoice(project, documentKind(project, document, role.documents) ?? role.documents[0] ?? 'model', document)
+        ? documentChoice(documentNames, documentKind(project, document, role.documents) ?? role.documents[0] ?? 'model', document)
         : absent ?? null }];
   const parts = rows.map(({ reference }, index) => reference ? selection?.(index, reference) : undefined);
   function checkpointEditor({ rule, selections: covered }: SelectionCheckpoint, step?: string) {

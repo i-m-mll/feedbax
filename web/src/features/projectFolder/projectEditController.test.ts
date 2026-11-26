@@ -1,10 +1,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
-import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot, StudioSavedTrainRuns } from '@/generated/studioContracts';
+import type { AuthoredFileAddress, ProjectValueEdit, StudioAuthoringCatalog, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { addressKey, applyAuthoredEdits, declarationAddress, presentationAddress } from './authoredEdits';
 import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport, type StoredEdit } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
-import { createTrain } from './createTrain';
+import { createSynthesize, createTrain } from './createModelStep';
 import { projectWindowPlan, savedRunId } from './projectWindowPlan';
 import { documentPayload } from './documentPayload';
 
@@ -14,6 +14,7 @@ const hex = (number: number) => number.toString(16).padStart(64, '0');
 const encoded = (value: unknown) => btoa(JSON.stringify(value));
 const value = (number: number): ProjectValueEdit => ({ op: 'replace', path: '/payload/value', value: number });
 const initial: StudioProjectSnapshot = {
+  names: { documents: {}, steps: {}, elements: {} }, variant_names: {},
   project_id: 'reach',
   revision: hex(1),
   presentation_revision: hex(2),
@@ -197,6 +198,29 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
   editor.dispose();
 });
 
+it('creates a Synthesize step whose payload names its documents and method, with no training document', async () => {
+  const { editor } = fixture(400, {
+    ...initial,
+    project: { steps: { synthesize: {} as never }, documents: {
+      'a-model': { schema: 'feedbax.spec.model', payload: {} },
+      'a-task': { schema: 'feedbax.spec.python_task', payload: {} },
+      'an-objective': { schema: 'feedbax.spec.objective_document', payload: {} },
+    } },
+  });
+  const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(initial);
+  const catalog = { registries: { synthesis_methods: { entries: [
+    { key: 'feedbax.constant_parameters', label: 'Constant parameters', settings_schema: {} },
+  ], origins: {} } } } as unknown as StudioAuthoringCatalog;
+  await createSynthesize(editor, initial.revision, catalog);
+  expect(create).toHaveBeenCalledWith('New Step', [{ kind: 'step', id: 'synthesize-2', step: {
+    kind: 'synthesize', base: { inline: {
+      model: { document: 'a-model' }, task: { document: 'a-task' }, objective: { document: 'an-objective' },
+      method: 'feedbax.constant_parameters',
+    } },
+  } }], initial.revision);
+  editor.dispose();
+});
+
 it('records the server’s document bytes when batch creation succeeds but loses its response', async () => {
   const { editor, create, replay, restore, current } = fixture();
   const authored = { schema: 'feedbax.spec.model', payload: { interior: {} }, label: 'Model' };
@@ -306,7 +330,7 @@ it('does not widen a selected Train row to an unselected variant', async () => {
   const variants = ['baseline', 'compare'];
   const rows = variants.map((variant) => ({
     key: { variant, step: 'train', row: 'seed=a' },
-    label: 'Replicate A', request_id: variant,
+    name: 'Replicate A', label: 'Replicate A', request_id: variant,
     attempts: [], status: 'not_run' as const,
     reason: null, result: null, previous: null, change: null,
   }));
@@ -316,20 +340,21 @@ it('does not widen a selected Train row to an unselected variant', async () => {
     window_map: {
       variants,
       steps: variants.map((variant) => ({
-        variant, step_id: 'train', kind: 'train', group: null, inputs: [],
+        variant, step_id: 'train', label: 'Train', kind: 'train', group: null, inputs: [],
         document_ids: {}, status_counts: { not_run: 1 },
       })),
-      rows: rows.map(({ key, label, status }) => ({
-        key, label, status, coordinates: { seed: { value_id: 'a', label: 'Replicate A', value: 1, axis_value: 'a' } },
+      rows: rows.map(({ key, name, label, status }) => ({
+        key, name, label, status, coordinates: { seed: { value_id: 'a', label: 'Replicate A', value: 1, axis_value: 'a' } },
       })),
       edges: [],
       problems: [],
     },
   };
   const project = { steps: { train: { kind: 'train' as const, base: { inline: {} } } } };
+  const names = { documents: {}, steps: { train: 'Train' }, elements: {} };
   await expect(createCheckpointTrain(editor, {
     stepId: 'train', selection: { kind: 'rows', stepId: 'train', runIds: [savedRunId(rows[1].key)] },
-  }, projectWindowPlan(project, projection, 'compare'), projection)).rejects.toBeInstanceOf(ProjectEditConflictError);
+  }, projectWindowPlan(project, { names, variant_names: { baseline: names, compare: names } }, projection, 'compare'), projection)).rejects.toBeInstanceOf(ProjectEditConflictError);
   expect(create).not.toHaveBeenCalled();
   editor.dispose();
 });

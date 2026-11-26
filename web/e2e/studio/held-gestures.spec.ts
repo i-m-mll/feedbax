@@ -46,7 +46,7 @@ test('gestures made while an edit saves run in order once it saves', async ({ pa
   });
 
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step train\b/ }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step Train\b/ }).click();
   await saveSent;
   await page.keyboard.press('Meta+Z');
   await page.keyboard.press('Meta+Shift+Z');
@@ -145,7 +145,7 @@ test('New Step chosen in the palette while the plan of an edit loads opens once 
   const release = await holdRequests(page, (url, method) => url.pathname === `${projectPath}/train-runs` && method !== 'POST');
   const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/members/command`);
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step train\b/ }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step Train\b/ }).click();
   expect((await saved).ok()).toBe(true);
   await newStepFromPalette(page, release);
 });
@@ -163,7 +163,7 @@ test('entering a Model composite while an edit saves happens at once', async ({ 
   // The duplicate's save is held, so the workspace stays unsettled.
   const release = await holdRequests(page, (url) => url.pathname === `${projectPath}/members/command`);
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step baseline\b/ }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step Baseline\b/ }).click();
   await model.locator('[data-id="wrapper"] header').dblclick();
   await expect(model.locator('[data-id="controller"] header')).toBeVisible();
   release();
@@ -178,7 +178,7 @@ test('Rename chosen from an Analyze canvas menu while an edit saves opens a fiel
   await page.goto(`/?project=${encodeURIComponent(project)}`);
   await mapStep(page, 'analyze').dblclick();
   await page.getByRole('tab', { name: 'Analysis', exact: true }).click();
-  const summarize = analysis.getByRole('group', { name: 'Select summarize', exact: true });
+  const summarize = analysis.getByRole('group', { name: 'Select Summarize', exact: true });
   await expect(summarize).toBeVisible();
 
   // The step's rename saves while held; the operation's Rename, made meanwhile, waits for it and the state it leaves.
@@ -187,12 +187,12 @@ test('Rename chosen from an Analyze canvas menu while an edit saves opens a fiel
   const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
   await palette.getByRole('combobox').fill('Rename Step');
   await palette.getByRole('combobox').press('Enter');
-  const stepName = page.locator('[data-map-step="analyze"]').getByRole('textbox', { name: 'Rename analyze', exact: true });
+  const stepName = page.locator('[data-map-step="analyze"]').getByRole('textbox', { name: 'Rename Analyze', exact: true });
   await stepName.fill('Velocity');
   await stepName.press('Enter');
   await summarize.click({ button: 'right' });
   await page.getByRole('menuitem', { name: /^Rename\b/ }).click();
-  const operationName = analysis.getByRole('textbox', { name: 'Rename summarize', exact: true });
+  const operationName = analysis.getByRole('textbox', { name: 'Rename Summarize', exact: true });
   await expect(operationName).toHaveCount(0);
   const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/members/command`);
   release();

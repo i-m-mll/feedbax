@@ -47,6 +47,7 @@ def preview_plan(
         operations=folders.operations, components=folders.components, functions=folders.functions,
         python_tasks=folders.python_tasks, figure_templates=folders.figure_templates,
         training_methods=folders.training_methods,
+        synthesis_methods=folders.synthesis_methods,
     )
 
 
@@ -120,7 +121,9 @@ def prepared_reach(
             return None
         definition = plan.selected_definitions.get(key)
         fields = plan.variant_projects[key.variant].steps[key.step].set_fields
-        return row.label, row.coordinates, row.problems, row.resolved, definition.payload if definition else None, fields
+        content = (definition.payload, definition.input_documents, definition.task_additions) if definition else None
+        # An existing run can acquire or lose the display name Run 1 when copies change.
+        return row.coordinates, row.problems, row.resolved, content, row.train, fields
 
     return frozenset(
         key for key in observed & edited_authored_rows(before, candidate)

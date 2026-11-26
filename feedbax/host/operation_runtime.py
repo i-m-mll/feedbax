@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelSource, decode_imported_model_document
 
 from feedbax.contracts.model_input import (
-    CheckpointModelSource,
     INITIAL_MODEL_MEDIA_TYPE,
     InitialModelSource,
     read_document_input,
@@ -18,7 +17,6 @@ from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.dataset import Dataset
 from feedbax.analysis.operation_inputs import (
     require_task_source,
-    uses_replicate_axis,
     verify_dataset,
 )
 from feedbax.dataset_replicates import replicate_ids, select_replicate, stack_replicates
@@ -81,9 +79,10 @@ def run_operation(
 
     model = None
     if model_member is not None:
-        from feedbax.persistence.model_input import checkpoint_model_source
-        from feedbax.host.model_input import prepare_model_task, reconstruct_model
+        from feedbax.persistence.model_input import model_product_source
+        from feedbax.host.model_input import ImportedModelWeights, prepare_model_task, reconstruct_model
 
+        producer_documents = None
         if model_member.content.media_type == INITIAL_MODEL_MEDIA_TYPE:
             source = read_document_input(model_member.content, artifacts)
             if not isinstance(source, InitialModelSource):
@@ -92,16 +91,24 @@ def run_operation(
             imported = read_document_input(model_member.content, artifacts)
             assert isinstance(imported, ImportedModelSource)
             pinned = decode_imported_model_document(artifacts.get_object(imported.model))
-            source = CheckpointModelSource(
+            source = ImportedModelWeights(
                 tree=imported.weights, encoding=imported.encoding, initial=InitialModelSource(document=pinned),
             )
         else:
-            source = checkpoint_model_source(model_member, artifacts=artifacts)
-        if task_source is None:
+            source, producer_documents = model_product_source(model_member, artifacts=artifacts)
+        paired_task = task_source or (producer_documents.task_source if producer_documents is not None else None)
+        if paired_task is None:
             model = reconstruct_model(source, registry=registry, artifacts=artifacts)
         else:
-            paired = prepare_model_task(source, task_source, registry=registry, artifacts=artifacts)
-            model = paired if isinstance(paired, tuple) else paired.model
+            input_bindings = producer_documents.bindings_for_same_task(paired_task) if producer_documents is not None else None
+            paired = prepare_model_task(
+                source, paired_task, registry=registry, artifacts=artifacts, input_bindings=input_bindings,
+            )
+            if isinstance(paired, tuple):
+                raise ValueError(paired[0].reason)
+            model = paired.model
+            if (role := operation.value.prepared_task_role) is not None:
+                arguments[role] = paired.paired.execution
         if isinstance(model, tuple):
             raise ValueError(model[0].reason)
 
@@ -110,7 +117,7 @@ def run_operation(
     for role, dataset in datasets.items():
         port = definition.inputs[role]
         assert isinstance(port, DatasetPort)
-        if uses_replicate_axis(port) or (coordinates := replicate_ids(dataset)) is None:
+        if port.uses_replicate_axis or (coordinates := replicate_ids(dataset)) is None:
             verify_dataset(dataset, port, parameters)
             continue
         if ids is None:

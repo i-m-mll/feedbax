@@ -1,15 +1,19 @@
+import { useState } from 'react';
 import type { FunctionInfo } from '@/generated/studioContracts';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { callText, parameterNames, rootFunctions, withFunction, type CallDraft, type FieldEdit, type FieldModel } from './fieldModel';
 import { setPartDraft } from './partDrafts';
+import { usePartMenu } from './partMenu';
 import { ValueField } from './ValueField';
 
 /**
  * A call's parts under its field: its function as a choice among `offered`, and each positional argument as a field.
  * Choosing a function keeps the arguments; an edit of a part writes the call's text once every argument is filled.
  */
-export function CallParts({ model, call, offered, kind }: {
+export function CallParts({ model, call, offered, kind, menu }: {
   model: FieldModel; call: CallDraft; offered: readonly FunctionInfo[]; kind: 'formula' | 'shape';
+  /** The function's list: told as it opens, and why it could not be read. */
+  menu?: Pick<FieldModel, 'listOpen' | 'reason'>;
 }) {
   const commit = model.commit;
   async function write(next: CallDraft) {
@@ -31,7 +35,7 @@ export function CallParts({ model, call, offered, kind }: {
   const base = { names: model.names, functions: model.functions, kinds: [], kind: 'value' } as const;
   const parts: FieldModel[] = [
     {
-      ...base, id: model.id + '.function', label: studioName('function'), text: null, value: call.function,
+      ...base, ...menu, id: model.id + '.function', label: studioName('function'), text: null, value: call.function,
       type: { kind: 'choice', options: offered.map(({ id, label }) => ({ value: id, label: label ?? id })) },
       commit: commit && ((edit: FieldEdit) => {
         const chosen = edit.kind === 'set' && offered.find(({ id }) => id === edit.value);
@@ -52,5 +56,8 @@ export function CallParts({ model, call, offered, kind }: {
 
 /** A Formula's parts: its outer function, chosen among those that fit at its root, and its arguments. */
 export function FormulaParts({ model, call }: { model: FieldModel; call: CallDraft }) {
-  return <CallParts model={model} call={call} offered={rootFunctions(model, call.function)} kind="formula" />;
+  const [open, setOpen] = useState(false);
+  const menu = usePartMenu(model, [], open);
+  return <CallParts model={model} call={call} offered={rootFunctions(model, call.function, menu)} kind="formula"
+    menu={{ listOpen: setOpen, reason: menu.kind === 'failed' ? menu.reason : undefined }} />;
 }

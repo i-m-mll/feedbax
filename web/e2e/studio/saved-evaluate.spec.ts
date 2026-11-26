@@ -7,7 +7,8 @@ import type {
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
 import { studioBytes } from '../../src/components/activity/studioVocabulary';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
-import { captureStudioWindow, chooseSweepValue, drawnRunLabel, enter, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { command, mapName } from './fixtures/members';
+import { captureStudioWindow, chooseSweepValue, drawnRunLabel, drawnStepLabel, enter, mapStep, runName, shownRunLabel, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
 import { pick, pickRecordedTrial, reveal, trialPicker } from './fixtures/controls';
@@ -74,11 +75,12 @@ test('authors Evaluate conditions from one authenticated Train checkpoint', { ta
   const [admitted] = trainItems;
   expect(admitted.disposition).toBe('admitted');
   await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 20_000 });
-  const trained = (await plan(initial.revision)).rows.find(({ key }) => key.variant === 'base')!;
+  const trainPlan = await plan(initial.revision);
+  const trained = trainPlan.rows.find(({ key }) => key.variant === 'base')!;
   expect(admitted.run_key).toBe(savedRunId(trained.key));
   expect(trained.result?.job_id).toBe(admitted.job_id);
   // A step's only run is named by its step.
-  await plans(page).getByRole('button', { name: runName(trained.key.step) }).click();
+  await plans(page).getByRole('button', { name: runName(drawnRunLabel(trainPlan.window_map!, trained.key)) }).click();
 
   const conditions = [1.25, 2];
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
@@ -138,7 +140,7 @@ test('authors Evaluate conditions from one authenticated Train checkpoint', { ta
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   for (const [index, condition] of conditions.entries()) {
     await tab(page, 'Runs').click();
-    await plans(page).getByRole('button', { name: runName(rows[index].label) }).click();
+    await plans(page).getByRole('button', { name: runName(shownRunLabel(rows[index])) }).click();
     await tab(page, 'Model').click();
     await model.locator('[data-id="plant"] header').click();
     const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
@@ -239,13 +241,13 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeDisabled();
   // A card accepts a new step whatever its runs' status.
-  await expect(page.getByRole('button', { name: 'New Step baseline', exact: true })).toBeEnabled();
+  await expect(command(mapCard(page, 'baseline'), 'newStep')).toBeEnabled();
 
   await chooseStep(page, 'unsupported');
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   // The inspector gives a run's reasons once the run is chosen.
-  await plans(page).getByRole('button', { name: runName('unsupported') }).click();
+  await plans(page).locator(`[data-run*='"unsupported"']`).getByRole('rowheader').getByRole('button').click();
   await expect(inspector.getByText(/requires a Train checkpoint selected by last/)).toBeVisible();
   await chooseStep(page, 'train');
   const [train] = await submit(page, path);
@@ -257,7 +259,7 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   await chooseStep(page, 'conditions');
   const conditions = await submit(page, path);
   await expect(plans(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 22_000 });
-  const baselineCard = page.getByRole('article', { name: 'Evaluate baseline', exact: true });
+  const baselineCard = mapCard(page, 'baseline');
   await expect(baselineCard.getByRole('img', { name: 'Done', exact: true })).toBeVisible({ timeout: 22_000 });
   await expect(baselineCard).toContainText('1');
   await expect(plans(page).getByRole('columnheader', { name: 'Size', exact: true })).toBeVisible();
@@ -388,7 +390,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   const chooseRow = async (run = selectedKey, extend = false) => {
     const definition = (await plan()).window_map?.rows.find(({ key }) => key.step === run.step && key.row === run.row);
     expect(definition).toBeDefined();
-    await plans(page).getByRole('button', { name: runName(definition!.label) })
+    await plans(page).getByRole('button', { name: runName(shownRunLabel(definition!)) })
       .click(extend ? { modifiers: ['Shift'] } : {});
   };
   await page.goto(`/?project=${snapshot.project_id}`);
@@ -454,7 +456,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   await expect(mass).toHaveAccessibleDescription('Trained by train');
   await expect(mass).toHaveValue('1.25');
   await enter(mass, '2');
-  await expect(mass).toHaveAccessibleDescription('Changed by conditions');
+  await expect(mass).toHaveAccessibleDescription(`Changed by ${await mapName(page, 'conditions')}`);
   await expect(mass).toHaveValue('2');
   const changed = await plan();
   expect(changed.rows).toEqual(before.rows);
@@ -515,8 +517,7 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 19_000 });
   const trainRequest = (await plan(snapshot.revision)).rows.find(({ key }) => key.step === 'train')!.request_id;
   const creating = posted(page, projectPath + '/files');
-  await page.getByRole('article', { name: 'Train train', exact: true })
-    .getByRole('button', { name: 'New Step train', exact: true }).click();
+  await command(mapCard(page, 'train'), 'newStep').click();
   await chooseStepKind(page, 'Evaluate');
   const created = await creating;
   expect(created.status(), await created.text()).toBe(201);
@@ -608,14 +609,15 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
     const curve = await read.json() as StudioEvaluationObjectiveSeries;
     expect(curve.lineage).toEqual([train.job_id]);
     expect(curve.gaps.map(({ update }) => update)).toEqual([3]);
-    const group = page.getByRole('group', { name: 'Objective evaluate · effort', exact: true });
+    const evaluateName = await mapName(page, 'evaluate');
+    const group = page.getByRole('group', { name: `Objective ${evaluateName} · effort`, exact: true });
     const marks = group.locator('circle');
     await expect(marks).toHaveCount(2);
     await expect(group.locator('polyline')).toHaveCount(0);
     const sorted = [...curve.points].sort((left, right) =>
       left.checkpoint.completed_updates - right.checkpoint.completed_updates);
     await expect(marks.locator('title')).toHaveText(sorted.map(({ checkpoint, terms: [term] }) =>
-      `evaluate · effort · Updates ${checkpoint.completed_updates} · ${term.value} · Coverage ${term.coverage}`));
+      `${evaluateName} · effort · Updates ${checkpoint.completed_updates} · ${term.value} · Coverage ${term.coverage}`));
     return curve;
   }
   const curve = await observeObjective();
@@ -648,7 +650,7 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
     .map(({ coordinates }) => coordinates.update.value_id)).toEqual(['4', '3', '2']);
   const gap = points[1];
   const gapRow = split.window_map!.rows.find(({ key }) => key.row === gap.key.row && key.step === 'evaluate')!;
-  await plans(page).getByRole('button', { name: runName(gapRow.label) }).click();
+  await plans(page).getByRole('button', { name: runName(shownRunLabel(gapRow)) }).click();
   const [gapJob] = await submit(page, runsPath);
   expect(gapJob.disposition).toBe('admitted');
   await expect.poll(async () => (await plan(swept.revision)).window_map!.evaluations!
@@ -749,7 +751,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
     expect(response.ok(), await response.text()).toBe(true);
     return await response.json() as StudioProjectSnapshot;
   }
-  await chooseSweepValue(page.getByRole('article', { name: 'Evaluate evaluate', exact: true }), 'replicate', 'left');
+  await chooseSweepValue(mapCard(page, 'evaluate'), 'Replicate', 'Left');
   await expect(every).toHaveValue('2');
   await pick(kind, 'List');
   const axis = await save(async () => {
@@ -761,7 +763,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   expect(axisPlan.right.request_id).toBe(before.right.request_id);
   expect(axisPlan.train).toBe(before.train);
   await expect(updates).toHaveValue('3');
-  await plans(page).getByRole('button', { name: /replicate=right/ }).click();
+  await plans(page).getByRole('button', { name: runName('Train · Right') }).click();
   await expect(every).toHaveValue('2');
   await pick(kind, 'List');
   const row = await save(async () => {
@@ -798,7 +800,7 @@ test('a checkpoint edit left for another run while the plan is read saves on its
   await reveal(page, 'Inspector');
   const kind = inspector.getByRole('combobox', { name: 'Checkpoint', exact: true });
   const updates = inspector.getByRole('textbox', { name: 'Updates', exact: true });
-  await chooseSweepValue(page.getByRole('article', { name: 'Evaluate evaluate', exact: true }), 'replicate', 'left');
+  await chooseSweepValue(mapCard(page, 'evaluate'), 'Replicate', 'Left');
   await expect(inspector.getByRole('textbox', { name: 'Every', exact: true })).toHaveValue('2');
   await pick(kind, 'List');
   const patches: StudioProjectSnapshot[] = [];
@@ -812,9 +814,9 @@ test('a checkpoint edit left for another run while the plan is read saves on its
   await updates.press('Enter');
   await plan.sent;
   await updates.fill('4');
-  await plans(page).getByRole('button', { name: /replicate=right/ }).click();
+  await plans(page).getByRole('button', { name: runName('Train · Right') }).click();
   plan.release();
-  await expect(inspector.getByRole('heading', { name: /replicate right/ })).toBeVisible();
+  await expect(inspector.getByRole('heading', { name: /Right/ })).toBeVisible();
   await expect(inspector.getByRole('textbox', { name: 'Every', exact: true })).toHaveValue('2');
   await expect.poll(() => patches.length).toBe(2);
   const after = await evaluations(patches[1].revision);
@@ -891,7 +893,7 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   await lineage.getByRole('button', { name: label, exact: true }).click();
   await expect(checkpoint.getByRole('heading')).toHaveText(label);
 
-  const plannedLabel = drawnRunLabel((await projection(saved.revision)).window_map!.rows, evaluation.key);
+  const plannedLabel = drawnRunLabel((await projection(saved.revision)).window_map!, evaluation.key);
   const replay = await showTrial(page, projectPath + '/evaluate-replay', evaluation, plannedLabel, at);
   expectPositionSamples(replayPosition(replay).samples);
   await info.attach('stopped-checkpoint-evaluation', {
@@ -906,11 +908,11 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
     (await runSavedEvaluation(page, request, info, studio.home))!;
   const plannedRows = completed.window_map!.rows;
   const labels = new Map(plannedRows.map(({ key, label }) => [JSON.stringify(key), label]));
-  const drawn = (key: StudioSavedEvaluationRow['key']) => drawnRunLabel(plannedRows, key);
+  const drawn = (key: StudioSavedEvaluationRow['key']) => drawnRunLabel(completed.window_map!, key);
   const conditions = single.filter(({ key }) => key.step === 'conditions');
   expect(conditions).toHaveLength(2);
   const activityRun = conditions[1];
-  const activityLabel = `${activityRun.key.step} · ${labels.get(JSON.stringify(activityRun.key))!}`;
+  const activityLabel = `${drawnStepLabel(completed.window_map!, activityRun.key)} · ${labels.get(JSON.stringify(activityRun.key))!}`;
   await chooseStep(page, 'conditions');
   await plans(page).getByRole('button', { name: runName(drawn(activityRun.key)) }).click();
   await expect(plans(page).getByText('Done', { exact: true }).first()).toBeVisible();
