@@ -174,6 +174,16 @@ def check(
     return run(tree)
 
 
+def infer_constant_type(
+    tree: Expression, functions: FunctionRegistry, *, path: NodePath = (),
+) -> ValueType | tuple[Problem, ...]:
+    """Infer the type of a run-level constant without imposing a destination's type."""
+    site = Site(expected=ValueType(base=ValueBase.REAL), finest=Level.RUN, structural=True)
+    run, _, _ = _checker(site, functions, path)
+    result = run(tree, match_expected=False)
+    return result.root.type if isinstance(result, Checked) else result
+
+
 def _checker(
     site: Site,
     functions: FunctionRegistry,
@@ -482,27 +492,28 @@ def _checker(
             checked[at[len(path) :]] = typed
         return typed
 
-    def run(tree: Expression, *, collect: bool = True) -> Checked | tuple[Problem, ...]:
+    def run(tree: Expression, *, collect: bool = True, match_expected: bool = True) -> Checked | tuple[Problem, ...]:
         nonlocal record
         record = collect
         problems.clear()
-        root = visit(tree, path, site.expected.dimensions, site.expected.base)
+        expected = site.expected if match_expected else None
+        root = visit(tree, path, expected.dimensions if expected else None, expected.base if expected else None)
         if root is not None:
-            if not site.expected.accepts_shape_and_base(root.type):
+            if expected is not None and not expected.accepts_shape_and_base(root.type):
                 problem(
                     tree,
                     ProblemCode.TYPE_MISMATCH,
                     f"Expected {site.expected.base} {site.expected.shape}.",
                     path,
                 )
-            elif root.type.dimensions != site.expected.dimensions:
+            elif expected is not None and root.type.dimensions != expected.dimensions:
                 problem(
                     tree,
                     ProblemCode.UNIT_MISMATCH,
                     "Expression dimensions differ from the site's dimensions.",
                     path,
                 )
-            elif not site.expected.accepts_space(root.type):
+            elif expected is not None and not expected.accepts_space(root.type):
                 problem(
                     tree,
                     ProblemCode.TYPE_MISMATCH,

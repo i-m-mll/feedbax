@@ -812,7 +812,7 @@ _ABSENT = object()
 
 def evaluation_document_write(
     project: Project, plan, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], slot: str,
-    variant: str | None = None,
+    variant: str | None = None, *, adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
 ) -> StoredEdit:
     """:func:`document_write` of ``shown`` for the ``chosen`` steps of ``variant``, among which an Evaluate step may
     read it through its subject at ``trial_documents.<slot>``.
@@ -839,7 +839,9 @@ def evaluation_document_write(
     def readers(name: str) -> frozenset[str]:
         return plan.document_users(variant_id, name) | (frozenset(named) if name == shown else frozenset())
 
-    return document_write(project, shown, edits, chosen, readers, variant, named, variant_view(plan, project, variant))
+    return document_write(
+        project, shown, edits, chosen, readers, variant, named, variant_view(plan, project, variant), adapt=adapt,
+    )
 
 
 def _holds(payload: Any, parts: Sequence[str]) -> bool:
