@@ -402,7 +402,7 @@ def _value_differences(
     expected: Mapping[str, jax.Array | np.ndarray],
     declarations: Mapping[str, object],
     tensors: Mapping[str, jax.Array | np.ndarray],
-    saved_declarations: Mapping[str, object], *, precision: ModelSlotPrecision,
+    saved_declarations: Mapping[str, object], *, precision: ModelSlotPrecision = "exact",
 ) -> Iterator[tuple[Literal["missing_slot", "unexpected_slot", "mismatched_slot"], str, str]]:
     present = saved_declarations.keys() | tensors.keys()
     for path in sorted(expected.keys() - tensors.keys()):
