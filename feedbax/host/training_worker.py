@@ -246,7 +246,7 @@ def _prepare_train(
     from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, read_document_input
     from feedbax.persistence.model_assets import model_artifact_provider
     from feedbax.runtime._graph_key_schedule import model_initialization_key
-    from feedbax.host.model_input import reconstruct_model
+    from feedbax.host.model_input import ImportedModelWeights, reconstruct_model
     from feedbax.host.method_checkpoint import read_method_checkpoint, validate_method_extra
     from feedbax.training.method_runtime import TrainingLoop, initialize_method, stack_replicas
     from feedbax.host.model_checkpoint import SemanticModelSlot, SemanticModelWriter
@@ -372,7 +372,7 @@ def _prepare_train(
         assert imported_model is not None
         with numerical_work():
             reconstructed = reconstruct_model(
-                CheckpointModelSource(
+                ImportedModelWeights(
                     tree=imported.weights, encoding=imported.encoding,
                     initial=InitialModelSource(document=imported_model),
                 ),

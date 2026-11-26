@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelSource, decode_imported_model_document
 
 from feedbax.contracts.model_input import (
-    CheckpointModelSource,
     INITIAL_MODEL_MEDIA_TYPE,
     InitialModelSource,
     read_document_input,
@@ -82,7 +81,7 @@ def run_operation(
     model = None
     if model_member is not None:
         from feedbax.persistence.model_input import model_product_source
-        from feedbax.host.model_input import prepare_model_task, reconstruct_model
+        from feedbax.host.model_input import ImportedModelWeights, prepare_model_task, reconstruct_model
 
         producer_documents = None
         if model_member.content.media_type == INITIAL_MODEL_MEDIA_TYPE:
@@ -93,7 +92,7 @@ def run_operation(
             imported = read_document_input(model_member.content, artifacts)
             assert isinstance(imported, ImportedModelSource)
             pinned = decode_imported_model_document(artifacts.get_object(imported.model))
-            source = CheckpointModelSource(
+            source = ImportedModelWeights(
                 tree=imported.weights, encoding=imported.encoding, initial=InitialModelSource(document=pinned),
             )
         else:

@@ -29,7 +29,7 @@ from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_GRAPH_PATH, MODEL_TREE_MANIFEST_PATH, SemanticModelEncoding, model_replica_array_path,
 )
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.model_values import model_owner_problems
+from feedbax.contracts.model_values import model_owner_problems, scalar_source_parameters
 from feedbax.contracts.project import diff
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.strict_json import strict_json_loads
@@ -199,11 +199,20 @@ def _read_replica(
     return decoded
 
 
-def _comparable_graph(graph: GraphSpec) -> GraphSpec:
+def _comparable_graph(graph: GraphSpec, components: ComponentRegistry) -> GraphSpec:
     return graph.model_copy(update={
+        "nodes": {
+            name: node.model_copy(update={
+                "params": {
+                    key: value for key, value in node.params.items()
+                    if key not in sources
+                },
+            }) if (sources := scalar_source_parameters(node, components)) else node
+            for name, node in graph.nodes.items()
+        },
         "wires": sorted(graph.wires, key=WireSpec.authored_id),
         "subgraphs": {
-            name: _comparable_graph(interior) if isinstance(interior, GraphSpec) else interior
+            name: _comparable_graph(interior, components) if isinstance(interior, GraphSpec) else interior
             for name, interior in (graph.subgraphs or {}).items()
         } or None,
     })
@@ -216,7 +225,7 @@ def _fit_model(
     fitted: tuple[GraphSpec, Graph, tuple[tuple[str, ...], ...]] | None = None
     lowered = None
     try:
-        supplied = canonical_json_v2_bytes(_comparable_graph(weights.graph).model_dump(mode="json"))
+        supplied = canonical_json_v2_bytes(_comparable_graph(weights.graph, components).model_dump(mode="json"))
     except CanonicalJsonError as error:
         raise _ArchiveReadError("/graph.json", str(error)) from error
     try:
@@ -253,7 +262,7 @@ def _fit_model(
                 detail=diagnostic.observed_condition,
             ))
     else:
-        expected = canonical_json_v2_bytes(_comparable_graph(graph).model_dump(mode="json"))
+        expected = canonical_json_v2_bytes(_comparable_graph(graph, components).model_dump(mode="json"))
         if expected != supplied:
             path = next(iter(diff(strict_json_loads(expected), strict_json_loads(supplied))))
             problems.append(ModelGraphFitProblem(
