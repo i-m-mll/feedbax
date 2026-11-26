@@ -7,6 +7,7 @@ import pytest
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_sweep import CHECKPOINT_RULE_TARGET
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.examples import load_shipped_projects
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
@@ -76,14 +77,14 @@ class _Studio:
 
 
 def _graph_project():
-    return {"documents": {"model": {"label": "Model", "schema": "feedbax.spec.model", "payload": {
+    return {"documents": {"model": {"label": "Model", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": {
         "step_seconds": 0.01,
         "ports": {
-            "inputs": [
-                {"id": "vector", "name": "Vector", "type": {"shape": [2]}},
-                {"id": "scalar", "name": "Scalar", "type": {"shape": []}},
-            ],
-            "outputs": [{"id": "out", "name": "Out", "type": {"shape": [2]}}],
+            "inputs": {
+                "vector": {"label": "Vector", "type": {"shape": [2]}},
+                "scalar": {"label": "Scalar", "type": {"shape": []}},
+            },
+            "outputs": {"out": {"label": "Out", "type": {"shape": [2]}}},
         },
         "interior": {},
     }}}}
@@ -108,7 +109,7 @@ def _duplicate_ports(studio):
     }})
     reopened = studio.reopen(edit["snapshot"], "document", "model")
     ports = reopened["project"]["documents"]["model"]["payload"]["ports"]["inputs"]
-    assert [(port["id"], port["name"]) for port in ports] == [("vector", "Vector"), ("scalar", "Vector")]
+    assert [(key, port["label"]) for key, port in ports.items()] == [("vector", "Vector"), ("scalar", "Vector")]
     assert {problem["address"]["element"]["end"]["port"] for problem in edit["problems"]
             if problem["address"]["element"]["kind"] == "port"} == {"vector", "scalar"}
 
@@ -120,19 +121,19 @@ def _typed_signal_project():
     model = project["documents"]["point-mass"]["payload"]
     for key, leaf in (("position", "pos"), ("velocity", "vel")):
         model["interior"]["components"][key] = {
-            "kind": "leaf", "name": key, "type": "feedbax.SelectState", "fields": {"paths": [leaf]},
+            "kind": "leaf", "label": key, "type": "feedbax.SelectState", "fields": {"paths": [leaf]},
         }
         model["interior"]["wires"][f"select-{key}"] = {
             "source": {"owner": "component", "component": "plant", "port": "effector"},
             "target": {"owner": "component", "component": key, "port": "state"},
         }
-    model["ports"]["inputs"][0]["type"] = {"shape": [2]}
+    model["ports"]["inputs"]["target_pos"]["type"] = {"shape": [2]}
     model["interior"]["components"]["point_receiver"] = {
-        "kind": "composite", "name": "Point receiver",
-        "ports": {"inputs": [
-            {"id": "in", "name": "Point", "type": {"shape": [2], "space": "point"}},
-            {"id": "free", "name": "Free", "type": {"shape": [2], "space": "free"}},
-        ]},
+        "kind": "composite", "label": "Point receiver",
+        "ports": {"inputs": {
+            "in": {"label": "Point", "type": {"shape": [2], "space": "point"}},
+            "free": {"label": "Free", "type": {"shape": [2], "space": "free"}},
+        }},
         "interior": {},
     }
     return project

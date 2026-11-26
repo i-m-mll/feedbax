@@ -31,7 +31,8 @@ from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.studio_place import definition_place, path_parts
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.studio_authoring import StudioAuthoringChange
-from feedbax.contracts.task_document import BLANK_TASK
+from feedbax.contracts.task_document import BLANK_STORED_TASK, STORED_TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.host import HostError
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
@@ -50,7 +51,7 @@ from tests.support.hang import HANG_SECONDS
 _URL = "/api/projects/reach"
 _MODEL = "point-mass"
 _SETTINGS = "settings"
-_VALUE = "/payload/value"
+_VALUE = "/payload/training_config/n_batches"
 _MASS_ADDRESS = ModelAddress.model_validate({
     "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
@@ -70,7 +71,10 @@ def study(tmp_path: Path):
         }}},
         "exceptions": {"z_first": {"where": {"rows": []}}, "a_second": {"where": {"rows": []}}},
     }
-    raw["documents"][_SETTINGS] = {"label": "Document", "schema": "example.settings", "payload": {"value": 1}}
+    raw["documents"][_SETTINGS] = {
+        "label": "Settings", "schema": TRAINING_DOCUMENT_SCHEMA_ID,
+        "payload": {"method": "feedbax.supervised_gradient", "settings": {}, "training_config": {"n_batches": 1}},
+    }
     project = Project.model_validate(raw)
     root = tmp_path / "reach"
     for name, data in dump_text_project(
@@ -121,7 +125,7 @@ def _edit_mass(client: TestClient, url: str, snapshot, value: float):
 
 
 def _settings(root: Path):
-    return load_text_project(root).project.documents[_SETTINGS].payload["value"]
+    return load_text_project(root).project.documents[_SETTINGS].payload["training_config"]["n_batches"]
 
 
 def _mass(root: Path):
@@ -1172,7 +1176,7 @@ def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path
 
     task = {"kind": "document", "id": "task", "document": {
         "label": "Document",
-        "schema": "feedbax.spec.task_document", "payload": BLANK_TASK.model_dump(mode="json"),
+        "schema": STORED_TASK_DOCUMENT_SCHEMA_ID, "payload": BLANK_STORED_TASK.model_dump(mode="json"),
     }}
     rejected = client.post(url, json={"revision": created["revision"], "file": task})
     assert rejected.status_code == 409
@@ -1355,7 +1359,7 @@ def test_external_revision_and_invalid_batch_preserve_external_bytes(study):
     assert _patch(client, baseline["revision"], 3).status_code == 409
 
     body = json.loads(path.read_bytes())
-    body["payload"]["value"] = 9
+    body["payload"]["training_config"]["n_batches"] = 9
     data = json.dumps(body, indent=4).encode()
     write_bytes_atomic(path, data)
     assert _settings(root) == 9
@@ -1514,7 +1518,7 @@ def test_existing_event_stream_observes_an_external_edit(study, monkeypatch, thr
                 else:
                     path = root / "documents/settings.json"
                     document = json.loads(path.read_bytes())
-                    document["payload"]["value"] = 11
+                    document["payload"]["training_config"]["n_batches"] = 11
                     write_bytes_atomic(path, json.dumps(document).encode())
             if self.calls > 2:
                 raise HostError("unavailable", "Stream ended")
@@ -1546,8 +1550,6 @@ def _shared_training(tmp_path, *, continuations=0, other=True, third=False, chec
     ``variants`` are the project's variant rows, none by default. ``third`` adds a third such step. ``continuations`` Train steps follow ``train`` in a chain, ``train-2`` based on
     ``train``, ``train-3`` on ``train-2``, each starting from its parent's checkpoint unless not ``checkpoints``.
     """
-    from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
-
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     inline = raw["steps"]["train"]["base"]["inline"]
     raw["documents"]["training"] = {
