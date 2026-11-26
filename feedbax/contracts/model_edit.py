@@ -484,6 +484,7 @@ class StudioStepNameReference(StrictModel):
 class StudioEvaluateValueSource(StrictModel):
     kind: Literal["trained", "evaluate"]
     reference: StudioStepNameReference
+    name: str
 
 
 class EvaluateModelState(StrictModel):

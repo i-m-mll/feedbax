@@ -310,11 +310,16 @@ export interface StudioEvaluationCheckpointSeries {
   requested: number[];
 }
 
+export interface StudioTrialName {
+  id: string;
+  name: string | null;
+}
+
 export interface StudioSavedEvaluationResult {
   job_id: string;
   request_id?: string | null;
   revision?: string | null;
-  trials?: string[] | null;
+  trials?: StudioTrialName[] | null;
   receipt: JobReceipt;
   checkpoint_source: StudioTrainCheckpointSource | null;
   loaded_model?: ImportedModelProvenance | null;
@@ -334,7 +339,7 @@ export interface StudioSavedEvaluationRow {
   status: "not_run" | "not_chosen" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
   reason: string | null;
   can_run: boolean;
-  trials: string[];
+  trials: StudioTrialName[];
   result: StudioSavedEvaluationResult | null;
   previous?: StudioSavedEvaluationResult | null;
   subject_rank_key?: string | null;
@@ -461,6 +466,9 @@ export interface StudioPlanReviewEntry {
 export interface StudioPlanReviewSource {
   kind: "document" | "step" | "sweep_value" | "exception" | "variant" | "upstream";
   key: string;
+  name: string;
+  axis_name?: string | null;
+  member_count?: number | null;
   path: string;
   step?: string | null;
   axis?: string | null;
@@ -887,6 +895,7 @@ export interface EvaluateModelState {
 export interface StudioEvaluateValueSource {
   kind: "trained" | "evaluate";
   reference: StudioStepNameReference;
+  name: string;
 }
 
 export interface StepRuns {
@@ -5382,7 +5391,7 @@ export type StudioProjectWindowMapRow = {
   "reason"?: string | null;
   "opening_step"?: "acquiring" | "connecting" | "copying" | "installing" | "starting_host" | null;
   "collection_progress"?: StoreTransferProgress | null;
-  "evaluation_conditions"?: Array<string> | null;
+  "evaluation_conditions"?: Array<StudioTrialName> | null;
   "origin"?: number | null;
   "target_total"?: number | null;
   "light"?: StudioSavedLightHistory | null;
@@ -5551,7 +5560,7 @@ export type StudioSetFieldEntry = {
   "over"?: Record<string, IndexRule> | null;
   "combination"?: "cross" | "zip";
   "entry": string | null;
-  "label"?: string | null;
+  "label": string;
   "weight": WeightPart | StudioSetEntryParts | null;
   "member_count"?: number | null;
 };
@@ -7142,13 +7151,22 @@ export const StudioEvaluationCheckpointSeriesSchema: z.ZodType<StudioEvaluationC
     .strict()
 ) as unknown as z.ZodType<StudioEvaluationCheckpointSeries>;
 
+export const StudioTrialNameSchema: z.ZodType<StudioTrialName> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "name": z.string().nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioTrialName>;
+
 export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationResult> = z.lazy(() =>
   z
     .object({
       "job_id": z.string(),
       "request_id": z.string().nullable().optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
-      "trials": z.array(z.string()).nullable().optional(),
+      "trials": z.array(StudioTrialNameSchema).nullable().optional(),
       "receipt": JobReceiptSchema,
       "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
       "loaded_model": ImportedModelProvenanceSchema.nullable().optional(),
@@ -7172,7 +7190,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "status": z.union([z.literal("not_run"), z.literal("not_chosen"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
       "reason": z.string().nullable(),
       "can_run": z.boolean(),
-      "trials": z.array(z.string()),
+      "trials": z.array(StudioTrialNameSchema),
       "result": StudioSavedEvaluationResultSchema.nullable(),
       "previous": StudioSavedEvaluationResultSchema.nullable().optional(),
       "subject_rank_key": z.string().nullable().optional(),
@@ -7359,6 +7377,9 @@ export const StudioPlanReviewSourceSchema: z.ZodType<StudioPlanReviewSource> = z
     .object({
       "kind": z.union([z.literal("document"), z.literal("step"), z.literal("sweep_value"), z.literal("exception"), z.literal("variant"), z.literal("upstream")]),
       "key": z.string(),
+      "name": z.string(),
+      "axis_name": z.string().nullable().optional(),
+      "member_count": z.number().int().safe().nullable().optional(),
       "path": z.string(),
       "step": z.string().nullable().optional(),
       "axis": z.string().nullable().optional(),
@@ -8110,6 +8131,7 @@ export const StudioEvaluateValueSourceSchema: z.ZodType<StudioEvaluateValueSourc
     .object({
       "kind": z.union([z.literal("trained"), z.literal("evaluate")]),
       "reference": StudioStepNameReferenceSchema,
+      "name": z.string(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioEvaluateValueSource>;
@@ -14868,7 +14890,7 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "reason": z.union([z.string(), z.null()]).optional(),
     "opening_step": z.union([z.union([z.literal("acquiring"), z.literal("connecting"), z.literal("copying"), z.literal("installing"), z.literal("starting_host")]), z.null()]).optional(),
     "collection_progress": z.union([StoreTransferProgressSchema, z.null()]).optional(),
-    "evaluation_conditions": z.union([z.array(z.string()), z.null()]).optional(),
+    "evaluation_conditions": z.union([z.array(StudioTrialNameSchema), z.null()]).optional(),
     "origin": z.union([z.number().int().safe(), z.null()]).optional(),
     "target_total": z.union([z.number().int().safe(), z.null()]).optional(),
     "light": z.union([StudioSavedLightHistorySchema, z.null()]).optional(),
@@ -15083,7 +15105,7 @@ export const StudioSetFieldEntrySchema: z.ZodType<StudioSetFieldEntry> = z.lazy(
     "over": z.union([z.record(IndexNameSchema, IndexRuleSchema).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }), z.null()]).optional(),
     "combination": z.union([z.literal("cross"), z.literal("zip")]).optional(),
     "entry": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
-    "label": z.union([z.string(), z.null()]).optional(),
+    "label": z.string(),
     "weight": z.union([WeightPartSchema, StudioSetEntryPartsSchema, z.null()]),
     "member_count": z.union([z.number().int().safe(), z.null()]).optional(),
   }).strict()
@@ -15932,6 +15954,7 @@ export const contractSchemas = {
   StudioEvaluationCheckpoint: StudioEvaluationCheckpointSchema,
   StudioEvaluationCheckpointGap: StudioEvaluationCheckpointGapSchema,
   StudioEvaluationCheckpointSeries: StudioEvaluationCheckpointSeriesSchema,
+  StudioTrialName: StudioTrialNameSchema,
   StudioSavedEvaluationResult: StudioSavedEvaluationResultSchema,
   StudioSavedEvaluationRow: StudioSavedEvaluationRowSchema,
   StudioSavedTrainAttempt: StudioSavedTrainAttemptSchema,
@@ -16134,6 +16157,7 @@ export interface ContractTypeMap {
   StudioEvaluationCheckpoint: StudioEvaluationCheckpoint;
   StudioEvaluationCheckpointGap: StudioEvaluationCheckpointGap;
   StudioEvaluationCheckpointSeries: StudioEvaluationCheckpointSeries;
+  StudioTrialName: StudioTrialName;
   StudioSavedEvaluationResult: StudioSavedEvaluationResult;
   StudioSavedEvaluationRow: StudioSavedEvaluationRow;
   StudioSavedTrainAttempt: StudioSavedTrainAttempt;

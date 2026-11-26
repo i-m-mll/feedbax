@@ -219,7 +219,7 @@ class StudioSetEntryParts(StrictModel):
 
 class StudioSetFieldEntry(StoredFamilyMember):
     entry: ProjectName | None
-    label: str | None = None
+    label: str
     weight: WeightPart | StudioSetEntryParts | None
     member_count: int | None = None
 

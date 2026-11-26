@@ -138,11 +138,16 @@ class StudioBoundBestSubject(StrictModel):
     selection_sha256: str = Field(pattern=_DigestPattern)
 
 
+class StudioTrialName(StrictModel):
+    id: str
+    name: str | None
+
+
 class StudioSavedEvaluationResult(StrictModel):
     job_id: str
     request_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
-    trials: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    trials: list[StudioTrialName] | None = Field(default=None, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
     loaded_model: ImportedModelProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -166,7 +171,7 @@ class StudioSavedEvaluationRow(StrictModel):
     status: JobStatus
     reason: str | None
     can_run: bool
-    trials: list[str]
+    trials: list[StudioTrialName]
     result: StudioSavedEvaluationResult | None
     previous: StudioSavedEvaluationResult | None = Field(default=None, exclude_if=lambda value: value is None)
     subject_rank_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -315,7 +320,7 @@ class StudioProjectWindowMapRow(StrictModel):
     reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
     opening_step: OpeningStep | None = Field(default=None, exclude_if=lambda value: value is None)
     collection_progress: StoreTransferProgress | None = Field(default=None, exclude_if=lambda value: value is None)
-    evaluation_conditions: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    evaluation_conditions: list[StudioTrialName] | None = Field(default=None, exclude_if=lambda value: value is None)
     origin: int | None = Field(default=None, exclude_if=lambda value: value is None)
     """A Train row's completed-update count at its start (0 when fresh); its readers select updates after it."""
     target_total: int | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -459,6 +464,9 @@ class StudioPlanRequest(StudioPlanRequestAddress):
 class StudioPlanReviewSource(StrictModel):
     kind: SourceKind
     key: str
+    name: str
+    axis_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    member_count: int | None = Field(default=None, exclude_if=lambda value: value is None)
     path: str
     step: str | None = Field(default=None, exclude_if=lambda value: value is None)
     axis: str | None = Field(default=None, exclude_if=lambda value: value is None)
