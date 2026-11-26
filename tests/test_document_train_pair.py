@@ -766,13 +766,17 @@ def test_a_sweep_on_a_term_follows_the_term_when_the_terms_are_reordered(authore
         assert weights == {(("effort", 1), ("speed", 2)), (("effort", 1), ("speed", 3))}
 
 
-@pytest.mark.parametrize("segment", ["0", "pace"])
-def test_a_term_is_addressed_only_by_an_id_it_has(authored, segment):
+@pytest.mark.parametrize(("segment", "reason"), [
+    ("0", "is addressed by its id"), ("pace", "is not an id of this collection"),
+])
+def test_a_term_is_addressed_only_by_an_id_it_has(authored, segment, reason):
     raw = _two_term_project(authored, ("effort", "speed"))
     raw["steps"]["train"]["sweep"] = {"axes": {"enabled": {
         "path": f"trial_documents.objective.terms.{segment}.enabled", "values": [True, False],
     }}}
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    assert not plan.runs
     assert plan.diagnostics
-    assert all("missing segment" in issue.detail and segment in issue.detail and issue.step == "train"
-               for issue in plan.diagnostics)
+    for issue in plan.diagnostics:
+        assert issue.step == "train"
+        assert f"{segment!r} {reason}; the ids are effort, speed" in issue.detail
