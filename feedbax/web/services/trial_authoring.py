@@ -1640,6 +1640,7 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
 def _trial_fields(
     path, site: Site, expression, functions, sweep, row, problems, name_paths, period,
     menu_fields: dict[str, TrialExpressionField], sites: FieldSiteIndex,
+    *, objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
 ) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
@@ -1681,7 +1682,8 @@ def _trial_fields(
     ))})
     text = print_field(expression, printed) if expression is not None else ""
     marks = _field_problems(path, site, text, functions, problems)
-    if not marks and (missing or isinstance(expression, UnresolvedValue)):
+    reports_missing = path[0] != "objective" or objective_use != ObjectiveUse.INHERITED
+    if not marks and (missing and reports_missing or isinstance(expression, UnresolvedValue)):
         found = read_field(text, site, functions)
         if isinstance(found, tuple):
             marks = [problem.model_copy(update={"path": path}) for problem in found]
@@ -1924,6 +1926,10 @@ def trial_authoring(
     fields = []
     sites = FieldSiteIndex()
     menu_fields: dict[str, TrialExpressionField] = {}
+    objective_use = (
+        ObjectiveUse.INHERITED if objective_source is not None and objective_source.kind in {"train", "synthesize"}
+        else ObjectiveUse.TRAIN
+    )
     for path, site in projected.fields.items():
         if path[1:2] == ("validation_trials",):
             continue
@@ -1931,7 +1937,7 @@ def trial_authoring(
             continue  # Internal gate and operand signals are not editable Task fields.
         fields.extend(_trial_fields(
             path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems,
-            output_paths, period, menu_fields, sites,
+            output_paths, period, menu_fields, sites, objective_use=objective_use,
         ))
     set_fields = trial_set_fields(project, key.step)
     if set_fields:
@@ -1944,11 +1950,7 @@ def trial_authoring(
         problem for field in fields for problem in field.problems
         if not _held_problems(problem.path, projected.problems)
     ]
-    tasks, task_problems = _task_choices(
-        folders, project, documents, bundle, graph,
-        ObjectiveUse.INHERITED if objective_source is not None and objective_source.kind in {"train", "synthesize"}
-        else ObjectiveUse.TRAIN,
-    )
+    tasks, task_problems = _task_choices(folders, project, documents, bundle, graph, objective_use)
     return StudioTrialAuthoring(
         revision=snapshot.revision, run=body.run,
         expression_context=folders.trial_expression_menus.remember(
