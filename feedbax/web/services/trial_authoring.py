@@ -52,7 +52,7 @@ from feedbax.contracts.project_storage import stored_keyed_collection, stored_pr
 from feedbax.contracts.stored_members import project_member
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.contracts.studio_sets import SetEntryTask
-from feedbax.contracts.studio_place import task_start_path
+from feedbax.contracts.studio_place import authored_task_link_path, task_start_path
 from feedbax.studio.authoring import training_document_choice
 from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -62,7 +62,7 @@ from feedbax.contracts.studio_trials import (
     StudioTrialExpressionEdit, StudioTrialField,
     StudioTrialInput, StudioTrialObjectiveSource, StudioTrialObjectiveTermAdd,
     StudioTrialOutput, StudioTrialRelate, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope,
-    StudioTrialStructureEdit,
+    StudioTrialStructureEdit, StudioTrialUnresolvedLink,
 )
 from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection,
@@ -359,6 +359,11 @@ def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None 
     return documents.model_copy(update={"task": task, "python_task": None, "input_bindings": bindings})
 
 
+def _authored_trial_problem(problem: Problem) -> Problem:
+    path = authored_task_link_path(problem.path)
+    return problem if path is problem.path else problem.model_copy(update={"path": path})
+
+
 def _task_choices(
     folders: ProjectFolderService, project: Project, documents: TrialDocuments | _InitialTrialDocuments,
     bundle: ApplicationRegistryBundle, graph: GraphSpec | None, objective_use: ObjectiveUse,
@@ -389,7 +394,8 @@ def _task_choices(
         )
         found = folders.task_choice_problems(key, partial(pair, entry))
         references = []
-        for problem in found:
+        for lowered in found:
+            problem = _authored_trial_problem(lowered)
             index = indices.setdefault(problem.model_dump_json(), len(problems))
             if index == len(problems):
                 problems.append(problem)
@@ -1951,6 +1957,19 @@ def trial_authoring(
         if not _held_problems(problem.path, projected.problems)
     ]
     tasks, task_problems = _task_choices(folders, project, documents, bundle, graph, objective_use)
+    resets = [
+        StudioTrialReset(
+            address=field.address, address_text=field.address.to_authored_text(),
+            path=task_start_path(reset_model, field.address), type=field.type, finest=field.finest,
+            required=field.required,
+        )
+        for field in projected.resets
+    ]
+    reset_keys = {reset.address_text for reset in resets}
+    unresolved_links = [
+        StudioTrialUnresolvedLink(key=key, path=task_start_path(reset_model, ModelAddress.from_authored_text(key)))
+        for key in stored_task.links if key not in reset_keys
+    ] if isinstance(stored_task, StoredTaskDocument) else []
     return StudioTrialAuthoring(
         revision=snapshot.revision, run=body.run,
         expression_context=folders.trial_expression_menus.remember(
@@ -1978,10 +1997,10 @@ def trial_authoring(
         input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
-        resets=[StudioTrialReset(address=field.address, path=task_start_path(reset_model, field.address),
-                                 type=field.type, finest=field.finest, required=field.required)
-                for field in projected.resets],
-        fields=fields, **sites.tables(fields), problems=[*projected.problems, *field_problems, *refused],
+        resets=resets, unresolved_links=unresolved_links,
+        fields=fields, **sites.tables(fields), problems=[
+            *(_authored_trial_problem(problem) for problem in (*projected.problems, *field_problems)), *refused,
+        ],
         created_term=created_term if stored.files or stored.created else None,
         files=stored.files, created=list(stored.created),
         store_choices=store_choices,
