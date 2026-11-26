@@ -802,7 +802,7 @@ def test_an_optimizer_swept_with_its_parameters_crosses_the_learning_rate(tmp_pa
             ("Adam", 0.001), ("Adam", 0.003), ("SGD", 0.001), ("SGD", 0.003),
         ]
         assert {row.label for row in plan.rows} == {
-            f"learning-rate={rate}, optimizer={name}" for rate in (0.001, 0.003) for name in ("Adam", "SGD")
+            f"Learning rate {rate} · {name}" for rate in (0.001, 0.003) for name in ("Adam", "SGD")
         }
         adam = train.runs(tmp_path, "classes", optimizer="adam")
         assert {definitions[key]["b1"] for key in adam} == {0.8}
@@ -875,7 +875,7 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
                       for row in runs}
         assert sorted(coordinate.values(), key=str) == [("Adam", 0.8), ("Adam", 0.9), ("SGD", None)]
         assert {row.label for row in runs} == {
-            f"optimizer=Adam, {axis}=0.8", f"optimizer=Adam, {axis}=0.9", "optimizer=SGD",
+            "Adam · Optimizer b1 0.8", "Adam · Optimizer b1 0.9", "SGD",
         }
         (sgd,) = (key for key, value in coordinate.items() if value[0] == "SGD")
         assert train.requests(tmp_path, name)[sgd] == before[sgd]
