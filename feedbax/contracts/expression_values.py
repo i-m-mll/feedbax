@@ -94,12 +94,15 @@ class SetVariableOrigin(ValueRecord):
     variable: str
 
 
-class ScopedValue(ValueRecord):
+class ScopedValueBase(ValueRecord):
     id: Annotated[str, Field(min_length=1)]
     name: Annotated[str, Field(min_length=1)]
     type: ValueType
     level: Level
     list_count: Annotated[StrictInt, Field(gt=0)] | None = None
+
+
+class ScopedValue(ScopedValueBase):
     set_entry: SetVariableOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
 
 

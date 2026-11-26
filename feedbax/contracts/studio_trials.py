@@ -6,7 +6,9 @@ from pydantic import Field, JsonValue, field_serializer, model_validator
 
 from feedbax.contracts.project_sweep import SetTrialSampling
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import Expression, Level, NodePath, Problem, ScopedValue, SetVariableOrigin, ValueType, WeightPart
+from feedbax.contracts.expression_values import (
+    Expression, Level, NodePath, Problem, ScopedValue, ScopedValueBase, SetVariableOrigin, ValueType, WeightPart,
+)
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
@@ -235,7 +237,7 @@ class StudioSetVariableOrigin(SetVariableOrigin):
     member_count: int | None
 
 
-class StudioTrialVariable(ScopedValue):
+class StudioTrialVariable(ScopedValueBase):
     set_entry: StudioSetVariableOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
