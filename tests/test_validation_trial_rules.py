@@ -68,8 +68,8 @@ def test_empty_trial_member_retains_its_key_but_the_default_is_sampled():
         type(listed).model_validate(listed.model_dump() | {"validation_trials": [{"epoch_steps": {"prep": 1}}]})
 
 
-@pytest.mark.parametrize("expression", ["U(1, 2)", "drawn + 1"])
-def test_validation_values_refuse_draws_and_other_variables(expression):
+@pytest.mark.parametrize("expression", ["U(1, 2)", "drawn + 1", "1 / 0"])
+def test_validation_values_must_be_defined_constants(expression):
     task = _task({"check": {"variables": {"assigned": expression}}}).lower()
     problems = _compile(task)
     assert not isinstance(problems, DocumentTask)
