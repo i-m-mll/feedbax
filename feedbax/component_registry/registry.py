@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional
 
+from pydantic import BaseModel
+
 from feedbax.contracts.portable import ComponentOwner, GraphTemplate
 
 from feedbax.contracts.component import (
@@ -293,6 +295,11 @@ class ComponentRegistry:
     def get(self, name: str) -> Optional[DeclaredComponent]:
         meta = self._component(name)
         return deepcopy(meta) if meta is not None else None
+
+    def parameter_model(self, type_id: str, revision: int | None) -> type[BaseModel] | None:
+        """Read the registered parameter model if it owns this declaration revision."""
+        meta = self._component(type_id)
+        return meta.params.model if meta is not None and revision in (None, meta.revision) else None
 
     def dynamic_port_layout(
         self,

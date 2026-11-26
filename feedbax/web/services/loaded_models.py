@@ -7,7 +7,7 @@ from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, Stor
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_inputs import DocumentReference
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document, composed_loaded_model_projection
+from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.studio_loaded_model import (
     StudioLoadedModelDoesNotFit, StudioLoadedModelExportRequest, StudioLoadedModelImported,
     StudioLoadedModelImportQuery, StudioLoadedModelImportResult, StudioLoadedModelUnreadableArchive,
@@ -21,7 +21,9 @@ from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifes
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE
 from feedbax.planner.project_plan import RunKey
 from feedbax.project_folder import ProjectFileExists, ProjectFolderInvalid, ProjectFolderNotFound
-from feedbax.project_model_assets import ModelAssetError, read_pinned_project_model, stage_project_archive
+from feedbax.project_model_assets import (
+    ModelAssetError, composed_loaded_model_projection, read_pinned_project_model, stage_project_archive,
+)
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 
