@@ -24,6 +24,7 @@ _RETIREMENTS = frozenset({
     "shared-trial-windows",
     "typed-delay-initial",
     "typed-intervention-operands",
+    "p4-keyed-validation-trials",
 })
 
 
