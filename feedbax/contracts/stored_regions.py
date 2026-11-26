@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import cache
-from typing import Any, Annotated, TYPE_CHECKING
+from typing import Annotated, Any, Protocol
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import to_jsonable_python
 
-from feedbax.contracts.analysis_document import OperationElement, StoredAnalysisPayload
+from feedbax.contracts.analysis_document import StoredAnalysisPayload
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.objective_document import StoredObjectiveDocument
 from feedbax.contracts.project_inputs import DocumentReference
@@ -19,10 +19,9 @@ from feedbax.contracts.request_specs import (
     AnalysisRequestSpec, DocumentTrainingRequestSpec, EvaluationRequestSpec, ReportRequestSpec,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, EveryCondition, RolloutSettings, SampleTrials, SelectedConditions
-from feedbax.contracts.stored_model import StoredLeafComponent, StoredModelDocument, model_leaf_expression_values
+from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PythonTaskSelection, StoredTaskDocument
-from feedbax.contracts.training_document import TrainingDocument
 
 
 class _TrialSlots(StrictModel):
@@ -91,93 +90,18 @@ class StoredRegion:
         return self.model.model_validate(values, extra="forbid")
 
 
-if TYPE_CHECKING:
-    from feedbax.analysis.operations import OperationRegistry
-    from feedbax.component_registry import ComponentRegistry
-    from feedbax.synthesis.methods import SynthesisMethodRegistry
-    from feedbax.tasks.registry import PythonTaskRegistry
-    from feedbax.training.methods import TrainingMethodRegistry
+class StoredRegionResolver(Protocol):
+    """Resolve open authored fields against declarations supplied by the caller."""
+
+    def region(self, owner: BaseModel, field: str) -> StoredRegion | None: ...
 
 
-@dataclass(frozen=True)
-class StoredRegionRegistries:
-    """The installed schemas supplied by the same registries that make the plan."""
-
-    training_methods: TrainingMethodRegistry | None = None
-    synthesis_methods: SynthesisMethodRegistry | None = None
-    operations: OperationRegistry | None = None
-    python_tasks: PythonTaskRegistry | None = None
-    components: ComponentRegistry | None = None
-
-    def _registry(self, family: str):
-        supplied = getattr(self, family)
-        if supplied is not None:
-            return supplied
-        from feedbax.application.composition import load_application
-
-        return getattr(load_application().bundle, family)
-
-    def region(self, owner: BaseModel, field: str) -> StoredRegion | None:
-        """Find the declaration owning an open value field, if there is one."""
-        try:
-            if isinstance(owner, (StoredTrainInline, TrainingDocument)) and field == "settings":
-                method = getattr(owner, "method", None)
-                return StoredRegion(self._registry("training_methods").resolve(method).settings_model
-                                    if isinstance(method, str) else None)
-            if isinstance(owner, SynthesisStepPayload) and field == "settings":
-                method = getattr(owner, "method", None)
-                return StoredRegion(self._registry("synthesis_methods").resolve(method).declaration.settings_model
-                                    if isinstance(method, str) else None)
-            if isinstance(owner, OperationElement) and field == "params":
-                operation = getattr(owner, "operation", None)
-                return StoredRegion(self._registry("operations").resolve(operation).value.parameter_model
-                                    if isinstance(operation, str) else None)
-            if isinstance(owner, PythonTaskSelection) and field == "params":
-                task = self._registry("python_tasks").resolve(owner.type)
-                return StoredRegion(task.parameters if task is not None else None)
-            if isinstance(owner, StoredLeafComponent) and field == "fields":
-                components = self._registry("components")
-                declaration = components.get(owner.type)
-                if declaration is not None and owner.revision in (None, declaration.revision):
-                    from feedbax.compiler.model_document import model_tau_seconds, split_model_field_context
-
-                    lowered, authored = model_leaf_expression_values(owner, components)
-                    _, context = split_model_field_context(declaration, owner.fields | lowered)
-                    if declaration.name == "feedbax.VanillaRNN" and "tau" in context:
-                        model_tau_seconds(context["tau"], 1.0)
-                    return StoredRegion(
-                        declaration.params.model, component=True, contextual=frozenset(context),
-                        lowered_expressions=lowered, authored_expressions=authored,
-                    )
-                return StoredRegion(None)
-            if isinstance(owner, StoredEvaluateInline) and field == "params" and (
-                getattr(owner, "evaluation_type", None) == ROLLOUT_TYPE
-            ):
-                return StoredRegion(StoredRolloutSettings)
-        except KeyError:
-            return StoredRegion(None)
-        return None
-
-    def feedbax_models(self) -> Iterable[type[BaseModel]]:
-        """Enumerate the declared defaults that belong in Feedbax's manifest."""
-        for family in ("training_methods", "synthesis_methods", "operations", "python_tasks", "components"):
-            registry = self._registry(family)
-            for key in registry.names() if family == "components" else registry.keys():
-                record = registry.resolve(key) if family == "operations" else registry.declaration_record(key)
-                if record.source.distribution != "feedbax":
-                    continue
-                value = record.value
-                match family:
-                    case "training_methods":
-                        yield value.settings_model
-                    case "synthesis_methods":
-                        yield value.declaration.settings_model
-                    case "operations":
-                        yield value.parameter_model
-                    case "python_tasks":
-                        yield value.parameters
-                    case "components":
-                        yield value.params.model
+def declared_stored_region(owner: BaseModel, field: str) -> StoredRegion | None:
+    if isinstance(owner, StoredEvaluateInline) and field == "params" and (
+        getattr(owner, "evaluation_type", None) == ROLLOUT_TYPE
+    ):
+        return StoredRegion(StoredRolloutSettings)
+    return None
 
 
 def inline_models() -> tuple[type[BaseModel], ...]:

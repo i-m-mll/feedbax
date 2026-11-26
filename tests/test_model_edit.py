@@ -15,7 +15,8 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import ModelComponent, ModelDocument, SignalType
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditProblem, ModelEditState
 from feedbax.contracts.project import RootDocument, Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.contracts.stored_model import (
     STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredDelayAttachment, StoredModelDocument, stored_model_attachment,
     stored_model_component,

@@ -10,10 +10,10 @@ import pytest
 from feedbax.cli import main
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.project import Project
+from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.project_io import (
     STUDIO_WRITE_LOCK_FILENAME,
     ProjectConfiguration,
-    dump_text_project,
 )
 from feedbax.planner.project_plan import PlanRequest, PlanRequests, RunKey, compile_project, diff_plan_requests
 from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests

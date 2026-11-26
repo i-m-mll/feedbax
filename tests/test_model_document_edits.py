@@ -10,7 +10,8 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import ModelTime
 from feedbax.contracts.project import BasedDocument, Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, load_text_project
 from feedbax.contracts.project_resolution import compose_document
 from feedbax.contracts.project_sweep import model_field_path, model_field_target
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument

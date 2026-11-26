@@ -4,7 +4,8 @@ from fastapi.testclient import TestClient
 
 from feedbax import project_folder
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.planner.project_plan import compile_project
 from feedbax.project_folder import ProjectFolderLocation
 from feedbax.web.app import create_app

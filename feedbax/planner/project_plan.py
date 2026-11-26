@@ -633,6 +633,7 @@ class SourceSnapshot:
     project: Project
     variant_sites: dict[str, bool]
     sweeps: dict[tuple[str, str], SourceSweep]
+    training_methods: TrainingMethodRegistry | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -644,7 +645,11 @@ class PlanSourceIndex:
     @cached_property
     def _resolver(self) -> _Compiler:
         readers = BaseReaders(external=self.externals.get, figure_external=self.externals.get)
-        return _Compiler(self.snapshot.project, readers, (), python_tasks=application_python_tasks())
+        project = self.snapshot.project
+        methods = self.snapshot.training_methods
+        if methods is None and any(step.kind == "train" for step in project.steps.values()):
+            methods = load_application().bundle.training_methods
+        return _Compiler(project, readers, (), python_tasks=application_python_tasks(), training_methods=methods)
 
     @cached_property
     def _templates(self) -> Callable[[str, str], tuple[StepTemplate, dict[str, ExpandedRow]]]:
@@ -657,7 +662,7 @@ class PlanSourceIndex:
             project = compiler.variants[variant]
             template = compose_step(
                 project, step, readers=compiler.readers, track_sources=True,
-                variant_sources=compiler.variant_sources.get(variant),
+                variant_sources=compiler.variant_sources.get(variant), training_methods=compiler.training_methods,
             )
             if isinstance(template, ProjectDiagnostic):
                 raise ValueError(f"Cannot resolve saved source for {variant}/{step}: {template.detail}")
@@ -2318,8 +2323,10 @@ class _Compiler:
             tuple(self.diagnostics),
             MappingProxyType(self.subsets),
             MappingProxyType(self.selected_definitions),
-            SourceSnapshot(self.project.model_copy(deep=True), self.variant_sites, self.source_sweeps)
-            if self.source_sweeps is not None else None,
+            SourceSnapshot(
+                self.project.model_copy(deep=True), self.variant_sites, self.source_sweeps,
+                training_methods=self.training_methods,
+            ) if self.source_sweeps is not None else None,
             MappingProxyType(self.exception_matches),
             MappingProxyType(dict(self.variants)),
         )
