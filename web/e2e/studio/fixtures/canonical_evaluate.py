@@ -257,8 +257,8 @@ def scoped_series_files():
     evaluation["sweep"] = {"axes": {
         "subject": {"input": "subject"},
         "replicate": {"values": {
-            "left": {"patches": {"params.seed": {"value": 31}}},
-            "right": {"patches": {"params.seed": {"value": 32}}},
+            "left": {"label": "Left", "patches": {"params.seed": {"value": 31}}},
+            "right": {"label": "Right", "patches": {"params.seed": {"value": 32}}},
         }},
     }}
     return [*series_files(), {"kind": "step", "id": "evaluate", "step": evaluation}]

@@ -37,7 +37,7 @@ def seed_entries(home: str, project_id: str):
     for name in ("velocity-analysis", "velocity-figure", "velocity-report"):
         raw["documents"].pop(name, None)
     raw["documents"]["set"] = {
-        "schema": "feedbax.set_document.v1", "label": "Set", "payload": {"entries": {"light": {}, "heavy": {}}},
+        "schema": "feedbax.set_document.v1", "label": "Set", "payload": {"entries": {"light": {"label": "Light"}, "heavy": {"label": "Heavy"}}},
     }
     raw["steps"]["train"]["sweep"] = {"axes": {"set": {"set": "set"}}}
     return _seed(home, project_id, raw)
