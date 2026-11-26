@@ -17,7 +17,7 @@ from tests.test_document_train_pair import authored_documents, document_project
 PROJECT = "sets"
 BASE = f"/api/projects/{PROJECT}"
 GAIN = {
-    "kind": "leaf", "name": "Gain", "type": "feedbax.Scale", "revision": None, "fields": {"scale": 0.5},
+    "kind": "leaf", "label": "Gain", "type": "feedbax.Scale", "revision": None, "fields": {"scale": 0.5},
     "port_counts": {}, "attachments": {"sources": {}, "sinks": {}},
 }
 INSERT = {"op": "insert_component", "address": {"composites": [], "element": {"kind": "wire", "id": "effector-wire"}},
@@ -341,11 +341,11 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
     entry = _duplicate(folders, client, "other", ["default"])["value"]
     _set_edit(folders, client, {"kind": "save_set", "step": "other", "axis": "run"})
     variable = {
-        "id": "onset", "name": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
+        "label": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
         "value": {"kind": "literal", "value": 0.03, "unit": "s"},
     }
     _set_edit(folders, client, {
-        "kind": "set_entry_task", "step": "other", "axis": "run", "entry": entry, "task_variables": [variable],
+        "kind": "set_entry_task", "step": "other", "axis": "run", "entry": entry, "task_variables": {"onset": variable},
     })
 
     def selected(row, change=None):
@@ -369,26 +369,27 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
     origin = {"step": "other", "axis": "run", "set": field.set, "entry": entry, "variable": "onset"}
     for row in _rows(folders, "other"):
         read = selected(row)
-        for variables in (read["variables"], read["task"]["variables"]):
-            assert any(item["id"] == variable["id"] for item in variables) == (row == f"run={entry}")
+        on_entry = row == f"run={entry}"
+        assert any(item["id"] == "onset" for item in read["variables"]) == on_entry
+        assert ("onset" in read["task"]["variables"]) == on_entry
         assert [item["set_entry"] for item in read["variables"] if "set_entry" in item] == (
             [origin] if row == f"run={entry}" else []
         )
     set_expression(f"run={entry}", "onset", "0.04 s")
-    assert selected(f"run={entry}")["task"]["variables"][-1]["value"]["value"] == 0.04
+    assert selected(f"run={entry}")["task"]["variables"]["onset"]["value"]["value"] == 0.04
     _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
     read = selected("default")
-    for variables in (read["variables"], read["task"]["variables"]):
-        assert len([item for item in variables if item["name"] == f"{entry} · Onset"]) == 1
+    assert len([item for item in read["variables"] if item["name"] == f"{entry} · Onset"]) == 1
     projected = next(item for item in read["variables"] if item["name"] == f"{entry} · Onset")
     assert projected["set_entry"] == origin
     scoped = projected["id"]
+    assert read["task"]["variables"][scoped]["label"] == f"{entry} · Onset"
     set_expression("default", scoped, "0.07 s")
     field = folders.read(PROJECT).project.steps["other"].set_fields["run"]
     project = folders.read(PROJECT).project
     source = project.documents[field.axis.set].payload["entries"][entry]
-    assert source["task_variables"][0]["id"] == "onset"
-    assert source["task_variables"][0]["value"]["value"] == 0.07
+    assert set(source["task_variables"]) == {"onset"}
+    assert source["task_variables"]["onset"]["value"]["value"] == 0.07
 
 
 def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
@@ -402,14 +403,14 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         raw["documents"][bank] = {
             "label": "Document",
             "schema": SET_DOCUMENT_SCHEMA_ID,
-            "payload": {"entries": {"shift": {"label": "Shift", "task_variables": [{
-                "id": "amount", "name": "Amount", "type": {"base": "real"},
+            "payload": {"entries": {"shift": {"label": "Shift", "task_variables": {"amount": {
+                "label": "Amount", "type": {"base": "real"},
                 "value": {"kind": "literal", "value": value},
-            }]}}},
+            }}}}},
         }
-    raw["documents"]["reach-bank"]["payload"]["entries"]["shift"]["task_variables"].append({
-        "id": "other", "name": "Other", "type": {"base": "real"}, "value": {"kind": "literal", "value": 3.0},
-    })
+    raw["documents"]["reach-bank"]["payload"]["entries"]["shift"]["task_variables"]["other"] = {
+        "label": "Other", "type": {"base": "real"}, "value": {"kind": "literal", "value": 3.0},
+    }
 
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         folders = client.app.state.project_folders
@@ -438,8 +439,8 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         assert written.status_code == 200, written.text
         stored = folders.read(PROJECT).project.documents
         for bank, value in (("reach-bank", 1.0), ("hold-bank", 4)):
-            (amount, *_) = stored[bank].payload["entries"]["shift"]["task_variables"]
-            assert amount["name"] == "Amount" and amount["value"]["value"] == value
+            amount = stored[bank].payload["entries"]["shift"]["task_variables"]["amount"]
+            assert amount["label"] == "Amount" and amount["value"]["value"] == value
 
 
 def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
@@ -447,13 +448,15 @@ def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
 
     raw = document_project(authored_documents(), evaluation=True)
     variable = {
-        "id": "onset", "name": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
+        "label": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
         "value": {"kind": "literal", "value": 0.03, "unit": "s"},
     }
     raw["documents"]["entry-set"] = {
         "label": "Entry set",
         "schema": SET_DOCUMENT_SCHEMA_ID,
-        "payload": {"entries": {"ordinary": {"label": "Ordinary"}, "pulse": {"label": "Pulse", "task_variables": [variable]}}},
+        "payload": {"entries": {
+            "ordinary": {"label": "Ordinary"}, "pulse": {"label": "Pulse", "task_variables": {"onset": variable}},
+        }},
     }
     raw["steps"]["baseline"]["sweep"] = {"axes": {"window": {"set": "entry-set"}}}
     with TestClient(create_app(projects_dir=tmp_path)) as client:
@@ -473,8 +476,9 @@ def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
 
         for row in before:
             read = author(row)
-            for projected in (read["variables"], read["task"]["variables"]):
-                assert any(item["id"] == "onset" for item in projected) == (row == "window=pulse")
+            on_entry = row == "window=pulse"
+            assert any(item["id"] == "onset" for item in read["variables"]) == on_entry
+            assert ("onset" in read["task"]["variables"]) == on_entry
         edit = author("window=pulse", {
             "kind": "expression", "path": "/task/variables/onset/value", "edit": {"kind": "text", "text": "0.04 s"},
         })
@@ -533,15 +537,15 @@ def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, sub
         "label": "Loads",
         "schema": "feedbax.set_document.v2",
         "payload": {"entries": {"pulse": {"label": "Pulse", "differences": {
-            "/interior/wires/effector-wire/attachments": {"value": [{
-                "id": "pulse", "kind": "intervention", "operation": "Add",
+            "/interior/wires/effector-wire/attachments": {"value": {"pulse": {
+                "kind": "intervention", "operation": "Add",
                 "operands": {"value": {"kind": "value", "value": [2, 0]}},
                 "window": {"spans": [{
                     "kind": "interval",
                     "start": {"anchor": {"kind": "epoch", "edge": "start", "epoch": "move"}},
                     "end": {"offset": {"value": 2, "unit": "st"}},
                 }]},
-            }]},
+            }}},
         }}}},
     }
     with TestClient(create_app(projects_dir=tmp_path)) as client:
@@ -585,10 +589,10 @@ def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, sub
 
 def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
     raw = document_project(authored_documents())
-    raw["documents"]["task"]["payload"]["variables"].append({
-        "id": "is_catch", "name": "is_catch", "type": {"base": "boolean"},
+    raw["documents"]["task"]["payload"]["variables"]["is_catch"] = {
+        "label": "is_catch", "type": {"base": "boolean"},
         "value": {"kind": "literal", "value": False},
-    })
+    }
     raw["documents"]["loads"] = {
         "label": "Loads", "schema": "feedbax.set_document.v2", "payload": {"entries": {"heavy": {"label": "Heavy"}}},
     }

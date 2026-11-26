@@ -48,7 +48,7 @@ def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slo
     if operation == "clamp":
         operands["low"] = {"kind": "value", "value": -1.0}
     attachment = {
-        "id": "pulse", "kind": "intervention", "operation": operation, "operands": operands,
+        "kind": "intervention", "operation": operation, "operands": operands,
         "window": {"spans": [{
             "kind": "interval",
             "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
@@ -69,7 +69,7 @@ def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slo
                 "out": {
                     "source": {"owner": "component", "component": "relay", "port": "output"},
                     "target": {"owner": "outputs", "port": "command"},
-                    "attachments": [] if source == "set" else [attachment],
+                    "attachments": [] if source == "set" else [{"id": "pulse", **attachment}],
                 },
             },
         },
@@ -95,7 +95,7 @@ def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slo
         if source == "set":
             bank = RootDocument(label="Document", schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"pulse": {
                 "label": "Pulse",
-                "differences": {"/interior/wires/out/attachments": {"value": [attachment]}},
+                "differences": {"/interior/wires/out/attachments": {"value": {"pulse": attachment}}},
             }}})
             field = TrialSetField.model_validate({"axis": {"set": "bank"}, "sampling": {"kind": "weighted", "none": 0}})
             model, task, _ = lower_trial_sets(model, task, {"bank": field}, {"bank": bank}.get, registry, functions=functions)
@@ -166,26 +166,26 @@ def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
     intervention = {"kind": "attachment", "id": "pulse", "parent": {"kind": "wire", "id": "input"}}
     bank = RootDocument(label="Document", schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"curl": {
         "label": "Curl",
-        "task_variables": [
-            {"id": "amp", "name": "Amplitude", "type": {"base": "real"}, "value": choice(1.0, 2.0)},
-            {"id": "onset", "name": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
-             "value": choice(0.02, 0.04, unit="s")},
-        ],
-        "task_links": [
-            {"variable": "amp", "model_field": address(
+        "task_variables": {
+            "amp": {"label": "Amplitude", "type": {"base": "real"}, "value": choice(1.0, 2.0)},
+            "onset": {"label": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
+                      "value": choice(0.02, 0.04, unit="s")},
+        },
+        "task_links": {
+            address(
                 "field", parent={"kind": "component", "id": "curl"}, path=["fields", "scale"],
-            )},
-            {"variable": "onset", "model_field": address(
+            ): "amp",
+            address(
                 "field", parent=intervention, path=["window", "spans", 0, "start", "offset"],
-            )},
-        ],
+            ): "onset",
+        },
         "differences": {
             "/interior/components/curl": {"value": {
-                "kind": "leaf", "name": "Curl", "type": "feedbax.CurlField", "fields": {"active": True},
+                "kind": "leaf", "label": "Curl", "type": "feedbax.CurlField", "fields": {"active": True},
             }},
             "/interior/wires/curl-input": {"value": wire(effector, port("component", "effector", "curl"))},
-            "/interior/wires/input/attachments": {"value": [{
-                "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {
+            "/interior/wires/input/attachments": {"value": {"pulse": {
+                "kind": "intervention", "operation": "add", "operands": {"value": {
                     "kind": "wire", "source": port("component", "force", "curl"),
                 }},
                 "window": {"spans": [{
@@ -194,7 +194,7 @@ def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
                         "offset": {"value": 0, "unit": "st"},
                     }, "end": {"offset": {"value": 2, "unit": "st"}},
                 }]},
-            }]},
+            }}},
         },
     }}})
     sampled = TrialSetField.model_validate({"axis": {"set": "bank"}, "sampling": {"kind": "weighted"}})
@@ -232,12 +232,12 @@ def _conditioned_project(sampling):
     authored = authored_documents()
     raw = document_project(authored)
     task = raw["documents"]["task"]["payload"]
-    task["variables"].append({
-        "id": "trial-kind", "name": "trial_kind", "type": {"base": "integer"},
+    task["variables"]["trial-kind"] = {
+        "label": "trial_kind", "type": {"base": "integer"},
         "value": {"kind": "draw", "family": "choice", "args": [
             {"kind": "literal", "value": kind} for kind in range(3)
         ]},
-    })
+    }
     placements = {}
     for kind, axis in enumerate(("reach", "hold")):
         bank = f"{axis}-bank"
@@ -295,12 +295,12 @@ def test_trial_set_conditions_select_none_and_preserve_the_eligible_draws(sampli
 ])
 def test_trial_set_condition_problem_names_the_placement(sampling, condition, reason):
     _, raw = _conditioned_project(sampling)
-    raw["documents"]["task"]["payload"]["variables"].append({
-        "id": "step-flag", "name": "step_flag", "type": {"base": "boolean"},
+    raw["documents"]["task"]["payload"]["variables"]["step-flag"] = {
+        "label": "step_flag", "type": {"base": "boolean"},
         "value": {"kind": "call", "function": "gt", "args": [
             {"kind": "name", "reference": "time"}, {"kind": "literal", "value": 0, "unit": "s"},
         ]},
-    })
+    }
     raw["steps"]["train"]["set_fields"] = {
         "reach": raw["steps"]["train"]["set_fields"]["reach"] | {"condition": condition},
     }
@@ -326,10 +326,10 @@ def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
     }]}
     entries = {
         name: {"label": name.upper(), "differences": {"/interior/wires/effector-wire/attachments": {
-            "value": [{
-                "kind": "intervention", "id": name, "operation": "add", "operands": {"value": {"kind": "value", "value": vector}},
+            "value": {name: {
+                "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": vector}},
                 "window": window,
-            }],
+            }},
         }}}
         for name, vector in {"x": [1.0, 0.0], "y": [0.0, 2.0], "z": [-3.0, -3.0]}.items()
     }
@@ -446,9 +446,9 @@ def test_set_free_twin_keeps_trial_values_and_matches_the_unmodified_train():
             "label": "Document",
             "schema": "feedbax.set_document.v2",
             "payload": {"entries": {"pulse": {"label": "Pulse", "differences": {
-                "/interior/wires/effector-wire/attachments": {"value": [{
-                    "kind": "intervention", "id": bank, "operation": "add", "operands": {"value": {"kind": "value", "value": vector}},
-                }]},
+                "/interior/wires/effector-wire/attachments": {"value": {bank: {
+                    "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": vector}},
+                }}},
             }}}},
         }
     raw["steps"]["train"]["set_fields"] = {

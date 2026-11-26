@@ -15,7 +15,7 @@ from feedbax.application.composition import load_application
 from tests.test_document_train_pair import authored_documents, document_project
 
 GAIN = {
-    "kind": "leaf", "name": "Gain", "type": "feedbax.Scale", "revision": None, "fields": {"scale": 0.5},
+    "kind": "leaf", "label": "Gain", "type": "feedbax.Scale", "revision": None, "fields": {"scale": 0.5},
     "port_counts": {}, "attachments": {"sources": {}, "sinks": {}},
 }
 
@@ -27,12 +27,12 @@ def _entries():
             "/interior/wires/plant-wire/target": {"value": {"owner": "component", "component": "gain", "port": "input"}},
             "/interior/wires/gain-wire": {"value": {
                 "source": {"owner": "component", "component": "gain", "port": "output"},
-                "target": {"owner": "component", "component": "plant", "port": "force"}, "attachments": [],
+                "target": {"owner": "component", "component": "plant", "port": "force"},
             }},
         }},
-        "scaled": {"label": "Scaled force", "differences": {"/interior/wires/plant-wire/attachments": {"value": [
-            {"kind": "intervention", "id": "scale", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
-        ]}}},
+        "scaled": {"label": "Scaled force", "differences": {"/interior/wires/plant-wire/attachments": {"value": {
+            "scale": {"kind": "intervention", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
+        }}}},
         "heavy": {"label": "Heavy", "differences": {"/interior/components/plant/fields/mass": {"value": 2.0}}},
     }
 
