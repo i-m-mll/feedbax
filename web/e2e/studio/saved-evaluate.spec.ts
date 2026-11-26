@@ -748,7 +748,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', { t
     expect(response.ok(), await response.text()).toBe(true);
     return await response.json() as StudioProjectSnapshot;
   }
-  await chooseSweepValue(mapCard(page, 'evaluate'), 'Replicate', 'Left');
+  await chooseSweepValue(mapCard(page, 'evaluate'), 'Seed', 'Left');
   await expect(every).toHaveValue('2');
   await pick(kind, 'List');
   const axis = await save(async () => {
@@ -797,7 +797,7 @@ test('a checkpoint edit left for another run while the plan is read saves on its
   await reveal(page, 'Inspector');
   const kind = inspector.getByRole('combobox', { name: 'Checkpoint', exact: true });
   const updates = inspector.getByRole('textbox', { name: 'Updates', exact: true });
-  await chooseSweepValue(mapCard(page, 'evaluate'), 'Replicate', 'Left');
+  await chooseSweepValue(mapCard(page, 'evaluate'), 'Seed', 'Left');
   await expect(inspector.getByRole('textbox', { name: 'Every', exact: true })).toHaveValue('2');
   await pick(kind, 'List');
   const patches: StudioProjectSnapshot[] = [];

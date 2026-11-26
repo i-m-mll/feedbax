@@ -2106,6 +2106,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     <TrialTaskDocument view={value} commit={commit} runs={runs} entries={entries} selected={selected} select={choose(document)}
+                      setName={(key) => nameIn(variantNames(plans.names, value.run.variant).documents, key)}
                       toSweep={step && ((axis) => sets.toSweep(step.id, axis))}
                       weigh={step && ((axis) => sets.fieldWeight(step.id, axis))}
                       drawn={drawnVariables(trialClock.trial)} />

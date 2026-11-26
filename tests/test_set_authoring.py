@@ -705,12 +705,21 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
 
 def test_required_set_can_be_emptied_and_repaired(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
-    raw["documents"]["draft"] = {"label": "Draft", "schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}}}}
+    raw["documents"]["draft"] = {
+        "label": "Draft", "schema": "feedbax.set_document.v1", "payload": {
+            "entries": {"one": {"label": "One"}, "two": {"label": "Two"}},
+        },
+    }
     raw["steps"]["train"]["sweep"] = {"axes": {"draft": {"set": "draft"}}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, PROJECT, Project.model_validate(raw))
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        emptied = _set_edit(folders, client, {"kind": "remove_value", "step": "train", "axis": "draft", "value": "one"})
+        before = _runs(folders, "train")
+        remove = {"kind": "remove_value", "step": "train", "axis": "draft"}
+        removed = _set_edit(folders, client, remove | {"value": "one"})
+        assert [file["address"] for file in removed["files"]] == [{"kind": "document", "id": "draft"}]
+        assert _runs(folders, "train") == {"draft=two": before["draft=two"]}
+        emptied = _set_edit(folders, client, remove | {"value": "two"})
         assert emptied["files"] and emptied["problems"][0]["address"] == "documents/draft.json"
         assert emptied["problems"][0]["authored_path"] == "/payload/entries"
         snapshot = folders.read(PROJECT)

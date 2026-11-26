@@ -86,7 +86,7 @@ test('a based document marks the value it changes, and Reset of its only one giv
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(mass).toHaveValue(base);
   await expect(mass).not.toHaveAccessibleDescription(/Changed/);
-  await expect.poll(async () => (await documents())['point-mass-2']).toMatchObject({ differences: {} });
+  await expect.poll(async () => ((await documents())['point-mass-2'] as BasedDocument).differences ?? {}).toEqual({});
   expect(await requests()).toEqual(initial);
 });
 
@@ -255,7 +255,7 @@ test('a based Objective document marks the term value it changes, and Reset give
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(name).toHaveValue('');
   await expect(inspected).not.toHaveAccessibleDescription(/Changed/);
-  await expect.poll(async () => (await documents())['simple-reaches-objective-2']).toMatchObject({ differences: {} });
+  await expect.poll(async () => ((await documents())['simple-reaches-objective-2'] as BasedDocument).differences ?? {}).toEqual({});
   expect(await requests()).toEqual(initial);
 });
 
@@ -443,7 +443,7 @@ test('a narrowed edit for two of three readers makes one document, and later edi
   await setMass('4');
   await expect.poll(() => changed(before)).toEqual(['sibling', 'third', 'train']);
   await expect(mass).toHaveValue('4');
-  expect((await documents())['point-mass-2']).toMatchObject({ differences: {} });
+  expect(((await documents())['point-mass-2'] as BasedDocument).differences ?? {}).toEqual({});
 });
 
 test('a subject moved to a new document leaves its evaluation\'s document as it was, and picking the old one back restores the evaluation', { tag: '@slow' }, async ({ page, request }) => {
