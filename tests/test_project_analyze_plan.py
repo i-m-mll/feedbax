@@ -375,6 +375,52 @@ def test_add_figure_layer_allocates_a_key_across_based_analyses(host, tmp_path, 
     assert [item.name for item in runtime.spec.document.layers] == ["bounds", "line-2"]
 
 
+def test_analyze_projects_effective_styles_without_adding_them_to_the_figure(host, tmp_path, monkeypatch):
+    project = _project()
+    figure = deepcopy(project.documents["velocity-figure"].payload)
+    span = {"mark": "span", "role": "summary", "panel": "velocity", "encode": {"axis": "x", "start": 0, "end": 1}}
+    figure["layers"].update({"hold": span, "hidden": span | {"style": {"fill_alpha": 0}}})
+    figure["color_scales"] = {"speed": {"kind": "continuous"}, "group": {"kind": "ordinal", "legend": False}}
+    project.documents["velocity-analysis"].payload["views"]["profile"]["figure"] = figure
+    root = tmp_path / "reach"
+    for name, content in dump_text_project(project, ProjectConfiguration(project="reach", store="results")).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    url = "/api/projects/reach"
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        opened = client.get(url).json()
+        revision = opened["revision"]
+        stored = opened["project"]["documents"]["velocity-analysis"]["payload"]["views"]["profile"]["figure"]
+        assert "style" not in stored["layers"]["hold"]
+        assert stored["color_scales"]["speed"] == {"kind": "continuous"}
+
+        body = {"revision": revision, "key": {"variant": "default", "step": "analyze", "row": "default"}}
+        response = client.post(f"{url}/authoring/analyze", json=body)
+        assert response.status_code == 200, response.text
+        values = response.json()["figure_values"]["profile"]
+        assert values == {
+            "layers": {"hold": {"fill_alpha": 0.15}, "hidden": {"fill_alpha": 0}},
+            "color_scales": {"speed": {"legend": True, "palette": "viridis"},
+                             "group": {"legend": False, "palette": "category10"}},
+        }
+
+        prepared = client.post(f"{url}/authoring/analyze", json=body | {
+            "change": {"kind": "edit", "edits": [{
+                "op": "add", "path": "/views/profile/figure/layers/hold/style", "value": {"fill_alpha": 0.5},
+            }]},
+        })
+        assert prepared.status_code == 200, prepared.text
+        change = prepared.json()
+        saved = client.patch(url, json={"revision": revision, "files": change["files"], "created": change["created"]})
+        assert saved.status_code == 200, saved.text
+        reopened = client.get(url).json()
+        stored = reopened["project"]["documents"]["velocity-analysis"]["payload"]["views"]["profile"]["figure"]
+        assert stored["layers"]["hold"]["style"] == {"fill_alpha": 0.5}
+        assert stored["color_scales"]["speed"] == {"kind": "continuous"}
+
+
 def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     import pytest
 

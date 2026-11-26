@@ -7,7 +7,7 @@ from pydantic import Field, JsonValue
 from feedbax.contracts.analysis_document import DatasetSource
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import DimensionSize, Name
-from feedbax.contracts.figure_document import StoredFigureDocument, StoredFigureLayer
+from feedbax.contracts.figure_document import ContinuousPalette, OrdinalPalette, StoredFigureDocument, StoredFigureLayer
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.operation import DatasetPort, OperationDefinition
 from feedbax.contracts.project import DocumentEdit, Pointer, Sha256
@@ -69,6 +69,20 @@ class StudioAnalyzeRequest(StrictModel):
     chosen_steps: list[ProjectName] = Field(default_factory=list)
 
 
+class StudioFigureSpanValues(StrictModel):
+    fill_alpha: float
+
+
+class StudioFigureColorScaleValues(StrictModel):
+    legend: bool
+    palette: ContinuousPalette | OrdinalPalette
+
+
+class StudioAnalyzeFigureValues(StrictModel):
+    layers: dict[StoredMemberKey, StudioFigureSpanValues]
+    color_scales: dict[Name, StudioFigureColorScaleValues]
+
+
 class StudioAnalyzeAuthoring(StrictModel):
     revision: Sha256
     document: ProjectName
@@ -85,6 +99,8 @@ class StudioAnalyzeAuthoring(StrictModel):
     variable_names: dict[str, str] = Field(default_factory=dict)
     """Display names for the dataset field IDs offered in ``variables``."""
     figure: StoredFigureDocument
+    figure_values: dict[ProjectName, StudioAnalyzeFigureValues]
+    """Effective span styles and color scales of the Analysis document's inline views."""
     created_layer: StoredMemberKey | None = Field(default=None, exclude_if=lambda key: key is None)
     changed: list[Pointer] = Field(default_factory=list)
     """The pointers at which the document's composed content differs from its base's."""

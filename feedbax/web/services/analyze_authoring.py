@@ -7,7 +7,7 @@ from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySe
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, AnalysisDocument, DatasetSource, OperationDataset, StepInput
 from feedbax.contracts.dataset import FieldDescriptor
-from feedbax.contracts.figure_document import FigureTemplateRef, StoredFigureDocument, validate_figure_bindings
+from feedbax.contracts.figure_document import FigureTemplateRef, StoredFigureDocument, StoredSpanLayer, validate_figure_bindings
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.model_document import ModelDocument
@@ -34,10 +34,13 @@ from feedbax.contracts.studio_analyze import (
     StudioAnalyzeAddFigureLayer,
     StudioAnalyzeAuthoring,
     StudioAnalyzeEdit,
+    StudioAnalyzeFigureValues,
     StudioAnalyzeRemove,
     StudioAnalyzeRequest,
     StudioAnalyzeReset,
     StudioAnalyzeWire,
+    StudioFigureColorScaleValues,
+    StudioFigureSpanValues,
 )
 from feedbax.contracts.studio_place import path_parts, task_start
 from feedbax.jobs import JobConflict, JobNotFound
@@ -83,6 +86,24 @@ def _catalog_analysis(project: Project, document: str) -> AnalysisDocument | Non
     except ValueError:
         # The window map already carries the diagnostics of a document that cannot be composed.
         return None
+
+
+def _figure_values(analysis: AnalysisDocument | None) -> dict[str, StudioAnalyzeFigureValues]:
+    if analysis is None:
+        return {}
+    return {
+        key: StudioAnalyzeFigureValues(
+            layers={
+                name: StudioFigureSpanValues(fill_alpha=layer.style.fill_alpha)
+                for name, layer in figure.layers.items() if isinstance(layer, StoredSpanLayer)
+            },
+            color_scales={
+                name: StudioFigureColorScaleValues(legend=scale.legend, palette=scale.palette)
+                for name, scale in figure.color_scales.items()
+            },
+        )
+        for key, view in analysis.views.items() if isinstance(figure := view.figure, StoredFigureDocument)
+    }
 
 
 def _sources(
@@ -562,6 +583,7 @@ def analyze_authoring(
         variables=variables,
         variable_names=_variable_names(variables, states, models, task_names),
         figure=StoredFigureDocument.from_lowered(VelocitySummary(VelocitySummarySettings())),
+        figure_values=_figure_values(analysis),
         created_layer=created_layer if stored.files or stored.created else None,
         changed=changed_from_base(project, saved_document),
         files=stored.files,
