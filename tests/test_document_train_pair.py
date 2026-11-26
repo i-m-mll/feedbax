@@ -465,7 +465,7 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     stored = json.loads(data)
     assert stored["schema"] == "feedbax.request.train.documents.v3"
     model = stored["spec"]["trial_documents"]["model"]
-    assert model["ports"]["inputs"][0]["name"] == "reach_target"
+    assert "name" not in model["ports"]["inputs"][0]
     wrapper = model["interior"]["components"]["wrapper"]
     assert "name" not in wrapper
     assert all("name" not in port for port in wrapper["ports"]["inputs"])
@@ -473,7 +473,8 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     decoded = decode_request(data, plan.documents.__getitem__)
     assert decoded.id == identity
     restored = decoded.spec.trial_documents.model
-    assert restored.scientific_projection() == authored[1].scientific_projection()
+    assert restored.ports.inputs[0].name == "task-input"
+    assert restored.scientific_projection(keyed_root_ports=True) == authored[1].scientific_projection(keyed_root_ports=True)
     assert encode_request(decoded.spec, decoded.inputs).data == data
     assert identity != request_id("train", stored["spec"], decoded.inputs)
 

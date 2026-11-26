@@ -82,10 +82,10 @@ def managed_evaluation_definition():
 
 def test_managed_plan_resolves_task_owned_trial_ids():
     from feedbax.planner.project_plan import compile_project
-    from feedbax.contracts.task_document import TaskDocument
+    from feedbax.contracts.task_document import StoredTaskDocument
 
     raw = managed_evaluation_definition()
-    task = TaskDocument.model_validate(raw["documents"]["task"]["payload"])
+    task = StoredTaskDocument.model_validate(raw["documents"]["task"]["payload"]).lower()
     assert len(task.condition_ids) == 28
     assert len({tuple(row.variables["start"]) for row in task.validation_trials}) == 4
     assert all(sum(other.variables["start"] == row.variables["start"] for other in task.validation_trials) == 7

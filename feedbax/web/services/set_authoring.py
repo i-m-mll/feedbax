@@ -139,8 +139,9 @@ def _set_store(folders, project_id: str, project: Project, step: str, body: Stud
         )
         return result if isinstance(result, list) else result.value
     if isinstance(command, RemoveAxisValue) and (body.selection is None or not body.selection.rows):
-        values = axis_values(row for row in plan.rows if row.key in selected)
-        selected = frozenset(key for key in selected if values.get((key, command.axis)) == command.value)
+        selected = frozenset(
+            row.key for row in plan.rows if row.key in selected and row.axis_keys.get(command.axis) == command.value
+        )
         if not selected:
             raise ProjectFolderInvalid("The selected axis value changed.")
     names = {
@@ -151,7 +152,7 @@ def _set_store(folders, project_id: str, project: Project, step: str, body: Stud
     if names:
         content = preview_stored(project, stored)
         chosen = {key.step for key in selected} or {step}
-        narrow = StoredEdit(list(stored.files), stored.created)
+        narrow = stored
         for name in sorted(names):
             readers = set_readers(project, name)
             targets = chosen & readers

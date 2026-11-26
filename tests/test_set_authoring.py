@@ -736,13 +736,20 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
 def test_required_set_can_be_emptied_and_repaired(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["documents"]["draft"] = {
-        "label": "Draft", "schema": "feedbax.set_document.v2", "payload": {"entries": {"one": {"label": "One"}}},
+        "label": "Draft", "schema": "feedbax.set_document.v2", "payload": {
+            "entries": {"one": {"label": "One"}, "two": {"label": "Two"}},
+        },
     }
     raw["steps"]["train"]["sweep"] = {"axes": {"draft": {"set": "draft"}}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, PROJECT, Project.model_validate(raw))
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        emptied = _set_edit(folders, client, {"kind": "remove_value", "step": "train", "axis": "draft", "value": "one"})
+        before = _runs(folders, "train")
+        remove = {"kind": "remove_value", "step": "train", "axis": "draft"}
+        removed = _set_edit(folders, client, remove | {"value": "one"})
+        assert [file["address"] for file in removed["files"]] == [{"kind": "document", "id": "draft"}]
+        assert _runs(folders, "train") == {"draft=two": before["draft=two"]}
+        emptied = _set_edit(folders, client, remove | {"value": "two"})
         assert emptied["files"] and emptied["problems"][0]["address"] == "documents/draft.json"
         assert emptied["problems"][0]["authored_path"] == "/payload/entries"
         snapshot = folders.read(PROJECT)
@@ -754,6 +761,32 @@ def test_required_set_can_be_emptied_and_repaired(tmp_path):
         assert repaired["files"] and not repaired["problems"] and _runs(folders, "train")
         entry, = folders.read(PROJECT).project.documents["draft"].payload["entries"].values()
         assert entry["label"] == "Run 2"
+
+
+def test_removing_a_shared_set_entry_can_keep_the_other_reader(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["documents"]["draft"] = {
+        "label": "Draft", "schema": "feedbax.set_document.v2", "payload": {
+            "entries": {"one": {"label": "One"}, "two": {"label": "Two"}},
+        },
+    }
+    raw["steps"]["train"]["sweep"] = {"axes": {"draft": {"set": "draft", "label": "Draft"}}}
+    raw["steps"]["other"] = deepcopy(raw["steps"]["train"])
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        before = {step: _runs(folders, step) for step in ("train", "other")}
+        command = {"kind": "remove_value", "step": "train", "axis": "draft", "value": "one"}
+        response = client.post(f"{BASE}/authoring/sets", json={
+            "revision": folders.read(PROJECT).revision, "command": command,
+        })
+        assert response.status_code == 200, response.text
+        choices = {item["kind"]: item["runs"] for item in response.json()["store_choices"]}
+        assert {item["step"] for item in choices["set_entry"]} == {"train", "other"}
+        assert choices["selected_readers"] == [{"variant": "default", "step": "train", "row": "draft=one"}]
+        _set_edit(folders, client, command, store="selected_readers")
+        assert _runs(folders, "train") == {"draft=two": before["train"]["draft=two"]}
+        assert _runs(folders, "other") == before["other"]
 
 
 def test_applying_an_inapplicable_set_stores_the_reference_and_marks_the_difference(tmp_path):
