@@ -1,6 +1,5 @@
-import { shownName } from '@/features/pipeline/planView';
-import type { Base, Document, JsonValue } from '@/generated/studioContracts';
-import { documentPayload, stepDocument } from './documentPayload';
+import type { Document, JsonValue, StudioProjectMemberNames } from '@/generated/studioContracts';
+import { documentPayload } from './documentPayload';
 import { documentsOfRole } from './useProjectDocuments';
 
 type Documents = Readonly<Record<string, Document>> | null | undefined;
@@ -18,20 +17,18 @@ function payloadElements(payload: JsonValue | undefined): Readonly<Record<string
 }
 
 /**
- * Every operation and figure the project's Analysis documents hold, by key, with its shown name; a new element's key is
- * none of the keys, and its name none of the names.
+ * The keys of every operation and figure the project's Analysis documents hold, and their names: the snapshot's, and
+ * the labels of elements an edit is still saving. A new element's key is none of the keys, and its name none of the
+ * names.
  */
-export function heldElements(documents: Documents, composed: Composed): ReadonlyMap<string, string> {
-  return new Map(documentsOfRole({ documents }, 'analysis')
-    .flatMap((name) => Object.entries(payloadElements(documentPayload(documents, composed, name))))
-    .map(([key, element]) => [key, shownName(key, element)]));
-}
-
-/** The shown name of `element` of the Analysis document `step` reads. */
-export function stepElementName(
-  project: { readonly documents?: Documents; readonly steps?: Readonly<Record<string, { readonly base?: Base }>> | null },
-  composed: Composed, step: string, element: string,
-) {
-  const document = stepDocument(project.steps?.[step]?.base);
-  return shownName(element, document ? payloadElements(documentPayload(project.documents, composed, document))[element] : undefined);
+export function heldElements(documents: Documents, composed: Composed, names: StudioProjectMemberNames) {
+  const elements = documentsOfRole({ documents }, 'analysis')
+    .flatMap((name) => Object.entries(payloadElements(documentPayload(documents, composed, name))));
+  return {
+    keys: new Set(elements.map(([key]) => key)),
+    names: new Set([
+      ...Object.values(names.elements).flatMap((named) => Object.values(named)),
+      ...elements.flatMap(([, { label }]) => label ? [label] : []),
+    ]),
+  };
 }

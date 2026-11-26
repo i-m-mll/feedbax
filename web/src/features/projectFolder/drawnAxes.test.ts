@@ -2,7 +2,14 @@ import { expect, it } from 'vitest';
 import { mapAxes, mapRunCells, orderedMapSweeps } from '@/components/pipeline/pipelineMapLayout';
 import { runColumns } from '@/components/pipeline/StudioRunTable';
 import type { Project, StudioProjectWindowMapRow, StudioSavedTrainRuns } from '@/generated/studioContracts';
+import type { ProjectNames } from './memberNames';
 import { projectWindowPlan } from './projectWindowPlan';
+
+/** The names a snapshot gives the steps `ids`, as authored and in the base variant. */
+function named(ids: readonly string[]): ProjectNames {
+  const names = { documents: {}, steps: Object.fromEntries(ids.map((id) => [id, id])), elements: {} };
+  return { names, variant_names: { base: names } };
+}
 
 type Row = StudioProjectWindowMapRow;
 const seed = (value: number): Row['coordinates'] => ({ seed: { value_id: String(value), label: null, value, axis_value: String(value) } });
@@ -53,7 +60,7 @@ function evaluateStep(
       problems: [],
     },
   };
-  return projectWindowPlan(project, saved, 'base').steps.find(({ id }) => id === 'evaluate')!;
+  return projectWindowPlan(project, named([...trains, 'evaluate']), saved, 'base').steps.find(({ id }) => id === 'evaluate')!;
 }
 
 it('draws an Evaluate step reading a seed sweep as one seed axis, its runs in one line', () => {
@@ -122,7 +129,8 @@ it('lists steps in one order whether or not the plan has been read', () => {
       })),
     },
   };
-  const order = (read?: StudioSavedTrainRuns) => projectWindowPlan(project, read, 'base').steps.map(({ id }) => id);
+  const order = (read?: StudioSavedTrainRuns) =>
+    projectWindowPlan(project, named(['train-10', 'train-2', 'analyze']), read, 'base').steps.map(({ id }) => id);
   expect(order(saved)).toEqual(['analyze', 'train-2', 'train-10']);
   expect(order(undefined)).toEqual(order(saved));
 });

@@ -62,7 +62,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   await mapStep(page, 'analyze').click();
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
   await expect(figures.getByText('Reach-aligned velocity', { exact: true })).toBeVisible();
-  await figures.getByRole('button', { name: 'profile', exact: true }).click();
+  await figures.getByRole('button', { name: 'Profile', exact: true }).click();
   await palette('New Step');
   await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');

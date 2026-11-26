@@ -52,12 +52,12 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
     { kind: 'document', id: 'analysis', document: analysis },
     { kind: 'step', id: 'analyze', step: { kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
   ]);
-  // A document is offered by its label, the name the Model and Task views give it.
+  // A document is offered by the name the snapshot gives it, as the Model and Task views do.
   const models = Object.entries(initial.project.documents ?? {}).filter(([, { schema }]) => schema === 'feedbax.spec.model')
-    .map(([id, { label }]) => ({ id, name: label ?? id }));
+    .map(([id]) => ({ id, name: initial.names.documents[id] }));
   const tasks = Object.entries(initial.project.documents ?? {})
     .filter(([, { schema }]) => schema === 'feedbax.spec.python_task' || schema === 'feedbax.spec.task_document')
-    .map(([id, { label }]) => label ?? id);
+    .map(([id]) => initial.names.documents[id]);
   expect(models.length).toBeGreaterThan(0);
 
   await page.goto('/?project=' + encodeURIComponent(project));

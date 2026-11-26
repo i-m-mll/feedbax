@@ -25,7 +25,7 @@ function documentBinder(saved: StudioProjectSnapshot, files: StudioProjectCreate
   return (document: Document, schemas = [document.schema]) => {
     const existing = documentNames.find((id) => schemas.includes(documents[id].schema));
     if (existing !== undefined) return existing;
-    const named = namedDocument(documents, document);
+    const named = namedDocument(documents, saved.names.documents, document);
     files.push({ kind: 'document', ...named });
     return named.id;
   };

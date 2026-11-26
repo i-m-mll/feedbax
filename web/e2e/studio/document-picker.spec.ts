@@ -250,7 +250,7 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
     await expect(picker('Model')).toHaveText(created);
     await expect.poll(async () => {
       const key = await model();
-      return key && ((await saved()).project.documents?.[key]?.label ?? key);
+      return key && (await saved()).names.documents[key];
     }).toBe(created);
     const { status, details } = await trainProblems();
     if (choice === 'New') {
@@ -304,7 +304,7 @@ test('New in the Document header gives an empty report that cannot run', async (
   await page.goto('/?project=' + encodeURIComponent(project));
   await mapStep(page, 'analyze').click();
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
-  await page.getByRole('tabpanel', { name: 'Figures', exact: true }).getByRole('button', { name: 'profile', exact: true }).click();
+  await page.getByRole('tabpanel', { name: 'Figures', exact: true }).getByRole('button', { name: 'Profile', exact: true }).click();
   await palette(page, 'newStep', 'New Step');
   await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('listitem')).toHaveCount(1);
@@ -389,7 +389,7 @@ test('a narrowed edit in the Training view makes a document based on the shown o
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
-  await expect(picker('Training')).toHaveText('training');
+  await expect(picker('Training')).toHaveText('Training');
   const initial = await requests();
   const edited = await setBatches('7');
   expect(edited.train).not.toBe(initial.train);
@@ -397,7 +397,7 @@ test('a narrowed edit in the Training view makes a document based on the shown o
   expect(rootPayload(await document('training'))).toMatchObject({ training_config: { n_batches: 7 } });
 
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
-  await expect(picker('Training')).toHaveText('training1 of 2');
+  await expect(picker('Training')).toHaveText('Training1 of 2');
   const files = (await saved()).project;
   const alone = await setBatches('9');
   expect(alone.train).not.toBe(edited.train);
@@ -406,13 +406,13 @@ test('a narrowed edit in the Training view makes a document based on the shown o
   expect(await document('training-2')).toMatchObject({ base: { document: 'training' } });
   await expect(picker('Training')).toHaveText('training 2');
   await expect(batches).toHaveValue('9');
-  expect(await indent('training')).toBe('0px');
+  expect(await indent('Training')).toBe('0px');
   expect(await indent('training 2')).not.toBe('0px');
 
   await primary.focus();
   await page.keyboard.press('Meta+Z');
   await expect.poll(async () => (await saved()).project).toEqual(files);
-  await expect(picker('Training')).toHaveText('training1 of 2');
+  await expect(picker('Training')).toHaveText('Training1 of 2');
 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   const objective = picker('Objective');
@@ -446,7 +446,7 @@ test('a continuation taken out keeps its runs, and Detach cuts a based document 
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   await mapStep(page, 'train-2').click({ modifiers: ['Shift'] });
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
-  await expect(picker('Training')).toHaveText('training1 of 3');
+  await expect(picker('Training')).toHaveText('Training1 of 3');
   const before = await requests();
   await batches.fill('9');
   await batches.press('Enter');

@@ -351,9 +351,10 @@ it('does not widen a selected Train row to an unselected variant', async () => {
     },
   };
   const project = { steps: { train: { kind: 'train' as const, base: { inline: {} } } } };
+  const names = { documents: {}, steps: { train: 'Train' }, elements: {} };
   await expect(createCheckpointTrain(editor, {
     stepId: 'train', selection: { kind: 'rows', stepId: 'train', runIds: [savedRunId(rows[1].key)] },
-  }, projectWindowPlan(project, projection, 'compare'), projection)).rejects.toBeInstanceOf(ProjectEditConflictError);
+  }, projectWindowPlan(project, { names, variant_names: { baseline: names, compare: names } }, projection, 'compare'), projection)).rejects.toBeInstanceOf(ProjectEditConflictError);
   expect(create).not.toHaveBeenCalled();
   editor.dispose();
 });

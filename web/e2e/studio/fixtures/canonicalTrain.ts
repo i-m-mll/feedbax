@@ -57,25 +57,22 @@ export function runName(label: string) {
 
 type RowKey = { readonly variant: string; readonly step: string; readonly row: string };
 
-/** The name the Runs table draws for a saved row of a swept step, which always has a label. */
-export function shownRunLabel(row: { readonly key: RowKey; readonly label: string | null }) {
-  if (row.label === null) throw new Error(`Run ${JSON.stringify(row.key)} has no label; read its step's name with drawnRunLabel.`);
-  return row.label;
+/** The name the Runs table draws for a saved row. */
+export function shownRunLabel(row: { readonly name: string }) {
+  return row.name;
 }
 
-type DrawnMap = {
-  readonly rows: readonly { readonly key: RowKey; readonly label: string | null }[];
-  readonly steps: readonly { readonly variant: string; readonly step_id: string; readonly label: string }[];
-};
+type DrawnMap = { readonly rows: readonly { readonly key: RowKey; readonly name: string }[] };
 
-/** The name the Runs table draws for the saved row at `key`: its label, or for a step's only run its step's name. */
+/** The name the Runs table draws for the saved row at `key`. */
 export function drawnRunLabel(map: DrawnMap, key: RowKey) {
-  const row = map.rows.find((item) => item.key.variant === key.variant && item.key.step === key.step && item.key.row === key.row)!;
-  return row.label ?? drawnStepLabel(map, key);
+  const row = map.rows.find((item) => item.key.variant === key.variant && item.key.step === key.step && item.key.row === key.row);
+  if (!row) throw new Error(`The window map has no run ${JSON.stringify(key)}.`);
+  return row.name;
 }
 
 /** The name the window map gives a run's step. */
-export function drawnStepLabel(map: Pick<DrawnMap, 'steps'>, key: Omit<RowKey, 'row'>) {
+export function drawnStepLabel(map: { readonly steps: readonly { readonly variant: string; readonly step_id: string; readonly label: string }[] }, key: Omit<RowKey, 'row'>) {
   return map.steps.find((step) => step.variant === key.variant && step.step_id === key.step)!.label;
 }
 
