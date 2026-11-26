@@ -17,13 +17,13 @@ from feedbax.contracts.project_resolution import compose_document, document_writ
 from feedbax.contracts.project_storage import StoredPath
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID
 
 type FileAddress = tuple[str, str]
 
 _SCHEMA_KEYS = frozenset({"schema_id", "schema_version"})
 _DOCUMENT_FIELDS = DocumentReference.model_fields.keys()
-_TASK_SCHEMAS = frozenset({TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID})
+_TASK_SCHEMAS = frozenset({STORED_TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID})
 
 
 def _walk(value: JsonValue, path: StoredPath = ()) -> Iterator[tuple[StoredPath, dict[str, JsonValue]]]:
