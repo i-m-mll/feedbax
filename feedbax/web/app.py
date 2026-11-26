@@ -89,7 +89,7 @@ def create_app(
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle,
             targets=targets, submit_session=submit_session,
-            automatic_run=automatic_run, quick_duration=quick_duration,
+            automatic_run=automatic_run, quick_duration=quick_duration, environment_root=running_environment(),
         )
         app.state.job_activity = JobActivity(app.state.job_service)
         app.state.remote_runs = remote_runs

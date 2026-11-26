@@ -82,15 +82,12 @@ class Launch:
     argv: tuple[str, ...]
     env: dict[str, str] = field(default_factory=dict)
     cwd: str | None = None
-    """The worker's directory, which is the uv project whose lock governs the worker's environment."""
     payload: JsonObject = field(default_factory=dict)
     warm_entrypoint: str | None = None
     preload: tuple[str, ...] = ()
     project_root: str | None = None
-
-    def __post_init__(self) -> None:
-        if self.project_root is not None and self.cwd is None:
-            raise ValueError("A launch that loads project code needs the directory of its environment as its cwd.")
+    environment_root: str | None = None
+    """The uv project whose lock governs the worker's environment; None for Studio's own runtime, which has none."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +133,6 @@ class AdmissionItem:
     terminal_reuse: TerminalReuse | None = None
     deferred_reuse: DeferredReuse | None = None
     force_execution: bool = False
-    light_definition: JsonObject | None = None
 
 
 class AdmissionResult(TypedDict):

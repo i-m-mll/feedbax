@@ -1,5 +1,6 @@
 """Exercise installed declarations through the Studio backend and managed worker."""
 
+from dataclasses import replace
 from hashlib import sha256
 import json
 import os
@@ -20,7 +21,7 @@ from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import InputMember, ProductRef
 from feedbax.contracts.request_specs import AnalysisRequestSpec
 from feedbax.dataset import Dataset, Variable
-from feedbax.host.light_jobs import LightDelivery, publish_light_success
+from feedbax.host.light_jobs import AdmittedDeclaration, LightDelivery, publish_light_success
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView, store_request
@@ -99,8 +100,8 @@ def test_installed_package_appears_in_cli_and_studio_catalogs(installed_site, mo
     assert resolved.defining_object is shift_series
 
 
-def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch, tmp_path):
-    monkeypatch.syspath_prepend(str(installed_site))
+def _shift_delivery(installed_site, tmp_path, declaration=None):
+    """An Analyze delivery of the installed operation over a stored source series, and how to run its worker."""
     store = ImmutableArtifactBlobProvider(tmp_path / "store")
     dataset = Dataset.from_arrays(
         {"value": Variable(np.array([2, 4]), ("step",))}, schema_id="fixture.series.v1",
@@ -119,7 +120,8 @@ def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch
     request = store_request(store, encode_request(spec, {
         "source": (InputMember(key="source", reference=ProductRef(request_id=producer.id, role="source")),),
     }))
-    delivery = LightDelivery(project_id="fixture", manifest_root=store.root, request=request)
+    declaration = declaration or AdmittedDeclaration.of(load_application().bundle.operations.resolve(_ANALYSIS))
+    delivery = LightDelivery(project_id="fixture", manifest_root=store.root, request=request, declaration=declaration)
     payload = tmp_path / "delivery.json"
     payload.write_text(delivery.model_dump_json())
     origins = {producer.id: published.ref.model_dump(mode="json")}
@@ -128,24 +130,38 @@ def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch
     bindings.write_bytes(raw_bindings)
     log = tmp_path / "events.jsonl"
     log.touch()
-    worker = subprocess.run(
-        [sys.executable, "-c", "from feedbax.host.light_worker import main; raise SystemExit(main([]))"],
-        env=_child_environment(installed_site) | {
-            "FEEDBAX_HOST_JOB_ID": "test-attempt",
-            "FEEDBAX_HOST_EVENT_LOG": str(log),
-            "FEEDBAX_HOST_INPUT": str(payload),
-            "FEEDBAX_HOST_COMPLETION_BINDINGS": str(bindings),
-            "FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256": sha256(raw_bindings).hexdigest(),
-        },
-        timeout=HANG_SECONDS, text=True, capture_output=True,
-    )
+
+    def run_worker():
+        return subprocess.run(
+            [sys.executable, "-c", "from feedbax.host.light_worker import main; raise SystemExit(main([]))"],
+            env=_child_environment(installed_site) | {
+                "FEEDBAX_HOST_JOB_ID": "test-attempt",
+                "FEEDBAX_HOST_EVENT_LOG": str(log),
+                "FEEDBAX_HOST_INPUT": str(payload),
+                "FEEDBAX_HOST_COMPLETION_BINDINGS": str(bindings),
+                "FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256": sha256(raw_bindings).hexdigest(),
+            },
+            timeout=HANG_SECONDS, text=True, capture_output=True,
+        )
+
+    def publish(provider):
+        result = json.loads(log.read_text())["data"]
+        return publish_light_success(
+            delivery.model_dump(mode="json"), "test-attempt", request.id, origins, result["products"],
+            provider=provider,
+        )
+
+    return store, run_worker, publish, log
+
+
+def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(installed_site))
+    store, run_worker, publish, log = _shift_delivery(installed_site, tmp_path)
+    worker = run_worker()
     assert worker.returncode == 0, worker.stderr
     result = json.loads(log.read_text())["data"]
     assert result["outcome"] == "succeeded"
-    publish_light_success(
-        delivery.model_dump(mode="json"), "test-attempt", request.id, origins, result["products"],
-        provider=result["provider"],
-    )
+    publish(result["provider"])
     receipt = SuccessView(store).read_attempt("test-attempt").receipt
     provider = receipt.provider
     assert provider is not None
@@ -157,6 +173,30 @@ def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch
         content=shifted.content, descriptor_sha256=shifted.descriptor["descriptor_sha256"],
     )) as data:
         np.testing.assert_array_equal(data.data("value"), [9, 11])
+
+
+def test_a_worker_refuses_a_declaration_that_changed_after_planning(installed_site, monkeypatch, tmp_path):
+    """Caught: a result computed by code other than the code that planned the step, committed as if it were."""
+    monkeypatch.syspath_prepend(str(installed_site))
+    admitted = AdmittedDeclaration.of(load_application().bundle.operations.resolve(_ANALYSIS))
+    planned = admitted.model_copy(update={"provider": replace(admitted.provider, version="2.7.0")})
+    store, run_worker, _, log = _shift_delivery(installed_site, tmp_path, planned)
+    assert run_worker().returncode != 0
+    assert not log.read_text(), "the worker computed under a declaration it was not admitted with"
+
+
+def test_the_host_refuses_a_result_from_another_provider(installed_site, monkeypatch, tmp_path):
+    """Caught: the Host committing a result whose provider is not the one the job was admitted with."""
+    monkeypatch.syspath_prepend(str(installed_site))
+    store, run_worker, publish, log = _shift_delivery(installed_site, tmp_path)
+    worker = run_worker()
+    assert worker.returncode == 0, worker.stderr
+    provider = json.loads(log.read_text())["data"]["provider"]
+    with pytest.raises(ValueError):
+        publish(provider | {"version": "9.9.9"})
+    with pytest.raises(ValueError):
+        publish(None)
+    assert SuccessView(store).attempt_ref("test-attempt") is None
 
 
 def test_describe_fails_if_an_installed_package_cannot_import(installed_site, tmp_path):

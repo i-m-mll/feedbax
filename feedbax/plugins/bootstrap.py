@@ -127,9 +127,9 @@ class _ImportFailed(Exception):
 
 
 def _described(error: BaseException) -> str:
-    text = "".join(traceback.format_exception_only(error)).strip()
     if isinstance(error, SyntaxError):
-        return text
+        return f"{type(error).__name__}: {error.msg} ({error.filename}, line {error.lineno})"
+    text = "".join(traceback.format_exception_only(error)).strip()
     frames = traceback.extract_tb(error.__traceback__)
     return f"{text} ({frames[-1].filename}, line {frames[-1].lineno})" if frames else text
 

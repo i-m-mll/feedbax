@@ -12,6 +12,7 @@ from tests.support.hang import HANG_SECONDS
 REPO = Path(__file__).resolve().parents[2]
 _FIXTURE = REPO / "tests" / "fixtures" / "downstream" / "environment_project"
 OPERATION = "environment_fixture.speed"
+COMPONENT = "environment_fixture.Readout"
 PACKAGE_SOURCE = Path("src") / "environment_fixture"
 
 
@@ -31,19 +32,42 @@ def rollout_project(*operations: str) -> Project:
                 "task": {"kind": "task", "source": {"document": "simple-reaches-task"}},
             },
         },
-    } | {
-        f"analysis-{index}": {
-            "kind": "analyze",
-            "base": {"inline": {
-                "inputs": {"states": {"kind": "dataset"}},
-                "operations": {"speed": {
-                    "operation": operation, "params": {"velocity": "/v1/model/state/plant/effector~1velocity"},
-                    "inputs": {"states": {"input": "states"}},
-                }},
+    } | {f"analysis-{index}": analysis_step(operation, "rollout") for index, operation in enumerate(operations)}
+    return Project.model_validate(raw)
+
+
+def analysis_step(operation: str, source: str) -> dict:
+    return {
+        "kind": "analyze",
+        "base": {"inline": {
+            "inputs": {"states": {"kind": "dataset"}},
+            "operations": {"speed": {
+                "operation": operation, "params": {"velocity": "/v1/model/state/plant/effector~1velocity"},
+                "inputs": {"states": {"input": "states"}},
             }},
-            "inputs": {"states": {"step": "rollout"}},
-        }
-        for index, operation in enumerate(operations)
+        }},
+        "inputs": {"states": {"step": source}},
+    }
+
+
+def trained_project() -> Project:
+    """A model whose readout is the package's component, trained for two updates, evaluated, and analyzed by the
+    package's operation."""
+    from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
+
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    sources = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
+    model = raw["documents"][sources["model"]["document"]]["payload"]
+    raw["documents"][sources["task"]["document"]]["payload"]["validation_trials"] = (
+        raw["documents"][sources["task"]["document"]]["payload"]["validation_trials"][:1]
+    )
+    components = model["interior"]["components"]
+    components["readout"]["type"] = COMPONENT
+    components["readout"]["fields"]["input_size"] = components["cell"]["fields"]["hidden_size"]
+    raw["steps"] = {
+        "train": raw["steps"]["train"],
+        "evaluate": managed_evaluation_step("train"),
+        "analysis": analysis_step(OPERATION, "evaluate"),
     }
     return Project.model_validate(raw)
 
@@ -56,7 +80,7 @@ def write_project(folder: Path, project: Project) -> Path:
     return folder
 
 
-def environment_project(root: Path, *, feedbax: Path = REPO) -> Path:
+def environment_project(root: Path, project: Project | None = None, *, feedbax: Path = REPO) -> Path:
     """A locked uv project at ``root`` depending on ``feedbax`` by path, holding the Studio project ``project/``."""
     shutil.copytree(_FIXTURE / "src", root / "src")
     (root / "pyproject.toml").write_text((_FIXTURE / "pyproject.toml.in").read_text().replace("@FEEDBAX@", str(feedbax)))
@@ -64,4 +88,4 @@ def environment_project(root: Path, *, feedbax: Path = REPO) -> Path:
         ["uv", "lock", "--offline", "--project", str(root)],
         check=True, timeout=HANG_SECONDS, capture_output=True, text=True,
     )
-    return write_project(root / "project", rollout_project(OPERATION))
+    return write_project(root / "project", project or rollout_project(OPERATION))
