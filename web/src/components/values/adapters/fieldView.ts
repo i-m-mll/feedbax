@@ -7,6 +7,21 @@ import {
 } from '@/components/activity/studioVocabulary';
 import { evaluateChange, valueKind, withReset, type ChangeMark, type FieldModel, type FieldRefusal } from '../fieldModel';
 
+/** The sites and function lists a field view response states once, which its fields name by key. */
+export interface FieldSites {
+  readonly sites?: Readonly<Record<string, StudioFieldSite>>;
+  readonly function_lists?: Readonly<Record<string, readonly StudioFieldFunction[]>>;
+}
+
+/** A field's site with its function list, from the response that emitted the field. */
+export function fieldSite(tables: FieldSites, key: string) {
+  const site = tables.sites?.[key];
+  if (!site) throw new Error(`The response emitted a field whose site ${key} it does not hold`);
+  const functions = tables.function_lists?.[site.functions];
+  if (!functions) throw new Error(`The response holds site ${key} but not its function list ${site.functions}`);
+  return { ...site, functions };
+}
+
 export type ProjectedEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit;
 
 /** An exception a field's source names: the runs it picks, and a command that reveals its row in Exceptions. */
@@ -23,24 +38,8 @@ export interface SourceNaming {
   readonly exceptions?: ExceptionMentions;
 }
 
-/** The sites and function lists a field response shares among its fields, which name them by key. */
-export interface FieldSites {
-  readonly sites?: Readonly<Record<string, StudioFieldSite>>;
-  readonly function_lists?: Readonly<Record<string, readonly StudioFieldFunction[]>>;
-}
-
-/** The site a field names, with its functions, from the tables of the response that sent it. */
-export function fieldSite(tables: FieldSites, key: string) {
-  const site = tables.sites?.[key];
-  const functions = site && tables.function_lists?.[site.functions];
-  if (!site || !functions) throw new Error(`The field response has no site ${key}.`);
-  return { site, functions };
-}
-
 export interface FieldViewOptions {
   id: string;
-  /** The tables of the response the field came in. */
-  sites: FieldSites;
   commit?: (edit: ProjectedEdit) => Promise<FieldRefusal | undefined>;
   /** The kind of a value that is not a sweep, where the source knows it and the field has no structure to read it from. */
   kind?: FieldKind;
@@ -72,16 +71,16 @@ function origin({ planSources, source, changed }: FieldViewOptions) {
 }
 
 /** A field the server projects (`StudioFieldView`): the server parses its text and reports refusals. */
-export function fromFieldView(field: StudioFieldView, options: FieldViewOptions): FieldModel {
+export function fromFieldView(field: StudioFieldView, tables: FieldSites, options: FieldViewOptions): FieldModel {
   const { label, sweep, unit } = field;
-  const { site, functions } = fieldSite(options.sites, field.site);
+  const site = fieldSite(tables, field.site);
   const { rowSelection = false, multipleRows = false } = options;
   const project = options.commit;
   const commit = withReset(project && ((edit) => edit.kind === 'add_member' || edit.kind === 'remove_member' || edit.kind === 'reset'
     ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit)), options.changed);
   const readOnly = !commit;
   const rule = readOnly || !field.can_change_axis ? undefined : commit;
-  const kind = sweep ? 'sweep' : field.structure ? valueKind(field.structure.value, functions) : options.kind ?? 'value';
+  const kind = sweep ? 'sweep' : field.structure ? valueKind(field.structure.value, site.functions) : options.kind ?? 'value';
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
   /** A member as written: a number in the field's unit, or its own text. */
@@ -158,7 +157,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     structure: field.structure ?? undefined,
     finest: site.finest,
     names: site.names ?? [],
-    functions,
+    functions: site.functions,
     menus: { kind: 'listed', parts: site.parts },
     namePaths: site.name_paths,
     commit,

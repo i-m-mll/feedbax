@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { FieldKind, JsonValue, ParamSchema, StudioFieldSite, StudioFieldView } from '@/generated/studioContracts';
+import type { JsonValue, ParamSchema, StudioFieldSite, StudioFieldView } from '@/generated/studioContracts';
 import { Button } from '@/components/ui/Button';
 import { ValueField } from '@/components/values/ValueField';
 import { fromFieldView, type FieldSites, type ProjectedEdit } from '@/components/values/adapters/fieldView';
@@ -9,33 +9,33 @@ import { fromParamSchema } from '@/components/values/adapters/paramSchema';
 import { rawField } from '@/components/values/adapters/raw';
 import type { ChangeMark } from '@/components/values/fieldModel';
 
-const swept = (kinds: FieldKind[]): StudioFieldSite => ({
+const scope: Omit<StudioFieldSite, 'kinds'> = {
   expected: { base: 'real' }, finest: 0,
   names: [
     { id: 'hidden', name: 'hidden_size', type: { base: 'integer' } },
     { id: 'tau', name: 'tau', type: { base: 'real' } },
   ],
-  kinds, functions: 'sweep',
+  functions: 'rules',
   parts: [{ path: [], functions: ['linspace', 'geomspace', 'sample'], names: ['hidden', 'tau'] }],
-});
+};
 
-/** The gallery's stand-in for the tables a field response carries, which its fields name by key. */
-const sites: FieldSites = {
+/** The gallery's stand-in for the sites and function lists a field view response states once. */
+const tables: FieldSites = {
   sites: {
-    number: swept(['value', 'sweep', 'formula']),
-    value: swept(['value']),
+    formula: { ...scope, kinds: ['value', 'sweep', 'formula'] },
+    value: { ...scope, kinds: ['value'] },
     draw: {
-      expected: { base: 'real', dimensions: { time: 1 } }, finest: 1, names: [], kinds: ['value', 'sweep', 'draw', 'formula'],
-      functions: 'draw', parts: [{ path: [], functions: ['uniform', 'normal'], names: [] }],
+      expected: { base: 'real' }, finest: 1, kinds: ['value', 'sweep', 'draw', 'formula'], functions: 'draws',
+      parts: [{ path: [], functions: ['uniform', 'normal'], names: [] }],
     },
   },
   function_lists: {
-    sweep: [
+    rules: [
       { id: 'linspace', signature: 'linspace(first, last, count)', display_class: 'sweep_rule', min_args: 3, max_args: 3 },
       { id: 'geomspace', signature: 'geomspace(first, last, count)', display_class: 'sweep_rule', min_args: 3, max_args: 3 },
       { id: 'sample', signature: 'sample(draw, count)', display_class: 'sweep_rule', min_args: 2, max_args: 2 },
     ],
-    draw: [
+    draws: [
       { id: 'uniform', signature: 'uniform(low, high)', label: 'Uniform', display_class: 'draw', min_args: 2, max_args: 2,
         parameters: [{ name: 'low', label: 'Low' }, { name: 'high', label: 'High' }] },
       { id: 'normal', signature: 'normal(mean, sd)', label: 'Normal', display_class: 'draw', min_args: 2, max_args: 2,
@@ -45,7 +45,7 @@ const sites: FieldSites = {
 };
 
 /** A stand-in for the server's field projection: numbers are constants, top-level commas a list sweep. */
-function useProjected(label: string, initial: string, site: 'number' | 'value') {
+function useProjected(label: string, initial: string, site: 'formula' | 'value') {
   const [field, setField] = useState<StudioFieldView>({ label, text: initial, site, can_sweep: true, can_change_axis: true });
   const commit = async (edit: ProjectedEdit) => {
     if (edit.kind === 'to_sweep') { setField({ ...field, text: field.text + ',', sweep: list([field.text]) }); return; }
@@ -59,13 +59,12 @@ function useProjected(label: string, initial: string, site: 'number' | 'value') 
   return { field, commit };
 }
 
-
 /** A stand-in for the server's reading of a draw of numbers, `family(a, b)` with an optional `per=run`. */
 function useDrawn(label: string, initial: string) {
   const read = (text: string): StudioFieldView | string => {
     const match = /^\s*(\w+)\((.*)\)\s*$/.exec(text);
     const family = match && ({ U: 'uniform', N: 'normal' } as Record<string, string>)[match[1]] || match?.[1];
-    if (!match || !sites.function_lists!.draw.some(({ id }) => id === family)) {
+    if (!match || !tables.function_lists!.draws.some(({ id }) => id === family)) {
       return Number.isFinite(Number(text)) ? { label, text: text.trim(), site: 'draw', structure: {
         value: { kind: 'literal', value: Number(text) } } } : `${label} takes Value, Sweep, Draw, Formula`;
     }
@@ -176,25 +175,25 @@ function useRaw(initial: Record<string, JsonValue>) {
 }
 
 export function ValueFieldGallery() {
-  const hidden = useProjected('Hidden size', '64', 'number');
-  const rate = useProjected('Learning rate', '0.001', 'number');
+  const hidden = useProjected('Hidden size', '64', 'formula');
+  const rate = useProjected('Learning rate', '0.001', 'formula');
   const step = useProjected('Step', '0.01', 'value');
-  const decay = useProjected('Decay', 'learning_rate / 10', 'number');
+  const decay = useProjected('Decay', 'learning_rate / 10', 'formula');
   const delay = useDrawn('Delay', 'U(0.3, 1)');
   const jitter = useDrawn('Jitter', '0.1');
-  const drawn = (view: ReturnType<typeof useDrawn>) => fromFieldView(view.field, { id: view.field.label, sites, commit: view.commit, kind: view.kind });
+  const drawn = (view: ReturnType<typeof useDrawn>) => fromFieldView(view.field, tables, { id: view.field.label, commit: view.commit, kind: view.kind });
   const raw = useRaw(Object.fromEntries(params.map(({ name, default: value }) => [name, value as JsonValue])));
   const settings = useHistory({
     optimizer: { type: 'adam', learning_rate: { type: 'constant', value: 0.003 }, b1: 0.9, b2: 0.999 },
   });
   const rangeField: StudioFieldView = {
-    label: 'Clip', text: 'geomspace(0.1, 10, 3)', site: 'number',
+    label: 'Clip', text: 'geomspace(0.1, 10, 3)', site: 'formula',
     sweep: { kind: 'range', id: 'clip', rule: { start: 0.1, stop: 10, count: 3, scale: 'log' }, can_list: true },
     members: [{ id: 'a', label: null, value: 0.1 }, { id: 'b', label: null, value: 1 }, { id: 'c', label: null, value: 10 }],
     can_change_axis: true,
   };
   const project = (view: ReturnType<typeof useProjected>, extra = {}) =>
-    fromFieldView(view.field, { id: view.field.label, sites, commit: view.commit, ...extra });
+    fromFieldView(view.field, tables, { id: view.field.label, commit: view.commit, ...extra });
   return (
     <section className="grid gap-4" aria-label="ValueField">
       <h2 className="text-sm font-medium text-shell-muted">ValueField</h2>
@@ -206,11 +205,11 @@ export function ValueFieldGallery() {
           <ValueField model={project(decay, { kind: 'formula' })} />
           <ValueField model={drawn(delay)} />
           <ValueField model={drawn(jitter)} />
-          <ValueField model={fromFieldView(rangeField, { id: 'clip', sites, commit: async () => undefined })} />
-          <ValueField model={fromFieldView({ ...hidden.field, label: 'Selected', effective: '96' },
-            { id: 'selected', sites, commit: hidden.commit, rowSelection: true })} />
-          <ValueField model={fromFieldView({ ...hidden.field, label: 'Several' },
-            { id: 'several', sites, commit: hidden.commit, rowSelection: true, multipleRows: true })} />
+          <ValueField model={fromFieldView(rangeField, tables, { id: 'clip', commit: async () => undefined })} />
+          <ValueField model={fromFieldView({ ...hidden.field, label: 'Selected', effective: '96' }, tables,
+            { id: 'selected', commit: hidden.commit, rowSelection: true })} />
+          <ValueField model={fromFieldView({ ...hidden.field, label: 'Several' }, tables,
+            { id: 'several', commit: hidden.commit, rowSelection: true, multipleRows: true })} />
           <ValueField model={project(step, { changed })} />
           <ValueField model={rawField({ id: 'reduction', label: 'Reduction', value: 'mean', changed, change: () => undefined,
             type: { kind: 'choice', options: [{ value: 'mean', label: 'Mean' }, { value: 'sum', label: 'Sum' }] } })} />
