@@ -119,8 +119,7 @@ def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
             if recorder is not None:
                 try:
                     if (project := message.get("project_root")) is not None:
-                        environment = message.get("environment_root")
-                        recorder.bind_project(Path(project), environment_root=Path(environment) if environment else None)
+                        recorder.bind_project(Path(project), environment_root=Path(message["environment_root"]))
                     recorder.start_delivery()
                 except (OSError, ValueError) as error:
                     source_error = error

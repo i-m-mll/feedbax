@@ -51,17 +51,25 @@ export interface ProblemEntry {
   readonly runs: number;
 }
 
+/** The project's own Problem for a package it cannot use, which every run needing that package points at. */
+function packageProblem(problem: StudioProjectWindowMapProblem): StudioProjectWindowMapProblem {
+  return { ...problem, code: 'package_unavailable', path: '', variant: null, step: null, row: null, place: null };
+}
+
 /**
  * The entries of the Problems list. A problem repeated across a step's rows is one entry; a run waiting on another
- * step's run is not listed, its own row and step mark saying so.
+ * step's run is not listed, its own row and step mark saying so; an unavailable package is one entry for the project.
  */
 export function problemEntries(problems: readonly StudioProjectWindowMapProblem[]): ProblemEntry[] {
   const entries = new Map<string, { problem: StudioProjectWindowMapProblem; rows: Set<string | null> }>();
   for (const problem of problems) {
     if (problem.code === 'blocked_input') continue;
-    const key = JSON.stringify([problem.step, problem.variant, problem.place, problem.path, problem.detail]);
-    const entry = entries.get(key) ?? { problem, rows: new Set() };
-    entry.rows.add(problem.row);
+    const packaged = problem.package != null;
+    const key = JSON.stringify(packaged ? [problem.package]
+      : [problem.step, problem.variant, problem.place, problem.path, problem.detail]);
+    const entry = entries.get(key) ?? { problem: packaged ? packageProblem(problem) : problem, rows: new Set() };
+    if (!packaged) entry.rows.add(problem.row);
+    else if (problem.row !== null) entry.rows.add(JSON.stringify([problem.variant, problem.step, problem.row]));
     entries.set(key, entry);
   }
   return [...entries.values()].map(({ problem, rows }) => ({ problem, runs: rows.size }));

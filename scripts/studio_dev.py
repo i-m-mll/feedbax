@@ -23,6 +23,9 @@ from feedbax.host import HostClient
 from feedbax.host.io import OWNER_ENV
 from feedbax.host.platform import end_with
 from feedbax.host.source import host_source
+from feedbax.project_environment import ENVIRONMENT_VARIABLE, EnvironmentFailure, StudioRuntime, project_environment
+from feedbax.project_folder import ProjectFolderLocation
+from feedbax.web.serve import STUDIO_APP
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
@@ -111,6 +114,25 @@ def require_matching_host(host: HostClient) -> None:
         )
 
 
+def backend_runtime(folder: Path | None) -> tuple[Path, Path, dict[str, str]]:
+    """The interpreter, working directory and environment of the backend that serves ``folder``."""
+    if folder is None:
+        return Path(sys.executable), ROOT, {}
+    environment = project_environment(folder)
+    if isinstance(environment, EnvironmentFailure):
+        raise SystemExit(str(environment))
+    if isinstance(environment, StudioRuntime):
+        return Path(sys.executable), ROOT, {}
+    expected = host_source()
+    if host_source(environment.feedbax) != expected:
+        raise SystemExit(
+            f"The environment of {environment.root / 'pyproject.toml'} uses Feedbax at {environment.feedbax}; "
+            f"this launch uses {expected['package']}. Launch Studio from the Feedbax checkout that project locks, "
+            "or lock the project to this one."
+        )
+    return environment.interpreter, environment.root, {ENVIRONMENT_VARIABLE: str(environment.root)}
+
+
 def seed_jax_cache(shared: Path, host_root: Path) -> None:
     host_root.mkdir(mode=0o700, parents=True)
     subprocess.run(["cp", "-cR", f"{shared}/", str(host_root / "jax")], check=True)
@@ -175,6 +197,7 @@ def claim_test_home(home: Path, paths: AppPaths, args: argparse.Namespace, scope
 
 
 def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: str) -> int:
+    interpreter, backend_cwd, backend_environment = backend_runtime(args.project)
     paths = AppPaths.resolve(instance_root=home)
     port = args.port or (3009 if args.preview or args.preview_from else 3008)
     backend_port = args.backend_port or port + 5000
@@ -194,10 +217,8 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
 
     # The backend ends with this launcher however it ends, SIGKILL included.
     backend = [
-        sys.executable, "-B", "-c",
-        "import sys; from feedbax.host.platform import end_with; end_with(int(sys.argv.pop(1)));"
-        " from uvicorn.main import main; main()",
-        str(os.getpid()), backend_app,
+        str(interpreter), "-B", "-m", "feedbax.web.serve", "--owner", str(os.getpid()), "--app", backend_app,
+        *(("--open", str(args.project)) if args.project is not None else ()),
     ]
     vite = ["bun", "--bun", "vite"]
     front = vite
@@ -219,7 +240,12 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind((HOST, backend_port))
         fd = listener.fileno()
-        api = spawn(scope, [*backend, "--fd", str(fd)], cwd=ROOT, pass_fds=(fd,))
+        api = spawn(
+            scope, [*backend, "--fd", str(fd)], cwd=backend_cwd, pass_fds=(fd,), env=os.environ | backend_environment,
+        )
+    if args.project is not None:
+        project = ProjectFolderLocation.selected(args.project).project_id
+        print(f"Studio project: http://{HOST}:{port}/?project={project}", flush=True)
     if args.backend_only:
         return api.wait()
     pid_file = paths.cache / "backend.pid"
@@ -229,11 +255,15 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
     return web.wait()
 
 
-def main(*, backend_app: str = "feedbax.web.app:app") -> int:
+def main(*, backend_app: str = STUDIO_APP) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, help="keep Studio data in this directory")
     parser.add_argument("--port", type=int, help="frontend port (default: 3008 or 3009 with --preview)")
     parser.add_argument("--backend-port", type=int, help="backend port (default: the frontend port plus 5000)")
+    parser.add_argument(
+        "--project", type=Path,
+        help="open this project folder in place, with the backend in the environment of the uv project containing it",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--preview", action="store_true",
                       help="build and serve the production frontend for a walkthrough: source-stamped, with the notes toolbar")
@@ -248,6 +278,8 @@ def main(*, backend_app: str = "feedbax.web.app:app") -> int:
         help="seed a new test home's JAX compilation cache from this directory and add its new entries back",
     )
     args = parser.parse_args()
+    if args.project is not None:
+        args.project = args.project.expanduser().resolve()
     if args.backend_only and args.home is None:
         parser.error("--backend-only requires --home")
     raw_owner = os.environ.get(OWNER_ENV)

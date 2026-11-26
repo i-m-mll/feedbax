@@ -18,6 +18,7 @@ from feedbax.jobs import DEFAULT_AUTOMATIC_RUN, AutomaticRun, JobService, Sessio
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.application.composition import compose_application
 from feedbax.validity.admission import QUICK_RECEIPT_DURATION
+from feedbax.project_environment import PackageAvailability, running_environment
 
 from feedbax.web.api import (
     components,
@@ -61,7 +62,9 @@ def create_app(
     remote_runs: StudioRemoteRuns | None = None,
     automatic_run: AutomaticRun = DEFAULT_AUTOMATIC_RUN,
     quick_duration: timedelta = QUICK_RECEIPT_DURATION,
+    open_folder: Path | None = None,
 ) -> FastAPI:
+    """Serve Studio; ``open_folder`` is a project folder opened in place at every start, wherever it lies."""
     project_root = projects_dir if projects_dir is not None else BASE_DIR / "projects"
 
     @asynccontextmanager
@@ -76,7 +79,13 @@ def create_app(
             synthesis_methods=app.state.bootstrap_state.bundle.synthesis_methods,
             figure_templates=app.state.bootstrap_state.bundle.figure_templates,
             load_examples=load_shipped_projects,
+            packages=PackageAvailability.of(
+                app.state.bootstrap_state.bundle.package_sources, app.state.bootstrap_state.failures,
+                running_environment(),
+            ),
         )
+        if open_folder is not None:
+            app.state.project_folders.open_native_folder(open_folder)
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle,
             targets=targets, submit_session=submit_session,

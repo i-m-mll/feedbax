@@ -68,7 +68,9 @@ from feedbax.contracts.project_io import (
 from feedbax.planner.project_plan import (
     ProjectPlan, ProjectPlanMemo, RunKey, _builtin_model_registry, compile_project, compiler_authority, project_variants,
 )
-from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, ResolutionCode, compose_document
+from feedbax.plugins.declarations import declaration_package
+from feedbax.project_environment import PackageAvailability
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
@@ -458,6 +460,25 @@ def _same_plan_inputs(readers: BaseReaders, expected: dict[str, dict[object, obj
     return True
 
 
+def package_problems(plan: ProjectPlan, packages: PackageAvailability, folder: Path) -> ProjectPlan:
+    """Report each unavailable package once, as a project Problem that the rows needing it point at."""
+    reasons: dict[str, str] = {}
+    diagnostics = []
+    for diagnostic in plan.diagnostics:
+        package = declaration_package(diagnostic.missing_key) if diagnostic.missing_key is not None else None
+        if package is not None and (reason := packages.unavailable(package, folder)) is not None:
+            reasons[package] = reason
+            diagnostic = replace(diagnostic, code=ResolutionCode.MISSING_PACKAGE, detail=reason, package=package)
+        diagnostics.append(diagnostic)
+    if not reasons:
+        return plan
+    return replace(plan, diagnostics=(
+        *(ProjectDiagnostic(ResolutionCode.PACKAGE_UNAVAILABLE, "", reason, package=package)
+          for package, reason in reasons.items()),
+        *diagnostics,
+    ))
+
+
 def compile_saved_project(
     text: TextProject, *, project_id: str, store: Path, readers: BaseReaders,
     operations: OperationRegistry | None = None, components: ComponentRegistry | None = None,
@@ -466,8 +487,12 @@ def compile_saved_project(
     source_runs: Iterable[RunKey] = (), memo: SavedPlanMemo | None = None,
     training_methods: TrainingMethodRegistry | None = None,
     synthesis_methods: SynthesisMethodRegistry | None = None,
+    packages: PackageAvailability | None = None,
 ) -> SettledProjectPlan:
-    """Compile exact authored bytes and reuse them only with matching input authority."""
+    """Compile exact authored bytes and reuse them only with matching input authority.
+
+    With ``packages``, each declaration of an unavailable package is reported once for the project.
+    """
     readers = replace(
         readers, terminal_train=terminal_train_reader(store),
         imported_model=portable_model_reader(text.root, store, components or _builtin_model_registry()),
@@ -500,6 +525,8 @@ def compile_saved_project(
             figure_templates=figure_templates, training_methods=training_methods, synthesis_methods=synthesis_methods,
             readers=replace(readers, **observed_readers),
         )
+        if packages is not None:
+            plan = package_problems(plan, packages, text.root)
         settled = SettledProjectPlan(
             project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
             regroup_refused(text.project),
@@ -948,8 +975,10 @@ class ProjectFolder:
         training_methods: TrainingMethodRegistry | None = None,
         synthesis_methods: SynthesisMethodRegistry | None = None,
         load_examples: Callable[[], Mapping[str, Project]] = dict,
+        packages: PackageAvailability | None = None,
     ) -> None:
         self.root = root.resolve()
+        self.packages = packages
         self._local_folder = local_folder
         self.operations = operations
         self.figure_templates = figure_templates
@@ -1182,7 +1211,7 @@ class ProjectFolder:
             source_runs=source_runs, memo=self._plan_memo(project_id),
             operations=self.operations, components=self.components, functions=self.functions,
             python_tasks=self.python_tasks, figure_templates=self.figure_templates, training_methods=self.training_methods,
-            synthesis_methods=self.synthesis_methods,
+            synthesis_methods=self.synthesis_methods, packages=self.packages,
         )
 
     def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:

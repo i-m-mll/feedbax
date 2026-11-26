@@ -70,7 +70,7 @@ class DeclarationRegistry[T]:
     def resolve(self, key: str) -> ResolvedDeclaration[T]:
         declaration = self._entries.get(self._renames.get(key, key))
         if declaration is None:
-            raise KeyError(missing_declaration(self._kind, key))
+            raise UnknownDeclaration(self._kind, key)
         if _observer is not None:
             _observer(self._kind, key, declaration)
         return declaration
@@ -138,6 +138,20 @@ def declaration_key(name: str, key: str | None, source: DistributionSource) -> s
     return validate_declaration_key(
         f"{source.package.partition('.')[0]}.{name}" if key is None else key
     )
+
+
+def declaration_package(key: str) -> str:
+    """The package a declaration key is named in, which is the root package of the distribution that declares it."""
+    return key.partition(".")[0]
+
+
+class UnknownDeclaration(KeyError):
+    """No registered declaration of ``kind`` has ``key``."""
+
+    def __init__(self, kind: str, key: str):
+        super().__init__(missing_declaration(kind, key))
+        self.kind = kind
+        self.key = key
 
 
 def missing_declaration(kind: str, key: str) -> str:

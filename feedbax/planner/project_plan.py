@@ -17,6 +17,7 @@ from pydantic_core import to_json
 
 from feedbax.application.composition import application_python_tasks, load_application
 from feedbax.checkpoint_coordinates import MAX_CHECKPOINT_COORDINATE
+from feedbax.plugins.declarations import UnknownDeclaration
 from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
@@ -1458,9 +1459,15 @@ def _checkpoint_fit_problem(
 class _PayloadProblems(Exception):
     """Problems at dotted payload paths found while lowering a row."""
 
-    def __init__(self, problems: tuple[tuple[str, str], ...]):
+    def __init__(self, problems: tuple[tuple[str, str], ...], *, missing_key: str | None = None):
         super().__init__(problems)
         self.problems = problems
+        self.missing_key = missing_key
+        """The declaration key no registered declaration provides, when that is the one problem."""
+
+    @classmethod
+    def unknown(cls, path: str, error: UnknownDeclaration) -> _PayloadProblems:
+        return cls(((path, str(error.args[0])),), missing_key=error.key)
 
 
 def _synthesis_request(
@@ -1490,8 +1497,8 @@ def _synthesis_request(
         )
     try:
         method = methods.resolve(authored.method)
-    except KeyError as error:
-        raise _PayloadProblems((("method", error.args[0]),)) from error
+    except UnknownDeclaration as error:
+        raise _PayloadProblems.unknown("method", error) from error
     try:
         settings = method.declaration.settings_model.model_validate(authored.settings).model_dump(mode="json")
     except ValidationError as error:
@@ -1569,6 +1576,7 @@ def _encode_row(
             model_source = replace(
                 model_source, evaluation_graph=preparation.evaluation, evaluation_states=preparation.evaluation_states,
             )
+    missing_key = None
     try:
         if kind == "report":
             document = ReportDocument.model_validate(payload)
@@ -1634,8 +1642,8 @@ def _encode_row(
                 raise ValueError("Train requires the installed method catalog.")
             try:
                 training_methods.resolve(spec.method)
-            except KeyError as error:
-                raise _PayloadProblems((("method", error.args[0]),)) from error
+            except UnknownDeclaration as error:
+                raise _PayloadProblems.unknown("method", error) from error
             try:
                 spec, method, _ = normalize_train_method(spec, training_methods)
                 metric_names = method.metric_names(spec)
@@ -1667,6 +1675,7 @@ def _encode_row(
         )
     except _PayloadProblems as error:
         problems = error.problems
+        missing_key = error.missing_key
     except ValueError as error:
         problems = (("", str(error)),)
     else:
@@ -1699,7 +1708,7 @@ def _encode_row(
         tuple(
             ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD, place, message, key.step, row=key.row, variant=key.variant,
-                document=document, document_path=document_path,
+                document=document, document_path=document_path, missing_key=missing_key,
             )
             for path, message in problems
             for place in (f"payload.{path}" if path else "payload",)

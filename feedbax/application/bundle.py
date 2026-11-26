@@ -13,6 +13,7 @@ from feedbax.synthesis.methods import SynthesisMethodRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
 
+from feedbax.plugins.bootstrap import PackageLoadFailure
 from feedbax.plugins.declarations import DeclarationRegistry, DistributionSource
 
 
@@ -64,6 +65,8 @@ class PluginProvenance:
 @dataclass(frozen=True)
 class BootstrapState:
     bundle: ApplicationRegistryBundle
+    failures: tuple[PackageLoadFailure, ...] = ()
+    """The packages that failed to import and contribute nothing to ``bundle``."""
 
     @property
     def provenance(self) -> tuple[PluginProvenance, ...]:

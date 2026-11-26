@@ -82,10 +82,15 @@ class Launch:
     argv: tuple[str, ...]
     env: dict[str, str] = field(default_factory=dict)
     cwd: str | None = None
+    """The worker's directory, which is the uv project whose lock governs the worker's environment."""
     payload: JsonObject = field(default_factory=dict)
     warm_entrypoint: str | None = None
     preload: tuple[str, ...] = ()
     project_root: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.project_root is not None and self.cwd is None:
+            raise ValueError("A launch that loads project code needs the directory of its environment as its cwd.")
 
 
 @dataclass(frozen=True, slots=True)

@@ -2340,7 +2340,7 @@ function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVarian
           context={[problem.step && !(holder?.kind === 'step' && holder.id === problem.step) ? stepName(problem.step) : null,
             showVariant ? problem.variant : null,
             runs > 1 ? studioFormat('runCount', { count: runs }) : null].flatMap((part) => part ? [part] : [])}
-          placeShown={!namedByHolder(problem, holder?.kind === 'document' ? holder.id : null)}
+          placeShown={(problem.place !== null || problem.step !== null) && !namedByHolder(problem, holder?.kind === 'document' ? holder.id : null)}
           onReveal={canReveal(problem) ? () => onChoose(problem) : undefined} />
       </li>)}</ul>
     </section>;

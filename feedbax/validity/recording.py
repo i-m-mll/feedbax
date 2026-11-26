@@ -242,9 +242,10 @@ class WorkerRecorder:
         self.observe_new_sources()
         self._delivery_started_ns = started
 
-    def bind_project(self, project: Path, *, environment_root: Path | None = None) -> None:
+    def bind_project(self, project: Path, *, environment_root: Path) -> None:
+        """Bind the project whose code this worker loads and the uv project whose lock governs its environment."""
         root = project.resolve(strict=True)
-        lock_root = environment_root.resolve(strict=True) if environment_root is not None else root
+        lock_root = environment_root.resolve(strict=True)
         if (self.project, self._environment_root) == (root, lock_root):
             return
         if self.held_project is not None:
