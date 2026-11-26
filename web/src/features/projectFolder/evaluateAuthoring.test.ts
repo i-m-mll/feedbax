@@ -3,8 +3,8 @@ import { expect, it } from 'vitest';
 import type { Step } from '@/generated/studioContracts';
 import { applyAuthoredEdits, type ProjectEditContent } from './authoredEdits';
 import {
-  checkpointDraft, checkpointDraftRule, conditionLabels, editableCheckpointRule, evaluateSubject, evaluateSubjectEdits,
-  selectionCheckpoints,
+  checkpointDraft, checkpointDraftRule, conditionLabels, editableCheckpointRule, storedCheckpointRule, evaluateSubject, evaluateSubjectEdits,
+  ordinaryEvaluation, selectionCheckpoints,
   type EvaluateSubject,
 } from './evaluateAuthoring';
 
@@ -33,6 +33,10 @@ it('saves nothing for an empty draft, a list that says no rule as its text, and 
     });
   }
   expect(checkpointDraft({ kind: 'unresolved', text: '7 14' })).toEqual({ kind: 'list', updates: '7 14' });
+  // A draft is stored as its exact text and reads back as the same draft; a List of `last` is the Last rule.
+  expect(storedCheckpointRule({ kind: 'unresolved', text: '7 14' })).toBe('7 14');
+  expect(checkpointDraft(editableCheckpointRule('7 14')!)).toEqual({ kind: 'list', updates: '7 14' });
+  expect(checkpointDraftRule({ kind: 'list', updates: 'last' })).toEqual({ rule: 'last' });
   expect(checkpointDraftRule({ kind: 'at', at: 9007199254740992 })).toEqual({ problem: expect.objectContaining({ field: 'at' }) });
   expect(checkpointDraftRule({ kind: 'every', every: 0, from: null, through: null })).toEqual({ problem: expect.objectContaining({ field: 'every' }) });
   expect(checkpointDraftRule({ kind: 'every', every: 7, from: 21, through: 14 })).toEqual({ problem: expect.objectContaining({ field: 'through' }) });
@@ -117,4 +121,14 @@ it('refuses an update outside the range every run read has, on its field, naming
   const early = checkpointDraftRule({ kind: 'list', updates: '100, 200' }, range);
   expect(early).toMatchObject({ rule: [{ at: 100 }, { at: 200 }], problem: { field: 'updates', reason: expect.stringMatching(/^train · .*101\b.*8000/) } });
   expect(checkpointDraftRule({ kind: 'last' }, range)).toEqual({ rule: 'last' });
+});
+
+// Catches an Evaluate whose stored form omits its default variation losing its Subject rule and Trial Set editors.
+it('edits a stored Evaluate that omits its default variation', () => {
+  const step = {
+    kind: 'evaluate', base: { inline: { evaluation_type: 'feedbax.rollout', params: { seed: 731, trial_set: { kind: 'every_condition' } } } },
+    sweep: { axes: { subject: { input: 'subject' } } },
+    inputs: { subject: { step: 'train', where: { rule: 'seed=7' }, checkpoint: 'last' } },
+  } as unknown as Step;
+  expect(ordinaryEvaluation(step)?.trialSet).toEqual({ kind: 'every_condition' });
 });

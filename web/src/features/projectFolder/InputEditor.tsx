@@ -11,7 +11,7 @@ import type { ElementSelectionStore } from '@/features/projectWindow/elementSele
 import type { InputBinding, InputRole, StepReference, StudioSavedTrainKey } from '@/generated/studioContracts';
 import type { AuthoredProject } from './authoredEdits';
 import {
-  selectionCheckpoints, type CheckpointKind, type CheckpointRange, type EditableCheckpointRule, type SelectionCheckpoint,
+  selectionCheckpoints, storedCheckpointRule, type CheckpointKind, type CheckpointRange, type EditableCheckpointRule, type SelectionCheckpoint,
 } from './evaluateAuthoring';
 import {
   chosenDocument, documentChoice, documentGroup, documentKind, stepChoice, stepChoiceId, stepGroup, type DocumentKind,
@@ -202,7 +202,7 @@ export function InputEditor({ label, role, binding, self, steps, project, docume
       onSave={(next) => {
         if (checkpoint) return checkpoint.onSave(next, covered);
         if (!selections || !onChange) return;
-        const changed = selections.map((reference, index) => covered.includes(index) ? { ...reference, checkpoint: next } : reference);
+        const changed = selections.map((reference, index) => covered.includes(index) ? { ...reference, checkpoint: storedCheckpointRule(next) } : reference);
         onChange({ kind: 'select', binding: changed.length === 1 ? changed[0] : changed });
       }}
       onToSweep={checkpoint?.onToSweep} />;
