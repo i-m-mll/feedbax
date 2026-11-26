@@ -509,6 +509,30 @@ def test_named_figure_matches_inline_and_variant_edit_reaches_both_views():
         assert (source.kind, source.name, source.path) == ("variant", "dark", "/documents/velocity-figure/payload/theme")
 
 
+def test_figure_request_review_uses_keys_and_keeps_layer_order():
+    project = _project()
+    layers = project.documents["velocity-figure"].payload["layers"]
+    layers["zero"] = {"mark": "rule", "role": "summary", "panel": "velocity", "encode": {"axis": "y", "at": 0}}
+    operations = _operations()
+    before = compile_project(project, operations=operations, capture_sources=True)
+    profile = ElementKey(_KEY, "profile")
+    assert not before.diagnostics
+
+    edited = deepcopy(project)
+    edited.documents["velocity-figure"].payload["layers"]["bounds"]["style"] = {"line_dash": "dash"}
+    after = compile_project(edited, operations=operations, capture_sources=True)
+    change = diff_analyze_elements(before, after)[profile]
+    assert change.path == "payload.views.profile.figure.layers.bounds.style.line_dash"
+    assert change.after_source.path == "/layers/bounds/style/line_dash"
+
+    reordered = deepcopy(project)
+    reordered.documents["velocity-figure"].payload["layers"] = dict(reversed(list(layers.items())))
+    after_order = compile_project(reordered, operations=operations, capture_sources=True)
+    assert after_order.elements[profile].request_id != before.elements[profile].request_id
+    assert [layer.name for layer in _decode(after_order, "profile").spec.document.layers] == ["zero", "bounds"]
+    assert diff_analyze_elements(before, after_order)[profile].path == "payload.views.profile.figure.layers"
+
+
 def test_installed_figure_template_shares_identity_with_its_inline_figure():
     project = _project()
     authored = project.documents["velocity-figure"]
