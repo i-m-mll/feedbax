@@ -340,6 +340,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       results.map(({ jobId }) => [jobId, state] as const))));
     return (job) => states.get(job.job_id);
   }, [plan]);
+  const activityRunName = useMemo(() => {
+    const map = shown?.window_map;
+    const names = new Map(map?.rows.map(({ key, name }) => [savedRunId(key), name]));
+    const requests = new Map(map?.requests?.filter(({ element }) => element == null)
+      .map(({ key, request_id }) => [savedRunId(key), request_id]));
+    return (job: StudioActivityJob) => job.project_id === saved.project_id && requests.get(job.run_key) === job.request_id
+      ? names.get(job.run_key) : undefined;
+  }, [shown, saved.project_id]);
   const runMenu: RunMenu = (runs, anchor) => {
     const owner = runs[0] && plan.steps.find(({ id }) => id === (JSON.parse(runs[0].id) as string[])[1]);
     return [
@@ -2035,7 +2043,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         </StudioProblems>}
         activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
           onToggle={activity.invoke}
-          onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} resultState={activityResultState} />}
+          onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names}
+          resultState={activityResultState} runName={activityRunName} />}
         renderView={(view, slot) => {
           const details = slot === 'primary' ? primary : secondary;
           if (held[slot].step) {

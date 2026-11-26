@@ -600,16 +600,16 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const rowless = mapCard(page, 'rowless');
   await rowless.getByRole('button', { name: "Can't run", exact: true }).click();
   await expect(list.getByRole('listitem')).toHaveCount(1);
-  await list.getByRole('button', { name: 'Base · Absent base', exact: true }).click();
+  await list.getByRole('listitem').getByRole('button').click();
   await expect(mapStep(page, 'rowless')).toHaveAttribute('aria-pressed', 'true');
 
   await problemButton.click();
   // The group heading names the document; the row names the field the problem is about.
-  await list.locator('section').filter({ has: page.getByRole('heading', { name: 'Empty model', exact: true }) })
+  await list.locator('section').filter({ has: page.getByRole('heading', { name: 'Empty Model', exact: true }) })
     .getByRole('button', { name: /^Components · Model has no components\./ }).click();
   const emptyReason = page.getByText('Components · Model has no components.', { exact: true });
   const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
-  await expect(empty.locator(':scope > header')).toContainText('Empty model');
+  await expect(empty.locator(':scope > header')).toContainText('Empty Model');
   await expect(emptyReason).toBeFocused();
   await expect(mapCard(page, 'empty').locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
 

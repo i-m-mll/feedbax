@@ -16,7 +16,7 @@ function submitted(page: Page, path: string) {
     response.request().method() === 'POST' && new URL(response.url()).pathname === path);
 }
 
-test('the slot header switches, creates, duplicates, renames and re-keys a step\'s documents in place, and Activity keeps a run\'s label', { tag: '@round' }, async ({ page, request }) => {
+test('the slot header switches, creates, duplicates, renames and re-keys a step\'s documents in place, and Activity follows a run\'s label', { tag: '@round' }, async ({ page, request }) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('history-files'));
   const runsPath = `${projectPath}/train-runs`;
   const table = page.getByRole('table', { name: 'Runs' });
@@ -87,9 +87,8 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true })
     .getByRole('region', { name: configuration.project, exact: true });
-  await expect(activity.getByRole('button', { name: 'Train Train', exact: true })).toBeVisible();
+  await expect(activity.getByRole('button', { name: 'Train Reach', exact: true })).toBeVisible();
   await expect(activity.getByRole('button', { name: 'Train Sibling reach', exact: true })).toBeVisible();
-  await expect(activity.getByRole('button', { name: 'Train Reach', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
 
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
