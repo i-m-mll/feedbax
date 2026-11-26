@@ -17,7 +17,6 @@ from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.dataset import Dataset
 from feedbax.analysis.operation_inputs import (
     require_task_source,
-    uses_replicate_axis,
     verify_dataset,
 )
 from feedbax.dataset_replicates import replicate_ids, select_replicate, stack_replicates
@@ -118,7 +117,7 @@ def run_operation(
     for role, dataset in datasets.items():
         port = definition.inputs[role]
         assert isinstance(port, DatasetPort)
-        if uses_replicate_axis(port) or (coordinates := replicate_ids(dataset)) is None:
+        if port.uses_replicate_axis or (coordinates := replicate_ids(dataset)) is None:
             verify_dataset(dataset, port, parameters)
             continue
         if ids is None:

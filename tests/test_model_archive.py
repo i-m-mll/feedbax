@@ -260,6 +260,98 @@ def test_archive_fits_changed_noise_without_changing_learned_weights(tmp_path):
         )
 
 
+def test_a_loaded_models_replicas_are_planned_rendered_and_retained(native_archive, host, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from feedbax.contracts.project import Project
+    from feedbax.web.app import create_app
+    from feedbax.web.services.project_folder import ProjectFolderService
+    from tests.support.host import job_row, token, wait_until
+    from tests.test_canonical_evaluate_admission import _save_project
+    from tests.test_project_report_plan import _report_project
+
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    _, _, _, _, archive, _ = native_archive
+    raw = _report_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    example = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    task = example["documents"]["simple-reaches-task"]
+    task["payload"]["fixed_steps"] = 8
+    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    del task["payload"]["validation_trials"]
+    figure = raw["documents"]["velocity-figure"]
+    (layer,) = figure["payload"]["layers"]
+    del layer["select"]
+    layer.update(group=["replicate"], style={"label": "{replicate}"})
+    raw["documents"] = {
+        "point-mass": example["documents"]["point-mass"], "task": task,
+        "velocity-analysis": raw["documents"]["velocity-analysis"], "velocity-figure": figure,
+    }
+    raw["steps"] = {
+        "analyze": raw["steps"]["analyze"],
+        "baseline": {
+            "kind": "evaluate",
+            "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
+                "seed": 17, "trial_policy": "paired", "variation": [],
+                "trial_set": {"kind": "sample", "count": 2},
+            }}},
+            "inputs": {
+                "subject": {"kind": "loaded_model", "source": {"document": "ensemble"}},
+                "task": {"kind": "task", "source": {"document": "task"}},
+            },
+        },
+    }
+    _save_project(ProjectFolderService(tmp_path), "replicated", Project.model_validate(raw))
+    path = "/api/projects/replicated"
+
+    def expect(response, status=200):
+        assert response.status_code == status, response.text
+        return response.json()
+
+    def key(step):
+        return {"variant": "default", "step": step, "row": "default"}
+
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        revision = expect(client.get(path))["revision"]
+        imported = expect(client.post(f"{path}/loaded-models/import", params={
+            "revision": revision, "name": "ensemble", "model": "point-mass",
+        }, content=archive, headers={"Content-Type": "application/octet-stream"}), 201)
+        revision = imported["snapshot"]["revision"]
+        catalog = expect(client.post(f"{path}/authoring/analyze", json={"revision": revision, "key": key("analyze")}))
+        outputs = catalog["operation_outputs"]
+        for name, role, variable, dims in (
+            ("align", "velocity", "parallel_velocity", ["replicate", "condition", "trial", "state_time"]),
+            ("summarize", "summary", "mean", ["replicate", "condition", "state_time"]),
+        ):
+            port = outputs[name][role]
+            assert port["variables"][variable]["dims"] == dims
+            assert port["coordinates"]["replicate"]["dims"] == ["replicate"]
+            assert port["coordinates"]["replicate"]["inline_values"] == ["a", "b"]
+
+        started = expect(client.post(f"{path}/train-runs", json={
+            "revision": revision, "token": token("replicated-analysis"),
+            "run_keys": [key("baseline"), key("analyze")],
+        }), 202)["items"]
+        assert len(started) == 4 and all(item["disposition"] == "admitted" for item in started), started
+        for item in started:
+            terminal = wait_until(lambda: (
+                job if (job := job_row(host, item["job_id"])) and job["outcome"] is not None else None
+            ))
+            assert terminal["state"] == "succeeded", terminal["outcome"]
+
+        window = expect(client.get(f"{path}/train-runs", params={
+            "revision": revision, "window_map": True,
+        }))["window_map"]
+        assert not window["problems"], window["problems"]
+        products = {element["name"]: element["requests"][0]["result"]["products"] for element in window["analysis_elements"]}
+        summary = expect(client.get(products["summarize"]["summary"]))
+        assert summary["variables"]["mean"]["dims"] == outputs["summarize"]["summary"]["variables"]["mean"]["dims"]
+        assert summary["coords"]["replicate"]["inline_values"] == ["a", "b"]
+        rendered = expect(client.get(products["profile"]["figure"]))
+        assert [trace["name"] for trace in rendered["data"] if trace.get("showlegend", True)] == ["a", "b"]
+
+
 def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_archive, tmp_path):
     from fastapi.testclient import TestClient
 

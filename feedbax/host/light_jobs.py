@@ -285,12 +285,12 @@ def _verify_dataset_output(
     store: ImmutableArtifactBlobProvider, product: Product, port: DatasetPort
 ) -> None:
     # Opening a dataset loads JAX; the Host admits light jobs and must not pay for it.
-    from feedbax.analysis.operation_inputs import uses_replicate_axis, verify_dataset
+    from feedbax.analysis.operation_inputs import verify_dataset
     from feedbax.dataset_replicates import replicate_ids, select_replicate
     from feedbax.persistence.dataset import open_stored_dataset
 
     with open_stored_dataset(store, dataset_member(product)) as dataset:
-        if not uses_replicate_axis(port) and replicate_ids(dataset) is not None:
+        if not port.uses_replicate_axis and replicate_ids(dataset) is not None:
             dataset = select_replicate(dataset, 0)
         verify_dataset(dataset, port)
 

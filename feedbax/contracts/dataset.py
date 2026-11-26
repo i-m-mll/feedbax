@@ -24,6 +24,7 @@ from feedbax.contracts.strict_json import strict_json_loads
 
 
 DATASET_MEDIA_TYPE = "application/vnd.safetensors"
+REPLICATE_DIM = "replicate"
 
 
 def _valid_name(value: str) -> str:
@@ -70,6 +71,14 @@ class FieldDescriptor(StrictModel):
         if len(set(dims)) != len(dims):
             raise ValueError("a field cannot use the same dimension twice")
         return dims
+
+
+def replicate_axis_index(dims: tuple[str, ...], after: str | None) -> int:
+    return dims.index(after) + 1 if after is not None and after in dims else 0
+
+
+def replica_coordinate(ids: tuple[str, ...] | None = None) -> FieldDescriptor:
+    return FieldDescriptor(dims=(REPLICATE_DIM,), inline_values=ids)
 
 
 class DatasetDescriptor(StrictModel):

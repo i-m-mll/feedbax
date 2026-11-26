@@ -15,7 +15,7 @@ from feedbax.contracts.operation import (
     DatasetPort,
     OperationDefinition,
     WholeDimensions,
-    require_dataset_fields,
+    operation_input_port, require_dataset_fields,
     require_dataset_port,
 )
 from feedbax.contracts.project import (
@@ -269,9 +269,10 @@ def _variable_choices(
             choices[port.takes.parameter] = dimensions
         if states is None or not isinstance(port, DatasetPort) or states.schema_ids[0] not in port.schema_ids:
             continue
-        for parameter, required in port.selected_variables.items():
+        actual_port = operation_input_port(states, port)
+        for parameter, required in port.for_dimensions(actual_port.dimensions).selected_variables.items():
             matching = []
-            for name, actual in states.variables.items():
+            for name, actual in actual_port.variables.items():
                 try:
                     require_dataset_fields({name: actual}, {name: required})
                 except ValueError:

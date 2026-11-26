@@ -52,7 +52,7 @@ def rollout_coordinates(update_axis: UpdateAxis | None) -> dict[str, FieldDescri
 
 def rollout_dataset_port(
     signals: Iterable[ScopedValue | Signal], schema: str, update_axis: UpdateAxis | None,
-    *, model_states: Sequence[RetainedStateField] = (),
+    *, model_states: Sequence[RetainedStateField] = (), replicate: FieldDescriptor | None = None,
 ) -> DatasetPort:
     leading = rollout_leading(update_axis)
     fields = dict(rollout_signal_field(signal.id, signal.name, signal.type, leading) for signal in signals)
@@ -62,7 +62,8 @@ def rollout_dataset_port(
     }
     if any("xy" in field.dims for field in fields.values()):
         coordinates["xy"] = XY
-    return DatasetPort(schema_ids=(schema,), variables=fields, coordinates=coordinates)
+    port = DatasetPort(schema_ids=(schema,), variables=fields, coordinates=coordinates)
+    return port.with_replicate_axis(replicate, after=update_axis) if replicate is not None else port
 
 
 def common_rollout_port(ports: Sequence[DatasetPort]) -> DatasetPort:
