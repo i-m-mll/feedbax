@@ -32,18 +32,29 @@ from tests.test_document_train_pair import authored_documents, document_project
 
 
 
-@pytest.mark.parametrize("operation, slot, parameter, changed, literal", [
-    ("scale", "factor", 3.0, [3.0, 6.0], False),
-    ("add", "value", 3.0, [4.0, 5.0], False),
-    ("clamp", "high", 1.5, [1.0, 1.5], False),
-    pytest.param("add", "value", 0.002, [1.002, 2.002], True, id="literal-float64"),
+@pytest.mark.parametrize("operation, slot, parameter, changed, source", [
+    ("scale", "factor", 3.0, [3.0, 6.0], "task"),
+    ("add", "value", 3.0, [4.0, 5.0], "task"),
+    ("clamp", "high", 1.5, [1.0, 1.5], "task"),
+    pytest.param("add", "value", 0.002, [1.002, 2.002], "literal", id="scalar-float64"),
+    pytest.param("scale", "factor", 0.002, [0.002, 0.004], "literal", id="scale-float64"),
+    pytest.param("clamp", "high", 1.002, [1.0, 1.002], "literal", id="clamp-float64"),
+    pytest.param("add", "value", [0.002, 0.0], [1.002, 2.0], "set", id="set-vector-float64"),
 ])
-def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slot, parameter, changed, literal):
+def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slot, parameter, changed, source):
     functions, *_ = authored_documents()
-    operand = {"kind": "value", "value": parameter} if literal else {"kind": "task", "variable": "gain"}
+    operand = {"kind": "task", "variable": "gain"} if source == "task" else {"kind": "value", "value": parameter}
     operands = {slot: operand}
     if operation == "clamp":
         operands["low"] = {"kind": "value", "value": -1.0}
+    attachment = {
+        "id": "pulse", "kind": "intervention", "operation": operation, "operands": operands,
+        "window": {"spans": [{
+            "kind": "interval",
+            "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
+            "end": {"offset": {"value": 2, "unit": "st"}},
+        }]},
+    }
     model = ModelDocument.model_validate({
         "step_seconds": 0.01,
         "ports": {
@@ -58,14 +69,7 @@ def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slo
                 "out": {
                     "source": {"owner": "component", "component": "relay", "port": "output"},
                     "target": {"owner": "outputs", "port": "command"},
-                    "attachments": [{
-                        "id": "pulse", "kind": "intervention", "operation": operation, "operands": operands,
-                        "window": {"spans": [{
-                            "kind": "interval",
-                            "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
-                            "end": {"offset": {"value": 2, "unit": "st"}},
-                        }]},
-                    }],
+                    "attachments": [] if source == "set" else [attachment],
                 },
             },
         },
@@ -74,7 +78,7 @@ def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slo
         "id": "task", "fixed_steps": 5,
         "variables": [{
             "id": "gain", "name": "gain", "type": {"base": "real"}, "value": {"kind": "literal", "value": parameter},
-        }],
+        }] if source == "task" else [],
         "epochs": [{"id": "move", "name": "Move", "end": {"kind": "length", "length": {
             "kind": "literal", "value": 5, "unit": "st",
         }}}],
@@ -86,9 +90,16 @@ def test_timed_intervention_reads_its_operand_on_its_exact_window(operation, slo
             }}],
         }],
     })
-    with jax.enable_x64(literal or jax.config.x64_enabled):
+    with jax.enable_x64(source != "task" or jax.config.x64_enabled):
+        registry = ComponentRegistry()
+        if source == "set":
+            bank = RootDocument(schema=SET_DOCUMENT_SCHEMA_ID, payload={"entries": {"pulse": {
+                "differences": {"/interior/wires/out/attachments": {"value": [attachment]}},
+            }}})
+            field = TrialSetField.model_validate({"axis": {"set": "bank"}, "sampling": {"kind": "weighted", "none": 0}})
+            model, task, _ = lower_trial_sets(model, task, {"bank": field}, {"bank": bank}.get, registry, functions=functions)
         compiled = compile_trial_execution(
-            model, task, ComponentRegistry(), functions, python_tasks=application_python_tasks(),
+            model, task, registry, functions, python_tasks=application_python_tasks(),
         )
         assert isinstance(compiled, PreparedTrialExecution), compiled
         trial = compiled.execution.task.ahead(TaskParameters(), jr.key(0), jr.key(1))
