@@ -28,7 +28,7 @@ NEAREST_SHARED = {
     "other": FEE,
     "check": "evaluate:a2dc720dec386e1fd5951caece29c1570d6f7589a5ce512d34fe54676127552c",
 }
-UNPAIRED_TASK = "Model input 'target_pos' reads undeclared signal ID 'target_pos'."
+UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
 TASK = "simple-reaches-task"
 MASS = {"composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]}}
