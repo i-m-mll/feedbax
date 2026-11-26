@@ -60,10 +60,10 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     project = "addressed-condition"
     raw = document_project(authored, evaluation=True)
     raw["steps"]["condition"] = deepcopy(raw["steps"]["baseline"])
-    _model_controller(raw)["wires"]["read"]["attachments"] = [
-        _scale_attachment("retain", 0.8),
-        _scale_attachment("remove", 0.5),
-    ]
+    _model_controller(raw)["wires"]["read"]["attachments"] = {
+        "retain": _scale_attachment(0.8),
+        "remove": _scale_attachment(0.5),
+    }
     _save_project(folders, project, Project.model_validate(raw))
     original = folders.read_plan(project, revision=None)
     previous = {run.key: run.request_id for run in original.plan.runs}
@@ -88,7 +88,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
         {
             "op": "change",
             "address": _attachment_address(owner, "retain"),
-            "attachment": _scale_attachment("retain", 0.6),
+            "attachment": _scale_attachment(0.6),
         },
         {"op": "remove", "address": _attachment_address(owner, "remove")},
     ):
@@ -420,7 +420,7 @@ def _curl_addition():
             "op": "add_component",
             "address": {"composites": [], "element": {"kind": "component", "id": "curl"}},
             "component": {
-                "kind": "leaf", "name": "Curl field", "type": "feedbax.CurlField",
+                "kind": "leaf", "label": "Curl field", "type": "feedbax.CurlField",
                 "fields": {"active": True, "scale": 2.0},
             },
         },

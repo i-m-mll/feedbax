@@ -10,6 +10,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import TypeAdapter
 
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
@@ -27,7 +28,8 @@ from feedbax.examples import load_shipped_projects
 from feedbax.contracts.jobs import JobStatus
 from feedbax.component_registry import ComponentRegistry
 from tests.support.component_owners import register_owners
-from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_document import ModelComponent, ModelDocument
+from feedbax.contracts.stored_model import StoredModelDocument, authored_model_payload, stored_model_component
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
@@ -77,7 +79,7 @@ def _end(component, port):
 
 
 def _wire(source, target, attachments=()):
-    return {"source": source, "target": target, "attachments": list(attachments)}
+    return {"source": source, "target": target, **({"attachments": list(attachments)} if attachments else {})}
 
 
 def _port(id_, name, *, shape=None):
@@ -226,11 +228,11 @@ def _model_project() -> dict:
 
 def _rename_components(model):
     for component in model["interior"]["components"].values():
-        component["name"] += " display name"
+        component["label"] += " display name"
         if component["kind"] == "composite":
             for ports in component["ports"].values():
-                for port in ports:
-                    port["name"] += " display name"
+                for port in ports.values():
+                    port["label"] += " display name"
             _rename_components(component)
 
 
@@ -245,7 +247,7 @@ def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_pat
     model = raw["documents"]["reach-model"]["payload"]
     model["step_seconds"] = step
     controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
-    controller["interior"]["wires"]["carry"]["attachments"][0]["delay"] = delay
+    controller["interior"]["wires"]["carry"]["attachments"]["carry"]["delay"] = delay
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "delay", Project.model_validate(raw))
     url = "/api/projects/delay"
@@ -271,13 +273,13 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     model = raw["documents"]["point-mass"]["payload"]
     pulse = {
-        "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+        "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
         "window": {"spans": [{
             "kind": "interval", "start": {"anchor": {"kind": "trial", "edge": "start"}},
             "end": {"offset": {"value": 2, "unit": "st"}},
         }]},
     }
-    model["interior"]["wires"]["drive"]["attachments"] = [pulse]
+    model["interior"]["wires"]["drive"]["attachments"] = {"pulse": pulse}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "window", Project.model_validate(raw))
     url = "/api/projects/window"
@@ -296,7 +298,7 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         shown_model = projection.json()
         assert not shown_model["problems"], shown_model["problems"]
         shown = shown_model["resolved_model"]
-        assert shown["interior"]["wires"]["drive"]["attachments"][0]["id"] == "pulse"
+        assert list(shown["interior"]["wires"]["drive"]["attachments"]) == ["pulse"]
         assert set(shown["interior"]["components"]) == set(model["interior"]["components"])
         response = client.post(url + "/model/fields", json=body)
         assert response.status_code == 200, response.text
@@ -366,10 +368,10 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
 def test_scale_operand_sweep_has_the_field_name_without_changing_the_axis_key(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     wire = raw["documents"]["point-mass"]["payload"]["interior"]["wires"]["drive"]
-    wire["attachments"] = [{
-        "kind": "intervention", "id": "scale", "operation": "Scale",
+    wire["attachments"] = {"scale": {
+        "kind": "intervention", "operation": "Scale",
         "operands": {"factor": {"kind": "value", "value": 0.5}},
-    }]
+    }}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "scale", Project.model_validate(raw))
     url = "/api/projects/scale"
@@ -503,7 +505,7 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
     model = raw["documents"]["reach-model"]["payload"]
     components = model["interior"]["components"]
     components["rnn"] = {
-        "kind": "leaf", "name": "RNN", "type": "feedbax.VanillaRNN",
+        "kind": "leaf", "label": "RNN", "type": "feedbax.VanillaRNN",
         "fields": {"tau": 2, "hidden_size": 4},
     }
     _save_project(ProjectFolderService(tmp_path), "duration", Project.model_validate(raw))
@@ -1094,14 +1096,14 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
 def _group_reaching_pipeline(raw, registry):
     payload = raw["documents"]["reach-model"]["payload"]
     payload["interior"]["components"]["relay"] = {
-        "kind": "leaf", "name": "Input relay", "type": "feedbax.Input",
+        "kind": "leaf", "label": "Input relay", "type": "feedbax.Input",
     }
     payload["interior"]["wires"]["task-wire"]["target"] = _end("relay", "input")
     payload["interior"]["wires"]["relay-wire"] = _wire(
         _end("relay", "output"), _end("wrapper", "target"),
     )
     ports = ModelRegistryPorts(registry)
-    state = ModelEditState(document=ModelDocument.model_validate(payload))
+    state = ModelEditState(document=StoredModelDocument.model_validate(payload).lower())
     command = ModelEditCommand.model_validate({"operation": {
         "op": "group", "name": "Group",
         "selection": [
@@ -1113,11 +1115,15 @@ def _group_reaching_pipeline(raw, registry):
         state, command, ports=ports.port, component_problem=ports.placement_problem,
     )
     assert isinstance(result, ModelEditResult), result
-    raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
+    raw["documents"]["reach-model"]["payload"] = authored_model_payload(result.state.document)
     group = result.changed[-1].element.id
-    for link in raw["documents"]["task"]["payload"]["links"]:
-        address = ModelAddress.from_text(link["model_field"])
-        link["model_field"] = address.model_copy(update={"composites": (group, *address.composites)}).to_text()
+    task = raw["documents"]["task"]["payload"]
+    links = {}
+    for key, link in task["links"].items():
+        address = ModelAddress.from_text(key)
+        moved = address.model_copy(update={"composites": (group, *address.composites)})
+        links[moved.to_text()] = link
+    task["links"] = links
     return group
 
 
@@ -1142,14 +1148,16 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
 
     documents = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
     documents.pop("input_bindings")
-    raw["documents"]["reach-model"]["payload"]["ports"]["inputs"][0]["name"] = "unknown"
+    model = raw["documents"]["reach-model"]["payload"]
+    model["ports"]["inputs"]["unknown"] = model["ports"]["inputs"].pop("task-input") | {"label": "unknown"}
+    model["interior"]["wires"]["task-wire"]["source"]["port"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
     (problem,) = [problem for row in refused.rows if row.key.step == "train" for problem in row.problems]
     assert problem.path.startswith("/trial_documents/model/")
     assert problem.detail == "Model input 'unknown' needs a Task signal."
     assert problem.model_address == ModelAddress.model_validate({
         "composites": [],
-        "element": {"kind": "port", "end": {"owner": "inputs", "port": "task-input"}},
+        "element": {"kind": "port", "end": {"owner": "inputs", "port": "unknown"}},
     })
 
 
@@ -1185,7 +1193,7 @@ def test_unwired_linear_review_accepts_the_gru_width(tmp_path):
     interior = data["documents"]["point-mass"]["payload"]["interior"]
     for wire in ("target", "decode"):
         del interior["wires"][wire]
-    interior["components"]["scalar"] = {"kind": "leaf", "name": "Scalar", "type": "feedbax.Constant", "fields": {"value": 2.0}}
+    interior["components"]["scalar"] = {"kind": "leaf", "label": "Scalar", "type": "feedbax.Constant", "fields": {"value": 2.0}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "unwired", Project.model_validate(data))
     revision = folders.read("unwired").revision
@@ -1209,10 +1217,10 @@ def test_model_projection_and_compilation_get_input_size_from_the_wire(tmp_path,
     """Changing a GRU's hidden size also changes the wired Linear's input width."""
     raw = _model_project()
     interior = raw["documents"]["reach-model"]["payload"]["interior"]
-    interior["components"]["receiver"] = {"kind": "leaf", "name": "Receiver", "type": "feedbax.Linear"}
+    interior["components"]["receiver"] = {"kind": "leaf", "label": "Receiver", "type": "feedbax.Linear"}
     if source == "gru":
         interior["components"]["sender"] = {
-            "kind": "leaf", "name": "Sender", "type": "feedbax.GRU", "fields": {"hidden_size": 4},
+            "kind": "leaf", "label": "Sender", "type": "feedbax.GRU", "fields": {"hidden_size": 4},
         }
         interior["wires"]["sender-input"] = _wire({"owner": "inputs", "port": "task-input"}, _end("sender", "input"))
         interior["wires"]["receiver-input"] = _wire(_end("sender", "output"), _end("receiver", "input"))
@@ -1255,10 +1263,10 @@ def test_model_projection_and_compilation_get_input_size_from_the_wire(tmp_path,
             })
             snapshot = folders.read("nested")
             model = snapshot.project.documents[document].payload
-            task_port = next(port for port in model["ports"]["inputs"] if port["name"] == "target_pos")
+            task_port = model["ports"]["inputs"]["target_pos"]
             task_type = {"base": "real", "shape": [2], "unit": "m"}
             assert task_port["type"] == task_type
-            assert projected_type(projection(snapshot), {"owner": "inputs", "port": task_port["id"]}) == task_type
+            assert projected_type(projection(snapshot), {"owner": "inputs", "port": "target_pos"}) == task_type
 
         if source == "gru":
             apply({
@@ -1285,10 +1293,11 @@ def test_unresolved_relative_link_is_reported_at_the_task():
 
     raw = document_project(authored_documents(), evaluation=True)
     _use_initial_evaluation(raw)
-    link = raw["documents"]["task"]["payload"]["links"][0]
-    address = ModelAddress.from_text(link["model_field"])
+    links = raw["documents"]["task"]["payload"]["links"]
+    key = next(iter(links))
+    address = ModelAddress.from_text(key)
     missing = address.model_copy(update={"composites": ("absent",)}).to_text()
-    link["model_field"] = missing
+    links[missing] = links.pop(key)
     plan = compile_project(Project.model_validate(raw))
 
     assert not plan.diagnostics
@@ -1305,7 +1314,7 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     raw = _model_project()
     model = raw["documents"]["reach-model"]["payload"]
     model["interior"]["components"]["custom"] = {
-        "kind": "leaf", "name": "Custom relay", "type": "test.CustomRelay",
+        "kind": "leaf", "label": "Custom relay", "type": "test.CustomRelay",
     }
     model["interior"]["wires"]["task-wire"]["target"] = _end("custom", "input")
     model["interior"]["wires"]["custom-wire"] = _wire(_end("custom", "output"), _end("wrapper", "target"))
@@ -1336,7 +1345,7 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
 
 def test_generated_delay_and_input_relay_keep_the_authored_source_addresses():
     raw = _model_project()
-    model = ModelDocument.model_validate(raw["documents"]["reach-model"]["payload"])
+    model = StoredModelDocument.model_validate(raw["documents"]["reach-model"]["payload"]).lower()
     lowered = lower_model_document(model, ComponentRegistry())
     (root_relay, _) = lowered.graph.input_bindings["reach_target"]
     port = lowered.source_address(f"/graph/nodes/{root_relay}/input")
@@ -1357,7 +1366,7 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids(monkeypatch):
     from tests.test_document_train_pair import authored_documents, document_project
 
     raw = document_project(authored_documents(), evaluation=True)
-    _swept_attachments(raw, "baseline", "decode", [_scale_attachment("scale", 0.5)])
+    _swept_attachments(raw, "baseline", "decode", {"scale": _scale_attachment(0.5)})
     memo = ProjectPlanMemo()
     train_key = RunKey("default", "train", "default")
     encode = Mock(wraps=request_identity.encode_request)
@@ -1461,7 +1470,7 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
     owner = {"composites": ["wrapper", "controller"], "element": {
         "kind": "port", "end": {"owner": "component", "component": "cell", "port": "output", "direction": "output"},
     }}
-    attachment = {"kind": "intervention", "id": "condition", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}}
+    attachment = _scale_attachment(0.5)
 
     def edit(client, difference):
         snapshot = folders.read("nested")
@@ -1478,10 +1487,11 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
 
     prior = {run.key: run.request_id for run in before.plan.runs}
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        missing = edit(client, {"op": "add", "after": None, "owner": owner | {
+        address = _attachment_address(owner, "condition")
+        missing = edit(client, {"op": "add", "after": None, "address": address | {
             "composites": ["wrapper", "controller", "missing"]}, "attachment": attachment})
         assert missing["status"] == "refused"
-        added = edit(client, {"op": "add", "after": None, "owner": owner, "attachment": attachment})
+        added = edit(client, {"op": "add", "after": None, "address": address, "attachment": attachment})
         assert added["status"] == "applied", added
         result = requests()
         assert result.keys() == prior.keys()
@@ -1510,8 +1520,10 @@ _VARIANT_FIELD = "evaluate:86530315779f1c0f14fc177396bae4f98e4f8ceb8a5600d09bd6b
 @pytest.mark.parametrize(("operation", "expected"), [
     ({"op": "set_attachment", "difference": {
         "op": "add", "after": None,
-        "owner": {"composites": ["wrapper", "controller"], "element": {"kind": "wire", "id": "decode"}},
-        "attachment": {"kind": "intervention", "id": "condition", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
+        "address": {"composites": ["wrapper", "controller"], "element": {
+            "kind": "attachment", "parent": {"kind": "wire", "id": "decode"}, "id": "condition",
+        }},
+        "attachment": {"kind": "intervention", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
     }}, _VARIANT_WIRE),
     ({"op": "set_field", "address": {"composites": [], "element": {
         "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
@@ -1566,7 +1578,7 @@ def _swept_attachments(raw, step, wire, attachments):
     raw["steps"][step]["sweep"] = {"axes": {"edit": {"values": {"on": {"patches": {
         f"{target}.wires.{wire}.attachments": {
             "op": "replace" if "attachments" in authored else "add",
-            "value": [*attachments, *authored.get("attachments", [])],
+            "value": {**attachments, **authored.get("attachments", {})},
         },
     }}}}}}
 
@@ -1578,12 +1590,12 @@ def _attachment_owner(wire):
     }
 
 
-def _scale_attachment(identity, factor):
-    return {"kind": "intervention", "id": identity, "operation": "Scale", "operands": {"factor": {"kind": "value", "value": factor}}}
+def _scale_attachment(factor):
+    return {"kind": "intervention", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": factor}}}
 
 
 def _add_attachment(owner, identity, after, factor=0.5):
-    return {"op": "add", "owner": owner, "attachment": _scale_attachment(identity, factor), "after": after}
+    return {"op": "add", "address": _attachment_address(owner, identity), "attachment": _scale_attachment(factor), "after": after}
 
 
 def _attachment_address(owner, identity):
@@ -1604,7 +1616,7 @@ def test_evaluate_attachment_order_follows_effective_graph():
         _add_attachment(owner, "second", None, 0.25),
         _add_attachment(owner, "following", "carry"),
     ]
-    source = ModelDocument.model_validate(raw["documents"]["reach-model"]["payload"])
+    source = StoredModelDocument.model_validate(raw["documents"]["reach-model"]["payload"]).lower()
     resolved = resolve_effective_model(
         source, ComponentRegistry(), tuple(MODEL_ATTACHMENT_BATCHES.validate_python({"step": records})["step"]),
     )
@@ -1630,10 +1642,10 @@ def test_group_keeps_delay_on_a_crossing_gru_output():
     registry = new_application_registry_bundle()
     payload = raw["documents"]["reach-model"]["payload"]
     controller = payload["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
-    controller["interior"]["wires"]["decode"]["attachments"] = [
-        {"kind": "delay", "id": "feedback", "delay": {"value": 1, "unit": "st"}},
-    ]
-    state = ModelEditState(document=ModelDocument.model_validate(payload))
+    controller["interior"]["wires"]["decode"]["attachments"] = {
+        "feedback": {"kind": "delay", "delay": {"value": 1, "unit": "st"}},
+    }
+    state = ModelEditState(document=StoredModelDocument.model_validate(payload).lower())
     ports = ModelRegistryPorts(registry.components)
     command = ModelEditCommand.model_validate({"operation": {
         "op": "group", "name": "Cell",
@@ -1646,7 +1658,7 @@ def test_group_keeps_delay_on_a_crossing_gru_output():
         state, command, ports=ports.port, component_problem=ports.placement_problem,
     )
     assert isinstance(result, ModelEditResult), result
-    raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
+    raw["documents"]["reach-model"]["payload"] = authored_model_payload(result.state.document)
     planned = compile_project(Project.model_validate(raw))
     assert not planned.diagnostics, planned.diagnostics
     train = next(run for run in planned.runs if run.kind == "train")
@@ -1717,8 +1729,8 @@ def test_stored_equations_use_the_scalar_solver_and_free_boundary():
     project = _model_project()
     del project["steps"]["baseline"]
     reaching = project["documents"]["reach-model"]["payload"]["interior"]
-    reaching["components"].update(model["interior"]["components"])
-    reaching["components"]["constant-force"] = leaf("Constant", value=1.0)
+    reaching["components"].update(authored_model_payload(ModelDocument.model_validate(model))["interior"]["components"])
+    reaching["components"]["constant-force"] = {"kind": "leaf", "label": "Constant", "type": "feedbax.Constant", "fields": {"value": 1.0}}
     reaching["wires"]["equations-force"] = _wire(
         _end("constant-force", "output"), _end("equations", "input-force"),
     )
@@ -1734,7 +1746,7 @@ def test_linked_delay_repeats_the_completed_reset_state():
     raw = _model_project()
     model = raw["documents"]["reach-model"]["payload"]
     controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
-    delay = controller["interior"]["wires"]["carry"]["attachments"][0]
+    delay = controller["interior"]["wires"]["carry"]["attachments"]["carry"]
     delay["delay"]["value"] = 3
     delay["initial_source"] = {"kind": "wire", "source": _end("cell", "hidden")}
     plan = compile_project(Project.model_validate(raw))
@@ -1828,12 +1840,13 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
     model = raw["documents"]["reach-model"]["payload"]
     arm = _planar_arm()
     arm["interior"]["physical_domain"] = domain
-    model["interior"]["components"].update(arm=arm, readout={
-        "kind": "leaf", "name": "Arm Command", "type": "feedbax.Linear",
+    stored_arm = stored_model_component(TypeAdapter(ModelComponent).validate_python(arm))
+    model["interior"]["components"].update(arm=stored_arm.model_dump(mode="json"), readout={
+        "kind": "leaf", "label": "Arm Command", "type": "feedbax.Linear",
         "fields": {"output_size": 6, "initialization": "zeros"},
     })
     model["interior"]["wires"].update(
-        command_arm=_wire({"owner": "inputs", "port": model["ports"]["inputs"][0]["id"]},
+        command_arm=_wire({"owner": "inputs", "port": next(iter(model["ports"]["inputs"]))},
                           _end("readout", "input")),
         drive_arm=_wire(_end("readout", "output"), _end("arm", "drive")),
     )
@@ -1886,7 +1899,7 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
 
 def test_shipped_reaching_matches_the_original_plant_feedback():
     document = load_shipped_projects()["point-mass-reaching"].documents["point-mass"]
-    model = ModelDocument.model_validate(document.payload)
+    model = StoredModelDocument.model_validate(document.payload).lower()
     assert not model.interior.wires["sense-hand"].attachments
     registry = ComponentRegistry()
     lowered = lower_model_document(model, registry).graph
@@ -2092,11 +2105,11 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     if grouped:
         model = raw["documents"]["reach-model"]["payload"]
         controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
-        controller["interior"]["wires"]["carry"]["attachments"][0]["delay"]["value"] = 3
-        controller["interior"]["wires"]["decode"]["attachments"] = [
-            _scale_attachment("train-scale", 0.95),
-            _scale_attachment("train-extra", 0.9),
-        ]
+        controller["interior"]["wires"]["carry"]["attachments"]["carry"]["delay"]["value"] = 3
+        controller["interior"]["wires"]["decode"]["attachments"] = {
+            key: _scale_attachment(factor)
+            for key, factor in (("train-scale", 0.95), ("train-extra", 0.9))
+        }
     else:
         _use_initial_evaluation(raw)
     project = "nested"
@@ -2109,7 +2122,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
             _add_attachment(owner, "condition", "train-scale"),
             {
                 "op": "change", "address": _attachment_address(owner, "train-scale"),
-                "attachment": _scale_attachment("train-scale", 0.75),
+                "attachment": _scale_attachment(0.75),
             },
             {"op": "remove", "address": _attachment_address(owner, "train-extra")},
         ):
@@ -2226,14 +2239,14 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     assert authenticated_receipts() == original_receipts
 
     model = raw["documents"][model_name]["payload"]
-    model["ports"]["inputs"][0]["name"] = "renamed_reach_target"
+    model["ports"]["inputs"]["task-input"]["label"] = "Renamed reach target"
     _save_project(folders, project, Project.model_validate(raw))
     changed = reopened.read_plan(project, revision=None)
     assert not changed.plan.diagnostics
     before_ids = {run.key: run.request_id for run in plan.plan.runs}
     after_ids = {run.key: run.request_id for run in changed.plan.runs}
     assert before_ids.keys() == after_ids.keys() == {train, evaluate}
-    assert all(before_ids[key] != after_ids[key] for key in before_ids)
+    assert before_ids == after_ids
     record_property("request_ids_before_root_rename", ",".join(before_ids.values()))
     record_property("request_ids_after_root_rename", ",".join(after_ids.values()))
     record_property("authenticated_receipts", ",".join(receipt.ref.sha256 for receipt in original_receipts))
@@ -2316,12 +2329,12 @@ def test_reading_the_plan_realizes_no_model(monkeypatch, scope):
 
 def test_reading_the_plan_of_a_grounded_network_realizes_no_model(monkeypatch):
     def leaf(name):
-        return {"kind": "leaf", "type": f"feedbax.{name}", "name": name}
+        return {"kind": "leaf", "type": f"feedbax.{name}", "label": name}
 
     raw = _model_project()
     del raw["steps"]["baseline"]
     raw["documents"]["reach-model"]["payload"]["interior"]["components"]["equations"] = {
-        "kind": "composite", "name": "Mass spring wall", "ports": {},
+        "kind": "composite", "label": "Mass spring wall", "ports": {},
         "interior": {
             "physical_domain": "translational",
             "components": {"mass": leaf("Mass"), "spring": leaf("LinearSpring"), "wall": leaf("Ground")},
@@ -2340,7 +2353,7 @@ def test_reading_the_plan_of_a_grounded_network_realizes_no_model(monkeypatch):
 def test_reading_the_plan_refuses_an_acausal_leaf_in_a_causal_model(monkeypatch):
     raw = _model_project()
     raw["documents"]["reach-model"]["payload"]["interior"]["components"]["mass"] = {
-        "kind": "leaf", "name": "Mass", "type": "feedbax.Mass", "fields": {"mass": 1},
+        "kind": "leaf", "label": "Mass", "type": "feedbax.Mass", "fields": {"mass": 1},
     }
     _refuse_realization(monkeypatch)
     plan = compile_project(Project.model_validate(raw))
@@ -2371,8 +2384,10 @@ def test_shipped_effector_delay_keeps_the_full_recorded_value(tmp_path):
             "command": {"operation": {"op": "set_attachment", "difference": {
                 "op": "add",
                 "after": None,
-                "owner": {"composites": [], "element": {"kind": "wire", "id": "effector"}},
-                "attachment": {"kind": "delay", "id": "observe-lag", "delay": {"value": 2, "unit": "st"}},
+                "address": {"composites": [], "element": {
+                    "kind": "attachment", "parent": {"kind": "wire", "id": "effector"}, "id": "observe-lag",
+                }},
+                "attachment": {"kind": "delay", "delay": {"value": 2, "unit": "st"}},
             }}},
         })
     assert response.status_code == 200, response.text

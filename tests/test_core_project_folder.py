@@ -37,7 +37,7 @@ def _end(component, port):
 
 
 def _gain():
-    return {"kind": "leaf", "name": "Gain", "type": "feedbax.Gain", "fields": {"gain": 1.0}}
+    return {"kind": "leaf", "label": "Gain", "type": "feedbax.Gain", "fields": {"gain": 1.0}}
 
 
 def _port(owner, port):
@@ -56,27 +56,27 @@ def _model_project():
     interior = model["interior"]
     interior["components"].update({name: _gain() for name in ("a", "b", "c", "d")})
     interior["components"]["physics"] = {
-        "kind": "composite", "name": "Physics",
-        "ports": {"physical": [{"id": "frame", "name": "Frame", "type": "translational"}]},
+        "kind": "composite", "label": "Physics",
+        "ports": {"physical": {"frame": {"label": "Frame", "type": "translational"}}},
         "interior": {
             "physical_domain": "translational",
             "components": {
-                "mass": {"kind": "leaf", "name": "Mass", "type": "feedbax.Mass"},
-                "ground": {"kind": "leaf", "name": "Ground", "type": "feedbax.Ground"},
+                "mass": {"kind": "leaf", "label": "Mass", "type": "feedbax.Mass"},
+                "ground": {"kind": "leaf", "label": "Ground", "type": "feedbax.Ground"},
             },
             "connections": {"mass-ground": {"a": _end("mass", "flange"), "b": _end("ground", "flange")}},
         },
     }
     interior["wires"].update({
-        "ab": {"source": _end("a", "output"), "target": _end("b", "input"), "attachments": [
-            {"kind": "intervention", "id": "scale", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
-        ]},
+        "ab": {"source": _end("a", "output"), "target": _end("b", "input"), "attachments": {
+            "scale": {"kind": "intervention", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
+        }},
         "bc": {"source": _end("b", "output"), "target": _end("c", "input")},
     })
-    model["ports"]["inputs"].extend([
-        {"id": "one", "name": "One", "type": {}, "default": {"value": 0}},
-        {"id": "two", "name": "Two", "type": {}, "default": {"value": 0}},
-    ])
+    model["ports"]["inputs"].update({
+        "one": {"label": "One", "type": {}, "default": {"value": 0}},
+        "two": {"label": "Two", "type": {}, "default": {"value": 0}},
+    })
     raw["documents"][_VARIANT] = {
         "label": "Document",
         "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
@@ -116,8 +116,9 @@ def _edit_cases():
         "rename": {"address": a, "name": "Renamed"},
         "move_port": {"address": _address("port", end=_port("inputs", "one")), "index": 0},
         "set_field": {"address": _address("field", parent=a["element"], path=["fields", "gain"]), "value": 2.0},
-        "set_attachment": {"difference": {"op": "add", "owner": ab, "after": "scale", "attachment": {
-            "kind": "intervention", "id": "second", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 2.0}},
+        "set_attachment": {"difference": {
+            "op": "add", "address": _address("attachment", parent=ab["element"], id="second"), "after": "scale",
+            "attachment": {"kind": "intervention", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 2.0}},
         }}},
         "move_wire_attachment": {
             "address": _address("attachment", parent=ab["element"], id="scale"),

@@ -87,7 +87,7 @@ def test_preview_returns_active_samples_at_the_source_intervention_address(clien
         "composites": [], "element": {"kind": "attachment", "id": "pulse", "parent": owner},
     }).to_text()
     payload["model"]["interior"]["attachments"] = {"sources": {"task-input": [{
-        "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.1, 0.0]}},
+        "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.1, 0.0]}},
         "window": {"spans": [{
             "kind": "interval", "start": {
                 "anchor": {"kind": "epoch", "epoch": "move", "edge": "start"},
@@ -114,9 +114,10 @@ def test_a_saved_evaluate_sample_uses_its_own_window(tmp_path):
     raw["steps"]["late"] = managed_evaluation_step("train")
     owner = {"composites": [], "element": {"kind": "wire", "id": "drive"}}
     read_changed_model(raw, "late", [{
-        "op": "add", "owner": owner, "after": None,
+        "op": "add", "after": None,
+        "address": owner | {"element": {"kind": "attachment", "parent": owner["element"], "id": "pulse"}},
         "attachment": {
-            "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+            "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
             "window": {"spans": [{
                 "kind": "interval",
                 "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 0.2, "unit": "s"}},
