@@ -39,6 +39,7 @@ from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.model_occurrence import graph_leaf_occurrences, graph_leaf_specs
 from feedbax.persistence.array_container import (
     ArrayContainerError,
+    DecodedArrayContainer,
     decode_array_container,
     encode_array_container,
 )
@@ -62,6 +63,13 @@ if TYPE_CHECKING:
     from feedbax.compiler.model_document import LoweredModelDocument
 
 
+
+
+type ModelSlotPrecision = Literal["exact", "synthesized", "imported"]
+
+
+def imported_array_dtype_fits(saved: str, destination: str) -> bool:
+    return saved == destination or (saved, destination) == ("float32", "float64")
 
 
 class ModelCheckpointError(CheckpointCustodyError):
@@ -214,53 +222,59 @@ class SemanticModelSlot:
             GraphDocument(graph=self.graph), self.components, prototypes, artifact_provider=self.provider,
         ).graph
 
-    def restore(
-        self, template: Graph | None = None, *,
-        target: ModelRestoreTarget | None = None, replica_index: int = 0, synthesized: bool = False,
-    ) -> Graph:
-        """Verify the source slot, then bind compatible retained values to the target."""
-        if template is None:
-            template = self.template()
+    def read_replica(self, replica_index: int) -> DecodedArrayContainer:
         if not 0 <= replica_index < len(self.replicas):
             raise ModelCheckpointError("/model/replicas", "unknown replica index")
         replica = self.replicas[replica_index]
         path = model_replica_array_path(replica_index)
         try:
-            decoded = decode_array_container(
+            return decode_array_container(
                 _read(self.provider, replica.arrays, path),
                 expected_descriptor_sha256=replica.descriptor.array_descriptor_sha256,
             )
         except ArrayContainerError as exc:
             raise ModelCheckpointError(path, str(exc)) from exc
+
+    def restore(
+        self, template: Graph | None = None, *,
+        target: ModelRestoreTarget | None = None, replica_index: int = 0,
+    ) -> Graph:
+        """Restore one exact checkpoint replica."""
+        decoded = self.read_replica(replica_index)
         return _restore_model(
-            self.graph, template, decoded.tensors, decoded.descriptor.metadata, target, synthesized=synthesized,
+            self.graph, self.template() if template is None else template,
+            decoded.tensors, decoded.descriptor.metadata, target,
         )
 
     def restore_all(
-        self, templates: Sequence[Graph], *,
-        targets: Sequence[ModelRestoreTarget] | None = None, synthesized: bool = False,
+        self, templates: Sequence[Graph], *, targets: Sequence[ModelRestoreTarget] | None = None,
+        precision: ModelSlotPrecision = "exact", decoded: Sequence[DecodedArrayContainer] | None = None,
     ) -> tuple[Graph, ...]:
         """Restore every replica using templates in checkpoint order."""
-        if len(templates) != len(self.replicas) or (targets is not None and len(targets) != len(templates)):
+        count = len(self.replicas)
+        if len(templates) != count or targets is not None and len(targets) != count:
             raise ModelCheckpointError("/model/replicas", "templates do not match the checkpoint replica count")
+        if decoded is None:
+            decoded = tuple(self.read_replica(index) for index in range(count))
         return tuple(
-            self.restore(
-                template, target=None if targets is None else targets[index], replica_index=index, synthesized=synthesized,
+            _restore_model(
+                self.graph, template, replica.tensors, replica.descriptor.metadata,
+                None if targets is None else targets[index], precision=precision,
             )
-            for index, template in enumerate(templates)
+            for index, (template, replica) in enumerate(zip(templates, decoded, strict=True))
         )
 
 
 def _restore_model(
     graph: GraphSpec, template: Graph, tensors: Mapping[str, jax.Array | np.ndarray],
-    actual: object, target: ModelRestoreTarget | None = None, *, synthesized: bool = False,
+    actual: object, target: ModelRestoreTarget | None = None, *, precision: ModelSlotPrecision = "exact",
 ) -> Graph:
     expected, declarations = _describe(graph, template)
     if not isinstance(actual, dict):
         raise ModelCheckpointError("/v1/model", "missing value declarations")
-    if synthesized:
+    if precision == "synthesized":
         tensors = _synthesized_precision(expected, tensors, declarations)
-    _verify_values(expected, declarations, tensors, actual)
+    _verify_values(expected, declarations, tensors, actual, precision=precision)
 
     source_leaves = dict(graph_leaf_specs(graph))
     retained = frozenset(source_leaves)
@@ -281,7 +295,8 @@ def _restore_model(
         destination, destination_declarations = _describe(
             target.graph, target.template, retained=retained,
         )
-        _verify_values(destination, destination_declarations, tensors, actual)
+        _verify_values(destination, destination_declarations, tensors, actual, precision=precision)
+        expected = destination
         template, overrides = target.template, target.source_overrides
 
     applied = set()
@@ -310,7 +325,8 @@ def _restore_model(
                         applied.add(address)
                     source[value.symbol] = overrides.get(address, float(data))
                 else:
-                    learned.append((value.field, jnp.asarray(data)))
+                    dtype = expected[address].dtype if precision == "imported" else None
+                    learned.append((value.field, jnp.asarray(data, dtype=dtype)))
             if source:
                 component = type(component).from_config(component.configuration_values() | source)
             if learned:
@@ -376,8 +392,8 @@ def _array_bytes(value: jax.Array | np.ndarray) -> bytes:
     return np.asarray(value).tobytes(order="C")
 
 
-def _verify_values(expected, declarations, tensors, saved_declarations) -> None:
-    if problem := next(_value_differences(expected, declarations, tensors, saved_declarations), None):
+def _verify_values(expected, declarations, tensors, saved_declarations, *, precision: ModelSlotPrecision) -> None:
+    if problem := next(_value_differences(expected, declarations, tensors, saved_declarations, precision=precision), None):
         _, path, reason = problem
         raise ModelCheckpointError(path, reason)
 
@@ -386,7 +402,7 @@ def _value_differences(
     expected: Mapping[str, jax.Array | np.ndarray],
     declarations: Mapping[str, object],
     tensors: Mapping[str, jax.Array | np.ndarray],
-    saved_declarations: Mapping[str, object],
+    saved_declarations: Mapping[str, object], *, precision: ModelSlotPrecision,
 ) -> Iterator[tuple[Literal["missing_slot", "unexpected_slot", "mismatched_slot"], str, str]]:
     present = saved_declarations.keys() | tensors.keys()
     for path in sorted(expected.keys() - tensors.keys()):
@@ -398,7 +414,13 @@ def _value_differences(
         differences = []
         if saved_declarations.get(path) != declarations[path]:
             differences.append("owner, revision, value schema or representation differs")
-        if restored.shape != current.shape or restored.dtype != current.dtype:
+        declaration = declarations[path]
+        dtype_matches = restored.dtype == current.dtype or (
+            precision == "imported" and isinstance(declaration, Mapping)
+            and declaration.get("representation") == "jax-array"
+            and imported_array_dtype_fits(restored.dtype.name, current.dtype.name)
+        )
+        if restored.shape != current.shape or not dtype_matches:
             differences.append(
                 f"expected shape {current.shape} and dtype {current.dtype}, "
                 f"found shape {restored.shape} and dtype {restored.dtype}",
@@ -410,6 +432,7 @@ def _value_differences(
 def model_slot_fit_problems(
     graph: GraphSpec, template: Graph, replica: str, tensors: Mapping[str, np.ndarray],
     metadata: Mapping[str, object], *, unsupported: Iterable[tuple[str, ...]],
+    precision: ModelSlotPrecision = "exact",
 ) -> Iterator[ModelSlotFitProblem]:
     unsupported = frozenset(unsupported)
     excluded = tuple(semantic_key("model", "value", path[:-1], path[-1]) + "/" for path in unsupported)
@@ -419,6 +442,7 @@ def model_slot_fit_problems(
         expected, declarations,
         {path: value for path, value in tensors.items() if not path.startswith(excluded)},
         {path: value for path, value in metadata.items() if not path.startswith(excluded)},
+        precision=precision,
     ):
         yield ModelSlotFitProblem(kind=kind, replica=replica, address=address or "/", detail=detail)
 
