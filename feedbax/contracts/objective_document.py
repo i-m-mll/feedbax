@@ -13,6 +13,7 @@ from feedbax.contracts.expression_values import (
     ValueRecord,
     ValueType,
 )
+from feedbax.contracts.member_family import StoredFamilyMember, expand_members
 from feedbax.contracts.stored_members import StoredMembers, keyed_members, project_member
 from feedbax.contracts.window import StoredWindow, Window
 
@@ -47,17 +48,22 @@ class ObjectiveTermValue(_TermFields[Expression, Window]):
 
 class ObjectiveTerm(ObjectiveTermValue, _TermIdentity):
     name: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
+    family: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @property
+    def report_key(self) -> str:
+        return self.family if self.family is not None else self.id
 
 
-class StoredObjectiveTerm(_TermFields[StoredExpression, StoredWindow]):
+class StoredObjectiveTerm(_TermFields[StoredExpression, StoredWindow], StoredFamilyMember):
     weight: StoredExpression = Field(default=1, validate_default=True)
     label: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
 
-    def lower(self, key: str) -> ObjectiveTerm:
+    def lower(self, key: str, *, family: str | None = None) -> ObjectiveTerm:
         term = project_member(self, ObjectiveTerm, {
             "measure": lower_expression,
             "window": lambda window: window.lower() if window is not None else None,
-        }, id=key, name=self.label, weight=lower_expression(self.weight))
+        }, id=key, name=self.label, family=family, weight=lower_expression(self.weight))
         if "weight" not in self.model_fields_set:
             term.model_fields_set.discard("weight")
         return term
@@ -95,9 +101,15 @@ class StoredObjectiveDocument(ValueRecord):
     id: str
     terms: StoredMembers[StoredObjectiveTerm] = Field(default_factory=dict)
 
-    def lower(self) -> ObjectiveDocument:
+    def lower(self, *, first: bool = False) -> ObjectiveDocument:
         return project_member(self, ObjectiveDocument, {
-            "terms": lambda terms: tuple(term.lower(key) for key, term in terms.items()),
+            "terms": lambda terms: tuple(
+                term.value.lower(
+                    term.source_key if first else term.key,
+                    family=term.source_key if term.coordinates and not first else None,
+                )
+                for term in expand_members(terms, first=first, label_placeholders=False)
+            ),
         })
 
     @classmethod

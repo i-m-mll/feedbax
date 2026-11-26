@@ -14,6 +14,7 @@ from typing import Literal
 from lark import Lark, Token, Tree, UnexpectedInput
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.expression_sequence import range_refusal, sequence_definition
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
     RESERVED_NAMES,
@@ -29,13 +30,14 @@ from feedbax.contracts.expression_values import (
     Problem,
     ProblemCode,
     Scalar,
+    SequenceValue,
     Site,
     SweepList,
-    SweepRange,
     SweepSample,
     TextSpan,
     UnresolvedValue,
     ValueBase,
+    normal_literal_number as _stored_number,
     scope_problems,
 )
 from feedbax.contracts.expression_registry import POINT_INTERPOLATIONS, FunctionClass, FunctionRegistry
@@ -70,7 +72,7 @@ HIGHEST: "highest"
       | power
 ?power: indexed POW unary -> binary
       | indexed
-?indexed: indexed "[" expr "]" -> index
+?indexed: indexed "[" sequence_item "]" -> index
         | atom
 ?atom: NUMBER UNIT? -> number
      | "true" -> true
@@ -79,10 +81,12 @@ HIGHEST: "highest"
      | NAME -> name
      | ESCAPED_STRING -> quoted_name
      | SINGLE_QUOTED_NAME -> single_quoted_name
-     | "[" expr ("," expr)* "]" -> vector
+     | "[" sequence_item ("," sequence_item)* "]" -> vector
      | "(" expr ")"
 ?argument: NAME "=" expr -> keyword
-         | expr
+         | sequence_item
+?sequence_item: sum ".." sum -> sequence_span
+              | expr
 CMP: "==" | "!=" | "<=" | ">=" | "<" | ">"
 ADD: "+" | "-" | "−"
 MUL: "*" | "/" | "·" | "%"
@@ -129,13 +133,13 @@ RULE_NAME = re.compile(r"[a-zA-Z_](?:[a-zA-Z0-9_-]*[a-zA-Z0-9_])?")
 _KEYWORDS = frozenset({"true", "false", "and", "or", "not"})
 
 
-@lru_cache(maxsize=3)
-def _parser(start: Literal["field", "rule", "expr"] = "field") -> Lark:
+@lru_cache(maxsize=4)
+def _parser(start: Literal["field", "rule", "expr", "sequence_item"] = "field") -> Lark:
     """The parser of a field's text, or of a run rule's, where terms are separated by spaces and so take no units, and
     names are project names, which take hyphens."""
     units = sorted(filter(None, UNITS), key=len, reverse=True)
     unit_pattern = (
-        "(?:" + "|".join(re.escape(unit).replace("/", r"\/") for unit in units) + r")(?![\w.])"
+        "(?:" + "|".join(re.escape(unit).replace("/", r"\/") for unit in units) + r")(?=\.\.|[^\w.]|$)"
         if start != "rule" else "(?!)_"
     )
     name_pattern = RULE_NAME.pattern if start == "rule" else _IDENTIFIER.pattern
@@ -195,11 +199,10 @@ class _Reader:
                     self.expr(item, ("members", i)) for i, item in enumerate(node.children)
                 )
             )
-        if node.data == "call" and node.children[0] in ("linspace", "geomspace", "sample"):
-            name, *arguments = node.children
-            required = 2 if name == "sample" else 3
-            if len(arguments) != required:
-                _fail(node, ProblemCode.ARITY, f"{name} requires {required} arguments.", ())
+        if node.data == "call" and node.children[0] == "sample":
+            _, *arguments = node.children
+            if len(arguments) != 2:
+                _fail(node, ProblemCode.ARITY, "sample requires two arguments.", ())
             count = self.expr(arguments[-1], ("count",))
             if (
                 not isinstance(count, LiteralValue)
@@ -213,30 +216,18 @@ class _Reader:
                     "Count must be a positive integer.",
                     ("count",),
                 )
-            if name == "sample":
-                draw = self.expr(arguments[0], ("draw",))
-                if not isinstance(draw, DrawValue):
-                    _fail(
-                        arguments[0],
-                        ProblemCode.TYPE_MISMATCH,
-                        "Sample requires a draw.",
-                        ("draw",),
-                    )
-                return SweepSample(draw=draw, count=count.value)
-            return SweepRange(
-                first=self.expr(arguments[0], ("first",)),
-                last=self.expr(arguments[1], ("last",)),
-                count=count.value,
-                spacing="linear" if name == "linspace" else "log",
-            )
+            draw = self.expr(arguments[0], ("draw",))
+            if not isinstance(draw, DrawValue):
+                _fail(arguments[0], ProblemCode.TYPE_MISMATCH, "Sample requires a draw.", ("draw",))
+            return SweepSample(draw=draw, count=count.value)
         return self.expr(node, ())
 
     def expr(self, node: Tree, path: NodePath) -> Expression:
         self.spans[path] = _span(node)
         expression = self._expr(node, path)
-        if self.stored and isinstance(expression, CallValue) and not expression.kwargs:
+        if isinstance(expression, CallValue) and not expression.kwargs:
             match expression.function, expression.args:
-                case ("neg" | "pos") as sign, (LiteralValue(value=value, unit=unit),) if type(value) is not bool:
+                case ("neg" | "pos") as sign, (LiteralValue(value=value, unit=unit),) if self.stored and type(value) is not bool:
                     self._keep_operand_spans(path)
                     return LiteralValue(value=_stored_number(-value if sign == "neg" else value), unit=unit)
                 case "lag", (operand, LiteralValue(value=0, unit=None)) if type(expression.args[1].value) is int:
@@ -304,6 +295,11 @@ class _Reader:
                 function, args = node.data.removesuffix("_"), node.children
             case "index" | "vector":
                 function, args = str(node.data), node.children
+            case "sequence_span":
+                first, last = node.children
+                return SequenceValue(
+                    rule="span", first=self.expr(first, (*path, "first")), last=self.expr(last, (*path, "last")),
+                )
             case "call":
                 return self._call(node, path)
             case _:
@@ -315,6 +311,14 @@ class _Reader:
 
     def _call(self, node: Tree, path: NodePath) -> Expression:
         name, *parts = node.children
+        if name in ("linspace", "geomspace"):
+            if len(parts) != 3 or any(child.data == "keyword" for child in parts):
+                _fail(node, ProblemCode.ARITY, f"{name} requires first, last and count.", path)
+            first, last, count = parts
+            return SequenceValue(
+                rule=str(name), first=self.expr(first, (*path, "first")),
+                last=self.expr(last, (*path, "last")), count=self.expr(count, (*path, "count")),
+            )
         args = []
         kwargs = {}
         for child in parts:
@@ -343,9 +347,13 @@ class _Reader:
             family = str(name)
         if family is not None or "per" in kwargs:
             per = kwargs.pop("per", None)
-            weights = self._choice_weights(kwargs.pop("weights"), path, len(args)) if (
-                family == "choice" and "weights" in kwargs
-            ) else None
+            weights = None
+            if family == "choice" and "weights" in kwargs:
+                try:
+                    count = sum(sequence_definition(arg).count if isinstance(arg, SequenceValue) else 1 for arg in args)
+                except ValueError:
+                    count = None  # Family indices are substituted before the checker counts the members.
+                weights = self._choice_weights(kwargs.pop("weights"), path, count)
             level = "trial"
             if per is not None:
                 if per.data != "name" or per.children[0] not in ("trial", "run"):
@@ -361,7 +369,7 @@ class _Reader:
                     path,
                 )
             return DrawValue(family=family or str(name), args=tuple(args), per=level, weights=weights)
-        if name in ("linspace", "geomspace", "sample"):
+        if name == "sample":
             reason = "An authored field takes one expression." if self.stored else "A sweep must be at the field root."
             _fail(node, ProblemCode.STRUCTURE, reason, path)
         if self.stored and "weights" in kwargs:
@@ -375,10 +383,10 @@ class _Reader:
             },
         )
 
-    def _choice_weights(self, node: Tree, path: NodePath, count: int) -> tuple[float, ...]:
+    def _choice_weights(self, node: Tree, path: NodePath, count: int | None) -> tuple[float, ...]:
         target = (*path, "weights")
         self.spans[target] = _span(node)
-        if node.data != "vector" or len(node.children) != count:
+        if node.data != "vector" or count is not None and len(node.children) != count:
             _fail(node, ProblemCode.STRUCTURE, "Choice needs one weight per entry.", target)
         weights = []
         for index, child in enumerate(node.children):
@@ -410,9 +418,11 @@ def parse(
     ))
 
 
-def _parse_text(text: str, reader: _Reader) -> ParsedField[FieldValue] | tuple[Problem, ...]:
+def _parse_text(
+    text: str, reader: _Reader, *, sequence: bool = False,
+) -> ParsedField[FieldValue] | tuple[Problem, ...]:
     try:
-        tree = _parser("expr" if reader.stored else "field").parse(text)
+        tree = _parser("sequence_item" if sequence else "expr" if reader.stored else "field").parse(text)
         value = reader.expr(tree, ()) if reader.stored else reader.field(tree)
         return ParsedField(value, MappingProxyType(reader.spans))
     except _ReadError as error:
@@ -436,12 +446,6 @@ def _parse_text(text: str, reader: _Reader) -> ParsedField[FieldValue] | tuple[P
         )
 
 
-def _stored_number(value: Scalar) -> Scalar:
-    if type(value) is float and value.is_integer() and abs(value) < 2**53:
-        return int(value)
-    return value
-
-
 @lru_cache(maxsize=1024)
 def _parsed_stored_text(text: str) -> ParsedField[FieldValue] | tuple[Problem, ...]:
     if len(text) > 8192:
@@ -456,8 +460,23 @@ def parse_stored_expression(value: Scalar | str) -> ParsedField[Expression] | tu
     parsed = _parsed_stored_text(value)
     if isinstance(parsed, tuple):
         return parsed
-    assert not isinstance(parsed.value, (SweepList, SweepRange, SweepSample))
+    assert not isinstance(parsed.value, (SweepList, SweepSample))
     return ParsedField(parsed.value.model_copy(deep=True), parsed.spans)
+
+
+def parse_sequence_rule(text: str) -> ParsedField[SequenceValue] | tuple[Problem, ...]:
+    """Parse the one sequence at a family's index, with key-spelled names."""
+    if len(text) > 8192:
+        return (Problem(code=ProblemCode.PARSE, reason="An expression can have at most 8,192 characters."),)
+    parsed = _parse_text(text, _Reader(None, None, stored=True), sequence=True)
+    if isinstance(parsed, tuple):
+        return parsed
+    if not isinstance(parsed.value, SequenceValue):
+        if isinstance(parsed.value, CallValue) and parsed.value.function == "range":
+            return (Problem(code=ProblemCode.UNKNOWN_FUNCTION, reason=range_refusal(parsed.value.args),
+                            span=parsed.spans.get(())),)
+        return (Problem(code=ProblemCode.STRUCTURE, reason="Expected one sequence rule.", span=parsed.spans.get(())),)
+    return ParsedField(parsed.value, parsed.spans)
 
 
 def resolve_expression(
@@ -469,7 +488,7 @@ def resolve_expression(
     parsed = parse(value.text, site, functions)
     if isinstance(parsed, tuple):
         return parsed
-    if isinstance(parsed.value, SweepList | SweepRange | SweepSample):
+    if isinstance(parsed.value, SweepList | SequenceValue | SweepSample):
         return (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression."),)
     return ParsedField(parsed.value, parsed.spans)
 
@@ -620,6 +639,11 @@ def _printed(node: Expression, names: Mapping[str, str] | None, expected: ValueB
                 escaped = name.replace("\\", "\\\\").replace("'", r"\'")
                 return f"'{escaped}'", _ATOM
             return json.dumps(name, ensure_ascii=False), _ATOM
+        case SequenceValue(rule="span", first=first, last=last):
+            return f"{_print(first, names, 5)}..{_print(last, names, 5)}", _ATOM
+        case SequenceValue(rule=rule, first=first, last=last, count=count):
+            assert count is not None
+            return f"{rule}({_print(first, names)}, {_print(last, names)}, {_print(count, names)})", _ATOM
         case DrawValue(family=family, args=args, per=per, weights=weights):
             parts = [_print(arg, names) for arg in args]
             if per == "run" or family not in _DRAW_SPELLINGS:
@@ -669,9 +693,6 @@ def print_field(value: FieldValue, site: Site, *, fragment: bool = False) -> str
             if len(members) == 1:
                 return _print(members[0], names) + ","
             return ", ".join(_print(member, names) for member in members)
-        case SweepRange(first=first, last=last, count=count, spacing=spacing):
-            function = "linspace" if spacing == "linear" else "geomspace"
-            return f"{function}({_print(first, names)}, {_print(last, names)}, {count})"
         case SweepSample(draw=draw, count=count):
             return f"sample({_print(draw, names)}, {count})"
         case _:

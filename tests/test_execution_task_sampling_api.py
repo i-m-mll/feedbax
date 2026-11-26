@@ -119,11 +119,11 @@ def test_a_saved_evaluate_sample_uses_its_own_window(tmp_path):
         "op": "add", "after": None,
         "address": owner | {"element": {"kind": "attachment", "parent": owner["element"], "id": "pulse"}},
         "attachment": {
-            "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+            "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": "vector(0.5, 0)"}},
             "window": {"spans": [{
                 "kind": "interval",
-                "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 0.2, "unit": "s"}},
-                "end": {"offset": {"value": 2, "unit": "st"}},
+                "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": "0.2 s"},
+                "end": {"offset": "2 st"},
             }]},
         },
     }], base="point-mass", components=new_application_registry_bundle().components)

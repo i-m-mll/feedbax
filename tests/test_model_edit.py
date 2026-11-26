@@ -15,8 +15,12 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import ModelComponent, ModelDocument, SignalType
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditProblem, ModelEditState
 from feedbax.contracts.project import RootDocument, Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
-from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, stored_model_component
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
+from feedbax.contracts.stored_model import (
+    STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredDelayAttachment, StoredModelDocument, stored_model_attachment,
+    stored_model_component,
+)
 from feedbax.compiler import model_edit
 from feedbax.compiler.model_edit import Port, apply_model_edit
 from feedbax.examples import load_shipped_projects
@@ -88,7 +92,7 @@ def test_boundary_growth_reviews_and_stores_a_port(scope, grow_source):
     wire = next(wire for wire in wires if wire[side]["owner"] == empty["owner"])
     port = next(port for port in saved["ports"][empty["owner"]] if port["id"] == wire[side]["port"])
     assert port["id"] != empty["port"]
-    assert port["name"] == ("in" if grow_source else "out")
+    assert port["name"] == ("in" if grow_source else "Output")
     expected = SCALAR.type if grow_source else SignalType()
     assert port["type"] == expected.model_dump(mode="json")
 
@@ -135,7 +139,7 @@ def test_delay_initial_modes_are_authored_by_the_attachment_command(initial_sour
     parent = {"kind": "wire", "id": "in"}
     address = _address(("outer",), "attachment", parent=parent, id="lag")
     attachment = {
-        "kind": "delay", "delay": {"value": 5, "unit": "st"}, "initial_source": initial_source,
+        "kind": "delay", "delay": "5 st", "initial_source": initial_source,
     }
     result = _execute(_start(), "set_attachment", difference={
         "op": "add", "address": address, "attachment": attachment, "after": None,
@@ -143,7 +147,9 @@ def test_delay_initial_modes_are_authored_by_the_attachment_command(initial_sour
     assert not isinstance(result, ModelEditProblem), result
     archived = ModelEditState.model_validate_json(result.state.model_dump_json())
     graph = archived.document.interior.components["outer"].interior
-    assert graph.wires["in"].attachments[0].model_dump(mode="json") == attachment | {"id": "lag"}
+    (delay,) = graph.wires["in"].attachments
+    assert delay.id == "lag" and (delay.delay.value, delay.delay.unit) == (5, "st")
+    assert stored_model_attachment(delay).model_dump(mode="json") == attachment
 
 
 def _start(deep_name="inner", *, decorated=False, fanout=False, default=False):
@@ -282,7 +288,7 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
     path = tmp_path / "project"
     project = Project(documents={
         "model": RootDocument(label="Model", schema=STORED_MODEL_DOCUMENT_SCHEMA_ID, payload={
-            "step_seconds": 0.01, "ports": {},
+            "step_seconds": "0.01 s", "ports": {},
             "interior": {"components": {"outer": {
                 "kind": "composite", "label": "Outer", "ports": {}, "interior": {},
             }}},
@@ -298,7 +304,7 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
         patch = client.patch(url, json={
             "revision": before["revision"],
             "address": {"kind": "document", "id": "model"},
-            "patches": [{"op": "replace", "path": "/payload/step_seconds", "value": 0.02}],
+            "patches": [{"op": "replace", "path": "/payload/step_seconds", "value": "0.02 s"}],
         })
         assert patch.status_code == 422, patch.text
         body = {
@@ -421,7 +427,7 @@ def test_batch_created_model_recovers_its_original_file_revision_after_undo(tmp_
             "files": [
                 {"kind": "document", "id": "model", "document": {
                     "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID,
-                    "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}},
+                    "payload": {"step_seconds": "0.01 s", "ports": {}, "interior": {}},
                     "label": "Model",
                 }},
                 {"kind": "step", "id": "fit", "step": {
@@ -620,7 +626,9 @@ def test_served_connect_adds_and_undoes_one_delay_and_can_move_it(tmp_path):
         closed = result["snapshot"]
         (closing, wire), = [(key, wire) for key, wire in wires(closed).items() if wire["target"] == _end("cell", "hidden")]
         (delay,) = wire["attachments"].values()
-        assert delay["kind"] == "delay" and delay["delay"] == {"value": 1, "unit": "st"}
+        assert delay == {"kind": "delay"}
+        duration = StoredDelayAttachment.model_validate(delay).delay
+        assert (duration.value, duration.unit) == (1, "st")
 
         undo = client.post(url + "/model/undo", json={
             "revision": closed["revision"], "presentation_revision": closed["presentation_revision"],

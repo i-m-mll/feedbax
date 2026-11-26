@@ -16,7 +16,8 @@ from feedbax.contracts.base import DEFAULT_MANIFEST_ROOT_ENV
 from feedbax.contracts.jobs import JobReceipt, JobStatus
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.planner.project_plan import RunKey
 from feedbax.host import HostError
 from feedbax.host.job_completion import verify_bound_training_completion
@@ -188,17 +189,12 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
     assert response == old.json()
     assert set(response) == {"revision", "rows"}
     assert window["variants"] == ["default"]
-    trial_variables = [
-        trial["variables"]
-        for trial in data["documents"]["simple-reaches-task"]["payload"]["validation_trials"].values()
-    ]
+    trial_ids = list(data["documents"]["simple-reaches-task"]["payload"]["validation_trials"])
     assert {
-        (row["key"]["variant"], row["key"]["step"], row["key"]["row"]): [
-            json.loads(condition_id) for condition_id in row["evaluation_conditions"]
-        ]
+        (row["key"]["variant"], row["key"]["step"], row["key"]["row"]): row["evaluation_conditions"]
         for row in window["rows"]
         if "evaluation_conditions" in row and row["key"]["step"] == "fit"
-    } == {("default", "fit", row): trial_variables for row in ("seed=a", "seed=b")}
+    } == {("default", "fit", row): trial_ids for row in ("seed=a", "seed=b")}
     steps = {step["step_id"]: step for step in window["steps"]}
     assert steps["fit"]["document_ids"] == {
         "payload.trial_documents.model": "point-mass",

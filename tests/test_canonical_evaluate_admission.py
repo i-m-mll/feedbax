@@ -15,7 +15,8 @@ from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.effective_success import INDEX_REF
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -50,7 +51,6 @@ def _save_project(folders, project, authored):
 
 
 def managed_evaluation_definition():
-    from feedbax.contracts.model_address import ModelAddress
     from feedbax.contracts.project_sweep import model_field_path
     from tests.test_document_train_pair import authored_documents, document_project
 
@@ -88,9 +88,9 @@ def test_managed_plan_resolves_task_owned_trial_ids():
     raw = managed_evaluation_definition()
     task = StoredTaskDocument.model_validate(raw["documents"]["task"]["payload"]).lower()
     assert len(task.condition_ids) == 28
-    assert len({tuple(row.variables["start"]) for row in task.validation_trials}) == 4
-    assert all(sum(other.variables["start"] == row.variables["start"] for other in task.validation_trials) == 7
-               for row in task.validation_trials)
+    points = [tuple(component.value for component in row.variables["start"].args) for row in task.validation_trials]
+    assert len(set(points)) == 4
+    assert all(points.count(point) == 7 for point in set(points))
     assert task.model_copy(update={"validation_trials": task.validation_trials[::-1]}).condition_ids == task.condition_ids[::-1]
     params = raw["steps"]["baseline"]["base"]["inline"]["params"]
     selected = [task.condition_ids[i] for i in (10, 0, 5)]
@@ -332,8 +332,10 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     np.testing.assert_allclose(subset.history[position], np.asarray(reference.history[position])[[1, 0]], atol=1e-7)
     for index, condition in enumerate((1, 0)):
         authored = documents.task_source.validation_trials[condition]
-        np.testing.assert_allclose(subset.trials.inputs["target_pos"][index, -1], authored.variables["target"])
-        np.testing.assert_allclose(subset.history[position][index, 0], authored.variables["start"])
+        target = [component.value for component in authored.variables["target"].args]
+        start = [component.value for component in authored.variables["start"].args]
+        np.testing.assert_allclose(subset.trials.inputs["target_pos"][index, -1], target)
+        np.testing.assert_allclose(subset.history[position][index, 0], start)
 
     arrays = {}
     for key, result in outcomes.items():

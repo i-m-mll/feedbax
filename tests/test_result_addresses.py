@@ -126,7 +126,8 @@ def test_a_key_held_by_two_unrelated_documents_is_a_diagnostic(studio):
 def test_status_by_card_element_and_by_element_agree(tmp_path, monkeypatch, capsys):
     root = tmp_path / PROJECT
     project = _report_project()
-    from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+    from feedbax.application.project_writer import dump_text_project
+    from feedbax.contracts.project_io import ProjectConfiguration
 
     for relative, data in dump_text_project(project, ProjectConfiguration(project=PROJECT, store="results")).items():
         (root / relative).parent.mkdir(parents=True, exist_ok=True)

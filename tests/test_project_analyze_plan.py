@@ -15,11 +15,10 @@ from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureDocument
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import BasedDocument, RootDocument, DocumentReference, Project, Step
+from feedbax.application.project_writer import dump_studio_project, dump_text_project
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
-    dump_studio_project,
-    dump_text_project,
     load_text_project,
     parse_studio_project,
 )

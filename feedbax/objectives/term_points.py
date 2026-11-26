@@ -23,6 +23,8 @@ def measure_points(checked: Checked) -> TermPoints:
         return kind.space == "point" and kind.shape == (2,)
 
     def visit(node: Expression, path: NodePath, lone: bool) -> None:
+        if path not in checked.nodes:
+            return
         if path in checked.calls:
             _, node = checked.calls[path]
         if isinstance(node, CallValue) and node.function == "sub":

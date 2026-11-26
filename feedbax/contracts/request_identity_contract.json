@@ -8,6 +8,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
@@ -25,6 +26,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
@@ -62,6 +64,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
@@ -103,6 +106,52 @@
         ]
       },
       "reference": {}
+    },
+    "feedbax.contracts.expression_values.SequenceValue": {
+      "count": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
+      "first": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
+      "kind": {
+        "absent": "sequence",
+        "values": [
+          "sequence"
+        ]
+      },
+      "last": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
+      "rule": {
+        "values": [
+          "geomspace",
+          "linspace",
+          "span"
+        ]
+      }
     },
     "feedbax.contracts.expression_values.UnresolvedValue": {
       "kind": {
@@ -1127,6 +1176,9 @@
       "enabled": {
         "absent": true
       },
+      "family": {
+        "absent": null
+      },
       "id": {},
       "measure": {
         "families": [
@@ -1134,6 +1186,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
@@ -1161,6 +1214,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
@@ -1270,6 +1324,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
@@ -1534,6 +1589,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
@@ -1562,6 +1618,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
@@ -1586,6 +1643,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
@@ -1613,6 +1671,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
@@ -1654,6 +1713,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
@@ -1665,12 +1725,23 @@
       },
       "limit": {}
     },
-    "feedbax.contracts.task_document.ValidationTrial": {
+    "feedbax.contracts.task_document.ValidationTrialV2": {
       "epoch_steps": {
         "absent": {}
       },
+      "id": {
+        "absent": null
+      },
       "variables": {
-        "absent": {}
+        "absent": {},
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
       }
     },
     "feedbax.contracts.task_document.Variable": {
@@ -1681,6 +1752,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
@@ -1696,6 +1768,7 @@
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.SequenceValue",
           "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
@@ -4283,6 +4356,16 @@
         "field": "initial",
         "migration": "typed-delay-initial",
         "model": "feedbax.contracts.model_document.DelayAttachment"
+      },
+      {
+        "field": "epoch_steps",
+        "migration": "p4-keyed-validation-trials",
+        "model": "feedbax.contracts.task_document.ValidationTrial"
+      },
+      {
+        "field": "variables",
+        "migration": "p4-keyed-validation-trials",
+        "model": "feedbax.contracts.task_document.ValidationTrial"
       }
     ],
     "values": [

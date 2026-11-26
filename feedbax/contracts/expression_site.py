@@ -21,7 +21,7 @@ from feedbax.contracts.expression_values import (
     ProblemCode,
     Site,
     SweepList,
-    SweepRange,
+    SequenceValue,
     SweepSample,
     UnresolvedValue,
     ValueBase,
@@ -31,6 +31,7 @@ from feedbax.contracts.expression_values import (
 )
 from feedbax.contracts.expression_check import Checked, _checker, check
 from feedbax.contracts.expression_registry import FunctionClass, FunctionInfo, FunctionRegistry
+from feedbax.contracts.expression_sequence import sequence_definition
 from feedbax.contracts.expression_text import ParsedField, parse
 
 
@@ -157,7 +158,7 @@ def _expression_parts(
     *, selected: NodePath | None = None,
 ) -> tuple[ExpressionPartSite, ...]:
     """Check a replacement with its enclosing expression so sibling constraints still apply."""
-    nodes = tuple(walk(tree))
+    nodes = tuple(walk(tree, include_sequence_bounds=False))
     by_path = dict(nodes)
     if selected is not None and selected not in by_path:
         return ()
@@ -217,7 +218,7 @@ def _expression_parts(
 
 
 def _literal_vector(value: Expression) -> bool:
-    return isinstance(value, LiteralValue) or (
+    return isinstance(value, LiteralValue | SequenceValue) or (
         isinstance(value, CallValue)
         and value.function == "vector"
         and not value.kwargs
@@ -227,7 +228,7 @@ def _literal_vector(value: Expression) -> bool:
 
 
 def field_kind(value: FieldValue, functions: FunctionRegistry) -> FieldKind:
-    if isinstance(value, (SweepList, SweepRange, SweepSample)):
+    if isinstance(value, (SweepList, SequenceValue, SweepSample)):
         return FieldKind.SWEEP
     if _literal_vector(value):
         return FieldKind.VALUE
@@ -252,13 +253,17 @@ def read_field(
     checks = [((), value, site)]
     if isinstance(value, SweepList):
         checks = [(("members", i), item, site) for i, item in enumerate(value.members)]
-    elif isinstance(value, SweepRange):
+    elif isinstance(value, SequenceValue):
         if site.expected.shape or site.expected.base == ValueBase.BOOLEAN:
             return (
                 Problem(
                     code=ProblemCode.TYPE_MISMATCH, reason="A range requires a numeric scalar site."
                 ),
             )
+        try:
+            sequence_definition(value)
+        except ValueError as error:
+            return (Problem(code=ProblemCode.STRUCTURE, reason=str(error), span=parsed.spans.get(())),)
         run_site = site.model_copy(update={"finest": Level.RUN})
         checks = [(("first",), value.first, run_site), (("last",), value.last, run_site)]
     elif isinstance(value, SweepSample):

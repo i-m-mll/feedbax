@@ -6,7 +6,8 @@ import shutil
 from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.jobs import JobService
 from feedbax.host.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider

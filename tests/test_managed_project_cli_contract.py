@@ -10,9 +10,9 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMapProblem,
     StudioSavedTrainRuns,
 )
+from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
-    dump_text_project,
     read_text_project_snapshot,
 )
 from feedbax.contracts.studio_authoring import StudioAuthoringCatalog

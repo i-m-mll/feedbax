@@ -61,7 +61,7 @@ def _wire(source, target):
 
 def _model(inputs, outputs, components, wires):
     return {
-        "step_seconds": 0.01,
+        "step_seconds": "10 ms",
         "ports": {"inputs": inputs, "outputs": outputs},
         "interior": {"components": components, "wires": wires},
     }
@@ -99,33 +99,28 @@ def _feedback_model():
     )
 
 
-def _literal(value):
-    return {"kind": "literal", "value": value}
-
-
 def _vector_signal(name, terms):
     return {
         "label": name, "type": {"base": "real", "shape": [len(terms)]},
         "cells": {"rollout": {
             "first_epoch": "rollout", "last_epoch": "rollout",
-            "value": {"kind": "call", "function": "vector", "args": terms},
+            "value": f"vector({', '.join(terms)})",
         }},
     }
 
 
 def _conditioning_task():
-    zero = _literal(0.0)
     return {
         "id": "conditioning",
-        "variables": {"conditioning": {"label": "conditioning", "type": {"base": "real"}, "value": zero}},
+        "variables": {"conditioning": {"label": "conditioning", "type": {"base": "real"}, "value": 0.0}},
         "epochs": {"rollout": {"label": "Rollout", "end": {"kind": "rest"}}},
         "fixed_steps": 2,
         "signals": {
-            "feedback": _vector_signal("feedback", [zero, zero, {"kind": "name", "reference": "conditioning"}]),
-            "memory": _vector_signal("memory", [zero] * 4),
+            "feedback": _vector_signal("feedback", ["0", "0", "conditioning"]),
+            "memory": _vector_signal("memory", ["0"] * 4),
         },
         "validation_trials": {
-            f"trial-{index}": {"variables": {"conditioning": level}}
+            f"trial-{index}": {"label": f"Conditioning {index}", "variables": {"conditioning": level}}
             for index, level in enumerate((0.0, 0.5, 1.0), start=1)
         },
     }

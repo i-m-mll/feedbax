@@ -19,6 +19,7 @@ from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTe
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scene import ScenePoint
 from feedbax.contracts.studio_scope import StudioStoreChoice
+from feedbax.contracts.member_family import IndexName, StoredFamilyMember
 from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, StoredTaskDocument
 from feedbax.contracts.task_structure import TaskStructureChange
 from feedbax.contracts.trial_record import TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace
@@ -209,10 +210,11 @@ class StudioTrialObjectiveSource(StrictModel):
     step: ProjectName
 
 
-class StudioSetFieldEntry(StrictModel):
+class StudioSetFieldEntry(StoredFamilyMember):
     entry: ProjectName | None
     label: str | None = None
     weight: WeightPart | SetEntryParts | None = None
+    member_count: int | None = None
 
 
 class StudioSetField(StrictModel):
@@ -221,6 +223,21 @@ class StudioSetField(StrictModel):
     sampling: SetTrialSampling
     condition: Expression | None = None
     entries: list[StudioSetFieldEntry]
+
+
+class StudioFamilyValue(StrictModel):
+    key: IndexName
+    name: str
+
+
+class StudioFamilyIndex(StrictModel):
+    count: int | None
+    values: list[StudioFamilyValue] | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class StudioFamily(StrictModel):
+    member_count: int | None
+    indices: dict[IndexName, StudioFamilyIndex]
 
 
 class StudioTrialAuthoring(StudioFieldSiteTables):
@@ -265,6 +282,7 @@ class StudioTrialAuthoring(StudioFieldSiteTables):
     unresolved_links: list[StudioTrialUnresolvedLink]
     fields: list[StudioTrialField]
     """Expression parts are returned by the menu route on request."""
+    families: dict[str, StudioFamily] | None = Field(default=None, exclude_if=lambda value: value is None)
     problems: list[Problem]
     created_term: str | None = Field(default=None, exclude_if=lambda value: value is None)
     files: list[StudioProjectFilePatch]

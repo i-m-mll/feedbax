@@ -15,13 +15,14 @@ from feedbax.contracts.expression_storage import (
     StoredExpression, StoredTime, lower_expression, stored_expression_value, stored_reference, stored_set_reference,
 )
 from feedbax.contracts.expression_values import (
-    TIME, Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, TextSpan,
+    TIME, Level, LiteralValue, Problem, ProblemCode, ScopedValue, SequenceValue, Site, SweepList, SweepSample, TextSpan,
     UnresolvedValue, SetVariableOrigin, ValueBase, ValueType,
 )
 from feedbax.tasks.document import TrialSource, zero
 from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.tasks.structure import restructure
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.member_family import FamilyProblem, expand_family
 from feedbax.contracts.studio_scope import StoreKind
 from feedbax.compiler.model_reset import ModelResetField
 from feedbax.compiler.model_signals import model_measure_scope
@@ -94,8 +95,10 @@ from feedbax.web.services.store_choice import EditStore, all_readers_store, choo
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.numeric_fields import project_numeric_field, time_conversion
 from feedbax.web.services.trial_fields import (
-    TrialFieldSweep, at, index_pointer, is_window_offset, numeric_nodes, routes_to_sweep,
-    site_expression, trial_field_sweep, trial_field_sweep_edit, trial_time_use,
+    FamilyEditor, FamilyField, TrialFieldSweep, at, family_indices, family_problem, index_pointer,
+    family_rule_edits, is_family_member_path, is_family_rule, is_family_rule_edit, is_window_offset, numeric_nodes,
+    objective_editor, routes_to_sweep,
+    site_expression, trial_field_sweep, trial_field_sweep_edit, trial_time_use, validation_editor, with_family_indices,
 )
 from feedbax.web.services.trial_scope import (
     authored_payload, base_value_edits, changed_from_base, content_edits, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, scoped_file,
@@ -125,6 +128,14 @@ class _DraftTrialDocuments:
 
 
 @dataclass(frozen=True)
+class _SetVariableView:
+    origin: SetVariableOrigin
+    source: SetEntry
+    generated: str
+    scoped: bool
+
+
+@dataclass(frozen=True)
 class _Projection:
     pair: TrialPair | None
     variables: tuple[ScopedValue, ...]
@@ -139,6 +150,8 @@ class _Projection:
     output_paths: dict[str, tuple[str, ...]] = field(default_factory=dict)
     set_condition_variables: tuple[Variable, ...] | None = None
     stored_task: StoredTaskDocument | PythonTaskSelection | None = None
+    family_editor: FamilyEditor = field(default_factory=FamilyEditor)
+    set_variables: dict[str, _SetVariableView] = field(default_factory=dict)
 
 
 def _project(
@@ -149,7 +162,7 @@ def _project(
 
     task = documents.task_source
     if isinstance(task, StoredTaskDocument):
-        return _project_until_drafts(documents, task, show_objective)
+        return _project_task_drafts(documents, task, show_objective)
     fields = {}
     if isinstance(task, PythonTaskSelection):
         resolved = resolve_python_task_instance(task, bundle.python_tasks)
@@ -229,8 +242,8 @@ def _project(
     )
 
 
-def _project_until_drafts(documents, task: StoredTaskDocument, show_objective: bool) -> _Projection:
-    """Keep the saved End editable when it has no executable time limit."""
+def _project_task_drafts(documents, task: StoredTaskDocument, show_objective: bool) -> _Projection:
+    """Keep authored Task fields visible while their draft has no executable form."""
     variables = tuple(ScopedValue(id=key, name=value.label, type=value.type, level=Level.TRIAL)
                       for key, value in task.variables.items())
     signals = tuple(ScopedValue(id=key, name=value.label, type=value.type, level=Level.STEP)
@@ -250,6 +263,11 @@ def _project_until_drafts(documents, task: StoredTaskDocument, show_objective: b
             fields.update({(*path, "limit"): length, (*path, "length"): length, (*path, "condition"): condition})
             problems.append(Problem(code=ProblemCode.MISSING_LIMIT, path=(*path, "limit"),
                                     reason="An Until limit needs a literal time in seconds or steps."))
+    try:
+        task.lower(first=True)
+    except StoredTaskDraftError as error:
+        if error.path[:1] == ("validation_trials",) and error.path[2:3] not in (("over",), ("combination",), ("label",)):
+            problems.append(Problem(code=ProblemCode.STRUCTURE, path=error.path, reason=str(error)))
     return _Projection(None, variables, signals, epochs, fields, tuple(problems), stored_task=task)
 
 
@@ -328,9 +346,9 @@ def _input_rows(documents, projection) -> list[StudioTrialInput]:
 _TASK_DOCUMENT_SCHEMAS = frozenset({STORED_TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID})
 
 
-def _authoring_task(task: StoredTaskDocument) -> TaskDocument | StoredTaskDocument:
+def _authoring_task(task: StoredTaskDocument, *, first: bool = True) -> TaskDocument | StoredTaskDocument:
     try:
-        return task.lower()
+        return task.lower(first=first)
     except StoredTaskDraftError:
         return task
 
@@ -361,6 +379,8 @@ def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None 
 
 def _authored_trial_problem(problem: Problem) -> Problem:
     path = authored_task_link_path(problem.path)
+    if path[:2] == ("task", "validation_trials"):
+        path = path[1:]
     return problem if path is problem.path else problem.model_copy(update={"path": path})
 
 
@@ -418,7 +438,7 @@ def _one_expression_problem(path):
 def _one_expression(text, site, functions, path):
     parsed = parse(text, site, functions, keep_unknown_names=True)
     value = UnresolvedValue(text=text) if isinstance(parsed, tuple) else parsed.value
-    return _one_expression_problem(path) if isinstance(value, SweepList | SweepRange | SweepSample) else value
+    return _one_expression_problem(path) if isinstance(value, SweepList | SequenceValue | SweepSample) else value
 
 
 _STORED_EXPRESSION = TypeAdapter(StoredExpression)
@@ -444,8 +464,12 @@ def _expression_edit(change, documents, stored_task, stored_objective, projectio
     if change.edit.kind != "text" or change.edit.value_id is not None:
         return one
     text = change.edit.text
-    end = _end_of(document, role, rest)
     raw = stored_project_value(document, keep_explicit=True)
+    if is_family_rule((role, *rest)) and isinstance(at(raw, tuple(rest)), str):
+        return StudioTrialDocumentEdit(kind=role, edits=[
+            SetProjectValue(op="replace", path=index_pointer(raw, tuple(rest)), value=text),
+        ])
+    end = _end_of(document, role, rest)
     if end is not None and text.strip() == "rest":
         return StudioTrialDocumentEdit(kind=role, edits=_end_edits(raw, end, "rest", {}))
     window_offset = is_window_offset(role, tuple(rest))
@@ -577,7 +601,11 @@ def _sweep_source(project, plan, key, definition, role) -> _SweepSource | None:
 def _field_sweep(project, key, path, site, label, sweep_source) -> TrialFieldSweep | None:
     """The number at ``path`` of a document the step reads whole, when the step can sweep it."""
     role, *rest = path
-    if is_window_offset(role, tuple(rest[:7])) or (source := sweep_source(role)) is None:
+    if (
+        is_family_member_path(tuple(path)) and (role == "task" or rest[2:3] == ["over"])
+        or is_window_offset(role, tuple(rest[:7]))
+        or (source := sweep_source(role)) is None
+    ):
         return None
     return trial_field_sweep(project.steps[key.step], source.payload, source.parsed, role, tuple(map(str, rest)), site, label)
 
@@ -620,6 +648,8 @@ def _edit_patches(prefix, change):
 
 
 def _value_writes(prefix, raw, change):
+    edits = family_rule_edits(raw, change.kind, change.edits)
+    change = change.model_copy(update={"edits": edits})
     if change.kind == "task" and any(json_pointer_parts(edit.path)[:1] == ("links",) for edit in change.edits):
         edited = _edit_value(raw, change)
         edits = content_edits(raw, edited, schema_id=STORED_TASK_DOCUMENT_SCHEMA_ID, dotted=True)
@@ -741,7 +771,7 @@ def _evaluation_task_path(definition):
     return f"payload.params.variation.{entry}.value" if entry is not None else EVALUATION_TASK
 
 
-def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
+def _initial_trial_documents(definition, bundle, *, first: bool, objective=None) -> _InitialTrialDocuments:
     subject = definition.input_documents["subject"]
     if subject.schema_id == LOADED_MODEL_SCHEMA_ID:
         model = definition.pinned_model
@@ -753,8 +783,9 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
     if task.schema_id == PYTHON_TASK_SCHEMA_ID:
         source = PythonTaskSelection.model_validate(task.payload)
     else:
-        source = _authoring_task(StoredTaskDocument.model_validate(task.payload))
-    objective = definition.input_documents.get("objective")
+        source = _authoring_task(StoredTaskDocument.model_validate(task.payload), first=first)
+    if objective is None and (entry := definition.input_documents.get("objective")) is not None:
+        objective = StoredObjectiveDocument.model_validate(entry.payload).lower(first=first)
     differences = MODEL_DIFFERENCE_BATCHES.validate_python(definition.payload.get(MODEL_ATTACHMENTS, {}))
     if differences and subject.schema_id != LOADED_MODEL_SCHEMA_ID:
         writes = tuple(item for batch in differences.values() for item in batch)
@@ -764,12 +795,12 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
         )
     params = authored_rollout_settings(definition.payload.get("params"))
     return _InitialTrialDocuments(
-        model, source, StoredObjectiveDocument.model_validate(objective.payload).lower() if objective is not None else None,
+        model, source, objective,
         params.input_bindings,
     )
 
 
-def _evaluate_documents(plan, key, definition, bundle):
+def _evaluate_documents(plan, key, definition, bundle, *, first: bool, objective):
     upstream = evaluate_subject(definition)
     authored = None
     if upstream:
@@ -781,13 +812,24 @@ def _evaluate_documents(plan, key, definition, bundle):
         if not isinstance(request, (DocumentTrainingRequestSpec, SynthesisRequestSpec)):
             raise ProjectFolderInvalid("The selected Evaluate has no managed model-producing subject.")
         documents = request.trial_documents
+        if objective is not None:
+            documents = documents.model_copy(update={"objective": objective})
         if subject.train is not None and isinstance(subject.train.task, TaskDocument):
             authored = subject.train
             documents = documents.model_copy(update={"task": authored.task, "input_bindings": authored.input_bindings})
     elif "subject" in definition.input_documents:
-        documents = _initial_trial_documents(definition, bundle)
+        documents = _initial_trial_documents(definition, bundle, first=first, objective=objective)
     else:
         raise ProjectFolderInvalid("The selected Evaluate has no authored trial pairing.")
+    stored_source = None
+    if first and upstream:
+        stored_source = _stored_task_view(plan, definition, documents.task_source, include_variation=False)
+        if isinstance(stored_source, StoredTaskDocument):
+            preview_task = _authoring_task(stored_source)
+            task = documents.task_source
+            if isinstance(task, TaskDocument) and isinstance(preview_task, TaskDocument):
+                preview_task = task.model_copy(update={"validation_trials": preview_task.validation_trials})
+            documents = _with_task(documents, preview_task)
     objective_use = ObjectiveUse.INHERITED if upstream else ObjectiveUse.TRAIN
     projection = _project(documents, bundle, objective_use=objective_use)
     if projection.pair is None:
@@ -796,12 +838,13 @@ def _evaluate_documents(plan, key, definition, bundle):
         if definition.payload.get("evaluation_type") != ROLLOUT_TYPE:
             raise ValueError("Task authoring requires a saved rollout Evaluate.")
         params = authored_rollout_settings(definition.payload.get("params"))
-        stored_source = _stored_task_view(plan, definition, documents.task_source, include_variation=False)
         own = (definition.payload.get("trial_documents") or {}).get("task")
         if own is not None:
             stored_source = stored_trial_task_slot(own)
+        elif stored_source is None:
+            stored_source = _stored_task_view(plan, definition, documents.task_source, include_variation=False)
         stored_task = resolve_authored_evaluation_task(stored_source, params.variation)
-        authored_task = _authoring_task(stored_task) if isinstance(stored_task, StoredTaskDocument) else stored_task
+        authored_task = _authoring_task(stored_task, first=first) if isinstance(stored_task, StoredTaskDocument) else stored_task
         if isinstance(authored_task, StoredTaskDocument):
             draft = _with_task(documents, authored_task, input_bindings=documents.input_bindings | params.input_bindings)
             return draft, replace(_project(draft, bundle), task_origins=_task_edit_origins(
@@ -833,6 +876,8 @@ def _evaluate_documents(plan, key, definition, bundle):
                     if any(patch.path.split(".", 1)[0] == "task"
                            for _, patch in authored_variation(settings.variation)):
                         task = _with_authored_task_details(lowered.task, authored_task)
+                        if first and isinstance(task, TaskDocument) and isinstance(authored_task, TaskDocument):
+                            task = task.model_copy(update={"validation_trials": authored_task.validation_trials})
                 params = settings
     except ValueError as error:
         return documents, _Projection(
@@ -850,7 +895,7 @@ def _evaluate_documents(plan, key, definition, bundle):
         isinstance(stored_task, StoredTaskDocument) and isinstance(task, TaskDocument)
         and (definition.task_additions or project.steps[key.step].set_fields)
     ):
-        set_ids = {id for id, _, _, _ in _set_variables(project, key, plan.row(key))}
+        set_ids = {id for id, _ in _set_variables(project, key, plan.row(key))}
         additions = {
             variable.id: project_member(variable, StoredVariable, label=variable.name)
             for variable in task.variables if variable.id in set_ids and variable.id not in stored_task.variables
@@ -935,24 +980,20 @@ def _stored_task_view(plan, definition, task, *, include_variation=True, scopes=
     if isinstance(task, PythonTaskSelection | StoredTaskDocument):
         return task
     payload = _effective_task_payload(plan, definition, include_variation=include_variation)
-    if isinstance(payload, dict):
-        authored = StoredTaskDocument.model_validate(payload)
-        if _authoring_task(authored) == task:
-            return authored
-    keys = tuple(payload.get("validation_trials", {})) if isinstance(payload, dict) else ()
-    # Crossed Set trials may have been expanded beyond the authored cohort.
+    authored = StoredTaskDocument.model_validate(payload) if isinstance(payload, dict) else None
+    if authored is not None and _authoring_task(authored) == task:
+        return authored
     return StoredTaskDocument.from_lowered(
-        task, trial_keys=keys if len(keys) == len(task.validation_trials) else None, scopes=scopes,
+        task, validation_trials=authored.validation_trials if authored is not None else None, scopes=scopes,
     )
 
 
-def _stored_objective_view(plan, key, definition, objective) -> StoredObjectiveDocument | None:
-    if objective is None:
-        return None
+def _stored_objective_view(plan, key, definition, objective=None) -> StoredObjectiveDocument | None:
     step = plan.steps[key.variant, key.step]
     if step.kind in ("train", "synthesize"):
         slots, _ = trial_document_slots(definition.payload)
-        return StoredObjectiveDocument.model_validate(slots["objective"])
+        value = slots.get("objective")
+        return StoredObjectiveDocument.model_validate(value) if value is not None else None
     if entry := definition.input_documents.get("objective"):
         return StoredObjectiveDocument.model_validate(entry.payload)
     if subject := evaluate_subject(definition):
@@ -967,58 +1008,142 @@ def _stored_objective_view(plan, key, definition, objective) -> StoredObjectiveD
                 entry := compose_document(project.documents.get, name), ProjectDiagnostic,
             ):
                 return StoredObjectiveDocument.model_validate(entry.payload)
-    return StoredObjectiveDocument.from_lowered(objective)
+    return StoredObjectiveDocument.from_lowered(objective) if objective is not None else None
 
 
-def _pairing(plan, key, bundle, *, definition=None):
+def _planned_family_problems(plan, key, families, preview):
+    """Use addressed Problems from the full Plan without expanding for authoring."""
+    if not families.families:
+        return ()
+    row = plan.row(key)
+    candidates = [
+        (json_pointer_parts(problem.path), problem.detail, None)
+        for problem in (row.problems if row is not None else ()) if problem.path.startswith("/")
+    ]
+    candidates.extend(
+        (tuple(problem.path.split(".")), problem.detail, problem.span)
+        for problem in plan.diagnostics
+        if (problem.variant, problem.step, problem.row) == (key.variant, key.step, key.row)
+        and problem.path.startswith(("payload.", "inputs."))
+    )
+    held = {(problem.path, problem.reason) for problem in preview}
+    found = []
+    for path, reason, span in candidates:
+        if path[:1] == ("payload",):
+            path = path[1:]
+        if path[:1] in (("trial_documents",), ("inputs",)):
+            path = path[1:]
+        if not is_family_member_path(path) or pointer(path[:3]) not in families.families:
+            continue
+        if (path, reason) not in held:
+            found.append(Problem(code=ProblemCode.STRUCTURE, path=path, reason=reason, span=span))
+            held.add((path, reason))
+        if path[3:4] in (("over",), ("combination",), ("label",)):
+            family = pointer(path[:3])
+            families.families[family] = families.families[family].model_copy(update={"member_count": None})
+    return tuple(found)
+
+
+def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
     if definition is None:
         definition = _definition(plan, key)
-    documents, projected, graph = _pairing_documents(plan, key, bundle, definition)
+    families = FamilyEditor()
+    objective = (
+        objective_editor(stored, families, bundle.expression_functions)
+        if first and (stored := _stored_objective_view(plan, key, definition)) is not None else None
+    )
+    documents, projected, graph = _pairing_documents(
+        plan, key, bundle, definition, first=first, objective=objective,
+    )
+    if first:
+        stored_task = projected.stored_task or _stored_task_view(
+            plan, definition, documents.task_source, scopes=_set_spellings(projected.variables),
+        )
+        if isinstance(stored_task, StoredTaskDocument) and _effective_task_payload(plan, definition) is not None:
+            validation_editor(stored_task, families, projected.variables, bundle.expression_functions)
+        fields = {
+            path: with_family_indices(site, families.names.get(path[:3], ()))
+            if path[:2] == ("objective", "terms") else site
+            for path, site in projected.fields.items()
+            if path[:1] != ("validation_trials",)
+        }
+        problems = (*map(families.problem, projected.problems), *families.problems)
+        projected = replace(
+            projected, fields=fields | {path: authored.site for path, authored in families.fields.items()},
+            problems=(*problems, *_planned_family_problems(plan, key, families, problems)),
+            family_editor=families, stored_task=stored_task,
+        )
     origins = _set_origins(plan, key, definition, projected)
 
     def member(value: ScopedValue) -> ScopedValue:
-        return value.model_copy(update={"set_entry": origin}) if (origin := origins.get(value.id)) else value
+        return value.model_copy(update={"set_entry": item.origin}) if (item := origins.get(value.id)) else value
 
     if origins:
+        @cache
+        def indices(axis, name, key):
+            item = next(
+                item for item in origins.values()
+                if (item.origin.axis, item.origin.set, item.origin.entry) == (axis, name, key)
+            )
+            path = ("set_fields", axis, "entries", key)
+            try:
+                preview = next(expand_family(key, item.source, first=True))
+                return family_indices(preview, bundle.expression_functions, path)
+            except FamilyProblem as error:
+                return (), (family_problem(error, path),)
+
+        family_problems = []
+        fields = {}
+        for path, site in projected.fields.items():
+            scoped = site.model_copy(update={"names": tuple(map(member, site.names))})
+            if (path[:2] == ("task", "variables") and len(path) == 4 and path[3] in ("value", "count")
+                    and (item := origins.get(path[2])) is not None and item.source.over is not None):
+                names, problems = indices(item.origin.axis, item.origin.set, item.origin.entry)
+                family_problems.extend(problem for problem in problems if problem not in family_problems)
+                scoped = with_family_indices(scoped, names)
+            fields[path] = scoped
         projected = replace(
-            projected, variables=tuple(map(member, projected.variables)),
-            fields={path: site.model_copy(update={"names": tuple(map(member, site.names))})
-                    for path, site in projected.fields.items()},
+            projected, variables=tuple(map(member, projected.variables)), fields=fields,
+            set_variables=origins, problems=(*projected.problems, *family_problems),
         )
     return documents, projected, graph
 
 
-def _pairing_documents(plan, key, bundle, definition):
+def _pairing_documents(plan, key, bundle, definition, *, first: bool, objective):
     step = plan.steps[key.variant, key.step]
     if step.kind == "train":
         stored = definition.payload.get("trial_documents")
         try:
-            documents = lower_stored_trial_documents(stored, components=bundle.components)
+            documents = lower_stored_trial_documents(stored, components=bundle.components, first=first, objective=objective)
         except StoredTaskDraftError:
             draft = _DraftTrialDocuments(
                 model=StoredModelDocument.model_validate(stored["model"]).lower(bundle.components),
                 task_source=StoredTaskDocument.model_validate(stored["task"]),
-                objective=StoredObjectiveDocument.model_validate(stored["objective"]).lower(),
+                objective=objective if objective is not None else StoredObjectiveDocument.model_validate(stored["objective"]).lower(first=first),
                 input_bindings=stored.get("input_bindings", {}),
             )
             return draft, _project(draft, bundle), None
         run = next((item for item in plan.runs if item.key == key), None)
-        if run is not None and run.train is not None and run.train.task != documents.task_source:
-            encoded = plan.requests.get(run.request_id)
-            if encoded is not None:
+        task = run.train.task if run is not None and run.train is not None else None
+        if isinstance(task, TaskDocument):
+            if first and documents.task is not None:
+                task = task.model_copy(update={"validation_trials": documents.task.validation_trials})
+            if task != documents.task_source and (encoded := plan.requests.get(run.request_id)) is not None:
                 spec = decode_request(encoded, plan.documents.__getitem__).spec
-                if isinstance(spec, DocumentTrainingRequestSpec) and isinstance(run.train.task, TaskDocument):
+                if isinstance(spec, DocumentTrainingRequestSpec):
                     documents = spec.trial_documents.model_copy(update={
-                        "task": _with_authored_task_details(run.train.task, documents.task),
+                        "task": _with_authored_task_details(task, documents.task),
+                        "objective": documents.objective,
                     })
         return documents, _project(documents, bundle), None
     if step.kind == "synthesize":
         slots = definition.payload
         task = stored_trial_task_slot(slots.get("task"))
         if isinstance(task, StoredTaskDocument):
-            task = _authoring_task(task)
+            task = _authoring_task(task, first=first)
         model = StoredModelDocument.model_validate(slots.get("model")).lower(bundle.components)
-        objective = StoredObjectiveDocument.model_validate(slots.get("objective")).lower()
+        if objective is None:
+            objective = StoredObjectiveDocument.model_validate(slots.get("objective")).lower(first=first)
         bindings = slots.get("input_bindings", {})
         documents = _DraftTrialDocuments(model, task, objective, bindings) if isinstance(
             task, StoredTaskDocument,
@@ -1030,7 +1155,7 @@ def _pairing_documents(plan, key, bundle, definition):
         )
         return documents, _project(documents, bundle), None
     if step.kind == "evaluate":
-        return _evaluate_documents(plan, key, definition, bundle)
+        return _evaluate_documents(plan, key, definition, bundle, first=first, objective=objective)
     raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
 
 
@@ -1049,7 +1174,7 @@ def read_run_trial_sample(
                 documents = _with_task(documents, run.train.task)
             return documents, None
     try:
-        documents, _, graph = _pairing(plan, key, bundle, definition=definition)
+        documents, _, graph = _pairing(plan, key, bundle, definition=definition, first=False)
         if isinstance(documents.task_source, StoredTaskDocument):
             documents.task_source.lower()
     except (ValueError, TypeError, KeyError) as error:
@@ -1057,36 +1182,36 @@ def read_run_trial_sample(
     return documents, graph
 
 
-def _set_variables(project: Project, key: RunKey, row: PlannedRow | None) -> Iterator[tuple[str, SetVariableOrigin, bool, SetEntry]]:
-    """Yield each visible variable's authored Set origin and entry contents."""
+def _set_variables(project: Project, key: RunKey, row: PlannedRow | None) -> Iterator[tuple[str, _SetVariableView]]:
+    """Find each visible variable's authored Set entry, retaining its runtime key."""
     if row is None:
         return
     template = compose_step(project, key.step)
     sweep = template.sweep if not isinstance(template, ProjectDiagnostic) else None
-    arms: list[tuple[str, str, tuple[str, ...] | None]] = [
-        (axis, read.set, (row.axis_keys[axis],))
-        for axis, read in (sweep.axes.items() if sweep is not None else ())
-        if isinstance(read, SetAxis) and axis in row.axis_keys
-    ]
+    arms = [(axis, read.set, row.axis_keys[axis]) for axis, read in (sweep.axes.items() if sweep is not None else ())
+            if isinstance(read, SetAxis) and axis in row.axis_keys]
     arms.extend((axis, field.axis.set, None) for axis, field in project.steps[key.step].set_fields.items())
     for axis, name, selected in arms:
         try:
             entries = read_set(project.documents.get, name).entries
         except ValueError:
             continue
-        scoped = selected is None
-        for entry in entries if selected is None else selected:
+        keys = entries if selected is None else (row.set_entries.get(axis, selected),)
+        for entry in keys:
             source = entries.get(entry)
             if source is None:
                 continue
+            try:
+                generated = next(expand_family(entry, source, first=True)).key if selected is None else selected
+            except FamilyProblem:
+                continue  # The Plan reports the invalid family at its authored rule.
             for variable in source.task_variables:
-                id = scoped_set_member_id(axis, entry, variable) if scoped else variable
-                yield id, SetVariableOrigin(
-                    step=key.step, axis=axis, set=name, entry=entry, variable=variable,
-                ), scoped, source
+                id = scoped_set_member_id(axis, generated, variable) if selected is None else variable
+                origin = SetVariableOrigin(step=key.step, axis=axis, set=name, entry=entry, variable=variable)
+                yield id, _SetVariableView(origin, source, generated, scoped=selected is None)
 
 
-def _set_origins(plan, key, definition, projection) -> dict[str, SetVariableOrigin]:
+def _set_origins(plan, key, definition, projection) -> dict[str, _SetVariableView]:
     origins = {}
     if (
         ("task",) not in projection.task_origins
@@ -1094,37 +1219,34 @@ def _set_origins(plan, key, definition, projection) -> dict[str, SetVariableOrig
         and (subject := evaluate_subject(definition)) is not None
     ):
         parent = subject[0]
-        origins.update((id, origin) for id, origin, _, _ in _set_variables(
-            plan.variant_projects[parent.variant], parent, plan.row(parent),
-        ))
-    origins.update((id, origin) for id, origin, _, _ in _set_variables(
-        plan.variant_projects[key.variant], key, plan.row(key),
-    ))
+        origins.update(_set_variables(plan.variant_projects[parent.variant], parent, plan.row(parent)))
+    origins.update(_set_variables(plan.variant_projects[key.variant], key, plan.row(key)))
     return origins
 
 
 def _set_variable_edit(project, plan, key, path, change, site):
-    if path[:2] != ("task", "variables") or len(path) != 4 or path[-1] != "value":
+    if path[:2] != ("task", "variables") or len(path) != 4 or path[-1] not in ("value", "count"):
         return None
-    choices = [(origin, scoped, source) for id, origin, scoped, source in _set_variables(project, key, plan.row(key))
-               if id == path[2]]
+    choices = [item for id, item in _set_variables(project, key, plan.row(key)) if id == path[2]]
     if len(choices) > 1:
         raise ProjectFolderInvalid("The variable belongs to more than one selected Set entry.")
     if not choices:
         return None
-    [(origin, scoped, source)] = choices
+    [item] = choices
+    origin, source = item.origin, item.source
     (edit,) = change.edits
     assert isinstance(edit, SetProjectValue)
-    refs = {scoped_set_member_id(origin.axis, origin.entry, variable): variable for variable in source.task_variables}
     value = edit.value
-    if scoped:
+    if item.scoped:
+        refs = {scoped_set_member_id(origin.axis, item.generated, key): key for key in source.task_variables}
         expression = lower_expression(_STORED_EXPRESSION.validate_python(value))
         value = stored_expression_value(expression, scopes=_set_spellings(site.names) | refs)
     previous = stored_project_value(source.task_variables[origin.variable], keep_explicit=True)
-    variables = source.task_variables | {origin.variable: StoredVariable.model_validate(previous | {"value": value})}
-    return origin.set, scoped, SetEntryTask(
+    variables = source.task_variables | {origin.variable: StoredVariable.model_validate(previous | {path[-1]: value})}
+    return item, SetEntryTask(
         kind="set_entry_task", step=key.step, axis=origin.axis, entry=origin.entry, task_variables=variables,
     )
+
 
 def _set_condition_site(definition, projection):
     variables = projection.set_condition_variables
@@ -1214,12 +1336,19 @@ def _prepare_edits(
             return StoredEdit([]), change, None
         entry = _set_variable_edit(project, plan, key, path, change, site)
         if entry is not None:
-            name, scoped, command = entry
-            selection = scope or (
-                StudioTrialStepScope(kind="step") if scoped
-                else AxisValueRuns(kind="axis_value", axis=command.axis, value=command.entry)
-            )
-            selected = selected_runs(plan, key, selection)
+            item, command = entry
+            name = item.origin.set
+            if scope is None and item.source.over is not None and not item.scoped:
+                selected = {
+                    row.key for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)
+                    and row.set_entries.get(command.axis) == command.entry
+                }
+            else:
+                selection = scope or (
+                    StudioTrialStepScope(kind="step") if item.scoped
+                    else AxisValueRuns(kind="axis_value", axis=command.axis, value=item.generated)
+                )
+                selected = selected_runs(plan, key, selection)
             stored = prepare_set_entry_task(project, name, command)
             narrowed = prepare_set_entry_task(project, name, command, {run.step for run in selected})
             candidates = [("set_entry", "Set Entry", name, stored)]
@@ -1311,11 +1440,12 @@ def _prepare_edits(
         raw = stored_project_value(shown, keep_explicit=True)
 
         def adapt(target):
+            edits = family_rule_edits(target, change.kind, change.edits)
             if change.kind == "objective":
-                return _objective_edits(target, change)
+                return _objective_edits(target, change.model_copy(update={"edits": edits}))
             if structural:
                 return _task_structure_edits(raw, target, change)
-            return change.edits
+            return edits
 
         def write_for(members):
             return document_write(project, document, change.edits, members, readers, variant, view=view, adapt=adapt)
@@ -1389,8 +1519,17 @@ def _structure_edit(change, task, stored_task, scopes) -> StudioTrialDocumentEdi
         changed = restructure(changed, each)
         if isinstance(changed, Problem):
             return (changed,)
-    keys = tuple(stored_task.validation_trials)
-    after = StoredTaskDocument.from_lowered(changed, trial_keys=keys if keys else None, scopes=scopes)
+    removed_variables = stored_task.variables.keys() - {member.id for member in changed.variables}
+    removed_epochs = stored_task.epochs.keys() - {member.id for member in changed.epochs}
+    trials = {}
+    for key, trial in stored_task.validation_trials.items():
+        changes = {}
+        if removed_variables & trial.variables.keys():
+            changes["variables"] = {name: value for name, value in trial.variables.items() if name not in removed_variables}
+        if removed_epochs & trial.epoch_steps.keys():
+            changes["epoch_steps"] = {name: value for name, value in trial.epoch_steps.items() if name not in removed_epochs}
+        trials[key] = trial.model_copy(update=changes) if changes else trial
+    after = StoredTaskDocument.from_lowered(changed, validation_trials=trials, scopes=scopes)
     raw = stored_project_value(stored_task, keep_explicit=True)
     edits = content_edits(
         raw, stored_project_value(after, keep_explicit=True), schema_id=STORED_TASK_DOCUMENT_SCHEMA_ID,
@@ -1443,7 +1582,10 @@ def _evaluate_task_write(project, plan, key, chosen, change, variant: str | None
     document = row.document_ids.get(EVALUATION_TASK) or row.document_ids.get("payload.trial_documents.python_task")
     if document is None:
         raise ProjectFolderInvalid("The selected Evaluate reads no Task document.")
-    return evaluation_document_write(project, plan, document, list(change.edits), chosen, "task", variant)
+    return evaluation_document_write(
+        project, plan, document, change.edits, chosen, "task", variant,
+        adapt=lambda target: family_rule_edits(target, "task", change.edits),
+    )
 
 
 def _present_ops(raw, change):
@@ -1461,7 +1603,8 @@ def _present_ops(raw, change):
 
     return change.model_copy(update={"edits": [
         edit.model_copy(update={"op": "replace" if holds(json_pointer_parts(edit.path)) else "add"})
-        if isinstance(edit, SetProjectValue) else edit for edit in change.edits
+        if isinstance(edit, SetProjectValue) and not is_family_rule_edit(change.kind, json_pointer_parts(edit.path))
+        else edit for edit in change.edits
     ]})
 
 
@@ -1627,14 +1770,18 @@ def _held_problems(path, problems) -> list[Problem]:
     return [problem for problem in problems if any(problem.path[:len(at)] == at for at in own)]
 
 
-def _field_problems(path, site: Site, text: str, functions, problems) -> list[Problem]:
+def _field_problems(path, site: Site, text: str, functions, problems, *, family=False) -> list[Problem]:
     """The field's problems, each at the field's path; one about a term of its text carries the term's place there."""
     held = _held_problems(path, problems)
     if not held or not text:
         return [problem.model_copy(update={"path": path}) for problem in held]
     read = read_field(text, site, functions)
     if isinstance(read, tuple):
-        termed = read if any(problem.span for problem in read) else held
+        if family:
+            span = next((problem.span for problem in read if problem.span is not None), None)
+            termed = [problem.model_copy(update={"span": problem.span or span}) for problem in held]
+        else:
+            termed = read if any(problem.span for problem in read) else held
         return [problem.model_copy(update={"path": path}) for problem in termed]
     within = len(path) - 1 if path[0] == "task" else len(path)
     return [
@@ -1646,7 +1793,7 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
 def _trial_fields(
     path, site: Site, expression, functions, sweep, row, problems, name_paths, period,
     menu_fields: dict[str, TrialExpressionField], sites: FieldSiteIndex,
-    *, objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
+    *, objective_use: ObjectiveUse = ObjectiveUse.TRAIN, authored: FamilyField | None = None, family=False,
 ) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
@@ -1658,7 +1805,8 @@ def _trial_fields(
     shown = expression is not None and not missing
     field_path = pointer(tuple(map(str, path)))
     projection = project_site(site, functions, expression, name_paths=name_paths, defer_parts=True)
-    if not _epoch_end_field(path, "limit"):
+    sequence_rule = is_family_rule(tuple(path)) and isinstance(expression, SequenceValue | UnresolvedValue)
+    if not _epoch_end_field(path, "limit") and not sequence_rule:
         menu_fields[field_path] = TrialExpressionField(site, expression)
     fields = []
     for inner, label in numeric_nodes(expression, functions) if shown else ():
@@ -1676,25 +1824,28 @@ def _trial_fields(
             fields.append(view)
         elif view.sweep is not None or view.can_sweep:
             return [view.model_copy(update={
-                "site": sites.reference(projection), "problems": _field_problems(path, site, view.text, functions, problems),
+                "site": sites.reference(projection), "problems": _field_problems(path, site, view.text, functions, problems, family=family),
             })]
     if _epoch_end_field(path, "limit"):
         projection = projection.model_copy(update={"kinds": (FieldKind.VALUE,), "functions": (), "parts": ()})
+    elif sequence_rule:
+        projection = projection.model_copy(update={"kinds": (FieldKind.SWEEP,), "functions": (), "parts": ()})
     else:
         projection = projection.model_copy(update={"kinds": tuple(kind for kind in projection.kinds if kind != FieldKind.SWEEP)})
     printed = site.model_copy(update={"names": (*site.names, *(
         ScopedValue(id=reference, name=stored_reference(reference), type=ValueType(base=ValueBase.REAL), level=Level.RUN)
         for reference in sorted(missing)
     ))})
-    text = print_field(expression, printed) if expression is not None else ""
-    marks = _field_problems(path, site, text, functions, problems)
+    text = print_field(expression, printed, fragment=authored is not None) if expression is not None else ""
+    marks = _field_problems(path, site, text, functions, problems, family=family)
     reports_missing = path[0] != "objective" or objective_use != ObjectiveUse.INHERITED
     if not marks and (missing and reports_missing or isinstance(expression, UnresolvedValue)):
         found = read_field(text, site, functions)
         if isinstance(found, tuple):
             marks = [problem.model_copy(update={"path": path}) for problem in found]
     return [StudioTrialField(
-        path=field_path, label=_field_label(path), site=sites.reference(projection), text=text,
+        path=field_path, label=authored.label if authored is not None else _field_label(path),
+        site=sites.reference(projection), text=text,
         structure=value_structure(expression, site, functions) if shown else None,
         conversion=time_conversion(expression, period, trial_time_use(path[0], path[1:])),
         problems=marks,
@@ -1902,7 +2053,13 @@ def trial_authoring(
     )
 
     def expression(path):
+        if (authored := projected.family_editor.fields.get(path)) is not None:
+            return authored.expression
         document = _field_document(documents, path[0])
+        if (path[:2] == ("task", "variables") and len(path) == 4 and path[3] in ("value", "count")
+                and (entry := projected.set_variables.get(path[2])) is not None and entry.source.over is not None):
+            value = getattr(entry.source.task_variables[entry.origin.variable], path[3])
+            return lower_expression(value) if value is not None else None
         if path[0] == "objective" and stored_objective is not None:
             found = site_expression(stored_objective, tuple(map(str, path[1:])))
             return lower_expression(found) if found is not None else None
@@ -1937,13 +2094,13 @@ def trial_authoring(
         else ObjectiveUse.TRAIN
     )
     for path, site in projected.fields.items():
-        if path[1:2] == ("validation_trials",):
-            continue
         if path[:2] == ("task", "signals") and path[2] not in authored_signals:
             continue  # Internal gate and operand signals are not editable Task fields.
         fields.extend(_trial_fields(
             path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems,
             output_paths, period, menu_fields, sites, objective_use=objective_use,
+            authored=projected.family_editor.fields.get(path),
+            family=pointer(path[:3]) in projected.family_editor.families,
         ))
     set_fields = trial_set_fields(project, key.step)
     if set_fields:
@@ -1979,6 +2136,7 @@ def trial_authoring(
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=objective_document,
         task=stored_task, objective=stored_objective, objective_source=objective_source,
+        families=projected.family_editor.families,
         task_changed=changed_from_base(project, _whole_document(definition, task_path) if task_path else None),
         objective_changed=changed_from_base(project, _whole_document(
             definition, objective_path,
@@ -1995,8 +2153,10 @@ def trial_authoring(
         reads_model=compiled.reads_model if compiled else False,
         tasks=tasks, task_problems=task_problems,
         input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
-        outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
-                 for value in paired.model.outputs] if paired else [],
+        outputs=[StudioTrialOutput(
+            address=ModelAddress.from_text(value.id),
+            value=value.model_copy(update={"name": ".".join(output_paths.get(value.id, (value.name,)))}),
+        ) for value in paired.model.outputs] if paired else [],
         resets=resets, unresolved_links=unresolved_links,
         fields=fields, **sites.tables(fields), problems=[
             *(_authored_trial_problem(problem) for problem in (*projected.problems, *field_problems)), *refused,

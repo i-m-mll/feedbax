@@ -18,7 +18,8 @@ from feedbax.contracts.model_checkpoint import (
     model_replica_array_path,
 )
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, NamedMember, ProductRef
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef

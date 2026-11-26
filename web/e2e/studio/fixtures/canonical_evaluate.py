@@ -12,7 +12,8 @@ from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
@@ -109,7 +110,9 @@ def seed_sixty_four_trials(home: str, project_id: str):
     for index in range(64):
         cycle, row = divmod(index, len(trials))
         trial = deepcopy(trials[row])
-        trial["variables"]["target"] = [value + 0.001 * cycle for value in trial["variables"]["target"]]
+        trial["label"] = f"Trial {index + 1}"
+        target = json.loads(trial["variables"]["target"])
+        trial["variables"]["target"] = json.dumps([value + 0.001 * cycle for value in target])
         scaled[f"trial-{index + 1}"] = trial
     task["validation_trials"] = scaled
     return _seed(home, project_id, raw)

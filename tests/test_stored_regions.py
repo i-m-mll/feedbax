@@ -7,15 +7,16 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from feedbax.application.composition import load_application
+from feedbax.application.project_writer import dump_text_project, write_project_file
+from feedbax.application.stored_regions import StoredRegionRegistries
 from feedbax.contracts.project import RootDocument, Step
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, parse_text_project_files
+from feedbax.contracts.project_io import ProjectConfiguration, parse_text_project_files
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.stored_regions import StoredRegionRegistries
-from feedbax.contracts.project_storage import write_project_file
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID
-from feedbax.planner.project_plan import RunKey, compile_project
+from feedbax.planner.project_plan import PlanRequests, RunKey, compile_project
+from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 from tests.support.python_task import REACHING_TASK, reaching_python_task  # noqa: F401
@@ -201,6 +202,59 @@ def test_studio_can_repair_an_invalid_file_without_rewriting_other_files(tmp_pat
         assert json.loads(step_file.read_bytes())["base"]["inline"]["settings"]["grad_clip"] == 2
 
 
+def test_studio_reads_effective_train_settings_and_saves_only_authored_values(tmp_path):
+    root = tmp_path / "fixture"
+    project = managed_train_project()
+    project.steps["train"].base.inline["settings"] = {}
+    _save_fixture(root, project)
+    step_file = root / "steps/train.json"
+    original = step_file.read_bytes()
+    optimizer = "/settings/optimizer"
+    schedule = optimizer + "/learning_rate"
+    rate = schedule + "/value"
+    url = "/api/projects/fixture"
+
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+
+        def prepare(*, endpoint="", **edit):
+            response = client.post(f"{url}/authoring/train/train{endpoint}", json={
+                "revision": folders.read("fixture").revision, **edit,
+            })
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        def save(prepared):
+            assert not prepared.get("problems") and prepared["files"], prepared
+            response = client.patch(url, json={
+                "revision": folders.read("fixture").revision, "files": prepared["files"],
+            })
+            assert response.status_code == 200, response.text
+            return json.loads(step_file.read_bytes())["base"]["inline"]["settings"]
+
+        shown = prepare()
+        classes = {field["id"]: field["classes"] for field in shown["classes"]}
+        assert classes[optimizer] == ["adam"]
+        assert classes[schedule] == ["constant_schedule"]
+        assert shown["settings"]["optimizer"]["learning_rate"] == {"type": "constant_schedule", "value": 0.001}
+        assert next(field["value"] for field in shown["fields"] if field["id"] == rate) == 0.001
+        assert not prepare(change={"field": optimizer, "value": "adam"})["files"]
+        assert step_file.read_bytes() == original
+
+        settings = save(prepare(endpoint="/fields", field=rate, edit={"kind": "text", "text": "0.003"}))
+        assert settings == {"optimizer": {
+            "type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.003},
+        }}
+        assert prepare()["settings"]["optimizer"]["learning_rate"]["value"] == 0.003
+        assert save(prepare(endpoint="/fields", field=rate, edit={"kind": "text", "text": "0.001"})) == {}
+        assert step_file.read_bytes() == original
+
+        settings = save(prepare(change={"field": schedule, "value": "linear_schedule"}))
+        assert settings == {"optimizer": {"type": "adam", "learning_rate": {"type": "linear_schedule"}}}
+        assert save(prepare(change={"field": schedule, "value": "constant_schedule"})) == {}
+        assert step_file.read_bytes() == original
+
+
 def test_studio_sweeps_a_train_setting_omitted_at_its_default(tmp_path):
     root = tmp_path / "fixture"
     project = managed_train_project()
@@ -227,3 +281,9 @@ def test_studio_sweeps_a_train_setting_omitted_at_its_default(tmp_path):
         selected = folders.read_plan("fixture", revision=None, source_runs=tuple(row.key for row in plan.rows)).plan
         rate = "/payload/settings/optimizer/learning_rate/value"
         assert all(definition.sources[rate].kind == "sweep_value" for definition in selected.selected_definitions.values())
+
+        captured = compile_project(folders.read("fixture").project, capture_sources=True)
+        reviewed, _ = load_plan_requests(dump_plan_requests(PlanRequests.from_plan(captured), ("default",)))
+        for row in plan.rows:
+            source = reviewed.source_index.source(row.key, tuple(rate[1:].split("/")))
+            assert source == selected.selected_definitions[row.key].sources[rate]

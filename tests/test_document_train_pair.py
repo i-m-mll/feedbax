@@ -22,7 +22,8 @@ from feedbax.contracts.objective_document import (
     STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm, StoredObjectiveDocument,
 )
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, load_text_project
 from feedbax.planner.project_plan import PlanRequests, ProjectPlanMemo, RunKey, compile_project
 from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
@@ -248,7 +249,9 @@ def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_
         (issue,) = run.problems
         assert issue.path.startswith("/trial_documents/model/")
         assert issue.model_address == ModelAddress.model_validate({
-            "composites": [], "element": {"kind": "component", "id": "plant"},
+            "composites": [], "element": {
+                "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
+            },
         })
 
 
@@ -410,12 +413,16 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
         folders.read_plan("cohort", revision=original.settled.revision),
     )) == before
     trials = raw["documents"]["task"]["payload"]["validation_trials"]
-    variables = next(iter(trials.values()))["variables"]
-    target = variables["target"]
-    assert isinstance(target, list)
-    target[:] = [1.0, -0.0]
-    after = verify(read())
-    assert after["rows"][0]["evaluation_conditions"] != conditions
+    first = next(iter(trials))
+    trials[first]["variables"]["target"] = "[1, 0]"
+    changed = read()
+    assert verify(changed)["rows"][0]["evaluation_conditions"] == conditions
+    assert changed.settled.plan.requests != original.settled.plan.requests
+
+    raw["documents"]["task"]["payload"]["validation_trials"] = {
+        ("renamed-trial" if key == first else key): trial for key, trial in trials.items()
+    }
+    assert verify(read())["rows"][0]["evaluation_conditions"] == ["renamed-trial", *conditions[1:]]
     assert projected(original) == before
 
 
@@ -460,13 +467,16 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
 
 
 def test_managed_train_stores_only_scientific_model_names(authored):
+    from feedbax.application.bundle import new_application_registry_bundle
+    from feedbax.compiler.model_document import complete_model_fields
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.request_identity import request_id
 
-    plan = compile_project(Project.model_validate(document_project(authored)))
+    components = new_application_registry_bundle().components
+    plan = compile_project(Project.model_validate(document_project(authored)), components=components)
     identity, data = next(iter(plan.requests.items()))
     stored = json.loads(data)
-    assert stored["schema"] == "feedbax.request.train.documents.v3"
+    assert stored["schema"] == "feedbax.request.train.documents.v4"
     model = stored["spec"]["trial_documents"]["model"]
     assert "name" not in model["ports"]["inputs"][0]
     wrapper = model["interior"]["components"]["wrapper"]
@@ -477,13 +487,15 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     assert decoded.id == identity
     restored = decoded.spec.trial_documents.model
     assert restored.ports.inputs[0].name == "task-input"
-    assert restored.scientific_projection(keyed_root_ports=True) == authored[1].scientific_projection(keyed_root_ports=True)
+    effective = complete_model_fields(authored[1], components)
+    assert restored.scientific_projection(keyed_root_ports=True) == effective.scientific_projection(keyed_root_ports=True)
     assert encode_request(decoded.spec, decoded.inputs).data == data
     assert identity != request_id("train", stored["spec"], decoded.inputs)
 
-    previous = stored | {"schema": "feedbax.request.train.documents.v2"}
-    with pytest.raises(ValueError, match="Unsupported stored request envelope"):
-        decode_request(canonical_json_v2_bytes(previous), plan.documents.__getitem__)
+    for previous_schema in ("feedbax.request.train.documents.v2", "feedbax.request.train.documents.v3"):
+        previous = stored | {"schema": previous_schema}
+        with pytest.raises(ValueError, match="Unsupported stored request envelope"):
+            decode_request(canonical_json_v2_bytes(previous), plan.documents.__getitem__)
     wrapper["name"] = "wrapper"
     with pytest.raises(ValueError, match="did not round-trip"):
         decode_request(canonical_json_v2_bytes(stored), plan.documents.__getitem__)

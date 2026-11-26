@@ -31,6 +31,8 @@ from feedbax.contracts.effective_success import (
 from feedbax.contracts.expression_values import Expression
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.model_address import FieldElement
+from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     StudioActivityJob,
@@ -89,6 +91,7 @@ from feedbax.planner.project_plan import (
 )
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
+from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import (
     CheckpointRuleAxis, SetAxis, authored_sweep_axis_name, axis_coordinates, model_field_target, sweep_value_name,
@@ -102,7 +105,9 @@ from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, ConditionalProduct, LastMember, ProductRef, RequestId, UpdateSeriesMember,
     is_synthesized_model_product,
 )
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec, SynthesisRequestSpec
+from feedbax.contracts.request_specs import (
+    DocumentTrainingRequestSpec, EvaluationRequestSpec, RenderRequestSpec, SynthesisRequestSpec,
+)
 from feedbax.contracts.trial_clock import StudioSavedFigureMeanRequest
 from feedbax.contracts.trial_record import StudioTrialReplayResponse
 from feedbax.dataset import Dataset
@@ -132,6 +137,7 @@ from feedbax.persistence.canonical_evaluate import EvaluationResult, decode_roll
 from feedbax.host.live_evaluate import live_objective_series
 from feedbax.contracts.rollout import CannotRun
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
+from feedbax.project_model_selection import trial_document_slots
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.services.axis_values import gather_axes
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, SettledProjectPlan
@@ -671,6 +677,23 @@ def _analysis_status(
     return PlanStatusRow(key, label, JobStatus.SUCCEEDED, None)
 
 
+def _figure_task_labels(
+    view: ProjectPlanRead, store: ImmutableArtifactBlobProvider, receipt: Success, spec: RenderRequestSpec, content: bytes,
+) -> bytes:
+    from feedbax.web.services.figure_labels import project_figure_task_labels
+
+    evaluations: dict[tuple[str, str], list[DatasetPort]] = defaultdict(list)
+    for run in view.settled.plan.runs:
+        row = view.evaluations.get(run.key)
+        result = row.result if row is not None else None
+        if (
+            result is not None and result.request_id is not None
+            and isinstance(run, PlannedRun) and run.dataset_port is not None
+        ):
+            evaluations[result.job_id, result.request_id].append(run.dataset_port)
+    return project_figure_task_labels(content, spec.document, receipt.inputs, store, evaluations)
+
+
 class ProjectPlanService:
     def __init__(
         self, folders: ProjectFolderService, jobs: JobService,
@@ -706,7 +729,7 @@ class ProjectPlanService:
 
     def _saved_light_receipt(
         self, project: str, revision: str, job_id: str, role: str,
-    ) -> tuple[ImmutableArtifactBlobProvider, Success]:
+    ) -> tuple[ProjectPlanRead, ImmutableArtifactBlobProvider, Success]:
         view = self.read(project, revision=revision)
         visible = next((result for history in view.light.values() for result in (history.result, history.previous)
                         if result is not None and result.job_id == job_id and role in result.products), None)
@@ -718,7 +741,7 @@ class ProjectPlanService:
         if ref is None or ref.sha256 != visible.receipt.manifest_sha256:
             raise JobConflict("The saved result receipt could not be authenticated.")
         try:
-            return store, success.read_receipt(ref)
+            return view, store, success.read_receipt(ref)
         except (OSError, TypeError, ValueError, KeyError) as error:
             raise JobConflict("The saved result receipt could not be authenticated.") from error
 
@@ -726,7 +749,7 @@ class ProjectPlanService:
         self, project: str, revision: str, job_id: str, role: str, member: str,
     ) -> SavedLightProduct:
         """Read a product of a current or previous result visible on the saved Plan."""
-        store, receipt = self._saved_light_receipt(project, revision, job_id, role)
+        view, store, receipt = self._saved_light_receipt(project, revision, job_id, role)
         try:
             product, = receipt.products[role]
             content = success_content_ref(product.content)
@@ -745,14 +768,18 @@ class ProjectPlanService:
                 return SavedLightProduct(store.get_object(selected), media_type, policy)
             if role != PLOTLY_FIGURE_ROLE or member != "figure.json":
                 raise JobNotFound(job_id)
-            return SavedLightProduct(store.get_object(content), "application/json")
+            request = read_effective_request(receipt, store.get_object)
+            if not isinstance(request.spec, RenderRequestSpec):
+                raise ValueError("Expected a saved figure request.")
+            labelled = _figure_task_labels(view, store, receipt, request.spec, store.get_object(content))
+            return SavedLightProduct(labelled, "application/json")
         except (OSError, TypeError, ValueError, KeyError) as error:
             raise JobConflict("The saved product could not be authenticated.") from error
 
 
     @contextmanager
     def _operation_dataset(self, project: str, revision: str, job_id: str, role: str) -> Iterator[Dataset]:
-        store, receipt = self._saved_light_receipt(project, revision, job_id, role)
+        _, store, receipt = self._saved_light_receipt(project, revision, job_id, role)
         if not receipt.request.id.startswith(("analyze:", "synthesize:")):
             raise JobNotFound(job_id)
         try:
@@ -789,10 +816,12 @@ class ProjectPlanService:
     def figure_mean(self, project: str, body: StudioSavedFigureMeanRequest) -> SavedLightProduct:
         from feedbax.host.light_worker import render_saved_figure
 
-        store, receipt = self._saved_light_receipt(project, body.revision, body.job_id, PLOTLY_FIGURE_ROLE)
+        view, store, receipt = self._saved_light_receipt(project, body.revision, body.job_id, PLOTLY_FIGURE_ROLE)
         try:
             request = read_effective_request(receipt, store.get_object)
-            return SavedLightProduct(render_saved_figure(store, request, receipt.inputs, mean=body.mean), "application/json")
+            content = render_saved_figure(store, request, receipt.inputs, mean=body.mean)
+            assert isinstance(request.spec, RenderRequestSpec)
+            return SavedLightProduct(_figure_task_labels(view, store, receipt, request.spec, content), "application/json")
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, TypeError, ValueError, KeyError) as error:
@@ -976,13 +1005,15 @@ class ProjectPlanService:
             requested = list(subject.select.updates)
             objective = train.trial_documents.objective
             if isinstance(result, EvaluationResult):
-                return result.objective_series(requested, objective=objective)
-            return live_objective_series(
-                ImmutableArtifactBlobProvider(settled.store_path),
-                project_id=settled.project_id, job_id=body.job_id, request_id=run.request_id,
-                producer_request=subject.request_id, params=params, requested=requested,
-                objective=objective, observation=result,
-            )
+                series = result.objective_series(requested, objective=objective)
+            else:
+                series = live_objective_series(
+                    ImmutableArtifactBlobProvider(settled.store_path),
+                    project_id=settled.project_id, job_id=body.job_id, request_id=run.request_id,
+                    producer_request=subject.request_id, params=params, requested=requested,
+                    objective=objective, observation=result,
+                )
+            return self._name_objective_families(settled, key, subject.request_id, objective, series)
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise JobConflict("The selected Evaluate objective could not be read and authenticated.") from error
 
@@ -1007,9 +1038,48 @@ class ProjectPlanService:
             train = receipts.read_request(producer.producer).spec
             if not isinstance(train, DocumentTrainingRequestSpec):
                 raise ValueError("Evaluate subject has no authored Objective.")
-            return result.objective_series(list(subject.select.updates), objective=train.trial_documents.objective)
+            objective = train.trial_documents.objective
+            series = result.objective_series(list(subject.select.updates), objective=objective)
+            key = RunKey(body.key.variant, body.key.step, body.key.row)
+            return self._name_objective_families(settled, key, subject.request_id, objective, series)
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise JobConflict("The retained Evaluate objective could not be read and authenticated.") from error
+
+    def _name_objective_families(
+        self, settled: SettledProjectPlan, evaluate: RunKey, producer_request: RequestId,
+        objective: ObjectiveDocument, series: StudioEvaluationObjectiveSeries,
+    ) -> StudioEvaluationObjectiveSeries:
+        """Read family labels from the selected definition without including them in the request."""
+        families = {term.family for term in objective.terms if term.enabled and term.family is not None}
+        if not families or not series.points:
+            return series
+        run = settled.plan.row(evaluate)
+        binding = run.inputs.get("subject") if isinstance(run, PlannedRun) else None
+        producer = settled.plan.row(binding.producer) if binding and binding.producer is not None else None
+        if not isinstance(producer, PlannedRun) or producer.request_id != producer_request:
+            return series
+        definition = settled.plan.selected_definitions.get(producer.key)
+        if definition is None:
+            selected = self.folders.read_plan(settled.project_id, revision=settled.revision, source_runs=(producer.key,))
+            definition = selected.plan.selected_definitions.get(producer.key)
+        if definition is None:
+            return series
+        slots, _ = trial_document_slots(definition.payload)
+        authored = slots.get("objective")
+        terms = authored.get("terms") if isinstance(authored, dict) else None
+        if not isinstance(terms, dict):
+            return series
+        names = {
+            pointer((key,)): label for key in families
+            if isinstance(member := terms.get(key), dict) and isinstance(label := member.get("label"), str)
+        }
+        return series.model_copy(update={"points": [
+            point.model_copy(update={"terms": [
+                term.model_copy(update={"name": names[term.path]}) if term.path in names else term
+                for term in point.terms
+            ]})
+            for point in series.points
+        ]})
 
 
 def _final_metric_check(

@@ -5,7 +5,7 @@ from copy import deepcopy
 from fastapi.testclient import TestClient
 import pytest
 
-from feedbax.contracts.expression_values import LiteralValue, ValueType
+from feedbax.contracts.expression_values import CallValue, LiteralValue, ValueType
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.task_document import BLANK_STORED_TASK, Marker, StoredTaskDocument
@@ -227,7 +227,7 @@ def test_making_a_cell_present_keeps_the_typed_text_in_the_same_write(tmp_path):
         assert [problem.code for problem in field.problems] == ["unknown_name"]
         _save(project, invalid)
         extra = project.composed(TASK)["signals"]["extra"]
-        assert extra["cells"]["hold"]["value"] == {"kind": "unresolved", "text": "unknown"}
+        assert extra["cells"]["hold"]["value"] == "unknown"
         repaired = _change(project, [
             {"op": "absent", "signal": "extra", "cell": "hold"},
             {"op": "present", "signal": "extra", "epoch": "hold", "text": "2"},
@@ -235,7 +235,7 @@ def test_making_a_cell_present_keeps_the_typed_text_in_the_same_write(tmp_path):
         assert not repaired.problems
         _save(project, repaired)
         extra = project.composed(TASK)["signals"]["extra"]
-        assert LiteralValue.model_validate(extra["cells"]["hold"]["value"]).value == 2
+        assert extra["cells"]["hold"]["value"] == 2
 
 
 def test_a_value_is_stored_in_a_task_that_already_has_problems(tmp_path):
@@ -251,7 +251,10 @@ def test_a_value_is_stored_in_a_task_that_already_has_problems(tmp_path):
         })
         assert view.files, view.problems
         _save(project, view)
-        assert project.composed(TASK)["variables"]["start"]["value"]["function"] == "vector"
+        task = StoredTaskDocument.model_validate(project.composed(TASK))
+        assert task.variables["start"].value == CallValue(
+            function="vector", args=(LiteralValue(value=0, unit="m"), LiteralValue(value=0, unit="m")),
+        )
 
 
 def test_removing_an_epoch_shortens_the_cells_and_repeat_that_span_it(tmp_path):
@@ -350,7 +353,7 @@ def test_an_end_s_text_makes_a_rest_epoch_a_length_and_rest_makes_it_rest_again(
         view = _change(project, None, body=end("0.2 s"))
         assert view.files, view.problems
         _save(project, view)
-        assert move() == {"kind": "length", "length": {"kind": "literal", "value": 0.2, "unit": "s"}}
+        assert move() == {"kind": "length", "length": "0.2 s"}
         view = _change(project, None, body=end("rest"))
         assert view.files, view.problems
         _save(project, view)

@@ -48,13 +48,13 @@ def _task():
         },
         "links": {start: "z"},
         "validation_trials": {
-            "right": {"variables": {"z": 3}},
-            "left": {"variables": {"z": 2}},
+            "right": {"label": "Right", "variables": {"z": 3}},
+            "left": {"label": "Left", "variables": {"z": 2}},
         },
     }
 
 
-def test_task_lowers_member_order_and_draw_root_without_using_trial_keys():
+def test_task_lowers_member_order_and_explicit_trial_keys():
     payload = _task()
     task = StoredTaskDocument.model_validate(payload)
     lowered = task.lower()
@@ -75,11 +75,10 @@ def test_task_lowers_member_order_and_draw_root_without_using_trial_keys():
     assert lowered.signals[0].absent == LiteralValue(value=True)
     assert lowered.signals[0].intervention == ModelAddress.from_authored_text("wire.drive#pulse").to_text()
 
-    authored = StoredTaskDocument.from_lowered(lowered, trial_keys=("right", "left"))
-    assert authored.model_dump(mode="json", exclude_unset=True) == payload
-    generated = StoredTaskDocument.from_lowered(lowered)
-    assert tuple(generated.validation_trials) == ("trial-1", "trial-2")
-    assert generated.lower().condition_ids == lowered.condition_ids
+    assert lowered.condition_ids == ("right", "left")
+    assert lowered.validation_trials[0].variables == {"z": LiteralValue(value=3)}
+    restored = StoredTaskDocument.from_lowered(lowered, validation_trials=task.validation_trials)
+    assert restored.model_dump(mode="json", exclude_unset=True) == payload
 
 
 def test_sampled_task_uses_the_empty_storage_default():
@@ -90,7 +89,6 @@ def test_sampled_task_uses_the_empty_storage_default():
     assert task.condition_ids == ()
     assert len(task.validation_trials) == 1
     assert StoredTaskDocument.from_lowered(task).validation_trials == {}
-    assert StoredTaskDocument.from_lowered(task, trial_keys=()).validation_trials == {}
 
 
 def test_objective_lowers_keyed_terms_and_keeps_optional_labels():
