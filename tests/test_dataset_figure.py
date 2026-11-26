@@ -372,6 +372,32 @@ def test_points_rules_and_spans_draw_at_their_authored_positions():
     assert [shape.showlegend for shape in figure.layout.shapes] == [True, True, False, True]
 
 
+def test_missing_group_value_leaves_no_gap_in_trace_or_reference_label():
+    dataset = Dataset.from_arrays(
+        {"value": Variable(np.array([[1.0, 2.0], [3.0, 4.0]]), ("case", "time"))},
+        coords={
+            "case": Variable(np.array(["nominal", "swept"]), ("case",)),
+            "rate": Variable(np.array([None, 0.25], dtype=object), ("case",)),
+            "time": Variable(np.array([0.0, 1.0]), ("time",)),
+        },
+    )
+    common = {
+        "role": "values", "panel": "profile", "group": ["case", "rate"],
+        "style": {"label": "{case} {rate:.2f} Mass 1"},
+    }
+    document = FigureDocument.model_validate({
+        "data": ["values"], "layout": [{"name": "profile", "row": 1, "col": 1}],
+        "layers": [
+            common | {"name": "path", "mark": "line", "encode": {"x": "time", "y": "value"}},
+            common | {"name": "reference", "mark": "rule", "encode": {"axis": "x", "at": 0.0}},
+        ],
+    })
+    figure = render(document, {"values": dataset}, names={"case": {"nominal": "Conditions Train", "swept": "Swept Train"}})
+    expected = ["Conditions Train Mass 1", "Swept Train 0.25 Mass 1"]
+    assert [trace.name for trace in figure.data] == expected
+    assert [shape.name for shape in figure.layout.shapes] == expected
+
+
 def test_error_bounds_that_exclude_their_point_are_refused():
     """Catches bounds given as offsets (or swapped), which would otherwise draw inverted bars."""
     values = Dataset.from_arrays(
