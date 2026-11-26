@@ -6,6 +6,7 @@ import re
 from itertools import count
 from typing import Any
 
+from feedbax.contracts.expression_storage import lower_expression
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase, member_name
 from feedbax.contracts.project_sources import pointer
@@ -13,13 +14,15 @@ from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCo
 from feedbax.planner.project_plan import RunKey, _sweep_problem
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_ROW, CooccurringSetTrials, ListedSetTrials, ManualCombination, NamedAxis, SetAxis,
-    SetEntryParts, SweepExpansionError, TrialSetField, WeightedSetTrials, numbered_run_name,
+    SweepExpansionError, TrialSetField, WeightedSetTrials, numbered_run_name,
 )
 from feedbax.contracts.set_document import (
     SET_DOCUMENT_SCHEMA_ID, SetMisfit, SetEntry, axis_from_set, check_fit, entry_pointer,
     read_set, resolve_set_axes, set_from_axis, sets_offered, step_model,
 )
-from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_project import (
+    AuthoredFileAddress, CreateNamedDocument, RemoveProjectValue, StudioProjectFilePatch,
+)
 from feedbax.contracts.studio_sets import (
     AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetEntryTask,
     SetFieldWeight, SetToField, SetToSweep,
@@ -27,7 +30,8 @@ from feedbax.contracts.studio_sets import (
     StudioSetsOffered, StudioSetsOfferedRequest,
 )
 from feedbax.contracts.model_edit import ListedRuns
-from feedbax.contracts.studio_trials import StudioSetField, StudioSetFieldEntry
+from feedbax.contracts.member_family import FamilyProblem, family_member_count
+from feedbax.contracts.studio_trials import StudioSetEntryParts, StudioSetField, StudioSetFieldEntry
 from feedbax.project_members import generated_name, new_document_name
 from feedbax.web.services.authored_scope import choose_authored_store, choose_prepared_edit, selected_edit_runs
 from feedbax.web.services.axis_values import axis_values
@@ -37,6 +41,15 @@ from feedbax.web.services.trial_scope import (
     StoredEdit, SweepValuesRuns, _composed, content_edits, file_value, selected_value, selection_scope,
     preview_stored, reached_steps, set_document_write, set_readers,
 )
+
+
+def set_entry_member_count(id: str, entry: SetEntry) -> int | None:
+    if entry.over is None:
+        return None
+    try:
+        return family_member_count(id, entry)
+    except FamilyProblem:
+        return None  # Plan reports the invalid rule on the authored entry.
 
 
 def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
@@ -49,17 +62,22 @@ def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
         sampling = field.sampling
         rows = []
         if isinstance(sampling, WeightedSetTrials):
-            rows.append(StudioSetFieldEntry(entry=None, weight=sampling.none))
+            rows.append(StudioSetFieldEntry(entry=None, label=None, weight=sampling.weight_for(None)))
         for id, entry in entries.items():
             if isinstance(sampling, ListedSetTrials):
                 weight = None
             elif isinstance(sampling, CooccurringSetTrials):
-                weight = sampling.weights.get(id, SetEntryParts())
+                parts = sampling.weight_for(id)
+                weight = StudioSetEntryParts(on=parts.on, off=parts.off)
             else:
-                weight = sampling.weights.get(id, 1.0)
-            rows.append(StudioSetFieldEntry(entry=id, label=entry.label, weight=weight))
+                weight = sampling.weight_for(id)
+            rows.append(StudioSetFieldEntry(
+                entry=id, label=entry.label, weight=weight, over=entry.over, combination=entry.combination,
+                member_count=set_entry_member_count(id, entry),
+            ))
         fields.append(StudioSetField(
-            axis=axis, set=field.axis.set, sampling=sampling, condition=field.condition, entries=rows,
+            axis=axis, set=field.axis.set, sampling=sampling,
+            condition=lower_expression(field.condition) if field.condition is not None else None, entries=rows,
         ))
     return fields
 
@@ -192,8 +210,12 @@ def _authored_axis(project: Project, step: str, axis: str):
 
 
 def _with_axes(address, raw, axes: dict[str, Any]) -> StudioProjectFilePatch:
-    sweep = raw.get("sweep") or {}
-    return file_value(address, raw, ("sweep",), sweep | {"axes": axes})
+    sweep = {name: value for name, value in (raw.get("sweep") or {}).items() if name != "axes"}
+    if axes:
+        sweep["axes"] = axes
+    if sweep:
+        return file_value(address, raw, ("sweep",), sweep)
+    return StudioProjectFilePatch(address=address, patches=[RemoveProjectValue(op="remove", path="/sweep")])
 
 
 def _copy_key(value: str, taken) -> str:
@@ -351,7 +373,8 @@ def _insert_set_entry(project: Project, axis: str, name: str) -> tuple[StoredEdi
     content = _composed(project, name)
     entries = content["entries"]
     value = generated_name(axis, lambda key: key == axis or key in entries)
-    edits = content_edits(content, content | {"entries": entries | {value: {"differences": {}}}})
+    entry = {"label": _next_run_name(entries), "differences": {}}
+    edits = content_edits(content, content | {"entries": entries | {value: entry}})
     return set_document_write(project, name, edits, set_readers(project, name)), StudioAxisValue(axis=axis, value=value)
 
 
@@ -507,15 +530,13 @@ def _set_field_weight(project: Project, command: SetFieldWeight) -> StoredEdit:
     sampling = raw["set_fields"][command.axis]["sampling"]
     weights = sampling.get("weights", {})
     if isinstance(field.sampling, WeightedSetTrials) and part is None:
-        if entry is None:
-            if field.sampling.none == weight:
-                return StoredEdit([])
-            return StoredEdit([file_value(address, raw, (*path, "none"), weight)])
-        if field.sampling.weights.get(entry, 1.0) == weight:
+        if field.sampling.weight_for(entry) == weight:
             return StoredEdit([])
+        if entry is None:
+            return StoredEdit([file_value(address, raw, (*path, "none"), weight)])
         weights = weights | {entry: weight}
     elif isinstance(field.sampling, CooccurringSetTrials) and entry is not None and part is not None:
-        if getattr(field.sampling.weights.get(entry, SetEntryParts()), part) == weight:
+        if getattr(field.sampling.weight_for(entry), part) == weight:
             return StoredEdit([])
         weights = weights | {entry: weights.get(entry, {}) | {part: weight}}
     else:

@@ -6,9 +6,8 @@ from collections.abc import Iterator
 from typing import Any
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.project import (
-    ProjectValueEdit, RemoveProjectValue, SetProjectValue, json_pointer_parts,
+    ProjectValueEdit, RemoveProjectValue, SetProjectValue, apply_document_edits,
 )
 from feedbax.contracts.project_sources import pointer
 
@@ -33,8 +32,4 @@ def inverse_delta(
 
 
 def apply_delta(target: dict[str, Any], patches: tuple[ProjectValueEdit, ...]) -> None:
-    for patch in patches:
-        apply_value_patch_in_place(
-            target, json_pointer_parts(patch.path), patch.op,
-            patch.value if isinstance(patch, SetProjectValue) else None, path=patch.path,
-        )
+    apply_document_edits(target, patches)

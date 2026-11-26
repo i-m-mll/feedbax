@@ -6,7 +6,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from feedbax.component_registry import ComponentRegistry
-from feedbax.compiler.model_document import LoweredModelDocument, ModelCompilationProblem, lower_model_document
+from feedbax.compiler.model_document import (
+    LoweredModelDocument, ModelCompilationProblem, complete_model_fields, lower_model_document,
+)
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import AttachmentElement, FieldElement, ModelAddress, WireElement
@@ -19,6 +21,7 @@ from feedbax.contracts.model_edit import ModelEditState
 from feedbax.contracts.project import Document
 from feedbax.contracts.project_sweep import TrialSetField
 from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.stored_model import lower_model_attachment, lower_model_component, lower_model_field_value
 from feedbax.compiler.model_edit import ModelEditDraft
 from feedbax.compiler.model_ports import ModelRegistryPorts
 
@@ -93,7 +96,7 @@ class _Chain:
             return
         elif self.items[identity]["kind"] != difference.attachment.kind:
             raise ValueError("Changing an attachment must preserve its kind")
-        self.items[identity] = difference.attachment.model_dump(mode="json")
+        self.items[identity] = lower_model_attachment(identity, difference.attachment).model_dump(mode="json")
         if "after" in difference.model_fields_set:
             self.positions.pop(identity, None)
             self.positions[identity] = (difference.after, address)
@@ -115,6 +118,22 @@ class _Chain:
             identity = next(name for name in self.positions if name in unresolved)
             raise ModelCompilationProblem(self.positions[identity][1], "Attachment positions form an anchor cycle")
         self.original[:] = [self.items[identity] for identity in ordered]
+
+
+def lower_model_difference_values(
+    model: ModelDocument, components: ComponentRegistry | None, differences: tuple[ModelDifference, ...],
+) -> tuple[ModelDifference, ...]:
+    """Lower addressed field values before they reach the typed Model compiler."""
+    lowered = []
+    for item in differences:
+        if isinstance(item, SetField):
+            try:
+                value = lower_model_field_value(model, item.address, item.value, components)
+                item = item.model_copy(update={"value": value})
+            except ValueError as error:
+                raise ModelCompilationProblem(item.address, str(error)) from error
+        lowered.append(item)
+    return tuple(lowered)
 
 
 def resolve_effective_model(
@@ -143,7 +162,9 @@ def resolve_effective_model(
                 _, graph = edit.context(address)
                 if element.id in graph["components"]:
                     raise ValueError("The addressed component already exists")
-                graph["components"][element.id] = difference.component.model_dump(mode="json")
+                graph["components"][element.id] = lower_model_component(difference.component, components).model_dump(
+                    mode="json",
+                )
                 continue
             if isinstance(difference, ModelWireDifference):
                 _, graph = edit.context(address)
@@ -294,8 +315,8 @@ def lower_evaluate_attachments(
         )
     elif evaluated_task is not None:
         resolved, evaluated_task = lower_trial_interventions(resolved, evaluated_task, components)
-    before = lower_model_document(trained, components, binding)
-    after = lower_model_document(resolved, components, binding)
+    before = lower_model_document(complete_model_fields(trained, components), components, binding)
+    after = lower_model_document(complete_model_fields(resolved, components), components, binding)
     try:
         derived = tuple(sorted(_graph_edits(before.graph, after.graph), key=lambda edit: edit.path))
     except ValueError as error:

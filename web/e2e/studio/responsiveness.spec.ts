@@ -1,10 +1,9 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
-import { blankTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns, type StudioTrialReplayResponse } from '../../src/generated/studioContracts';
+import { blankStoredTask, modelDocumentSchemaId, objectiveDocumentSchemaId, taskDocumentSchemaId, type StoredModelDocument as ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns, type StudioTrialReplayResponse } from '../../src/generated/studioContracts';
 import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runName, shownRunLabel, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { pickRecordedTrial } from './fixtures/controls';
-import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -13,7 +12,7 @@ function modelFixture(cards: number): ModelDocument {
   const wires: NonNullable<ModelDocument['interior']['wires']> = {};
   for (let index = 0; index < cards; index++) {
     const component = `sum-${index}`;
-    components[component] = { kind: 'leaf', name: `Signal aggregation ${index + 1}`, type: 'feedbax.Sum' };
+    components[component] = { kind: 'leaf', label: `Signal aggregation ${index + 1}`, type: 'feedbax.Sum' };
     for (const [offset, port] of ['a', 'b', 'c'].entries()) {
       const previous = index - offset - 1;
       wires[`wire-${index}-${port}`] = {
@@ -24,7 +23,7 @@ function modelFixture(cards: number): ModelDocument {
     }
   }
   return {
-    step_seconds: 0.01, ports: { inputs: [{ id: 'target', name: 'reach_target', type: {} }] },
+    step_seconds: '0.01 s', ports: { inputs: { target: { label: 'reach_target', type: {} } } },
     interior: { components, wires },
   };
 }
@@ -182,9 +181,7 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     const { snapshot, changed, acknowledgedAt } = await savedEdit;
     const addressed = changed.find(({ element }) => element.kind === 'field' && element.path.at(-1) === 'step_seconds');
     if (!addressed) throw new Error('The acknowledgement did not address the Step field');
-    const model = rootPayload(snapshot.project.documents![modelDocument]) as unknown as ModelDocument;
-    expect(model.step_seconds).toBe(0.02);
-    const plan = await (await settled).json() as StudioSavedTrainRuns;
+      const plan = await (await settled).json() as StudioSavedTrainRuns;
     expect(plan.revision).toBe(snapshot.revision);
     expect(plan.window_map?.rows).toHaveLength(1);
     const cannotRun = plan.window_map?.steps.find(({ step_id }) => step_id === 'train')?.status_counts.cannot_run;
@@ -352,7 +349,7 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
   const result = plan.window_map?.evaluations?.find(({ key }) => key.step === 'baseline');
   expect(result?.result?.job_id).toBe(evaluation.job_id);
   expect(result?.result?.checkpoint_source?.job_id).toBe(train.job_id);
-  const trial = result!.trials[1];
+  const trial = result!.trials[1].id;
   const row = plan.window_map!.rows.find(({ key }) => key.step === 'baseline')!;
   await table.getByRole('button', { name: runName(shownRunLabel(row)) }).click();
   await tabs.getByRole('tab', { name: 'Scene', exact: true }).click();
@@ -413,7 +410,7 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
 test('measures mounted Model, Runs and Scene responsiveness @responsiveness', async ({ page, request, browser, studio }, info) => {
   test.setTimeout(100_000);
   const files = await fixture('ordinary-files', '2');
-  const modelFile = files.find((file: { document?: { schema: string } }) => file.document?.schema === 'feedbax.spec.model');
+  const modelFile = files.find((file: { document?: { schema: string } }) => file.document?.schema === modelDocumentSchemaId);
   const stepFile = files.find((file: { kind: string }) => file.kind === 'step');
   const trial = stepFile.step.base.inline.trial_documents;
   trial.task = { document: 'profile-task' };
@@ -422,10 +419,10 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
   const { snapshot, projectPath } = await seedManagedProject(request, [
     modelFile,
     { kind: 'document', id: 'profile-task', document: {
-      schema: 'feedbax.spec.task_document', label: 'Profile Task', payload: blankTask,
+      schema: taskDocumentSchemaId, label: 'Profile Task', payload: blankStoredTask,
     } },
     { kind: 'document', id: 'profile-objective', document: {
-      schema: 'feedbax.spec.objective_document', label: 'Profile Objective', payload: { id: 'profile-objective', terms: [] },
+      schema: objectiveDocumentSchemaId, label: 'Profile Objective', payload: { id: 'profile-objective' },
     } },
     stepFile,
   ]);

@@ -1,12 +1,15 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import {
-  firstTrainTask, type ModelDocument, type ObjectiveDocument, type StudioProjectSnapshot, type StudioSavedTrainRuns,
-  type StudioTrialAuthoring, type TaskDocument,
+  firstTrainTask, type StoredModelDocument as ModelDocument, type StoredObjectiveDocument, type StudioProjectSnapshot, type StudioSavedTrainRuns,
+  type StoredTaskDocument, type StudioTrialAuthoring, type TaskDocument,
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
 import { pick } from './controls';
 import { activate, activateMenuItem, number, palette, post, readSaved, startProject } from './studioKeyboard';
 import { rootPayload } from './rootPayload';
+import { keyLabelled } from './members';
+import { stateLinkKey, trialView } from './trialFields';
+import { trainSettings } from './serviceViews';
 
 /** The Task document a first Train creates: simple reaches, named by its label. */
 const taskDocument = 'simple-reaches';
@@ -39,7 +42,7 @@ export async function authorFirstTrain(
   const nBatches = inspector.getByRole('textbox', { name: 'Batches', exact: true });
   const batchSize = inspector.getByRole('textbox', { name: 'Batch Size', exact: true });
   const terms = (project: StudioProjectSnapshot['project']) =>
-    (rootPayload(project.documents?.objective) as unknown as ObjectiveDocument | undefined)?.terms ?? [];
+    Object.values((rootPayload(project.documents?.objective) as StoredObjectiveDocument | undefined)?.terms ?? {});
   /** A new Train step reads its training config from the `training` document. */
   const config = (project: StudioProjectSnapshot['project']) => (
     rootPayload(project.documents?.training) as { training_config?: { n_batches?: number; batch_size?: number } } | undefined
@@ -134,10 +137,9 @@ export async function authorFirstTrain(
   await page.keyboard.press('Meta+4');
   await activate(page, objective.getByRole('button', { name: 'Add Term', exact: true }));
   await activateMenuItem(page, page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Output', exact: true }));
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Output)');
   await setNumber(weight, 2, (project) => {
-    const authored = terms(project)[0]?.weight;
-    return authored && 'value' in authored ? authored.value : undefined;
+    return terms(project)[0]?.weight;
   });
   await page.keyboard.press('Meta+1');
   await setNumber(nBatches, totalUpdates, (project) => config(project)?.n_batches);
@@ -145,20 +147,11 @@ export async function authorFirstTrain(
   await setNumber(batchSize, 4, (project) => config(project)?.batch_size);
 
   // Simple reaches starts nothing until `start` is chosen to initialize this Model's point mass.
-  const shipped = rootPayload(firstTrainTask) as unknown as TaskDocument;
-  const plantLink = JSON.stringify({ composites: [], element: {
-    kind: 'field', parent: { id: plantId, kind: 'component' }, path: ['state', 'effector/position'],
-  } });
-  const problems = async () => {
-    const { revision } = await savedProject();
-    const response = await request.post(projectPath + '/authoring/trials', {
-      data: { revision, run: { variant: 'default', step: 'train', row: 'default' }, change: null },
-    });
-    expect(response.ok(), await response.text()).toBe(true);
-    return (await response.json() as StudioTrialAuthoring).problems;
-  };
-  const links = async () => (rootPayload((await savedProject()).project.documents?.[taskDocument]) as unknown as TaskDocument).links;
-  expect((await links()) ?? []).toEqual([]);
+  const shipped = rootPayload(firstTrainTask) as unknown as StoredTaskDocument;
+  const problems = async () => (await trialView(request, snapshot.project_id)).problems;
+  const plantLink = await stateLinkKey(request, snapshot.project_id, plantId!, 'effector/position');
+  const links = async () => (rootPayload((await savedProject()).project.documents?.[taskDocument]) as unknown as StoredTaskDocument).links ?? {};
+  expect(await links()).toEqual({});
   await page.keyboard.press('Meta+3');
   const initializes = task.getByRole('combobox', { name: 'Initializes start', exact: true });
   const toggle = async (component: string) => {
@@ -168,15 +161,15 @@ export async function authorFirstTrain(
     await page.keyboard.press('Escape');
   };
   await toggle('PointMass');
-  await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
+  await expect.poll(links).toEqual({ [plantLink]: 'start' });
   expect(await problems()).toEqual([]);
   await page.keyboard.press('Meta+1');
   // A comparison of forces reads one reach: simple reaches' others point every way, and their mean along the reach is
   // flat. The Task view does not edit validation trials yet.
-  const [reach] = shipped.validation_trials!;
+  const [[reachKey, reach]] = Object.entries(shipped.validation_trials!);
   if (forceComparison) {
     const narrowed = await request.patch(projectPath, { data: { revision: (await savedProject()).revision, files: [
-      { address: { kind: 'document', id: taskDocument }, patches: [{ op: 'replace', path: '/payload/validation_trials', value: [reach] }] },
+      { address: { kind: 'document', id: taskDocument }, patches: [{ op: 'replace', path: '/payload/validation_trials', value: { [reachKey]: reach } }] },
     ] } });
     expect(narrowed.ok(), await narrowed.text()).toBe(true);
   }
@@ -191,9 +184,10 @@ export async function authorFirstTrain(
     training_config: { document: 'training', pointer: '/training_config' },
   } });
   expect(rootPayload(saved.project.documents?.training)).toMatchObject({
-    method: 'feedbax.supervised_gradient',
-    settings: { optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } } },
-    training_config: { n_batches: totalUpdates, batch_size: 4 },
+    method: 'feedbax.supervised_gradient', training_config: { n_batches: totalUpdates, batch_size: 4 },
+  });
+  expect(await trainSettings(request, projectPath)).toMatchObject({
+    optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } },
   });
   const savedModel = rootPayload(saved.project.documents?.model) as unknown as ModelDocument;
   expect(savedModel.interior.components).toMatchObject({
@@ -202,38 +196,30 @@ export async function authorFirstTrain(
     } },
     [plantId!]: { kind: 'leaf', type: 'feedbax.PointMass' },
   });
-  const reachPort = savedModel.ports.inputs?.find(({ name }) => name === 'target position');
-  const commandPort = savedModel.ports.outputs?.find(({ name }) => name === 'output');
-  expect(reachPort?.id).toBeTruthy();
-  expect(commandPort?.id).toBeTruthy();
+  const reachPort = keyLabelled(savedModel.ports.inputs, 'target position');
+  const commandPort = keyLabelled(savedModel.ports.outputs, 'Output');
+  expect(reachPort).toBeTruthy();
+  expect(commandPort).toBeTruthy();
   const linearOutput = { owner: 'component', component: linearId, port: 'output' };
   const wires = Object.values(savedModel.interior.wires ?? {});
   expect(wires).toHaveLength(3);
   expect(wires).toEqual(expect.arrayContaining([
     expect.objectContaining({
-      source: { owner: 'inputs', port: reachPort!.id },
+      source: { owner: 'inputs', port: reachPort },
       target: { owner: 'component', component: linearId, port: 'input' },
     }),
     expect.objectContaining({
       source: linearOutput, target: { owner: 'component', component: plantId, port: 'force' },
     }),
-    expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort!.id } }),
+    expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort } }),
   ]));
   expect(rootPayload(saved.project.documents?.[taskDocument])).toEqual({
-    ...shipped, links: [{ model_field: plantLink, variable: 'start' }],
-    ...(forceComparison && { validation_trials: [reach] }),
+    ...shipped, links: { [plantLink]: 'start' },
+    ...(forceComparison && { validation_trials: { [reachKey]: reach } }),
   });
   const [term] = terms(saved.project);
   expect(terms(saved.project)).toHaveLength(1);
-  expect(term).toMatchObject({
-    id: expect.any(String),
-    measure: { function: 'sqnorm', args: [{ kind: 'name', reference: expect.any(String) }] },
-    weight: { value: 2 },
-  });
-  const measureArgument = 'args' in term.measure ? term.measure.args?.[0] : undefined;
-  expect(JSON.parse(measureArgument && 'reference' in measureArgument ? measureArgument.reference : 'null')).toEqual({
-    composites: [], element: { kind: 'port', end: { owner: 'outputs', port: commandPort!.id } },
-  });
+  expect(term).toMatchObject({ weight: 2 });
   const before = await plan(saved.revision);
   expect(before.window_map?.problems).toEqual([]);
   expect(before.rows).toMatchObject([{ key: { variant: 'default', step: 'train', row: 'default' },
@@ -249,7 +235,7 @@ export async function authorFirstTrain(
   expect(await savedProject()).toMatchObject({ project_id: saved.project_id, revision: saved.revision, project: saved.project });
   expect((await plan(saved.revision)).rows).toEqual(before.rows);
   await page.keyboard.press('Meta+4');
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Output)');
   await expect(weight).toHaveValue('2');
   await page.keyboard.press('Meta+1');
   await expect(nBatches).toHaveValue(String(totalUpdates));

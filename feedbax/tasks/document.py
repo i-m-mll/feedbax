@@ -12,6 +12,7 @@ from feedbax.compiler.model_document import ResolvedModelInterface
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from feedbax.contracts.expression_values import (
     RESERVED_NAMES,
@@ -43,10 +44,10 @@ from feedbax.contracts.task_document import (
     Signal as Signal,
     TaskDocument as TaskDocument,
     ValidationTrial as ValidationTrial,
-    ValidationValue,
     Variable as Variable,
 )
 from feedbax.contracts.expression_check import Checked, check, dependency_order, references
+from feedbax.contracts.expression_sequence import structural_integer
 from feedbax.contracts.expression_text import resolve_expression
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
@@ -436,7 +437,7 @@ class DocumentTask:
         return self.finish(parameters, variables, final, samples, {})
 
     def validation(self, parameters, key) -> Trial | PendingTrial:
-        keys = validation_trial_keys(key, len(self.validation_rows))
+        keys = validation_trial_keys(key, len(self.validation_rows), ids=self.condition_ids)
         return self._sample_rows(self.validation_rows, parameters, key, keys)
 
     def evaluation(self, parameters, key, trial_ids, trial_keys) -> Trial | PendingTrial:
@@ -457,12 +458,6 @@ class DocumentTask:
         return {port: trial.inputs[signal] for port, signal in self.input_bindings}
 
 
-def _validation_expression(value: ValidationValue) -> Expression:
-    if isinstance(value, tuple):
-        return CallValue(function="vector", args=tuple(map(_validation_expression, value)))
-    return LiteralValue(value=value)
-
-
 def zero(base, shape) -> Expression:
     """The value of a type that is nothing: false, or zero in every entry."""
     if not shape:
@@ -480,22 +475,23 @@ def bind_task_inputs(
     model: ResolvedModelInterface,
     signals: tuple[ScopedValue, ...],
     input_bindings: Mapping[str, str | None] | None,
+    *, input_labels: Mapping[str, str] | None = None,
 ) -> tuple[tuple[tuple[str, str], ...], tuple[Problem, ...]]:
     """Resolve runtime input names to stable signal IDs and report invalid bindings."""
     problems = []
     bindings = []
     by_id = {value.id: value for value in signals}
-    by_name = {value.name: value.id for value in signals}
     authored = input_bindings or {}
     for port in model.inputs:
-        signal_id = selected_signal_id(port.root_id, port.name, by_name, authored)
+        label = (input_labels or {}).get(port.root_id, port.name)
+        signal_id = selected_signal_id(port.root_id, by_id, authored)
         signal = by_id.get(signal_id) if signal_id is not None else None
         path = ("model", "inputs", port.id)
         if signal is None:
             if signal_id is not None:
-                reason = f"Model input {port.name!r} reads undeclared signal ID {signal_id!r}."
+                reason = f"Model input {label!r} reads undeclared signal ID {signal_id!r}."
             elif port.required:
-                reason = f"Model input {port.name!r} needs a Task signal."
+                reason = f"Model input {label!r} needs a Task signal."
             else:
                 continue
             problems.append(Problem(
@@ -504,7 +500,7 @@ def bind_task_inputs(
         elif not _compatible_task_signal(model, port, signal.type):
             problems.append(Problem(
                 code=ProblemCode.TYPE_MISMATCH,
-                reason=f"Signal {signal.name!r} does not fit model input {port.name!r}.",
+                reason=f"Signal {signal.name!r} does not fit model input {label!r}.",
                 path=path, model_address=port.address,
             ))
         else:
@@ -586,9 +582,9 @@ def compile_task(
     """The variables with problems of their own or read from another that has them."""
 
     def lower(tree, expected, finest, scope, address, *, epoch=False, discrete=False,
-              list_count=None, repeat_count=None):
+              list_count=None, repeat_count=None, structural=False):
         site = Site(
-            expected=expected, finest=finest, names=tuple(scope),
+            expected=expected, finest=finest, names=tuple(scope), structural=structural,
             list_count=list_count, repeat_count=repeat_count,
         )
         if sites is not None:
@@ -677,15 +673,16 @@ def compile_task(
             problems.extend(item.model_copy(update={"path": (*path, *item.path)}) for item in parsed)
             return None
         tree = parsed.value
-        if isinstance(tree, LiteralValue) and type(tree.value) is int and tree.unit is None:
-            count = tree.value
-        elif isinstance(tree, NameValue) and tree.reference in fixed_values and any(
+        if isinstance(tree, NameValue) and tree.reference in fixed_values and any(
             item.id == tree.reference for item in count_scope
         ):
             count = int(fixed_values[tree.reference])
         else:
-            problem(ProblemCode.LIST_COUNT, "Count needs an integer or a fixed Integer variable.", path)
-            return None
+            try:
+                count = structural_integer(tree)
+            except ValueError as error:
+                problem(ProblemCode.LIST_COUNT, f"Count needs an integer expression or a fixed Integer variable. {error}", path)
+                return None
         if not 0 < count < 2**31:
             problem(ProblemCode.LIST_COUNT, "Count must be a positive integer.", path)
             return None
@@ -974,8 +971,8 @@ def compile_task(
             )
     rows = []
     first = document.validation_trials[0]
-    for index, row in enumerate(document.validation_trials):
-        path = ("validation_trials", index)
+    for row in document.validation_trials:
+        path = ("validation_trials", row.id or 0)
         if (
             row.variables.keys() != first.variables.keys()
             or row.epoch_steps.keys() != first.epoch_steps.keys()
@@ -995,20 +992,27 @@ def compile_task(
                 )
                 continue
             code = lower(
-                _validation_expression(value),
+                value,
                 variable.type if variable.list_count is None else variable.type.model_copy(
                     update={"shape": (variable.list_count, *variable.type.shape)}
                 ),
                 Level.RUN,
                 (),
                 (*path, "variables", key),
+                structural=True,
             )
             if code is not None:
                 literal_inputs = Inputs(code.code.parameters, {}, None, None)
                 run = code.code.evaluate_run(literal_inputs)
-                row_values[key] = code.code.evaluate_step(
-                    literal_inputs, code.code.with_trial(literal_inputs, run)
-                )[0].value
+                evaluated, _ = code.code.evaluate_step(literal_inputs, code.code.with_trial(literal_inputs, run))
+                if not np.all(evaluated.defined) or not np.all(np.isfinite(evaluated.value)):
+                    problem(
+                        ProblemCode.STRUCTURE, "A validation trial needs a defined, finite constant.",
+                        (*path, "variables", key),
+                    )
+                else:
+                    row_values[key] = evaluated.value
+        row_steps = {}
         for key, value in row.epoch_steps.items():
             epoch_index = indexes.get(key)
             if epoch_index is not None and isinstance(document.epochs[epoch_index].end, Until):
@@ -1029,12 +1033,9 @@ def compile_task(
                     "Validation epoch step count must fit a bounded length.",
                     (*path, "epoch_steps", key),
                 )
-        rows.append(
-            TaskParameters(
-                variables=row_values,
-                epoch_steps={key: jnp.asarray(value) for key, value in row.epoch_steps.items()},
-            )
-        )
+                continue
+            row_steps[key] = jnp.asarray(value)
+        rows.append(TaskParameters(variables=row_values, epoch_steps=row_steps))
     if problems:
         return tuple(problems)
     groups = []

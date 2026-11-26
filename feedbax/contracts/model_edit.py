@@ -11,11 +11,14 @@ from feedbax.contracts.model_address import ModelAddress, ModelElementId, Signal
 from feedbax.contracts.model_attachment import ModelAttachmentDifference, SetField as SetField
 from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
-    ModelDocument, ModelWire, PhysicalPort, PhysicalPortType, SignalInput, SignalOutput, SignalType, WireAttachment,
+    ModelDocument, ModelWire, PhysicalPort, PhysicalPortType, SignalInput, SignalOutput, SignalType,
 )
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
+from feedbax.contracts.stored_model import (
+    StoredModelComponent, StoredModelDocument, StoredModelSignalSource, StoredModelWire, StoredWireAttachment,
+)
 from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
@@ -32,7 +35,7 @@ class RegisteredComponent(StrictModel):
     definition: Name
 
 
-type ComponentToPlace = LeafComponent | CompositeComponent | RegisteredComponent
+type ComponentToPlace = StoredModelComponent | RegisteredComponent
 
 
 class AddComponent(StrictModel):
@@ -154,7 +157,7 @@ class InsertComponentOnWire(StrictModel):
 class InsertComponentOnPhysicalConnection(StrictModel):
     op: Literal["insert_physical_component"]
     address: ModelAddress
-    component: LeafComponent | CompositeComponent
+    component: StoredModelComponent
     a_port: ModelElementId
     b_port: ModelElementId
     position: ModelPosition
@@ -292,6 +295,20 @@ class ModelConnectionReviewRequest(ModelProjectionRequest):
     grow_source: bool = False
 
 
+type InterventionOperation = Literal["add", "scale", "clamp"]
+
+
+class ModelAttachmentDefaultsRequest(ModelProjectionRequest):
+    """Default operands for an intervention on a Model wire or output source."""
+
+    owner: ModelAddress
+    operation: InterventionOperation
+
+
+class ModelAttachmentDefaults(StrictModel):
+    operands: dict[str, StoredModelSignalSource]
+
+
 class ModelPortProjection(StrictModel):
     address: ModelAddress
     type: SignalType
@@ -332,9 +349,9 @@ class ModelRemovedElement(StrictModel):
 
     change: Literal["removed"]
     address: ModelAddress
-    definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | WireAttachment
+    definition: StoredModelComponent | StoredModelWire | ModelPhysicalConnection | StoredWireAttachment
     position: ModelPosition | None = None
-    wires: dict[ModelElementId, ModelWire] = Field(default_factory=dict)
+    wires: dict[ModelElementId, StoredModelWire] = Field(default_factory=dict)
     connections: dict[ModelElementId, ModelPhysicalConnection] = Field(default_factory=dict)
 
 
@@ -343,7 +360,7 @@ class ModelRewiredElement(StrictModel):
 
     change: Literal["rewired"]
     address: ModelAddress
-    previous: ModelWire | ModelPhysicalConnection
+    previous: StoredModelWire | ModelPhysicalConnection
 
 
 ModelStructuralDifference = Annotated[
@@ -355,13 +372,16 @@ class ModelProjection(StrictModel):
     """``base_differences`` are the shown document's structural differences from its base, when it has one;
     ``value_differences`` are the selected sweep value's or set entry's from the step's Model."""
 
+    address_texts: dict[str, str]
+    """Compact authored text by the projected element's canonical runtime address."""
+
     ports: tuple[ModelPortProjection, ...] = ()
     physical_ports: tuple[ModelPhysicalPortProjection, ...] = ()
     delay_steps: dict[str, int | None] = Field(default_factory=dict)
     task_signals: tuple[ModelTaskSignal, ...] = ()
     task_inputs: tuple[ModelTaskInput, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
-    resolved_model: ModelDocument | None = None
+    resolved_model: StoredModelDocument | None = None
     base_differences: tuple[ModelStructuralDifference, ...] = ()
     value_differences: tuple[ModelStructuralDifference, ...] = ()
     ungroup: tuple[ModelUngroupEligibility, ...] = ()
@@ -464,13 +484,14 @@ class StudioStepNameReference(StrictModel):
 class StudioEvaluateValueSource(StrictModel):
     kind: Literal["trained", "evaluate"]
     reference: StudioStepNameReference
+    name: str
 
 
 class EvaluateModelState(StrictModel):
     revision: Sha256
     editable: bool
     effective: tuple[ModelAttachmentDifference, ...]
-    resolved_model: ModelDocument | None = None
+    resolved_model: StoredModelDocument | None = None
     source: StudioEvaluateValueSource | None = None
     field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
     changed_from: ProjectName | None = None

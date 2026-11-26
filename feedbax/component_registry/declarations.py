@@ -5,14 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import UnionType
 from typing import (
     TYPE_CHECKING,
     Any,
-    Literal,
-    Union,
-    get_args,
-    get_origin,
 )
 
 from pydantic import BaseModel, ValidationError
@@ -32,6 +27,7 @@ from feedbax.contracts.graph import (
     GraphUIState,
     NodeUIState,
     ParamSchema,
+    parameter_schema_from_model,
 )
 from feedbax.contracts.portable import (
     MissingPrototypeInput as MissingPrototypeInput,
@@ -94,67 +90,6 @@ class ComponentParamValidation:
     @property
     def ok(self) -> bool:
         return self.value is not None
-
-
-def parameter_schema_from_model(
-    model: ComponentParamModel, *, properties: Mapping[str, Any] | None = None,
-) -> tuple[ParamSchema, ...]:
-    """Project authored model fields into the shared authoring controls."""
-    if properties is None:
-        properties = model.model_json_schema(by_alias=False).get("properties", {})
-    schemas: list[ParamSchema] = []
-    for name, model_field in model.model_fields.items():
-        field_schema = properties.get(name, {})
-        extra = field_schema.get("feedbax", {})
-        annotation = model_field.annotation
-        origin = get_origin(annotation)
-        args = tuple(arg for arg in get_args(annotation) if arg is not type(None))
-        base = args[0] if origin in (Union, UnionType) and len(args) == 1 else annotation
-        options = get_args(base) if get_origin(base) is Literal else ()
-        text_options = options if all(isinstance(option, str) for option in options) else ()
-        if options and not text_options:
-            base = type(options[0]) if len({type(item) for item in options}) == 1 else object
-        if extra.get("type"):
-            field_type = extra["type"]
-        elif text_options:
-            field_type = "enum"
-        elif base is bool:
-            field_type = "bool"
-        elif base is int:
-            field_type = "int"
-        elif base is float:
-            field_type = "float"
-        elif base is str:
-            field_type = "str"
-        elif get_origin(base) in (list, tuple):
-            field_type = "array"
-        elif get_origin(base) in (dict, Mapping):
-            field_type = "object"
-        else:
-            field_type = "object"
-        default = field_schema.get("default")
-        schemas.append(
-            ParamSchema(
-                name=name,
-                type=field_type,
-                default=default,
-                required=bool(extra.get("required", model_field.is_required())),
-                description=model_field.description or "",
-                min=next(
-                    (item.ge for item in model_field.metadata if hasattr(item, "ge")),
-                    None,
-                ),
-                max=next(
-                    (item.le for item in model_field.metadata if hasattr(item, "le")),
-                    None,
-                ),
-                step=extra.get("step"),
-                options=extra.get("options") or (list(text_options) if text_options else None),
-                option_descriptions=extra.get("option_descriptions"),
-                nested_schema=extra.get("nested_schema"),
-            )
-        )
-    return tuple(schemas)
 
 
 @dataclass(frozen=True)
@@ -492,3 +427,17 @@ def settings_schema(model: type[BaseModel]) -> SettingsSchema:
             if fields.get(name, {}).get("feedbax", {}).get("static") is True
         ),
     )
+
+
+def split_lowering_metadata(
+    type_id: str, fields: Mapping[str, Any], declaration: DeclaredComponent | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Separate graph controls from a component's declared parameters."""
+    params, metadata = dict(fields), {}
+    if type_id == "feedbax.Sum" and "channel_adapter" in params:
+        metadata["channel_adapter"] = params.pop("channel_adapter")
+    if declaration is not None and isinstance(params.get("trainable"), bool):
+        contract = declaration.params
+        if "trainable" not in contract.model.model_fields and "trainable" not in contract.build_context_fields:
+            metadata["trainable"] = params.pop("trainable")
+    return params, metadata

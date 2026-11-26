@@ -1,8 +1,11 @@
 """Require every managed command to honor the shared CLI output contract."""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.application.project_writer import dump_text_project
 from feedbax.bin.project_commands import PROJECT_COMMANDS
 from feedbax.cli import main
 from feedbax.contracts.jobs import (
@@ -10,19 +13,227 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMapProblem,
     StudioSavedTrainRuns,
 )
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
-    dump_text_project,
     read_text_project_snapshot,
 )
+from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.studio_authoring import StudioAuthoringCatalog
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.store_check import StoreCheckResult
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.planner.project_plan import compile_project
+from feedbax.project_folder import ProjectRevisionConflict, resave_project_declaration
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.store_damage import writable_store_object
 from tests.support.host import admit, held_until_released, job_row, run_job, token, wait_until
 from tests.test_text_project_plan_cli import _edit, _write_walkthrough
+
+
+def _write_advice_project(root, documents, *, initialize_store=True):
+    project = Project.model_validate({"documents": documents})
+    files = dump_text_project(project, ProjectConfiguration(project="study", store="results"))
+    for name, data in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    if initialize_store:
+        ImmutableArtifactBlobProvider(root / "results").store_object(b"family advice check")
+
+
+def test_check_advises_on_unrolled_families_without_writing_files(tmp_path, capsys):
+    def document(schema, label, payload):
+        return {"schema": schema, "label": label, "payload": payload}
+
+    def entry(label, value, *, scale=1, target="gain"):
+        return {
+            "label": label,
+            "task_variables": {"load": {"label": "Load", "type": {"base": "real"}, "value": value}},
+            "differences": {f"/interior/components/{target}/fields/scale": {"value": scale}},
+        }
+
+    def trial(label, position, *, epoch="move"):
+        return {"label": label, "variables": {"position": position}, "epoch_steps": {epoch: 5}}
+
+    documents = {
+        "cost": document(STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "Cost", {"id": "cost", "terms": {
+            "early": {"label": "Early", "measure": "x * 2", "weight": 1},
+            "late": {"label": "Late", "measure": "x * 4"},
+            "other_signal": {"measure": "y * 6"},
+            "other_literal_type": {"measure": "x * 6.5"},
+            "other_unit": {"measure": "x * 6 s"},
+            "other_reduction": {"measure": "x * 6", "reduction": "last"},
+            "draft": {"measure": "x + "},
+            "family": {"label": "Movement", "measure": "x * k", "over": {"k": "1..10"}},
+        }}),
+        "bank": document(SET_DOCUMENT_SCHEMA_ID, "Bank", {"entries": {
+            "low": entry("Low", "2 * bias"),
+            "high": entry("High", "4 * bias"),
+            "other_target": entry("Other target", "6 * bias", target="other"),
+            "other_difference": entry("Other difference", "6 * bias", scale=2),
+            "family": entry("Gain {k}", "k * bias") | {"over": {"k": "1..10"}},
+        }}),
+        "cohort": document(STORED_TASK_DOCUMENT_SCHEMA_ID, "Cohort", {
+            "id": "cohort",
+            "variables": {"position": {"label": "Position", "type": {"base": "real", "shape": [2]}, "value": "[0, 0]"}},
+            "epochs": {name: {"label": name, "end": {"kind": "length", "length": "5 st"}}
+                       for name in ("move", "hold")},
+            "signals": {},
+            "validation_trials": {
+                "near": trial("Near", "[0, 1]"),
+                "far": trial("Far", "[3, 5]"),
+                "other_epoch": trial("Other epoch", "[4, 5]", epoch="hold"),
+                "other_shape": trial("Other shape", "[4, 5, 6]"),
+                "family": trial("Trial {k}", "[k, 0]") | {"over": {"k": "1..10"}},
+            },
+        }),
+    }
+    _write_advice_project(tmp_path, documents)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    assert main(["check", str(tmp_path), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    result = StoreCheckResult.model_validate_json(captured.out)
+    assert not result.findings and result.verified_objects == 1
+    expected = {
+        ("documents/cost.json", "/payload/terms", ("early", "late")),
+        ("documents/bank.json", "/payload/entries", ("low", "high")),
+        ("documents/cohort.json", "/payload/validation_trials", ("near", "far")),
+    }
+    assert {(item.address, item.path, item.members) for item in result.advice} == expected
+    assert all(item.count == 2 and item.code == "unrolled_member_family" for item in result.advice)
+    assert main(["check", str(tmp_path / "study.feedbax")]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert len(captured.out.splitlines()) == 4
+    for item in result.advice:
+        assert f"Advice {item.address}:{item.path} {item.detail}" in captured.out
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_check_locates_unrolled_family_in_a_fresh_based_project(tmp_path, capsys):
+    schema = STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+    _write_advice_project(tmp_path, {
+        "base": {"schema": schema, "label": "Base", "payload": {
+            "id": "cost", "terms": {"first": {"measure": "x * 2"}},
+        }},
+        "second": {"schema": schema, "label": "Second", "base": {"document": "base"}, "differences": {
+            "/terms/second": {"value": {"measure": "x * 4"}},
+        }},
+        "copy": {"schema": schema, "label": "Copy", "base": {"document": "second"}},
+    }, initialize_store=False)
+
+    assert main(["check", str(tmp_path), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    report = StoreCheckResult.model_validate_json(captured.out)
+    assert report.verified_objects == report.verified_bytes == 0 and not report.findings
+    (item,) = report.advice
+    assert (item.address, item.path, item.members, item.count) == (
+        "documents/second.json", "/differences/~1terms~1second", ("first", "second"), 2,
+    )
+    store = tmp_path / "results"
+    assert not store.exists()
+    assert main(["check", str(tmp_path), "--attempt", "missing", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and StudioProjectWindowMapProblem.model_validate_json(captured.err).code == "io_error"
+    assert not store.exists()
+    store.mkdir()
+    assert main(["check", str(tmp_path), "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and StudioProjectWindowMapProblem.model_validate_json(captured.err).code == "io_error"
+    assert not tuple(store.iterdir())
+
+
+def test_check_reports_individual_restatements_in_saved_project_files(tmp_path, capsys):
+    schema = STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+    project = Project.model_validate({
+        "documents": {
+            "base": {"schema": schema, "label": "Base", "payload": {
+                "id": "cost", "terms": {"first": {"measure": 1}},
+            }},
+            "second": {"schema": schema, "label": "Second", "base": {"document": "base"}, "differences": {
+                "/terms/first/enabled": {"value": True},
+            }},
+        },
+        "steps": {"train": {"kind": "train", "label": "Train", "base": {"inline": {}}}},
+    })
+    files = dump_text_project(project, ProjectConfiguration(project="study", store="results"))
+    legacy = {name: json.loads(data) for name, data in files.items()}
+    legacy["study.feedbax"].update(sweep=None, variants=[])
+    legacy["steps/train.json"]["sweep"] = {"axes": {}}
+    legacy["documents/base.json"]["payload"]["terms"]["first"]["enabled"] = True
+    legacy_bytes = {name: json.dumps(value).encode() for name, value in legacy.items()}
+    for name, data in legacy_bytes.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    assert main(["check", str(tmp_path), "--json"]) == 0
+    result = StoreCheckResult.model_validate_json(capsys.readouterr().out)
+    assert {(item.code, item.address, item.path) for item in result.advice} == {
+        ("restated_default", "study.feedbax", "/sweep"),
+        ("restated_default", "study.feedbax", "/variants"),
+        ("restated_default", "steps/train.json", "/sweep"),
+        ("restated_default", "documents/base.json", "/payload/terms/first/enabled"),
+    }
+    assert {name: (tmp_path / name).read_bytes() for name in legacy_bytes} == legacy_bytes
+    for name, data in files.items():
+        (tmp_path / name).write_bytes(data)
+    assert main(["check", str(tmp_path), "--json"]) == 0
+    assert not StoreCheckResult.model_validate_json(capsys.readouterr().out).advice
+
+
+@pytest.mark.parametrize("with_variants", [False, True])
+def test_check_can_resave_a_declaration_without_changing_its_project(tmp_path, capsys, with_variants):
+    project = managed_train_project()
+    if with_variants:
+        project.sweep = Sweep.model_validate({"rows": {"first": {}, "second": {"patches": {
+            "steps.train.base.inline.training_config.n_batches": {"value": 3},
+        }}}})
+    configuration = ProjectConfiguration(
+        project="study", store="study-results", settings={"example_label": "Study", "custom": {"sample": 6}},
+    )
+    original = dump_text_project(project, configuration)
+    name = "study.feedbax"
+    path = tmp_path / name
+    declaration = json.loads(original[name])
+    if not with_variants:
+        declaration.update(sweep=None, variants=[])
+    old = json.dumps(declaration).encode()
+    for file, data in (original | {name: old}).items():
+        target = tmp_path / file
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    before = read_text_project_snapshot(tmp_path)
+    plan = compile_project(before.project)
+    requests = {run.key: run.request_id for run in plan.runs}
+    assert len(requests) == (2 if with_variants else 1) and not plan.diagnostics
+
+    assert main(["check", str(path), "--attempt", "some-run", "--fix-declaration", "--json"]) == 2
+    assert StudioProjectWindowMapProblem.model_validate_json(capsys.readouterr().err).code == "invalid_arguments"
+    assert path.read_bytes() == old
+    assert main(["check", str(path), "--fix-declaration", "--json"]) == 0
+    captured = capsys.readouterr()
+    report = StoreCheckResult.model_validate_json(captured.out)
+    assert not captured.err and not report.findings
+    assert not any(advice.code == "restated_default" and advice.address == name for advice in report.advice)
+
+    after = read_text_project_snapshot(tmp_path)
+    assert after.files == original
+    assert after.configuration == before.configuration
+    assert after.manifest == before.manifest
+    assert {run.key: run.request_id for run in compile_project(after.project).runs} == requests
+    assert resave_project_declaration(after) is after
+    with pytest.raises(ProjectRevisionConflict):
+        resave_project_declaration(before)
+    assert path.read_bytes() == original[name]
 
 
 def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, monkeypatch, capsys):

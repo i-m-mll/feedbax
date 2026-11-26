@@ -1,0 +1,46 @@
+{
+  "schema": "feedbax.spec.model.v2",
+  "label": "Campaign point mass",
+  "payload": {
+    "step_seconds": "0.01 s",
+    "ports": {
+      "inputs": {
+        "target_pos": {
+          "label": "Target position",
+          "type": {"shape": [2], "unit": "m", "space": "point"}
+        }
+      },
+      "outputs": {"command": {"label": "Command", "type": {"shape": [2]}}}
+    },
+    "interior": {
+      "components": {
+        "plant": {"kind": "leaf", "label": "Point mass", "type": "feedbax.PointMass"},
+        "cell": {"kind": "leaf", "label": "Recurrent controller", "type": "feedbax.GRU"},
+        "readout": {
+          "kind": "leaf",
+          "label": "Motor command",
+          "type": "feedbax.Linear",
+          "fields": {"output_size": 2}
+        }
+      },
+      "wires": {
+        "target": {
+          "source": {"owner": "inputs", "port": "target_pos"},
+          "target": {"owner": "component", "component": "cell", "port": "input"}
+        },
+        "decode": {
+          "source": {"owner": "component", "component": "cell", "port": "output"},
+          "target": {"owner": "component", "component": "readout", "port": "input"}
+        },
+        "drive": {
+          "source": {"owner": "component", "component": "readout", "port": "output"},
+          "target": {"owner": "component", "component": "plant", "port": "force"}
+        },
+        "command": {
+          "source": {"owner": "component", "component": "readout", "port": "output"},
+          "target": {"owner": "outputs", "port": "command"}
+        }
+      }
+    }
+  }
+}

@@ -399,7 +399,7 @@ def _verify_values(expected, declarations, tensors, saved_declarations, *, preci
 
 
 def _value_differences(
-    expected: Mapping[str, jax.Array | np.ndarray],
+    expected: Mapping[str, jax.Array | np.ndarray | jax.ShapeDtypeStruct],
     declarations: Mapping[str, object],
     tensors: Mapping[str, jax.Array | np.ndarray],
     saved_declarations: Mapping[str, object], *, precision: ModelSlotPrecision = "exact",
@@ -429,22 +429,34 @@ def _value_differences(
             yield "mismatched_slot", path, ", ".join(differences)
 
 
-def model_slot_fit_problems(
-    graph: GraphSpec, template: Graph, replica: str, tensors: Mapping[str, np.ndarray],
-    metadata: Mapping[str, object], *, unsupported: Iterable[tuple[str, ...]],
-    precision: ModelSlotPrecision = "exact",
-) -> Iterator[ModelSlotFitProblem]:
-    unsupported = frozenset(unsupported)
-    excluded = tuple(semantic_key("model", "value", path[:-1], path[-1]) + "/" for path in unsupported)
-    retained = {path for path, _ in graph_leaf_specs(graph)} - unsupported
-    expected, declarations = _describe(graph, template, retained=retained)
-    for kind, address, detail in _value_differences(
-        expected, declarations,
-        {path: value for path, value in tensors.items() if not path.startswith(excluded)},
-        {path: value for path, value in metadata.items() if not path.startswith(excluded)},
-        precision=precision,
-    ):
-        yield ModelSlotFitProblem(kind=kind, replica=replica, address=address or "/", detail=detail)
+@dataclass(frozen=True)
+class ModelSlotFitLayout:
+    """Model checkpoint metadata shared by every fitted replica."""
+
+    shapes: Mapping[str, jax.ShapeDtypeStruct]
+    declarations: Mapping[str, object]
+    excluded: tuple[str, ...]
+
+    @classmethod
+    def describe(cls, graph: GraphSpec, template: Graph, *, unsupported: Iterable[tuple[str, ...]]) -> ModelSlotFitLayout:
+        unsupported = frozenset(unsupported)
+        excluded = tuple(semantic_key("model", "value", path[:-1], path[-1]) + "/" for path in unsupported)
+        retained = {path for path, _ in graph_leaf_specs(graph)} - unsupported
+        expected, declarations = _describe(graph, template, retained=retained)
+        shapes = {path: jax.ShapeDtypeStruct(value.shape, value.dtype) for path, value in expected.items()}
+        return cls(shapes, declarations, excluded)
+
+    def problems(
+        self, replica: str, tensors: Mapping[str, np.ndarray], metadata: Mapping[str, object],
+        *, precision: ModelSlotPrecision,
+    ) -> Iterator[ModelSlotFitProblem]:
+        for kind, address, detail in _value_differences(
+            self.shapes, self.declarations,
+            {path: value for path, value in tensors.items() if not path.startswith(self.excluded)},
+            {path: value for path, value in metadata.items() if not path.startswith(self.excluded)},
+            precision=precision,
+        ):
+            yield ModelSlotFitProblem(kind=kind, replica=replica, address=address or "/", detail=detail)
 
 
 @dataclass(frozen=True)

@@ -13,9 +13,10 @@ from feedbax.compiler.graph_schema import _component_port_dimension
 from feedbax.compiler.model_ports import derives_input_width
 from feedbax.compiler.resolution import GraphParameterResolution
 from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.expression_storage import MAX_AUTHORED_EXPRESSION_TEXT
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
-    DIMENSIONLESS, Dimensions, Level, ScopedValue, SignalSpace, ValueBase, ValueType,
+    DIMENSIONLESS, CallValue, Dimensions, Level, LiteralValue, ScopedValue, SignalSpace, ValueBase, ValueType,
 )
 from feedbax.contracts.graph import ComponentSpec, StudioTaskDataSpec
 from feedbax.contracts.model_address import (
@@ -26,6 +27,7 @@ from feedbax.contracts.model_document import CompositeComponent, ModelDocument, 
 from feedbax.contracts.model_edit import ModelGraphProblem
 from feedbax.contracts.model_values import SignalLeafPath, model_owner_class
 from feedbax.contracts.portable import OutputSignals, PassedSignal, SignalProperties, StateSignal, signal_leaf_declaration
+from feedbax.contracts.stored_model import StoredDelayInitialValue, StoredModelSignalSource
 
 
 @dataclass(frozen=True)
@@ -154,13 +156,16 @@ def model_measure_scope(model: ModelDocument, signals: ModelSignalTable) -> Mode
         scope = leaf.port.composites
         owner = owner_at(scope)
         prefix = labels[scope]
+        label = leaf.name
         if isinstance(end, ComponentPortAddress):
             if end.component not in owner.interior.components:
                 continue
             prefix = (*prefix, owner.interior.components[end.component].name)
-        elif scope:
-            prefix = (*prefix, "Outputs")
-        path = (*prefix, leaf.name, *map(str, leaf.path))
+        elif isinstance(end, OutputBoundaryEnd):
+            if scope:
+                prefix = (*prefix, "Outputs")
+            label = next((port.name for port in owner.ports.outputs if port.id == end.port), label)
+        path = (*prefix, label, *map(str, leaf.path))
         address = leaf.address.to_text()
         name = ".".join(path)
         if name in used:
@@ -193,6 +198,52 @@ def _end_address(
     if isinstance(end, ComponentPortEnd):
         return _component_port(scope, end.component, direction, end.port)
     return ModelAddress(composites=scope, element=PortElement(kind="port", end=end))
+
+
+def intervention_operand_defaults(
+    model: ModelDocument, signals: ModelSignalTable, owner: ModelAddress, operation: str,
+) -> dict[str, StoredModelSignalSource]:
+    """Author defaults for an intervention using the signal that the owner carries."""
+    branch: ModelDocument | CompositeComponent = model
+    for key in owner.composites:
+        child = branch.interior.components.get(key)
+        if not isinstance(child, CompositeComponent):
+            raise ValueError(f"The attachment owner’s composite {key!r} does not exist.")
+        branch = child
+    match owner.element:
+        case WireElement(id=key):
+            if (wire := branch.interior.wires.get(key)) is None:
+                raise ValueError(f"The attachment owner’s wire {key!r} does not exist.")
+            port = _end_address(owner.composites, wire.source, "output")
+        case PortElement(end=InputBoundaryEnd() | ComponentPortAddress(direction="output")):
+            port = owner
+        case _:
+            raise ValueError("An intervention needs a wire or a signal source port.")
+    leaves = signals.at_port(port)
+    if not leaves:
+        raise ValueError("The attachment owner’s source port does not exist.")
+
+    match operation.lower():
+        case "scale":
+            values = {"factor": LiteralValue(value=1)}
+        case "clamp":
+            values = {"low": LiteralValue(value=-1), "high": LiteralValue(value=1)}
+        case "add":
+            leaf = signals.at(port)
+            kind = leaf.type if leaf is not None else None
+            if kind is None or kind.base == ValueBase.BOOLEAN or len(kind.shape) > 1:
+                raise ValueError("Add needs a source with a resolved numeric scalar or vector shape.")
+            zero = LiteralValue(value=0)
+            if kind.shape:
+                width, = kind.shape
+                if 3 * width > MAX_AUTHORED_EXPRESSION_TEXT:
+                    raise ValueError("The Add default exceeds the authored expression text limit.")
+                values = {"value": CallValue(function="vector", args=(zero,) * width)}
+            else:
+                values = {"value": zero}
+        case _:
+            raise ValueError(f"No intervention operation named {operation!r}.")
+    return {name: StoredDelayInitialValue(kind="value", value=value) for name, value in values.items()}
 
 
 def _port_element(address: ModelAddress) -> PortElement:

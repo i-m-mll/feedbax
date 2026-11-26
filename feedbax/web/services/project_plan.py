@@ -30,6 +30,9 @@ from feedbax.contracts.effective_success import (
 )
 from feedbax.contracts.expression_values import Expression
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
+from feedbax.contracts.model_address import FieldElement
+from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     StudioActivityJob,
@@ -66,6 +69,7 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainResult,
     StudioSavedTrainRow,
     StudioSavedTrainRuns,
+    StudioTrialName,
 )
 from feedbax.contracts.project_inputs import (
     BatchCheckpoint, BoundRank, InputBinding, SelectedAxisValue, StepReference, SubsetTerms,
@@ -87,10 +91,12 @@ from feedbax.planner.project_plan import (
     authored_request_change, common_train_metrics, planned_input_groups,
 )
 from feedbax.planner.project_plan_io import run_key
+from feedbax.planner.trial_names import TrialNameParts, numbered_trial_parts
 from feedbax.contracts.project_resolution import ProjectDiagnostic
+from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import (
-    CheckpointRuleAxis, SetAxis, authored_sweep_axis_name, axis_coordinates, sweep_value_name,
+    CheckpointRuleAxis, SetAxis, authored_sweep_axis_name, axis_coordinates, model_field_target, sweep_value_name,
 )
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.run_rule import (
@@ -101,7 +107,9 @@ from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, ConditionalProduct, LastMember, ProductRef, RequestId, UpdateSeriesMember,
     is_synthesized_model_product,
 )
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec, SynthesisRequestSpec
+from feedbax.contracts.request_specs import (
+    DocumentTrainingRequestSpec, EvaluationRequestSpec, RenderRequestSpec, SynthesisRequestSpec,
+)
 from feedbax.contracts.trial_clock import StudioSavedFigureMeanRequest
 from feedbax.contracts.trial_record import StudioTrialReplayResponse
 from feedbax.dataset import Dataset
@@ -131,6 +139,7 @@ from feedbax.persistence.canonical_evaluate import EvaluationResult, decode_roll
 from feedbax.host.live_evaluate import live_objective_series
 from feedbax.contracts.rollout import CannotRun
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
+from feedbax.project_model_selection import trial_document_slots
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.services.axis_values import gather_axes
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, SettledProjectPlan
@@ -310,11 +319,13 @@ class ProjectPlanRead:
             )
         statuses = {item.key: item for row in self.status_rows() for item in row.flattened()}
         elements = plan.elements.values()
-        conditions: dict[str, list[str] | None] = {}
+        conditions: dict[str, list[StudioTrialName] | None] = {}
 
-        def task_conditions(row: PlannedRow) -> list[str] | None:
+        def task_conditions(row: PlannedRow) -> list[StudioTrialName] | None:
             if evaluation_tasks is None:
                 return None
+            if row.trial_names is not None:
+                return _named_trials(tuple(row.trial_names), row.trial_names)
             task = row.train.task if row.train is not None else None
             if isinstance(row, PlannedRun) and row.kind == "synthesize":
                 spec = decode_request(plan.requests[row.request_id], plan.documents.__getitem__).spec
@@ -325,7 +336,8 @@ class ProjectPlanRead:
             identity = to_json(task.model_dump(mode="json")).decode()
             if identity not in conditions:
                 try:
-                    conditions[identity] = list(evaluation_conditions(task, evaluation_tasks))
+                    ids = evaluation_conditions(task, evaluation_tasks)
+                    conditions[identity] = _named_trials(ids, numbered_trial_parts(ids))
                 except ValueError:
                     # An unresolved Task has no authorable trial domain.
                     conditions[identity] = None
@@ -399,14 +411,29 @@ class ProjectPlanRead:
 
         def exceptions(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapException]:
             at = variant, step_id
-            sweep = plan.steps[at].sweep
+            step = plan.steps[at]
+            sweep = step.sweep
             if sweep is None and (project := plan.variant_projects.get(variant)) is not None:
                 sweep = project.steps[step_id].sweep
             if sweep is not None:
                 matches = plan.exception_matches.get(at, {})
                 for name, rule in sweep.exceptions.items():
-                    if rule is not None:
-                        yield StudioProjectWindowMapException(id=name, count=len(matches.get(name, ())), rule=rule)
+                    if rule is None:
+                        continue
+                    field_labels = {}
+                    for path, patch in rule.patches.items():
+                        if patch is None:
+                            continue
+                        if label := step.exception_field_labels.get(path):
+                            field_labels[path] = label
+                        elif (target := model_field_target(path)) is not None and isinstance(
+                            target.address.element, FieldElement,
+                        ):
+                            field = str(target.address.element.path[-1]).replace("_", " ")
+                            field_labels[path] = field[:1].upper() + field[1:]
+                    yield StudioProjectWindowMapException(
+                        id=name, count=len(matches.get(name, ())), rule=rule, field_labels=field_labels,
+                    )
 
         def includes(variant: str | None) -> bool:
             return variants is None or variant is None or variant in variants
@@ -655,6 +682,23 @@ def _analysis_status(
     return PlanStatusRow(key, label, JobStatus.SUCCEEDED, None)
 
 
+def _figure_task_labels(
+    view: ProjectPlanRead, store: ImmutableArtifactBlobProvider, receipt: Success, spec: RenderRequestSpec, content: bytes,
+) -> bytes:
+    from feedbax.web.services.figure_labels import project_figure_task_labels
+
+    evaluations: dict[tuple[str, str], list[DatasetPort]] = defaultdict(list)
+    for run in view.settled.plan.runs:
+        row = view.evaluations.get(run.key)
+        result = row.result if row is not None else None
+        if (
+            result is not None and result.request_id is not None
+            and isinstance(run, PlannedRun) and run.dataset_port is not None
+        ):
+            evaluations[result.job_id, result.request_id].append(run.dataset_port)
+    return project_figure_task_labels(content, spec.document, receipt.inputs, store, evaluations)
+
+
 class ProjectPlanService:
     def __init__(
         self, folders: ProjectFolderService, jobs: JobService,
@@ -690,7 +734,7 @@ class ProjectPlanService:
 
     def _saved_light_receipt(
         self, project: str, revision: str, job_id: str, role: str,
-    ) -> tuple[ImmutableArtifactBlobProvider, Success]:
+    ) -> tuple[ProjectPlanRead, ImmutableArtifactBlobProvider, Success]:
         view = self.read(project, revision=revision)
         visible = next((result for history in view.light.values() for result in (history.result, history.previous)
                         if result is not None and result.job_id == job_id and role in result.products), None)
@@ -702,7 +746,7 @@ class ProjectPlanService:
         if ref is None or ref.sha256 != visible.receipt.manifest_sha256:
             raise JobConflict("The saved result receipt could not be authenticated.")
         try:
-            return store, success.read_receipt(ref)
+            return view, store, success.read_receipt(ref)
         except (OSError, TypeError, ValueError, KeyError) as error:
             raise JobConflict("The saved result receipt could not be authenticated.") from error
 
@@ -710,7 +754,7 @@ class ProjectPlanService:
         self, project: str, revision: str, job_id: str, role: str, member: str,
     ) -> SavedLightProduct:
         """Read a product of a current or previous result visible on the saved Plan."""
-        store, receipt = self._saved_light_receipt(project, revision, job_id, role)
+        view, store, receipt = self._saved_light_receipt(project, revision, job_id, role)
         try:
             product, = receipt.products[role]
             content = success_content_ref(product.content)
@@ -729,14 +773,18 @@ class ProjectPlanService:
                 return SavedLightProduct(store.get_object(selected), media_type, policy)
             if role != PLOTLY_FIGURE_ROLE or member != "figure.json":
                 raise JobNotFound(job_id)
-            return SavedLightProduct(store.get_object(content), "application/json")
+            request = read_effective_request(receipt, store.get_object)
+            if not isinstance(request.spec, RenderRequestSpec):
+                raise ValueError("Expected a saved figure request.")
+            labelled = _figure_task_labels(view, store, receipt, request.spec, store.get_object(content))
+            return SavedLightProduct(labelled, "application/json")
         except (OSError, TypeError, ValueError, KeyError) as error:
             raise JobConflict("The saved product could not be authenticated.") from error
 
 
     @contextmanager
     def _operation_dataset(self, project: str, revision: str, job_id: str, role: str) -> Iterator[Dataset]:
-        store, receipt = self._saved_light_receipt(project, revision, job_id, role)
+        _, store, receipt = self._saved_light_receipt(project, revision, job_id, role)
         if not receipt.request.id.startswith(("analyze:", "synthesize:")):
             raise JobNotFound(job_id)
         try:
@@ -773,10 +821,12 @@ class ProjectPlanService:
     def figure_mean(self, project: str, body: StudioSavedFigureMeanRequest) -> SavedLightProduct:
         from feedbax.host.light_worker import render_saved_figure
 
-        store, receipt = self._saved_light_receipt(project, body.revision, body.job_id, PLOTLY_FIGURE_ROLE)
+        view, store, receipt = self._saved_light_receipt(project, body.revision, body.job_id, PLOTLY_FIGURE_ROLE)
         try:
             request = read_effective_request(receipt, store.get_object)
-            return SavedLightProduct(render_saved_figure(store, request, receipt.inputs, mean=body.mean), "application/json")
+            content = render_saved_figure(store, request, receipt.inputs, mean=body.mean)
+            assert isinstance(request.spec, RenderRequestSpec)
+            return SavedLightProduct(_figure_task_labels(view, store, receipt, request.spec, content), "application/json")
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, TypeError, ValueError, KeyError) as error:
@@ -928,7 +978,10 @@ class ProjectPlanService:
     ) -> StudioTrialReplayResponse:
         _, result = self._evaluation_result(project_id, body)
         try:
-            return result.replay(body.trial, checkpoint=body.checkpoint, aggregate=body.aggregate, mean=body.mean)
+            return result.replay(
+                body.trial, checkpoint=body.checkpoint, replicate=body.replicate, aggregate=body.aggregate, mean=body.mean,
+                components=self.folders.components,
+            )
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, ValueError, KeyError) as error:
@@ -960,13 +1013,15 @@ class ProjectPlanService:
             requested = list(subject.select.updates)
             objective = train.trial_documents.objective
             if isinstance(result, EvaluationResult):
-                return result.objective_series(requested, objective=objective)
-            return live_objective_series(
-                ImmutableArtifactBlobProvider(settled.store_path),
-                project_id=settled.project_id, job_id=body.job_id, request_id=run.request_id,
-                producer_request=subject.request_id, params=params, requested=requested,
-                objective=objective, observation=result,
-            )
+                series = result.objective_series(requested, objective=objective)
+            else:
+                series = live_objective_series(
+                    ImmutableArtifactBlobProvider(settled.store_path),
+                    project_id=settled.project_id, job_id=body.job_id, request_id=run.request_id,
+                    producer_request=subject.request_id, params=params, requested=requested,
+                    objective=objective, observation=result,
+                )
+            return self._name_objective_families(settled, key, subject.request_id, objective, series)
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise JobConflict("The selected Evaluate objective could not be read and authenticated.") from error
 
@@ -991,9 +1046,48 @@ class ProjectPlanService:
             train = receipts.read_request(producer.producer).spec
             if not isinstance(train, DocumentTrainingRequestSpec):
                 raise ValueError("Evaluate subject has no authored Objective.")
-            return result.objective_series(list(subject.select.updates), objective=train.trial_documents.objective)
+            objective = train.trial_documents.objective
+            series = result.objective_series(list(subject.select.updates), objective=objective)
+            key = RunKey(body.key.variant, body.key.step, body.key.row)
+            return self._name_objective_families(settled, key, subject.request_id, objective, series)
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise JobConflict("The retained Evaluate objective could not be read and authenticated.") from error
+
+    def _name_objective_families(
+        self, settled: SettledProjectPlan, evaluate: RunKey, producer_request: RequestId,
+        objective: ObjectiveDocument, series: StudioEvaluationObjectiveSeries,
+    ) -> StudioEvaluationObjectiveSeries:
+        """Read family labels from the selected definition without including them in the request."""
+        families = {term.family for term in objective.terms if term.enabled and term.family is not None}
+        if not families or not series.points:
+            return series
+        run = settled.plan.row(evaluate)
+        binding = run.inputs.get("subject") if isinstance(run, PlannedRun) else None
+        producer = settled.plan.row(binding.producer) if binding and binding.producer is not None else None
+        if not isinstance(producer, PlannedRun) or producer.request_id != producer_request:
+            return series
+        definition = settled.plan.selected_definitions.get(producer.key)
+        if definition is None:
+            selected = self.folders.read_plan(settled.project_id, revision=settled.revision, source_runs=(producer.key,))
+            definition = selected.plan.selected_definitions.get(producer.key)
+        if definition is None:
+            return series
+        slots, _ = trial_document_slots(definition.payload)
+        authored = slots.get("objective")
+        terms = authored.get("terms") if isinstance(authored, dict) else None
+        if not isinstance(terms, dict):
+            return series
+        names = {
+            pointer((key,)): label for key in families
+            if isinstance(member := terms.get(key), dict) and isinstance(label := member.get("label"), str)
+        }
+        return series.model_copy(update={"points": [
+            point.model_copy(update={"terms": [
+                term.model_copy(update={"name": names[term.path]}) if term.path in names else term
+                for term in point.terms
+            ]})
+            for point in series.points
+        ]})
 
 
 def _final_metric_check(
@@ -1263,6 +1357,21 @@ def _evaluation_params(settled: SettledProjectPlan, run: PlannedRun) -> Mapping[
     return spec.params if isinstance(spec, EvaluationRequestSpec) else None
 
 
+def _named_trials(ids: Sequence[str], names: TrialNameParts) -> list[StudioTrialName]:
+    known = [names[id] for id in ids if id in names]
+    varying = {
+        index for index, parts in enumerate(zip(*known)) if len(set(parts)) > 1
+    }
+    result = []
+    for id in ids:
+        parts = names.get(id)
+        label = None
+        if parts is not None:
+            label = " · ".join(part for index, part in enumerate(parts) if index in varying) or parts[0]
+        result.append(StudioTrialName(id=id, name=label))
+    return result
+
+
 def _evaluation_row(
     settled: SettledProjectPlan, run: PlannedRun, jobs: PlanJobAttempts, reader: PlanJobReader,
     history: Mapping[RunKey, TrainRowHistory],
@@ -1350,8 +1459,9 @@ def _evaluation_row(
         attempt.request_id != run.request_id and attempt.successful_receipt is not None
         and attempt.output_size_bytes is not None
     )), None)
-    result = _saved_evaluation_result(success, planned)
-    prior = _saved_evaluation_result(previous, None)
+    names = run.trial_names or numbered_trial_parts(trials)
+    result = _saved_evaluation_result(success, planned, names)
+    prior = _saved_evaluation_result(previous, None, names)
     retained = bool(attempts and attempts[-1].collected_evaluate) or (
         success is not None and success.collected_evaluate
     )
@@ -1366,7 +1476,8 @@ def _evaluation_row(
     return StudioSavedEvaluationRow(
         key=key, request_id=run.request_id,
         status=status, reason=reason,
-        can_run=can_run, trials=trials, result=result, previous=prior, checkpoint_series=series, checkpoint_rule=rule,
+        can_run=can_run, trials=_named_trials(trials, names), result=result, previous=prior,
+        checkpoint_series=series, checkpoint_rule=rule,
         checkpoint_attempt=displayed_attempt.checkpoint_attempt if series is not None and displayed_attempt else None,
         subject_rank_key=planned.member.key if isinstance(reference, BestRank) and reference.group else None,
         bound_subject=_planned_bound(attempts[-1].bound_subject, planned) if attempts else None,
@@ -1375,14 +1486,14 @@ def _evaluation_row(
 
 
 def _saved_evaluation_result(
-    attempt: PlanJobAttempt | None, planned: PlannedInput | None,
+    attempt: PlanJobAttempt | None, planned: PlannedInput | None, names: TrialNameParts,
 ) -> StudioSavedEvaluationResult | None:
     if attempt is None:
         return None
     assert attempt.successful_receipt is not None and attempt.output_size_bytes is not None
     return StudioSavedEvaluationResult(
         job_id=attempt.job_id, request_id=attempt.request_id, revision=attempt.revision,
-        receipt=attempt.successful_receipt, trials=list(attempt.trials),
+        receipt=attempt.successful_receipt, trials=_named_trials(attempt.trials, names),
         checkpoint_source=attempt.checkpoint_source, size_bytes=attempt.output_size_bytes,
         checkpoint_sources=list(attempt.checkpoint_sources) or None,
         checkpoint_gaps=list(attempt.checkpoint_gaps) if attempt.checkpoint_gaps is not None else None,
@@ -1391,6 +1502,7 @@ def _saved_evaluation_result(
         provenance=attempt.provenance,
         loaded_model=attempt.loaded_model,
         origin=attempt.model_origin,
+        replicates=attempt.replicates,
     )
 
 def _subject_checkpoint_path(settled: SettledProjectPlan, run: PlannedRun, planned: PlannedInput) -> str:

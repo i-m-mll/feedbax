@@ -1,8 +1,7 @@
 """Seed a Train step whose Model holds a Linear and a Conv2d without their required parameters, a sound 8000-batch
 Train step, an Evaluate of the first, and an Analyze of the Evaluate."""
 
-import json
-import sys
+from tests.support.browser_seed_actions import HomeSeed, print_action
 from copy import deepcopy
 
 from web.e2e.studio.fixtures.canonical_evaluate import _seed
@@ -19,8 +18,8 @@ def seed(home: str, project_id: str):
     documents = raw["documents"]
     documents["sound-model"] = deepcopy(documents["reach-model"]) | {"label": "Sound model"}
     components = documents["reach-model"]["payload"]["interior"]["components"]
-    components["linear"] = {"kind": "leaf", "name": "Linear", "type": "feedbax.equinox.Linear", "fields": {}}
-    components["conv"] = {"kind": "leaf", "name": "Conv", "type": "feedbax.Conv2d", "fields": {}}
+    components["linear"] = {"kind": "leaf", "label": "Linear", "type": "feedbax.equinox.Linear", "fields": {}}
+    components["conv"] = {"kind": "leaf", "label": "Conv", "type": "feedbax.Conv2d", "fields": {}}
     train = steps["train"]
     train["base"]["inline"]["training_config"]["n_batches"] = 10000
     train["sweep"] = {"axes": {"rate": {
@@ -37,6 +36,8 @@ def seed(home: str, project_id: str):
     return _seed(home, project_id, raw)
 
 
+ACTIONS = {"seed": HomeSeed(seed)}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed}[action](*args)))
+    print_action(ACTIONS)

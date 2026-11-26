@@ -1,5 +1,6 @@
 """Exercise the installed examples through ordinary project and training entry points."""
 
+import json
 from math import isfinite
 from pathlib import Path
 
@@ -8,12 +9,13 @@ import jax.random as jr
 import numpy as np
 
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.project import RootDocument
 from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.train_settings import normalize_train_method
 from feedbax.examples import load_shipped_projects
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -31,20 +33,39 @@ _REACH_TERMS = {"effector_position", "effector_final_velocity", "nn_hidden", "nn
 _POINT_MASS_REFERENCE = Path(__file__).parent / "fixtures" / "point_mass_one_update.npz"
 
 
-def test_shipped_trial_documents_have_unique_names():
+def test_studio_can_author_the_generated_blank_documents():
+    source = Path(__file__).resolve().parents[1] / "web/src/generated/studioContracts.ts"
+    generated = source.read_text()
+    for name, schema in (
+        ("blankStoredModel", STORED_MODEL_DOCUMENT_SCHEMA_ID),
+        ("blankStoredTask", STORED_TASK_DOCUMENT_SCHEMA_ID),
+        ("blankStoredObjective", STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID),
+    ):
+        data = generated.split(f"export const {name} = ", 1)[1]
+        payload, _ = json.JSONDecoder().raw_decode(data)
+        RootDocument(schema=schema, label="Blank", payload=payload)
+
+
+def test_shipped_trial_documents_have_unique_keys_and_catalog_labels():
     projects = load_shipped_projects()
-    assert "point-mass-reaching" in projects
+    assert {"point-mass-reaching", "point-mass-set-campaign"} <= projects.keys()
     seen: dict[tuple[str, str], str] = {}
+    labels: dict[tuple[str, str], tuple[str, str]] = {}
     for folder, project in projects.items():
         for name, document in project.documents.items():
             entry = document.schema_id, name
             assert entry not in seen, (entry, seen[entry], folder)
             seen[entry] = folder
+            label = document.schema_id, document.label
+            assert label not in labels, (label, labels[label], (folder, name))
+            labels[label] = (folder, name)
+            if folder == "point-mass-set-campaign":
+                assert document.label != name
 
-    assert seen[MODEL_DOCUMENT_SCHEMA_ID, "point-mass"] == "point-mass-reaching"
+    assert seen[STORED_MODEL_DOCUMENT_SCHEMA_ID, "point-mass"] == "point-mass-reaching"
     for name in _VALIDATION_COUNTS:
-        assert seen[TASK_DOCUMENT_SCHEMA_ID, f"{name}-task"] == "point-mass-reaching"
-        assert seen[OBJECTIVE_DOCUMENT_SCHEMA_ID, f"{name}-objective"] == "point-mass-reaching"
+        assert seen[STORED_TASK_DOCUMENT_SCHEMA_ID, f"{name}-task"] == "point-mass-reaching"
+        assert seen[STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, f"{name}-objective"] == "point-mass-reaching"
 
 
 def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):

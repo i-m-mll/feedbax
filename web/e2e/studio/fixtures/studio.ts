@@ -9,7 +9,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFixtureRunner } from './python';
-import type { AnalysisDocument, StudioActivityJob, StudioJobSnapshot, StudioProjectSnapshot } from '../../../src/generated/studioContracts';
+import {
+  analysisDocumentSchemaId, type AnalysisDocument, type StudioActivityJob, type StudioJobSnapshot, type StudioProjectSnapshot,
+  type ComponentListResponse, type StudioProjectWindowMap, type StudioSavedTrainRuns,
+} from '../../../src/generated/studioContracts';
 
 export const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 
@@ -233,35 +236,55 @@ async function settleJobs(origin: string) {
 }
 
 const snapshotRoute = /^\/api\/projects(?:\/[^/]+(?:\/(?:open|rename|files|history\/replay|members\/command|model\/(?:edit|undo)|loaded-models\/import))?)?$/;
+const planRoute = /^\/api\/projects\/([^/]+)\/train-runs$/;
 
+/** Collections whose members carry no label of their own, so that a walk for labelled members does not find them. */
+const unlabelledCollections = new Set(['wires']);
+
+/**
+ * The member keys of a project: the key of every keyed member of its documents and steps (components, ports, wires,
+ * Task variables, signals, epochs, Set entries, trials, Objective terms, Analysis operations and views, named index
+ * values), found as the keys of a collection whose members have a label, and the keys of its documents and steps.
+ */
 function memberNames(snapshot: StudioProjectSnapshot) {
   const keys = new Set<string>();
   const labels = new Set<string>();
   const layerNames = new Set<string>();
-  function collect(members: Record<string, { label: string }> | undefined) {
-    for (const [key, { label }] of Object.entries(members ?? {})) {
-      keys.add(key);
-      labels.add(label);
+  function walk(value: unknown, collection?: string) {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, member] of Object.entries(value)) {
+      if (member && typeof member === 'object' && !Array.isArray(member)) {
+        const { label } = member as { label?: unknown };
+        if (typeof label === 'string') {
+          keys.add(key);
+          labels.add(label);
+        } else if (collection !== undefined && unlabelledCollections.has(collection)) {
+          keys.add(key);
+        }
+      }
+      walk(member, key);
     }
   }
-  function analysis(payload: unknown) {
-    const { operations, views } = payload as AnalysisDocument;
-    collect(operations);
-    collect(views);
+  function analysisLayers(payload: unknown) {
+    const { views } = payload as AnalysisDocument;
     for (const { figure } of Object.values(views ?? {})) {
-      if ('layers' in figure) for (const { name } of figure.layers) layerNames.add(name);
+      if ('layers' in figure) for (const key of Object.keys(figure.layers)) layerNames.add(key);
     }
   }
 
-  collect(snapshot.project.documents);
-  collect(snapshot.project.steps);
+  walk(snapshot.project.documents);
+  walk(snapshot.project.steps);
+  walk(snapshot.composed);
   for (const [key, document] of Object.entries(snapshot.project.documents ?? {})) {
-    if (document.schema !== 'feedbax.analysis_document.v1') continue;
-    const payload = 'payload' in document ? document.payload : snapshot.composed?.[key];
-    if (payload && typeof payload === 'object') analysis(payload);
+    if (document.schema !== analysisDocumentSchemaId) continue;
+    analysisLayers('payload' in document ? document.payload : snapshot.composed?.[key]);
   }
   for (const step of Object.values(snapshot.project.steps ?? {})) {
-    if (step.kind === 'analyze' && 'inline' in step.base) analysis(step.base.inline);
+    if (step.kind === 'analyze' && 'inline' in step.base) analysisLayers(step.base.inline);
   }
   // A variant can introduce members of its own and label existing ones differently.
   for (const variant of Object.values(snapshot.variant_names)) {
@@ -272,16 +295,125 @@ function memberNames(snapshot: StudioProjectSnapshot) {
       }
     }
   }
-  return { keys: [...keys].filter((key) => !labels.has(key)), layerNames: [...layerNames] };
+  return { keys: [...keys].filter((key) => !labels.has(key)), labels, layerNames: [...layerNames] };
 }
 
-/** Reads snapshots the browser already requested, then checks the visible text in each open Studio page. */
-async function checkMemberLabels({ context, studio }: { context: BrowserContext; studio: Studio }, use: () => Promise<void>) {
+/**
+ * The ids the plan generates for the members of families, which no document stores (trials and evaluation conditions),
+ * leaving out an id that is its own name.
+ */
+function generatedIds(map: StudioProjectWindowMap) {
+  const lists: readonly (readonly unknown[] | null | undefined)[] = [
+    ...(map.evaluations ?? []).map(({ trials }) => trials), ...map.rows.map(({ evaluation_conditions }) => evaluation_conditions),
+  ];
+  return lists.flatMap((trials) => (trials ?? []).flatMap((trial) => {
+    const { id, name } = typeof trial === 'string' ? { id: trial, name: null } : trial as { id: string; name: string | null };
+    return id === name ? [] : [id];
+  }));
+}
+
+type ShownNames = { keys: string[]; layerNames: string[]; generated: string[] };
+
+/**
+ * The visible text and tooltips in `page` that show a member key or a generated id as a name: text that equals a key,
+ * or contains a generated id or a lowered Set member's id (`set-<hex>`), outside Change Key, inputs and expression fields.
+ */
+async function leakedNames(page: Page, names: ShownNames) {
+  return page.evaluate(({ keys, layerNames, generated }) => {
+    const members = new Set(keys);
+    const layers = new Set(layerNames);
+    const lowered = /\bset-[0-9a-f]{3,}/;
+    // A long id is shown cut short with an ellipsis; the token before it is a prefix of the id.
+    const cut = /([^\s…]+)…/g;
+    // An id built from the parts of a family (`reach-0-0--kick-bank=drift`) is found inside other text. A bare one is a
+    // position, such as a sampled trial's, which text shows as a number.
+    const built = generated.filter((id) => /[-=]/.test(id) && id.length >= 4);
+    const leaks = (value: string) => members.has(value) || lowered.test(value) || built.some((id) => value.includes(id))
+      || [...value.matchAll(cut)].some(([, prefix]) => /[-=]/.test(prefix) && prefix.length >= 6
+        && built.some((id) => id.startsWith(prefix)));
+    const exempt = (element: Element) => !!element.closest('[data-member-key], input, textarea, [contenteditable], .sr-only')
+      // The title names the project itself, which can share a name with one of its members.
+      || !!element.closest('.studio-window-bar__project h1');
+    const place = (element: Element) => [element.localName, ...element.classList].join('.');
+    const found = new Set<string>();
+    const nodes = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    while (nodes.nextNode()) {
+      const node = nodes.currentNode;
+      const value = node.textContent?.trim();
+      const parent = node.parentElement;
+      if (!value || !parent || !leaks(value) || exempt(parent)) continue;
+      // A figure layer can have the same authored name as a different member's key.
+      if (layers.has(value) && parent.closest('[data-node]')?.getAttribute('data-node') === JSON.stringify(['layer', value])) continue;
+      if (getComputedStyle(parent).visibility !== 'visible') continue;
+      range.selectNodeContents(node);
+      if (Array.from(range.getClientRects()).some(({ width, height }) => width > 0 && height > 0)) found.add(`${value} in ${place(parent)}`);
+    }
+    // A tooltip or an accessible name is shown text too, though no text node holds it until it is shown.
+    const named = ['data-app-tip', 'aria-label', 'aria-description', 'title'];
+    for (const element of document.body.querySelectorAll(named.map((name) => `[${name}]`).join(', '))) {
+      if (exempt(element) || !element.getClientRects().length) continue;
+      for (const name of named) {
+        const value = element.getAttribute(name)?.trim();
+        if (value && leaks(value)) found.add(`${value} in ${name} of ${place(element)}`);
+      }
+    }
+    return [...found];
+  }, names);
+}
+
+/**
+ * The pickers whose choices and marks are shown only while open: the trial picker and each slot header's document
+ * picker. Each is opened in turn and closed again.
+ */
+const pickers = (page: Page) => [
+  page.getByRole('group', { name: 'Clock', exact: true }).getByRole('button', { name: /^Trial / }),
+  ...[0, 1].map((index) => page.locator('.studio-window-slot__header button[data-document]').nth(index)),
+];
+
+/**
+ * Checks that the open Studio pages show no member key or generated id as a name, now, with each picker of `pickers`
+ * opened in turn. The fixture also checks each page as the test leaves it, with its pickers as they are.
+ */
+export type MemberLabels = (where?: string) => Promise<void>;
+
+/**
+ * The port names the component types declare, as the Service's component read gives them. A leaf's port is named by
+ * its type, not by a member key, so text that shows one is a name even where it equals some member's key.
+ */
+async function typePortNames(origin: string) {
+  const response = await fetch(`${origin}/api/components`);
+  if (!response.ok) throw new Error(`The component read failed: ${response.status} ${await response.text()}`);
+  const { data } = await response.json() as ComponentListResponse;
+  return new Set(data.components.flatMap(({ input_ports, output_ports, port_types, dynamic_port_policy }) => [
+    ...input_ports ?? [], ...output_ports ?? [],
+    ...Object.keys(port_types?.inputs ?? {}), ...Object.keys(port_types?.outputs ?? {}),
+    ...dynamic_port_policy?.fixed_input_ports ?? [], ...dynamic_port_policy?.fixed_output_ports ?? [],
+  ]));
+}
+
+/** Reads the snapshots and plans the browser already requested, then checks the visible text in each open Studio page. */
+async function checkMemberLabels({ context, studio }: { context: BrowserContext; studio: Studio }, use: (check: MemberLabels) => Promise<void>) {
+  let ports: Promise<Set<string>> | undefined;
   const reads: Promise<void>[] = [];
   const latest = new Map<string, { order: number; members: ReturnType<typeof memberNames> }>();
+  const generated = new Map<string, Set<string>>();
   const read = (response: Response) => {
     const { origin, pathname } = new URL(response.url());
-    if (origin !== studio.origin || !response.ok() || !snapshotRoute.test(pathname)) return;
+    if (origin !== studio.origin || !response.ok()) return;
+    const plan = planRoute.exec(pathname);
+    if (plan) {
+      const project = decodeURIComponent(plan[1]);
+      reads.push(response.json().catch(() => undefined).then((body) => {
+        const map = (body as StudioSavedTrainRuns | undefined)?.window_map;
+        if (!map) return;
+        const ids = generated.get(project) ?? new Set();
+        for (const id of generatedIds(map)) ids.add(id);
+        generated.set(project, ids);
+      }));
+      return;
+    }
+    if (!snapshotRoute.test(pathname)) return;
     const order = reads.length;
     reads.push(response.json().catch(() => undefined).then((body) => {
       // Some specs abort requests and some matching routes also return a list.
@@ -292,50 +424,46 @@ async function checkMemberLabels({ context, studio }: { context: BrowserContext;
       }
     }));
   };
-  context.on('response', read);
-  try {
-    await use();
-  } finally {
-    context.off('response', read);
+  const check = async (where?: string, open = true) => {
     await Promise.all(reads);
     for (const page of context.pages()) {
+      if (page.isClosed()) continue;
       const url = new URL(page.url());
       const shown = url.searchParams.get('project');
       const members = url.origin === studio.origin && shown ? latest.get(shown)?.members : undefined;
-      if (!members?.keys.length) continue;
-      const leaked = await page.evaluate(({ keys, layerNames }) => {
-        const members = new Set(keys);
-        const layers = new Set(layerNames);
-        const nodes = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        const range = document.createRange();
-        const found = new Set<string>();
-        while (nodes.nextNode()) {
-          const node = nodes.currentNode;
-          const value = node.textContent?.trim();
-          const parent = node.parentElement;
-          if (!value || !members.has(value) || !parent || parent.closest('[data-member-key], input, textarea, .sr-only')) continue;
-          // The title names the project itself, which can share a name with one of its members.
-          if (parent.closest('.studio-window-bar__project h1')) continue;
-          // A figure layer can have the same authored name as a different member's key.
-          if (layers.has(value) && parent.closest('[data-node]')?.getAttribute('data-node') === JSON.stringify(['layer', value])) continue;
-          if (getComputedStyle(parent).visibility !== 'visible') continue;
-          range.selectNodeContents(node);
-          if (Array.from(range.getClientRects()).some(({ width, height }) => width > 0 && height > 0)) {
-            const place = [parent.localName, ...parent.classList].join('.');
-            found.add(`${value} in ${place}`);
-          }
-        }
-        return [...found];
-      }, members);
-      expect(leaked, 'Studio shows member names outside Change Key').toEqual([]);
+      if (!members) continue;
+      ports ??= typePortNames(studio.origin);
+      const declared = await ports;
+      const keys = new Set(members.keys.filter((key) => !declared.has(key)));
+      // A generated id that is also an authored key, such as a plain trial's, is held to the key's rule.
+      const ids = [...generated.get(shown!) ?? []].filter((id) => !keys.has(id) && !members.labels.has(id));
+      if (!keys.size && !ids.length) continue;
+      const names = { keys: [...keys], layerNames: members.layerNames, generated: ids };
+      const leaked = new Set(await leakedNames(page, names));
+      for (const picker of open ? pickers(page) : []) {
+        if (!await picker.isVisible() || !await picker.isEnabled()) continue;
+        await picker.click();
+        await expect(picker).toHaveAttribute('aria-expanded', 'true');
+        for (const leak of await leakedNames(page, names)) leaked.add(leak);
+        await page.keyboard.press('Escape');
+        await expect(picker).not.toHaveAttribute('aria-expanded', 'true');
+      }
+      expect.soft([...leaked], `${where ? `${where}: ` : ''}Studio shows member keys or generated ids as names outside Change Key`).toEqual([]);
     }
+  };
+  context.on('response', read);
+  try {
+    await use(check);
+  } finally {
+    context.off('response', read);
+    await check(undefined, false);
   }
 }
 
 type WorkerFixtures = { studioBackend: StudioBackend; studioFrontend: StudioFrontend; studio: Studio };
 
 /** Each worker owns one Studio; tests in the worker share its home and job host, and each leaves the queue empty. */
-export const test = traced.extend<{ settledJobs: void; memberLabels: void }, WorkerFixtures>({
+export const test = traced.extend<{ settledJobs: void; memberLabels: MemberLabels }, WorkerFixtures>({
   memberLabels: [checkMemberLabels, { auto: true }],
   settledJobs: [async ({ studio }, use) => {
     await use();
@@ -365,7 +493,7 @@ async function workerLogs(home: string) {
 }
 
 /** Each test owns its Studio, for tests that stop and restart the backend. */
-export const isolatedTest = traced.extend<{ studio: Studio; memberLabels: void }>({
+export const isolatedTest = traced.extend<{ studio: Studio; memberLabels: MemberLabels }>({
   memberLabels: [checkMemberLabels, { auto: true }],
   studio: [async ({}, use, info) => {
     const { studio, close } = await launchStudio('app', 'preview');

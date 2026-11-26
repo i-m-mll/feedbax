@@ -15,7 +15,8 @@ from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.effective_success import INDEX_REF
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -50,15 +51,15 @@ def _save_project(folders, project, authored):
 
 
 def managed_evaluation_definition():
-    from feedbax.contracts.model_address import ModelAddress
+    from feedbax.contracts.project_sweep import model_field_path
     from tests.test_document_train_pair import authored_documents, document_project
 
     raw = document_project(authored_documents(), evaluation=True)
     baseline = raw["steps"]["baseline"]
-    mass = ModelAddress.model_validate({
+    mass = model_field_path(ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
-    }).to_text()
+    }))
     sweep = {"axes": {"mass": {"values": {
         name: {"value": value, "patches": {mass: {"value": value}}}
         for name, value in (("nominal", 1), ("heavy", 2))
@@ -82,17 +83,20 @@ def managed_evaluation_definition():
 
 def test_managed_plan_resolves_task_owned_trial_ids():
     from feedbax.planner.project_plan import compile_project
-    from feedbax.contracts.task_document import TaskDocument
+    from feedbax.contracts.task_document import StoredTaskDocument
 
     raw = managed_evaluation_definition()
-    task = TaskDocument.model_validate(raw["documents"]["task"]["payload"])
-    assert len(task.condition_ids) == 28
-    assert len({tuple(row.variables["start"]) for row in task.validation_trials}) == 4
-    assert all(sum(other.variables["start"] == row.variables["start"] for other in task.validation_trials) == 7
-               for row in task.validation_trials)
-    assert task.model_copy(update={"validation_trials": task.validation_trials[::-1]}).condition_ids == task.condition_ids[::-1]
+    stored = StoredTaskDocument.model_validate(raw["documents"]["task"]["payload"])
+    task = stored.lower()
+    authored_ids = tuple(stored.validation_trials)
+    assert len(authored_ids) == 28
+    assert task.condition_ids == authored_ids
+    points = [tuple(component.value for component in row.variables["start"].args) for row in task.validation_trials]
+    assert len(set(points)) == 4
+    assert all(points.count(point) == 7 for point in set(points))
+    assert task.model_copy(update={"validation_trials": task.validation_trials[::-1]}).condition_ids == authored_ids[::-1]
     params = raw["steps"]["baseline"]["base"]["inline"]["params"]
-    selected = [task.condition_ids[i] for i in (10, 0, 5)]
+    selected = [authored_ids[i] for i in (10, 0, 5)]
     params["trial_set"] = {"kind": "conditions", "ids": selected}
     plan = compile_project(Project.model_validate(raw))
     baseline = next(run for run in plan.runs if run.key.step == "baseline")
@@ -324,15 +328,19 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         np.testing.assert_array_equal(np.asarray(replay.drawn.trials[0].states[replay.position].samples[:3], dtype=first.dtype), first)
     np.testing.assert_allclose(first, reference.history[position][0, :3], atol=1e-7)
     np.testing.assert_allclose(hidden, reference.history[carry][0, :3], atol=1e-7)
+    cohort = {trial.id: trial for trial in documents.task_source.validation_trials}
+    selected_trials = (trial_ids[1], trial_ids[0])
     subset = fresh.execution.evaluate(
         restored, fresh.objective, TaskParameters(), key=jax.random.PRNGKey(731),
-        trial_ids=(trial_ids[1], trial_ids[0]), capture_state=layout.capture,
+        trial_ids=selected_trials, capture_state=layout.capture,
     )
     np.testing.assert_allclose(subset.history[position], np.asarray(reference.history[position])[[1, 0]], atol=1e-7)
-    for index, condition in enumerate((1, 0)):
-        authored = documents.task_source.validation_trials[condition]
-        np.testing.assert_allclose(subset.trials.inputs["target_pos"][index, -1], authored.variables["target"])
-        np.testing.assert_allclose(subset.history[position][index, 0], authored.variables["start"])
+    for index, condition in enumerate(selected_trials):
+        authored = cohort[condition]
+        trial_target = [component.value for component in authored.variables["target"].args]
+        trial_start = [component.value for component in authored.variables["start"].args]
+        np.testing.assert_allclose(subset.trials.inputs["target_pos"][index, -1], trial_target)
+        np.testing.assert_allclose(subset.history[position][index, 0], trial_start)
 
     arrays = {}
     for key, result in outcomes.items():
@@ -525,7 +533,7 @@ def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, mon
     ))
     compiled = compile_graph(
         GraphDocument(graph=graph), registry.components,
-        input_prototypes={graph.input_bindings["reach_target"]: jax.ShapeDtypeStruct((2,), np.float32)},
+        input_prototypes={graph.input_bindings["task-input"]: jax.ShapeDtypeStruct((2,), np.float32)},
     )
     with pytest.raises(StateLayoutError, match="no declared raw-state layout") as failure:
         bind_raw_state(compiled.graph, compiled.resolved.graph)

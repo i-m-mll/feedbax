@@ -7,6 +7,7 @@ import { createCheckpointTrain } from './createCheckpointTrain';
 import { createSynthesize, createTrain } from './createModelStep';
 import { projectWindowPlan, savedRunId } from './projectWindowPlan';
 import { documentPayload } from './documentPayload';
+import { modelDocumentSchemaId, objectiveDocumentSchemaId, taskDocumentSchemaId } from '@/generated/studioContracts';
 
 const model: AuthoredFileAddress = { kind: 'document', id: 'model' };
 const task: AuthoredFileAddress = { kind: 'document', id: 'task' };
@@ -15,6 +16,7 @@ const encoded = (value: unknown) => btoa(JSON.stringify(value));
 const value = (number: number): ProjectValueEdit => ({ op: 'replace', path: '/payload/value', value: number });
 const initial: StudioProjectSnapshot = {
   variant_names: {},
+  report_values: {},
   project_id: 'reach',
   revision: hex(1),
   presentation_revision: hex(2),
@@ -142,7 +144,7 @@ function fixture(settleMs = 400, start = initial) {
   });
   /** The Service's name for a new member, which a creating gesture writes as given. */
   const nameMember = vi.fn<NonNullable<ProjectEditTransport['nameMember']>>(async (_id, { member }) => {
-    const kind = member.kind === 'document' ? member.schema_id.split('.').pop()! : member.kind === 'step' ? member.step : member.family;
+    const kind = member.kind === 'document' ? member.schema_id.split('.').filter((part) => !/^v[0-9]+$/.test(part)).pop()! : member.kind === 'step' ? member.step : member.family;
     return { id: `named-${kind}`, label: `Named ${kind}` };
   });
   const editor = new ProjectEditController(document(), { read, write, replay, rename, create, memberCommand, nameMember }, settleMs);
@@ -176,11 +178,11 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
   const { editor } = fixture(400, {
     ...initial,
     project: { steps: { train: {} as never }, documents: {
-      model: { schema: 'feedbax.spec.model', label: 'Model', payload: {} },
+      model: { schema: modelDocumentSchemaId, label: 'Model', payload: {} },
       task: { schema: 'feedbax.spec.python_task', label: 'Task', payload: {} },
       objective: { schema: 'feedbax.report_document.v1', label: 'Objective', payload: {} },
-      'a-model': { schema: 'feedbax.spec.model', label: 'A model', payload: {} },
-      'a-task': { schema: 'feedbax.spec.task_document', label: 'A task', payload: {} },
+      'a-model': { schema: modelDocumentSchemaId, label: 'A model', payload: {} },
+      'a-task': { schema: taskDocumentSchemaId, label: 'A task', payload: {} },
     } },
   });
   const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(initial);
@@ -190,7 +192,7 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
   await createTrain(editor, initial.revision);
   expect(create).toHaveBeenCalledWith('New Step', [
     { kind: 'document', id: 'named-objective_document', document: {
-      schema: 'feedbax.spec.objective_document', label: 'Named objective_document', payload: { id: 'objective', terms: [] },
+      schema: objectiveDocumentSchemaId, label: 'Named objective_document', payload: { id: 'objective' },
     } },
     { kind: 'document', id: 'named-training_document', document: expect.objectContaining({ schema: 'feedbax.spec.training_document' }) },
     expect.objectContaining({ kind: 'step', id: 'named-train', step: expect.objectContaining({
@@ -208,9 +210,9 @@ it('creates a Synthesize step whose payload names its documents and method, with
   const { editor } = fixture(400, {
     ...initial,
     project: { steps: { synthesize: {} as never }, documents: {
-      'a-model': { schema: 'feedbax.spec.model', label: 'A model', payload: {} },
+      'a-model': { schema: modelDocumentSchemaId, label: 'A model', payload: {} },
       'a-task': { schema: 'feedbax.spec.python_task', label: 'A task', payload: {} },
-      'an-objective': { schema: 'feedbax.spec.objective_document', label: 'An objective', payload: {} },
+      'an-objective': { schema: objectiveDocumentSchemaId, label: 'An objective', payload: {} },
     } },
   });
   const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(initial);
@@ -229,7 +231,7 @@ it('creates a Synthesize step whose payload names its documents and method, with
 
 it('records the server’s document bytes when batch creation succeeds but loses its response', async () => {
   const { editor, create, replay, restore, current } = fixture();
-  const authored = { schema: 'feedbax.spec.model', payload: { interior: {} }, label: 'Model' };
+  const authored = { schema: modelDocumentSchemaId, payload: { interior: {} }, label: 'Model' };
   const stored = { schema: authored.schema, label: authored.label, payload: authored.payload };
   const address = { kind: 'document', id: 'blank-model' } as const;
   const data = btoa(JSON.stringify(stored, null, 2) + '\n');

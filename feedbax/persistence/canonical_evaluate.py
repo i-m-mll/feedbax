@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,20 +12,23 @@ from pydantic import Field, ValidationError, model_validator
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.base import ParentRef, Provenance, StrictModel
-from feedbax.contracts.dataset import DATASET_MEDIA_TYPE as STATES_MEDIA_TYPE, DatasetProductRef
+from feedbax.contracts.dataset import DATASET_MEDIA_TYPE as STATES_MEDIA_TYPE, REPLICATE_DIM, DatasetProductRef
 from feedbax.contracts.effective_success import TerminalTrainSubject
 from feedbax.contracts.jobs import (
     JobReceipt, StudioEvaluationCheckpoint, StudioEvaluationCheckpointGap,
     StudioEvaluationObjectivePoint, StudioEvaluationObjectiveSeries, StudioEvaluationObjectiveTerm,
 )
-from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelProvenance, ImportedModelSource
+from feedbax.contracts.loaded_model import (
+    IMPORTED_MODEL_MEDIA_TYPE, ImportedModelProvenance, ImportedModelSource, decode_imported_model_document,
+)
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
     load_manifest_bytes,
 )
 from feedbax.contracts.model_input import (
-    INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, document_input_object, read_document_input,
+    INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, InitialModelSource,
+    document_input_object, read_document_input,
 )
 from feedbax.contracts.model_origin import ModelProductKey, SynthesizedModelOrigin
 from feedbax.contracts.objective_document import ObjectiveDocument
@@ -51,13 +54,15 @@ from feedbax.contracts.rollout import (
 from feedbax.contracts.semantic_values import model_state_address, semantic_key
 from feedbax.contracts.trial_clock import TrialMeanSelection
 from feedbax.contracts.trial_record import StudioTrialReplayResponse, TrialAggregate, TrialRecords
-from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_trial_record
+from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_linear_state_track, read_trial_record
 from feedbax.persistence.checkpoint_selection import selected_coordinates
 from feedbax.persistence.best_selection import completion_score
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.project_subject import imported_model_provenance, read_imported_model
 
 if TYPE_CHECKING:
+    from feedbax.compiler.linear_state_geometry import LinearStatePoint
+    from feedbax.component_registry import ComponentRegistry
     from feedbax.dataset import Dataset
 
 
@@ -170,6 +175,11 @@ def decode_rollout_request(
         first = error.errors()[0]
         path = pointer(("params", *map(str, first["loc"])))
         raise CannotRun(path, first["msg"]) from error
+    if params.best_variant_tasks and (
+        not isinstance(subject, BestRank)
+        or params.best_variant_tasks.keys() - {candidate.key for candidate in subject.candidates}
+    ):
+        raise CannotRun("/params/best_variant_tasks", "Task variants must name candidates of the ranked subject")
     for path, patch in authored_variation(params.variation):
         if "op" not in patch.model_fields_set:
             raise CannotRun(f"{path}/op", "declare the override operation explicitly")
@@ -495,6 +505,30 @@ def states_product(manifest: EvaluationRunManifest):
     )
 
 
+def _initial_scene_points(
+    store: ImmutableArtifactBlobProvider, manifest: EvaluationRunManifest, subject: EvaluationSubject,
+    components: ComponentRegistry, variables: Collection[str],
+) -> tuple[tuple[str, LinearStatePoint], ...]:
+    """Read the recorded Model's position bindings without resolving or realizing its graph."""
+    if not isinstance(subject, ContentRef):
+        return ()
+    from feedbax.compiler.linear_state_geometry import linear_state_points
+
+    source = read_document_input(subject, store)
+    if isinstance(source, ImportedModelSource):
+        model = decode_imported_model_document(store.get_object(source.model))
+    else:
+        assert isinstance(source, InitialModelSource)
+        model = source.document
+    spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+    params = RolloutParameters.model_validate(spec.params)
+    overrides = {edit.path: edit.value for _, edit in authored_variation(params.variation)}
+    return tuple(
+        (point.address.to_text(), point) for point in linear_state_points(model, components, overrides)
+        if point.vector in variables
+    )
+
+
 class EvaluationResult:
     """Open the dataset through the exact receipt of one successful Jobs attempt.
 
@@ -512,13 +546,14 @@ class EvaluationResult:
         self.receipt = receipt
         self._manifest_object = manifest_object
 
-    def _manifest(self) -> EvaluationRunManifest:
-        store = ImmutableArtifactBlobProvider(self._root)
-        manifest, _ = decode_evaluation_manifest(
+    def _verified_manifest(self, store: ImmutableArtifactBlobProvider) -> tuple[EvaluationRunManifest, EvaluationSubject]:
+        return decode_evaluation_manifest(
             store, store.get_object(self._manifest_object), self._manifest_object,
             self._job_id, self._request_id, self.receipt,
         )
-        return manifest
+
+    def _manifest(self) -> EvaluationRunManifest:
+        return self._verified_manifest(ImmutableArtifactBlobProvider(self._root))[0]
 
     @property
     def size_bytes(self) -> int:
@@ -529,29 +564,40 @@ class EvaluationResult:
         """Read Store-owned slices, or authenticate selected tensors on request."""
         from feedbax.persistence.dataset import open_stored_dataset
 
-        manifest = self._manifest()
+        store = ImmutableArtifactBlobProvider(self._root)
+        manifest, _ = self._verified_manifest(store)
         ref = states_ref(manifest)
         spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
         params = RolloutParameters.model_validate(spec.params)
-        store = ImmutableArtifactBlobProvider(self._root)
         with open_stored_dataset(store, ref, verify=verify) as dataset:
             if dataset.descriptor.schema_id != params.states_schema:
                 raise ValueError("Evaluation receipt names an incompatible states schema.")
             yield dataset
 
     def replay(
-        self, trial: str | None = None, *, checkpoint: int | None = None, aggregate: bool = False,
+        self, trial: str | None = None, *, checkpoint: int | None = None, replicate: int | None = None,
+        aggregate: bool = False,
         mean: TrialMeanSelection | None = None,
+        components: ComponentRegistry | None = None,
     ) -> StudioTrialReplayResponse:
-        """Read trial records at one exact preserved Evaluate checkpoint."""
+        """Read trial records for one retained replicate and checkpoint."""
+        from feedbax.dataset_replicates import select_replicate
+
         if mean is not None and trial is not None:
             raise CannotRun("/mean", "Mean requires all recorded trials")
         with self.open_states() as dataset:
+            replicates = dataset.descriptor.dimensions.get(REPLICATE_DIM)
+            if replicates is not None:
+                if replicate is None:
+                    raise CannotRun("/replicate", "choose a retained replicate for replay")
+                if not 0 <= replicate < replicates:
+                    raise CannotRun("/replicate", "the chosen replicate is absent from the retained set")
+                dataset = select_replicate(dataset, replicate)
+            elif replicate is not None:
+                raise CannotRun("/replicate", "the retained result has no replicate dimension")
             descriptor = dataset.descriptor
             update_axis = next((axis for axis in ("update", "checkpoint") if axis in descriptor.dimensions), None)
             selected = ()
-            if "replicate" in descriptor.dimensions:
-                raise CannotRun("/replicate", "choose a retained replicate for replay")
             if update_axis is not None:
                 checkpoints = dataset.data(update_axis).tolist()
                 if checkpoint is None and len(checkpoints) != 1:
@@ -574,11 +620,23 @@ class EvaluationResult:
             if raw_layout is None:
                 raise ValueError("The retained result has no trial record.")
             layout = RecordedTrialLayout.model_validate(raw_layout)
-            position_key = next(iter(layout.positions), None)
-            records = [
-                read_trial_record(dataset, trials[index], (*selection, index), layout)
-                for index in indices
-            ]
+            position = model_state_address(layout.positions[0]).to_text() if layout.positions else None
+            points = ()
+            if components is not None and any(
+                name.startswith("/v1/model/state/") and name.endswith("/vector") for name in descriptor.variables
+            ):
+                store = ImmutableArtifactBlobProvider(self._root)
+                manifest, subject = self._verified_manifest(store)
+                points = _initial_scene_points(store, manifest, subject, components, descriptor.variables)
+            records = []
+            for index in indices:
+                address = (*selection, index)
+                record = read_trial_record(dataset, trials[index], address, layout)
+                for name, point in points:
+                    record.states[name] = read_linear_state_track(dataset, point.vector, point.span, address)
+                records.append(record)
+            if position is None and points:
+                position = points[0][0]
             mean_options = layout.mean_options() if trials else None
             mean_result = None
             if mean is not None and mean_options is not None:
@@ -594,7 +652,7 @@ class EvaluationResult:
             return StudioTrialReplayResponse(
                 n_steps=n_steps,
                 state_time=state_time.tolist(),
-                position=model_state_address(position_key).to_text() if position_key is not None else None,
+                position=position,
                 receipt=self.receipt,
                 drawn=drawn,
                 mean_options=mean_options,
@@ -679,7 +737,7 @@ def _objective_points(
     coverage_paths = {
         key.removeprefix(coverage_prefix) for key in dataset.descriptor.variables if key.startswith(coverage_prefix + "/")
     }
-    labels = {pointer((term.id,)): term.name or term.id for term in objective.terms if term.enabled}
+    labels = {pointer((term.report_key,)): term.name or term.report_key for term in objective.terms if term.enabled}
     if paths != coverage_paths or paths != labels.keys():
         raise ValueError("Evaluate objective terms and coverage differ from the authored Objective.")
     terms: list[list[StudioEvaluationObjectiveTerm]] = [[] for _ in checkpoints]

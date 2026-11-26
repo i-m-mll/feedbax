@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from copy import copy, deepcopy
+from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
@@ -11,9 +12,12 @@ import re
 from string import Formatter
 from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import Field, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 
 from feedbax.contracts._authoring_inputs import AuthoringTextReader, read_authoring_text
+from feedbax.contracts.expression_storage import StoredTime
+from feedbax.contracts.expression_text import parse_stored_expression, print_stored_expression
+from feedbax.contracts.expression_values import Expression, UnresolvedValue
 from feedbax.contracts.expressions import ContextItem, ExpressionContext, ValueExpr, evaluate_query
 from feedbax.contracts.extraction import SourceBinding, load_expression_context, set_dotted_path
 from feedbax.contracts.base import (
@@ -689,12 +693,123 @@ def apply_override_patch_in_place(
 
 def apply_override_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dict[str, Any]:
     """Apply a patch to new containers along its path, sharing untouched subtrees."""
+    return _patch_copy(root, patch, by_id=True)
+
+
+type ExpressionSiteKind = Literal["expression", "time"]
+type ExpressionSite = Callable[[tuple[str, ...]], ExpressionSiteKind | None]
+type KeyedPatchCollection = Callable[[tuple[str, ...]], bool]
+
+
+@dataclass(frozen=True)
+class ExpressionNodePatch:
+    """A whole-field stored write and the matching node edit for provenance."""
+
+    field: tuple[str, ...]
+    before: dict[str, Any]
+    node: OverridePatch
+
+
+_EXPRESSION = TypeAdapter(Expression)
+_STORED_TIME = TypeAdapter(StoredTime)
+
+
+def prepare_stored_patch(
+    root: dict[str, Any], patch: OverridePatch, *, expression_site: ExpressionSite | None = None,
+    keyed_collection: KeyedPatchCollection | None = None,
+) -> tuple[OverridePatch, ExpressionNodePatch | None]:
+    """Translate a typed expression-node path to one validated authored field write."""
+    site = _stored_expression_site(root, patch.path, expression_site, keyed_collection, replace_leaf=patch.op == "replace")
+    if site is None:
+        return patch, None
+    field, kind, raw = site
+    parts = tuple(patch.path.split("."))[len(field):]
+    leaf_value = _validate_expression_node_path(parts, patch.path)
+    before = _parse_expression_for_patch(raw, patch.path).model_dump(mode="json")
+    if kind == "time" and isinstance(_STORED_TIME.validate_python(raw), UnresolvedValue):
+        raise ValueError(f"Expected a literal time at {patch.path!r}.")
+    value = patch.value
+    if not leaf_value and patch.op != "remove":
+        value = _parse_expression_for_patch(value, patch.path).model_dump(mode="json")
+    node = patch.model_copy(update={"path": ".".join(parts), "value": value})
+    changed = replay_stored_patch_copy(before, node)
+    text = print_stored_expression(_EXPRESSION.validate_python(changed))
+    if kind == "time":
+        if isinstance(_STORED_TIME.validate_python(text), UnresolvedValue):
+            raise ValueError(f"Expected a literal time at {patch.path!r}.")
+    else:
+        _parse_expression_for_patch(text, patch.path)
+    scalar = patch.model_copy(update={"path": ".".join(field), "op": "replace", "value": text})
+    return scalar, ExpressionNodePatch(field, before, node)
+
+
+def _parse_expression_for_patch(raw: Any, path: str) -> Expression:
+    if type(raw) not in (str, float, int, bool):
+        raise ValueError(f"Expected an authored expression scalar or text at {path!r}.")
+    parsed = parse_stored_expression(raw)
+    if isinstance(parsed, tuple):
+        raise ValueError(f"Cannot patch expression at {path!r}: {parsed[0].reason}")
+    return parsed.value
+
+
+def _validate_expression_node_path(parts: tuple[str, ...], path: str) -> bool:
+    position = 0
+    while position + 1 < len(parts):
+        parent, child = parts[position:position + 2]
+        if parent == "args" and _ARRAY_INDEX_RE.fullmatch(child) is None:
+            raise ValueError(f"An expression argument needs a non-negative decimal index: {path!r}")
+        if parent not in {"args", "kwargs"}:
+            raise ValueError(f"Expected an expression argument or keyword: {path!r}")
+        position += 2
+    if position == len(parts):
+        return False
+    if parts[position] == "value":
+        return True
+    raise ValueError(f"Expected an expression node or its literal value: {path!r}")
+
+
+def apply_stored_patch_in_place(
+    root: dict[str, Any],
+    patch: OverridePatch,
+    *,
+    error_context: Literal["override", "delta"] = "override",
+    expression_site: ExpressionSite | None = None,
+    keyed_collection: KeyedPatchCollection | None = None,
+) -> ExpressionNodePatch | None:
+    """Apply an authored sweep patch, with absent object keys already removed."""
+    physical, expression = prepare_stored_patch(root, patch, expression_site=expression_site, keyed_collection=keyed_collection)
+    apply_value_patch_in_place(
+        root, physical.path.split("."), physical.op, physical.value, path=patch.path, error_context=error_context,
+        allow_absent_remove=True,
+    )
+    return expression
+
+
+def apply_stored_patch_copy(
+    root: dict[str, Any], patch: OverridePatch, *, expression_site: ExpressionSite | None = None,
+) -> dict[str, Any]:
+    """Apply an authored sweep patch, copying the containers along its path."""
+    physical, _ = prepare_stored_patch(root, patch, expression_site=expression_site)
+    return replay_stored_patch_copy(root, physical)
+
+
+def replay_stored_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dict[str, Any]:
+    """Replay a checked path in an origin tree, or apply an internally generated path."""
+    return _patch_copy(root, patch, by_id=False, allow_absent_remove=True)
+
+
+def _patch_copy(
+    root: dict[str, Any], patch: OverridePatch, *, by_id: bool, allow_absent_remove: bool = False,
+) -> dict[str, Any]:
     parts = patch.path.split(".")
     result = copy(root)
     parent = _resolve_patch_parent(
-        result, parts, path=patch.path, error_context="override", copy_path=True, by_id=True,
+        result, parts, path=patch.path, error_context="override", copy_path=True, by_id=by_id,
     )
-    _apply_patch_target(parent, parts[-1], patch.op, patch.value, patch.path, "override", by_id=True)
+    _apply_patch_target(
+        parent, parts[-1], patch.op, patch.value, patch.path, "override",
+        by_id=by_id, allow_absent_remove=allow_absent_remove,
+    )
     return result
 
 
@@ -707,14 +822,17 @@ def apply_value_patch_in_place(
     path: str,
     error_context: Literal["override", "delta"] = "override",
     by_id: bool = False,
+    allow_absent_remove: bool = False,
 ) -> None:
     """Apply the common patch semantics to an already decoded path.
 
-    ``by_id`` says the path is a stored one, which names a member of a list of identified items by its id; a JSON
-    pointer against one revision of a document names it by its index.
+    Lowered variation paths use ``by_id`` to name identified list members. Authored sweep paths
+    can remove an absent object key, while revision-specific edits require the key to exist.
     """
     parent = _resolve_patch_parent(root, parts, path=path, error_context=error_context, by_id=by_id)
-    _apply_patch_target(parent, parts[-1], op, value, path, error_context, by_id=by_id)
+    _apply_patch_target(
+        parent, parts[-1], op, value, path, error_context, by_id=by_id, allow_absent_remove=allow_absent_remove,
+    )
 
 
 def ensure_value_collection(
@@ -757,10 +875,15 @@ def member_ids(items: Sequence[Any]) -> tuple[str, ...] | None:
     return ids
 
 
+def _unknown_member(segment: str, ids: Iterable[str], path: str, collection: str) -> ValueError:
+    reason = "is addressed by its id" if segment.isdigit() else f"is not an id of this {collection}"
+    return ValueError(f"{segment!r} {reason}; the ids are {', '.join(ids) or '(none)'}: {path!r}")
+
+
 def resolve_segment(container: Any, segment: str, *, path: str, by_id: bool = True) -> str | int | None:
     """The key or index ``segment`` names in ``container``, or ``None`` when it names no member.
 
-    In a stored path (``by_id``), a member of a list whose members carry ids is named by its id; an index or an
+    In a lowered path (``by_id``), a member of a list whose members carry ids is named by its id; an index or an
     unknown id under such a list is refused, naming the ids it has. Any other list is addressed by index.
     """
     if isinstance(container, dict):
@@ -771,10 +894,43 @@ def resolve_segment(container: Any, segment: str, *, path: str, by_id: bool = Tr
     if ids is not None:
         if segment in ids:
             return ids.index(segment)
-        reason = "is addressed by its id" if segment.isdigit() else "is not an id of this list"
-        raise ValueError(f"{segment!r} {reason}; the ids are {', '.join(ids)}: {path!r}")
+        raise _unknown_member(segment, ids, path, "list")
     if segment.isdigit() and int(segment) < len(container):
         return int(segment)
+    return None
+
+
+def validate_stored_patch_path(root: Any, path: str) -> None:
+    """Validate the visible path before a document reference is followed."""
+    _stored_expression_site(root, path, None)
+
+
+def _stored_expression_site(
+    root: Any, path: str, expression_site: ExpressionSite | None,
+    keyed_collection: KeyedPatchCollection | None = None, *, replace_leaf: bool = False,
+) -> tuple[tuple[str, ...], ExpressionSiteKind, Any] | None:
+    parts = tuple(path.split("."))
+    value = root
+    for index, part in enumerate(parts):
+        if isinstance(value, list):
+            raise ValueError(f"A stored path cannot traverse an array: {path!r}")
+        key = resolve_segment(value, part, path=path, by_id=False)
+        if key is None:
+            if (keyed_collection is not None and isinstance(value, dict)
+                    and (replace_leaf or index < len(parts) - 1) and keyed_collection(parts[:index])):
+                raise _unknown_member(part, value, path, "collection")
+            return None
+        child = value[key]
+        if index < len(parts) - 1:
+            if part in {"links", "task_links"} and isinstance(child, dict) and all(
+                isinstance(link, str) for link in child.values()
+            ):
+                raise ValueError(f"Link members require a JSON pointer: {path!r}")
+            if expression_site is not None and not isinstance(child, (dict, list)):
+                prefix = parts[:index + 1]
+                if (kind := expression_site(prefix)) is not None:
+                    return prefix, kind, child
+        value = child
     return None
 
 
@@ -802,6 +958,7 @@ def _apply_patch_target(
     error_context: Literal["override", "delta"],
     *,
     by_id: bool,
+    allow_absent_remove: bool = False,
 ) -> None:
     if op == "add" and isinstance(parent, list) and (
         leaf == "-" or (not by_id or member_ids(parent) is None) and leaf.isdigit() and int(leaf) == len(parent)
@@ -822,6 +979,8 @@ def _apply_patch_target(
         parent[leaf] = deepcopy(value)
         return
     if key is None:
+        if allow_absent_remove and op == "remove" and isinstance(parent, dict):
+            return
         if error_context == "delta":
             raise ValueError(f"{op} delta path is missing: {path!r}")
         if op == "replace":

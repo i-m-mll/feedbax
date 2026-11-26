@@ -5,26 +5,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import replace
 
-from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.application.stored_regions import compose_document
+from feedbax.compiler.model_attachment import lower_model_difference_values, resolve_effective_model
 from feedbax.compiler.model_document import ModelCompilationProblem
 from feedbax.compiler.model_edit import model_ungroup_eligibility
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, AttachmentDifference
 from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.stored_model import (
+    STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, authored_model_payload, model_keyed_collection,
+)
 from feedbax.contracts.model_edit import (
     AxisValueRuns, EvaluateModelRequest, ListedRuns, EvaluateModelState,
     VariantRuns, StudioEvaluateValueSource, StudioStepNameReference,
 )
 from feedbax.contracts.project import (
-    DifferenceNotApplied, Differences, LoadedModelDocument, Project, apply_differences, diff, nearest_shared_base,
+    DifferenceNotApplied, Differences, LoadedModelDocument, Project, apply_differences, diff, member_name,
+    nearest_shared_base,
 )
 from feedbax.planner.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, SelectedRunDefinition
 from feedbax.contracts.project_io import project_declaration_name
-from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.project_folder import ProjectFolderInvalid
 from feedbax.project_model_selection import selected_model
 from feedbax.web.services.axis_values import axis_values
+from feedbax.web.services.pinned_model_labels import pinned_model_labels
 
 
 def evaluate_subject(definition: SelectedRunDefinition | None) -> tuple[RunKey, ValueSource] | None:
@@ -34,10 +40,15 @@ def evaluate_subject(definition: SelectedRunDefinition | None) -> tuple[RunKey, 
     return RunKey(source.variant, source.step, source.row), source
 
 
-def evaluate_value_source(source: ValueSource, *, evaluate_step: str | None = None) -> StudioEvaluateValueSource:
+def evaluate_value_source(
+    plan: ProjectPlan, source: ValueSource, *, variant: str, evaluate_step: str | None = None,
+) -> StudioEvaluateValueSource:
+    step = source.step or evaluate_step or source.name
+    project = plan.variant_projects[source.variant or variant]
     return StudioEvaluateValueSource(
         kind="evaluate" if evaluate_step is not None else "trained",
-        reference=StudioStepNameReference(kind="step", key=source.step or evaluate_step or source.name),
+        reference=StudioStepNameReference(kind="step", key=step),
+        name=member_name(project.steps, step),
     )
 
 
@@ -48,6 +59,8 @@ class EvaluateReading:
     """What the read Model document changes on the trained model: its differences from ``shared``."""
     shared: str | None
     """The nearest document the read Model document shares with the subject's, when they differ."""
+    model: ModelDocument | None
+    """The effective Model in the compiler's form."""
 
 
 def read_evaluate_model(
@@ -62,6 +75,8 @@ def read_evaluate_model(
         raise ProjectFolderInvalid("Choose an Evaluate step.")
     if selected is None:
         selected = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+    if components is None:
+        components = folders.components
     definition = selected.selected_definitions.get(key)
     problems = [
         problem for problem in selected.diagnostics
@@ -88,17 +103,20 @@ def read_evaluate_model(
         if model_document is not None and read != model_document:
             raise ProjectFolderInvalid("The selected run does not use this Model.")
         authored = selected_model(definition, read)
-        changed = _document_changes(snapshot.project, subject, read, authored)
+        project = selected.variant_projects[key.variant]
+        changed = _document_changes(project, subject, read, authored)
         if isinstance(changed, ProjectDiagnostic):
             problems.append(located(changed))
         else:
             shared, changes = changed
             try:
+                pinned = _read_changed_model(authored_model_payload(definition.pinned_model, components), changes, components)
+                pinned = pinned_model_labels(pinned, authored_pinned_model(project, read, authored))
                 resolved = resolve_effective_model(
-                    ModelDocument.model_validate(apply_differences(definition.pinned_model.model_dump(mode="json"), changes)),
-                    components or folders.components, differences, functions=folders.functions,
+                    pinned, components, lower_model_difference_values(pinned, components, differences),
+                    functions=folders.functions,
                 )
-            except (DifferenceNotApplied, ModelCompilationProblem) as error:
+            except ValueError as error:
                 problems.append(located(ProjectDiagnostic(
                     ResolutionCode.INVALID_DOCUMENT, EVALUATION_MODEL, str(error), document=read,
                     model_address=error.address if isinstance(error, ModelCompilationProblem) else None,
@@ -106,7 +124,7 @@ def read_evaluate_model(
         editable &= not loaded.model.unresolved and loaded.model.pointer is None and read in snapshot.project.documents
     elif upstream := evaluate_subject(definition):
         producer, provenance = upstream
-        source = evaluate_value_source(provenance)
+        source = evaluate_value_source(selected, provenance, variant=key.variant)
         train_plan = folders.read_plan(project_id, revision=body.revision, source_runs=(producer,)).plan
         train = train_plan.selected_definitions.get(producer)
         row = next((row for row in selected.rows if row.key == key), None)
@@ -124,9 +142,10 @@ def read_evaluate_model(
                 else:
                     shared, changes = changes_from_shared
                     try:
+                        base = _read_changed_model(model, changes, components)
                         resolved = resolve_effective_model(
-                            ModelDocument.model_validate(apply_differences(model, changes)),
-                            components or folders.components, differences, functions=folders.functions,
+                            base, components, lower_model_difference_values(base, components, differences),
+                            functions=folders.functions,
                         )
                     except (DifferenceNotApplied, ModelCompilationProblem) as error:
                         problems.append(located(ProjectDiagnostic(
@@ -141,12 +160,14 @@ def read_evaluate_model(
                     pointer((*site, "op")),
                 )
                 if origin is not None:
-                    field_sources[record.address.to_text()] = evaluate_value_source(origin, evaluate_step=key.step)
+                    field_sources[record.address.to_text()] = evaluate_value_source(
+                        selected, origin, variant=key.variant, evaluate_step=key.step,
+                    )
     return EvaluateReading(EvaluateModelState(
         revision=body.revision,
         editable=editable,
         effective=tuple(record for record in differences if isinstance(record, AttachmentDifference)),
-        resolved_model=resolved,
+        resolved_model=StoredModelDocument.from_lowered(resolved, components) if resolved is not None else None,
         ungroup=model_ungroup_eligibility(resolved) if resolved is not None else (),
         source=source,
         field_sources=field_sources,
@@ -155,7 +176,22 @@ def read_evaluate_model(
             StudioProjectWindowMapProblem.from_diagnostic(problem, declaration=project_declaration_name(project_id))
             for problem in problems
         ],
-    ), changes, shared)
+    ), changes, shared, resolved)
+
+
+def authored_pinned_model(project: Project, name: str, selected: object = None) -> StoredModelDocument:
+    """Read the authored Model paired with a pinned revision, including the run's selected Model when present."""
+    if selected is None:
+        document = compose_document(project.documents.get, name)
+        if isinstance(document, ProjectDiagnostic) or document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
+            raise ValueError("The Loaded Model's authored Model cannot be read.")
+        selected = document.payload
+    return StoredModelDocument.model_validate(selected)
+
+
+def _read_changed_model(payload, changes: Differences, components=None) -> ModelDocument:
+    authored = apply_differences(payload, changes, keyed_collection=model_keyed_collection)
+    return StoredModelDocument.model_validate(authored).lower(components)
 
 
 def _document_changes(
@@ -173,7 +209,10 @@ def _document_changes(
     composed = [compose_document(project.documents.get, name) for name in (shared, read)]
     if bad := next((entry for entry in composed if isinstance(entry, ProjectDiagnostic)), None):
         return replace(bad, path=EVALUATION_MODEL, document=read)
-    changes = diff(composed[0].payload, own if isinstance(own, dict) else composed[1].payload)
+    changes = diff(
+        composed[0].payload, own if isinstance(own, dict) else composed[1].payload,
+        keyed_collection=model_keyed_collection,
+    )
     return (shared if changes or read != subject else None), changes
 
 

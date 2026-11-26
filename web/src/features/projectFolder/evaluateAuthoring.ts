@@ -1,11 +1,10 @@
-import { joinText, referentName, type ShownText } from '@/components/ui/ShownText';
 import type { PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import { studioFormat, studioReason } from '@/components/activity/studioVocabulary';
 import type { PlanRunView, PlanView } from '@/features/pipeline/planView';
 import {
   BatchCheckpointSchema, StepReferenceSchema, UnresolvedValueSchema, UpdateRuleSchema,
   type Axis, type BatchCheckpoint, type CheckpointRule, type JsonValue, type ProjectValueEdit, type Step, type StepReference,
-  type StudioSavedTrainRuns,
+  type StoredCheckpointRule, type StudioSavedTrainRuns, type StudioTrialName,
   type SubsetTerms, type UnresolvedValue, type UpdateRule,
 } from '@/generated/studioContracts';
 import { modelSourceSubset } from './createCheckpointTrain';
@@ -19,14 +18,20 @@ export const checkpointLabel = (update: number) => studioFormat('checkpointAtUpd
 /** A checkpoint rule the Evaluate inspector edits, or the text of one written that does not say a rule. */
 export type EditableCheckpointRule = 'last' | BatchCheckpoint | UpdateRule | UnresolvedValue;
 
-export function editableCheckpointRule(rule: CheckpointRule | null | undefined): EditableCheckpointRule | undefined {
+export function editableCheckpointRule(rule: StoredCheckpointRule | CheckpointRule | null | undefined): EditableCheckpointRule | undefined {
   if (rule === 'last') return rule;
+  if (typeof rule === 'string') return { kind: 'unresolved', text: rule };
   const point = BatchCheckpointSchema.safeParse(rule);
   if (point.success) return point.data;
   const series = UpdateRuleSchema.safeParse(rule);
   if (series.success) return series.data;
   const held = UnresolvedValueSchema.safeParse(rule);
   return held.success ? held.data : undefined;
+}
+
+/** A rule as a step stores it: a draft that says no rule is stored as its exact text. */
+export function storedCheckpointRule(rule: EditableCheckpointRule): StoredCheckpointRule {
+  return typeof rule === 'object' && !Array.isArray(rule) && 'text' in rule ? rule.text : rule;
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -125,6 +130,7 @@ export function checkpointDraftRule(draft: CheckpointDraft, range?: CheckpointRa
     case 'list': {
       const text = draft.updates.trim();
       if (!text) return {};
+      if (text === 'last') return { rule: 'last' };
       const held = { rule: { kind: 'unresolved', text } as const };
       if (!/^\d+(?:\s*,\s*\d+)*$/.test(text)) {
         return { ...held, problem: { field: 'updates', reason: studioReason('invalidCheckpointRule', text) } };
@@ -163,7 +169,7 @@ export type TrialSet =
   | { kind: 'sample'; count: number };
 
 export type TrialDomain =
-  | { kind: 'fixed'; conditions: string[] }
+  | { kind: 'fixed'; conditions: StudioTrialName[] }
   | { kind: 'sampler' };
 
 export type StoppedEvaluationSubject = {
@@ -180,6 +186,7 @@ export function exactCheckpoint(step: Step | undefined): number | undefined {
     ? checkpoint.at : undefined;
 }
 
+/** The trials every one of `members` offers, from the rows the Service plans for them; none while one is unresolved. */
 export function managedTrialDomain(projection: StudioSavedTrainRuns | undefined, members: readonly PlanRunView[]): TrialDomain | undefined {
   if (!members.length) return undefined;
   const domains = new Map(projection?.window_map?.rows
@@ -189,40 +196,14 @@ export function managedTrialDomain(projection: StudioSavedTrainRuns | undefined,
   const first = cohorts[0];
   if (!first || cohorts.some((cohort) => !cohort || (cohort.length === 0) !== (first.length === 0))) return undefined;
   return first.length
-    ? { kind: 'fixed', conditions: first.filter((id) => cohorts.every((cohort) => cohort?.includes(id))) }
+    ? { kind: 'fixed', conditions: first.filter(({ id }) => cohorts.every((cohort) => cohort?.some((trial) => trial.id === id))) }
     : { kind: 'sampler' };
 }
 
-/**
- * Each condition of a cohort named by the Task variables that vary across it, as `name = value`, each variable by its
- * name in `variables` and marked missing when the Task lacks it. A condition is identified by the canonical JSON of its
- * variables, keyed by variable id; an id that is not a JSON object is its own name.
- */
-export function conditionLabels(ids: readonly string[], variables: readonly { readonly id: string; readonly name: string }[]): ReadonlyMap<string, ShownText> {
-  const parsed = ids.map((id) => {
-    try {
-      const value: unknown = JSON.parse(id);
-      return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-    } catch {
-      return undefined;
-    }
-  });
-  const text = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value);
-  const names = [...new Set(parsed.flatMap((variables) => Object.keys(variables ?? {})))];
-  const varying = names.filter((name) => new Set(parsed.map((variables) => text(variables?.[name]))).size > 1);
-  const shown = varying.length ? varying : names;
-  return new Map(ids.map((id, index): [string, ShownText] => {
-    const values = parsed[index];
-    if (!values) return [id, id];
-    const terms = shown.filter((key) => key in values)
-      .map((key) => joinText([referentName(variables.find((variable) => variable.id === key), key), text(values[key])], ' = '));
-    return [id, terms.length ? joinText(terms, ', ') : id];
-  }));
-}
-
-/** The trials an authored rule names by itself, which are what is offered while the subject's Task is unknown. */
+/** The trials an authored rule names by itself, unnamed, which are what is offered while the subject's Task is unknown. */
 export function authoredTrialDomain(rule: TrialSet): TrialDomain {
-  return rule.kind === 'sample' ? { kind: 'sampler' } : { kind: 'fixed', conditions: rule.kind === 'conditions' ? rule.ids : [] };
+  return rule.kind === 'sample' ? { kind: 'sampler' }
+    : { kind: 'fixed', conditions: rule.kind === 'conditions' ? rule.ids.map((id) => ({ id, name: null })) : [] };
 }
 
 export function validTrialSet(rule: TrialSet, domain: TrialDomain | undefined): boolean {
@@ -230,7 +211,7 @@ export function validTrialSet(rule: TrialSet, domain: TrialDomain | undefined): 
     return domain?.kind === 'sampler' && Number.isInteger(rule.count) && rule.count >= 1 && rule.count <= 10_000;
   }
   return domain?.kind === 'fixed' && (rule.kind === 'every_condition' ||
-    (rule.ids.length > 0 && rule.ids.every((id) => domain.conditions.includes(id))));
+    (rule.ids.length > 0 && rule.ids.every((id) => domain.conditions.some((trial) => trial.id === id))));
 }
 
 /** A path of the Evaluate's own fields: its Model's by address, its Task's, its Seed and its sampled Trials. */
@@ -274,7 +255,7 @@ export function ordinaryEvaluation(step: Step): { subjects: EvaluationSubject[];
       sweep?.rows || sweep?.combination) return undefined;
   const { evaluation_type, params } = step.base.inline;
   if (evaluation_type !== rollout || !params || typeof params !== 'object' || Array.isArray(params) ||
-      !Array.isArray(params.variation) || params.variation.length || 'trials' in params) return undefined;
+      (params.variation !== undefined && (!Array.isArray(params.variation) || params.variation.length)) || 'trials' in params) return undefined;
   const rule = params.trial_set;
   if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return undefined;
   let trialSet: TrialSet;
@@ -310,7 +291,7 @@ export async function createEvaluation(
       kind: 'evaluate', label,
       base: { inline: {
         evaluation_type: rollout,
-        params: { trial_set: trialSet, seed: 0, trial_policy: 'paired', variation: [] },
+        params: { trial_set: trialSet, seed: 0 },
       } },
       inputs: { subject: { step: step.id, ...checkpoint, ...(where && { where }) } },
       sweep: { axes: { subject: { input: 'subject' } } },
@@ -368,7 +349,7 @@ export function evaluateSubjectEdits(step: Step, next: EvaluateSubject): Project
   const set = (path: string, present: boolean, value: JsonValue): ProjectValueEdit =>
     ({ op: present ? 'replace' : 'add', path, value });
   if (next.kind === 'step') {
-    const read = (checkpoint: CheckpointRule | null | undefined): JsonValue =>
+    const read = (checkpoint: StoredCheckpointRule | null | undefined): JsonValue =>
       next.reads === 'checkpoint' ? { step: next.step, checkpoint: checkpoint ?? 'last' } : { step: next.step };
     if (current?.kind === 'steps') {
       const [first] = current.selections;

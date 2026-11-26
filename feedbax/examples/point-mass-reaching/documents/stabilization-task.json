@@ -1,234 +1,68 @@
 {
-  "schema": "feedbax.spec.task_document",
+  "schema": "feedbax.spec.task_document.v2",
   "label": "Stabilization",
   "payload": {
     "id": "stabilization",
-    "variables": [
-      {
-        "id": "start",
-        "name": "start",
-        "type": {
-          "base": "real",
-          "shape": [
-            2
-          ],
-          "dimensions": {
-            "length": 1
-          },
-          "space": "point"
-        },
-        "value": {
-          "kind": "call",
-          "function": "vector",
-          "args": [
-            {
-              "kind": "draw",
-              "family": "uniform",
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": -0.4
-                },
-                {
-                  "kind": "literal",
-                  "value": 0.5
-                }
-              ]
-            },
-            {
-              "kind": "draw",
-              "family": "uniform",
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": -0.3
-                },
-                {
-                  "kind": "literal",
-                  "value": 0.45
-                }
-              ]
-            }
-          ]
-        }
+    "variables": {
+      "start": {
+        "label": "start",
+        "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
+        "value": "[U(-0.4, 0.5), U(-0.3, 0.45)]"
       },
-      {
-        "id": "target",
-        "name": "target",
-        "type": {
-          "base": "real",
-          "shape": [
-            2
-          ],
-          "dimensions": {
-            "length": 1
-          },
-          "space": "point"
-        },
-        "value": {
-          "kind": "name",
-          "reference": "start"
-        }
+      "target": {
+        "label": "target",
+        "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
+        "value": "start"
       }
-    ],
-    "epochs": [
-      {
-        "id": "move",
-        "name": "move",
-        "end": {
-          "kind": "length",
-          "length": {
-            "kind": "literal",
-            "value": 80,
-            "unit": "st"
-          }
-        }
-      }
-    ],
-    "signals": [
-      {
-        "id": "target_pos",
-        "name": "target position",
-        "type": {
-          "base": "real",
-          "shape": [
-            2
-          ],
-          "dimensions": {
-            "length": 1
-          },
-          "space": "point"
-        },
-        "cells": [
-          {
-            "id": "move",
-            "first_epoch": "move",
-            "last_epoch": "move",
-            "value": {
-              "kind": "name",
-              "reference": "target"
-            }
-          }
-        ]
+    },
+    "epochs": {"move": {"label": "move", "end": {"kind": "length", "length": "80 st"}}},
+    "signals": {
+      "target_pos": {
+        "label": "target position",
+        "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
+        "cells": {"move": {"first_epoch": "move", "last_epoch": "move", "value": "target"}}
       },
-      {
-        "id": "target_vel",
-        "name": "target velocity",
+      "target_vel": {
+        "label": "target velocity",
         "type": {
           "base": "real",
-          "shape": [
-            2
-          ],
-          "dimensions": {
-            "length": 1,
-            "time": -1
-          },
+          "shape": [2],
+          "dimensions": {"length": 1, "time": -1},
           "space": "free"
         },
-        "cells": [
-          {
-            "id": "move",
-            "first_epoch": "move",
-            "last_epoch": "move",
-            "value": {
-              "kind": "call",
-              "function": "vector",
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 0
-                },
-                {
-                  "kind": "literal",
-                  "value": 0
-                }
-              ]
-            }
-          }
-        ]
+        "cells": {"move": {"first_epoch": "move", "last_epoch": "move", "value": "[0, 0]"}}
       },
-      {
-        "id": "goal",
-        "name": "goal",
-        "type": {
-          "base": "real",
-          "shape": [
-            2
-          ],
-          "dimensions": {
-            "length": 1
-          },
-          "space": "point"
-        },
-        "cells": [
-          {
-            "id": "move",
-            "first_epoch": "move",
-            "last_epoch": "move",
-            "value": {
-              "kind": "name",
-              "reference": "target"
-            }
-          }
-        ]
+      "goal": {
+        "label": "goal",
+        "type": {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"},
+        "cells": {"move": {"first_epoch": "move", "last_epoch": "move", "value": "target"}}
       }
-    ],
-    "links": [
-      {
-        "model_field": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"state\",\"effector/position\"]}}",
-        "variable": "start"
-      }
-    ],
+    },
+    "links": {"component.plant.state.\"effector/position\"": "start"},
     "fixed_steps": 80,
-    "validation_trials": [
-      {
+    "validation_trials": {
+      "trial-1": {
+        "label": "Trial 1",
         "variables": {
-          "start": [
-            -0.4000000059604645,
-            -0.30000001192092896
-          ],
-          "target": [
-            -0.4000000059604645,
-            -0.30000001192092896
-          ]
+          "start": "[-0.4000000059604645, -0.30000001192092896]",
+          "target": "[-0.4000000059604645, -0.30000001192092896]"
         }
       },
-      {
+      "trial-2": {
+        "label": "Trial 2",
+        "variables": {"start": "[0.5, -0.30000001192092896]", "target": "[0.5, -0.30000001192092896]"}
+      },
+      "trial-3": {
+        "label": "Trial 3",
         "variables": {
-          "start": [
-            0.5,
-            -0.30000001192092896
-          ],
-          "target": [
-            0.5,
-            -0.30000001192092896
-          ]
+          "start": "[-0.4000000059604645, 0.44999998807907104]",
+          "target": "[-0.4000000059604645, 0.44999998807907104]"
         }
       },
-      {
-        "variables": {
-          "start": [
-            -0.4000000059604645,
-            0.44999998807907104
-          ],
-          "target": [
-            -0.4000000059604645,
-            0.44999998807907104
-          ]
-        }
-      },
-      {
-        "variables": {
-          "start": [
-            0.5,
-            0.44999998807907104
-          ],
-          "target": [
-            0.5,
-            0.44999998807907104
-          ]
-        }
+      "trial-4": {
+        "label": "Trial 4",
+        "variables": {"start": "[0.5, 0.44999998807907104]", "target": "[0.5, 0.44999998807907104]"}
       }
-    ]
+    }
   }
 }

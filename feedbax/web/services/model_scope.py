@@ -5,13 +5,15 @@ from dataclasses import replace
 
 from pydantic import JsonValue
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.contracts.model_edit import ListedRuns, ModelEditAsked, ModelEditRequest, SetField
 from feedbax.contracts.project import Project, SetDocumentValue
-from feedbax.contracts.project_resolution import ProjectDiagnostic, RunKey, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic, RunKey
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.result_address import family_documents
 from feedbax.contracts.set_document import read_set
 from feedbax.contracts.studio_scope import StoreKind
+from feedbax.contracts.stored_model import model_member_order
 from feedbax.planner.project_plan import ProjectPlan
 from feedbax.studio.selection import StoredEdit
 from feedbax.web.services.authored_scope import choose_authored_store, edited_authored_rows, preview_plan
@@ -58,15 +60,22 @@ def _selected(plan: ProjectPlan, body: ModelEditRequest, variant: str) -> frozen
 def _read_field(model: object, parts: tuple[str, ...]) -> JsonValue:
     value = model
     for part in parts:
-        value = value.get(part) if isinstance(value, dict) else None
+        if isinstance(value, dict):
+            value = value.get(part)
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
+        else:
+            return None
     return value
 
 
 def _overridden_fields(
-    project: Project, plan: ProjectPlan, body: ModelEditRequest, selected: frozenset[RunKey], operation: SetField,
+    project: Project, plan: ProjectPlan, body: ModelEditRequest, selected: frozenset[RunKey],
+    operation: SetField, after: dict,
 ) -> tuple[frozenset[RunKey], list[tuple[StoreKind, str, str, StoredEdit]]]:
     parts = operation.address.stored_path()
     path = pointer(parts)
+    value = _read_field(after, parts)
     field = f"/payload/trial_documents/model{path}"
     remaining = set(selected)
     sources: dict[ValueSource, JsonValue] = {}
@@ -85,10 +94,10 @@ def _overridden_fields(
             entry = read_set(project.documents.get, source.name).entries[source.value]
             stored = set_entry_write(
                 project, source.name, source.value,
-                entry.differences | {path: SetDocumentValue(value=operation.value)}, set_readers(project, source.name),
+                entry.differences | {path: SetDocumentValue(value=value)}, set_readers(project, source.name),
             )
             alternatives.append(("set_entry", "Set Entry", f"{source.name}:{source.value}", stored))
-        elif (file := source_value_file(project, source, before, operation.value)) is not None:
+        elif (file := source_value_file(project, source, before, value)) is not None:
             kind, label = {
                 "sweep_value": ("sweep_value", "Sweep Value"), "exception": ("row_exception", "Row Exception"),
                 "variant": ("variant", "Variant"),
@@ -125,7 +134,13 @@ def model_edit_store(
         and (binding := run.inputs.get("subject")) is not None and binding.producer is not None
     )
     tracked = folders.read_plan(project_id, revision=body.revision, source_runs=observed).plan
-    values = {key: _observed_model(tracked, project, key, body.document) for key in observed}
+
+    def observation(plan: ProjectPlan, project: Project, key: RunKey) -> tuple[object, list]:
+        value = _observed_model(plan, project, key, body.document)
+        payload = value[0] if isinstance(value, tuple) and value else value
+        return value, sorted(model_member_order(payload))
+
+    values = {key: observation(tracked, project, key) for key in observed}
 
     def reach(stored: StoredEdit) -> frozenset[RunKey]:
         if not (stored.files or stored.created):
@@ -135,7 +150,7 @@ def model_edit_store(
         authored = edited_authored_rows(tracked, projection)
         return frozenset(
             key for key, value in values.items()
-            if key in authored and value != _observed_model(projection, candidate, key, body.document)
+            if key in authored and value != observation(projection, candidate, key)
         )
 
     def only_readers(steps: Collection[str]) -> ModelEditRequest:
@@ -178,7 +193,7 @@ def model_edit_store(
             remaining = selected
             alternatives = []
             if isinstance(body.command.operation, SetField) and isinstance(row.scope, ListedRuns):
-                remaining, alternatives = _overridden_fields(project, tracked, body, selected, body.command.operation)
+                remaining, alternatives = _overridden_fields(project, tracked, body, selected, body.command.operation, after)
             recipient = (
                 replace(row, scope=ListedRuns(kind="rows", rows=tuple(sorted(key.row for key in remaining))))
                 if remaining and remaining != selected else row

@@ -9,21 +9,20 @@ from functools import cache
 from pydantic import JsonValue, ValidationError
 
 from feedbax.contracts.matrix_core import resolve_segment
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project import BasedDocument, InlineBase, Project, RemoveDocumentValue, RootDocument, StepBase
+from feedbax.contracts.project import InlineBase, Project, RootDocument, StepBase
 from feedbax.contracts.project import base_chain, json_pointer_parts
 from feedbax.contracts.project_inputs import DocumentReference
+from feedbax.contracts.stored_regions import StoredRegionResolver
 from feedbax.contracts.project_resolution import compose_document, document_write_target
 from feedbax.contracts.project_storage import StoredPath
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep
-from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID
 
 type FileAddress = tuple[str, str]
 
 _SCHEMA_KEYS = frozenset({"schema_id", "schema_version"})
 _DOCUMENT_FIELDS = DocumentReference.model_fields.keys()
-_TASK_SCHEMAS = frozenset({TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID})
+_TASK_SCHEMAS = frozenset({STORED_TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID})
 
 
 def _walk(value: JsonValue, path: StoredPath = ()) -> Iterator[tuple[StoredPath, dict[str, JsonValue]]]:
@@ -66,7 +65,9 @@ def _sweep_paths(sweep: Sweep | None) -> Iterator[str]:
             yield from (path for path, patch in source.patches.items() if patch is not None)
 
 
-def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPath]]:
+def protected_project_fields(
+    project: Project, *, registries: StoredRegionResolver | None = None,
+) -> dict[FileAddress, set[StoredPath]]:
     """Find exact authored paths to retain before serializing the project.
 
     This only reads authored rules and document chains. A path with no statically
@@ -111,7 +112,7 @@ def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPa
 
     @cache
     def composed(name: str) -> JsonValue:
-        entry = compose_document(project.documents.get, name)
+        entry = compose_document(project.documents.get, name, regions=registries)
         return entry.payload if isinstance(entry, RootDocument) else None
 
     @cache
@@ -134,21 +135,6 @@ def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPa
                 continue
             document(key, json_pointer_parts(reference.pointer), by_id=False, subtree=True)
 
-    for name, entry in project.documents.items():
-        if isinstance(entry, BasedDocument) and not entry.base.unresolved:
-            for pointer, difference in entry.differences.items():
-                parts = json_pointer_parts(pointer)
-                document(entry.base.document, parts if isinstance(difference, RemoveDocumentValue) else parts[:-1], by_id=False)
-        if entry.schema_id == SET_DOCUMENT_SCHEMA_ID:
-            try:
-                entries = SetDocument.model_validate(composed(name)).entries
-            except ValidationError:
-                continue
-            for item in entries.values():
-                for pointer, difference in item.differences.items():
-                    parts = json_pointer_parts(pointer)
-                    compatible(frozenset({MODEL_DOCUMENT_SCHEMA_ID}), parts if isinstance(difference, RemoveDocumentValue) else parts[:-1])
-
     for path in _sweep_paths(project.sweep):
         if path.startswith(("steps.", "documents.")):
             explicit(path)
@@ -166,14 +152,20 @@ def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPa
                 key = resolve_segment(payload, part, path="/".join(selection), by_id=False)
                 payload = payload[key] if key is not None else None
 
+        def observe_base(parts: StoredPath) -> None:
+            if owner is not None:
+                document(owner, (*selection, *parts))
+            elif isinstance(base, InlineBase):
+                observe("steps", ancestors[-1], ("base", "inline", *parts))
+
         if owner is not None and any(project.steps[ancestor].deltas for ancestor in ancestors):
             for path, value in _walk(payload):
                 for key in value.keys() & _SCHEMA_KEYS:
-                    document(owner, (*selection, *path, key))
-            for ancestor in ancestors:
-                for delta in project.steps[ancestor].deltas:
-                    for patch in delta.patches:
-                        document(owner, (*selection, *patch.path.split(".")))
+                    observe_base((*path, key))
+        for ancestor in ancestors:
+            for delta in project.steps[ancestor].deltas:
+                for patch in delta.patches:
+                    observe_base(tuple(patch.path.split(".")))
 
         for ancestor in ancestors:
             for path in _sweep_paths(project.steps[ancestor].sweep):
@@ -185,10 +177,10 @@ def protected_project_fields(project: Project) -> dict[FileAddress, set[StoredPa
                     continue
                 if target is not None:
                     document(target[0], tuple(target[1].split(".")))
-                elif owner is not None:
-                    document(owner, (*selection, *path.split(".")))
-                elif step.kind == "evaluate" and path.startswith("task."):
-                    compatible(_TASK_SCHEMAS, tuple(path.split(".")[1:]))
+                else:
+                    observe_base(tuple(path.split(".")))
+                    if owner is None and step.kind == "evaluate" and path.startswith("task."):
+                        compatible(_TASK_SCHEMAS, tuple(path.split(".")[1:]))
 
         if step.kind == "evaluate" and isinstance(payload, dict):
             params = payload.get("params")

@@ -2,9 +2,9 @@ import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
 import { reasonOf, untilText, type FieldModel } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
-import type { StudioNamedValueType, TaskDocument, ValueType } from '@/generated/studioContracts';
+import type { StoredTaskDocument, StudioNamedValueType, ValueType } from '@/generated/studioContracts';
 import { authoredPointer } from '../authoredEdits';
-import { changedAt, expressionKind, trialField, type Commit, type TrialRuns, type TrialView } from '../StudioTrialAuthoring';
+import { changedAt, trialField, type Commit, type TrialRuns, type TrialView } from '../StudioTrialAuthoring';
 import { TaskGrid, type GridEdits } from './TaskGrid';
 import { TaskInspector } from './TaskInspector';
 import type { TrialShown } from './trialSample';
@@ -17,15 +17,16 @@ type Structure = Extract<Parameters<Commit>[1], { kind: 'structure' }>['changes'
  * The field the service projects at `parts` of the task document, or an empty read-only one where it projects none
  * there (a task whose problems stop it before that part).
  */
-function projected(view: TrialView, parts: readonly string[], stored: string, options: {
-  id: string; label: string; value?: unknown; commit?: Commit; runs?: TrialRuns; name: string;
+function projected(view: TrialView, parts: readonly string[], options: {
+  id: string; label: string; commit?: Commit; runs?: TrialRuns; name: string;
 }): FieldModel {
   const path = authoredPointer(['task', ...parts]);
+  const stored = authoredPointer(parts);
   const projection = view.fields.find((field) => field.path === path);
   if (!projection) return rawField({ id: options.id, label: options.label, value: '', type: { kind: 'readOnly' } });
   const { commit, runs } = options;
   return trialField(view, projection, options.label, runs, {
-    id: options.id, kind: expressionKind(options.value as never), changed: changedAt(view, 'task', stored, commit),
+    id: options.id, changed: changedAt(view, 'task', stored, commit),
     commit: commit && ((edit) => commit(studioAccessibleName('set', options.name), { kind: 'expression', path, edit })),
   });
 }
@@ -35,15 +36,15 @@ function projected(view: TrialView, parts: readonly string[], stored: string, op
  * End's shows its condition and limit as one text, with each as its own part. Committing `rest`, a length's text or
  * `<condition> ≤ <limit>` makes the End that kind, in one edit the service makes.
  */
-function endField(view: TrialView, task: TaskDocument, index: number, commit?: Commit): FieldModel {
-  const epoch = task.epochs[index];
+function endField(view: TrialView, task: StoredTaskDocument, key: string, commit?: Commit): FieldModel {
+  const epoch = task.epochs[key];
   const label = studioName('end');
   const end = epoch.end;
-  const at = (part: 'length' | 'condition' | 'limit', partLabel: string, value?: unknown) =>
-    projected(view, ['epochs', epoch.id, 'end', part], `/epochs/${index}/end/${part}`,
-      { id: `end:${epoch.id}${part === 'length' ? '' : `.${part}`}`, label: partLabel, value, commit, name: `${epoch.name} ${partLabel}` });
-  const length = at('length', label, 'length' in end ? end.length : undefined);
-  const condition = at('condition', studioName('condition'), 'condition' in end ? end.condition : undefined);
+  const at = (part: 'length' | 'condition' | 'limit', partLabel: string) =>
+    projected(view, ['epochs', key, 'end', part],
+      { id: `end:${key}${part === 'length' ? '' : `.${part}`}`, label: partLabel, commit, name: `${epoch.label} ${partLabel}` });
+  const length = at('length', label);
+  const condition = at('condition', studioName('condition'));
   const kinds = [
     ...length.kinds.filter(({ kind }) => 'length' in end || kind !== 'sweep'),
     { kind: 'until' as const, enabled: !!length.commit, names: [
@@ -65,61 +66,61 @@ function endField(view: TrialView, task: TaskDocument, index: number, commit?: C
 const sameType = (a: ValueType, b: ValueType) => studioValueType(a) === studioValueType(b);
 
 /** The grid of a task document: its epochs with their Ends, and its signals with their cells and absent values. */
-function grid(view: TrialView, task: TaskDocument, types: readonly StudioNamedValueType[], commit?: Commit, runs?: TrialRuns) {
+function grid(view: TrialView, task: StoredTaskDocument, types: readonly StudioNamedValueType[], commit?: Commit, runs?: TrialRuns) {
   const period = view.period_seconds;
-  const epochs = task.epochs.map((epoch, index): TaskEpoch => {
-    const steps = view.epochs.find(({ id }) => id === epoch.id)?.steps;
+  const order = Object.keys(task.epochs);
+  const epochs = Object.entries(task.epochs).map(([key, epoch]): TaskEpoch => {
+    const steps = view.epochs.find(({ id }) => id === key)?.steps;
     return {
-      id: epoch.id, name: epoch.name, end: endField(view, task, index, commit),
+      id: key, name: epoch.label, end: endField(view, task, key, commit),
       bounds: {
-        id: epoch.id, name: epoch.name, ends: endsBy(epoch.end, steps),
+        id: key, name: epoch.label, ends: endsBy(epoch.end, steps),
         least: steps && period != null ? steps.least * period : 0,
         nominal: steps && period != null ? steps.nominal * period : 0,
         greatest: steps && period != null ? steps.greatest * period : 0,
       },
     };
   });
-  const signals = task.signals.map((signal, row): TaskSignal => {
+  const signals = Object.entries(task.signals).map(([key, signal]): TaskSignal => {
     const type = types.find((named) => sameType(named.type, signal.type))?.name ?? studioValueType(signal.type);
-    const order = task.epochs.map(({ id }) => id);
     const cells: TaskCell[] = [];
+    const stored = Object.entries(signal.cells);
     for (let at = 0; at < order.length;) {
-      const index = signal.cells.findIndex((cell) => cell.first_epoch === order[at]);
-      const cell = signal.cells[index];
-      if (!cell) {
+      const [cellKey, cell] = stored.find(([, each]) => each.first_epoch === order[at]) ?? [];
+      if (!cellKey || !cell) {
         cells.push({ id: `absent:${order[at]}`, first: order[at], last: order[at], kind: 'absent' });
         at += 1;
         continue;
       }
       cells.push({
-        id: cell.id, first: cell.first_epoch, last: cell.last_epoch, kind: 'value',
-        value: projected(view, ['signals', signal.id, 'cells', cell.id, 'value'], `/signals/${row}/cells/${index}/value`,
-          { id: `cell:${signal.id}:${cell.id}`, label: signal.name, value: cell.value, commit, runs, name: signal.name }),
+        id: cellKey, first: cell.first_epoch, last: cell.last_epoch, kind: 'value',
+        value: projected(view, ['signals', key, 'cells', cellKey, 'value'],
+          { id: `cell:${key}:${cellKey}`, label: signal.label, commit, runs, name: signal.label }),
       });
       at = Math.max(at + 1, order.indexOf(cell.last_epoch) + 1);
     }
     return {
-      id: signal.id, name: signal.name, type, valueType: signal.type, cells,
-      absent: projected(view, ['signals', signal.id, 'absent'], `/signals/${row}/absent`,
-        { id: `absent:${signal.id}`, label: studioName('absent'), value: signal.absent ?? undefined, commit, name: signal.name }),
+      id: key, name: signal.label, type, valueType: signal.type, cells,
+      absent: projected(view, ['signals', key, 'absent'],
+        { id: `absent:${key}`, label: studioName('absent'), commit, name: signal.label }),
     };
   });
-  const repeats = (task.repeats ?? []).map((repeat): TaskRepeat => ({
-    id: repeat.id, first: repeat.first_epoch, last: repeat.last_epoch,
-    count: projected(view, ['repeats', repeat.id, 'count'], `/repeats/${task.repeats!.indexOf(repeat)}/count`,
-      { id: `repeat:${repeat.id}`, label: studioName('count'), value: repeat.count, commit, name: studioName('repeat') }),
-    reason: view.problems.find(({ path = [] }) => path[0] === 'repeats' && path[1] === repeat.id && path.length === 2)?.reason,
+  const repeats = Object.entries(task.repeats ?? {}).map(([key, repeat]): TaskRepeat => ({
+    id: key, first: repeat.first_epoch, last: repeat.last_epoch,
+    count: projected(view, ['repeats', key, 'count'],
+      { id: `repeat:${key}`, label: studioName('count'), commit, name: studioName('repeat') }),
+    reason: view.problems.find(({ path = [] }) => path[0] === 'repeats' && path[1] === key && path.length === 2)?.reason,
   }));
   return { epochs, repeats, signals };
 }
 
-function gridEdits(task: TaskDocument, commit?: Commit): GridEdits {
+function gridEdits(task: StoredTaskDocument, commit?: Commit): GridEdits {
   if (!commit) return {};
   /** One edit making `changes` in order: all of them, or none when one is refused. */
   const make = async (name: string, changes: readonly Structure[], removes?: boolean) =>
     reasonOf(await commit(name, { kind: 'structure', changes: [...changes] }, removes));
-  const epoch = (id: string) => task.epochs.find((item) => item.id === id)?.name;
-  const signal = (id: string) => task.signals.find((item) => item.id === id)?.name;
+  const epoch = (id: string) => task.epochs[id]?.label;
+  const signal = (id: string) => task.signals[id]?.label;
   return {
     addEpoch: (name, index) => make(studioName('addEpoch'), [{ op: 'add', member: 'epoch', name, index }]),
     renameEpoch: (id, name) => make(studioAccessibleName('rename', epoch(id)), [{ op: 'rename', member: 'epoch', id, name }]),

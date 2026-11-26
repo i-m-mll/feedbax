@@ -101,9 +101,6 @@ UPWARD: dict[tuple[str, str], str] = {
     ("feedbax/contracts/rollout.py", "feedbax.compiler.graph"): (
         "rollout semantics take the compiled graph key schedule (annotation only)"
     ),
-    ("feedbax/contracts/train_settings.py", "feedbax.training.methods"): (
-        "Train settings are normalized against the training method registry passed in (annotation only)"
-    ),
     ("feedbax/jobs.py", "feedbax.orchestration.session"): (
         "the job service hands remote jobs to execution sessions, whose job adapters import the job service"
     ),

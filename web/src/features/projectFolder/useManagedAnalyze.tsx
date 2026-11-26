@@ -45,7 +45,7 @@ import { savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, placedField, type Reveal } from './projectWindowProblems';
 import { ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
-import { FigureLayers, offeredFields, type RoleFields } from './FigureLayers';
+import { FigureLayers, offeredFields, type FigureMemberEdit, type RoleFields } from './FigureLayers';
 import { holdsProducts, OperationProducts } from './OperationProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import type { GestureFailures } from './refusals';
@@ -222,7 +222,7 @@ export function useManagedAnalyze({
   }
 
   /** Runs an edit after the edits before it have saved; the controls stay editable meanwhile. */
-  async function perform(work: (current: StudioProjectSnapshot) => Promise<void>, allowed = canEdit, at?: RefusalPlace) {
+  async function perform(work: (current: StudioProjectSnapshot) => Promise<unknown>, allowed = canEdit, at?: RefusalPlace) {
     if (!allowed) return;
     setEdits((count) => count + 1);
     failures.clear();
@@ -232,13 +232,16 @@ export function useManagedAnalyze({
     finally { setEdits((count) => count - 1); }
   }
 
-  /** Store `change` of the shown document for the chosen steps, as the service computes it, as one Undo entry. */
+  /**
+   * Store `change` of the shown document for the chosen steps, as the service computes it, as one Undo entry, and give
+   * the Service's review of it.
+   */
   async function save(current: StudioProjectSnapshot, label: string, change: StudioAnalyzeChange) {
     if (!key || liveScope.current !== scope) throw new ProjectEditConflictError();
     const reviewed = await readStudioAnalyze(current.project_id, {
       revision: current.revision, key, change, chosen_steps: [...chosen ?? []],
     });
-    if (!reviewed.files?.length && !reviewed.created?.length) return;
+    if (!reviewed.files?.length && !reviewed.created?.length) return reviewed;
     let land!: (basis: string) => void;
     edited.current = { landed: new Promise((resolve) => { land = resolve; }), value: { shape: undefined, review: reviewed } };
     try {
@@ -253,12 +256,22 @@ export function useManagedAnalyze({
       edited.current.value.shape = after.shape;
       land(after.basis);
     }
+    return reviewed;
   }
+  const ensured = (path: readonly string[]) => path.map((_, index) => ({
+    op: 'ensure' as const, path: authoredPointer(path.slice(0, index + 1)), collection: 'object' as const,
+  }));
   const set = (path: readonly string[], value: JsonValue): StudioAnalyzeChange => ({ kind: 'edit', edits: [
-    ...path.slice(0, -1).map((_, index) => ({
-      op: 'ensure' as const, path: authoredPointer(path.slice(0, index + 1)), collection: 'object' as const,
-    })),
-    { op: 'replace', path: authoredPointer(path), value },
+    ...ensured(path.slice(0, -1)), { op: 'replace', path: authoredPointer(path), value },
+  ] });
+  /** The member edits of a figure, written under the figure's place in the document. */
+  const atFigure = (place: readonly string[], edits: readonly FigureMemberEdit[]): StudioAnalyzeChange => ({ kind: 'edit', edits: [
+    ...ensured(place),
+    ...edits.map((edit) => {
+      const path = authoredPointer([...place, ...edit.path]);
+      return edit.op === 'order' ? { op: 'order' as const, path, order: [...edit.order] }
+        : edit.op === 'remove' ? { op: 'remove' as const, path } : { op: 'replace' as const, path, value: edit.value };
+    }),
   ] });
   const changedPaths = new Set(catalog?.document === document ? catalog?.changed ?? [] : []);
   function changedAt(path: readonly string[]): ChangeMark | undefined {
@@ -434,11 +447,19 @@ export function useManagedAnalyze({
     return port ? offeredFields(port) : {};
   }
   const authoredFigure = figure && 'data' in figure.figure ? figure.figure : undefined;
-  const layers = selected && authoredFigure && <FigureLayers key={JSON.stringify([scope, selected])}
-    figure={authoredFigure} fields={roleFields} refusal={roleRefusal(selected, layersPlace)}
-    edit={canEdit ? (label, next) => void perform(
-      (current) => save(current, label, set(['views', selected, 'figure'], next as JsonValue)), canEdit, [selected, layersPlace],
-    ) : undefined} />;
+  const figureValues = selected ? catalog?.figure_values[selected] : undefined;
+  const layers = selected && authoredFigure && figureValues && <FigureLayers key={JSON.stringify([scope, selected])}
+    figure={authoredFigure} values={figureValues} fields={roleFields} refusal={roleRefusal(selected, layersPlace)}
+    edit={canEdit ? (label, edits) => void perform(
+      (current) => save(current, label, atFigure(['views', selected, 'figure'], edits)), canEdit, [selected, layersPlace],
+    ) : undefined}
+    addLayer={canEdit ? async (label, layer) => {
+      let created: string | undefined;
+      await perform(async (current) => {
+        created = (await save(current, label, { kind: 'add_figure_layer', view: selected, layer }))?.created_layer ?? undefined;
+      }, canEdit, [selected, layersPlace]);
+      return created;
+    } : undefined} />;
   const inspector = selected && (operation || figure || selectedInput) && <Inspector name={operation || figure ? shown(selected) : boundName(selected)}
     type={operation ? definition?.label ?? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}
     attachments={layers}>

@@ -77,6 +77,17 @@ function snapshot(value: JsonValue): JsonValue {
   return structuredClone(isDraft(value) ? current(value) : value);
 }
 
+/**
+ * The keys of a keyed collection in the order `order` gives them: the listed keys it has first, in that order, then the
+ * rest in their present order. A listed key it lacks is ignored.
+ */
+export function orderedKeys(keys: readonly string[], order: readonly string[]) {
+  const present = new Set(keys);
+  const listed = order.filter((key) => present.has(key));
+  const first = new Set(listed);
+  return [...listed, ...keys.filter((key) => !first.has(key))];
+}
+
 function applyEdit(entry: JsonObject, edit: ProjectValueEdit, positions?: Position[]) {
   const path = authoredPointerParts(edit.path);
   let container: Container = entry;
@@ -89,6 +100,13 @@ function applyEdit(entry: JsonObject, edit: ProjectValueEdit, positions?: Positi
   const key = keyAt(container, path[path.length - 1]);
   const exists = own(container, key);
   if (edit.op !== 'add' && !exists) throw new Error(`The field at ${edit.path} no longer exists.`);
+  if (edit.op === 'order') {
+    const members = Array.isArray(container) ? undefined : container[key];
+    if (!plainObject(members)) throw new Error(`The value at ${edit.path} is not a keyed collection.`);
+    (container as JsonObject)[key] = Object.fromEntries(
+      orderedKeys(Object.keys(members), edit.order).map((name) => [name, snapshot(members[name])]));
+    return;
+  }
   if (Array.isArray(container)) {
     const index = key as number;
     if (index > container.length) throw new Error(`The list index at ${edit.path} is out of range.`);
@@ -110,6 +128,14 @@ function applyEdit(entry: JsonObject, edit: ProjectValueEdit, positions?: Positi
       delete container[key];
     } else container[key] = structuredClone(edit.value);
   }
+}
+
+/** Whether `after` holds the members of `before`, unchanged, in another order. */
+function reordered(before: JsonValue | undefined, after: JsonValue | undefined): before is JsonObject {
+  if (!plainObject(before) || !plainObject(after)) return false;
+  const keys = Object.keys(before);
+  return keys.join('\0') !== Object.keys(after).join('\0') && keys.length === Object.keys(after).length &&
+    keys.every((key) => own(after, key) && sameValue(before[key], after[key]));
 }
 
 function plainObject(value: JsonValue | undefined): value is JsonObject {
@@ -233,6 +259,7 @@ function shouldReapply(before: Container, latest: Container, edit: ProjectValueE
     const exists = own(latest, key);
     if (index === path.length - 1) {
       if (edit.op === 'remove' && !exists) return false;
+      if (edit.op === 'order') return exists;
       if (edit.op === 'add' && exists && JSON.stringify(latest[key]) === JSON.stringify(edit.value)) return false;
       if (edit.op === 'replace' && before[key] !== null && typeof before[key] === 'object' &&
           JSON.stringify(before[key]) !== JSON.stringify(latest[key])) {
@@ -294,6 +321,9 @@ export function applyAuthoredEdits(
     inverse: inverse.flatMap((patch): ProjectValueEdit[] => {
       const path = authoredPointer(patch.path);
       if (patch.op === 'remove') return [{ op: 'remove', path }];
+      const previous = patch.value as JsonValue;
+      const now = authoredMemberOf(changed, patch.path.map(String));
+      if (patch.op === 'replace' && reordered(previous, now)) return [{ op: 'order', path, order: Object.keys(previous) }];
       const undone: ProjectValueEdit = { op: patch.op, path, value: patch.value as JsonValue };
       const following = patch.op === 'add' ? restored.get(path) : undefined;
       return following ? [undone, ...following.flatMap(([member, value]): ProjectValueEdit[] =>

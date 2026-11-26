@@ -21,17 +21,22 @@ from feedbax.contracts.project import json_pointer_parts
 from feedbax._atomic import write_bytes_atomic
 from feedbax import project_folder
 from feedbax.contracts import request_identity
+from feedbax.contracts.base import sha256_bytes
 from feedbax.planner import project_plan
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sweep import model_field_path
 from feedbax.contracts.project import InlineBase, Project, StepBase, member_name
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, load_text_project
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.studio_place import definition_place, path_parts
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.studio_authoring import StudioAuthoringChange
-from feedbax.contracts.task_document import BLANK_TASK
+from feedbax.contracts.studio_project import PresentationDocument
+from feedbax.contracts.task_document import BLANK_STORED_TASK, STORED_TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.host import HostError
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
@@ -41,7 +46,7 @@ from feedbax.studio.selection import StoredEdit, TrainSelection
 from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
-from feedbax.web.services.project_folder import ProjectFolderInvalid
+from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from tests.support import external_method_witness
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.hang import HANG_SECONDS
@@ -50,7 +55,7 @@ from tests.support.hang import HANG_SECONDS
 _URL = "/api/projects/reach"
 _MODEL = "point-mass"
 _SETTINGS = "settings"
-_VALUE = "/payload/value"
+_VALUE = "/payload/training_config/n_batches"
 _MASS_ADDRESS = ModelAddress.model_validate({
     "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
@@ -70,7 +75,10 @@ def study(tmp_path: Path):
         }}},
         "exceptions": {"z_first": {"where": {"rows": []}}, "a_second": {"where": {"rows": []}}},
     }
-    raw["documents"][_SETTINGS] = {"label": "Document", "schema": "example.settings", "payload": {"value": 1}}
+    raw["documents"][_SETTINGS] = {
+        "label": "Settings", "schema": TRAINING_DOCUMENT_SCHEMA_ID,
+        "payload": {"method": "feedbax.supervised_gradient", "settings": {}, "training_config": {"n_batches": 1}},
+    }
     project = Project.model_validate(raw)
     root = tmp_path / "reach"
     for name, data in dump_text_project(
@@ -121,7 +129,7 @@ def _edit_mass(client: TestClient, url: str, snapshot, value: float):
 
 
 def _settings(root: Path):
-    return load_text_project(root).project.documents[_SETTINGS].payload["value"]
+    return load_text_project(root).project.documents[_SETTINGS].payload["training_config"]["n_batches"]
 
 
 def _mass(root: Path):
@@ -175,6 +183,7 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
         )}
         for name in (trial[slot]["document"] for slot in ("model", "task", "objective"))
     ]
+    model["document"]["payload"]["interior"]["components"]["plant"]["fields"]["mass"] = 1.5
     for entry in (
         model, task, objective,
         {"kind": "step", "id": "train", "step": {"label": "Step", "kind": "train", "base": {"inline": {}}}},
@@ -216,8 +225,8 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     }
     assert set(before.selected_definitions) == {selected}
     definition = before.selected_definitions[selected]
-    assert definition.payload["trial_documents"]["model"] == model["document"]["payload"]
-    assert definition.payload["trial_documents"]["task"] == task["document"]["payload"]
+    assert definition.payload["trial_documents"]["model"] == snapshot["project"]["documents"][model["id"]]["payload"]
+    assert definition.payload["trial_documents"]["task"] == snapshot["project"]["documents"][task["id"]]["payload"]
     assert (
         definition.sources[mass].kind,
         definition.sources[mass].name,
@@ -237,7 +246,7 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
         plan.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
         == 2.0
     )
-    assert definition.payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"] == 1.0
+    assert definition.payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"] == 1.5
     files = _folder_state(root)
     with pytest.raises(project_folder.ProjectRevisionConflict) as conflict:
         app.state.project_folders.read_plan(snapshot["project_id"], revision=snapshot["revision"])
@@ -415,6 +424,25 @@ def _three_methods() -> TrainingMethodRegistry:
         key="probe.adversarial", source=source,
     )
     return registry
+
+
+def test_an_inherited_train_reads_based_defaults_from_its_supplied_method_registry():
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    parent = raw["steps"]["train"]["base"]["inline"]
+    training = {**{key: parent[key] for key in TRAINING_DOCUMENT_KEYS}, "method": "probe.penalized", "settings": {}}
+    raw["documents"].update({
+        "training": {"label": "Training", "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": training},
+        "adapted": {"label": "Adapted", "schema": TRAINING_DOCUMENT_SCHEMA_ID, "base": {"document": "training"},
+                    "differences": {"/settings/optimizer/type": {"value": "adabelief"}}},
+    })
+    parent.update({key: {"document": "adapted", "pointer": f"/{key}"} for key in TRAINING_DOCUMENT_KEYS})
+    raw["steps"]["continue"] = {"kind": "train", "label": "Continue", "base": {"step": "train"}}
+
+    project = Project.model_validate(raw)
+    projection = project_train_fields(project, "continue", _three_methods(), None, _WHOLE_STEP)
+    assert projection.settings["optimizer"]["type"] == "adabelief"
+    assert projection.settings["penalty"] == 0.1
+    assert "/settings/optimizer/type" in projection.changed
 
 
 def test_a_method_change_keeps_shared_settings_and_stores_a_method_without_a_swept_parameter():
@@ -623,7 +651,7 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         assert reviewed.status_code == 200, reviewed.text
         recipe, = reviewed.json()["files"]
         assert recipe["address"] == {"kind": "variant", "id": "compare"}
-        target = f"documents.{_MODEL}.{field.to_text()}"
+        target = model_field_path(field, ("documents", _MODEL))
         assert recipe["patches"][0]["value"][target] == {"op": "replace", "value": 3}
         snapshot = client.patch(_URL, json={"revision": before["revision"], **recipe})
         assert snapshot.status_code == 200, snapshot.text
@@ -743,13 +771,15 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
 def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
     root, client = study
     opened = _read(client)
+    with client:
+        opened = _edit_mass(client, _URL, opened, 1.5)
     service = client.app.state.project_folders
     selected = RunKey("default", "fit", "seed=10")
     entered = Event()
     release = Event()
 
     def pause_old_compile(project, **kwargs):
-        if project.documents[_MODEL].payload["interior"]["components"]["plant"]["fields"]["mass"] == 1:
+        if project.documents[_MODEL].payload["interior"]["components"]["plant"]["fields"]["mass"] == 1.5:
             entered.set()
             assert release.wait(HANG_SECONDS)
         return compile_project(project, **kwargs)
@@ -771,13 +801,74 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
     assert (old.revision, old.semantic_root) == (opened["revision"], opened["semantic_root"])
     assert (
         old.plan.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
-        == 1
+        == 1.5
     )
     assert (
         current.selected_definitions[selected].payload["trial_documents"]["model"]["interior"]["components"]["plant"]["fields"]["mass"]
         == 4
     )
     assert _read_plan(client, root, changed, selected) == current
+
+
+@pytest.mark.parametrize("source_first", [False, True])
+def test_in_place_plan_reuses_both_read_modes_and_checks_external_pins(tmp_path, monkeypatch, source_first):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    train = raw["steps"]["train"]
+    payload = train["base"]["inline"]
+    pinned = json.dumps(payload).encode()
+    name = "inputs/train.json"
+    train["base"] = {"path": name, "sha256": sha256_bytes(pinned)}
+    root = tmp_path / "outside"
+    project_folder.write_new_project_folder(
+        root, Project.model_validate(raw), ProjectConfiguration(project="reach", store="results"),
+        PresentationDocument(),
+    )
+    external = root / name
+    external.parent.mkdir()
+    external.write_bytes(pinned)
+    folders = ProjectFolderService(tmp_path / "studio")
+    snapshot = folders.open_native_folder(root)[0].snapshot
+
+    calls = []
+    original = project_folder.compile_project
+
+    @wraps(original)
+    def counted(*args, **kwargs):
+        calls.append(kwargs["source_runs"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(project_folder, "compile_project", counted)
+    run = RunKey("default", "train", "default")
+    modes = [frozenset({run}), frozenset()]
+    if not source_first:
+        modes.reverse()
+
+    def read(selected):
+        return folders.read_plan(snapshot.project_id, revision=snapshot.revision, source_runs=selected).plan
+
+    for mode in modes:
+        plan = read(mode)
+        assert not plan.diagnostics
+        assert set(plan.selected_definitions) == mode
+        assert read(mode) == plan
+        assert calls.count(mode) == 1
+    (external.parent / "unread.json").write_text("{}")
+    for mode in modes * 2:
+        assert not read(mode).diagnostics
+    assert calls == modes
+
+    payload["training_config"]["n_batches"] += 1
+    external.write_bytes(json.dumps(payload).encode())
+    for mode in modes:
+        plan = read(mode)
+        assert any(problem.code == ResolutionCode.BAD_EXTERNAL_CONTENT for problem in plan.diagnostics)
+        assert read(mode) == plan
+    assert calls == modes * 2
+
+    external.write_bytes(pinned)
+    for mode in modes:
+        assert not read(mode).diagnostics
+    assert calls == modes * 3
 
 
 def _plan_dependencies(root: Path) -> None:
@@ -1172,7 +1263,7 @@ def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path
 
     task = {"kind": "document", "id": "task", "document": {
         "label": "Document",
-        "schema": "feedbax.spec.task_document", "payload": BLANK_TASK.model_dump(mode="json"),
+        "schema": STORED_TASK_DOCUMENT_SCHEMA_ID, "payload": BLANK_STORED_TASK.model_dump(mode="json"),
     }}
     rejected = client.post(url, json={"revision": created["revision"], "file": task})
     assert rejected.status_code == 409
@@ -1251,7 +1342,7 @@ def test_named_document_edit_reopens_and_presentation_leaves_authored_identity(s
     presentation = {
         "documents": {
             _MODEL: {
-                "positions": {"plant": {"x": 40, "y": 20}},
+                "positions": {"component.plant": {"x": 40, "y": 20}},
                 "camera": {"x": 2, "y": 3, "zoom": 1.5},
             }
         },
@@ -1355,7 +1446,7 @@ def test_external_revision_and_invalid_batch_preserve_external_bytes(study):
     assert _patch(client, baseline["revision"], 3).status_code == 409
 
     body = json.loads(path.read_bytes())
-    body["payload"]["value"] = 9
+    body["payload"]["training_config"]["n_batches"] = 9
     data = json.dumps(body, indent=4).encode()
     write_bytes_atomic(path, data)
     assert _settings(root) == 9
@@ -1420,7 +1511,7 @@ def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkey
             "address": {"kind": "presentation", "id": "presentation"},
             "patches": [{
                 "op": "add", "path": "/steps",
-                "value": {"fit": {"model_positions": {_MODEL: {"plant": {"x": 1, "y": 2}}}}},
+                "value": {"fit": {"model_positions": {_MODEL: {"component.plant": {"x": 1, "y": 2}}}}},
             }],
         })
         before_write = _folder_state(root)
@@ -1450,7 +1541,7 @@ def test_multi_file_patch_recovers_one_revision_after_interruption(study, monkey
     if placement:
         assert after["presentation_revision"] != before["presentation_revision"]
         assert after["presentation"]["steps"]["fit"]["model_positions"][_MODEL] == {
-            "plant": {"x": 1.0, "y": 2.0},
+            "component.plant": {"x": 1.0, "y": 2.0},
         }
     assert not (root / ".studio-patch.json").exists()
     stale = client.patch(_URL, json=body)
@@ -1514,7 +1605,7 @@ def test_existing_event_stream_observes_an_external_edit(study, monkeypatch, thr
                 else:
                     path = root / "documents/settings.json"
                     document = json.loads(path.read_bytes())
-                    document["payload"]["value"] = 11
+                    document["payload"]["training_config"]["n_batches"] = 11
                     write_bytes_atomic(path, json.dumps(document).encode())
             if self.calls > 2:
                 raise HostError("unavailable", "Stream ended")
@@ -1546,8 +1637,6 @@ def _shared_training(tmp_path, *, continuations=0, other=True, third=False, chec
     ``variants`` are the project's variant rows, none by default. ``third`` adds a third such step. ``continuations`` Train steps follow ``train`` in a chain, ``train-2`` based on
     ``train``, ``train-3`` on ``train-2``, each starting from its parent's checkpoint unless not ``checkpoints``.
     """
-    from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
-
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     inline = raw["steps"]["train"]["base"]["inline"]
     raw["documents"]["training"] = {
@@ -1816,6 +1905,22 @@ def test_a_continuation_s_edit_in_a_variant_is_a_layer_its_row_appends(tmp_path)
         train.number("train-2", _BATCHES, {"kind": "text", "text": "6"}, variant="treated")
         assert _select(train.plan().selected_definitions[RunKey("treated", "train-2", "default")].payload, _BATCHES) == 6
         assert _changed(after, _ids(train)) == {key for key in after if (key.variant, key.step) == ("treated", "train-2")}
+
+        later = client.patch(_URL, json={
+            "revision": train.revision,
+            "address": {"kind": "step", "id": "train-2"},
+            "patches": [{"op": "add", "path": "/deltas/-", "value": {
+                "layer_id": "later", "patches": [{"path": "seed", "op": "add", "value": 17}],
+            }}],
+        })
+        assert later.status_code == 200, later.text
+        plan = train.plan()
+        key = RunKey("treated", "train-2", "default")
+        assert plan.selected_definitions[key].payload["seed"] == 17
+        assert _select(plan.selected_definitions[key].payload, _BATCHES) == 6
+        assert [layer.layer_id for layer in plan.variant_projects["treated"].steps["train-2"].deltas] == [
+            "initialize", "later", "variant",
+        ]
 
 
 def test_a_variant_edit_back_to_the_default_value_drops_the_row_s_write(tmp_path):

@@ -12,19 +12,22 @@ import unicodedata
 
 from pydantic import JsonValue
 
-from feedbax.contracts.project import Document, Project, Step, diff, json_pointer_parts, member_name
+from feedbax.application.stored_regions import compose_document, project_holders
+from feedbax.contracts.project import (
+    DOCUMENT, Document, LoadedModelDocument, Project, RootDocument, Step, base_chain, diff, json_pointer_parts, member_name,
+)
 from feedbax.contracts.project_inputs import DocumentReference, NamedSubset, StepReference
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.result_address import (
-    ANALYSIS_SCHEMA, ELEMENT_FAMILIES, ElementHolders, family_documents, payload_elements, project_holders,
+    ANALYSIS_SCHEMA, ELEMENT_FAMILIES, ElementHolders, family_documents, payload_elements,
 )
 from feedbax.contracts.studio_project import KeyedFamily, MemberFamily, StudioMemberName
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 
 type _Json = Any
@@ -41,11 +44,11 @@ def generated_name(base: str, taken: Callable[[str], bool], separator: str = "-"
 
 
 _DOCUMENT_NAMES = {
-    MODEL_DOCUMENT_SCHEMA_ID: ("model", "Model"),
+    STORED_MODEL_DOCUMENT_SCHEMA_ID: ("model", "Model"),
     LOADED_MODEL_SCHEMA_ID: ("loaded-model", "Loaded Model"),
-    TASK_DOCUMENT_SCHEMA_ID: ("task", "Task"),
+    STORED_TASK_DOCUMENT_SCHEMA_ID: ("task", "Task"),
     PYTHON_TASK_SCHEMA_ID: ("task", "Task"),
-    OBJECTIVE_DOCUMENT_SCHEMA_ID: ("objective", "Objective"),
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID: ("objective", "Objective"),
     TRAINING_DOCUMENT_SCHEMA_ID: ("training", "Training"),
     ANALYSIS_SCHEMA: ("analysis", "Analysis"),
     "feedbax.report_document.v1": ("report", "Report"),
@@ -75,7 +78,7 @@ def new_document_name(
 ) -> StudioMemberName:
     """Allocate within the picker family, with a key available across all documents."""
     fallback, default = _DOCUMENT_NAMES.get(schema, ("document", "Document"))
-    task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
+    task_schemas = {STORED_TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
     family = task_schemas if schema in task_schemas else {schema}
     labels = {document.label for document in documents.values() if document.schema_id in family}
     return allocate_member_name(base or default, labels, documents.__contains__, fallback, copy=copy)
@@ -208,6 +211,32 @@ def preserve_dangling_member(
 
 def _rekey(mapping: dict[str, _Json], old: str, new: str) -> dict[str, _Json]:
     return {new if key == old else key: item for key, item in mapping.items()}
+
+
+def preserve_loaded_archive_paths(
+    documents: Mapping[str, Document], renamed: dict[str, _Json], old: str, new: str,
+) -> None:
+    """Preserve the effective archive of the rekeyed Load and its based documents."""
+    def read(name: str) -> Document | None:
+        return DOCUMENT.validate_python(renamed[name]) if name in renamed else None
+
+    family = [(name, base_chain(documents, name)) for name, document in documents.items()
+              if document.schema_id == LOADED_MODEL_SCHEMA_ID]
+    for name, chain in sorted(family, key=lambda item: len(item[1])):
+        if old not in chain:
+            continue
+        target = new if name == old else name
+        before, after = compose_document(documents.get, name), compose_document(read, target)
+        if not isinstance(before, RootDocument) or not isinstance(after, RootDocument):
+            continue
+        archive = LoadedModelDocument.model_validate(before.payload).archive_path(name)
+        if archive == LoadedModelDocument.model_validate(after.payload).archive_path(target):
+            continue
+        entry = renamed[target]
+        if "payload" in entry:
+            entry["payload"]["archive"] = archive
+        else:
+            entry.setdefault("differences", {})["/archive"] = {"value": archive}
 
 
 def _rename_document(

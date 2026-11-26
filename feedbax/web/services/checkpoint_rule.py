@@ -10,7 +10,7 @@ from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns
 from feedbax.contracts.project import Project, RemoveProjectValue, StepBase
 from feedbax.contracts.project_io import project_declaration_name
-from feedbax.contracts.project_inputs import InputBinding, StepReference
+from feedbax.contracts.project_inputs import InputBinding, StepReference, stored_checkpoint_rule
 from feedbax.planner.project_plan import BlockedRow, PlannedRun, PlanSourceIndex, ProjectPlan, RunKey
 from feedbax.contracts.project_sweep import (
     CHECKPOINT_RULE_TARGET, CheckpointRuleAxis, NamedAxis, authored_row, checkpoint_sweep_refusal,
@@ -168,7 +168,7 @@ def _choose_checkpoint_store(
         raise ProjectFolderInvalid("The selected run is outside the requested scope.")
 
     sources = _checkpoint_sources(project, plan)
-    rule = edit.model_dump(mode="json", by_alias=True, exclude_none=True)["rule"]
+    rule = stored_checkpoint_rule(edit.rule)
     preferred: EditStore[StudioProjectFilePatch | None] = EditStore(
         "other_runs", "Other Runs", key.step, frozenset(), None,
     )

@@ -126,10 +126,15 @@ def pair_trial_source(
     task_sites: dict[tuple[str | int, ...], Site] | None = None,
     reset_fields: list[ModelResetField] | None = None,
     nominal: bool = False,
+    keyed_root_ports: bool = False,
 ) -> TrialPair | tuple[Problem, ...]:
     """The Model and Task paired for execution, or the Problems that refuse them. ``task_sites`` receives the Task's
     field sites, and ``reset_fields`` the Model fields a trial starts from, once the Model resolves."""
     authored = input_bindings or {}
+    input_labels = None
+    if keyed_root_ports:
+        input_labels = {port.id: port.name for port in model.ports.inputs}
+        model = model.with_keyed_root_ports()
     if isinstance(task, PythonTaskSelection):
         resolved = resolve_python_task_instance(task, python_tasks)
         if isinstance(resolved, tuple):
@@ -137,7 +142,6 @@ def pair_trial_source(
         template = resolved.template()
         task = resolved.selection()
         signal_types = template.signals
-        signal_ids = {name: name for name in signal_types}
     else:
         template = None
         from feedbax.compiler.set_fields import lower_trial_interventions
@@ -159,10 +163,9 @@ def pair_trial_source(
                 signal for id, signal in signals.items() if not is_trial_binding(id) or id in graph_override.input_bindings
             )})
         signal_types = {signal.id: signal.type for signal in task.signals}
-        signal_ids = {signal.name: signal.id for signal in task.signals}
     supplied_types = {}
     for port in model.ports.inputs:
-        signal_id = selected_signal_id(port.id, port.name, signal_ids, authored)
+        signal_id = selected_signal_id(port.id, signal_types, authored)
         if signal_id is not None and signal_id in signal_types:
             supplied_types[port.name] = signal_types[signal_id]
     supplied = frozenset(supplied_types)
@@ -223,7 +226,7 @@ def pair_trial_source(
             code=ProblemCode.STRUCTURE, path=("python_task", "type"),
             reason="The prepared Task's conditions differ from its registry declaration.",
         ),)
-    bindings, problems = bind_task_inputs(interface, compiled.interface.signals, authored)
+    bindings, problems = bind_task_inputs(interface, compiled.interface.signals, authored, input_labels=input_labels)
     graph_problems = tuple(Problem(
         code=ProblemCode.TYPE_MISMATCH,
         reason=issue.reason,
@@ -418,17 +421,21 @@ def resolve_trial_execution(
     input_bindings: Mapping[str, str | None] | None = None,
     graph_override: GraphSpec | None = None,
     nominal: bool = False,
+    keyed_root_ports: bool = False,
 ) -> ResolvedTrialExecution | tuple[Problem, ...]:
     """Validate the paired Model, Task and Objective before runtime construction."""
     try:
         pairing = pair_trial_source(
             model, task, components, functions, python_tasks=python_tasks,
             input_bindings=input_bindings, graph_override=graph_override, nominal=nominal,
+            keyed_root_ports=keyed_root_ports,
         )
         if isinstance(pairing, tuple):
             return pairing
         if pairing.problems:
             return pairing.problems
+        if keyed_root_ports:
+            model = model.with_keyed_root_ports()
         if problems := _missing_required_inputs(
             pairing.lowered.graph, model, components, frozenset(port for port, _ in pairing.input_bindings),
         ):

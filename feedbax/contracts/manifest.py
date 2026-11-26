@@ -19,6 +19,7 @@ from feedbax.contracts.artifact_store import (
     _validate_retention_artifact_ref_metadata,
 )
 from feedbax.contracts.loaded_model import ImportedModelProvenance
+from feedbax.contracts.model_address import authored_model_field_target
 from feedbax.contracts.model_origin import ModelOrigin
 from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID as AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
@@ -81,7 +82,7 @@ class OverridePatch(StrictModel):
     def _validate_patch(self) -> "OverridePatch":
         if not self.path.strip():
             raise ValueError("OverridePatch path must not be empty")
-        if any(not part for part in self.path.split(".")):
+        if any(not part for part in self.path.split(".")) and authored_model_field_target(self.path) is None:
             raise ValueError(f"OverridePatch path is not dotted-path-like: {self.path!r}")
         has_value = "value" in self.model_fields_set
         if self.op == "remove":

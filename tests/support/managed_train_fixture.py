@@ -31,25 +31,20 @@ def managed_train_project(*, batches: int = 2, scenario: str = "simple-reaches")
         name: interior["wires"][name] for name in ("target", "decode", "drive", "command")
     }
     interior["wires"]["target"]["target"] = {"owner": "component", "component": "cell", "port": "input"}
-    model["ports"]["outputs"] = [
-        port for port in model["ports"]["outputs"] if port["id"] == "command"
-    ]
+    model["ports"]["outputs"] = {"command": model["ports"]["outputs"]["command"]}
     objective = example.documents[trial["objective"]["document"]].payload
-    objective["terms"] = [{
-        "id": "command",
-        "measure": {
-            "kind": "call", "function": "sqnorm",
-            "args": [{"kind": "name", "reference": COMMAND_ADDRESS}],
-        },
+    objective["terms"] = {"command": {
+        "measure": "sqnorm(outputs.command)",
         "reduction": "last",
-    }]
+    }}
     return Project(
         documents={name: document for name, document in example.documents.items() if name in names},
         steps={"train": step},
     )
 
 
-def managed_train_payload(*, batches: int = 2, scenario: str = "simple-reaches") -> dict:
+def managed_stored_train_payload(*, batches: int = 2, scenario: str = "simple-reaches") -> dict:
+    """A Train step's keyed inline definition, suitable for an authored project."""
     project = managed_train_project(batches=batches, scenario=scenario).model_dump(
         mode="json", by_alias=True, exclude_unset=True,
     )
@@ -57,6 +52,15 @@ def managed_train_payload(*, batches: int = 2, scenario: str = "simple-reaches")
     documents = payload["trial_documents"]
     for name in ("model", "task", "objective"):
         documents[name] = project["documents"][documents[name]["document"]]["payload"]
+    return payload
+
+
+def managed_train_payload(*, batches: int = 2, scenario: str = "simple-reaches") -> dict:
+    """The lowered Train payload used by request and execution tests."""
+    from feedbax.contracts.training import lower_stored_trial_documents
+
+    payload = managed_stored_train_payload(batches=batches, scenario=scenario)
+    payload["trial_documents"] = lower_stored_trial_documents(payload["trial_documents"]).model_dump(mode="json")
     return payload
 
 
@@ -81,7 +85,8 @@ def managed_train_spec(*, batches: int = 2):
     from feedbax.application.composition import load_application
 
     registries = load_application().bundle
+    payload = managed_train_payload(batches=batches)
     spec, _, _ = normalize_train_method(
-        DocumentTrainingRequestSpec.model_validate(managed_train_payload(batches=batches)), registries.training_methods,
+        DocumentTrainingRequestSpec.model_validate(payload), registries.training_methods,
     )
     return spec, registries

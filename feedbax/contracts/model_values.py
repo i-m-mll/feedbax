@@ -95,10 +95,7 @@ class ModelFacts:
 
 def model_owner_class(node: ComponentSpec, components: ComponentRegistry) -> type[ComponentOwner] | None:
     """Look up the owner of a current, already migrated component."""
-    meta = components.get(node.type)
-    if meta is None or node.revision not in (None, meta.revision):
-        return None
-    return meta.owner_class
+    return components.owner_class(node.type, node.revision)
 
 
 def component_model_facts(node: ComponentSpec, components: ComponentRegistry) -> ModelFacts | None:

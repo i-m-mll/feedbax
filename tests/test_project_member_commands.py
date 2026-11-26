@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sweep import model_field_path
 from feedbax.contracts.project import Project
 from feedbax.web.app import create_app
 from tests.test_canonical_evaluate_admission import _save_project
@@ -20,7 +21,7 @@ MASS = {
     "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
 }
-MASS_TEXT = ModelAddress.model_validate(MASS).to_text()
+MASS_TEXT = model_field_path(ModelAddress.model_validate(MASS))
 
 
 @pytest.fixture
@@ -32,7 +33,7 @@ def studio(tmp_path):
         raw["steps"]["train-b"] = deepcopy(raw["steps"]["train"])
         model = raw["documents"]["reach-model"]["payload"]
         controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
-        controller["interior"]["wires"]["carry"]["attachments"][0]["initial_source"] = {
+        controller["interior"]["wires"]["carry"]["attachments"]["carry"]["initial_source"] = {
             "kind": "wire", "source": {"owner": "component", "component": "cell", "port": "hidden"},
         }
         _save_project(folders, PROJECT, Project.model_validate(raw))
@@ -40,7 +41,7 @@ def studio(tmp_path):
             "documents": {"reach-model": {"positions": {
                 ModelAddress.model_validate({
                     "composites": [], "element": {"kind": "component", "id": "wrapper"},
-                }).to_text(): {"x": 1, "y": 2},
+                }).to_authored_text(): {"x": 1, "y": 2},
             }}},
         }))
         yield client, folders
@@ -127,8 +128,10 @@ def test_change_key_preserves_document_bytes_and_requests_through_undo(studio):
     # A document whose content mentions another document's name is not a reference to it.
     raw["documents"]["notes"] = {
         "label": "Notes",
-        "schema": "application/json",
-        "payload": {"document": "reach-model", "label": "documents.reach-model.payload.name"},
+        "schema": "feedbax.report_document.v1",
+        "payload": {
+            "title": "Notes", "blocks": [{"markdown": "The Model is `reach-model`. See `documents.reach-model.payload.name`."}],
+        },
     }
     raw["sweep"] = {"rows": {"nominal": {"patches": {f"documents.reach-model.{MASS_TEXT}": {"value": 2.0}}}}}
     _save_project(folders, PROJECT, Project.model_validate(raw))
@@ -218,7 +221,9 @@ def test_a_step_using_a_duplicate_diverges_alone(studio):
 
     response = client.patch(URL, json={
         "revision": used["revision"], "address": {"kind": "document", "id": copy},
-        "patches": [{"op": "replace", "path": "/payload/variables/0/value/args/0/args/0/value", "value": -0.35}],
+        "patches": [{
+            "op": "replace", "path": "/payload/variables/start/value", "value": "[U(-0.35, 0.5), U(-0.3, 0.45)]",
+        }],
     })
     assert response.status_code == 200, response.text
     edited = _requests(folders, response.json()["revision"])

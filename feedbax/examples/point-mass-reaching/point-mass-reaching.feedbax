@@ -1,7 +1,5 @@
 {
-  "store": "store",
   "schema_version": "feedbax.project.v1",
-  "settings": {"example_label": "Point mass reaching"},
-  "sweep": null,
-  "variants": []
+  "store": "store",
+  "settings": {"example_label": "Point mass reaching"}
 }

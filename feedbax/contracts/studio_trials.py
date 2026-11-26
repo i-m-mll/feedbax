@@ -2,24 +2,28 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, field_serializer
+from pydantic import Field, JsonValue, field_serializer, model_validator
 
-from feedbax.contracts.project_sweep import SetEntryParts, SetTrialSampling
+from feedbax.contracts.project_sweep import SetTrialSampling
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import Expression, Level, NodePath, Problem, ScopedValue, ValueType, WeightPart
+from feedbax.contracts.expression_values import (
+    Expression, Level, NodePath, Problem, ScopedValue, ScopedValueBase, SetVariableOrigin, ValueType, WeightPart,
+)
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
     AxisValueRuns, ListedRuns, StudioEvaluateValueSource,
 )
-from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.objective_document import ObjectiveTermValue, Reduction, StoredObjectiveDocument
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
+from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldSiteTables, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.studio_scene import ScenePoint
 from feedbax.contracts.studio_scope import StudioStoreChoice
-from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, TaskDocument
+from feedbax.contracts.member_family import IndexName, StoredFamilyMember
+from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, StoredTaskDocument
 from feedbax.contracts.task_structure import TaskStructureChange
 from feedbax.contracts.trial_record import TrialAnchorPlace, TrialSignalPlace, TrialVariablePlace
 
@@ -57,6 +61,8 @@ class StudioTrialReset(StrictModel):
     """A value of the paired Model that a variable of the Task may initialize at the start of each trial."""
 
     address: ModelAddress
+    address_text: str
+    """The compact key for this address in a stored Task's links."""
     path: tuple[str, ...]
     """Display segments for enclosing composites, the component, and the state or parameter."""
     type: ValueType
@@ -64,9 +70,30 @@ class StudioTrialReset(StrictModel):
     required: bool
 
 
+class StudioTrialUnresolvedLink(StrictModel):
+    """A stored link whose address does not name a reset in the paired Model."""
+
+    key: str
+    path: tuple[str, ...]
+    """Display segments in the same form as a reset's path."""
+
+
 class StudioTrialDocumentEdit(StrictModel):
     kind: Literal["task", "objective"]
     edits: list[ProjectValueEdit] = Field(min_length=1)
+
+
+class StudioObjectiveTerm(ObjectiveTermValue):
+    """The typed editor value of a new Objective term."""
+
+    label: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
+
+
+class StudioTrialObjectiveTermAdd(StrictModel):
+    """Add an Objective term under a key allocated by the Service."""
+
+    kind: Literal["add_objective_term"]
+    term: StudioObjectiveTerm
 
 
 class StudioTrialDocumentReset(StrictModel):
@@ -136,7 +163,7 @@ class StudioTrialAuthoringRequest(StrictModel):
     run: StudioSavedTrainKey
     change: Annotated[
         StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument
-        | StudioTrialExpressionEdit | StudioTrialStructureEdit | StudioTrialRelate,
+        | StudioTrialExpressionEdit | StudioTrialStructureEdit | StudioTrialRelate | StudioTrialObjectiveTermAdd,
         Field(discriminator="kind"),
     ] | None = None
     store_choice: Sha256 | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -177,7 +204,8 @@ class StudioTrialEpochInstance(StudioTrialEpoch):
 
 class StudioTaskChoice(StrictModel):
     document: ProjectName
-    problems: list[Problem]
+    problem_indices: list[Annotated[int, Field(ge=0)]]
+    """The choice's problems, as positions in the response's Task problem list."""
 
 
 class StudioTrialObjectiveSource(StrictModel):
@@ -185,10 +213,32 @@ class StudioTrialObjectiveSource(StrictModel):
     step: ProjectName
 
 
-class StudioSetFieldEntry(StrictModel):
+class StudioSetEntryParts(StrictModel):
+    """The effective on and off parts of a cooccurring entry."""
+
+    on: WeightPart
+    off: WeightPart
+
+
+class StudioSetFieldEntry(StoredFamilyMember):
     entry: ProjectName | None
-    label: str | None = None
-    weight: WeightPart | SetEntryParts | None = None
+    label: str | None
+    weight: WeightPart | StudioSetEntryParts | None
+    member_count: int | None = None
+
+    @model_validator(mode="after")
+    def _entry_label(self):
+        validate_cross_field_refinements("StudioSetFieldEntry", self)
+        return self
+
+
+class StudioSetVariableOrigin(SetVariableOrigin):
+    label: str
+    member_count: int | None
+
+
+class StudioTrialVariable(ScopedValueBase):
+    set_entry: StudioSetVariableOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioSetField(StrictModel):
@@ -199,7 +249,27 @@ class StudioSetField(StrictModel):
     entries: list[StudioSetFieldEntry]
 
 
-class StudioTrialAuthoring(StrictModel):
+class StudioFamilyValue(StrictModel):
+    key: IndexName
+    name: str
+
+
+class StudioFamilyIndex(StrictModel):
+    count: int | None
+    values: list[StudioFamilyValue] | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class StudioFamily(StrictModel):
+    member_count: int | None
+    indices: dict[IndexName, StudioFamilyIndex]
+
+
+class StudioObjectiveTermValues(StrictModel):
+    enabled: bool
+    reduction: Reduction
+
+
+class StudioTrialAuthoring(StudioFieldSiteTables):
     revision: Sha256
     run: StudioSavedTrainKey
     expression_context: str
@@ -207,19 +277,23 @@ class StudioTrialAuthoring(StrictModel):
     model: ProjectName | None
     task_document: ProjectName | None
     objective_document: ProjectName | None
-    task: TaskDocument | PythonTaskSelection
+    task: StoredTaskDocument | PythonTaskSelection
     task_source: StudioEvaluateValueSource | None = None
     task_field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
     task_changed: list[Pointer] = Field(default_factory=list)
     """Pointers, at every depth, whose value in the Task document the step reads differs from its base's."""
     objective_changed: list[Pointer] = Field(default_factory=list)
     """The same, in the Objective document."""
-    objective: ObjectiveDocument | None
+    objective: StoredObjectiveDocument | None
+    objective_term_values: dict[str, StudioObjectiveTermValues]
+    """The parsed values of defaultable term controls, separate from authored field presence."""
     objective_source: StudioTrialObjectiveSource | None = None
     set_fields: list[StudioSetField] = Field(default_factory=list)
     task_types: list[StudioTaskType]
     tasks: list[StudioTaskChoice]
-    variables: list[ScopedValue]
+    task_problems: list[Problem]
+    """Distinct problems referenced by the Task choices."""
+    variables: list[StudioTrialVariable]
     signals: list[ScopedValue]
     epochs: list[StudioTrialEpoch]
     """Authored epochs in editor column order."""
@@ -236,10 +310,12 @@ class StudioTrialAuthoring(StrictModel):
     inputs: list[StudioTrialInput]
     outputs: list[StudioTrialOutput]
     resets: list[StudioTrialReset]
+    unresolved_links: list[StudioTrialUnresolvedLink]
     fields: list[StudioTrialField]
     """Expression parts are returned by the menu route on request."""
+    families: dict[str, StudioFamily] | None = Field(default=None, exclude_if=lambda value: value is None)
     problems: list[Problem]
-    related_term: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    created_term: str | None = Field(default=None, exclude_if=lambda value: value is None)
     files: list[StudioProjectFilePatch]
     created: list[CreateNamedDocument] = Field(default_factory=list)
     """Documents the edit creates, written before ``files``, which may name them."""
@@ -249,6 +325,8 @@ class StudioTrialAuthoring(StrictModel):
     """An unanswered edit. No files or documents are proposed until the caller chooses a store."""
 
     @field_serializer("task", "objective")
-    def _authored_document(self, document: TaskDocument | PythonTaskSelection | ObjectiveDocument | None):
+    def _authored_document(self, document: StoredTaskDocument | PythonTaskSelection | StoredObjectiveDocument | None):
+        from feedbax.contracts.project_storage import stored_project_value
+
         # The editor uses field presence to choose between add and replace.
-        return document.model_dump(mode="json", exclude_unset=True) if document is not None else None
+        return stored_project_value(document, keep_explicit=True) if document is not None else None

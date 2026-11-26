@@ -12,17 +12,18 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAliasType, Union, get_args, get_origin, get_type_hints
 from uuid import UUID
 
-from pydantic import BaseModel, JsonValue
+from pydantic import BaseModel, JsonValue, PlainSerializer
 from pydantic.fields import FieldInfo
+from pydantic_core import PydanticUndefined
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from feedbax.contracts.task_document import BLANK_TASK
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, ImportedModelProvenance, ModelFitReport
 from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_inputs import LoadedModelReference
+from feedbax.contracts.project_storage import stored_project_value
 from feedbax.studio.library import first_train_task
 from feedbax.contracts.component import (
     ComponentDefinition,
@@ -58,7 +59,10 @@ from feedbax.contracts.execution_target import (
     CloseWhenIdle, ExecutionTargets, HostRuntime, KeepOpen, LocalTarget, LocalTargetProfile, OffTarget, OpeningObservation, ReadyTarget,
     SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnreachableTarget,
 )
-from feedbax.contracts.analysis_document import AnalysisDocument
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, AnalysisDocument
+from feedbax.contracts.figure_document import (
+    STORED_FIGURE_DOCUMENT_SCHEMA_ID, FigureDocument, StoredFigureDocument,
+)
 from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.contracts.studio_figure import (
     FigureLayoutMeta, FigurePanelMeta, FigureProduct, FigureRun, FigureTraceMeta, PlotlyLayout, PlotlyTrace,
@@ -204,6 +208,7 @@ from feedbax.contracts.jobs import (
     StudioEvaluationCheckpoint,
     StudioEvaluationCheckpointGap,
     StudioEvaluationCheckpointSeries,
+    StudioTrialName,
     StudioSavedEvaluationResult,
     StudioSavedEvaluationRow,
     StudioSavedTrainAttempt,
@@ -306,6 +311,8 @@ from feedbax.contracts.model_edit import (
     ModelPhysicalPortProjection,
     ModelProjection,
     ModelProjectionRequest,
+    ModelAttachmentDefaults,
+    ModelAttachmentDefaultsRequest,
     ModelRemovedElement,
     ModelRewiredElement,
     ModelTaskInput,
@@ -447,13 +454,21 @@ from feedbax.contracts.studio_project import (
 from feedbax.contracts.studio_loaded_model import (
     StudioLoadedModelExportRequest, StudioLoadedModelImportQuery, StudioLoadedModelImportResult,
 )
-from feedbax.contracts.objective_document import ObjectiveDocument
-from feedbax.contracts.set_document import SetDocument, SetEntry
+from feedbax.contracts.objective_document import (
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, StoredObjectiveDocument,
+)
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument, SetEntry
+from feedbax.contracts.stored_model import (
+    STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredGraphInterior, StoredModelDocument, StoredModelPorts,
+)
 from feedbax.contracts.window import Window
 from feedbax.contracts.training_document import TrainingDocument
 from feedbax.contracts.request_specs import DocumentTrainingConfig, SynthesisRequestSpec, TrainContinuation, TrialDocuments
 from feedbax.contracts.synthesis import SynthesisStepPayload
-from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_document import (
+    BLANK_STORED_TASK, BLANK_TASK, STORED_TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, StoredTaskDocument,
+    TaskDocument,
+)
 from feedbax.contracts.studio_trials import (
     StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest,
     StudioTrialExpressionMenuRequest, StudioTrialRelate,
@@ -499,6 +514,7 @@ JOB_MODELS = (
     StudioEvaluationCheckpoint,
     StudioEvaluationCheckpointGap,
     StudioEvaluationCheckpointSeries,
+    StudioTrialName,
     StudioSavedEvaluationResult,
     StudioSavedEvaluationRow,
     StudioSavedTrainAttempt,
@@ -530,7 +546,12 @@ AUTHORED_CONTRACT_MODELS = (
     ValidityAction,
     ValidityAcceptance,
     AnalysisDocument,
+    FigureDocument,
+    StoredFigureDocument,
     TaskDocument,
+    StoredTaskDocument,
+    StoredObjectiveDocument,
+    StoredModelDocument,
     SetDocument,
     SetEntry,
     PythonTaskSelection,
@@ -712,6 +733,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelRewiredElement,
     ModelProjection,
     ModelProjectionRequest,
+    ModelAttachmentDefaults,
+    ModelAttachmentDefaultsRequest,
     ModelTaskInput,
     ModelTaskSignal,
     ModelFieldRequest,
@@ -1001,6 +1024,8 @@ CONTRACT_MODEL_NAMES = [
     "ModelConnectionReview",
     "ModelProjectionRequest",
     "ModelProjection",
+    "ModelAttachmentDefaultsRequest",
+    "ModelAttachmentDefaults",
     "ModelFieldRequest",
     "ModelFieldResponse",
     "TrainFieldRequest",
@@ -1101,6 +1126,14 @@ def _annotation_metadata(annotation: Any) -> tuple[Any, ...]:
     return tuple(metadata)
 
 
+def _wire_annotation(annotation: Any) -> Any:
+    """Use the serializer's declared wire type when it differs from the Python value."""
+    for item in _annotation_metadata(annotation):
+        if isinstance(item, PlainSerializer) and item.return_type is not PydanticUndefined:
+            return item.return_type
+    return annotation
+
+
 def _unique_metadata(metadata: tuple[Any, ...]) -> tuple[Any, ...]:
     result: list[Any] = []
     seen: set[tuple[str, str]] = set()
@@ -1117,7 +1150,7 @@ def ts_type(annotation: Any) -> str:
 
     if annotation is ModelSignalSource:
         return "ModelSignalSource"
-    annotation = _unwrap_annotated(annotation)
+    annotation = _unwrap_annotated(_wire_annotation(annotation))
     if annotation is Any:
         return "unknown"
     if annotation is JsonValue:
@@ -1141,8 +1174,8 @@ def ts_type(annotation: Any) -> str:
     args = get_args(annotation)
 
     if origin is list or (origin is tuple and len(args) == 2 and args[1] is Ellipsis):
-        item = _unwrap_annotated(args[0]) if args else Any
-        item_type = ts_type(item)
+        item = _unwrap_annotated(_wire_annotation(args[0])) if args else Any
+        item_type = ts_type(args[0]) if args else ts_type(Any)
         if (
             _is_union(item)
             or (get_origin(item) is Literal and len(get_args(item)) > 1)
@@ -1229,6 +1262,7 @@ def zod_schema(
 ) -> str:
     """Return a zod expression for a Python annotation."""
 
+    annotation = _wire_annotation(annotation)
     annotation_metadata = _annotation_metadata(annotation)
     field_metadata = () if field is None else tuple(field.metadata)
     metadata = _unique_metadata(annotation_metadata + field_metadata)
@@ -1436,7 +1470,7 @@ def model_dependencies(model: type[BaseModel]) -> tuple[type[BaseModel], ...]:
     dependencies: list[type[BaseModel]] = []
 
     def collect(annotation: Any) -> None:
-        annotation = _alias_value(annotation)
+        annotation = _alias_value(_wire_annotation(annotation))
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             if annotation is not model and annotation not in dependencies:
                 dependencies.append(annotation)
@@ -1453,6 +1487,10 @@ def generate() -> str:
     interfaces = "\n\n".join(emit_interface(model) for model in MODEL_TYPES)
     schemas = "\n\n".join(emit_schema(model) for model in MODEL_TYPES)
     authored_types, authored_schemas = emit_authored_contracts(AUTHORED_CONTRACT_MODELS, MODEL_TYPES)
+    blank_stored_model = StoredModelDocument(
+        step_seconds=TimeValue(value=0.01, unit="s"), ports=StoredModelPorts(), interior=StoredGraphInterior(),
+    )
+    blank_stored_objective = StoredObjectiveDocument(id="objective")
     acausal_report_defaults = {
         model.__name__: {
             name: field.get_default(call_default_factory=True)
@@ -1505,7 +1543,16 @@ def generate() -> str:
         f"{interfaces}\n\n"
         f"{authored_types}\n\n"
         f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
-        f"export const blankTask = {json.dumps(BLANK_TASK.model_dump(mode='json'), indent=2)};\n\n"
+        f"export const blankTask = {json.dumps(BLANK_TASK.model_dump(mode='json'), indent=2)};\n"
+        f"export const blankStoredModel = {json.dumps(stored_project_value(blank_stored_model), indent=2)};\n"
+        f"export const blankStoredTask = {json.dumps(stored_project_value(BLANK_STORED_TASK), indent=2)};\n"
+        f"export const blankStoredObjective = {json.dumps(stored_project_value(blank_stored_objective), indent=2)};\n\n"
+        f"export const modelDocumentSchemaId = {json.dumps(STORED_MODEL_DOCUMENT_SCHEMA_ID)};\n"
+        f"export const taskDocumentSchemaId = {json.dumps(STORED_TASK_DOCUMENT_SCHEMA_ID)};\n"
+        f"export const objectiveDocumentSchemaId = {json.dumps(STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID)};\n"
+        f"export const setDocumentSchemaId = {json.dumps(SET_DOCUMENT_SCHEMA_ID)};\n"
+        f"export const analysisDocumentSchemaId = {json.dumps(ANALYSIS_SCHEMA)};\n"
+        f"export const figureDocumentSchemaId = {json.dumps(STORED_FIGURE_DOCUMENT_SCHEMA_ID)};\n"
         f"export const loadedModelDocumentSchemaId = {json.dumps(LOADED_MODEL_SCHEMA_ID)};\n\n"
         f"export const firstTrainTask: Document = {json.dumps(first_train_task().model_dump(mode='json', by_alias=True), indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"

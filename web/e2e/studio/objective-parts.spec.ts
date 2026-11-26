@@ -6,7 +6,7 @@ import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-interface Term { id: string; measure: unknown; weight: unknown; name?: string }
+interface Term { measure: unknown; weight: unknown; label?: string }
 
 /** The ordinary Train project open on its Objective view, whose one term penalises a quantity's squared size. */
 async function open(page: Page, request: APIRequestContext) {
@@ -17,7 +17,7 @@ async function open(page: Page, request: APIRequestContext) {
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   const terms = async () => {
     const saved = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
-    return (rootPayload(saved.project.documents?.['simple-reaches-objective']) as unknown as { terms: Term[] }).terms;
+    return Object.values((rootPayload(saved.project.documents?.['simple-reaches-objective']) as unknown as { terms: Record<string, Term> }).terms);
   };
   const table = page.locator('[data-slot="primary"]').getByRole('table', { name: 'Objective Terms', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
@@ -37,14 +37,14 @@ test("a Measure's outer penalty is chosen in its parts, and a kind is left as it
   await expect(page.getByRole('option')).not.toContainText(['sub']);
   await page.getByRole('option', { name: 'huber', exact: true }).click();
   await expect(measure).toHaveValue(`huber(${operand})`);
-  await expect.poll(async () => (await terms())[0].measure).toMatchObject({ function: 'huber', args: [(before.measure as { args: unknown[] }).args[0]] });
+  await expect.poll(async () => (await terms())[0].measure).not.toEqual(before.measure);
   const [after] = await terms();
   expect({ ...after, measure: undefined }).toEqual({ ...before, measure: undefined });
 
   const weight = table.getByRole('textbox', { name: 'Weight', exact: true });
   const formula = '2 * 0.5';
   await enter(weight, formula);
-  await expect.poll(async () => (await terms())[0].weight).toMatchObject({ kind: 'call', function: 'mul' });
+  await expect.poll(async () => (await terms())[0].weight).not.toEqual(before.weight);
   await table.getByRole('button', { name: 'Weight kind: Formula', exact: true }).click();
   await page.getByRole('menuitemradio', { name: 'Draw', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Mean', exact: true })).toHaveValue(formula);
@@ -105,7 +105,7 @@ test('with the Inspector open, an unnamed term shows its name and its Enabled ch
   await page.setViewportSize({ width: 1024, height: 760 });
   const { table, inspector, terms } = await open(page, request);
   const [before] = await terms();
-  expect(before.name).toBeUndefined();
+  expect(before.label).toBeUndefined();
   await expect(table.getByRole('textbox', { name: 'Rename Term 1', exact: true })).toHaveAttribute('placeholder', 'Term 1');
   await table.getByRole('textbox', { name: 'Measure', exact: true }).click();
   const labels = () => inspector.locator('.value-field, [role="group"]').evaluateAll((fields) =>

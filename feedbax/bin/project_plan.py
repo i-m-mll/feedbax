@@ -1,4 +1,4 @@
-"""Read-only planning and status for an authored text project."""
+"""Plan an authored text project and read its saved status."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from feedbax.application.stored_regions import project_holders
 from feedbax.bin.project_commands import CommandOutput
 
 from feedbax._atomic import write_bytes_atomic
@@ -43,7 +44,7 @@ from feedbax.planner.project_plan_io import (
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
 from feedbax.contracts.project_sweep import DEFAULT_SWEEP_ROW
 from feedbax.contracts.result_address import (
-    AddressProblem, ResultAddress, ResultTarget, parse_labels, project_holders, row_names, row_selector, selects,
+    AddressProblem, ResultAddress, ResultTarget, parse_labels, row_names, row_selector, selects,
 )
 from feedbax.persistence.project_subject import terminal_train_reader
 
@@ -164,6 +165,7 @@ def _output_path(path: Path, text: TextProject, external_paths: set[Path]) -> Pa
         root / name
         for name in (
             *text.file_revisions,
+            "models",
             STUDIO_PATCH_JOURNAL_FILENAME,
             STUDIO_PRESENTATION_FILENAME,
             STUDIO_WRITE_LOCK_FILENAME,
@@ -225,6 +227,7 @@ def _read_plan(
 ) -> tuple[ProjectFolderLocation, TextProject, ProjectPlan, set[Path], dict[str, bytes]]:
     from feedbax.application.composition import load_application
     from feedbax.project_folder import ProjectFolderInvalid, ProjectFolderLocation, ProjectFolderNotFound
+    from feedbax.project_model_assets import portable_model_reader
 
     root, declaration = locate_text_project(project_dir)
     try:
@@ -244,8 +247,10 @@ def _read_plan(
         return data
 
     read = read_pin if capture_sources else external.read
+    store = text.store_path
     readers = BaseReaders(
-        external=read, figure_external=read, terminal_train=terminal_train_reader(text.store_path),
+        external=read, figure_external=read, terminal_train=terminal_train_reader(store),
+        imported_model=portable_model_reader(text.root, store, registry.components),
     )
     return location, text, compile_project(
         text.project, operations=registry.operations, components=registry.components,
@@ -344,21 +349,26 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
         write_bytes_atomic(destination, dump_plan_requests(current, variants))
 
     if output.json:
-        from feedbax.contracts.jobs import StudioPlanReviewEntry, StudioPlanReviewSource
+        from feedbax.contracts.jobs import StudioPlanReviewEntry
         from feedbax.project_folder import SettledProjectPlan
         from feedbax.web.services.project_plan import ProjectPlanRead, plan_request_address
+        from feedbax.web.services.value_sources import PlanSourceNames
 
         view = ProjectPlanRead.without_history(SettledProjectPlan.from_text(location, text, plan))
         result = view.response(include_window_map=True, variants=variants)
         if before is not None:
+            before_names = PlanSourceNames(before.source_index) if before.source_index is not None else None
+            after_names = PlanSourceNames(plan)
             result.review = [
                 StudioPlanReviewEntry(
                     **plan_request_address(key),
                     request_id=(scoped.entries.get(key) or before.entries[key]).request_id,
                     state=change.state, path=change.path,
                     upstream=plan_request_address(change.upstream) if change.upstream else None,
-                    before_source=StudioPlanReviewSource.from_source(change.before_source) if change.before_source else None,
-                    after_source=StudioPlanReviewSource.from_source(change.after_source) if change.after_source else None,
+                    before_source=before_names.project(change.before_source, run_key(key))
+                    if before_names is not None and change.before_source is not None else None,
+                    after_source=after_names.project(change.after_source, run_key(key))
+                    if change.after_source is not None else None,
                 )
                 for key, change in changes.items()
             ]

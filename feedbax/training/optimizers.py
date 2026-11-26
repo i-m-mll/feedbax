@@ -42,8 +42,77 @@ _REQUIRED_DEFAULTS: Mapping[str, Any] = {
     "warmup_steps": 100,
     "interpolate_type": "linear",
 }
+# Defaults for JSON-visible optional parameters. The contract test compares these to Optax.
+_SIGNATURE_DEFAULTS: Mapping[str, Mapping[str, Any]] = {
+    "constant_schedule": {},
+    "cosine_decay_schedule": {"alpha": 0.0, "exponent": 1.0},
+    "cosine_onecycle_schedule": {"pct_start": 0.3, "div_factor": 25.0, "final_div_factor": 10000.0},
+    "exponential_decay": {"transition_begin": 0, "staircase": False, "end_value": None},
+    "linear_onecycle_schedule": {
+        "pct_start": 0.3, "pct_final": 0.85, "div_factor": 25.0, "final_div_factor": 10000.0,
+    },
+    "linear_schedule": {"transition_begin": 0},
+    "piecewise_constant_schedule": {"boundaries_and_scales": None},
+    "piecewise_interpolate_schedule": {"boundaries_and_scales": None},
+    "polynomial_schedule": {"transition_begin": 0},
+    "warmup_constant_schedule": {},
+    "warmup_cosine_decay_schedule": {"end_value": 0.0, "exponent": 1.0},
+    "warmup_exponential_decay_schedule": {"transition_begin": 0, "staircase": False, "end_value": None},
+    "adabelief": {"b1": 0.9, "b2": 0.999, "eps": 1e-16, "eps_root": 1e-16, "nesterov": False},
+    "adadelta": {"learning_rate": None, "rho": 0.9, "eps": 1e-06},
+    "adafactor": {
+        "learning_rate": None, "min_dim_size_to_factor": 128, "decay_rate": 0.8, "decay_offset": 0,
+        "multiply_by_parameter_scale": True, "clipping_threshold": 1.0, "momentum": None,
+        "weight_decay_rate": None, "eps": 1e-30, "factored": True,
+    },
+    "adagrad": {"initial_accumulator_value": 0.1, "eps": 1e-07},
+    "adam": {"b1": 0.9, "b2": 0.999, "eps": 1e-08, "eps_root": 0.0, "nesterov": False},
+    "adamax": {"b1": 0.9, "b2": 0.999, "eps": 1e-08},
+    "adamaxw": {"b1": 0.9, "b2": 0.999, "eps": 1e-08, "weight_decay": 0.0001},
+    "adamw": {
+        "b1": 0.9, "b2": 0.999, "eps": 1e-08, "eps_root": 0.0, "weight_decay": 0.0001,
+        "nesterov": False,
+    },
+    "adan": {"b1": 0.98, "b2": 0.92, "b3": 0.99, "eps": 1e-08, "eps_root": 1e-08, "weight_decay": 0.0},
+    "amsgrad": {
+        "b1": 0.9, "b2": 0.999, "eps": 1e-08, "eps_root": 0.0, "bias_correction_mu": True,
+        "bias_correction_nu": True,
+    },
+    "fromage": {"min_norm": 1e-06},
+    "lamb": {"b1": 0.9, "b2": 0.999, "eps": 1e-06, "eps_root": 0.0, "weight_decay": 0.0},
+    "lars": {
+        "weight_decay": 0.0, "trust_coefficient": 0.001, "eps": 0.0, "momentum": 0.9,
+        "nesterov": False,
+    },
+    "lion": {"b1": 0.9, "b2": 0.99, "weight_decay": 0.001},
+    "noisy_sgd": {"eta": 0.01, "gamma": 0.55, "seed": None},
+    "novograd": {"b1": 0.9, "b2": 0.25, "eps": 1e-06, "eps_root": 0.0, "weight_decay": 0.0},
+    "optimistic_adam_v2": {
+        "alpha": 1.0, "beta": 1.0, "b1": 0.9, "b2": 0.999, "eps": 1e-08, "eps_root": 0.0,
+        "nesterov": True,
+    },
+    "optimistic_gradient_descent": {"alpha": 1.0, "beta": 1.0},
+    "radam": {"b1": 0.9, "b2": 0.999, "eps": 1e-08, "eps_root": 0.0, "threshold": 5.0, "nesterov": False},
+    "rmsprop": {
+        "decay": 0.9, "eps": 1e-08, "initial_scale": 0.0, "eps_in_sqrt": True, "centered": False,
+        "momentum": None, "nesterov": False, "bias_correction": False,
+    },
+    "rprop": {"eta_minus": 0.5, "eta_plus": 1.2, "min_step_size": 1e-06, "max_step_size": 50.0},
+    "sgd": {"momentum": None, "nesterov": False},
+    "sign_sgd": {},
+    "signum": {"beta": 0.9},
+    "sm3": {"momentum": 0.9},
+    "yogi": {"b1": 0.9, "b2": 0.999, "eps": 0.001},
+}
+
 # Optax types noisy_sgd's PRNG key as a number.
 _UNREPRESENTED_PARAMETERS = frozenset({"key"})
+# Optax 0.2.9 exposed these controls. Keep the established transform and
+# checkpoint state by passing the equivalent upstream defaults as static arguments.
+_UPSTREAM_ONLY_DEFAULTS: Mapping[str, Mapping[str, Any]] = {
+    "adabelief": {"weight_decay": None, "weight_decay_mask": None},
+    "sm3": {"eps": 1e-08},
+}
 # lbfgs and polyak_sgd read the loss value through update's extra arguments, which the training step does
 # not pass; Optax deprecates optimistic_adam for optimistic_adam_v2.
 _EXCLUDED_OPTIMIZERS = frozenset({"lbfgs", "polyak_sgd", "optimistic_adam"})
@@ -63,6 +132,7 @@ class RegistryEntry:
     factory: Callable[..., Any]
     model: type[BaseModel]
     kinds: Mapping[str, _Kind]
+    upstream_defaults: Mapping[str, Any]
 
     @property
     def label(self) -> str:
@@ -101,7 +171,11 @@ def _field_type(hint: Any, schedule: Any) -> tuple[Any, _Kind] | None:
 def _entry(key: str, factory: Callable[..., Any], schedule: Any, constant: type[BaseModel] | None) -> RegistryEntry | None:
     fields: dict[str, Any] = {"type": (Literal[key], key)}
     kinds: dict[str, _Kind] = {}
-    for name, parameter in inspect.signature(factory).parameters.items():
+    parameters = inspect.signature(factory).parameters
+    upstream_defaults = {name: value for name, value in _UPSTREAM_ONLY_DEFAULTS.get(key, {}).items() if name in parameters}
+    for name, parameter in parameters.items():
+        if name in upstream_defaults:
+            continue
         derived = None if name in _UNREPRESENTED_PARAMETERS else _field_type(parameter.annotation, schedule)
         required = parameter.default is inspect.Parameter.empty
         if derived is None:
@@ -109,7 +183,7 @@ def _entry(key: str, factory: Callable[..., Any], schedule: Any, constant: type[
                 return None
             continue
         annotation, kinds[name] = derived
-        default = _REQUIRED_DEFAULTS[name] if required else parameter.default
+        default = _REQUIRED_DEFAULTS[name] if required else _SIGNATURE_DEFAULTS[key][name]
         if kinds[name] == "schedule" and default is not None:
             assert constant is not None
             default = constant(value=default)
@@ -117,7 +191,7 @@ def _entry(key: str, factory: Callable[..., Any], schedule: Any, constant: type[
     model = create_model(
         _class_name(key), __config__=ConfigDict(extra="forbid", title=_title(key)), __module__=__name__, **fields,
     )
-    return RegistryEntry(key, factory, model, kinds)
+    return RegistryEntry(key, factory, model, kinds, upstream_defaults)
 
 
 def _registry(entries: list[RegistryEntry]) -> tuple[dict[str, RegistryEntry], Any]:
@@ -191,7 +265,7 @@ def build_step_optimizer(
 ) -> optax.GradientTransformationExtraArgs:
     """Build an optimizer whose scheduled parameters follow an explicit update clock."""
     entry, arguments = _arguments(spec)
-    static = []
+    static = list(entry.upstream_defaults)
     schedules = {}
     for name, kind in entry.kinds.items():
         value = arguments[name]
@@ -199,6 +273,7 @@ def build_step_optimizer(
             schedules[name] = build_schedule(value)
         elif kind == "static" or value is None:
             static.append(name)
+    arguments.update(entry.upstream_defaults)
     inject = optax.inject_hyperparams(entry.factory, static_args=static)
     if schedules:
         rate_name = next(iter(schedules))

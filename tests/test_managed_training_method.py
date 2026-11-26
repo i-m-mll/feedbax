@@ -14,7 +14,8 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import EvaluationSubjectValue, success_content_ref
 from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.host import HostClient
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import decode_array_container
@@ -71,7 +72,7 @@ def _write_project(folders, project, store, *, evaluate_request=None):
     )
     authored["training_config"].update(n_batches=_TOTAL, batch_size=2, snapshot_interval=2, replicates=_REPLICATES)
     task = raw["documents"][authored["trial_documents"]["task"]["document"]]["payload"]
-    task["epochs"][0]["end"]["length"]["value"] = 6
+    task["epochs"]["move"]["end"]["length"] = "6 st"
     receiver = deepcopy(authored)
     receiver.update(
         method="managed_method_probe.receiver", settings={"initial_count": 41},

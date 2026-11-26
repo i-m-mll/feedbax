@@ -16,9 +16,9 @@ from feedbax.contracts.base import DEFAULT_MANIFEST_ROOT_ENV
 from feedbax.contracts.jobs import JobReceipt, JobStatus
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.planner.project_plan import RunKey
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.host import HostError
 from feedbax.host.job_completion import verify_bound_training_completion
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -26,17 +26,16 @@ from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectRevisionConflict
 from tests.support.host import admit, held_until_released, run_job, token, wait_until
-from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_payload, managed_train_project
+from tests.support.managed_train_fixture import managed_evaluation_step, managed_stored_train_payload, managed_train_project
 
 
-def _write_project(root: Path, spec: DocumentTrainingRequestSpec) -> None:
-    assert spec.seed is not None
+def _write_project(root: Path, payload: dict) -> None:
     project = Project.model_validate({
-        "steps": {"fit": {"label": "Fit", "kind": "train", "base": {"inline": spec.model_dump(mode="json")}}},
+        "steps": {"fit": {"label": "Fit", "kind": "train", "base": {"inline": payload}}},
         "sweep": {"rows": {
             "original": {},
             "same": {},
-            "different": {"patches": {"steps.fit.base.inline.seed": {"value": spec.seed + 1}}},
+            "different": {"patches": {"steps.fit.base.inline.seed": {"value": payload["seed"] + 1}}},
         }},
     })
     for relative, data in dump_text_project(
@@ -103,7 +102,7 @@ def test_window_map_names_axes_with_problems_before_they_have_values(host, tmp_p
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     data = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     data["documents"]["empty"] = {
-        "schema": "feedbax.set_document.v1", "label": "Noise conditions", "payload": {"entries": {}},
+        "schema": "feedbax.set_document.v2", "label": "Noise conditions", "payload": {"entries": {}},
     }
     original = data["steps"].pop("train")
     for name, axis in (
@@ -168,7 +167,7 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
     data["steps"]["invalid"] = {"label": "Invalid", "kind": "train", "base": {"inline": {}}}
     trial = data["steps"]["fit"]["base"]["inline"]["trial_documents"]
     data["documents"]["unscored"] = copy.deepcopy(data["documents"][trial["objective"]["document"]])
-    data["documents"]["unscored"]["payload"]["terms"] = []
+    data["documents"]["unscored"]["payload"]["terms"] = {}
     data["steps"]["unscored"] = copy.deepcopy(data["steps"]["fit"]) | {"sweep": None}
     data["steps"]["unscored"]["base"]["inline"]["trial_documents"]["objective"] = {"document": "unscored"}
     for name, content in dump_text_project(
@@ -190,17 +189,13 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
     assert response == old.json()
     assert set(response) == {"revision", "rows"}
     assert window["variants"] == ["default"]
-    trial_variables = [
-        trial["variables"]
-        for trial in data["documents"]["simple-reaches-task"]["payload"]["validation_trials"]
-    ]
+    trials = data["documents"]["simple-reaches-task"]["payload"]["validation_trials"]
+    trial_names = [{"id": id, "name": trial["label"]} for id, trial in trials.items()]
     assert {
-        (row["key"]["variant"], row["key"]["step"], row["key"]["row"]): [
-            json.loads(condition_id) for condition_id in row["evaluation_conditions"]
-        ]
+        (row["key"]["variant"], row["key"]["step"], row["key"]["row"]): row["evaluation_conditions"]
         for row in window["rows"]
         if "evaluation_conditions" in row and row["key"]["step"] == "fit"
-    } == {("default", "fit", row): trial_variables for row in ("seed=a", "seed=b")}
+    } == {("default", "fit", row): trial_names for row in ("seed=a", "seed=b")}
     steps = {step["step_id"]: step for step in window["steps"]}
     assert steps["fit"]["document_ids"] == {
         "payload.trial_documents.model": "point-mass",
@@ -298,7 +293,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(host, tmp_pa
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
-    authored = DocumentTrainingRequestSpec.model_validate(managed_train_payload(batches=160) | {"seed": 0})
+    authored = managed_stored_train_payload(batches=160) | {"seed": 0}
     _write_project(root, authored)
     same = RunKey("same", "fit", "default")
     original = RunKey("original", "fit", "default")
@@ -434,7 +429,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(host, tmp_pa
 
             edit = client.patch("/api/projects/reach", json={
                 "revision": revision, "address": {"kind": "step", "id": "fit"},
-                "patches": [{"op": "replace", "path": "/base/inline/seed", "value": authored.seed + 2}],
+                "patches": [{"op": "replace", "path": "/base/inline/seed", "value": authored["seed"] + 2}],
             })
             assert edit.status_code == 200, edit.text
             with pytest.raises(ProjectRevisionConflict):

@@ -5,17 +5,17 @@ from feedbax.builtins.training import StandardTrainingSettings
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_inputs import BoundRank, SubsetTerms, subset_to_rows
+from feedbax.application.project_writer import dump_studio_project, dump_text_project
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
-    dump_studio_project,
-    dump_text_project,
     load_text_project,
     parse_studio_project,
 )
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.project_sweep import (
+    model_field_path,
     SweepInputMember,
     axis_to_list,
     expand_sweep,
@@ -24,6 +24,8 @@ from feedbax.contracts.project_sweep import (
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import BatchMember, InputMember, LastMember, ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.application.composition import load_application
+from feedbax.compiler.model_document import complete_model_fields
 from tests.support.managed_train_fixture import (
     managed_evaluation_step,
     managed_train_payload,
@@ -45,7 +47,10 @@ def _project_data():
 def _expected_train():
     payload = managed_train_payload() | {"seed": 0}
     payload["settings"] = StandardTrainingSettings.model_validate(payload["settings"]).model_dump(mode="json")
-    return encode_request(DocumentTrainingRequestSpec.model_validate(payload), {})
+    spec = DocumentTrainingRequestSpec.model_validate(payload)
+    documents = spec.trial_documents
+    model = complete_model_fields(documents.model, load_application().bundle.components)
+    return encode_request(spec.model_copy(update={"trial_documents": documents.model_copy(update={"model": model})}), {})
 
 
 def test_text_and_studio_compile_one_shared_plan_before_any_results(tmp_path):
@@ -152,9 +157,9 @@ def test_a_step_that_holds_a_model_difference_is_refused(held):
 
 def test_a_project_variant_changes_a_model_through_a_document_only():
     data = _project_data()
-    mass = ModelAddress.model_validate({
+    mass = model_field_path(ModelAddress.model_validate({
         "composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
-    }).to_text()
+    }))
     data["sweep"] = {"rows": {"base": {}, "heavy": {"patches": {f"steps.fit.{mass}": {"value": 2.0}}}}}
     plan = compile_project(Project.model_validate(data))
     (problem,) = plan.diagnostics

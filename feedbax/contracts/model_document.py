@@ -36,6 +36,13 @@ class ModelTime(TimeValue):
     value: PositivePeriod
 
 
+ModelDelay = Annotated[ModelTime | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
+ModelStepSeconds = Annotated[PositivePeriod | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
+ModelSubsteps = Annotated[Annotated[int, Field(ge=1)] | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
+ComponentRevision = Annotated[int, Field(strict=True, ge=1)]
+ComponentPortCount = Annotated[int, Field(ge=0)]
+
+
 class DelayInitialValue(StrictModel):
     kind: Literal["value"]
     value: Annotated[FiniteNumber | tuple[FiniteNumber, ...] | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
@@ -54,11 +61,15 @@ class DelayInitialWire(StrictModel):
 type ModelSignalSource = Annotated[DelayInitialValue | DelayInitialTask | DelayInitialWire, Field(discriminator="kind")]
 
 
+def default_delay_initial_source() -> DelayInitialValue:
+    return DelayInitialValue(kind="value", value=0.0)
+
+
 class DelayAttachment(StrictModel):
     kind: Literal["delay"]
     id: ModelElementId
-    delay: Annotated[ModelTime | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
-    initial_source: ModelSignalSource = Field(default_factory=lambda: DelayInitialValue(kind="value", value=0.0))
+    delay: ModelDelay
+    initial_source: ModelSignalSource = Field(default_factory=default_delay_initial_source)
 
 
 class HoldAttachment(StrictModel):
@@ -145,9 +156,9 @@ class LeafComponent(StrictModel):
     kind: Literal["leaf"]
     name: ModelName
     type: ModelName
-    revision: Annotated[int, Field(strict=True, ge=1)] | None = None
+    revision: ComponentRevision | None = None
     fields: dict[str, JsonValue] = Field(default_factory=dict)
-    port_counts: dict[ModelElementId, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
+    port_counts: dict[ModelElementId, ComponentPortCount] = Field(default_factory=dict)
     attachments: ModelPortAttachments = Field(default_factory=ModelPortAttachments)
 
 
@@ -156,7 +167,7 @@ class CompositeComponent(StrictModel):
     name: ModelName
     ports: ModelPorts
     interior: GraphInterior | PhysicalInterior
-    substeps: Annotated[Annotated[int, Field(ge=1)] | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)] = 1
+    substeps: ModelSubsteps = 1
     attachments: ModelPortAttachments = Field(default_factory=ModelPortAttachments)
 
     @model_validator(mode="after")
@@ -211,7 +222,7 @@ class ModelDocument(StrictModel):
     model_config = ConfigDict(allow_inf_nan=False)
 
     schema_version: Literal[MODEL_DOCUMENT_SCHEMA_VERSION] = MODEL_DOCUMENT_SCHEMA_VERSION
-    step_seconds: Annotated[PositivePeriod | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
+    step_seconds: ModelStepSeconds
     ports: ModelPorts
     interior: GraphInterior
     world: ModelWorld | None = None
@@ -221,32 +232,43 @@ class ModelDocument(StrictModel):
         validate_cross_field_refinements("ModelDocument", self)
         return self
 
-    def scientific_projection(self) -> dict[str, JsonValue]:
+    def with_keyed_root_ports(self) -> ModelDocument:
+        """Use stable port keys for the external names of a managed graph."""
+        updated = {}
+        for direction in ("inputs", "outputs", "physical"):
+            ports = getattr(self.ports, direction)
+            if any(port.name != port.id for port in ports):
+                updated[direction] = tuple(port.model_copy(update={"name": port.id}) for port in ports)
+        if not updated:
+            return self
+        return self.model_copy(update={"ports": self.ports.model_copy(update=updated)})
+
+    def scientific_projection(self, *, keyed_root_ports: bool = False) -> dict[str, JsonValue]:
         value = self.model_dump(mode="json")
-        omit_model_display_names(value)
+        omit_model_display_names(value, keyed_root_ports=keyed_root_ports)
         return value
 
 
-def _display_names(interior: dict[str, Any]) -> Iterator[tuple[dict[str, Any], str]]:
-    for identifier, component in interior.get("components", {}).items():
+def _display_names(value: dict[str, Any], *, keyed_root_ports: bool) -> Iterator[tuple[dict[str, Any], str]]:
+    if keyed_root_ports:
+        for direction in ("inputs", "outputs", "physical"):
+            for port in value["ports"].get(direction, ()):
+                yield port, port["id"]
+    for identifier, component in value["interior"].get("components", {}).items():
         yield component, identifier
         if component["kind"] == "composite":
-            for direction in ("inputs", "outputs", "physical"):
-                ports = component["ports"].get(direction, ())
-                for port in ports:
-                    yield port, port["id"]
-            yield from _display_names(component["interior"])
+            yield from _display_names(component, keyed_root_ports=True)
 
 
-def omit_model_display_names(value: dict[str, Any]) -> None:
-    """Remove presentation-only names from a serialized model in place."""
-    for element, _ in _display_names(value["interior"]):
+def omit_model_display_names(value: dict[str, Any], *, keyed_root_ports: bool = False) -> None:
+    """Remove presentation labels from a serialized Model."""
+    for element, _ in _display_names(value, keyed_root_ports=keyed_root_ports):
         element.pop("name", None)
 
 
-def restore_model_display_names(value: dict[str, Any]) -> None:
-    """Supply required display names using stable IDs when reading scientific data."""
-    for element, identifier in _display_names(value["interior"]):
+def restore_model_display_names(value: dict[str, Any], *, keyed_root_ports: bool = False) -> None:
+    """Supply the names the runtime Model requires from the stored keys."""
+    for element, identifier in _display_names(value, keyed_root_ports=keyed_root_ports):
         element["name"] = identifier
 
 

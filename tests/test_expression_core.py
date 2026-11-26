@@ -5,9 +5,11 @@ from hypothesis import given, strategies as st
 import jax
 import jax.numpy as jnp
 import pytest
+from pydantic import TypeAdapter, ValidationError
 
 from feedbax.contracts.expression_values import (
     CallValue,
+    DrawValue,
     LENGTH,
     TIME,
     Level,
@@ -16,6 +18,7 @@ from feedbax.contracts.expression_values import (
     ProblemCode,
     ScopedValue,
     Site,
+    UnresolvedValue,
     ValueBase,
     ValueType,
 )
@@ -24,8 +27,14 @@ from feedbax.contracts.expression_check import Checked, check, dependency_order
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import Function, FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.contracts.expression_site import FieldKind, field_kind, project_site, read_field
-from feedbax.contracts.expression_text import ParsedField, parse, print_field
+from feedbax.contracts.expression_storage import StoredExpression, StoredTime, lower_expression, store_expression
+from feedbax.contracts.expression_text import ParsedField, parse, parse_stored_expression, print_field, print_stored_expression
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.stored_members import scoped_set_member_id
 from feedbax.contracts.task_document import VALUE_TYPES
+from feedbax.contracts.studio_field import StudioFieldView
+from feedbax.contracts.time_units import TimeValue
+from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.studio.value_structure import value_structure
 
 
@@ -149,6 +158,69 @@ def test_printed_text_reads_back_as_the_same_value(tree):
     """Catches a printer whose operators or parentheses change what the text means when it is read back."""
     names = site(names=_OPERANDS)
     assert parsed(print_field(tree, names), names) == tree
+
+
+def test_authored_choice_round_trips_weights_and_quoted_member_keys():
+    text = r"choice('fore-arm', 'controller/o\'clock.\\axis', weights=[3, 1])"
+    result = parse_stored_expression(text)
+    assert isinstance(result, ParsedField)
+    assert result.value == DrawValue(
+        family="choice", args=(
+            NameValue(reference="fore-arm"), NameValue(reference="controller/o'clock.\\axis"),
+        ), weights=(3, 1),
+    )
+    assert print_stored_expression(result.value) == text
+    assert ("weights", 1) in result.spans
+
+
+@pytest.mark.parametrize("text", (
+    "choice(1, 2, weights=[1])",
+    "choice(1, 2, weights=[0, 0])",
+    "choice(1, 2, weights=[1 s, 3])",
+    "sample(B(0.5), 20)",
+    "1, 2",
+))
+def test_authored_expression_refuses_invalid_weights_and_field_gestures(text):
+    assert isinstance(parse_stored_expression(text), tuple)
+
+
+def test_authored_expression_normalizes_signs_and_zero_lag():
+    result = parse_stored_expression("lag((x + 2.0), 0)")
+    assert isinstance(result, ParsedField)
+    assert print_stored_expression(result.value) == "x + 2"
+    assert ("args", 1) in result.spans
+    assert print_stored_expression(LiteralValue(value=2.0)) == 2
+
+
+def test_stored_expression_lowers_qualified_keys_without_label_lookup():
+    stored = TypeAdapter(StoredExpression)
+    text = "f(epoch.hold.condition, outputs.hand.position, set.load.heavy.force)"
+    authored = stored.validate_python(text)
+    assert stored.dump_python(authored, mode="json") == text
+    lowered = lower_expression(authored)
+    assert isinstance(lowered, CallValue)
+    assert tuple(argument.reference for argument in lowered.args) == (
+        "epoch:hold:condition",
+        ModelAddress.from_authored_text("outputs.hand.position").to_text(),
+        scoped_set_member_id("load", "heavy", "force"),
+    )
+    assert stored.dump_python(store_expression(lowered, scopes={
+        lowered.args[-1].reference: "set.load.heavy.force",
+    }), mode="json") == text
+
+
+def test_stored_expression_and_time_hold_editable_text_without_tree_payloads():
+    stored = TypeAdapter(StoredExpression)
+    assert stored.validate_python("broken(") == UnresolvedValue(text="broken(")
+    assert stored.dump_python(stored.validate_python("'later-key'"), mode="json") == "'later-key'"
+    with pytest.raises(ValidationError, match="scalar or text"):
+        stored.validate_python({"kind": "literal", "value": 2})
+    time = TypeAdapter(StoredTime)
+    assert time.validate_python("50 ms") == TimeValue(value=0.05, unit="s")
+    assert time.dump_python(time.validate_python("30 st"), mode="json") == "30 st"
+    assert time.validate_python("broken(") == UnresolvedValue(text="broken(")
+    with pytest.raises(ValidationError, match="literal text"):
+        time.validate_python({"value": 1, "unit": "s"})
 
 
 @pytest.mark.parametrize(
@@ -344,6 +416,31 @@ def test_huber_requires_a_positive_scalar_delta_in_the_residual_units(functions)
     assert read_field("huber(2 m, 1 s)", measure, functions)[0].code == ProblemCode.UNIT_MISMATCH
     problem = read_field("huber(2 m, 0 m)", measure, functions)[0]
     assert (problem.code, problem.path) == (ProblemCode.TYPE_MISMATCH, ("args", 1))
+
+
+def test_studio_draw_cadence_follows_the_field_site(functions):
+    index = FieldSiteIndex()
+    value = parsed("1 + 2", site())
+    for level, structural, expected_cadence in (
+        (Level.RUN, False, "run"), (Level.TRIAL, False, "trial"),
+        (Level.STEP, False, "trial"), (Level.RUN, True, None),
+    ):
+        expected = site(level=level).model_copy(update={"structural": structural})
+        projection = project_site(expected, functions, value)
+        ref = index.reference(projection)
+        field = StudioFieldView(label="Value", text="1 + 2", site=ref)
+        wire = index.tables((field,))["sites"][ref].model_dump(mode="json")
+        assert ("uniform" in projection.parts[0].functions) == (expected_cadence is not None)
+        if expected_cadence is None:
+            assert "draw_per" not in wire
+        else:
+            assert wire["draw_per"] == expected_cadence
+
+    expected = site(level=Level.TRIAL)
+    for text, cadence in (("U(0, 1)", "trial"), ("U(0, 1, per=run)", "run")):
+        expression = parsed(text, expected)
+        structure = value_structure(expression, expected, functions)
+        assert structure.model_dump(mode="json", exclude_unset=True)["value"]["per"] == cadence
 
 
 def test_literal_edits_keep_real_operands_and_do_not_retrace(functions):

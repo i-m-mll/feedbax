@@ -16,11 +16,15 @@ from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticMo
 from feedbax.contracts.model_origin import ModelProductKey, SynthesizedModelOrigin
 from feedbax.contracts.operation import DatasetPort, JaxOperation
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_sweep import model_field_path
+from feedbax.contracts.receipt_validity import CheckConditions, ValidityCheckDelivery
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_specs import SynthesisRequestSpec, TrialDocuments
+from feedbax.contracts.request_specs import SynthesisRequestSpec
+from feedbax.contracts.training import lower_stored_trial_documents
 from feedbax.examples import load_shipped_projects
 from feedbax.host.synthesis import PreparedSynthesis, synthesize_model
 from feedbax.host import light_jobs, light_worker
+from feedbax.host.train_validity import recheck_train
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import decode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -84,10 +88,13 @@ def test_synthesize_resolves_model_sweeps_and_trial_set_fields():
     mass = ModelAddress.at_stored_path(("interior", "components", "plant", "fields", "mass"))
     step = raw["steps"]["synthesize"]
     step["sweep"] = {"axes": {"mass": {"values": {
-        name: {"value": value, "patches": {mass.to_text(): {"value": value}}}
+        name: {"value": value, "patches": {model_field_path(mass): {"value": value}}}
         for name, value in (("light", 1.0), ("heavy", 1.5))
     }}}}
-    raw["documents"]["bank"] = {"label": "Bank", "schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}, "two": {}}}}
+    raw["documents"]["bank"] = {
+        "label": "Bank", "schema": "feedbax.set_document.v2",
+        "payload": {"entries": {"one": {"label": "One"}, "two": {"label": "Two"}}},
+    }
     step["set_fields"] = {"bank": {"axis": {"set": "bank"}, "sampling": {"kind": "weighted", "none": 0}}}
     plan = compile_project(Project.model_validate(raw))
     assert not plan.diagnostics, plan.diagnostics
@@ -106,8 +113,7 @@ def test_served_synthesis_documents_bind_in_trials_and_model_view(host, tmp_path
     project = "synthesis-authoring"
     raw["documents"]["extra-model"] = raw["documents"]["point-mass"]
     signals = raw["documents"]["simple-reaches-task"]["payload"]["signals"]
-    signal = next(value for value in signals if value["id"] == "target_pos")
-    signals.append(signal | {"id": "alternate_target", "name": "Alternate target"})
+    signals["alternate_target"] = signals["target_pos"] | {"label": "Alternate target"}
     _save_project(ProjectFolderService(tmp_path), project, Project.model_validate(raw))
     route = f"/api/projects/{project}"
     run = {"variant": "default", "step": "synthesize", "row": "default"}
@@ -231,8 +237,15 @@ def test_saved_synthesize_model_runs_evaluation_train_start_and_export(host, tmp
     assert trained.disposition == "admitted", trained
     job = wait_until(lambda: (job if (job := job_row(host, trained.job_id)) and job["outcome"] is not None else None))
     assert job["state"] == "succeeded", job["outcome"]
-    (start,) = SuccessView(store).read_attempt(trained.job_id).receipt.inputs["checkpoint"]
+    training = SuccessView(store).read_attempt(trained.job_id)
+    assert training is not None
+    (start,) = training.receipt.inputs["checkpoint"]
     assert start.content == product.content and start.selection.receipt == view.attempt_ref(admitted.job_id)
+    evidence = recheck_train(ValidityCheckDelivery(
+        project_root=plan.project_root, store_root=store.root, request_id=training.receipt.request.id,
+        receipt=training.ref, checks=("code",), conditions=CheckConditions(code=(), environment=()),
+    ), registry)
+    assert evidence.code.outcome == "equal", evidence
 
     with TestClient(create_app(projects_dir=folders.root, automatic_run="off")) as client:
         export_url = f"{route}/loaded-models/export"
@@ -248,7 +261,7 @@ def test_saved_synthesize_model_runs_evaluation_train_start_and_export(host, tmp
 def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):
     project = load_shipped_projects()["point-mass-reaching"]
     spec = SynthesisRequestSpec(
-        trial_documents=TrialDocuments.model_validate({
+        trial_documents=lower_stored_trial_documents({
             "model": project.documents["point-mass"].payload,
             "task": project.documents["simple-reaches-task"].payload,
             "objective": project.documents["simple-reaches-objective"].payload,
@@ -324,9 +337,9 @@ def test_analyze_reads_a_declared_synthesis_dataset(tmp_path, monkeypatch):
         "base": {"inline": {
             "inputs": {"diagnostic": {"kind": "dataset"}},
             "views": {"result": {"label": "Result", "inputs": {"data": {"input": "diagnostic"}}, "figure": {
-                "data": ["data"], "layout": [{"name": "values", "row": 1, "col": 1}],
-                "layers": [{"name": "values", "role": "data", "panel": "values", "mark": "line",
-                            "encode": {"x": "sample", "y": "value"}}],
+                "data": ["data"], "layout": {"values": {"row": 1, "col": 1}},
+                "layers": {"values": {"role": "data", "panel": "values", "mark": "line",
+                                      "encode": {"x": "sample", "y": "value"}}},
             }}},
         }},
     }

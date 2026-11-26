@@ -1,5 +1,5 @@
 import type {
-  ExpressionPartSite, FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FieldValue, FunctionInfo, JsonValue, Level, NodePath, ScopedValue,
+  DrawCadence, ExpressionPartSite, FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FieldValue, StudioFieldFunction, JsonValue, Level, NodePath, StudioFieldName,
   StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, TextSpan, ValueType,
 } from '@/generated/studioContracts';
 import type { EvaluateOrigin } from '@/components/activity/studioVocabulary';
@@ -71,7 +71,7 @@ export interface FieldKindOffer {
   readonly kind: ValueKind;
   readonly enabled: boolean;
   /** The names a value of this kind reads, where they are not the field's: an Until's condition reads the Model's outputs. */
-  readonly names?: readonly ScopedValue[];
+  readonly names?: readonly StudioFieldName[];
 }
 
 /** One value of a swept field. Its text is the value; a member is never drawn by its id. */
@@ -136,8 +136,12 @@ export interface FieldModel {
   readonly curve?: readonly (number | null)[];
   /** How often the site's consumer reads the value again. */
   readonly finest?: Level;
-  readonly names: readonly ScopedValue[];
-  readonly functions: readonly FunctionInfo[];
+  /** The cadence a new Draw at this site is drawn at, as the Service gives it. */
+  readonly drawPer?: DrawCadence;
+  readonly names: readonly StudioFieldName[];
+  /** The Set entry a name is marked with, where a Set entry adds it, by the name's id. */
+  readonly nameMarks?: ReadonlyMap<string, string>;
+  readonly functions: readonly StudioFieldFunction[];
   /** The functions and names that fit at each node of the value: its root, `['args', 0]` and so on. */
   readonly menus?: PartMenus;
   /** The levels of a name that belongs to a tree (a Model's states under its components), by the name's id. */
@@ -180,9 +184,9 @@ const literalVector = (value: FieldValue): boolean => value.kind === 'literal' |
   value.args.every(literalVector);
 
 /** The kind a value reads as: a call is a Shape when its function is one, and a vector of numbers is a Value. */
-export function valueKind(value: FieldValue, functions: readonly FunctionInfo[]): FieldKind {
+export function valueKind(value: FieldValue, functions: readonly StudioFieldFunction[]): FieldKind {
   switch (value.kind) {
-    case 'list': case 'range': case 'sample': return 'sweep';
+    case 'list': case 'sequence': case 'sample': return 'sweep';
     case 'draw': return 'draw';
     case 'name': return 'link';
     case 'unresolved': return 'formula';
@@ -194,15 +198,18 @@ export function valueKind(value: FieldValue, functions: readonly FunctionInfo[])
   }
 }
 
-/** A draw as its parts: a family, the text of each argument (undefined while unfilled), and when it is drawn. */
+/**
+ * A draw as its parts: a family, the text of each argument (undefined while unfilled), and when it is drawn; none
+ * where the site gives a new Draw no cadence, which its text then leaves to the Service.
+ */
 export interface DrawDraft {
   readonly family: string;
   readonly args: readonly (string | undefined)[];
-  readonly per: 'run' | 'trial';
+  readonly per?: DrawCadence;
 }
 
 /** A family whose first parameter is the draw's centre (a mean, a region's centre). */
-export const centred = (family: FunctionInfo) => ['mean', 'centre'].includes(family.parameters?.[0]?.name ?? '');
+export const centred = (family: StudioFieldFunction) => ['mean', 'centre'].includes(family.parameters?.[0]?.name ?? '');
 
 /** The centre of a draw whose family has one. */
 export function drawCentre(model: FieldModel, draw: DrawDraft) {
@@ -219,22 +226,22 @@ export const perIsFree = (model: FieldModel) => (model.finest ?? 0) >= 1;
 export function drawOf(model: FieldModel): DrawDraft | undefined {
   const value = model.structure?.value;
   if (value?.kind !== 'draw') return undefined;
-  return { family: value.family, args: model.structure!.arguments ?? [], per: value.per ?? 'trial' };
+  return { family: value.family, args: model.structure!.arguments ?? [], per: value.per };
 }
 
 /** The arguments a family takes: each named parameter, or for a family of any count, at least its least. */
-function slots(family: FunctionInfo) {
+function slots(family: StudioFieldFunction) {
   return family.parameters?.length ? family.parameters.length : Math.max(family.min_args, 1);
 }
 
 /** `draft` as a draw of `family`: a parameter keeps its text where the family has one of the same name. */
-export function withFamily(model: FieldModel, draft: DrawDraft | undefined, family: FunctionInfo): DrawDraft {
+export function withFamily(model: FieldModel, draft: DrawDraft | undefined, family: StudioFieldFunction): DrawDraft {
   const previous = draft && drawFamilies(model).find(({ id }) => id === draft.family);
   const named = new Map((previous?.parameters ?? []).map(({ name }, index) => [name, draft!.args[index]]));
   const args = family.parameters?.length
     ? family.parameters.map(({ name }) => named.get(name))
     : !previous?.parameters?.length && draft ? draft.args : Array.from({ length: slots(family) }, () => undefined);
-  return { family: family.id, args, per: draft?.per ?? (perIsFree(model) ? 'trial' : 'run') };
+  return { family: family.id, args, per: draft?.per ?? model.drawPer };
 }
 
 /** The text a filled draft writes; undefined while a part is empty. */
@@ -252,6 +259,8 @@ export interface Completion {
   readonly insert: string;
   readonly label: string;
   readonly detail: string;
+  /** The Set entry a name is marked with. */
+  readonly mark?: string;
 }
 
 /**
@@ -267,6 +276,7 @@ export function completions(model: FieldModel, before: string): { token: string;
   const names = model.names.filter(({ name }) => name.toLowerCase().startsWith(lower) && name !== token)
     .map(({ id, name, type, list_count }) => ({
       id: 'name:' + id, insert: repeated && list_count ? `${name}[i]` : name, label: name, detail: typeText(type),
+      mark: model.nameMarks?.get(id),
     }));
   const functions = model.functions.filter(({ id }) => id.toLowerCase().startsWith(lower))
     .map(({ id, signature }) => ({ id: 'function:' + id, insert: id + '(', label: id, detail: signature }));
@@ -287,7 +297,7 @@ export function callOf(model: FieldModel): CallDraft | undefined {
 }
 
 /** The names of a function's positional parameters, from its signature (`x[, delta]`, `start, stop, over=T`). */
-export function parameterNames(info: FunctionInfo) {
+export function parameterNames(info: StudioFieldFunction) {
   if (info.parameters?.length) return info.parameters.map(({ label }) => label);
   const inner = info.signature.includes('(') ? info.signature.slice(info.signature.indexOf('(') + 1, info.signature.lastIndexOf(')'))
     : info.signature;
@@ -298,7 +308,7 @@ export function parameterNames(info: FunctionInfo) {
  * `draft` as a call of `info`: its arguments kept, those past the function's last dropped, and those it needs beyond
  * them unfilled.
  */
-export function withFunction(draft: CallDraft, info: FunctionInfo): CallDraft {
+export function withFunction(draft: CallDraft, info: StudioFieldFunction): CallDraft {
   const kept = info.max_args === null ? draft.args : draft.args.slice(0, info.max_args);
   const needed = Math.max(info.min_args, 1);
   return { function: info.id, args: kept.length >= needed ? kept : [...kept, ...Array.from({ length: needed - kept.length }, () => undefined)] };

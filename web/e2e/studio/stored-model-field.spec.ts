@@ -1,9 +1,10 @@
 import { expect, test } from './fixtures/studio';
-import type { ModelFieldResponse, StudioProjectDocument, StudioProjectSnapshot } from '../../src/generated/studioContracts';
+import type { ModelFieldResponse, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
-import { chooseStepKind } from './fixtures/studioKeyboard';
+import { chooseStepKind, readSaved } from './fixtures/studioKeyboard';
 import { placeFromLibrary } from './fixtures/controls';
 import { rootPayload } from './fixtures/rootPayload';
+import { modelFields } from './fixtures/serviceViews';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -28,15 +29,15 @@ test('reopens a Model duration range and an integer sample in their saved forms'
   await expect(tauText).toHaveValue('linspace(0.02 s, 0.04 s, 4)');
   await enter(hidden, 'sample(choice(8, 12), 4)');
   await expect(hidden).toHaveValue('sample(choice(8, 12, per=run), 4)');
-  const saved = await request.get(projectPath);
-  expect(saved.ok()).toBe(true);
-  const opened = await saved.json() as StudioProjectSnapshot;
-  expect(opened.project.steps?.train.sweep?.axes?.tau).toMatchObject({
-    path: expect.stringContaining('"path":["fields","tau"]'), range: { start: 0.02, stop: 0.04, count: 4 },
-  });
-  expect(opened.project.steps?.train.sweep?.axes?.['hidden-size']).toMatchObject({
-    sampler: { count: 4, distribution: { family: 'choice', per: 'run' } },
-  });
+  const rnn = await model.locator('.react-flow__node').filter({ hasText: 'VanillaRNN' }).getAttribute('data-id');
+  const { revision } = await readSaved(request, projectPath);
+  const plan = await request.get(`${projectPath}/train-runs?revision=${revision}`);
+  expect(plan.ok(), await plan.text()).toBe(true);
+  const [{ key: run }] = (await plan.json() as StudioSavedTrainRuns).rows;
+  const fields = await modelFields(request, projectPath, 'model', rnn!, run);
+  const sweep = (label: string) => fields.find((field) => field.label === label)?.sweep;
+  expect(sweep('Tau')).toMatchObject({ kind: 'range', rule: { start: 0.02, stop: 0.04, count: 4 } });
+  expect(sweep('Hidden size')).toMatchObject({ kind: 'sampler', rule: { count: 4, distribution: { family: 'choice', per: 'run' } } });
   await page.reload();
   await mapStep(page, 'train').click();
   await expect(model).toBeVisible();

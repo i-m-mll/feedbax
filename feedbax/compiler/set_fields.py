@@ -5,17 +5,22 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from hashlib import sha256
+from functools import cached_property
 from itertools import product
+
+from pydantic import JsonValue
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.contracts.stored_members import scoped_set_member_id
 from feedbax.contracts.expression_registry import FunctionRegistry
-from feedbax.contracts.expression_text import ParsedField, resolve_expression
+from feedbax.contracts.expression_storage import lower_expression, rename_expression_references
+from feedbax.contracts.expression_text import ParsedField, parse_stored_expression, print_stored_expression, resolve_expression
 from feedbax.contracts.expression_values import (
     CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, Site,
     ValueBase, ValueType, walk,
 )
+from feedbax.contracts.member_family import FamilyProblem, expand_members
 from feedbax.contracts.model_address import (
     AttachmentElement, AttachmentOwner, ComponentElement, ComponentPortAddress, ComponentPortEnd, FieldElement,
     InputBoundaryEnd, ModelAddress, PortElement, SignalSource, WireElement,
@@ -25,9 +30,14 @@ from feedbax.contracts.model_document import (
     CompositeComponent, DelayInitialTask, DelayInitialWire, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
     SignalInput, SignalType,
 )
-from feedbax.contracts.project import Document, apply_differences
-from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField
+from feedbax.contracts.project_storage import apply_document_differences
+from feedbax.contracts.project import Document, SetDocumentValue, json_pointer_parts
+from feedbax.contracts.project_sweep import (
+    DEFAULT_SWEEP_ROW, CooccurringSetTrials, ListedSetTrials, SetTrialSampling, TrialSetField,
+)
+from feedbax.contracts.request_refs import axis_values_id
 from feedbax.contracts.set_document import SetEntry, read_set
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, authored_model_payload
 from feedbax.contracts.task_document import (
     Cell, Link, SetVariableChoices, Signal, TaskAdditions, TaskDocument, ValidationTrial, Variable, add_to_task,
 )
@@ -35,16 +45,17 @@ from feedbax.contracts.window import Window
 
 
 class SetFieldProblem(ValueError):
-    def __init__(self, axis: str, set_name: str, entry: str | None, reason: str, *, condition: bool = False):
+    def __init__(
+        self, axis: str, set_name: str, entry: str | None, reason: str, *,
+        condition: bool = False, member_path: tuple[str, ...] = (),
+    ):
         self.axis = axis
         self.set_name = set_name
         self.entry = entry
         self.condition = condition
+        self.member_path = member_path
         super().__init__(reason)
 
-
-def _id(*parts: str) -> str:
-    return "set-" + sha256("\0".join(parts).encode()).hexdigest()[:28]
 
 
 def _call(function: str, *args: Expression) -> CallValue:
@@ -59,19 +70,23 @@ _BOOL = ValueType(base=ValueBase.BOOLEAN)
 _INT = ValueType(base=ValueBase.INTEGER)
 
 
-def entry_variable_id(axis: str, entry: str, variable: str) -> str:
-    return _id(axis, entry, variable)
 
-
-def rename_entry_references(value, refs: Mapping[str, str]):
+def _entry_model_references(value, path: tuple[str, ...], refs: Mapping[str, str]):
+    """Bind references within the authored Model values contributed by a single Set entry."""
+    if (
+        len(path) >= 5 and path[-5:-3] == ("window", "spans")
+        and path[-3].isdigit() and path[-2] in {"start", "end", "at"} and path[-1] == "offset"
+        and type(value) in (bool, int, float, str)
+    ):
+        parsed = parse_stored_expression(value)
+        if isinstance(parsed, ParsedField):
+            return print_stored_expression(rename_expression_references(parsed.value, refs))
     if isinstance(value, dict):
-        if value.get("kind") == "name" and isinstance(reference := value.get("reference"), str) and reference in refs:
-            return value | {"reference": refs[reference]}
         if value.get("kind") == "task" and isinstance(variable := value.get("variable"), str) and variable in refs:
             return value | {"variable": refs[variable]}
-        return {key: rename_entry_references(item, refs) for key, item in value.items()}
+        return {key: _entry_model_references(item, (*path, key), refs) for key, item in value.items()}
     if isinstance(value, list):
-        return [rename_entry_references(item, refs) for item in value]
+        return [_entry_model_references(item, (*path, str(index)), refs) for index, item in enumerate(value)]
     return value
 
 
@@ -110,16 +125,25 @@ def _entry_label(entry: str, variable: str) -> str:
     return f"{entry} · {variable}"
 
 
-def _entry_scope(axis: str, entry: str, source: SetEntry, shared_labels: frozenset[str]) -> SetEntry:
-    refs = {variable.id: entry_variable_id(axis, entry, variable.id) for variable in source.task_variables}
-    renamed = rename_entry_references(source.model_dump(mode="json"), refs)
-    for variable in renamed.get("task_variables", ()):
-        variable["id"] = refs[variable["id"]]
-        label = _entry_label(entry, variable["name"])
-        variable["name"] = f"{axis} · {label}" if label in shared_labels else label
-    for link in renamed.get("task_links", ()):
-        link["variable"] = refs.get(link["variable"], link["variable"])
-    return SetEntry.model_validate(renamed)
+def _entry_scope(
+    axis: str, entry: str, source: SetEntry, shared_labels: frozenset[str],
+) -> tuple[TaskAdditions, dict[str, str]]:
+    additions = source.lower()
+    refs = {variable.id: scoped_set_member_id(axis, entry, variable.id) for variable in additions.task_variables}
+
+    def bind(variable: Variable) -> Variable:
+        label = _entry_label(entry, variable.name)
+        return variable.model_copy(update={
+            "id": refs[variable.id], "name": f"{axis} · {label}" if label in shared_labels else label,
+            "value": rename_expression_references(variable.value, refs),
+            "count": rename_expression_references(variable.count, refs) if variable.count is not None else None,
+        })
+
+    return TaskAdditions(
+        task_variables=tuple(map(bind, additions.task_variables)),
+        task_links=tuple(link.model_copy(update={"variable": refs.get(link.variable, link.variable)})
+                         for link in additions.task_links),
+    ), refs
 
 
 def _attachment_links(
@@ -177,9 +201,13 @@ class _Union:
         self.wires = dict(model.interior.wires)
         self.port_attachments = model.interior.attachments
         self.alternatives: dict[str, list[_Alternative]] = defaultdict(list)
-        self.conditions: list[tuple[dict[str, int], ...]] = []
+        self.conditions: dict[str, tuple[str, ...]] = {}
         self.condition_origins: dict[str, str] = {}
         self.curl_activation: dict[str, tuple[bool, list[Expression]]] = {}
+
+    @cached_property
+    def _authored_model(self) -> dict[str, JsonValue]:
+        return authored_model_payload(self.model, self.registry)
 
     def variable(
         self, id: str, value_type: ValueType, value: Expression, *, choices: SetVariableChoices | None = None,
@@ -210,7 +238,7 @@ class _Union:
             variable = next((variable for variable in self.variables if variable.id == reference), None)
             if variable is None:
                 raise ValueError(f"Intervention {attachment.id!r} links to missing Task variable {reference!r}.")
-            id = _id(*self.scope, context, attachment.id, key)
+            id = scoped_set_member_id(*self.scope, context, attachment.id, key)
             self.signals.append(Signal(
                 id=id, name=id, type=variable.type,
                 cells=(Cell(id=id, first_epoch=self.task.epochs[0].id, last_epoch=self.task.epochs[-1].id,
@@ -244,14 +272,23 @@ class _Union:
         set_name = placement.axis.set
         cooccurring = isinstance(placement.sampling, CooccurringSetTrials)
         try:
-            source = _entry_scope(axis, entry, authored, self.shared_entry_labels)
-            variant = ModelDocument.model_validate(
-                apply_differences(self.model.model_dump(mode="json"), source.differences),
-            )
-            variant, links = _attachment_links(variant, source.task_links, self.registry)
+            additions, refs = _entry_scope(axis, entry, authored, self.shared_entry_labels)
+            variant = self.model
+            if authored.differences:
+                differences = {
+                    path: difference.model_copy(update={
+                        "value": _entry_model_references(difference.value, json_pointer_parts(path), refs),
+                    })
+                    if isinstance(difference, SetDocumentValue) else difference
+                    for path, difference in authored.differences.items()
+                }
+                variant = StoredModelDocument.model_validate(
+                    apply_document_differences(STORED_MODEL_DOCUMENT_SCHEMA_ID, self._authored_model, differences),
+                ).lower(self.registry)
+            variant, links = _attachment_links(variant, additions.task_links, self.registry)
             task = add_to_task(
                 self.task.model_copy(update={"variables": tuple(self.variables), "links": tuple(self.links)}),
-                (TaskAdditions(task_variables=source.task_variables, task_links=links),),
+                (additions.model_copy(update={"task_links": links}),),
             )
             self.variables = list(task.variables)
             self.links = list(task.links)
@@ -313,11 +350,13 @@ class _Union:
             ScopedValue(id=var.id, name=var.name, type=var.type, level=Level.TRIAL)
             for var in self.task.variables
         )
-        parsed = resolve_trial_set_condition(placement.condition, placement.sampling, trial_set_condition_site(scope), functions)
+        parsed = resolve_trial_set_condition(
+            lower_expression(placement.condition), placement.sampling, trial_set_condition_site(scope), functions,
+        )
         if isinstance(parsed, tuple):
             raise refused(parsed[0].reason)
         try:
-            id = _id("eligibility", axis, "condition")
+            id = scoped_set_member_id("eligibility", axis, "condition")
             eligible = self.variable(id, _BOOL, parsed.value)
         except ValueError as error:
             raise refused(str(error)) from error
@@ -325,7 +364,8 @@ class _Union:
         return eligible
 
     def placement(
-        self, axis: str, placement: TrialSetField, entries: Mapping[str, SetEntry], functions: FunctionRegistry,
+        self, axis: str, placement: TrialSetField, entries: Mapping[str, SetEntry],
+        sources: Mapping[str, str], functions: FunctionRegistry,
     ):
         eligible = self.eligibility(axis, placement, functions)
 
@@ -341,27 +381,28 @@ class _Union:
         try:
             sample = placement.sampling
             by_id = tuple(entries)
+            if not isinstance(sample, ListedSetTrials) and sample.weights.keys() - (entries.keys() | set(sources.values())):
+                raise ValueError("Set sampling names an entry that the Set no longer has.")
+
             if isinstance(sample, ListedSetTrials):
                 weights = (1.0,) * len(by_id)
                 choices = tuple(range(1, len(by_id) + 1))
             elif isinstance(sample, CooccurringSetTrials):
                 weights, choices = (), ()
             else:
-                weights = (sample.none, *(sample.weights.get(entry, 1.0) for entry in by_id))
+                weights = (sample.weight_for(None), *(sample.weight_for(entry, family=sources[entry]) for entry in by_id))
                 choices = tuple(range(len(by_id) + 1))
-            if not isinstance(sample, ListedSetTrials) and sample.weights.keys() - entries.keys():
-                raise ValueError("Set sampling names an entry that the Set no longer has.")
             if isinstance(sample, CooccurringSetTrials):
                 gates = []
                 for entry in by_id:
-                    parts = sample.weights.get(entry, SetEntryParts())
-                    if not (parts.off or parts.on):
-                        raise SetFieldProblem(axis, placement.axis.set, entry, "The switch has zero total parts.")
+                    weight = sample.weight_for(entry, family=sources[entry])
+                    if not (weight.off or weight.on):
+                        raise SetFieldProblem(axis, placement.axis.set, sources[entry], "The switch has zero total parts.")
                     draw = DrawValue(
                         family="choice", args=(LiteralValue(value=False), LiteralValue(value=True)),
-                        weights=(parts.off, parts.on),
+                        weights=(weight.off, weight.on),
                     )
-                    gates.append(select(_id(axis, entry), _BOOL, draw, False, (None, entry)))
+                    gates.append(select(scoped_set_member_id(axis, entry), _BOOL, draw, False, (None, entry)))
             else:
                 if not any(weights):
                     raise ValueError("The choice has zero total parts.")
@@ -370,29 +411,34 @@ class _Union:
                 )
                 selected = select(axis, _INT, draw, 0, (None, *by_id))
                 if isinstance(sample, ListedSetTrials):
-                    self.conditions.append(tuple({selected.reference: value} for value in choices))
+                    self.conditions[selected.reference] = by_id
                 gates = [_call("eq", selected, LiteralValue(value=index)) for index in range(1, len(by_id) + 1)]
         except SetFieldProblem:
             raise
         except ValueError as error:
             raise SetFieldProblem(axis, placement.axis.set, None, str(error)) from error
         for entry, gate in zip(by_id, gates, strict=True):
-            self.entry(axis, placement, entry, gate, entries[entry])
+            try:
+                self.entry(axis, placement, entry, gate, entries[entry])
+            except SetFieldProblem as error:
+                if entry == sources[entry]:
+                    raise
+                raise SetFieldProblem(axis, placement.axis.set, sources[entry], f"{entry}: {error}") from error
 
     def route(
         self, id: str, source: SignalSource, chain, active_source: SignalSource, active_chain,
         alt: _Alternative, window: Window | None = None, address: ModelAddress | None = None,
     ) -> ComponentPortEnd:
-        switch_id = _id(id, alt.axis, alt.entry)
-        gate_id = _id(switch_id, "gate")
+        switch_id = scoped_set_member_id(id, alt.axis, alt.entry)
+        gate_id = scoped_set_member_id(switch_id, "gate")
         self.components[switch_id] = LeafComponent(kind="leaf", name=switch_id, type="feedbax.Switch")
-        self.wires[_id(switch_id, "base")] = ModelWire(
+        self.wires[scoped_set_member_id(switch_id, "base")] = ModelWire(
             source=source, target=_component_port(switch_id, "false_input"), attachments=chain,
         )
-        self.wires[_id(switch_id, "entry")] = ModelWire(
+        self.wires[scoped_set_member_id(switch_id, "entry")] = ModelWire(
             source=active_source, target=_component_port(switch_id, "true_input"), attachments=active_chain,
         )
-        self.wires[_id(switch_id, "control")] = ModelWire(
+        self.wires[scoped_set_member_id(switch_id, "control")] = ModelWire(
             source=self.gate(alt, gate_id, window, address), target=_component_port(switch_id, "condition"),
         )
         return _component_port(switch_id, "output")
@@ -401,9 +447,9 @@ class _Union:
         self, id: str, source, chain, attachment: InterventionAttachment, alt: _Alternative,
         owner: AttachmentOwner | None = None,
     ):
-        context = _id(*self.scope, id, alt.axis, alt.entry, attachment.id)
+        context = scoped_set_member_id(*self.scope, id, alt.axis, alt.entry, attachment.id)
         if chain:
-            stem = _id(context, "stem")
+            stem = scoped_set_member_id(context, "stem")
             self.components[stem] = LeafComponent(kind="leaf", name=stem, type="feedbax.Input")
             self.wires[stem] = ModelWire(source=source, target=_component_port(stem, "input"), attachments=chain)
             source = _component_port(stem, "output")
@@ -416,7 +462,7 @@ class _Union:
     def source_chain(self, end: SignalSource, attachments):
         if not _needs_task(attachments):
             return attachments
-        owner = _id(end.owner, getattr(end, "component", ""), end.port)
+        owner = scoped_set_member_id(end.owner, getattr(end, "component", ""), end.port)
         end_address = end if isinstance(end, InputBoundaryEnd) else ComponentPortAddress(
             owner="component", component=end.component, port=end.port, direction="output",
         )
@@ -436,7 +482,7 @@ class _Union:
         if source == end:
             return chain
         if chain:
-            out = _id(*self.scope, owner, "source")
+            out = scoped_set_member_id(*self.scope, owner, "source")
             self.components[out] = LeafComponent(kind="leaf", name=out, type="feedbax.Input")
             self.wires[out] = ModelWire(source=source, target=_component_port(out, "input"), attachments=chain)
             source = _component_port(out, "output")
@@ -474,7 +520,7 @@ class _Union:
             self.components[name] = child.model_copy(update={"interior": model.interior, "ports": model.ports})
             for port in model.ports.inputs[len(child.ports.inputs):]:
                 self.inputs.append(port)
-                self.wires[_id(*self.scope, name, port.id)] = ModelWire(
+                self.wires[scoped_set_member_id(*self.scope, name, port.id)] = ModelWire(
                     source=InputBoundaryEnd(owner="inputs", port=port.id), target=_component_port(name, port.id),
                 )
 
@@ -527,17 +573,14 @@ class _Union:
         })
         cohort = self.task.validation_trials
         if self.conditions:
-            cohort = tuple(
-                ValidationTrial(variables=row.variables | _combine_conditions(selected), epoch_steps=row.epoch_steps)
-                for row in cohort for selected in product(*self.conditions)
-            )
+            cohort = cross_set_validation_trials(cohort, self.conditions)
         links = self.links
         for node, (base, selectors) in self.curl_activation.items():
             enabled = selectors[0]
             for selector in selectors[1:]:
                 enabled = _call("or", enabled, selector)
             active = _call("not", enabled) if base else enabled
-            variable = self.variable(_id(node, "active"), _BOOL, active)
+            variable = self.variable(scoped_set_member_id(node, "active"), _BOOL, active)
             links.append(Link(model_field=_curl_address(node), variable=variable.reference))
         task = self.task.model_copy(update={
             "variables": tuple(self.variables), "signals": tuple(self.signals),
@@ -552,8 +595,32 @@ def _curl_address(component: str) -> str:
     )).to_text()
 
 
-def _combine_conditions(selected):
-    return {id: value for condition in selected for id, value in condition.items()}
+def cross_set_validation_trials(
+    cohort: tuple[ValidationTrial, ...], conditions: Mapping[str, tuple[str, ...]],
+) -> tuple[ValidationTrial, ...]:
+    """Pair fixed trials with the listed entries and retain both coordinates in each ID."""
+    trials = []
+    for row in cohort:
+        for selected in product(*(enumerate(entries, 1) for entries in conditions.values())):
+            choices = dict(zip(conditions, selected, strict=True))
+            coordinate = axis_values_id({axis: entry for axis, (_, entry) in choices.items()})
+            trials.append(ValidationTrial(
+                id=f"{row.id or DEFAULT_SWEEP_ROW}--{coordinate}",
+                variables=row.variables | {axis: LiteralValue(value=index) for axis, (index, _) in choices.items()},
+                epoch_steps=row.epoch_steps,
+            ))
+    return tuple(trials)
+
+
+def listed_set_validation_choices(task: TaskDocument) -> dict[str, tuple[str, ...]]:
+    """Recover listed axes from a prepared Task's fixed selector assignments."""
+    first = task.validation_trials[0]
+    if first.id is None or "=" not in first.id:
+        return {}
+    return {
+        variable.id: tuple(entry for entry in variable.set_choices.entries if entry is not None)
+        for variable in task.variables if variable.set_choices is not None and variable.id in first.variables
+    }
 
 
 def _has_window(wire: ModelWire) -> bool:
@@ -631,16 +698,24 @@ def lower_trial_sets(
         if placement.axis.where is not None:
             raise SetFieldProblem(axis, placement.axis.set, None, "Trial Set placements apply to all runs of the step.")
         try:
-            entries = read_set(read, placement.axis.set).entries
+            authored = read_set(read, placement.axis.set).entries
+            expanded = tuple(expand_members(authored, unique_labels=True))
+        except FamilyProblem as error:
+            coordinates = f" ({error.coordinates})" if error.coordinates else ""
+            raise SetFieldProblem(
+                axis, placement.axis.set, error.source_key, f"{error}{coordinates}", member_path=error.path,
+            ) from error
         except ValueError as error:
             raise SetFieldProblem(axis, placement.axis.set, None, str(error)) from error
-        placements.append((axis, placement, entries))
-        names.update(_entry_label(entry, variable.name) for entry, source in entries.items()
-                     for variable in source.task_variables)
+        entries = {item.key: item.value for item in expanded}
+        sources = {item.key: item.source_key for item in expanded}
+        placements.append((axis, placement, entries, sources))
+        names.update(_entry_label(entry, variable.label) for entry, source in entries.items()
+                     for variable in source.task_variables.values())
 
     union = _Union(model, task, components, shared_entry_labels=frozenset(name for name, count in names.items() if count > 1))
-    for axis, placement, entries in placements:
-        union.placement(axis, placement, entries, functions)
+    for axis, placement, entries, sources in placements:
+        union.placement(axis, placement, entries, sources, functions)
     compiled_model, compiled_task = union.finish()
     return compiled_model, compiled_task, union.condition_origins
 

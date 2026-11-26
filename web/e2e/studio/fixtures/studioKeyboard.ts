@@ -104,9 +104,13 @@ export async function submitOption(page: Page, select: Locator, label: string | 
   const option = listbox.getByRole('option', { name: label, exact: true });
   await expect(option).toHaveCount(1);
   await page.keyboard.press('Home');
+  const highlighted = listbox.locator('[role="option"][data-highlighted]');
   const options = await listbox.getByRole('option').count();
   for (let index = 0; index < options && !await option.evaluate((element) => element.hasAttribute('data-highlighted')); index += 1) {
+    const before = await highlighted.count() ? await highlighted.getAttribute('id') : null;
     await page.keyboard.press('ArrowDown');
+    if (before === null) await expect(highlighted).toHaveCount(1);
+    else await expect(highlighted).not.toHaveAttribute('id', before);
   }
   await expect(option).toHaveAttribute('data-highlighted');
   await page.keyboard.press('Enter');

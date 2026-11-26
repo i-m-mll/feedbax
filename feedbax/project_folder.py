@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
@@ -21,6 +22,8 @@ from typing import Literal, Protocol, TYPE_CHECKING
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
+from feedbax.application.project_writer import dump_text_project
+from feedbax.application.stored_regions import StoredRegionRegistries, compose_document
 from feedbax._atomic import sync_parent_directories, write_bytes_atomic
 from feedbax._secure_fs import (
     DirectoryRecord, SecurePathRigor, close_directory_chain, directory_open_flags, open_directory_chain,
@@ -30,20 +33,27 @@ from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.synthesis.methods import SynthesisMethodRegistry
+from feedbax.contracts.authored_arrays import AuthoredArrayBudgetError, check_authored_array_budget
 from feedbax.contracts.base import StrictModel, sha256_bytes
-from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import (
+    STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, authored_model_payload,
+)
 from feedbax.contracts.project import (
-    BasedDocument, Document, LoadedModelDocument, Project, RootDocument, Sha256, diff, json_pointer_parts, member_name, same_json,
+    BasedDocument, Document, DocumentEdit, LoadedModelDocument, OrderDocumentMembers, OrderProjectValue, Project, RootDocument, Sha256,
+    apply_document_edit, diff, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.project_storage import write_project_file
+from feedbax.contracts.project_storage import (
+    apply_document_differences, difference_parent_paths, document_difference_basis, stored_keyed_collection, write_project_file,
+)
+from feedbax.contracts.stored_regions import StoredRegionResolver
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     ProjectReadError,
@@ -54,7 +64,6 @@ from feedbax.contracts.project_io import (
     TextProject,
     TextProjectExternalInputs,
     authored_declaration_revision,
-    dump_text_project,
     parse_text_project_files,
     project_declaration_name,
     read_text_project_declaration,
@@ -63,26 +72,28 @@ from feedbax.contracts.project_io import (
     replay_text_project_declaration,
     require_text_declaration,
     text_file_stamp,
+    text_project_changes,
     text_project_fingerprint,
     text_project_settings_edit,
 )
 from feedbax.planner.project_plan import (
     ProjectPlan, ProjectPlanMemo, RunKey, _builtin_model_registry, compile_project, compiler_authority, project_variants,
 )
-from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, ResolutionCode, compose_document
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, ResolutionCode
 from feedbax.plugins.declarations import declaration_package
 from feedbax.project_environment import PackageAvailability
-from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
+from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_path, model_field_target
+from feedbax.contracts.report_document import REPORT_DOCUMENT_SCHEMA_ID, ReportDocument
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, analysis_elements, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.project_model_assets import (
-    ModelAssetError, model_archive_path, portable_model_reader, publish_project_model, write_model_assets,
+    ModelAssetError, portable_model_reader, publish_project_model, write_model_assets,
 )
 from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
     change_member_key, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
     allocate_member_name, label_member, merge_cards, new_document_name, new_step_name,
-    preserve_dangling_member, regroup_refused, split_card,
+    preserve_dangling_member, preserve_loaded_archive_paths, regroup_refused, split_card,
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.examples import ShippedExample
@@ -92,6 +103,7 @@ from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS,
     AuthoredFileAddress,
     CreateNamedDocument,
+    DocumentPresentation,
     MemberFamily,
     NamedFileCreation,
     PresentationDocument,
@@ -121,6 +133,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectMemberNames,
     StudioProjectRevision,
     StudioProjectSnapshot,
+    StudioReportValues,
 )
 
 if TYPE_CHECKING:
@@ -143,8 +156,39 @@ type _Resource = Literal["project", "presentation"]
 _MODEL_LAYOUT_FIELDS = ("positions", "flipped", "collapsed", "waypoints")
 
 
+def _runtime_model_layout(entry: DocumentPresentation | None) -> dict[str, JsonValue]:
+    if entry is None:
+        return {}
+    stored = entry.model_dump(mode="json", exclude_unset=True)
+    return {
+        name: {ModelAddress.from_authored_text(key).to_text(): value for key, value in stored[name].items()}
+        for name in _MODEL_LAYOUT_FIELDS if name in stored
+    }
+
+
+def _validate_model_presentation(presentation: PresentationDocument, project: Project) -> None:
+    models = {name for name, document in project.documents.items() if document.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID}
+
+    def check(keys: Iterable[str], path: tuple[str, ...]) -> None:
+        for key in keys:
+            try:
+                ModelAddress.from_authored_text(key)
+            except ValueError as error:
+                at = pointer((*path, key))
+                raise ProjectFolderInvalid(f"{STUDIO_PRESENTATION_FILENAME} at {at}: {error}") from error
+
+    for name in models & presentation.documents.keys():
+        entry = presentation.documents[name]
+        for section in _MODEL_LAYOUT_FIELDS:
+            check(getattr(entry, section), ("documents", name, section))
+    for name, entry in presentation.steps.items():
+        for model, positions in entry.model_positions.items():
+            check(positions, ("steps", name, "model_positions", model))
+
+
 def _model_sweep_changes(
-    project: Project, document: str, before, after, moves: dict[str, ModelAddress], *, functions, read_plan,
+    project: Project, document: str, before, after, moves: dict[str, ModelAddress],
+    *, before_payload: dict[str, JsonValue], after_payload: dict[str, JsonValue], functions, read_plan,
 ) -> tuple[list[StudioProjectFilePatch], list[StudioProjectWindowMapProblem]]:
     """Track moved fields and report removed targets on their authored sweep patches."""
     from feedbax.contracts.project import base_chain
@@ -181,8 +225,7 @@ def _model_sweep_changes(
                 return path
             if new == old:
                 return path
-            prefix = ".".join(model.scope) + "." if model.scope else ""
-            return prefix + new.to_text()
+            return model_field_path(new, model.scope)
         parts = path.split(".")
         if len(parts) < 4 or (parts[0], parts[2]) != ("documents", "payload"):
             return path
@@ -190,7 +233,7 @@ def _model_sweep_changes(
             return path
         old = ModelAddress.at_stored_path(parts[3:])
         new = old.relocated(moves)
-        if _model_path_present(before.document, parts[3:]) and not _model_path_present(after.document, new.stored_path()):
+        if _model_path_present(before_payload, parts[3:]) and not _model_path_present(after_payload, new.stored_path()):
             mark_missing(old, at, step)
             return path
         return ".".join((*parts[:3], *new.stored_path())) if new != old else path
@@ -272,15 +315,12 @@ def model_edit_source(
         raise ProjectFolderNotFound(document)
     if isinstance(source, ProjectDiagnostic):
         raise ProjectFolderInvalid(source.detail)
-    if source.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+    if source.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
         raise ProjectFolderNotFound(document)
     if snapshot.presentation is None:
         raise ProjectFolderInvalid("The project presentation document is unreadable")
-    entry = snapshot.presentation.documents.get(document)
-    present = entry.model_dump(mode="json", exclude_unset=True) if entry is not None else {}
-    layout = {key: present[key] for key in _MODEL_LAYOUT_FIELDS if key in present}
     assert isinstance(source.payload, dict)
-    return source.payload, layout
+    return source.payload, _runtime_model_layout(snapshot.presentation.documents.get(document))
 
 
 
@@ -306,13 +346,27 @@ class ProjectRevisionConflict(RuntimeError):
 
 
 def _apply_file_edits(entry: dict, file: StudioProjectFilePatch, *, model_operation: bool = False) -> None:
+    original_schema = entry.get("schema")
+    order_only = all(isinstance(patch, OrderProjectValue) for patch in file.patches)
+
     def check_model() -> None:
-        if file.address.kind == "document" and not model_operation and entry.get("schema") == MODEL_DOCUMENT_SCHEMA_ID:
+        if file.address.kind == "document" and not model_operation and entry.get("schema") == STORED_MODEL_DOCUMENT_SCHEMA_ID:
             raise ProjectFolderInvalid("Model documents are edited through addressed operations")
 
-    check_model()
+    if not order_only:
+        check_model()
     for patch in file.patches:
         path = json_pointer_parts(patch.path)
+        if isinstance(patch, OrderProjectValue):
+            if (
+                file.address.kind != "document" or path[:1] != ("payload",)
+                or not isinstance(original_schema, str) or entry.get("schema") != original_schema
+            ):
+                raise ProjectFolderInvalid("An Order edit must name a keyed collection in a document payload")
+            apply_document_edit(
+                entry, patch, None, keyed_collection=lambda parts: stored_keyed_collection(original_schema, parts[1:]),
+            )
+            continue
         if file.address == DECLARATION_ADDRESS and not model_operation:
             if path[0] != "settings":
                 raise ProjectFolderInvalid("Only project settings can be edited through the declaration address")
@@ -322,7 +376,8 @@ def _apply_file_edits(entry: dict, file: StudioProjectFilePatch, *, model_operat
             entry, path, patch.op,
             patch.value if isinstance(patch, SetProjectValue) else None, path=patch.path,
         )
-    check_model()
+    if not order_only:
+        check_model()
 
 
 def _project_file_entry(payload: dict, address: AuthoredFileAddress) -> dict:
@@ -341,17 +396,50 @@ def preview_authored_files(project: Project, files: Sequence[StudioProjectFilePa
 
 def document_file(
     name: str, document: Document, content: dict[str, JsonValue], base: dict[str, JsonValue] | None,
+    *, regions: StoredRegionResolver | None = None, edits: Sequence[DocumentEdit] | None = None,
 ) -> StudioProjectFilePatch | None:
     """The document's file holding ``content``: its payload, or its differences from ``base``; none when unchanged."""
     address = AuthoredFileAddress(kind="document", id=name)
+    keyed = partial(stored_keyed_collection, document.schema_id)
     if isinstance(document, RootDocument):
-        if same_json(document.payload, content):
+        if isinstance(document.payload, dict) and not diff(document.payload, content, keyed_collection=keyed):
             return None
         return StudioProjectFilePatch(address=address, patches=[SetProjectValue(op="replace", path="/payload", value=content)])
     assert base is not None
-    differences = diff(base, content)
+    if regions is None:
+        regions = StoredRegionRegistries()
+    retained_parents = set()
+    for path in difference_parent_paths(document.differences):
+        parent, depth = content, 0
+        for part in path:
+            child = parent.get(part)
+            if not isinstance(child, dict):
+                break
+            parent = child
+            depth += 1
+        retained_parents.add(path[:depth])
+    # An omitted base parent was synthesized only to reach an override. Once the
+    # edit drops that parent, comparing against a synthesized object would save a removal.
+    basis = document_difference_basis(
+        document.schema_id, base, retained_parents, registries=regions,
+    )
+    differences = diff(basis, content, keyed_collection=keyed)
+    if edits is not None:
+        for path, previous in document.differences.items():
+            ordered = isinstance(previous, OrderDocumentMembers)
+            if any(path == edit.path or path.startswith(edit.path + "/")
+                   or not ordered and edit.path.startswith(path + "/") for edit in edits):
+                continue
+            if any(path.startswith(parent + "/") and not isinstance(difference, OrderDocumentMembers)
+                   for parent, difference in differences.items()):
+                continue
+            if not ordered:
+                differences = {at: difference for at, difference in differences.items() if not at.startswith(path + "/")}
+            differences[path] = previous
     if differences == document.differences:
-        return None
+        previous = apply_document_differences(document.schema_id, base, document.differences, registries=regions)
+        if not diff(previous, content, keyed_collection=keyed):
+            return None
     return StudioProjectFilePatch(address=address, patches=[SetProjectValue(
         op="replace" if "differences" in document.model_fields_set else "add", path="/differences",
         value={path: value.model_dump(mode="json") for path, value in differences.items()},
@@ -376,7 +464,11 @@ def _layout_patches(
     for document, layout in layouts.items():
         entry = presentation.documents.get(document)
         current = entry.model_dump(mode="json", exclude_unset=True) if entry is not None else {}
-        next_entry = {key: value for key, value in current.items() if key not in _MODEL_LAYOUT_FIELDS} | layout
+        authored = {
+            name: {ModelAddress.from_text(key).to_authored_text(): value for key, value in entries.items()}
+            for name, entries in layout.items()
+        }
+        next_entry = {key: value for key, value in current.items() if key not in _MODEL_LAYOUT_FIELDS} | authored
         if next_entry == current:
             continue
         path = pointer(("documents", document))
@@ -427,18 +519,20 @@ class SavedProjectPlans(Protocol):
 
 @dataclass(frozen=True)
 class _SavedCompilation:
-    stamp: tuple[object, ...]
     plan: SettledProjectPlan
     observations: dict[str, dict[object, object]]
 
 
+_SAVED_PLAN_CACHE_SIZE = 4
+
+
 class SavedPlanMemo(ProjectPlanMemo):
-    """Retain a reviewed compilation and the data its external reads observed."""
+    """Retain recent reviewed compilations and their observed inputs."""
 
     def __init__(self) -> None:
         super().__init__()
         self.lock = Lock()
-        self.saved: _SavedCompilation | None = None
+        self.saved: OrderedDict[tuple[object, ...], _SavedCompilation] = OrderedDict()
 
 
 def _observe_plan_input[Key, T](reader: Callable[[Key], T], observations: dict[Key, object], name: Key) -> T:
@@ -508,45 +602,50 @@ def compile_saved_project(
     source_runs = frozenset(source_runs)
     stamp = (
         project_id, text.revision, semantic_root, text.root, store, source_runs,
-        compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods),
-        readers.figure_external is not None,
+        compiler_authority(
+            components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods,
+            stored_regions=readers.stored_regions,
+        ),
+        readers.external is not None, readers.figure_external is not None,
     )
     observations: dict[str, dict[object, object]] = {}
     observed_readers = {}
-    for kind in ("terminal_train", "imported_model", "figure_external"):
+    for kind in ("external", "terminal_train", "imported_model", "figure_external"):
         if (reader := getattr(readers, kind)) is not None:
             observations[kind] = {}
             observed_readers[kind] = partial(_observe_plan_input, reader, observations[kind])
     memo = memo if memo is not None else SavedPlanMemo()
-    reusable = readers.run is None and readers.row is None and readers.external is None
+    reusable = readers.run is None and readers.row is None
     with memo.lock:
-        previous = memo.saved
-        if (
-            reusable and previous is not None and previous.stamp == stamp
-            and _same_plan_inputs(readers, previous.observations)
-        ):
-            return replace(previous.plan, plan=previous.plan.plan.detached(), readers=readers)
-        plan = compile_project(
-            text.project, source_runs=source_runs, memo=memo,
-            operations=operations, components=components, functions=functions, python_tasks=python_tasks,
-            figure_templates=figure_templates, training_methods=training_methods, synthesis_methods=synthesis_methods,
-            readers=replace(readers, **observed_readers),
-        )
-        if packages is not None:
-            plan = package_problems(plan, packages, text.root)
-        settled = SettledProjectPlan(
-            project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
-            regroup_refused(text.project),
-        )
-        if reusable:
-            memo.saved = _SavedCompilation(stamp, settled, observations)
-        return settled
+        previous = memo.saved.get(stamp) if reusable else None
+        if previous is not None and _same_plan_inputs(readers, previous.observations):
+            memo.saved.move_to_end(stamp)
+            settled = replace(previous.plan, plan=previous.plan.plan.detached(), readers=readers)
+        else:
+            plan = compile_project(
+                text.project, source_runs=source_runs, memo=memo,
+                operations=operations, components=components, functions=functions, python_tasks=python_tasks,
+                figure_templates=figure_templates, training_methods=training_methods, synthesis_methods=synthesis_methods,
+                readers=replace(readers, **observed_readers),
+            )
+            settled = SettledProjectPlan(
+                project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
+                regroup_refused(text.project),
+            )
+            if reusable:
+                memo.saved[stamp] = _SavedCompilation(settled, observations)
+                memo.saved.move_to_end(stamp)
+                if len(memo.saved) > _SAVED_PLAN_CACHE_SIZE:
+                    memo.saved.popitem(last=False)
+    if packages is not None:
+        settled = replace(settled, plan=package_problems(settled.plan, packages, text.root))
+    return settled
 
 
 def _may_read_figure_pin(project: Project) -> bool:
     figures = {
         name: compose_document(project.documents.get, name) for name, document in project.documents.items()
-        if document.schema_id == FIGURE_DOCUMENT_SCHEMA
+        if document.schema_id == STORED_FIGURE_DOCUMENT_SCHEMA_ID
     }
     if any(
         not isinstance(document, ProjectDiagnostic) and is_figure_document_pin(document.payload)
@@ -899,6 +998,29 @@ def check_revision(resource: _Resource, expected: str, current: str) -> None:
         raise ProjectRevisionConflict(resource, current)
 
 
+def resave_project_declaration(project: TextProject) -> TextProject:
+    """Publish the declaration's canonical bytes against the caller's authored snapshot."""
+    declaration = project.declaration
+    data = write_project_file(project.manifest, source=declaration)
+    if data == project.files[declaration]:
+        return project
+    updated = parse_text_project_files(project.root, project.files | {declaration: data})
+    pending = _PendingFile(
+        address=AuthoredFileAddress(kind="declaration", id=project.configuration.project),
+        before=project.file_revisions[declaration],
+        data=data.decode(),
+    )
+
+    def guard() -> None:
+        current = read_text_project_snapshot(project.root, declaration=declaration)
+        check_revision("project", project.revision, current.revision)
+
+    location = ProjectFolderLocation.selected(project.root)
+    with _folder_lock(location, declaration=declaration) as folder:
+        _publish_patch(folder, [pending], guard)
+    return updated
+
+
 def _read_presentation(root: Path) -> tuple[bytes | None, str]:
     path = root / STUDIO_PRESENTATION_FILENAME
     try:
@@ -910,7 +1032,7 @@ def _read_presentation(root: Path) -> tuple[bytes | None, str]:
 
 
 def _encode_presentation(presentation: PresentationDocument) -> bytes:
-    return write_project_file(presentation)
+    return write_project_file(presentation, source=STUDIO_PRESENTATION_FILENAME)
 
 
 def _decode_presentation(data: bytes | None) -> PresentationDocument:
@@ -925,10 +1047,12 @@ def write_new_project_folder(
     project: Project,
     configuration: ProjectConfiguration,
     presentation: PresentationDocument,
+    *, registries: StoredRegionResolver | None = None,
 ) -> None:
     """Publish the ordinary authored folder and presentation in one exclusive rename."""
     root = destination.parent.resolve(strict=True)
-    files = dump_text_project(project, configuration)
+    files = dump_text_project(project, configuration, registries=registries)
+    _validate_model_presentation(presentation, project)
     files[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(presentation)
     with TemporaryDirectory(prefix=".studio-project-", dir=root) as staged:
         staging = Path(staged)
@@ -994,6 +1118,10 @@ class ProjectFolder:
         self.python_tasks = python_tasks
         self.training_methods = training_methods
         self.synthesis_methods = synthesis_methods
+        self._stored_regions = StoredRegionRegistries(
+            training_methods=training_methods, synthesis_methods=synthesis_methods,
+            operations=operations, python_tasks=python_tasks, components=components,
+        )
         self._load_examples = load_examples
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: SavedPlanMemo())
         self._known_locations: dict[str, ProjectFolderLocation] = {}
@@ -1064,22 +1192,31 @@ class ProjectFolder:
         presentation_error = None
         try:
             presentation = _decode_presentation(data)
+            _validate_model_presentation(presentation, text.project)
         except (ValueError, UnicodeError):
             presentation = None
             presentation_error = "unreadable_presentation"
         documents = text.project.documents
         composed = {}
+        report_values = {}
         problems = []
         for name, document in documents.items():
+            entry = document
             if isinstance(document, BasedDocument):
-                entry = compose_document(documents.get, name)
+                entry = compose_document(documents.get, name, regions=self._stored_regions)
                 if isinstance(entry, ProjectDiagnostic):
                     problems.append(StudioProjectWindowMapProblem.from_diagnostic(
                         replace(entry, authored_file=f"documents/{entry.document or name}.json"),
                         declaration=text.declaration,
                     ))
-                else:
-                    composed[name] = entry.payload
+                    continue
+                composed[name] = entry.payload
+            if isinstance(entry, RootDocument) and entry.schema_id == REPORT_DOCUMENT_SCHEMA_ID:
+                try:
+                    report = ReportDocument.model_validate(entry.payload)
+                except ValidationError:
+                    continue  # Plan reports invalid Report content.
+                report_values[name] = StudioReportValues(completeness=report.completeness)
         names = StudioProjectMemberNames.from_project(text.project)
         variants = project_variants(
             text.project, components=self.components, functions=self.functions, python_tasks=self.python_tasks,
@@ -1092,6 +1229,7 @@ class ProjectFolder:
                 for key, project in variants.items()
             },
             composed=composed,
+            report_values=report_values,
             problems=problems,
             revision=text.revision,
             project=text.project,
@@ -1222,8 +1360,10 @@ class ProjectFolder:
 
     def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:
         if not _may_read_figure_pin(text.project):
-            return BaseReaders()
-        return BaseReaders(figure_external=TextProjectExternalInputs(text, authority=self.root).read)
+            return BaseReaders(stored_regions=self._stored_regions)
+        return BaseReaders(
+            figure_external=TextProjectExternalInputs(text, authority=self.root).read, stored_regions=self._stored_regions,
+        )
 
     @contextmanager
     def admission_plan(self, project_id: str) -> Iterator[SettledProjectPlan]:
@@ -1249,7 +1389,9 @@ class ProjectFolder:
         self.root.mkdir(parents=True, exist_ok=True)
         destination = self.root / name
         try:
-            write_new_project_folder(destination, project, configuration, PresentationDocument())
+            write_new_project_folder(
+                destination, project, configuration, PresentationDocument(), registries=self._stored_regions,
+            )
         except FileExistsError as error:
             raise ProjectFileExists(name) from error
         except OSError as error:
@@ -1317,8 +1459,11 @@ class ProjectFolder:
             else:
                 steps[file.id] = file.step
         project = Project(documents=documents, steps=steps, sweep=text.project.sweep)
-        encoded = dump_text_project(project, text.configuration)
-        _check_file_spellings(root, encoded)
+        try:
+            encoded = dump_text_project(project, text.configuration, registries=self._stored_regions, only=additions)
+        except ValueError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        _check_file_spellings(root, text.files.keys() | encoded.keys())
 
         def guard() -> None:
             check_revision("project", text.revision, self._load(root).revision)
@@ -1341,14 +1486,15 @@ class ProjectFolder:
             check_revision("project", revision, text.revision)
             existing = name in text.project.documents
             if existing:
-                document = compose_document(text.project.documents.get, name)
+                document = compose_document(text.project.documents.get, name, regions=self._stored_regions)
                 if isinstance(document, ProjectDiagnostic) or document.schema_id != LOADED_MODEL_SCHEMA_ID:
                     raise ProjectFileExists(f"documents/{name}.json")
                 saved = LoadedModelDocument.model_validate(document.payload)
-                if saved.source != model.source or saved.model != model.model:
+                if saved.lower() != model.lower() or saved.model != model.model:
                     raise ProjectFileExists(f"documents/{name}.json")
                 model = saved
-            archive = model_archive_path(name, model)
+            archive = model.archive_path(name)
+            source = model.lower()
 
             def check() -> None:
                 folder.check()
@@ -1357,10 +1503,10 @@ class ProjectFolder:
             def publish() -> None:
                 try:
                     write_model_assets(
-                        folder.path, folder.location.identity, archive, raw_archive, model.source,
-                        staging.get_object(model.source.model), check=check,
+                        folder.path, folder.location.identity, archive, raw_archive, source,
+                        staging.get_object(source.model), check=check,
                     )
-                    publish_project_model(text.store_path, staging, model.source)
+                    publish_project_model(text.store_path, staging, source)
                 except FileExistsError as error:
                     raise ProjectFileExists(*error.args) from error
                 except (ModelAssetError, ArtifactBlobCustodyError) as error:
@@ -1436,6 +1582,8 @@ class ProjectFolder:
                 if pending:
                     _check_file_spellings(root, proposed)
                     validated = parse_text_project_files(root, proposed)
+                    if body.presentation is not None:
+                        _validate_model_presentation(body.presentation.after, validated.project)
                     # Validate the encodings the acknowledged snapshot will need before committing.
                     project_semantic_root(validated.project)
                     authored_declaration_revision(validated.manifest)
@@ -1464,7 +1612,7 @@ class ProjectFolder:
             return new_step_name(project.steps, member.step)
         if member.document not in project.documents:
             raise ProjectFolderNotFound(f"documents/{member.document}.json")
-        entry = compose_document(project.documents.get, member.document)
+        entry = compose_document(project.documents.get, member.document, regions=self._stored_regions)
         if isinstance(entry, ProjectDiagnostic):
             raise ProjectFolderInvalid(entry.detail)
         if entry.schema_id != ANALYSIS_SCHEMA or not isinstance(entry.payload, dict):
@@ -1474,7 +1622,7 @@ class ProjectFolder:
         for name, document in project.documents.items():
             if document.schema_id != ANALYSIS_SCHEMA:
                 continue
-            composed = compose_document(project.documents.get, name)
+            composed = compose_document(project.documents.get, name, regions=self._stored_regions)
             if isinstance(composed, ProjectDiagnostic):
                 continue
             elements = analysis_elements(composed.payload)
@@ -1505,7 +1653,7 @@ class ProjectFolder:
 
             def composed(name: str) -> dict:
                 """The document ``name`` as a root document holding its composed payload, under its own label."""
-                document = compose_document(text.project.documents.get, name)
+                document = compose_document(text.project.documents.get, name, regions=self._stored_regions)
                 if isinstance(document, ProjectDiagnostic):
                     raise ProjectFolderInvalid(f"{member_name(text.project.documents, name)} cannot be composed: {document.detail}")
                 return document.model_dump(mode="json", by_alias=True)
@@ -1513,7 +1661,7 @@ class ProjectFolder:
             def element_keys() -> set[str]:
                 return {
                     key for name, document in text.project.documents.items() if document.schema_id == ANALYSIS_SCHEMA
-                    if isinstance(entry := compose_document(text.project.documents.get, name), RootDocument)
+                    if isinstance(entry := compose_document(text.project.documents.get, name, regions=self._stored_regions), RootDocument)
                     for key in payload_elements(entry.payload)
                 }
 
@@ -1585,6 +1733,8 @@ class ProjectFolder:
                     raise ProjectFileExists(f"{family}/{name}.json")
                 if command.kind == "change_key":
                     project, shown = change_member_key(source, shown, family, member, name)
+                    if family == "documents" and members[member].schema_id == LOADED_MODEL_SCHEMA_ID:
+                        preserve_loaded_archive_paths(text.project.documents, project["documents"], member, name)
                 else:
                     source = preserve_dangling_member(source, family, name)
                     if family == "steps":
@@ -1595,22 +1745,22 @@ class ProjectFolder:
                         copy["label"] = copy_label
                         if copy["schema"] == ANALYSIS_SCHEMA:
                             copy["payload"] = fresh_element_keys(copy["payload"], element_keys())
+                        elif copy["schema"] == LOADED_MODEL_SCHEMA_ID:
+                            loaded = LoadedModelDocument.model_validate(copy["payload"])
+                            copy["payload"]["archive"] = loaded.archive_path(member)
                         project = {**source, "documents": {**source["documents"], name: copy}}
                         if member in shown.get("documents", {}):
                             shown["documents"] = {**shown["documents"], name: shown["documents"][member]}
             try:
                 validated = Project.model_validate(project)
                 presentation = PresentationDocument.model_validate(shown)
+                _validate_model_presentation(presentation, validated)
+                changes = text_project_changes(text, validated, registries=self._stored_regions)
             except ValueError as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            original = dump_text_project(text.project, text.configuration)
-            encoded = dump_text_project(validated, text.configuration)
             pending = []
-            for relative in sorted(original.keys() | encoded.keys()):
-                if original.get(relative) == encoded.get(relative):
-                    continue
+            for relative, data in sorted(changes.items()):
                 path = Path(relative)
-                data = encoded.get(relative)
                 pending.append(_PendingFile(
                     address=AuthoredFileAddress(kind="declaration", id=text.configuration.project)
                     if relative == text.declaration
@@ -1625,7 +1775,8 @@ class ProjectFolder:
                     before=sha256_bytes(presentation_data) if presentation_data is not None else None,
                     data=_encode_presentation(presentation).decode(),
                 ))
-            _check_file_spellings(root, encoded)
+            removed = {name for name, data in changes.items() if data is None}
+            _check_file_spellings(root, (text.files.keys() | changes.keys()) - removed)
 
             def guard() -> None:
                 check_revision("project", text.revision, self._load(root).revision)
@@ -1654,16 +1805,25 @@ class ProjectFolder:
         from feedbax.compiler.model_document import inspect_model_signals
         from feedbax.compiler.model_edit import ModelEditDraft, apply_model_edit
         from feedbax.compiler.model_ports import ModelRegistryPorts
+        from feedbax.compiler.model_signals import intervention_operand_defaults
         from feedbax.compiler.model_templates import instantiate_model_template
         from feedbax.project_model_selection import selected_task_signal
 
         snapshot = self.read(project_id, revision=body.revision)
         check_revision("presentation", body.presentation_revision, snapshot.presentation_revision)
+        if isinstance(operation := body.command.operation, SetField):
+            try:
+                check_authored_array_budget(
+                    operation.value, path=("payload", *operation.address.stored_path()),
+                    source=f"documents/{body.document}.json",
+                )
+            except AuthoredArrayBudgetError as error:
+                return ModelEditProblem(address=operation.address, detail=str(error))
         shown = payload, layout = model_edit_source(snapshot, body.document)
         if source is not None:
             payload = source
         state = ModelEditState.model_validate({
-            "document": payload, **layout,
+            "document": StoredModelDocument.model_validate(payload).lower(components), **layout,
         })
         authority = ModelRegistryPorts(components)
 
@@ -1674,11 +1834,32 @@ class ProjectFolder:
                 restored = model_edit_source(snapshot, entry.base.document)
             else:
                 return None
-            return ModelEditState.model_validate({"document": restored[0], **restored[1]})
+            return ModelEditState.model_validate({
+                "document": StoredModelDocument.model_validate(restored[0]).lower(components), **restored[1],
+            })
+
+        def attachment_defaults(owner: ModelAddress, operation: str):
+            from feedbax.application.task_signals import matched_task_inputs
+            from feedbax.contracts.jobs import StudioSavedTrainKey
+            from feedbax.contracts.task_document import TaskDocument
+            from feedbax.project_model_selection import selected_model_and_task
+
+            supplied, task = {}, None
+            model = state.document
+            if operation.lower() == "add" and body.rows and body.step is not None:
+                variant = self.read_plan(project_id, revision=body.revision).plan.variants[0]
+                run = StudioSavedTrainKey(variant=variant, step=body.step, row=body.rows[0])
+                selection = ModelProjectionRequest(revision=body.revision, document=body.document, run=run)
+                if selected := selected_model_and_task(self, project_id, selection):
+                    _, signals, _, bindings, task = selected
+                    supplied = {port.name: signal.type for port, signal in matched_task_inputs(model, signals, bindings)}
+            table = inspect_model_signals(model, components, supplied, task=task if isinstance(task, TaskDocument) else None)
+            return intervention_operand_defaults(model, table, owner, operation)
 
         result = apply_model_edit(
             state, body.command, ports=authority.port, component_problem=authority.placement_problem,
-            next_input=authority.next_input, functions=self.functions, reference=reference,
+            next_input=authority.next_input, functions=self.functions, reference=reference, components=components,
+            attachment_defaults=attachment_defaults,
             instantiate_template=lambda name: instantiate_model_template(name, components, state.document.step_seconds),
             task_signal=lambda command: selected_task_signal(self, project_id, ModelProjectionRequest(
                 revision=body.revision, run=command.run, document=body.document,
@@ -1698,7 +1879,8 @@ class ProjectFolder:
         sweep_problems = []
         created: tuple[str, ...] = ()
         if result.state != state or body.files:
-            next_payload = result.state.document.model_dump(mode="json") if result.state.document != state.document else payload
+            next_payload = (authored_model_payload(result.state.document, components)
+                            if result.state.document != state.document else payload)
             next_layout = layout.copy()
             updated_layout = result.state.model_dump(mode="json", include=set(_MODEL_LAYOUT_FIELDS))
             for key in _MODEL_LAYOUT_FIELDS:
@@ -1721,8 +1903,7 @@ class ProjectFolder:
                     narrowed = True
                     layouts[document.id] = next_layout
                 elif base is not None and (entry := snapshot.presentation.documents.get(base)) is not None:
-                    shown = entry.model_dump(mode="json", exclude_unset=True)
-                    layouts[document.id] = {key: shown[key] for key in _MODEL_LAYOUT_FIELDS if key in shown}
+                    layouts[document.id] = _runtime_model_layout(entry)
             if not narrowed:
                 layouts[body.document] = next_layout
             shown_file = AuthoredFileAddress(kind="document", id=body.document)
@@ -1734,7 +1915,8 @@ class ProjectFolder:
                 before_draft = ModelEditDraft(state, authority.port)
                 after_draft = ModelEditDraft(result.state, authority.port)
                 moved, sweep_problems = _model_sweep_changes(
-                    candidate, body.document, before_draft, after_draft, result.relocations, functions=self.functions,
+                    candidate, body.document, before_draft, after_draft, result.relocations,
+                    before_payload=payload, after_payload=next_payload, functions=self.functions,
                     read_plan=lambda: self.read_plan(project_id, revision=body.revision).plan,
                 )
                 files = merged_files([*files, *moved])
@@ -1763,7 +1945,7 @@ class ProjectFolder:
         base = None
         if isinstance(entry, BasedDocument):
             base, _ = model_edit_source(snapshot, entry.base.document)
-        files = [file] if (file := document_file(document, entry, payload, base)) is not None else []
+        files = [file] if (file := document_file(document, entry, payload, base, regions=self._stored_regions)) is not None else []
         if patches := _layout_patches(
             snapshot.presentation, {document: layout}, had_entry=had_entry, had_documents=had_documents,
         ):
@@ -1783,7 +1965,6 @@ class ProjectFolder:
             text = self._load(root)
             check_revision("project", body.revision, text.revision)
             files, created = (body.files, body.created) if isinstance(body, StudioProjectPatchBatch) else ([body], [])
-            original = dump_text_project(text.project, text.configuration)
             payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             configuration = text.configuration.model_dump(mode="json")
             addresses = {}
@@ -1792,7 +1973,7 @@ class ProjectFolder:
             for document in created:
                 address = AuthoredFileAddress(kind="document", id=document.id)
                 relative = _relative_file(address)
-                if document.id in payload.setdefault("documents", {}) or relative in original:
+                if document.id in payload.setdefault("documents", {}) or relative in text.files:
                     raise ProjectFileExists(relative)
                 payload["documents"][document.id] = document.document.model_dump(mode="json", by_alias=True, exclude_unset=True)
                 addresses[relative] = address
@@ -1826,29 +2007,36 @@ class ProjectFolder:
                             declaration_settings = True
                             entry = configuration
                     else:
-                        if relative not in original and relative not in made:
+                        if relative not in text.files and relative not in made:
                             raise ProjectFolderNotFound(file.address.id)
                         entry = _project_file_entry(payload, file.address)
                     _apply_file_edits(entry, file, model_operation=model_operation)
                 project = Project.model_validate(payload)
-                encoded = dump_text_project(project, text.configuration)
+                changes = text_project_changes(text, project, registries=self._stored_regions, only=addresses)
                 if declaration_settings:
                     settings = ProjectConfiguration.model_validate(configuration).settings
-                    original[text.declaration] = text_project_settings_edit(text.manifest, text.configuration.settings)
-                    encoded[text.declaration] = text_project_settings_edit(text.manifest, settings)
+                    before = text_project_settings_edit(
+                        text.manifest, text.configuration.settings, declaration=text.declaration,
+                    )
+                    after = text_project_settings_edit(text.manifest, settings, declaration=text.declaration)
+                    if before != after:
+                        changes[text.declaration] = after
                 if presentation is not None:
-                    original[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(_decode_presentation(presentation_data))
-                    encoded[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(PresentationDocument.model_validate(presentation))
+                    before = _encode_presentation(_decode_presentation(presentation_data))
+                    shown = PresentationDocument.model_validate(presentation)
+                    _validate_model_presentation(shown, project)
+                    after = _encode_presentation(shown)
+                    if before != after:
+                        changes[STUDIO_PRESENTATION_FILENAME] = after
             except (ValueError, TypeError, RecursionError) as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            changed = [relative for relative in addresses if encoded[relative] != original.get(relative)]
 
             def guard() -> None:
                 check_revision("project", text.revision, self._load(root).revision)
                 if edits_presentation:
                     check_revision("presentation", body.presentation_revision, _read_presentation(root)[1])
 
-            if changed:
+            if changes:
                 _publish_patch(folder, [
                     _PendingFile(
                         address=AuthoredFileAddress(kind="declaration", id=text.configuration.project)
@@ -1856,9 +2044,9 @@ class ProjectFolder:
                         before=(
                             sha256_bytes(presentation_data) if presentation_data is not None else None
                         ) if relative == STUDIO_PRESENTATION_FILENAME else text.file_revisions.get(relative),
-                        data=encoded[relative].decode(),
+                        data=data.decode() if data is not None else None,
                     )
-                    for relative in changed
+                    for relative, data in changes.items()
                 ], guard)
                 text = self._load(root)
             return self._snapshot(folder.location, text)
@@ -1871,6 +2059,7 @@ class ProjectFolder:
             text = self._load(root)
             data, revision = _read_presentation(root)
             check_revision("presentation", body.revision, revision)
+            _validate_model_presentation(body.presentation, text.project)
             replacement = _encode_presentation(body.presentation)
             if replacement != data:
                 path = root / STUDIO_PRESENTATION_FILENAME

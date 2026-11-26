@@ -14,12 +14,12 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_refs import Sha256
+from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 
 if TYPE_CHECKING:
     from feedbax.compiler.graph import GraphKeySchedule
     from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.objective_document import ObjectiveDocument
-    from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 
 STUDIO_DEFAULT_EVALUATION_TYPE = "feedbax.studio.default_eval"
 ROLLOUT_TYPE = "feedbax.rollout"
@@ -94,9 +94,9 @@ def authored_variation(edits: VariationEdits) -> Iterator[tuple[str, OverridePat
 
 class RolloutSettings(StrictModel):
     seed: int = Field(strict=True, ge=0, lt=2**32)
-    trial_policy: Literal["paired"]
+    trial_policy: Literal["paired"] = "paired"
     retention: Literal["raw_states", "observations"] = "raw_states"
-    variation: VariationEdits
+    variation: VariationEdits = ()
     input_bindings: dict[str, str | None] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
     @field_validator("variation")
@@ -123,6 +123,9 @@ class RolloutSettings(StrictModel):
 
 class RolloutParameters(RolloutSettings):
     trials: tuple[str, ...] = Field(min_length=1)
+    best_variant_tasks: dict[str, TaskDocument | PythonTaskSelection] = Field(
+        default_factory=dict, exclude_if=lambda value: not value,
+    )
 
     @field_validator("trials")
     @classmethod
@@ -132,11 +135,23 @@ class RolloutParameters(RolloutSettings):
         return values
 
     def condition_id(self) -> str:
-        return canonical_sha256(self.model_dump(mode="json")["variation"])
+        payload = self.model_dump(mode="json")
+        if self.best_variant_tasks:
+            return canonical_sha256({name: payload[name] for name in ("variation", "best_variant_tasks")})
+        return canonical_sha256(payload["variation"])
+
+    def for_best_candidate(self, key: str) -> RolloutParameters:
+        """Use the planned Task for the authenticated winner, if that Task was edited."""
+        task = self.best_variant_tasks.get(key)
+        if task is None:
+            return self
+        variation = tuple(edit for _, edit in authored_variation(self.variation))
+        replacement = OverridePatch(op="replace", path="task", value=task.model_dump(mode="json"))
+        return self.model_copy(update={"variation": (*variation, replacement)})
 
 
 def rollout_objective_sha256(objective: ObjectiveDocument) -> str:
-    return sha256_bytes(canonical_json_v2_bytes(objective.model_dump(mode="json")))
+    return sha256_bytes(canonical_json_v2_bytes(objective.for_execution().model_dump(mode="json")))
 
 
 class ResolvedRolloutMember(StrictModel):
@@ -172,7 +187,7 @@ def rollout_semantics(
     from feedbax.contracts.task_document import TaskDocument
 
     if isinstance(task_source, TaskDocument):
-        task_source = task_source.without_markers()
+        task_source = task_source.for_execution()
     model = sha256_bytes(canonical_json_v2_bytes({
         "graph": graph.model_dump(mode="json"),
         "key_schedule": schedule.model_dump(mode="json"),

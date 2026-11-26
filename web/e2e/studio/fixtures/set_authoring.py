@@ -1,7 +1,6 @@
 """Seed projects whose steps read Sets."""
 
-import json
-import sys
+from tests.support.browser_seed_actions import HomeSeed, print_action
 from copy import deepcopy
 
 from web.e2e.studio.fixtures.canonical_evaluate import _seed
@@ -37,44 +36,60 @@ def seed_entries(home: str, project_id: str):
     for name in ("velocity-analysis", "velocity-figure", "velocity-report"):
         raw["documents"].pop(name, None)
     raw["documents"]["set"] = {
-        "schema": "feedbax.set_document.v1", "label": "Set", "payload": {"entries": {"light": {"label": "Light"}, "heavy": {"label": "Heavy"}}},
+        "schema": "feedbax.set_document.v2", "label": "Set",
+        "payload": {"entries": {"light": {"label": "Light"}, "heavy": {"label": "Heavy"}}},
     }
     raw["steps"]["train"]["sweep"] = {"axes": {"set": {"set": "set"}}}
     return _seed(home, project_id, raw)
 
 
-def seed_window(home: str, project_id: str):
+def seed_window(home: str, project_id: str, *, weighted: bool = False):
     """A Model force pulse whose onset is declared by one Set entry."""
     from tests.support.managed_train_fixture import managed_train_project
 
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["documents"]["pulses"] = {
-        "schema": "feedbax.set_document.v1",
+        "schema": "feedbax.set_document.v2",
         "label": "Pulses",
         "payload": {"entries": {
-            "nominal": {},
+            "nominal": {"label": "Nominal"},
             "force": {
-                "task_variables": [{
-                    "id": "onset", "name": "Onset",
+                "label": "Force",
+                "task_variables": {"onset": {
+                    "label": "Onset",
                     "type": {"base": "real", "dimensions": {"time": 1}},
-                    "value": {"kind": "literal", "value": 0.1, "unit": "s"},
-                }],
-                "differences": {"/interior/wires/drive/attachments": {"value": [{
-                    "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+                    "value": "0.1 s",
+                }},
+                "differences": {"/interior/wires/drive/attachments": {"value": {"pulse": {
+                    "kind": "intervention", "operation": "add",
+                    "operands": {"value": {"kind": "value", "value": "[0.5, 0]"}},
                     "window": {"spans": [{
                         "kind": "interval",
                         "start": {"anchor": {"kind": "trial", "edge": "start"},
-                                  "offset": {"kind": "name", "reference": "onset"}},
-                        "end": {"offset": {"value": 5.0, "unit": "st"}},
+                                  "offset": "onset"},
+                        "end": {"offset": "5 st"},
                     }]},
-                }]}},
+                }}}},
             },
         }},
     }
-    raw["steps"]["train"]["sweep"] = {"axes": {"pulse": {"set": "pulses"}}}
+    train = raw["steps"]["train"]
+    if weighted:
+        train["set_fields"] = {"pulse": {
+            "axis": {"set": "pulses"},
+            "sampling": {"kind": "weighted", "none": 0, "weights": {"nominal": 0, "force": 1}},
+        }}
+    else:
+        train["sweep"] = {"axes": {"pulse": {"set": "pulses"}}}
     return _seed(home, project_id, raw)
 
 
+ACTIONS = {
+    "seed": HomeSeed(seed),
+    "seed_entries": HomeSeed(seed_entries),
+    "seed_window": HomeSeed(seed_window),
+}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed, "seed_entries": seed_entries, "seed_window": seed_window}[action](*args)))
+    print_action(ACTIONS)

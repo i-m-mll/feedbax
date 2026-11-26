@@ -1,7 +1,6 @@
 """Seed two Train steps, two Evaluate steps that read the first, and an Analyze step over one of them."""
 
-import json
-import sys
+from tests.support.browser_seed_actions import HomeSeed, print_action
 from copy import deepcopy
 
 from web.e2e.studio.fixtures.canonical_evaluate import _seed
@@ -30,12 +29,14 @@ def seed(home: str, project_id: str):
             patch["value"] = mass
         masses[new] = value
     steps["analyze"]["inputs"]["states"] = {"step": "conditions"}
-    layer = raw["documents"]["velocity-figure"]["payload"]["layers"][0]
+    layer = raw["documents"]["velocity-figure"]["payload"]["layers"]["bounds"]
     layer["group"] = ["source", "model", "rate", "mass"]
     layer["style"] = {"label": "{source} {model} {rate} {mass}"}
     return _seed(home, project_id, raw)
 
 
+ACTIONS = {"seed": HomeSeed(seed)}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({"seed": seed}[action](*args)))
+    print_action(ACTIONS)

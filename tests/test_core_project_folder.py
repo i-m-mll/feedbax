@@ -16,6 +16,7 @@ from feedbax.contracts.model_edit import ModelEditCommand, ModelEditRequest
 from feedbax.contracts.expression_values import LiteralValue, ValueBase, ValueType
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.studio_project import (
     PresentationDocument, StudioPresentationWrite, StudioProjectCreateFile, StudioProjectPatch,
     StudioProjectPatchBatch, StudioProjectRename,
@@ -37,7 +38,7 @@ def _end(component, port):
 
 
 def _gain():
-    return {"kind": "leaf", "name": "Gain", "type": "feedbax.Gain", "fields": {"gain": 1.0}}
+    return {"kind": "leaf", "label": "Gain", "type": "feedbax.Gain", "fields": {"gain": 1.0}}
 
 
 def _port(owner, port):
@@ -56,27 +57,27 @@ def _model_project():
     interior = model["interior"]
     interior["components"].update({name: _gain() for name in ("a", "b", "c", "d")})
     interior["components"]["physics"] = {
-        "kind": "composite", "name": "Physics",
-        "ports": {"physical": [{"id": "frame", "name": "Frame", "type": "translational"}]},
+        "kind": "composite", "label": "Physics",
+        "ports": {"physical": {"frame": {"label": "Frame", "type": "translational"}}},
         "interior": {
             "physical_domain": "translational",
             "components": {
-                "mass": {"kind": "leaf", "name": "Mass", "type": "feedbax.Mass"},
-                "ground": {"kind": "leaf", "name": "Ground", "type": "feedbax.Ground"},
+                "mass": {"kind": "leaf", "label": "Mass", "type": "feedbax.Mass"},
+                "ground": {"kind": "leaf", "label": "Ground", "type": "feedbax.Ground"},
             },
             "connections": {"mass-ground": {"a": _end("mass", "flange"), "b": _end("ground", "flange")}},
         },
     }
     interior["wires"].update({
-        "ab": {"source": _end("a", "output"), "target": _end("b", "input"), "attachments": [
-            {"kind": "intervention", "id": "scale", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
-        ]},
+        "ab": {"source": _end("a", "output"), "target": _end("b", "input"), "attachments": {
+            "scale": {"kind": "intervention", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
+        }},
         "bc": {"source": _end("b", "output"), "target": _end("c", "input")},
     })
-    model["ports"]["inputs"].extend([
-        {"id": "one", "name": "One", "type": {}, "default": {"value": 0}},
-        {"id": "two", "name": "Two", "type": {}, "default": {"value": 0}},
-    ])
+    model["ports"]["inputs"].update({
+        "one": {"label": "One", "type": {}, "default": {"value": 0}},
+        "two": {"label": "Two", "type": {}, "default": {"value": 0}},
+    })
     raw["documents"][_VARIANT] = {
         "label": "Document",
         "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
@@ -116,8 +117,9 @@ def _edit_cases():
         "rename": {"address": a, "name": "Renamed"},
         "move_port": {"address": _address("port", end=_port("inputs", "one")), "index": 0},
         "set_field": {"address": _address("field", parent=a["element"], path=["fields", "gain"]), "value": 2.0},
-        "set_attachment": {"difference": {"op": "add", "owner": ab, "after": "scale", "attachment": {
-            "kind": "intervention", "id": "second", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 2.0}},
+        "set_attachment": {"difference": {
+            "op": "add", "address": _address("attachment", parent=ab["element"], id="second"), "after": "scale",
+            "attachment": {"kind": "intervention", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 2.0}},
         }}},
         "move_wire_attachment": {
             "address": _address("attachment", parent=ab["element"], id="scale"),
@@ -127,7 +129,7 @@ def _edit_cases():
                              "output_port": "output", "position": point},
         "insert_physical_component": {
             "address": _address("physical_connection", scope=("physics",), id="mass-ground"),
-            "component": {"kind": "leaf", "name": "Spring", "type": "feedbax.LinearSpring"},
+            "component": {"kind": "leaf", "label": "Spring", "type": "feedbax.LinearSpring"},
             "a_port": "flange_a", "b_port": "flange_b", "position": point,
         },
         "bring_signal_in": {"source_graph": graph, "source": _end("a", "output"),
@@ -135,7 +137,9 @@ def _edit_cases():
         "copy": {"selection": [a]},
         "cut": {"selection": [a]},
         "duplicate": {"selection": [a]},
-        "paste": {"graph": graph, "clipboard": {"components": {"a": _gain()}, "wires": {}, "connections": {}}},
+        "paste": {"graph": graph, "clipboard": {"components": {
+            "a": {"kind": "leaf", "name": "Gain", "type": "feedbax.Gain", "fields": {"gain": 1.0}},
+        }, "wires": {}, "connections": {}}},
         "group": {"selection": [a], "name": "Group"},
         "ungroup": {"address": outer},
         "reset_difference": {"address": _address("component", id="d")},
@@ -260,16 +264,19 @@ def test_named_files_and_patch_batches_have_core_and_http_parity(tmp_path, model
             return result
 
         for file in (
-            {"kind": "document", "id": "settings", "document": {"label": "Document", "schema": "custom", "payload": {"x": 1}}},
+            {"kind": "document", "id": "settings", "document": {
+                "label": "Document", "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID,
+                "payload": {"id": "one"},
+            }},
             {"kind": "step", "id": "next", "step": {"label": "Step", "kind": "train", "base": {"step": "train"}}},
         ):
             body = StudioProjectCreateFile.model_validate({"revision": snapshot.revision, "file": file})
             snapshot = compare("POST", "/files", body, core.create_file("project", body), envelope=True)
         patch = {"address": {"kind": "document", "id": "settings"},
-                 "patches": [{"op": "replace", "path": "/payload/x", "value": 2}]}
+                 "patches": [{"op": "replace", "path": "/payload/id", "value": "two"}]}
         body = StudioProjectPatch.model_validate({"revision": snapshot.revision, **patch})
         snapshot = compare("PATCH", "", body, core.patch("project", body))
-        patch["patches"][0]["value"] = 3
+        patch["patches"][0]["value"] = "three"
         body = StudioProjectPatchBatch.model_validate({"revision": snapshot.revision, "files": [
             patch, {"address": {"kind": "step", "id": "next"}, "patches": [
                 {"op": "add", "path": "/group", "value": "experiment"},

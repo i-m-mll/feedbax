@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from enum import IntEnum, StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictBool, StrictInt, model_validator
 
 from feedbax.contracts.model_address import ModelAddress
 
@@ -94,12 +94,15 @@ class SetVariableOrigin(ValueRecord):
     variable: str
 
 
-class ScopedValue(ValueRecord):
+class ScopedValueBase(ValueRecord):
     id: Annotated[str, Field(min_length=1)]
     name: Annotated[str, Field(min_length=1)]
     type: ValueType
     level: Level
     list_count: Annotated[StrictInt, Field(gt=0)] | None = None
+
+
+class ScopedValue(ScopedValueBase):
     set_entry: SetVariableOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
@@ -151,6 +154,13 @@ class Problem(ValueRecord):
 type Scalar = StrictBool | StrictInt | FiniteFloat
 
 
+def normal_literal_number(value: Scalar) -> Scalar:
+    """Use an integer for a whole, representable numeric literal."""
+    if type(value) is float and value.is_integer() and abs(value) < 2**53:
+        return int(value)
+    return value
+
+
 class LiteralValue(ValueRecord):
     kind: Literal["literal"] = "literal"
     value: Scalar
@@ -172,11 +182,14 @@ class CallValue(ValueRecord):
 type WeightPart = Annotated[FiniteFloat, Field(ge=0)]
 
 
+type DrawCadence = Literal["run", "trial"]
+
+
 class DrawValue(ValueRecord):
     kind: Literal["draw"] = "draw"
     family: str
     args: tuple[Expression, ...]
-    per: Literal["run", "trial"] = "trial"
+    per: DrawCadence = "trial"
     weights: tuple[WeightPart, ...] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
@@ -185,22 +198,31 @@ class UnresolvedValue(ValueRecord):
     text: str
 
 
+class SequenceValue(ValueRecord):
+    kind: Literal["sequence"] = "sequence"
+    rule: Literal["span", "linspace", "geomspace"]
+    first: Expression
+    last: Expression
+    count: Expression | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def _count_matches_rule(self) -> SequenceValue:
+        if (self.count is None) != (self.rule == "span"):
+            raise ValueError("Only linspace and geomspace take a count.")
+        return self
+
+
 type Expression = Annotated[
-    LiteralValue | NameValue | CallValue | DrawValue | UnresolvedValue, Field(discriminator="kind")
+    LiteralValue | NameValue | CallValue | DrawValue | SequenceValue | UnresolvedValue, Field(discriminator="kind")
 ]
+
+
+DrawValue.model_rebuild()
 
 
 class SweepList(ValueRecord):
     kind: Literal["list"] = "list"
     members: tuple[Expression, ...] = Field(min_length=1)
-
-
-class SweepRange(ValueRecord):
-    kind: Literal["range"] = "range"
-    first: Expression
-    last: Expression
-    count: Annotated[StrictInt, Field(gt=0)]
-    spacing: Literal["linear", "log"]
 
 
 class SweepSample(ValueRecord):
@@ -209,7 +231,7 @@ class SweepSample(ValueRecord):
     count: Annotated[StrictInt, Field(gt=0)]
 
 
-type FieldValue = Expression | SweepList | SweepRange | SweepSample
+type FieldValue = Expression | SweepList | SweepSample
 type NodePath = tuple[str | int, ...]
 
 
@@ -251,11 +273,18 @@ def children(node: Expression) -> tuple[tuple[NodePath, Expression], ...]:
         )
     if isinstance(node, DrawValue):
         return tuple((("args", i), child) for i, child in enumerate(node.args))
+    if isinstance(node, SequenceValue):
+        bounds = ((("first",), node.first), (("last",), node.last))
+        return bounds if node.count is None else (*bounds, (("count",), node.count))
     return ()
 
 
-def walk(tree: Expression, at: NodePath = ()) -> Iterator[tuple[NodePath, Expression]]:
+def walk(
+    tree: Expression, at: NodePath = (), *, include_sequence_bounds: bool = True,
+) -> Iterator[tuple[NodePath, Expression]]:
     """Every node of ``tree`` with its path, the root first."""
     yield at, tree
+    if not include_sequence_bounds and isinstance(tree, SequenceValue):
+        return
     for step, child in children(tree):
-        yield from walk(child, (*at, *step))
+        yield from walk(child, (*at, *step), include_sequence_bounds=include_sequence_bounds)

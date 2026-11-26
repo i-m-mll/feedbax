@@ -6,6 +6,7 @@ import pytest
 from feedbax.application.composition import load_application
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.task_document import TaskDocument
 from feedbax.jobs import JobService
 from feedbax.planner.project_plan import compile_project
 from feedbax.web.services.project_folder import ProjectFolderService
@@ -26,13 +27,16 @@ def _axis(path, values, *, op="replace"):
 def _project(seeds, axes):
     raw = managed_evaluation_definition()
     train = raw["steps"]["train"]
-    train["base"]["inline"]["trial_documents"].update(task=None, python_task={"document": "task"}, input_bindings={})
+    train["base"]["inline"]["trial_documents"].update(
+        task=None, python_task={"document": "task"}, input_bindings={"task-input": "reach_target"},
+    )
     raw["documents"]["task"] = {
         "label": "Task",
         "schema": "feedbax.spec.python_task",
         "payload": {"type": REACHING_TASK, "params": {"x": 0.1, "n_steps": 5}},
     }
-    raw["documents"]["objective"]["payload"]["terms"][0].pop("window")
+    terms = raw["documents"]["objective"]["payload"]["terms"]
+    next(iter(terms.values())).pop("window")
     if seeds:
         train["sweep"] = {"axes": {"seed": _axis("seed", seeds, op="add")}}
     evaluate = raw["steps"]["baseline"]
@@ -51,6 +55,12 @@ def _compile(project):
     )
 
 
+def _replacement_task(spec):
+    (edit,) = spec.params["variation"]
+    assert (edit["op"], edit["path"]) == ("replace", "task")
+    return edit["value"]
+
+
 def test_task_and_trials_axes_cross_the_subject_runs():
     """Catches an Evaluate axis on its Task or Trials that is dropped, refused, or not crossed with its subjects."""
     plan = _compile(_project([0, 1, 2], {
@@ -62,9 +72,8 @@ def test_task_and_trials_axes_cross_the_subject_runs():
     authored = set()
     for run in runs:
         spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-        (edit,) = spec.params["variation"].values()
-        assert edit["path"] == "task.params.x"
-        authored.add((run.inputs["subject"].producer, edit["value"], len(spec.params["trials"])))
+        task = _replacement_task(spec)
+        authored.add((run.inputs["subject"].producer, task["params"]["x"], len(spec.params["trials"])))
     assert len(runs) == len({run.request_id for run in runs}) == 18
     assert {(x, count) for _, x, count in authored} == {(x, n) for x in (0.2, 0.3) for n in (1, 2, 3)}
     assert len({producer for producer, _, _ in authored}) == 3
@@ -109,10 +118,7 @@ def test_a_task_document_field_edit_on_some_evaluate_runs_reaches_their_requests
     evaluate = raw["steps"]["baseline"]
     evaluate["sweep"] = {"axes": {"probe": {"values": {"near": {"value": 1}, "far": {"value": 2}}}}}
     raw["steps"] = {"train": raw["steps"]["train"], "baseline": evaluate}
-    index = next(i for i, item in enumerate(raw["documents"]["task"]["payload"]["variables"]) if item["id"] == "target")
-    target = {"kind": "call", "function": "vector", "args": [
-        {"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (0.25, -0.1)
-    ]}
+    target = "vector(0.25 m, -0.1 m)"
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "fields", Project.model_validate(raw))
     before = folders.read_plan("fields", revision=None)
@@ -121,7 +127,7 @@ def test_a_task_document_field_edit_on_some_evaluate_runs_reaches_their_requests
         reply = client.post("/api/projects/fields/authoring/trials", json={
             "revision": before.revision, "run": {"variant": far.variant, "step": far.step, "row": far.row},
             "scope": {"kind": "rows", "rows": [far.row]},
-            "change": {"kind": "task", "edits": [{"op": "replace", "path": f"/variables/{index}/value", "value": target}]},
+            "change": {"kind": "task", "edits": [{"op": "replace", "path": "/variables/target/value", "value": target}]},
         })
         assert reply.status_code == 200, reply.text
         edited = reply.json()
@@ -134,10 +140,11 @@ def test_a_task_document_field_edit_on_some_evaluate_runs_reaches_their_requests
     for run in after.runs:
         if run.kind == "evaluate":
             spec = decode_request(after.requests[run.request_id], after.documents.__getitem__).spec
-            variation = spec.params["variation"]
-            variations[run.key] = list(variation.values()) if isinstance(variation, dict) else variation
-    assert variations.pop(far) == [{"op": "replace", "path": "task.variables.target.value", "value": target}]
-    assert list(variations.values()) == [[]]
+            variations[run.key] = spec
+    task = TaskDocument.model_validate(_replacement_task(variations.pop(far)))
+    variable = next(variable for variable in task.variables if variable.id == "target")
+    assert [(coordinate.value, coordinate.unit) for coordinate in variable.value.args] == [(0.25, "m"), (-0.1, "m")]
+    assert [spec.params["variation"] for spec in variations.values()] == [[]]
 
 
 def test_a_set_applies_to_an_evaluate_that_runs_its_subjects_model():
@@ -172,8 +179,9 @@ def test_a_list_typed_in_an_evaluate_s_trials_sweeps_them_across_its_subjects(tm
         url = "/api/projects/trials/authoring/train/baseline/fields"
         shown = client.post(url, json={"revision": before.revision})
         assert shown.status_code == 200, shown.text
-        trials = next(field for field in shown.json()["fields"] if field["id"] == "/params/trial_set/count")
-        assert "sweep" in trials["site"]["kinds"]
+        view = shown.json()
+        trials = next(field for field in view["fields"] if field["id"] == "/params/trial_set/count")
+        assert "sweep" in view["sites"][trials["site"]]["kinds"]
         reply = client.post(url, json={
             "revision": before.revision, "field": "/params/trial_set/count", "edit": {"kind": "text", "text": "1, 4"},
         })
@@ -195,11 +203,18 @@ def test_a_range_on_an_integer_task_parameter_plans_whole_values():
         "path": "trial_documents.python_task.params.n_steps", "range": {"start": 5, "stop": 9, "count": 3},
     }}))
     assert plan.diagnostics == ()
-    values = sorted(
-        decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.params["variation"]
-        ["task-params-n_steps"]["value"]
-        for run in plan.runs if run.kind == "evaluate"
-    )
+    values = []
+    for run in plan.runs:
+        if run.kind != "evaluate":
+            continue
+        spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        if spec.params["variation"]:
+            values.append(_replacement_task(spec)["params"]["n_steps"])
+        else:
+            producer = next(train for train in plan.runs if train.key == run.inputs["subject"].producer)
+            train = decode_request(plan.requests[producer.request_id], plan.documents.__getitem__).spec
+            values.append(train.trial_documents.python_task.params["n_steps"])
+    values.sort()
     assert values == [5, 7, 9] and all(type(value) is int for value in values)
 
 
@@ -232,10 +247,11 @@ def test_a_sweep_typed_in_an_evaluate_s_task_field_leaves_its_subject_alone(tmp_
     assert after.diagnostics == ()
     trained = {run.key: run.request_id for run in before.plan.runs if run.kind == "train"}
     assert {run.key: run.request_id for run in after.runs if run.kind == "train"} == trained
-    values = sorted(
-        edit["value"]
-        for run in after.runs if run.kind == "evaluate"
-        for edit in decode_request(after.requests[run.request_id], after.documents.__getitem__).spec.params["variation"]
-        if edit["path"].startswith("task.signals.fixation.")
-    )
-    assert values == [0.5, 0.75]
+    values = []
+    for run in after.runs:
+        if run.kind == "evaluate":
+            spec = decode_request(after.requests[run.request_id], after.documents.__getitem__).spec
+            task = TaskDocument.model_validate(_replacement_task(spec))
+            fixation = next(signal for signal in task.signals if signal.id == "fixation")
+            values.append(next(cell.value.value for cell in fixation.cells if cell.id == "hold-cue"))
+    assert sorted(values) == [0.5, 0.75]

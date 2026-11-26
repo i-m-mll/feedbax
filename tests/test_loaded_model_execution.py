@@ -38,8 +38,8 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
     model = raw["documents"][model_name]
     interior = model["payload"]["interior"]
     interior["components"].update({
-        "motor-noise": {"kind": "leaf", "name": "Motor noise", "type": "feedbax.Noise", "fields": {"shape": [2]}},
-        "actuate": {"kind": "leaf", "name": "Actuate", "type": "feedbax.Sum"},
+        "motor-noise": {"kind": "leaf", "label": "Motor noise", "type": "feedbax.Noise", "fields": {"shape": [2]}},
+        "actuate": {"kind": "leaf", "label": "Actuate", "type": "feedbax.Sum"},
     })
 
     def port(component, name):
@@ -135,22 +135,20 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
         raw["documents"]["shorter"] = deepcopy(raw["documents"]["task"])
         short_task = raw["documents"]["shorter"]["payload"]
         short_task["fixed_steps"] = 7
-        short_task["epochs"][0]["end"]["length"]["value"] = 7
-        raw["documents"]["loads"] = {"label": "Loads", "schema": "feedbax.set_document.v1", "payload": {"entries": {
-            "pulse": {"task_variables": [{
-                "id": "amplitude", "name": "Amplitude", "type": {"base": "real", "shape": [2]},
-                "value": {"kind": "call", "function": "vector", "args": [
-                    {"kind": "literal", "value": 1.0}, {"kind": "literal", "value": 0.0},
-                ]},
-            }], "differences": {"/interior/wires/plant-wire/attachments": {"value": [{
-                "id": "pulse", "kind": "intervention", "operation": "Add",
+        short_task["epochs"]["move"]["end"]["length"] = "7 st"
+        raw["documents"]["loads"] = {"label": "Loads", "schema": "feedbax.set_document.v2", "payload": {"entries": {
+            "pulse": {"label": "Pulse", "task_variables": {"amplitude": {
+                "label": "Amplitude", "type": {"base": "real", "shape": [2]},
+                "value": "[1, 0]",
+            }}, "differences": {"/interior/wires/plant-wire/attachments": {"value": {"pulse": {
+                "kind": "intervention", "operation": "Add",
                 "operands": {"value": {"kind": "task", "variable": "amplitude"}},
                 "window": {"spans": [{
                     "kind": "interval",
-                    "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
-                    "end": {"offset": {"value": 2, "unit": "st"}},
+                    "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": "2 st"},
+                    "end": {"offset": "2 st"},
                 }]},
-            }]}}},
+            }}}}},
         }}}
         next_train = deepcopy(train)
         next_train["base"]["inline"]["training_config"]["n_batches"] = 1
@@ -161,7 +159,7 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
             "state": "preserve", "rng": "carry", "schedule": "continue",
         }
         raw["steps"]["analyze"]["inputs"]["states"] = {"step": "baseline"}
-        for layer in raw["documents"]["velocity-figure"]["payload"]["layers"]:
+        for layer in raw["documents"]["velocity-figure"]["payload"]["layers"].values():
             layer.get("select", {}).pop("checkpoint", None)
         raw["steps"] = {
             "train": next_train, "baseline": loaded_baseline, "shorter": shorter,
@@ -195,7 +193,7 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
             "revision": revision, "run": key("perturbed") | {"row": "loads=pulse"}, "scope": {"kind": "step"},
         }))
         assert scoped["editable"] and not scoped["problems"], scoped["problems"]
-        assert [item["id"] for item in scoped["resolved_model"]["interior"]["wires"]["plant-wire"]["attachments"]] == ["pulse"]
+        assert list(scoped["resolved_model"]["interior"]["wires"]["plant-wire"]["attachments"]) == ["pulse"]
         set_edit({"kind": "set_to_field", "step": "perturbed", "axis": "loads"})
         set_edit({"kind": "set_field_weight", "step": "perturbed", "axis": "loads", "entry": None, "weight": 0})
         pairing = expect(client.post(f"{path}/authoring/trials", json={
@@ -203,7 +201,10 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
         }))
         assert not pairing["problems"], pairing["problems"]
         (origin,) = [item["set_entry"] for item in pairing["variables"] if item.get("set_entry")]
-        assert origin == {"step": "perturbed", "axis": "loads", "set": "loads", "entry": "pulse", "variable": "amplitude"}
+        assert origin == {
+            "step": "perturbed", "axis": "loads", "set": "loads", "entry": "pulse", "variable": "amplitude",
+            "label": "Pulse", "member_count": None,
+        }
         plan = folders.read_plan("receiver", revision=revision).plan
         paired_steps = {"baseline", "perturbed", "quiet"}
         members = {

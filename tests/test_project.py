@@ -1,16 +1,16 @@
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project, RootDocument
+from feedbax.application.project_writer import dump_studio_project, dump_text_project
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     ProjectReadError,
     StudioProjectFile,
-    dump_studio_project,
-    dump_text_project,
     load_text_project,
     parse_studio_project,
 )
@@ -25,6 +25,7 @@ from feedbax.contracts.project_resolution import (
     validate_project_documents,
 )
 from feedbax.contracts.project_sweep import expand_sweep
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 
 
 def _write(root: Path, files: dict[str, bytes]) -> None:
@@ -34,15 +35,22 @@ def _write(root: Path, files: dict[str, bytes]) -> None:
         path.write_bytes(payload)
 
 
+def _training_document(label: str, settings: dict) -> dict:
+    return {"label": label, "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": {
+        "method": "feedbax.example_training", "settings": settings, "training_config": {},
+    }}
+
+
 def test_both_project_readers_round_trip_and_resolve(tmp_path):
     repeat = {"clauses": [{"attempt": [{"id": "high_repeat", "label": "High repeated"}]}]}
     high_seed = {"seed": {"value": 61}}
     repeated_reach = {"reach": {"value": 2.0}}
+    graph = _training_document("Model", {"units": 48})
     project = Project.model_validate(
         {
             "documents": {
-                "model": {"label": "Model", "schema": "model.v1", "payload": {"units": 48}},
-                "task": {"label": "Task", "schema": "task.v1", "payload": {"limits": {"reach/a": 1.0}}},
+                "model": graph,
+                "task": _training_document("Task", {"limits": {"reach/a": 1.0}}),
             },
             "steps": {
                 "train": {
@@ -51,11 +59,11 @@ def test_both_project_readers_round_trip_and_resolve(tmp_path):
                     "base": {
                         "inline": {
                             "graph": {"document": "model"},
-                            "reach": {"document": "task", "pointer": "/limits/reach~1a"},
+                            "reach": {"document": "task", "pointer": "/settings/limits/reach~1a"},
                             "seed": 17,
                         }
                     },
-                    "requires": ["graph.units", "reach"],
+                    "requires": ["graph.settings.units", "reach"],
                     "sweep": {
                         "axes": {"attempt": {"values": {
                             "high": {"patches": high_seed},
@@ -102,7 +110,7 @@ def test_both_project_readers_round_trip_and_resolve(tmp_path):
             },
             "sweep": {
                 "rows": {
-                    "wide": {"patches": {"documents.model.payload.units": {"value": 64}}},
+                    "wide": {"patches": {"documents.model.payload.settings.units": {"value": 64}}},
                     "wide_repeat": {
                         "from": "wide",
                         "patches": {
@@ -133,7 +141,7 @@ def test_both_project_readers_round_trip_and_resolve(tmp_path):
 
     resume = resolve_step(text.project, "resume")
     assert isinstance(resume, ResolvedStep)
-    assert resume.payload == {"graph": {"units": 48}, "reach": 2.0, "seed": 61}
+    assert resume.payload == {"graph": graph["payload"], "reach": 2.0, "seed": 61}
     assert resume.sweep is None
     evaluate = resolve_step(text.project, "evaluate_subset")
     assert isinstance(evaluate, ResolvedStep)
@@ -149,7 +157,7 @@ def test_both_project_readers_round_trip_and_resolve(tmp_path):
 def test_delta_diagnostics_and_document_reference_atomicity():
     project = Project.model_validate(
         {
-            "documents": {"condition": {"label": "Condition", "schema": "condition.v1", "payload": {"gain": 4}}},
+            "documents": {"condition": _training_document("Condition", {"gain": 4})},
             "steps": {
                 "base": {
                     "label": "Base",
@@ -186,7 +194,7 @@ def test_delta_diagnostics_and_document_reference_atomicity():
                             "layer_id": "bind-condition",
                             "acknowledges_ancestor_paths": ["condition"],
                             "patches": [
-                                {"path": "condition", "value": {"document": "condition"}},
+                                {"path": "condition", "value": {"document": "condition", "pointer": "/settings"}},
                             ],
                         }
                     ],
@@ -245,14 +253,17 @@ def test_delta_diagnostics_and_document_reference_atomicity():
             "task.rate",
         ),
         (
-            {"loop": {"label": "Loop", "schema": "task", "payload": {"item": {"document": "loop"}}}},
-            {"a": {"label": "A", "kind": "train", "base": {"inline": {"task": {"document": "loop"}}}}},
+            {"loop": _training_document("Loop", {"item": {"document": "loop", "pointer": "/settings"}})},
+            {"a": {
+                "label": "A", "kind": "train",
+                "base": {"inline": {"task": {"document": "loop", "pointer": "/settings"}}},
+            }},
             ResolutionCode.DOCUMENT_CYCLE,
             "payload.task.item",
         ),
         (
-            {"task": {"label": "Task", "schema": "task", "payload": {"items": []}}},
-            {"a": {"label": "A", "kind": "train", "base": {"document": "task", "pointer": "/items/0"}}},
+            {"task": _training_document("Task", {"items": []})},
+            {"a": {"label": "A", "kind": "train", "base": {"document": "task", "pointer": "/settings/items/0"}}},
             ResolutionCode.BAD_POINTER,
             "base",
         ),
@@ -377,23 +388,31 @@ def test_external_and_historical_bases_use_exact_readers():
 
 
 def test_document_schema_validation_distinguishes_unknown_schema_reference_and_value():
-    class Task(BaseModel):
+    class Rates(BaseModel):
         rate: int
 
-    project = Project(
-        documents={
-            "good": RootDocument(label="Good", schema="task", payload={"rate": 1}),
-            "bad": RootDocument(label="Bad", schema="task", payload={"rate": "never"}),
-            "unknown": RootDocument(label="Unknown", schema="unknown", payload={}),
-            "unresolved": RootDocument(label="Unresolved", schema="task", payload={"document": "missing"}),
-        }
-    )
-    errors = validate_project_documents(project, {"task": Task.model_validate})
+    class Training(BaseModel):
+        settings: Rates
+
+    project = Project.model_validate({"documents": {
+        "good": _training_document("Good", {"rate": 1}),
+        "bad": _training_document("Bad", {"rate": "never"}),
+        "unrecognized": {
+            "label": "Unrecognized", "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "payload": {"id": "objective"},
+        },
+        "unresolved": _training_document("Unresolved", {"document": "missing"}),
+    }})
+    errors = validate_project_documents(project, {TRAINING_DOCUMENT_SCHEMA_ID: Training.model_validate})
     assert [(item.code, item.path) for item in errors] == [
-        (ResolutionCode.INVALID_DOCUMENT, "payload.rate"),
+        (ResolutionCode.INVALID_DOCUMENT, "payload.settings.rate"),
         (ResolutionCode.UNKNOWN_SCHEMA, "schema"),
-        (ResolutionCode.MISSING_DOCUMENT, "payload"),
+        (ResolutionCode.MISSING_DOCUMENT, "payload.settings"),
     ]
+
+
+def test_project_documents_refuse_unregistered_storage_schema():
+    with pytest.raises(ValidationError, match="No registered stored document has schema 'unknown'"):
+        RootDocument(label="Unknown", schema="unknown", payload={})
 
 
 def test_reader_refuses_duplicate_json_members():
@@ -405,14 +424,16 @@ def test_document_base_follows_root_alias_before_deltas():
     project = Project.model_validate(
         {
             "documents": {
-                "condition": {"label": "Condition", "schema": "condition", "payload": {"gain": 3}},
-                "alias": {"label": "Alias", "schema": "condition", "payload": {"document": "condition"}},
+                "condition": _training_document("Condition", {"gain": 3}),
+                "alias": _training_document("Alias", {
+                    "target": {"document": "condition", "pointer": "/settings"},
+                }),
             },
             "steps": {
                 "evaluate": {
                     "label": "Evaluate",
                     "kind": "evaluate",
-                    "base": {"document": "alias"},
+                    "base": {"document": "alias", "pointer": "/settings/target"},
                     "deltas": [
                         {"layer_id": "higher-gain", "patches": [{"path": "gain", "value": 6}]}
                     ],
@@ -423,35 +444,51 @@ def test_document_base_follows_root_alias_before_deltas():
     resolved = resolve_step(project, "evaluate")
     assert isinstance(resolved, ResolvedStep)
     assert resolved.payload == {"gain": 6}
-    assert project.documents["condition"].payload == {"gain": 3}
+    assert project.documents["condition"].payload["settings"] == {"gain": 3}
 
 
-def test_selected_row_sources_follow_list_edits_inherited_rows_and_document_paths():
+def test_selected_row_sources_follow_expression_edits_inherited_rows_and_document_paths():
+    from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
+
     project = Project.model_validate(
         {
             "documents": {
-                "settings": {"label": "Settings", "schema": "settings", "payload": {"values": [2, 4], "limit": 10}},
+                "task": {
+                    "schema": STORED_TASK_DOCUMENT_SCHEMA_ID,
+                    "label": "Task",
+                    "payload": {
+                        "id": "task",
+                        "variables": {"goal": {
+                            "label": "Goal", "type": {"base": "real", "shape": [3]},
+                            "value": "vector(2, 4)", "count": 10,
+                        }},
+                        "epochs": {"trial": {"label": "Trial", "end": {"kind": "length", "length": 1}}},
+                        "signals": {},
+                    },
+                },
             },
             "steps": {
                 "fit": {
                     "label": "Fit",
                     "kind": "train",
-                    "base": {"document": "settings"},
+                    "base": {"document": "task", "pointer": "/variables/goal"},
                     "deltas": [
                         {
                             "layer_id": "insert",
-                            "patches": [{"path": "values.0", "op": "add", "value": 1}],
+                            "patches": [{
+                                "path": "value.args.0", "op": "add", "value": 1,
+                            }],
                         },
                     ],
                     "sweep": {
                         "rows": {
-                            "first": {"patches": {"limit": {"value": 11}}},
+                            "first": {"patches": {"count": {"value": 11}}},
                             "derived": {"from": "first"},
                         },
                         "exceptions": {
                             "raise": {
                                 "where": {"rows": ["derived"]},
-                                "patches": {"limit": {"value": 12}},
+                                "patches": {"count": {"value": 12}},
                             },
                         },
                     },
@@ -464,26 +501,27 @@ def test_selected_row_sources_follow_list_edits_inherited_rows_and_document_path
     assert not isinstance(template, ProjectDiagnostic)
     result = template.resolve(include_sources=True)
     assert isinstance(result, ResolvedStep)
-    assert result.payload == {"values": [1, 2, 4], "limit": 12}
+    assert result.payload["value"] == "[1, 2, 4]"
+    assert result.payload["count"] == 12
     assert result.sources is not None
-    assert result.sources["/values/0"].path == "/deltas/0/patches/0/value"
-    assert result.sources["/values/1"].path == "/values/0"
-    assert result.sources["/values/2"].path == "/values/1"
-    assert (result.sources["/limit"].kind, result.sources["/limit"].name) == ("exception", "raise")
+    assert result.sources["/value/args/0/value"].path == "/deltas/0/patches/0/value"
+    assert result.sources["/value/args/1/value"].path == "/variables/goal/value"
+    assert result.sources["/value/args/2/value"].path == "/variables/goal/value"
+    assert (result.sources["/count"].kind, result.sources["/count"].name) == ("exception", "raise")
 
 
-def test_selected_sibling_rows_keep_original_sources_after_list_writes():
+def test_selected_sibling_rows_keep_original_sources_after_member_writes():
     project = Project.model_validate({
-        "documents": {"shared": {"label": "Shared", "schema": "data", "payload": {"a/b": {"~key": 5}}}},
+        "documents": {"shared": _training_document("Shared", {"a/b": {"~key": 5}})},
         "steps": {"fit": {
             "label": "Fit",
             "kind": "train",
-            "base": {"inline": {"items": [
-                {"document": "shared", "pointer": "/a~1b"}, {"native": []},
-            ]}},
+            "base": {"inline": {"items": {
+                "shared": {"document": "shared", "pointer": "/settings/a~1b"}, "native": [],
+            }}},
             "sweep": {"rows": {
-                "inserted": {"patches": {"items.0": {"op": "add", "value": 7}}},
-                "removed": {"patches": {"items.0": {"op": "remove"}}},
+                "inserted": {"patches": {"items.inserted": {"op": "add", "value": 7}}},
+                "removed": {"patches": {"items.shared": {"op": "remove"}}},
                 "original": {},
             }},
         }},
@@ -496,11 +534,44 @@ def test_selected_sibling_rows_keep_original_sources_after_list_writes():
     assert isinstance(inserted, ResolvedStep) and inserted.sources is not None
     assert isinstance(removed, ResolvedStep) and removed.sources is not None
     assert isinstance(original, ResolvedStep) and original.sources is not None
-    assert inserted.payload["items"] == [7, {"~key": 5}, {"native": []}]
-    assert removed.payload["items"] == [{"native": []}]
-    assert original.payload["items"] == [{"~key": 5}, {"native": []}]
-    assert inserted.sources["/items/0"].path == "/sweep/rows/inserted/patches/items.0/value"
-    assert inserted.sources["/items/1/~0key"] == original.sources["/items/0/~0key"]
-    assert original.sources["/items/0/~0key"].path == "/a~1b/~0key"
-    assert removed.sources["/items/0/native"] == inserted.sources["/items/2/native"]
-    assert removed.sources["/items/0/native"].path == "/base/inline/items/1/native"
+    assert list(inserted.payload["items"].items()) == [("shared", {"~key": 5}), ("native", []), ("inserted", 7)]
+    assert removed.payload["items"] == {"native": []}
+    assert original.payload["items"] == {"shared": {"~key": 5}, "native": []}
+    assert inserted.sources["/items/inserted"].path == "/sweep/rows/inserted/patches/items.inserted/value"
+    assert inserted.sources["/items/shared/~0key"] == original.sources["/items/shared/~0key"]
+    assert original.sources["/items/shared/~0key"].path == "/settings/a~1b/~0key"
+    assert removed.sources["/items/native"] == inserted.sources["/items/native"]
+    assert removed.sources["/items/native"].path == "/base/inline/items/native"
+
+
+def test_sweep_routes_reject_arrays_and_remove_absent_fields_in_referenced_documents():
+    project = Project.model_validate({
+        "documents": {
+            "shared": _training_document("Shared", {"weights": [1], "amount": 2}),
+        },
+        "steps": {"fit": {
+            "label": "Fit",
+            "kind": "train",
+            "base": {"inline": {
+                "settings": {"document": "shared", "pointer": "/settings"},
+                "aliases": [{"id": "first", "ref": {"document": "shared", "pointer": "/settings"}}],
+            }},
+            "sweep": {"rows": {
+                "remove-absent": {"patches": {"settings.defaulted": {"op": "remove"}}},
+                "array-in-document": {"patches": {"settings.weights.0": {"value": 3}}},
+                "array-before-reference": {"patches": {"aliases.first.ref.amount": {"value": 3}}},
+            }},
+        }},
+    })
+    template = compose_step(project, "fit", track_sources=True)
+    assert not isinstance(template, ProjectDiagnostic)
+    resolved, indexed, redirected = (
+        template.resolve(row, include_sources=True) for row in expand_sweep(template.sweep)
+    )
+
+    assert isinstance(resolved, ResolvedStep) and resolved.sources is not None
+    assert resolved.payload["settings"] == {"weights": [1], "amount": 2}
+    assert resolved.sources["/settings/amount"].name == "shared"
+    for problem in (indexed, redirected):
+        assert isinstance(problem, ProjectDiagnostic) and problem.code == ResolutionCode.INVALID_SWEEP
+        assert "cannot traverse an array" in problem.detail

@@ -5,28 +5,33 @@ from dataclasses import dataclass, replace
 
 from pydantic import JsonValue
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.compiler.model_document import model_tau_seconds
 from feedbax.compiler.model_ports import model_unstored_fields
 from feedbax.contracts.expression_values import (
     TIME, CallValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, Site,
-    SweepList, SweepRange, SweepSample, UnresolvedValue, ValueBase, ValueType,
+    SequenceValue, SweepList, SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress, PortElement, WireElement
 from feedbax.contracts.model_document import (
-    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, DelayInitialTask, DelayInitialValue, InterventionAttachment,
+    CompositeComponent, DelayAttachment, DelayInitialTask, DelayInitialValue, InterventionAttachment,
     LeafComponent, ModelDocument,
+)
+from feedbax.contracts.stored_model import (
+    STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, authored_model_payload, lower_model_field_value,
+    stored_model_field_value,
 )
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, ListedRuns, StepRuns, ModelEditCommand, SetField,
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import BasedDocument, InlineBase, SetProjectValue
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.planner.project_plan import RunKey
-from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.project_sources import ValueSource, pointer
-from feedbax.contracts.project_sweep import NamedAxis, SetValue
+from feedbax.contracts.project_sweep import NamedAxis, SetValue, model_field_path, model_field_target
 from feedbax.contracts.studio_field import (
     FieldResetEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
 )
@@ -35,19 +40,21 @@ from feedbax.contracts.studio_scope import StoreKind
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_site import project_site, read_field
 from feedbax.contracts.expression_text import ParsedField, print_field
-from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.task_document import StoredTaskDocument
 from feedbax.contracts.window import store_window_offset, window_offset_expression, window_offset_sites
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
+from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import StoredEdit, merged_files
 from feedbax.studio.value_structure import value_structure
 from feedbax.web.services.authored_scope import choose_prepared_edit, selected_edit_runs
 from feedbax.web.services.axis_values import axis_values
+from feedbax.web.services.value_sources import PlanSourceNames
 from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.trial_scope import (
-    evaluation_document_write, scoped_file, selected_value, selection_scope, source_value_file, variant_file,
+    evaluation_document_write, model_content_edits, scoped_file, selected_value, selection_scope, source_value_file, variant_file,
 )
 
 
@@ -267,29 +274,44 @@ def _addressed(value: JsonValue) -> list[SetProjectValue]:
 
 
 def _kept_writes(
-    project, step_id: str, writes: list[OverridePatch],
+    project, step_id: str, writes: list[OverridePatch], model: ModelDocument, components: ComponentRegistry,
 ) -> tuple[list[StudioProjectFilePatch], SetField | None] | Problem:
     """What gives ``step_id`` a removed sweep's kept value: its Model field as a document write, the rest in its
     definition."""
-    fields = [(ModelAddress.from_text(write.path), write) for write in writes if write.path.startswith("{")]
+    fields, rest = [], []
+    for write in writes:
+        target = model_field_target(write.path)
+        if target is None:
+            rest.append(write)
+        else:
+            fields.append((target.address, write))
     if any(write.op == "remove" for _, write in fields):
         raise ProjectFolderInvalid("A sweep value removes a Model field.")
     if len(fields) > 1:
         return Problem(code=ProblemCode.STRUCTURE, reason="This sweep value sets more than one Model field.")
-    rest = [write for write in writes if not write.path.startswith("{")]
     files = scoped_file(project, step_id, StepRuns(kind="step"), rest).files if rest else []
-    return files, next((SetField(op="set_field", address=address, value=write.value) for address, write in fields), None)
+    field = next((SetField(
+        op="set_field", address=address, value=lower_model_field_value(model, address, write.value, components),
+    ) for address, write in fields), None)
+    return files, field
+
+
+def _reference_model(project, restored: str | None, components: ComponentRegistry) -> ModelDocument | None:
+    document = compose_document(project.documents.get, restored) if restored is not None else None
+    if document is None or isinstance(document, ProjectDiagnostic):
+        return None
+    return StoredModelDocument.model_validate(document.payload).lower(components)
 
 
 def _reset_text(
     project, restored: str | None, owner: ModelAddress, address: ModelAddress, components: ComponentRegistry,
 ) -> str | Problem:
     """The text of the field at ``address`` in ``restored``, the document a Reset gives the field its value from."""
-    document = compose_document(project.documents.get, restored) if restored is not None else None
-    if document is None or isinstance(document, ProjectDiagnostic):
+    model = _reference_model(project, restored, components)
+    if model is None:
         return Problem(code=ProblemCode.STRUCTURE, reason="This value is not changed from another document.")
     field = next((
-        item for item in _fields(ModelDocument.model_validate(document.payload), owner, components)
+        item for item in _fields(model, owner, components)
         if item.address == address
     ), None)
     if field is None:
@@ -309,7 +331,7 @@ def _held_values(
         payload = selected_model(definition, document) if definition is not None else None
         if payload is None:
             continue
-        for field in _fields(ModelDocument.model_validate(payload), owner, components):
+        for field in _fields(StoredModelDocument.model_validate(payload).lower(components), owner, components):
             values = held.setdefault(field.address.to_text(), [])
             if field.expression is None and not isinstance(field.numeric.value, UnresolvedValue) and field.numeric.value not in values:
                 values.append(field.numeric.value)
@@ -340,7 +362,9 @@ def _field_store(
         retain_equivalent=body.edit is not None and body.edit.kind == "to_list",
     )
     if isinstance(choice, list):
-        return ModelFieldResponse(fields=response.fields, store_choices=choice)
+        return ModelFieldResponse(
+            fields=response.fields, sites=response.sites, function_lists=response.function_lists, store_choices=choice,
+        )
     return response.model_copy(update={"files": choice.files, "created": list(choice.created)})
 
 
@@ -361,7 +385,7 @@ def _held_problems(field: _Field, functions: FunctionRegistry, period: float | N
     return _address_problems(field, result)
 
 
-def _hold_sweep_member(axis, member: str, held: JsonValue, step_file, problems: list[Problem]) -> ModelFieldResponse:
+def _hold_sweep_member(axis, member: str, text: str, step_file, problems: list[Problem]) -> ModelFieldResponse:
     if axis is None or len(axis.covering) != 1:
         raise ProjectFolderInvalid("Choose an authored Model sweep value.")
     _, sweep = axis.covering[0]
@@ -369,7 +393,7 @@ def _hold_sweep_member(axis, member: str, held: JsonValue, step_file, problems: 
         raise ProjectFolderInvalid("Choose an authored Model sweep value.")
     path = axis.target.patch_path
     assert path is not None
-    updated = entry.model_copy(update={"value": held, "patches": entry.patches | {path: SetValue(value=held)}})
+    updated = entry.model_copy(update={"value": text, "patches": entry.patches | {path: SetValue(value=text)}})
     after = sweep.model_copy(update={"values": sweep.values | {member: updated}})
     return ModelFieldResponse(files=[step_file(axis.write_axis(after))], problems=problems)
 
@@ -383,9 +407,9 @@ def model_fields(
     document = compose_document(project.documents.get, body.document)
     if isinstance(document, ProjectDiagnostic):
         raise ProjectFolderInvalid(f"The Model document cannot be read: {document.detail}")
-    if document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+    if document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
         raise ProjectFolderInvalid("The Model document does not exist.")
-    model = ModelDocument.model_validate(document.payload)
+    model = StoredModelDocument.model_validate(document.payload).lower(components)
     step = selected = plan = effective_model = None
     shown = project.documents.get(body.document)
     changes, restored = (shown.differences, shown.base.document) if isinstance(shown, BasedDocument) else ({}, None)
@@ -402,7 +426,7 @@ def model_fields(
         reading = read_evaluate_model(
             folders, project_id, evaluate, components, selected=plan, model_document=body.document,
         )
-        effective_model = reading.state.resolved_model
+        effective_model = reading.model
         changes, restored = reading.differences, reading.shared
         candidate = project.steps[key.step]
         if (isinstance(evaluate.scope, StepRuns) and plan.variants[:1] == (key.variant,)
@@ -421,7 +445,7 @@ def model_fields(
             )
         definition = plan.selected_definitions.get(key)
         if definition is not None and (model_payload := selected_model(definition, body.document)) is not None:
-            effective_model = ModelDocument.model_validate(model_payload)
+            effective_model = StoredModelDocument.model_validate(model_payload).lower(components)
             selected = next((row for row in plan.rows if row.key == key), None)
             if plan.steps[(key.variant, key.step)].kind == "train":
                 if project.sweep is None:
@@ -442,9 +466,9 @@ def model_fields(
         slots = definition.payload.get("trial_documents") if definition is not None else None
         if isinstance(slots, dict) and isinstance(raw := slots.get("task"), dict):
             try:
-                task = TaskDocument.model_validate(raw)
-                names = tuple(ScopedValue(id=variable.id, name=variable.name, type=variable.type, level=Level.TRIAL)
-                              for variable in task.variables)
+                task = StoredTaskDocument.model_validate(raw)
+                names = tuple(ScopedValue(id=key, name=variable.label, type=variable.type, level=Level.TRIAL)
+                              for key, variable in task.variables.items())
             except ValueError:
                 pass
     effective_fields = {
@@ -452,50 +476,59 @@ def model_fields(
     } if effective_model is not None else {}
     authored_fields = {field.address.to_text(): field for field in _fields(model, body.owner, components, names)}
     visible_fields = effective_fields if evaluate or variant is not None else effective_fields | authored_fields
+    reference = _reference_model(project, restored, components) if changes else None
+    reference_fields = {
+        field.address.to_text(): field for field in _fields(reference, body.owner, components, names)
+    } if reference is not None else {}
     period = (effective_model or model).step_seconds
     if isinstance(period, UnresolvedValue):
         period = None
     fields = []
+    sites = FieldSiteIndex()
     targets = {}
+    source_names = PlanSourceNames(plan) if plan is not None and definitions else None
     for field_key, field in visible_fields.items():
         numeric = field.numeric
         resolved = effective_fields.get(field_key)
         axis = None
         if step is not None:
             target = SweepTarget(
-                numeric.value.model_dump(mode="json") if isinstance(numeric.value, UnresolvedValue) else numeric.value,
-                _addressed, field_key,
+                numeric.value.text if isinstance(numeric.value, UnresolvedValue) else numeric.value,
+                _addressed, model_field_path(field.address),
             )
             axis = FieldSweeps(
                 step, target, numeric.label, numeric.key[-1:], integer=numeric.site.expected.base == ValueBase.INTEGER,
                 runs=runs,
             )
-            if evaluate is not None:
-                # The addressed sweep can set fields inherited from registry defaults.
-                numeric = replace(numeric, stored=True)
+            # An addressed sweep can set fields inherited from the registry.
+            numeric = replace(numeric, stored=True)
         relative = pointer(field.address.stored_path())
-        changed = any(relative == path or relative.startswith(path + "/") for path in changes)
-        # The window map groups equal coordinates. Keep the stored origin key and path.
-        sources = dict.fromkeys(
+        changed = relative in changes
+        if not changed and any(relative.startswith(path + "/") for path in changes):
+            inherited = reference_fields.get(field_key)
+            changed = inherited is None or (
+                inherited.numeric.value, inherited.numeric.unit, inherited.expression
+            ) != (numeric.value, numeric.unit, field.expression)
+        sources = {
             replace(source, value=value_id) if (
                 source.kind == "sweep_value" and source.step == run.step and source.axis is not None
                 and (value_id := visible_axis_values.get((run, source.axis))) is not None
-            ) else source
+            ) else source: run
             for run, definition in definitions
             if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None
-        )
+        }
         view = project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
-            held=held.get(field_key, ()),
+            sites=sites, held=held.get(field_key, ()),
             period=period, effective_unit=resolved.numeric.unit if resolved else None,
             scoped=bool(body.rows or body.axes),
-            address=field.address, problems=_held_problems(field, functions, period)
+            address=field.address, address_text=field.address.to_authored_text(), problems=_held_problems(field, functions, period)
             or (_held_problems(resolved, functions, period) if resolved is not None else []),
-            sources=[StudioPlanReviewSource.from_source(source) for source in sources],
+            sources=[source_names.project(source, run) for source, run in sources.items()] if source_names else [],
             changed=changed,
         )
         if field.window_offset or field.address.element.path[0] == "operands" and isinstance(field.address.element.parent, AttachmentElement):
-            view = view.model_copy(update={"site": project_site(numeric.site, functions)})
+            view = view.model_copy(update={"site": sites.reference(project_site(numeric.site, functions))})
         if field.expression is not None:
             view = view.model_copy(update={
                 "text": print_field(field.expression, numeric.site),
@@ -505,7 +538,7 @@ def model_fields(
         fields.append(view)
         targets[field_key] = replace(field, numeric=numeric), axis
     if body.edit is None:
-        return ModelFieldResponse(fields=fields)
+        return ModelFieldResponse(fields=fields, **sites.tables(fields))
     if body.address is None or body.address.to_text() not in targets:
         raise ProjectFolderInvalid("Choose a supported field of the selected Model.")
     if body.run is None and (body.rows or body.axes or body.evaluate_scope is not None) or (
@@ -538,7 +571,7 @@ def model_fields(
         parsed = read_field(edit.text, field.numeric.site, functions)
         if isinstance(parsed, ParsedField):
             node = parsed.value
-            if field.window_offset and not isinstance(node, LiteralValue | SweepList | SweepRange | SweepSample):
+            if field.window_offset and not isinstance(node, LiteralValue | SequenceValue | SweepList | SweepSample):
                 expression = store_window_offset(node).model_dump(mode="json")
             elif operand and isinstance(node, NameValue):
                 write_address = _address(body.owner, *field.address.element.path[:2])
@@ -566,11 +599,12 @@ def model_fields(
         if member_id is not None:
             return _field_store(
                 folders, project_id, project, plan, body,
-                _hold_sweep_member(axis, member_id, result, step_file, problems), axis=axis, member_id=member_id,
+                _hold_sweep_member(axis, member_id, edit.text, step_file, problems), axis=axis, member_id=member_id,
             )
     if prepared is not None and isinstance(result, list):
         assert body.run is not None
-        kept = _kept_writes(project, body.run.step, prepared.keep) if prepared.keep and step is not None else ([], None)
+        kept = (_kept_writes(project, body.run.step, prepared.keep, model, components)
+                if prepared.keep and step is not None else ([], None))
         if isinstance(kept, Problem):
             return ModelFieldResponse(problems=[kept])
         files, field_value = kept
@@ -599,8 +633,10 @@ def model_fields(
             return ModelFieldResponse(problems=[Problem(
                 code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",
             )])
-        path = axis.target.patch_path if write_address == field.address else write_address.to_text()
-        write = OverridePatch(op="replace", path=path, value=value)
+        path = axis.target.patch_path if write_address == field.address else model_field_path(write_address)
+        # A coordinate uses the current field's unit. An expression is stored in its own authored form.
+        stored = value if type(value) in (int, float) else stored_model_field_value(write_address, value)
+        write = OverridePatch(op="replace", path=path, value=stored)
         relative = pointer(write_address.stored_path())
         selected = selected_edit_runs(plan, body.run.step, body)
         alternatives = []
@@ -619,7 +655,7 @@ def model_fields(
             held = selected_model(definition, owner_name)
             for part in write_address.stored_path():
                 held = held.get(part) if isinstance(held, dict) else None
-            file = source_value_file(project, source, held, value)
+            file = source_value_file(project, source, held, stored)
             if file is not None:
                 kind, label = {
                     "sweep_value": ("sweep_value", "Sweep Value"), "exception": ("row_exception", "Row Exception"),
@@ -638,16 +674,20 @@ def model_fields(
     if variant is not None:
         assert body.run is not None
         field_key = difference.address.to_text()
-        path = f"documents.{owner_name}.{field_key}"
+        path = model_field_path(difference.address, ("documents", owner_name))
         if field_key not in authored_fields or isinstance(difference.address.element.parent, AttachmentElement):
             raise ProjectFolderInvalid("This Model field is not part of the named document.")
-        write = OverridePatch(op="replace", path=path, value=value)
+        stored = stored_model_field_value(write_address, value)
+        write = OverridePatch(op="replace", path=path, value=stored)
         chosen_steps = {body.run.step, *body.chosen_steps}
         alternatives = []
         if chosen_steps < plan.document_users(variant, owner_name):
-            narrowed = evaluation_document_write(project, plan, owner_name, [
-                SetProjectValue(op="replace", path=pointer(difference.address.stored_path()), value=value),
-            ], chosen_steps, "model", variant)
+            try:
+                changed = resolve_effective_model(model, components, (difference,), functions=functions)
+            except ValueError as error:
+                raise ProjectFolderInvalid(str(error)) from error
+            edits = model_content_edits(document.payload, authored_model_payload(changed, components))
+            narrowed = evaluation_document_write(project, plan, owner_name, edits, chosen_steps, "model", variant)
             alternatives.append(("selected_readers", "Selected Readers", variant, narrowed))
         return _field_store(
             folders, project_id, project, plan, body,

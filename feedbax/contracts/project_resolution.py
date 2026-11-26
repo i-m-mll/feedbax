@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from functools import cached_property
+from functools import cached_property, partial
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import JsonValue, ValidationError
@@ -15,23 +15,30 @@ from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import TextSpan
-from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
-from feedbax.contracts.loaded_model import encode_imported_model_document
-from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, is_figure_document_pin
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.loaded_model import ImportedModelSource
+from feedbax.contracts.matrix_core import (
+    ExpressionNodePatch, ExpressionSite, KeyedPatchCollection, apply_stored_patch_in_place, prepare_stored_patch,
+    replay_stored_patch_copy, resolve_segment, validate_stored_patch_path,
+)
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
+from feedbax.contracts.project_storage import (
+    apply_document_differences, document_difference_basis, stored_expression_site, stored_keyed_collection, stored_step_expression_site,
+    stored_step_keyed_collection,
+)
 from feedbax.contracts.project import (
     DifferenceNotApplied,
     Document,
     RootDocument,
-    apply_differences,
     base_chain,
     check_typed_payload,
     DocumentReference,
     ExternalBase,
     InlineBase,
-    LoadedModelDocument,
+    OrderDocumentMembers,
     Payload,
     Project,
     RunBase,
@@ -45,6 +52,8 @@ from feedbax.contracts.project_inputs import (
     InitialModelReference, InputBinding, LoadedModelReference, ObjectiveDocumentReference, SelectedAxisValueProblem, TaskDocumentReference,
 )
 from feedbax.contracts.project_sources import (
+    ExpressionSources,
+    expression_source_leaves,
     SourceList,
     SourceObject,
     ValueSource,
@@ -75,6 +84,9 @@ from feedbax.contracts.project_sweep import (
 from feedbax.contracts.run_matrix import CompositionDeltaError, apply_composition_deltas
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.stored_regions import StoredRegionResolver
+from feedbax.contracts.train_settings import TrainMethodSettings, TrainSettingsResolver, train_sweep_basis
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 
 if TYPE_CHECKING:
     from feedbax.contracts.effective_success import TerminalTrainSubject
@@ -232,11 +244,16 @@ class TerminalTrainSource:
 
 @dataclass(frozen=True)
 class LoadedModelRead:
-    """The compiled document address and payload, with its legacy Model candidate if available."""
+    """The immutable source and the project's location for recovering its portable assets."""
 
     document: str
-    authored: bytes
-    legacy_model: bytes | None = None
+    archive: str
+    source: ImportedModelSource
+
+    def __hash__(self) -> int:
+        source = self.source
+        return hash((self.document, self.archive, source.model.sha256, source.weights.descriptor.sha256,
+                     source.encoding.descriptor_sha256))
 
 
 @dataclass(frozen=True)
@@ -263,6 +280,7 @@ class BaseReaders:
     figure_external: Callable[[str], bytes | None] | None = None
     terminal_train: Callable[[str], TerminalTrainSource | None] | None = None
     imported_model: Callable[[LoadedModelRead], ResolvedImportedModel] | None = None
+    stored_regions: StoredRegionResolver | None = None
 
 
 def _at_sweep_origin(problem: ProjectDiagnostic, source: ValueSource) -> ProjectDiagnostic:
@@ -401,13 +419,14 @@ def _variation_name(target: str) -> str:
     return "task-" + sha256_bytes(target.encode())[:16]
 
 
-def subject_task_write(payload: Any, patch: OverridePatch) -> tuple[OverridePatch, bool] | None:
+def subject_task_write(payload: Any, patch: OverridePatch) -> tuple[OverridePatch, int | None] | None:
     """The variation write that lowers an Evaluate's write at ``trial_documents.<task role>.<field>`` of the Task it
     runs from its subject, or ``None`` when the step names its own Task there.
 
     The write becomes the edit ``task.<field>``. It replaces an edit at the same target, and is otherwise added after
     the authored edits. A named variation holds no edit inside another's target, so there the variation becomes the
-    list of its edits in name order followed by this one; the flag says so.
+    list of its edits in name order followed by this one. A list is written as one value, with the
+    returned index identifying the changed member for source tracking.
     """
     parts = patch.path.split(".")
     if len(parts) < 3 or parts[0] != "trial_documents" or parts[1] not in _SUBJECT_TASK_ROLES:
@@ -415,27 +434,35 @@ def subject_task_write(payload: Any, patch: OverridePatch) -> tuple[OverridePatc
     slots = payload.get("trial_documents") if isinstance(payload, dict) else None
     if isinstance(slots, dict) and "task" in slots:
         return None
+    if len(parts) > 3 and parts[2] == "links":
+        raise ValueError(f"Link members require a JSON pointer: {patch.path!r}")
     params = payload.get("params") if isinstance(payload, dict) else None
-    variation = params.get("variation") if isinstance(params, dict) else None
-    if not isinstance(variation, (dict, list)):
-        raise ValueError("A Task field write requires the Evaluate's variation")
+    if not isinstance(params, dict):
+        raise ValueError("A Task field write requires the Evaluate's params")
     target = ".".join(("task", *parts[2:]))
     edit = {"op": patch.op, "path": target, **({"value": patch.value} if patch.op != "remove" else {})}
+    if "variation" not in params:
+        return OverridePatch(op="add", path="params.variation", value={_variation_name(target): edit}), None
+    variation = params["variation"]
+    if not isinstance(variation, (dict, list)):
+        raise ValueError("An Evaluate variation must be an object or an array")
     entries = list(variation.items()) if isinstance(variation, dict) else list(enumerate(variation))
     paths = {name: entry.get("path") for name, entry in entries if isinstance(entry, dict)}
     same = next((name for name, path in paths.items() if path == target), None)
-    if same is not None:
-        return OverridePatch(op="replace", path=f"params.variation.{same}", value=edit), False
     if isinstance(variation, list):
-        return OverridePatch(op="add", path=f"params.variation.{len(variation)}", value=edit), False
+        index = same if same is not None else len(variation)
+        ordered = [*variation[:index], edit, *variation[index + 1:]]
+        return OverridePatch(op="replace", path="params.variation", value=ordered), index
+    if same is not None:
+        return OverridePatch(op="replace", path=f"params.variation.{same}", value=edit), None
     if any(isinstance(path, str) and (target.startswith(path + ".") or path.startswith(target + "."))
            for path in paths.values()):
         ordered = [variation[name] for name in sorted(variation)]
-        return OverridePatch(op="replace", path="params.variation", value=[*ordered, edit]), True
+        return OverridePatch(op="replace", path="params.variation", value=[*ordered, edit]), len(ordered)
     name = _variation_name(target)
     while name in variation:
         name += "-field"
-    return OverridePatch(op="add", path=f"params.variation.{name}", value=edit), False
+    return OverridePatch(op="add", path=f"params.variation.{name}", value=edit), None
 
 
 def subject_model_read(project: Project, payload: Any, document: str) -> Any | None:
@@ -443,7 +470,7 @@ def subject_model_read(project: Project, payload: Any, document: str) -> Any | N
     the step names no Model of its own; the step then runs the subject's Model with the row's writes as its
     differences. ``None`` when the step already reads a Model, or ``document`` is not one."""
     entry = project.documents.get(document)
-    if entry is None or entry.schema_id != MODEL_DOCUMENT_SCHEMA_ID or not isinstance(payload, dict):
+    if entry is None or entry.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID or not isinstance(payload, dict):
         return None
     slots = payload.get("trial_documents")
     if isinstance(slots, dict) and "model" in slots:
@@ -461,14 +488,23 @@ def _figure_slot(path: str) -> str | None:
 
 def _written_sources(shape: Any, at: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str, ...], Any]]:
     """The places a variant wrote in a sparse source tree, each with the sources of the value it wrote there."""
-    if isinstance(shape, ValueSource) or isinstance(shape, SourceObject | SourceList) and shape.source is not None:
+    if isinstance(shape, (ValueSource, ExpressionSources)) or (
+        isinstance(shape, (SourceObject, SourceList)) and shape.source is not None
+    ):
         yield at, shape
     elif isinstance(shape, SourceObject):
         for key, child in shape.items():
             yield from _written_sources(child, (*at, key))
 
 
-def compose_document(read_document: Callable[[str], Document | None], name: str) -> RootDocument | ProjectDiagnostic:
+def composed_document_sources(project: Project, name: str, variant_sources: Any = None) -> Any:
+    """Describe a document's authored origins before a variant changes its composition."""
+    return _Documents(project, variant_sources=variant_sources).shape(name)
+
+
+def compose_document(
+    read_document: Callable[[str], Document | None], name: str, *, regions: StoredRegionResolver | None = None,
+) -> RootDocument | ProjectDiagnostic:
     """The document ``name`` as a root document holding its composed payload."""
     document = read_document(name)
     if document is None:
@@ -478,26 +514,10 @@ def compose_document(read_document: Callable[[str], Document | None], name: str)
     if isinstance(document, RootDocument):
         return document
     try:
-        payload = _Documents(Project(), read_document=read_document).payload(name, document, "document")
+        payload = _Documents(Project(), read_document=read_document, regions=regions).payload(name, document, "document")
     except _Problem as error:
         return error.diagnostic
     return RootDocument.model_construct(schema_id=document.schema_id, label=document.label, payload=payload)
-
-
-def composed_loaded_model_projection(
-    loaded: LoadedModelDocument, read_document: Callable[[str], Document | None],
-) -> bytes | None:
-    """Encode the currently composed navigation Model as a candidate for exact verification."""
-    nav = loaded.model
-    if nav.unresolved or nav.pointer is not None:
-        return None
-    document = compose_document(read_document, nav.document)
-    if isinstance(document, ProjectDiagnostic) or document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
-        return None
-    try:
-        return encode_imported_model_document(ModelDocument.model_validate(document.payload))
-    except ValueError:
-        return None  # The pin may still be readable from the Store or its projection file.
 
 
 class _Documents:
@@ -511,14 +531,19 @@ class _Documents:
         external: Callable[[str], bytes | None] | None = None,
         partial_figures: bool = False,
         row_patches: Mapping[str, tuple[_DocumentRowPatch, ...]] | None = None,
+        regions: StoredRegionResolver | None = None,
+        training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
     ):
         self.step = step
         self.variant_sources = variant_sources
         self.read_document = project.documents.get if read_document is None else read_document
         self.row_patches = row_patches or {}
+        self.regions = regions
+        self.training_methods = training_methods
         self.used: set[str] = set()
         self.edited: dict[str, JsonValue] = {}
         self.edited_sources: dict[str, Any] = {}
+        self.edited_patches: dict[str, list[_PreparedDocumentPatch]] = {}
         self.external = external
         self.pinned: dict[str, tuple[ExternalBase, JsonValue]] = {}
         self.partial_figures = partial_figures
@@ -570,7 +595,7 @@ class _Documents:
         if not isinstance(content, dict):
             raise problem(ResolutionCode.INVALID_DOCUMENT, "base.document", f"{label} is not an object")
         try:
-            payload = apply_differences(content, document.differences)
+            payload = apply_document_differences(document.schema_id, content, document.differences, registries=self.regions)
         except DifferenceNotApplied as error:
             raise problem(ResolutionCode.INVALID_DELTA, f"differences.{error.path}", str(error)) from error
         try:
@@ -594,11 +619,15 @@ class _Documents:
             else:
                 shape = self.shape(document.base.document)
                 for path, difference in document.differences.items():
+                    if isinstance(difference, OrderDocumentMembers):
+                        continue
                     shape = place_source(shape, json_pointer_parts(path), (
                         source_shape(difference.value, ValueSource("document", name, path))
                         if isinstance(difference, SetDocumentValue) else None
                     ))
                 for parts, source in _written_sources(source_at(self.variant_sources, ("documents", name, "payload"))):
+                    if isinstance(source, ExpressionSources) and source.source is None:
+                        source = replace(source, source=first_source(source_at(shape, parts)))
                     shape = place_source(shape, parts, source)
                 self.shapes[name] = shape
         return self.shapes[name]
@@ -620,23 +649,37 @@ class _Documents:
         if patches:
             if reference.document not in self.edited:
                 draft = deepcopy(payload)
+                expression_site = partial(stored_expression_site, document.schema_id)
+                keyed_collection = partial(stored_keyed_collection, document.schema_id)
+                prepared = []
                 for item in patches:
                     try:
                         if not isinstance(draft, dict):
                             raise ValueError("A variant writes into an object payload only")
-                        draft = apply_override_patch_copy(draft, item.patch)
+                        basis = draft
+                        if document.schema_id == TRAINING_DOCUMENT_SCHEMA_ID and item.patch.op == "replace":
+                            basis = train_sweep_basis(basis, item.patch.path, self.training_methods)
+                        parents = tuple(item.patch.path.split(".")[:-1])
+                        basis = document_difference_basis(document.schema_id, basis, (parents,), registries=self.regions)
+                        physical, expression = prepare_stored_patch(
+                            basis, item.patch, expression_site=expression_site, keyed_collection=keyed_collection,
+                        )
+                        prepared.append(_PreparedDocumentPatch(physical, expression, basis if basis is not draft else None))
+                        draft = replay_stored_patch_copy(basis, physical)
                     except ValueError as error:
                         problem = _Problem(
-                            ResolutionCode.INVALID_SWEEP, item.patch.path, str(error),
+                            ResolutionCode.INVALID_SWEEP, item.step_path, str(error),
                             step=self.step, document=reference.document,
+                            document_path=pointer(tuple(item.patch.path.split("."))),
                         )
                         if (origin := item.source) is not None:
                             problem.diagnostic = _at_sweep_origin(problem.diagnostic, origin)
                         raise problem from error
                 self.edited[reference.document] = draft
+                self.edited_patches[reference.document] = prepared
             payload = self.edited[reference.document]
         if (
-            document.schema_id == FIGURE_DOCUMENT_SCHEMA
+            document.schema_id == STORED_FIGURE_DOCUMENT_SCHEMA_ID
             and is_figure_document_pin(payload)
             and (self.step is None or _figure_slot(path) is not None)
         ):
@@ -717,9 +760,12 @@ class _Documents:
                 deepcopy(self.shape(name)) if based
                 else source_shape(cast(RootDocument, document).payload, ValueSource("document", name), variant)
             )
-            for item in patches:
+            for item, prepared in zip(patches, self.edited_patches[name], strict=True):
                 assert item.source is not None
-                shape = patch_source(shape, item.patch, source_shape(item.patch.value, item.source, item.override))
+                if prepared.default_basis is not None:
+                    shape = source_shape(prepared.default_basis, None, shape)
+                source = source_shape(item.patch.value, item.source, item.override)
+                shape = patch_source(shape, prepared.physical, source, expression=prepared.expression)
             self.edited_sources[name] = shape
         return source_at(self.edited_sources[name], parts)
 
@@ -765,6 +811,11 @@ class _Documents:
             yield from self.source_leaves(
                 selected, self.source(value, selected), path, output, active
             )
+        elif isinstance(shape, ExpressionSources):
+            if shape.source is not None:
+                yield output, shape.source
+            for parts, source in expression_source_leaves(shape.nodes, shape.source):
+                yield output + pointer(parts), source
         elif isinstance(value, dict) and value:
             for key, item in value.items():
                 yield from self.source_leaves(
@@ -799,6 +850,8 @@ class _Documents:
                     "document", value.document, value.pointer or "",
                 ), parts, path, active)
             return self.source_leaf(selected, self.source(value, selected), parts, path, active)
+        if isinstance(shape, ExpressionSources):
+            return first_source(source_at(shape, parts))
         if not parts:
             if isinstance(shape, (SourceObject, SourceList)):
                 return shape.source
@@ -863,8 +916,17 @@ class _Documents:
 @dataclass(frozen=True)
 class _DocumentRowPatch:
     patch: OverridePatch
+    step_path: str
     source: ValueSource | None
     override: Any = None
+
+
+@dataclass(frozen=True)
+class _PreparedDocumentPatch:
+    physical: OverridePatch
+    expression: ExpressionNodePatch | None
+    default_basis: dict[str, JsonValue] | None
+    """The verified read basis when the patch entered an omitted declared default."""
 
 
 @dataclass
@@ -878,6 +940,7 @@ class _StepState:
     document_uses: frozenset[str] = frozenset()
     root_document: str | None = None
     row_document_patches: Mapping[str, tuple[_DocumentRowPatch, ...]] = field(default_factory=dict)
+    root_pointer: tuple[str, ...] = ()
 
 
 class _Resolver:
@@ -889,6 +952,7 @@ class _Resolver:
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
         inline_origin: Callable[[Payload, ValueSource], Any] = source_shape,
+        *, training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
     ):
         self.project = project
         self.readers = readers
@@ -896,9 +960,10 @@ class _Resolver:
         self.variant_sources = variant_sources
         self.read_document = read_document
         self.inline_origin = inline_origin
+        self.training_methods = training_methods
 
     def documents(self, step: str) -> _Documents:
-        return _Documents(self.project, step, self.variant_sources, self.read_document)
+        return _Documents(self.project, step, self.variant_sources, self.read_document, regions=self.readers.stored_regions)
 
     def base_origins(
         self, name: str, base: InlineBase | RunBase | ExternalBase, payload: Any
@@ -914,6 +979,16 @@ class _Resolver:
             self.inline_origin(payload, source)
             if override is None else source_shape(payload, source, override)
         )
+
+    def patch_sites(self, state: _StepState, kind: StepKind) -> tuple[ExpressionSite, KeyedPatchCollection]:
+        if state.root_document is not None:
+            read = self.read_document or self.project.documents.get
+            if (document := read(state.root_document)) is not None:
+                return (
+                    lambda path: stored_expression_site(document.schema_id, (*state.root_pointer, *path)),
+                    lambda path: stored_keyed_collection(document.schema_id, (*state.root_pointer, *path)),
+                )
+        return partial(stored_step_expression_site, kind), partial(stored_step_keyed_collection, kind)
 
     def state(self, name: str, active: tuple[str, ...] = ()) -> _StepState:
         if name in active:
@@ -941,12 +1016,14 @@ class _Resolver:
                 parent = self.select_row(name, base, parent)
         else:
             root_document = None
+            root_pointer = ()
             document_uses = frozenset()
             if isinstance(base, DocumentReference):
                 documents = self.documents(name)
                 payload, reference = documents.base(base)
                 origins = documents.source(reference, payload) if self.track_sources else None
                 root_document = reference.document
+                root_pointer = json_pointer_parts(reference.pointer)
                 document_uses = frozenset(documents.used)
             else:
                 payload = self.read_base(name, base)
@@ -965,6 +1042,7 @@ class _Resolver:
                 origins=origins,
                 document_uses=document_uses,
                 root_document=root_document,
+                root_pointer=root_pointer,
             )
         payload = parent.payload
         written = parent.written
@@ -984,11 +1062,20 @@ class _Resolver:
                 else patch
                 for patch in layer.patches
             ]
+            expressions: list[ExpressionNodePatch | None] = []
+            expression_site, keyed_collection = self.patch_sites(parent, step.kind)
+
+            def apply(owned: dict, patch: OverridePatch) -> None:
+                expressions.append(apply_stored_patch_in_place(
+                    owned, patch, expression_site=expression_site, keyed_collection=keyed_collection,
+                ))
+
             try:
                 payload, _, written = apply_composition_deltas(
                     payload,
                     [layer.model_copy(update={"patches": patches})],
                     ancestor_written_paths=written,
+                    apply_patch=apply,
                 )
             except CompositionDeltaError as error:
                 raise _Problem(
@@ -1007,11 +1094,13 @@ class _Resolver:
                     layer=layer.layer_id,
                 ) from error
             if origins is not None:
-                for j, patch in enumerate(patches):
+                for j, (patch, expression) in enumerate(zip(patches, expressions, strict=True)):
                     path = ("deltas", str(i), "patches", str(j), "value")
                     source = ValueSource("step", name, pointer(path), step=name)
                     override = source_at(self.variant_sources, ("steps", name, *path))
-                    origins = patch_source(origins, patch, source_shape(patch.value, source, override))
+                    origins = patch_source(
+                        origins, patch, source_shape(patch.value, source, override), expression=expression,
+                    )
         try:
             sweep = inherit_sweep(
                 parent.sweep, step.sweep, author=name if self.track_sources else None
@@ -1029,6 +1118,7 @@ class _Resolver:
             origins,
             parent.document_uses,
             parent.root_document,
+            root_pointer=parent.root_pointer,
         )
 
     def read_base(self, step: str, base: InlineBase | RunBase | ExternalBase) -> JsonValue:
@@ -1074,6 +1164,7 @@ class _Resolver:
                 requires=parent.requires,
                 document_uses=parent_step.document_uses,
                 root_document=parent.root_document,
+                root_pointer=parent.root_pointer,
             )
         else:
             raise _Problem(ResolutionCode.UNKNOWN_ROW, "base.row", base.row, step=child, missing_subject=base.row)
@@ -1091,6 +1182,7 @@ class _Resolver:
         return _StepState(
             selected.payload, inputs=selected.inputs, origins=origins, document_uses=selected.document_uses,
             root_document=state.root_document,
+            root_pointer=state.root_pointer,
         )
 
     def row_source(self, author: str, row: ExpandedRow, path: str) -> tuple[ValueSource, Any]:
@@ -1158,6 +1250,7 @@ class _Resolver:
         model_document = None
         fields = []
         document_uses = state.document_uses
+        expression_site, keyed_collection = self.patch_sites(state, self.project.steps[name].kind)
         try:
             for path, write in row.patches.items():
                 address = None
@@ -1178,13 +1271,14 @@ class _Resolver:
                     fields.append((path, patch))
                     continue
                 authored = patch.path
+                validate_stored_patch_path(payload, authored)
                 if authored.split(".")[0] == "inputs" and not (isinstance(payload, dict) and "inputs" in payload):
                     raise ValueError("An input is narrowed by its Runs rule and Checkpoint, not swept")
-                reordered = False
+                variation_index = None
                 if self.project.steps[name].kind == "evaluate" and (
                     lowered := subject_task_write(payload, patch)
                 ) is not None:
-                    patch, reordered = lowered
+                    patch, variation_index = lowered
                 elif (target := document_write_target(payload, patch.path)) is not None:
                     document, document_path = target
                     if self.project.steps[name].kind == "evaluate" and (
@@ -1200,7 +1294,7 @@ class _Resolver:
                         payload = read
                     source, override = self.row_source(row.patch_authors.get(authored, name), row, authored)
                     documents.setdefault(document, []).append(_DocumentRowPatch(
-                        patch.model_copy(update={"path": document_path}), source, override,
+                        patch.model_copy(update={"path": document_path}), authored, source, override,
                     ))
                     continue
                 if not isinstance(payload, dict):
@@ -1212,25 +1306,39 @@ class _Resolver:
                     )
                 if patch.op != "remove":
                     patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
-                variation = payload["params"]["variation"] if reordered else None
-                payload = apply_override_patch_copy(payload, patch)
+                variation = payload["params"]["variation"] if variation_index is not None else None
+                train_setting = (
+                    self.project.steps[name].kind == "train" and patch.op == "replace"
+                    and patch.path.startswith("settings.")
+                )
+                if train_setting:
+                    payload = train_sweep_basis(payload, patch.path, self.training_methods)
+                physical, expression = prepare_stored_patch(
+                    payload, patch, expression_site=expression_site, keyed_collection=keyed_collection,
+                )
+                payload = replay_stored_patch_copy(payload, physical)
                 if origins is not None:
                     author = row.patch_authors.get(authored, name)
                     source, override = self.row_source(author, row, authored)
-                    if authored == patch.path:
+                    if authored == patch.path or patch.path == "params.variation" and variation_index is None:
                         shape = source_shape(patch.value, source, override)
                     else:
-                        edit = patch.value[-1] if reordered else patch.value
+                        edit = patch.value[variation_index] if variation_index is not None else patch.value
                         shape = SourceObject(source, {
                             key: source_shape(value, source, override) if key == "value" else source
                             for key, value in edit.items()
                         })
                     if variation is not None:
                         held = source_at(origins, ("params", "variation"))
-                        shape = SourceList(getattr(held, "source", None), iter([
-                            *(source_at(held, (entry,)) for entry in sorted(variation)), shape,
-                        ]), patch.value)
-                    origins = patch_source(origins, patch, shape)
+                        previous_keys = sorted(variation) if isinstance(variation, dict) else map(str, range(len(variation)))
+                        children = [source_at(held, (entry,)) for entry in previous_keys]
+                        children[variation_index:variation_index + 1] = [shape]
+                        shape = SourceList(getattr(held, "source", None), iter(children), patch.value)
+                    parts = tuple(patch.path.split("."))
+                    if train_setting and source_at(origins, parts) is None:
+                        origins = place_source(origins, parts, shape)
+                    else:
+                        origins = patch_source(origins, patch, shape, expression=expression)
             if fields:
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
@@ -1265,7 +1373,7 @@ class _Resolver:
             raise problem from error
         return _StepState(
             payload, inputs=inputs, requires=state.requires, origins=origins, document_uses=document_uses,
-            root_document=state.root_document, row_document_patches={
+            root_document=state.root_document, root_pointer=state.root_pointer, row_document_patches={
                 document: tuple(patches) for document, patches in documents.items()
             },
         )
@@ -1275,7 +1383,7 @@ class _Resolver:
             self.project, name, self.variant_sources, self.read_document,
             external=self.readers.figure_external if self.project.steps[name].kind == "analyze" else None,
             partial_figures=partial_figures,
-            row_patches=state.row_document_patches,
+            row_patches=state.row_document_patches, training_methods=self.training_methods, regions=self.readers.stored_regions,
         )
 
     def finish(
@@ -1400,10 +1508,12 @@ class StepComposition:
         readers: BaseReaders = BaseReaders(),
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
+        training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
     ) -> StepTemplate:
         return StepTemplate(
             self, _Resolver(
-                project, readers, self._state.origins is not None, variant_sources, read_document
+                project, readers, self._state.origins is not None, variant_sources, read_document,
+                training_methods=training_methods,
             )
         )
 
@@ -1482,9 +1592,12 @@ def compose_step(
     variant_sources: Any = None,
     read_document: Callable[[str], Document | None] | None = None,
     inline_origin: Callable[[Payload, ValueSource], Any] = source_shape,
+    training_methods: TrainSettingsResolver[TrainMethodSettings] | None = None,
 ) -> StepTemplate | ProjectDiagnostic:
     """Compose inherited layers and prepare a step for sweep expansion."""
-    resolver = _Resolver(project, readers, track_sources, variant_sources, read_document, inline_origin)
+    resolver = _Resolver(
+        project, readers, track_sources, variant_sources, read_document, inline_origin, training_methods=training_methods,
+    )
     try:
         state = resolver.state(step)
         return StepTemplate(StepComposition(step, state), resolver)
@@ -1507,7 +1620,7 @@ def validate_project_documents(
     readers: BaseReaders = BaseReaders(),
 ) -> tuple[ProjectDiagnostic, ...]:
     """Validate inlined document payloads using the caller's explicit schema authorities."""
-    documents = _Documents(project, external=readers.figure_external)
+    documents = _Documents(project, external=readers.figure_external, regions=readers.stored_regions)
     failures = []
     for name, document in project.documents.items():
         validator = schemas.get(document.schema_id)

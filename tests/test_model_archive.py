@@ -26,10 +26,12 @@ from feedbax.contracts.model_checkpoint import ModelReplicaManifest
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_input import InitialModelSource, document_input_object, encode_document_input
 from feedbax.contracts.operation import DatasetPort, JaxOperation, ModelPort
-from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.stored_model import StoredModelDocument
+from feedbax.contracts.task_document import StoredTaskDocument
 from feedbax.dataset import Dataset, Variable
 from feedbax.examples import load_shipped_projects
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
+from feedbax.host import model_archive
 from feedbax.host.model_archive import UnreadableModelArchive, export_model_archive, stage_model_archive
 from feedbax.host.model_checkpoint import ModelCheckpointError, SemanticModelSlot, SemanticModelWriter
 from feedbax.host.model_input import ImportedModelWeights, ReconstructedModel, reconstruct_model
@@ -44,8 +46,8 @@ from feedbax.runtime.graph import Graph
 @pytest.fixture(scope="module")
 def native_archive(tmp_path_factory):
     project = load_shipped_projects()["point-mass-reaching"]
-    model = ModelDocument.model_validate(project.documents["point-mass"].payload)
-    task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
+    model = StoredModelDocument.model_validate(project.documents["point-mass"].payload).lower()
+    task = StoredTaskDocument.model_validate(project.documents["simple-reaches-task"].payload).lower()
     registry = new_application_registry_bundle()
     return model, registry.components, *_publish_archive(model, task, registry, tmp_path_factory.mktemp("native-train"))
 
@@ -72,11 +74,11 @@ def _publish_archive(model, task, registry, transaction):
 def _delay_archive(root, *, x64):
     project = load_shipped_projects()["point-mass-reaching"]
     raw = project.documents["point-mass"].payload
-    raw["interior"]["wires"]["command"]["attachments"] = [{
-        "kind": "delay", "id": "lag", "delay": {"value": 2, "unit": "st"},
-    }]
-    model = ModelDocument.model_validate(raw)
-    task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
+    raw["interior"]["wires"]["command"]["attachments"] = {
+        "lag": {"kind": "delay", "delay": "2 st"},
+    }
+    model = StoredModelDocument.model_validate(raw).lower()
+    task = StoredTaskDocument.model_validate(project.documents["simple-reaches-task"].payload).lower()
     registry = new_application_registry_bundle()
     with jax.enable_x64(x64):
         return model, registry, *_publish_archive(model, task, registry, root)
@@ -219,20 +221,33 @@ def test_native_archive_preserves_replicas_in_a_new_store(native_archive, tmp_pa
     assert export_model_archive(store, result.weights, result.encoding) == raw
 
 
+def test_causal_archive_fit_does_not_realize_an_executable(native_archive, tmp_path, monkeypatch):
+    model, components, _, _, raw, checkpoint = native_archive
+
+    def refuse(*args, **kwargs):
+        pytest.fail("Fitting a causal archive should only trace the graph's layout")
+
+    monkeypatch.setattr(model_archive, "realize_graph", refuse)
+    store = ImmutableArtifactBlobProvider(tmp_path / "loaded")
+    with stage_model_archive(raw, model, store, components=components) as result:
+        assert isinstance(result, ImportedModelSource), result
+        assert (result.weights, result.encoding) == (checkpoint.tree, checkpoint.encoding)
+
+
 def test_archive_fits_changed_noise_without_changing_learned_weights(tmp_path):
     project = load_shipped_projects()["point-mass-reaching"]
     raw = project.documents["point-mass"].payload
     raw["interior"]["components"]["motor-noise"] = {
-        "kind": "leaf", "name": "Motor noise", "type": "feedbax.Noise",
+        "kind": "leaf", "label": "Motor noise", "type": "feedbax.Noise",
         "fields": {"std": 0.5, "shape": [2]},
     }
-    task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
+    task = StoredTaskDocument.model_validate(project.documents["simple-reaches-task"].payload).lower()
     registry = new_application_registry_bundle()
-    trained = ModelDocument.model_validate(raw)
+    trained = StoredModelDocument.model_validate(raw).lower()
     first, second, archive, checkpoint = _publish_archive(trained, task, registry, tmp_path / "trained")
     noise = raw["interior"]["components"]["motor-noise"]["fields"]
     noise["std"] = 0.0
-    selected = ModelDocument.model_validate(raw)
+    selected = StoredModelDocument.model_validate(raw).lower()
 
     store = ImmutableArtifactBlobProvider(tmp_path / "loaded")
     with stage_model_archive(archive, selected, store, components=registry.components) as imported:
@@ -252,7 +267,7 @@ def test_archive_fits_changed_noise_without_changing_learned_weights(tmp_path):
         assert export_model_archive(store, imported.weights, imported.encoding) == archive
 
     noise["shape"] = [3]
-    with stage_model_archive(archive, ModelDocument.model_validate(raw), store, components=registry.components) as rejected:
+    with stage_model_archive(archive, StoredModelDocument.model_validate(raw).lower(), store, components=registry.components) as rejected:
         assert isinstance(rejected, ModelFitReport), rejected
         assert any(
             problem.kind == "graph_mismatch" and problem.address.startswith("/graph/nodes/motor-noise/params/shape")
@@ -263,6 +278,7 @@ def test_archive_fits_changed_noise_without_changing_learned_weights(tmp_path):
 def test_a_loaded_models_replicas_are_planned_rendered_and_retained(native_archive, host, tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
+    from feedbax.contracts.jobs import StudioSavedEvaluationRead
     from feedbax.contracts.project import Project
     from feedbax.web.app import create_app
     from feedbax.web.services.project_folder import ProjectFolderService
@@ -278,10 +294,10 @@ def test_a_loaded_models_replicas_are_planned_rendered_and_retained(native_archi
     example = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task = example["documents"]["simple-reaches-task"]
     task["payload"]["fixed_steps"] = 8
-    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"] = "8 st"
     del task["payload"]["validation_trials"]
     figure = raw["documents"]["velocity-figure"]
-    (layer,) = figure["payload"]["layers"]
+    (layer,) = figure["payload"]["layers"].values()
     del layer["select"]
     layer.update(group=["replicate"], style={"label": "{replicate}"})
     raw["documents"] = {
@@ -345,6 +361,32 @@ def test_a_loaded_models_replicas_are_planned_rendered_and_retained(native_archi
             "revision": revision, "window_map": True,
         }))["window_map"]
         assert not window["problems"], window["problems"]
+        (evaluation,) = window["evaluations"]
+        result = evaluation["result"]
+        assert result["replicates"] == 2
+        replay = {"revision": revision, "job_id": result["job_id"], "key": key("baseline")}
+        _, retained = client.app.state.project_plan._evaluation_result(
+            "replicated", StudioSavedEvaluationRead.model_validate(replay),
+        )
+        with retained.open_states() as states:
+            position, *_ = states.descriptor.attrs["trial_record"]["positions"]
+            trial = states.data("trial")[0].item()
+            expected = states.data(position)[:, 0, 0]
+            assert not np.allclose(expected[0], expected[1])
+            for index in range(2):
+                recorded = expect(client.post(f"{path}/evaluate-replay", json={
+                    **replay, "replicate": index, "trial": trial,
+                }))
+                (drawn,) = recorded["drawn"]["trials"]
+                assert drawn["id"] == trial
+                np.testing.assert_array_equal(drawn["states"][recorded["position"]]["samples"], expected[index])
+        for selection, reason in (
+            ({}, "choose a retained replicate for replay"),
+            ({"replicate": 2}, "the chosen replicate is absent"),
+        ):
+            refusal = client.post(f"{path}/evaluate-replay", json={**replay, **selection})
+            assert refusal.status_code == 422 and f"/replicate: {reason}" in refusal.text
+
         products = {element["name"]: element["requests"][0]["result"]["products"] for element in window["analysis_elements"]}
         summary = expect(client.get(products["summarize"]["summary"]))
         assert summary["variables"]["mean"]["dims"] == outputs["summarize"]["summary"]["variables"]["mean"]["dims"]
@@ -363,8 +405,20 @@ def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_
     with TestClient(create_app(projects_dir=tmp_path / "projects")) as client:
         created = client.post("/api/projects", json={"name": "load", "example": "point-mass-reaching"})
         assert created.status_code == 201, created.text
-        prior = created.json()["snapshot"]
-        url = f"/api/projects/{prior['project_id']}/loaded-models/import"
+        project = created.json()["snapshot"]["project_id"]
+        folders = client.app.state.project_folders
+        root = folders.read_authored_snapshot(project, revision=None).root
+        model_file = root / "documents" / "point-mass.json"
+        authored = json.loads(model_file.read_bytes())
+        authored["payload"]["ports"]["inputs"]["target_pos"]["label"] = "Requested target"
+        authored["payload"]["ports"]["outputs"]["effector"]["label"] = "Point mass state"
+        authored["payload"]["interior"]["wires"] = {
+            {"target": "target-in", "decode": "readout-in"}.get(key, key): wire
+            for key, wire in authored["payload"]["interior"]["wires"].items()
+        }
+        model_file.write_text(json.dumps(authored))
+        prior = client.get(f"/api/projects/{project}").json()
+        url = f"/api/projects/{project}/loaded-models/import"
         query = {"name": "imported", "model": "point-mass", "revision": prior["revision"]}
         headers = {"Content-Type": "application/octet-stream"}
         rejected = client.post(url, params=query, content=b"not an archive", headers=headers)
@@ -376,9 +430,41 @@ def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_
         saved = imported.json()
         assert saved["document"] == "imported"
         payload = LoadedModelDocument.model_validate(saved["snapshot"]["project"]["documents"]["imported"]["payload"])
-        assert payload.source.weights == checkpoint.tree
+        assert payload.lower().weights == checkpoint.tree
         assert payload.model.document == "point-mass"
         assert client.post(url, params=query, content=archive, headers=headers).status_code == 409
+
+
+@pytest.mark.parametrize("change", ["endpoint", "duplicate"])
+def test_fit_checks_plain_wire_endpoints_and_multiplicity(native_archive, tmp_path, change):
+    model, components, _, _, raw, _ = native_archive
+    files = _read_files(raw)
+    graph = GraphSpec.model_validate_json(files["graph.json"])
+    index, wire = next((index, wire) for index, wire in enumerate(graph.wires) if not wire.is_recurrent)
+    if change == "endpoint":
+        graph.wires[index] = wire.model_copy(update={"target_port": "different-port"})
+    else:
+        graph.wires.append(wire.model_copy(update={"id": "duplicate"}))
+    files["graph.json"] = canonical_json_v2_bytes(graph.model_dump(mode="json"))
+    store = ImmutableArtifactBlobProvider(tmp_path / "rejected")
+    with stage_model_archive(_as_archive(files), model, store, components=components) as result:
+        assert isinstance(result, ModelFitReport), result
+        problem, = result.problems
+        assert (problem.kind, problem.address) == ("graph_mismatch", "/graph/wires")
+    assert not store.root.exists()
+
+
+def test_fit_still_checks_names_used_in_delay_carry(float32_delay_archive, tmp_path):
+    model, registry, _, _, raw, _ = float32_delay_archive
+    authored = model.model_dump(mode="json")
+    wires = authored["interior"]["wires"]
+    wires["command-out"] = wires.pop("command")
+    model = ModelDocument.model_validate(authored)
+    store = ImmutableArtifactBlobProvider(tmp_path / "rejected")
+    with stage_model_archive(raw, model, store, components=registry.components) as result:
+        assert isinstance(result, ModelFitReport), result
+        assert any(problem.kind == "graph_mismatch" for problem in result.problems)
+    assert not store.root.exists()
 
 
 @pytest.mark.parametrize("unsupported_owner", [False, True])

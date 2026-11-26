@@ -1,9 +1,13 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
-import type { BasedDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { modelDocumentSchemaId, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { applyTo } from './fixtures/controls';
 import { documentChoice } from './fixtures/members';
+
+/** A document's differences, none where it stores none; undefined for a document that is not there. */
+const differencesOf = (document: object | undefined) =>
+  document && ((document as { differences?: object }).differences ?? {});
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -86,7 +90,7 @@ test('a based document marks the value it changes, and Reset of its only one giv
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(mass).toHaveValue(base);
   await expect(mass).not.toHaveAccessibleDescription(/Changed/);
-  await expect.poll(async () => ((await documents())['point-mass-2'] as BasedDocument).differences ?? {}).toEqual({});
+  await expect.poll(async () => differencesOf((await documents())['point-mass-2'])).toEqual({});
   expect(await requests()).toEqual(initial);
 });
 
@@ -134,7 +138,7 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
 
 test('Detach of an evaluation\'s based Model is stored, marks the Evaluate\'s Model and leaves its Task readable', async ({ page, request }) => {
   const narrowed = { kind: 'document', id: 'point-mass-2', document: {
-    schema: 'feedbax.spec.model', label: 'Point mass 2', base: { document: 'point-mass' }, differences: {},
+    schema: modelDocumentSchemaId, label: 'Point mass 2', base: { document: 'point-mass' },
   } };
   const check = evaluation('check', 'train');
   (check.step.base.inline as Record<string, unknown>).trial_documents = { model: { document: 'point-mass-2' } };
@@ -255,7 +259,7 @@ test('a based Objective document marks the term value it changes, and Reset give
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(name).toHaveValue('');
   await expect(inspected).not.toHaveAccessibleDescription(/Changed/);
-  await expect.poll(async () => ((await documents())['simple-reaches-objective-2'] as BasedDocument).differences ?? {}).toEqual({});
+  await expect.poll(async () => differencesOf((await documents())['simple-reaches-objective-2'])).toEqual({});
   expect(await requests()).toEqual(initial);
 });
 
@@ -263,11 +267,11 @@ test('an attachment a based Model document adds is marked as authored there, and
   const { snapshot: seeded } = await project(request);
   const { snapshot } = await appendManagedFiles(request, seeded, [
     { kind: 'document', id: 'point-mass-2', document: {
-      schema: 'feedbax.spec.model', label: 'Point mass 2', base: { document: 'point-mass' }, differences: {
-        '/interior/wires/decode/attachments': { value: [{ id: 'lag', kind: 'delay', delay: { value: 1, unit: 'st' }, initial_source: { kind: 'value', value: 0 } }] },
+      schema: modelDocumentSchemaId, label: 'Point mass 2', base: { document: 'point-mass' }, differences: {
+        '/interior/wires/decode/attachments': { value: { lag: { kind: 'delay', delay: '1 st' } } },
       },
     } },
-    { kind: 'document', id: 'point-mass-3', document: { schema: 'feedbax.spec.model', label: 'Point mass 3', base: { document: 'point-mass-2' } } },
+    { kind: 'document', id: 'point-mass-3', document: { schema: modelDocumentSchemaId, label: 'Point mass 3', base: { document: 'point-mass-2' } } },
   ]);
   const pointed = await request.patch(`/api/projects/${snapshot.project_id}`, { data: { revision: snapshot.revision, files: [{
     address: { kind: 'step', id: 'train' },
@@ -338,7 +342,7 @@ test('a based Training document marks the value it changes inside its field, and
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(batches).toHaveValue(base);
   await expect(batches).not.toHaveAccessibleDescription(/Changed/);
-  await expect.poll(async () => ((await documents())['training-2'] as BasedDocument).differences ?? {}).toEqual({});
+  await expect.poll(async () => differencesOf((await documents())['training-2'])).toEqual({});
   expect(await requests()).toEqual(initial);
 });
 
@@ -370,7 +374,7 @@ test('a based Training document marks the class it changes, and Reset gives it t
   await expect(primary.getByRole('textbox', { name: 'Batches', exact: true })).not.toHaveAccessibleDescription(/Changed/);
   await optimizer.getByRole('button', { name: 'Changed', exact: true }).first().click();
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
-  await expect.poll(async () => (await documents())['training-2']).not.toHaveProperty('differences');
+  await expect.poll(async () => differencesOf((await documents())['training-2'])).toEqual({});
   await expect(optimizer.getByRole('combobox', { name: 'Optimizer', exact: true })).toHaveValue('Adam');
   await expect(optimizer.getByRole('button', { name: 'Changed', exact: true })).toHaveCount(0);
 });
@@ -403,7 +407,7 @@ test('an Evaluate step\'s Task edit marks the value its document changes, and Re
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(target).toHaveValue(base);
   await expect(target).not.toHaveAccessibleDescription('Changed by Check');
-  await expect.poll(async () => ((await documents())[created[0]] as BasedDocument).differences ?? {}).toEqual({});
+  await expect.poll(async () => differencesOf((await documents())[created[0]])).toEqual({});
 });
 
 test('a narrowed edit for two of three readers makes one document, and later edits of the base reach it by the document rule', { tag: '@slow' }, async ({ page, request }) => {
@@ -443,7 +447,7 @@ test('a narrowed edit for two of three readers makes one document, and later edi
   await setMass('4');
   await expect.poll(() => changed(before)).toEqual(['sibling', 'third', 'train']);
   await expect(mass).toHaveValue('4');
-  expect(((await documents())['point-mass-2'] as BasedDocument).differences ?? {}).toEqual({});
+  expect(differencesOf((await documents())['point-mass-2'])).toEqual({});
 });
 
 test('a subject moved to a new document leaves its evaluation\'s document as it was, and picking the old one back restores the evaluation', { tag: '@slow' }, async ({ page, request }) => {

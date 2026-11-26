@@ -411,7 +411,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     })));
     expect(new Set(retained.members.map(({ store_success_sha256 }: { store_success_sha256: string }) => store_success_sha256)).size).toBe(2);
     expect(retained.producers.sort()).toEqual(sources.map(({ result }) => result!.job_id).sort());
-    const condition = { seed: 0, trial_policy: 'paired', trials: firstCondition.trials };
+    const condition = { seed: 0, trial_policy: 'paired', trials: firstCondition.trials.map(({ id }) => id) };
     expect(retained.condition_inputs).toEqual([
       { ...condition, variation: [] },
       { ...condition, variation: [{ op: 'replace', path: `graph.nodes.${first.plantId}.params.mass`, value: 2 }] },
@@ -422,7 +422,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     expect(nominal.x).toHaveLength(first.task.fixed_steps! + 1);
     expect(nominal.x).toEqual(heavy.x);
     // Softmax pushes (1/2, 1/2) at unit mass, so the speed along the one reach grows by its share of that per second.
-    const [[startX, startY], [targetX, targetY]] = [first.reach.variables!.start, first.reach.variables!.target] as number[][];
+    const [[startX, startY], [targetX, targetY]] = [first.reach.variables!.start, first.reach.variables!.target].map(planarPoint);
     const along = (targetX - startX + targetY - startY) / (2 * Math.hypot(targetX - startX, targetY - startY));
     for (const [index, time] of nominal.x.entries()) {
       expect(nominal.y[index]).toBeCloseTo(time * along, 6);
@@ -669,3 +669,12 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   }
   expect(finished.window_map?.evaluations?.filter(({ key }) => key.step === 'conditions')).toEqual(settled);
 });
+
+/** A stored validation-trial point, which the shipped Task writes as the text of a literal 2-vector. */
+function planarPoint(value: unknown): [number, number] {
+  const point = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+  if (!Array.isArray(point) || point.length !== 2 || !point.every((each) => typeof each === 'number')) {
+    throw new Error(`Expected a literal planar point, got ${JSON.stringify(value)}`);
+  }
+  return point as [number, number];
+}

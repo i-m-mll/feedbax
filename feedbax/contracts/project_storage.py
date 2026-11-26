@@ -4,23 +4,36 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
-from functools import cache
-from types import MappingProxyType
-from typing import Annotated, Any, TypeAliasType, get_args, get_origin
+from copy import deepcopy
+from functools import cache, lru_cache, partial
+from types import MappingProxyType, UnionType
+from typing import Annotated, Any, TYPE_CHECKING, TypeAliasType, Union, get_args, get_origin
 
 import rfc8785
-from pydantic import BaseModel, JsonValue, ValidationError
+from pydantic import BaseModel, JsonValue, RootModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 
+from feedbax.contracts.authored_arrays import check_authored_array_budget
 from feedbax.contracts.canonical_json import validate_canonical_json_v2
+from feedbax.contracts.expression_storage import StoredExpression, StoredTime
 from feedbax.contracts.expression_values import LiteralValue
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureSource
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.matrix_core import ExpressionSiteKind
 from feedbax.contracts.model_attachment import SetField
-from feedbax.contracts.objective_document import ObjectiveTerm
-from feedbax.contracts.project import InlineBase, RootDocument, SetDocumentValue, Step
-from feedbax.contracts.project_sweep import AxisValue, NamedAxis, SetValue, Sweep, SweepException
+from feedbax.contracts.objective_document import ObjectiveTerm, StoredObjectiveTerm
+from feedbax.contracts.project import (
+    Differences, ExternalBase, InlineBase, OrderDocumentMembers, Payload, RootDocument, SetDocumentValue, Step,
+    apply_differences, json_pointer_parts,
+)
+from feedbax.contracts.project_sweep import AxisValue, NamedAxis, SetValue, Sweep, SweepException, sweep_refines_parent
 from feedbax.contracts.rollout import ROLLOUT_TYPE
+from feedbax.contracts.stored_members import StoredAddressedMembers, StoredMembers
+
+
+if TYPE_CHECKING:
+    from feedbax.contracts.stored_regions import StoredRegionResolver
 
 
 type StoredPath = tuple[str, ...]
@@ -30,39 +43,171 @@ _REAL_TOKEN_VALUES = (SetDocumentValue, OverridePatch, SetValue, SetField, Liter
 _WIDTH = 100
 
 
+class StoredFigurePayload(RootModel[StoredFigureSource | ExternalBase]):
+    """The authored Figure, template selection, or external pin in a Figure document."""
+
+
 @cache
 def stored_document_models() -> Mapping[str, type[BaseModel] | None]:
-    """The payload models used by the authored writer, including the opaque Figure kind."""
-    from feedbax.contracts.analysis_document import AnalysisPayload
-    from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA
+    """The payload models used by the authored writer."""
+    from feedbax.contracts.analysis_document import StoredAnalysisPayload
     from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
-    from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
-    from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
+    from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+    from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, StoredObjectiveDocument
     from feedbax.contracts.project import LoadedModelDocument
     from feedbax.contracts.project_inputs import SubsetTerms
     from feedbax.contracts.report_document import ReportDocument
     from feedbax.contracts.result_address import ANALYSIS_SCHEMA
     from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
-    from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument
+    from feedbax.contracts.task_document import (
+        PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, StoredTaskDocument,
+    )
     from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 
     return MappingProxyType({
-        MODEL_DOCUMENT_SCHEMA_ID: ModelDocument,
-        TASK_DOCUMENT_SCHEMA_ID: TaskDocument,
-        OBJECTIVE_DOCUMENT_SCHEMA_ID: ObjectiveDocument,
+        STORED_MODEL_DOCUMENT_SCHEMA_ID: StoredModelDocument,
+        STORED_TASK_DOCUMENT_SCHEMA_ID: StoredTaskDocument,
+        STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID: StoredObjectiveDocument,
         TRAINING_DOCUMENT_SCHEMA_ID: TrainingDocument,
         PYTHON_TASK_SCHEMA_ID: PythonTaskSelection,
         LOADED_MODEL_SCHEMA_ID: LoadedModelDocument,
         SET_DOCUMENT_SCHEMA_ID: SetDocument,
-        ANALYSIS_SCHEMA: AnalysisPayload[JsonValue],
-        FIGURE_DOCUMENT_SCHEMA: None,
+        ANALYSIS_SCHEMA: StoredAnalysisPayload,
+        STORED_FIGURE_DOCUMENT_SCHEMA_ID: StoredFigurePayload,
         ReportDocument.model_fields["schema_version"].default: ReportDocument,
         "subset": SubsetTerms,
     })
 
 
+@lru_cache(maxsize=4096)
+def stored_keyed_collection(schema_id: str, path: StoredPath) -> bool:
+    """Whether a stored pointer names a typed member map whose authored order matters."""
+    model = stored_document_models().get(schema_id)
+    return model is not None and _keyed_collection_at(model, path)
+
+
+def _keyed_collection_at(annotation: Any, path: StoredPath) -> bool:
+    if annotation is JsonValue:
+        return False
+    origin = get_origin(annotation)
+    arguments = get_args(annotation)
+    if origin in (StoredMembers, StoredAddressedMembers):
+        return not path or _keyed_collection_at(arguments[0], path[1:])
+    if origin is dict and len(arguments) == 2:
+        return bool(path) and _keyed_collection_at(arguments[1], path[1:])
+    if origin is Annotated:
+        return _keyed_collection_at(arguments[0], path)
+    if origin in (Union, UnionType):
+        return any(_keyed_collection_at(member, path) for member in arguments)
+    if isinstance(annotation, TypeAliasType):
+        return _keyed_collection_at(annotation.__value__, path)
+    if isinstance(annotation, type) and issubclass(annotation, RootModel):
+        return _keyed_collection_at(annotation.model_fields["root"].annotation, path)
+    if path and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        annotation.model_rebuild()
+        for name, field in annotation.model_fields.items():
+            if _key(name, field) == path[0]:
+                return _keyed_collection_at(field.annotation, path[1:])
+    return False
+
+
+def stored_expression_site(schema_id: str, path: StoredPath) -> ExpressionSiteKind | None:
+    """Identify a declared scalar expression or time, without inspecting its content."""
+    return _model_expression_site(stored_document_models().get(schema_id), path)
+
+
+@lru_cache(maxsize=4096)
+def _model_expression_site(model: type[BaseModel] | None, path: StoredPath) -> ExpressionSiteKind | None:
+    return _expression_site_at(model, path)
+
+
+def _expression_site_at(annotation: Any, path: StoredPath) -> ExpressionSiteKind | None:
+    if annotation is StoredExpression or annotation is StoredTime:
+        return None if path else "expression" if annotation is StoredExpression else "time"
+    if annotation is JsonValue:
+        return None
+    origin = get_origin(annotation)
+    arguments = get_args(annotation)
+    if origin in (StoredMembers, StoredAddressedMembers):
+        return _expression_site_at(arguments[0], path[1:]) if path else None
+    if origin is dict and len(arguments) == 2:
+        return _expression_site_at(arguments[1], path[1:]) if path else None
+    if origin is Annotated:
+        return _expression_site_at(arguments[0], path)
+    if origin in (Union, UnionType):
+        return next((site for arg in arguments if (site := _expression_site_at(arg, path)) is not None), None)
+    if isinstance(annotation, TypeAliasType):
+        return _expression_site_at(annotation.__value__, path)
+    if path and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        annotation.model_rebuild()
+        for name, field in annotation.model_fields.items():
+            if _key(name, field) == path[0]:
+                return _expression_site_at(field.annotation, path[1:])
+    return None
+
+
+def _step_patch_site(kind: str, path: StoredPath) -> tuple[type[BaseModel] | None, StoredPath]:
+    from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+    from feedbax.contracts.result_address import ANALYSIS_SCHEMA
+    from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
+    from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
+
+    if kind == "analyze":
+        return stored_document_models().get(ANALYSIS_SCHEMA), path
+    if kind == "synthesize":
+        from feedbax.contracts.synthesis import SynthesisStepPayload
+
+        return SynthesisStepPayload, path
+    if kind in {"train", "evaluate"} and len(path) > 2 and path[0] == "trial_documents":
+        schema = {
+            "model": STORED_MODEL_DOCUMENT_SCHEMA_ID,
+            "task": STORED_TASK_DOCUMENT_SCHEMA_ID,
+            "objective": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID,
+        }.get(path[1])
+        return stored_document_models().get(schema) if schema is not None else None, path[2:]
+    return None, path
+
+
+@lru_cache(maxsize=4096)
+def stored_step_expression_site(kind: str, path: StoredPath) -> ExpressionSiteKind | None:
+    """Resolve an expression in a step's authored payload using its declared document roles."""
+    return _model_expression_site(*_step_patch_site(kind, path))
+
+
+@lru_cache(maxsize=4096)
+def stored_step_keyed_collection(kind: str, path: StoredPath) -> bool:
+    model, relative = _step_patch_site(kind, path)
+    return model is not None and _keyed_collection_at(model, relative)
+
+
+def _project_patch_site(project: Mapping[str, Any], path: StoredPath) -> tuple[type[BaseModel] | None, StoredPath]:
+    if len(path) < 3:
+        return None, path
+    family, name, *member_path = path
+    if family not in {"documents", "steps"}:
+        return None, path
+    member = project.get(family, {}).get(name, {})
+    if family == "documents" and member_path[0] == "payload":
+        return stored_document_models().get(member.get("schema", "")), tuple(member_path[1:])
+    if family == "steps":
+        if member_path[:2] == ["base", "inline"]:
+            return _step_patch_site(member.get("kind", ""), tuple(member_path[2:]))
+        return Step, tuple(member_path)
+    return None, path
+
+
+def stored_project_expression_site(project: Mapping[str, Any], path: StoredPath) -> ExpressionSiteKind | None:
+    """Resolve declarations for variants, whose paths start at the authored project."""
+    return _model_expression_site(*_project_patch_site(project, path))
+
+
+def stored_project_keyed_collection(project: Mapping[str, Any], path: StoredPath) -> bool:
+    model, relative = _project_patch_site(project, path)
+    return model is not None and _keyed_collection_at(model, relative)
+
+
 @cache
-def _schema_inventory() -> tuple[tuple[type[BaseModel], ...], dict[type[BaseModel], set[str]]]:
+def _schema_inventory(extra_models: tuple[Any, ...] = ()) -> tuple[tuple[type[BaseModel], ...], dict[type[BaseModel], set[str]]]:
     """Reachable stored models and the tag fields that discriminate their actual unions."""
     from feedbax.contracts.project import BasedDocument, Project, Step
     from feedbax.contracts.project_io import StudioProjectFile, TextProjectManifest
@@ -71,7 +216,7 @@ def _schema_inventory() -> tuple[tuple[type[BaseModel], ...], dict[type[BaseMode
     roots = (RootDocument, BasedDocument, Project, Step, TextProjectManifest, StudioProjectFile, PresentationDocument)
     models: set[type[BaseModel]] = set()
     seen: set[Any] = set()
-    tags: dict[type[BaseModel], set[str]] = defaultdict(set, {OverridePatch: {"op"}})
+    tags: dict[type[BaseModel], set[str]] = defaultdict(set)
 
     def variants(annotation: Any) -> Iterator[type[BaseModel]]:
         if isinstance(annotation, TypeAliasType):
@@ -107,7 +252,7 @@ def _schema_inventory() -> tuple[tuple[type[BaseModel], ...], dict[type[BaseMode
             for item in get_args(annotation):
                 visit(item)
 
-    for model in (*roots, *stored_document_models().values()):
+    for model in (*roots, *stored_document_models().values(), *extra_models):
         if model is not None:
             visit(model)
     return tuple(sorted(models, key=_model_name)), tags
@@ -123,6 +268,9 @@ def _field_default(model: type[BaseModel], name: str) -> JsonValue:
     if field.default_factory_takes_validated_data:
         raise ValueError(f"{_model_name(model)}.{name} has a data-dependent stored default")
     value = field.get_default(call_default_factory=True)
+    if _expression_site_at(field.annotation, ()) is not None:
+        codec = TypeAdapter(field.rebuild_annotation())
+        return codec.dump_python(codec.validate_python(value), mode="json", by_alias=True)
     return to_jsonable_python(value, by_alias=True)
 
 
@@ -130,9 +278,11 @@ def _key(name: str, field: FieldInfo) -> str:
     return field.serialization_alias or field.alias or name
 
 
-def stored_defaults_manifest() -> dict[str, JsonValue]:
-    """Declare every constant default reachable through a stored model."""
-    models, tags = _schema_inventory()
+def stored_defaults_manifest(installed: Iterable[type[BaseModel]]) -> dict[str, JsonValue]:
+    """Describe constant authored defaults from declared and supplied model roots."""
+    from feedbax.contracts.stored_regions import inline_models
+
+    models, tags = _schema_inventory((*inline_models(), *installed))
     return {
         _model_name(model): {
             _key(name, field): _field_default(model, name)
@@ -143,7 +293,7 @@ def stored_defaults_manifest() -> dict[str, JsonValue]:
     }
 
 
-def _payload_model(document: RootDocument) -> BaseModel | None:
+def validated_stored_payload(document: RootDocument) -> BaseModel | None:
     model = stored_document_models().get(document.schema_id)
     if model is None:
         return None
@@ -151,11 +301,14 @@ def _payload_model(document: RootDocument) -> BaseModel | None:
     try:
         return model.model_validate(document.payload)
     except ValidationError:
-        # Analysis, Report and Subset payloads can be saved in Studio with planner Problems.
+        # These payloads can be saved in Studio with planner Problems.
         from feedbax.contracts.result_address import ANALYSIS_SCHEMA
         from feedbax.contracts.report_document import ReportDocument
 
-        if document.schema_id in (ANALYSIS_SCHEMA, ReportDocument.model_fields["schema_version"].default, "subset"):
+        if document.schema_id in (
+            ANALYSIS_SCHEMA, STORED_FIGURE_DOCUMENT_SCHEMA_ID, ReportDocument.model_fields["schema_version"].default,
+            "subset",
+        ):
             return None
         raise
 
@@ -179,10 +332,38 @@ def _same_stored_value(left: JsonValue, right: JsonValue, *, real_site: bool) ->
 
 def _projected_file(
     model: BaseModel, exclude: set[str] | None, protected: Iterable[StoredPath],
+    *, keep_explicit: bool = False, registries: StoredRegionResolver | None = None,
+    parents: frozenset[StoredPath] = frozenset(),
 ) -> tuple[JsonValue, set[StoredPath]]:
+    from feedbax.contracts.stored_regions import StoredRegion, declared_stored_region, step_inline_model, typed_region
+
+    resolve_region = registries.region if registries is not None else declared_stored_region
     real_tokens: set[StoredPath] = set()
     prefixes = {path[:end] for path in protected for end in range(1, len(path) + 1)}
-    _, tags = _schema_inventory()
+    parent_prefixes = {path[:end] for path in parents for end in range(1, len(path) + 1)}
+    _, base_tags = _schema_inventory()
+    tags = {model: set(fields) for model, fields in base_tags.items()}
+    registered_here: set[type[BaseModel]] = set()
+
+    def project_region(region: StoredRegion, child: dict, path: StoredPath, *, inline=False) -> JsonValue:
+        context = {key: value for key, value in child.items() if key in region.contextual}
+        declared = {key: value for key, value in child.items() if key not in context}
+        typed, encoded, complete = typed_region(region, declared, inline=inline)
+        if not complete and not inline and not parents:
+            authored = region.authored_values(child)
+            remember_reals(authored, path)
+            return authored
+        cls = type(typed)
+        if cls not in registered_here:
+            registered_here.add(cls)
+            _, found = _schema_inventory((cls,))
+            for owner, fields in found.items():
+                tags.setdefault(owner, set()).update(fields)
+        projected = project(typed, encoded, path) | context
+        if inline:
+            known = {_key(name, field) for name, field in cls.model_fields.items()}
+            return projected | {key: value for key, value in encoded.items() if key not in known}
+        return region.authored_values(projected)
 
     def remember_reals(value: JsonValue, path: StoredPath) -> None:
         if type(value) is float:
@@ -203,6 +384,8 @@ def _projected_file(
                 remember_reals(edit["value"], (*path, "params", "variation", str(key), "value"))
 
     def project(value: Any, encoded: JsonValue, path: StoredPath) -> JsonValue:
+        if isinstance(value, RootModel):
+            return project(value.root, encoded, path)
         if isinstance(value, BaseModel) and isinstance(encoded, dict):
             result = {}
             cls = type(value)
@@ -217,31 +400,54 @@ def _projected_file(
                 observed = explicit and (
                     child_path in prefixes or isinstance(value, _REFINEMENTS)
                     or isinstance(value, OverridePatch) and name == "value"
+                    or keep_explicit and key in encoded
                 )
-                raw = getattr(value, name)
-                if key in encoded:
-                    child = encoded[key]
-                elif observed:
-                    child = to_jsonable_python(raw, by_alias=True)
-                else:
+                parent_needed = child_path in parents
+                if key not in encoded and not (observed or parent_needed):
                     continue
-                if not (required or observed) and (
+                raw = getattr(value, name, None)
+                child = encoded[key] if key in encoded else to_jsonable_python(raw, by_alias=True)
+                if (isinstance(value, Step) and name == "sweep" and isinstance(raw, Sweep)
+                    and not observed and not sweep_refines_parent(raw)):
+                    continue
+                needed = parent_needed and isinstance(child, dict)
+                if key not in encoded and not (observed or needed):
+                    continue
+                region = None
+                if (not parents or child_path in parent_prefixes) and isinstance(child, dict) and (explicit or child or needed):
+                    region = resolve_region(value, name)
+                if region is not None:
+                    if region.model is None:
+                        remember_reals(child, child_path)
+                        result[key] = child
+                        continue
+                    if not (isinstance(child.get("document"), str) and child.keys() <= {"document", "pointer", "unresolved"}):
+                        child = project_region(region, child, child_path)
+                        raw = child
+                if not (required or observed or needed) and (
                     isinstance(value, _REFINEMENTS) or _same_stored_value(
-                        child, _field_default(cls, name), real_site=isinstance(value, ObjectiveTerm) and name == "weight",
+                        child, _field_default(cls, name),
+                        real_site=isinstance(value, (ObjectiveTerm, StoredObjectiveTerm)) and name == "weight",
                     )
                 ):
                     continue
                 if isinstance(value, RootDocument) and name == "payload":
                     if isinstance(child, dict) and child.get("evaluation_type") == ROLLOUT_TYPE:
                         remember_variation(child, child_path)
-                    typed = _payload_model(value)
+                    typed = validated_stored_payload(value)
                     if typed is not None:
                         raw = typed
                         child = typed.model_dump(mode="json", by_alias=True)
                 if isinstance(value, _REAL_TOKEN_VALUES) and name == "value":
                     remember_reals(child, child_path)
-                elif isinstance(value, Step) and value.kind == "evaluate" and name == "base" and isinstance(raw, InlineBase):
-                    remember_variation(raw.inline, (*child_path, "inline"))
+                elif isinstance(value, Step) and name == "base" and isinstance(raw, InlineBase):
+                    body_path = (*child_path, "inline")
+                    if value.kind == "evaluate":
+                        remember_variation(raw.inline, body_path)
+                    result[key] = {"inline": project_region(
+                        StoredRegion(step_inline_model(value.kind, raw.inline)), raw.inline, body_path, inline=True,
+                    )}
+                    continue
                 result[key] = project(raw, child, child_path)
             return result
         if isinstance(value, (tuple, list)) and isinstance(encoded, list):
@@ -253,11 +459,66 @@ def _projected_file(
     return project(model, model.model_dump(mode="json", by_alias=True), ()), real_tokens
 
 
+def difference_parent_paths(differences: Differences) -> Iterator[StoredPath]:
+    for path, difference in differences.items():
+        parts = json_pointer_parts(path)
+        yield parts if isinstance(difference, OrderDocumentMembers) else parts[:-1]
+
+
+def document_difference_basis(
+    schema_id: str, base: Payload, parent_paths: Iterable[StoredPath], *, registries: StoredRegionResolver | None = None,
+) -> Payload:
+    """Expose the declared object defaults required to apply a based document's paths."""
+    missing: dict[StoredPath, None] = {}
+    parents: set[StoredPath] = set()
+    for parts in parent_paths:
+        current: JsonValue = base
+        for index, part in enumerate(parts):
+            if not isinstance(current, dict):
+                break
+            if part not in current:
+                missing[parts[:index + 1]] = None
+                parents.update(parts[:end] for end in range(index + 1, len(parts) + 1))
+                break
+            current = current[part]
+    if not missing or (model := stored_document_models().get(schema_id)) is None:
+        return base
+    try:
+        typed = model.model_validate(base)
+        projected, _ = _projected_file(typed, None, (), registries=registries, parents=frozenset(parents))
+    except ValueError:
+        return base
+    if not isinstance(projected, dict):
+        return base
+
+    # Insert only declared objects that were absent from the authored base.
+    result = deepcopy(base)
+    for path in missing:
+        candidate: JsonValue = projected
+        for part in path:
+            candidate = candidate.get(part) if isinstance(candidate, dict) else None
+        if isinstance(candidate, dict):
+            target = result
+            for part in path[:-1]:
+                target = target[part]
+            target[path[-1]] = candidate
+    return result
+
+
+def apply_document_differences(
+    schema_id: str, base: Payload, differences: Differences, *, registries: StoredRegionResolver | None = None,
+) -> Payload:
+    """Apply persisted differences over the declared parents in the base document."""
+    basis = document_difference_basis(schema_id, base, difference_parent_paths(differences), registries=registries)
+    return apply_differences(basis, differences, keyed_collection=partial(stored_keyed_collection, schema_id))
+
+
 def stored_project_value(
     model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
+    keep_explicit: bool = False, registries: StoredRegionResolver | None = None,
 ) -> JsonValue:
-    """Project typed stored fields, retaining authored keys that a strict operation observes."""
-    return _projected_file(model, exclude, protected)[0]
+    """Project typed stored fields, retaining explicit defaults when a patch view needs their presence."""
+    return _projected_file(model, exclude, protected, keep_explicit=keep_explicit, registries=registries)[0]
 
 
 def _scalar(value: JsonValue, *, keep_real: bool = False) -> str:
@@ -348,8 +609,10 @@ class _Layout:
 
 def write_project_file(
     model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
+    registries: StoredRegionResolver | None = None, source: str | None = None,
 ) -> bytes:
     """Encode one typed authored file with canonical numbers and 100-column layout."""
-    value, real_tokens = _projected_file(model, exclude, protected)
+    value, real_tokens = _projected_file(model, exclude, protected, registries=registries)
     validate_canonical_json_v2(value)
+    check_authored_array_budget(value, source=source)
     return ("\n".join(_Layout(real_tokens).lines(value, 0, "", "", ())) + "\n").encode("utf-8")

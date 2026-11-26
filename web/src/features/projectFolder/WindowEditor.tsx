@@ -11,7 +11,9 @@ import type { ChangeMark } from '@/components/values/fieldModel';
 import type { FieldModel } from '@/components/values/fieldModel';
 import { changeTip, ValueField } from '@/components/values/ValueField';
 import type {
-  Window, WindowEpoch, WindowEpochAnchor, WindowInterval, WindowMoment, WindowPosition, WindowRelativePosition, WindowTrialAnchor,
+  StoredWindow as Window, StoredWindowInterval as WindowInterval, StoredWindowMoment as WindowMoment,
+  StoredWindowPosition as WindowPosition, StoredWindowRelativePosition as WindowRelativePosition, WindowEpoch, WindowEpochAnchor,
+  WindowTrialAnchor,
 } from '@/generated/studioContracts';
 
 type Span = Window['spans'][number];
@@ -39,7 +41,6 @@ export interface WindowHost {
   readonly changed?: ChangeMark;
 }
 
-const zero = { value: 0, unit: 's' } as const;
 
 /** An epoch, or one zero-based occurrence of it, by a choice's value. */
 const epochKey = ({ epoch, occurrence }: { epoch: string; occurrence?: number | null }) =>
@@ -86,7 +87,7 @@ function spanOf(kind: Span['kind'], epochs: readonly WindowEpochChoice[], from?:
   const epoch = from?.kind === 'epoch' ? from : from?.kind === 'interval' ? epochOfAnchor(from.start.anchor)
     : from?.kind === 'moment' ? epochOfAnchor(from.at.anchor) : undefined;
   const start: WindowPosition = from?.kind === 'interval' ? from.start : from?.kind === 'moment' ? from.at
-    : { anchor: edgeOf(epoch ?? firstEpoch(epochs), 'start'), offset: zero };
+    : { anchor: edgeOf(epoch ?? firstEpoch(epochs), 'start') };
   switch (kind) {
     case 'epoch': {
       const chosen = epoch ?? firstEpoch(epochs);
@@ -94,8 +95,8 @@ function spanOf(kind: Span['kind'], epochs: readonly WindowEpochChoice[], from?:
     }
     case 'interval': return {
       kind: 'interval', start,
-      end: from?.kind === 'moment' ? { offset: { value: 1, unit: 'st' } }
-        : { anchor: start.anchor.kind === 'trial' ? { kind: 'trial', edge: 'end' } : { ...start.anchor, edge: 'end' }, offset: zero },
+      end: from?.kind === 'moment' ? {}
+        : { anchor: start.anchor.kind === 'trial' ? { kind: 'trial', edge: 'end' } : { ...start.anchor, edge: 'end' } },
     };
     case 'moment': return { kind: 'moment', at: start };
   }
@@ -107,7 +108,8 @@ function spanOf(kind: Span['kind'], epochs: readonly WindowEpochChoice[], from?:
  */
 export function windowText(window: Window | null | undefined, host: Pick<WindowHost, 'epochs' | 'offset'>): ShownText {
   const position = (position: WindowPosition | WindowRelativePosition, site: OffsetSite): ShownText => {
-    const offset = position.offset == null ? '' : host.offset(site).text ?? '';
+    // An anchor with no offset is at its edge; a length with none is the Service's default, which its field shows.
+    const offset = position.offset == null && 'anchor' in position ? '' : host.offset(site).text ?? '';
     const shown = offset && !offset.startsWith('-') ? `+ ${offset}` : offset.replace(/^-\s*/, '- ');
     if (!('anchor' in position)) return shown;
     const { anchor } = position;
@@ -146,8 +148,10 @@ function PositionFields({ host, position, site, relative, disabled, set }: {
     <span className="w-8 shrink-0 text-xs text-shell-muted">{label}</span>
     <Select className="min-w-16 flex-1" aria-label={studioAccessibleName('anchor', label)} items={places} disabled={disabled}
       value={anchored ? anchorKey(anchored) : lengthKey}
-      onValueChange={(key) => set(key === lengthKey ? { offset: position.offset ?? zero }
-        : { anchor: anchorAt(key, anchored?.edge ?? 'start'), offset: position.offset ?? zero })} />
+      onValueChange={(key) => {
+        const offset = position.offset == null ? {} : { offset: position.offset };
+        set(key === lengthKey ? offset : { anchor: anchorAt(key, anchored?.edge ?? 'start'), ...offset });
+      }} />
     {anchored && <Select className="min-w-16 flex-1" aria-label={studioAccessibleName('edge', label)} items={edges} disabled={disabled}
       value={anchored.edge} onValueChange={(edge) => set({ ...position, anchor: { ...anchored, edge } })} />}
     <div className="min-w-28 flex-1"><ValueField model={host.offset(site)} form="cell" /></div>

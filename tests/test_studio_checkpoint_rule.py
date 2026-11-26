@@ -4,6 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_inputs import StepReference
+from feedbax.contracts.expression_values import UnresolvedValue
 from feedbax.contracts.project_sweep import CHECKPOINT_RULE_TARGET
 from feedbax.contracts.request_refs import UpdateSeriesMember
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleRequest
@@ -14,6 +16,18 @@ from feedbax.web.services.project_folder import (
 )
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_saved_update_series import definition
+
+
+def test_checkpoint_draft_is_only_raw_text_in_a_saved_reference():
+    text = "  1, huh  "
+    reference = StepReference.model_validate({"step": "train", "checkpoint": text})
+    assert reference.checkpoint == UnresolvedValue(text=text)
+    assert reference.model_dump(mode="json", exclude_unset=True) == {"step": "train", "checkpoint": text}
+    with pytest.raises(ValueError, match="Save an invalid checkpoint rule as its text"):
+        StepReference.model_validate({"step": "train", "checkpoint": {"kind": "unresolved", "text": text}})
+    for rule in ("last", {"at": 3}, [{"at": 3}], {"every": 2, "through": 8}):
+        reference = StepReference.model_validate({"step": "train", "checkpoint": rule})
+        assert reference.model_dump(mode="json", exclude_unset=True, exclude_none=True)["checkpoint"] == rule
 
 
 @pytest.mark.parametrize("site", ["run", "checkpoint"])
@@ -78,7 +92,7 @@ def test_bad_rule_commits_and_reopens_for_repair(tmp_path, monkeypatch, site):
             assert persisted.inputs["subject"].where.rule == text
         else:
             [exception] = persisted.sweep.exceptions.values()
-            assert exception.patches[CHECKPOINT_RULE_TARGET].value == held
+            assert exception.patches[CHECKPOINT_RULE_TARGET].value == text
         plan = reopened.read_plan(project, revision=revision).plan
         assert {run.kind for run in plan.runs} == {"train"}
         [problem] = plan.diagnostics
@@ -98,7 +112,7 @@ def test_bad_rule_commits_and_reopens_for_repair(tmp_path, monkeypatch, site):
             files[0]["patches"] = [{"op": "replace", "path": "/inputs/subject/where/rule", "value": ""}]
         else:
             [exception] = step["exceptions"]
-            assert exception["rule"]["patches"][CHECKPOINT_RULE_TARGET]["value"] == held
+            assert exception["rule"]["patches"][CHECKPOINT_RULE_TARGET]["value"] == text
             response = prepare(revision, {"at": 2})
             assert response.status_code == 200, response.text
             assert response.json()["problems"] == []

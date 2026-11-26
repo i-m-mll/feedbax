@@ -3,15 +3,18 @@
 import json
 import os
 import sys
+from functools import partial
 from pathlib import Path
 
 from feedbax.desktop.release import AppPaths
 from feedbax.web.services.project_folder import ProjectFolderService
+from tests.support.browser_seed_actions import HomeSeed, NonSeed
 
 
 def seed(project: str, root: Path, *, variants: bool = False) -> None:
     from feedbax.contracts.project import Project
-    from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+    from feedbax.application.project_writer import dump_text_project
+    from feedbax.contracts.project_io import ProjectConfiguration
     from web.e2e.studio.fixtures.canonical_evaluate import _evaluation_project
 
     raw = _evaluation_project()
@@ -28,20 +31,28 @@ def seed(project: str, root: Path, *, variants: bool = False) -> None:
     print(json.dumps(document.snapshot.project_id))
 
 
-def main(action: str, instance: str, project: str) -> int:
+def seed_home(instance: str, project: str, *, variants: bool = False) -> int:
+    paths = AppPaths.resolve(instance_root=Path(instance))
+    seed(project, paths.web / "projects" / project, variants=variants)
+    return 0
+
+
+def status(instance: str, project: str) -> int:
+    from feedbax.cli import main as cli
+
     paths = AppPaths.resolve(instance_root=Path(instance))
     projects = paths.web / "projects"
-    if action in {"seed", "seed-variants"}:
-        seed(project, projects / project, variants=action == "seed-variants")
-        return 0
-    if action == "status":
-        from feedbax.cli import main as cli
+    os.environ["FEEDBAX_HOST_ROOT"] = str(paths.host)
+    _, location = ProjectFolderService(projects).open_native_id(project)
+    return cli(["status", str(location.path), "--json"])
 
-        os.environ["FEEDBAX_HOST_ROOT"] = str(paths.host)
-        _, location = ProjectFolderService(projects).open_native_id(project)
-        return cli(["status", str(location.path), "--json"])
-    raise ValueError(f"Unknown action {action!r}")
 
+ACTIONS = {
+    "seed": HomeSeed(seed_home),
+    "seed-variants": HomeSeed(partial(seed_home, variants=True)),
+    "status": NonSeed(status, "reads current Host-backed status through the CLI"),
+}
 
 if __name__ == "__main__":
-    raise SystemExit(main(*sys.argv[1:]))
+    action, *arguments = sys.argv[1:]
+    raise SystemExit(ACTIONS[action].command(*arguments))

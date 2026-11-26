@@ -9,7 +9,7 @@ import {
 } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
-  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceIsDocument, studioProblemName, studioReason, studioRunReason, studioRunStatus, studioStep, type SourceNames,
+  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceIsDocument, studioProblemName, studioReason, studioRunReason, studioRunStatus, studioStep,
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -55,7 +55,7 @@ import {
 } from '@/features/projectWindow/projectWindowState';
 import { pinnableViews, stepModelSource, usePinnedSubject } from './pinnedSlot';
 import {
-  ModelAddressSchema, StepReferenceSchema, StudioProjectRenameSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
+  StepReferenceSchema, StudioProjectRenameSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type FigureLayoutMeta, type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type LoadedModelReference, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StepReference, type SubsetTerms,
   type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type StudioPlanReviewSource, type StudioProjectWindowMapException, type ModelAddress, type PatchValue,
@@ -82,7 +82,7 @@ import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type R
 import { createSynthesize, createTrain } from './createModelStep';
 import { trainingDocumentId } from './trainingDocument';
 import {
-  authoredTrialDomain, checkpointLabel, createEvaluation, editableCheckpointRule, evaluateSubject, evaluateSubjectEdits, exactCheckpoint,
+  authoredTrialDomain, checkpointLabel, createEvaluation, editableCheckpointRule, storedCheckpointRule, evaluateSubject, evaluateSubjectEdits, exactCheckpoint,
   managedTrialDomain, ordinaryEvaluation, selectionCheckpoints, type CheckpointRange, type EditableCheckpointRule, type EvaluateSubject,
   type SelectionCheckpoint, type StoppedEvaluationSubject,
 } from './evaluateAuthoring';
@@ -140,26 +140,19 @@ function valueText(value: JsonValue) {
 }
 
 /**
- * The label of the field a sweep exception patches: a Train field's label from the server, or a model field's name.
- * A path no field of the step has (the exception outlived its field) is drawn by its last segment.
+ * The label of the field a sweep exception patches, as the Service names it for the patch's path. A Train path the
+ * Service does not name (the exception outlived its field) is drawn by its last segment; a Model target as written.
  */
-function exceptionFieldLabel(path: string, trainLabels: ReadonlyMap<string, string>) {
-  if (!path.startsWith('{')) return trainLabels.get(path) ?? humanizeLabel(path.split('.').at(-1)!);
-  try {
-    const address = ModelAddressSchema.safeParse(JSON.parse(path));
-    const field = address.success && address.data.element.kind === 'field' ? address.data.element.path.at(-1) : undefined;
-    return field == null ? path : humanizeLabel(String(field));
-  } catch {
-    return path;
-  }
+function exceptionFieldLabel(path: string, labels: Readonly<Record<string, string>>, trainLabels: ReadonlyMap<string, string>) {
+  return labels[path] ?? trainLabels.get(path) ?? (path.startsWith('{') ? path : humanizeLabel(path.split('.').at(-1)!));
 }
 /**
  * What an exception's patches change, one text each. A class chosen for the runs reads by the field and the class's
  * label (`Optimizer AdamW`); the parameters choosing it wrote are the class's and are not listed.
  */
 function exceptionPatchTexts(
-  patches: Readonly<Record<string, PatchValue | null>>, trainLabels: ReadonlyMap<string, string>,
-  classes: readonly StudioClassField[],
+  patches: Readonly<Record<string, PatchValue | null>>, labels: Readonly<Record<string, string>>,
+  trainLabels: ReadonlyMap<string, string>, classes: readonly StudioClassField[],
 ): string[] {
   const entries = Object.entries(patches);
   const chosen = classes.flatMap((field) => {
@@ -175,7 +168,7 @@ function exceptionPatchTexts(
     const pick = chosen.find((entry) => path === entry.tag);
     if (pick) return [pick.text];
     if (!patch || chosen.some((entry) => path.startsWith(entry.path + '.'))) return [];
-    return [`${exceptionFieldLabel(path, trainLabels)} ${'value' in patch ? valueText(patch.value) : studioName('remove')}`];
+    return [`${exceptionFieldLabel(path, labels, trainLabels)} ${'value' in patch ? valueText(patch.value) : studioName('remove')}`];
   });
 }
 
@@ -376,11 +369,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     editor, project: saved.project, applies: !outside && reachable && variantApplies,
     perform, state: () => latestState.current, select: (next) => selection.select(next), confirmRemoval: runRemoval.confirm,
     ask: (anchor, choices) => askStore(anchor, choices),
-    valueName: (step, axis, entry) => {
-      const value = plan.steps.find(({ id }) => id === step)?.sweeps.find(({ id }) => id === axis)?.values.find(({ id }) => id === entry);
-      if (!value) throw new Error(`The plan has no value ${entry} of axis ${axis} of step ${step}.`);
-      return value.label;
-    },
   });
   const axisMenu: AxisMenu = (stepId, axis) => {
     const planned = plan.steps.find(({ id }) => id === stepId);
@@ -655,10 +643,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }) : undefined;
   const mapInputs = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step?.id && id === variant)?.inputs;
   const subject = mapInputs?.find(({ id }) => id === 'subject');
-  const subjectSubset = subject?.subset;
-  const rankGroups = bestRankGroups(subjectSubset);
-  const rankedSubjects = rankGroups.length ? authoredMap?.evaluations?.flatMap(({ key, bound_subject }) =>
-    key.variant === variant && key.step === step?.id && bound_subject ? [bound_subject] : []) ?? [] : [];
   const boundByRank = new Map(authoredMap?.evaluations?.flatMap(({ key, bound_subject }) =>
     key.variant === variant && key.step === step?.id && bound_subject ? [[bound_subject.key, bound_subject]] : []));
   /** The attempts To Rows freezes a measured selection to: one per rank, each group's from one selection. */
@@ -669,16 +653,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       return snapshots.every(Boolean) && new Set(snapshots).size === 1;
     }) ? groups.flatMap(({ ranks }) => ranks.map((key) => boundByRank.get(key)!.consumer_job_id)) : undefined;
   }
-  const subjectIds = subject && rankGroups.length
-    ? new Set(rankedSubjects.map((bound) => savedRunId({ ...bound, step: subject.source_step_id })))
-    : subjectSubset?.members && new Set(subjectSubset.members.map(savedRunId));
   const evaluationEditor = evaluationAuthoring && evaluationSources && evaluationSources.length === evaluationAuthoring.subjects.length
     ? {
       authored: evaluationAuthoring, subjects: evaluationSources,
-      domain: managedTrialDomain(shown, evaluationSources.length === 1
-        ? subjectIds ? evaluationSources[0].source.runs.filter(({ id }) => subjectIds.has(id))
-          : evaluationSources[0].reference.where == null ? evaluationSources[0].source.runs : []
-        : evaluationSources.flatMap(({ source }) => source.runs)) ?? authoredTrialDomain(evaluationAuthoring.trialSet),
+      domain: managedTrialDomain(shown, step?.runs ?? []) ?? authoredTrialDomain(evaluationAuthoring.trialSet),
     } : undefined;
   const checkpointVariant = variant && saved.project.sweep?.rows?.[variant] ? variant : undefined;
   const evaluated = authored?.kind === 'evaluate' && !authored.deltas?.length ? authored : undefined;
@@ -697,21 +675,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const planned = plan.steps.find((item) => item.id === id);
     if (!planned) throw new Error(`The plan has no step ${id}.`);
     return planned.label;
-  };
-  const plannedAxis = (step: string, axis: string) => {
-    const planned = plan.steps.find((item) => item.id === step)?.sweeps.find((item) => item.id === axis);
-    if (!planned) throw new Error(`The plan has no axis ${axis} of step ${step}.`);
-    return planned;
-  };
-  const sourceNames: SourceNames = {
-    step: stepLabel,
-    document: (key) => labelOf(namedDocuments, key),
-    axis: (step, axis) => plannedAxis(step, axis).label,
-    value: (step, axis, value) => {
-      const planned = plannedAxis(step, axis).values.find((item) => item.id === value);
-      if (!planned) throw new Error(`The plan has no value ${value} of axis ${axis} of step ${step}.`);
-      return planned.valueLabel;
-    },
   };
   /** The rows of its producer that selection `index` of the step's input `role` reads. */
   function selectionRows(role: string, index: number) {
@@ -800,7 +763,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   });
   const evaluationReplay = trialClock.replay;
   const scoredEvaluation = step?.kind === 'evaluate' && selectedEvaluation?.status === 'succeeded' ? selectedEvaluation : undefined;
-  const recordedTerms = useRecordedTerms(saved.project_id, saved.revision, scoredEvaluation, evaluationReplay.checkpoint,
+  const recordedTerms = useRecordedTerms(saved.project_id, saved.revision, scoredEvaluation, evaluationReplay.checkpoint, windowState.clock?.replicate,
     windowState.mode !== 'map' && [primaryView, secondaryView].includes('objective'));
   const documentBase = authored && stepDocument(authored.base);
   const pickDocument = useProjectDocuments({
@@ -870,7 +833,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     },
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
     fieldAxes: valueTerms && Object.fromEntries(valueTerms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]])),
-    sourceNaming: { names: sourceNames, exceptions: exceptionMention },
+    sourceNaming: { exceptions: exceptionMention },
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({
@@ -1329,7 +1292,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     checkpoint={startCheckpoints && startSelections && {
       groups: startCheckpoints, disabled: !applies, refusal: refusedAt('checkpoint'),
       range: (selections) => checkpointRange('checkpoint', selections),
-      onSave: (rule) => onCurrentPlan('startTrain')({ ...startSelections[0], checkpoint: rule }, 'checkpoint'),
+      onSave: (rule) => onCurrentPlan('startTrain')({ ...startSelections[0], checkpoint: storedCheckpointRule(rule) }, 'checkpoint'),
     }}
     onChange={applies ? onCurrentPlan('changeTrainStart') : undefined} />
     : evaluateInputs && subjectRole ? <InputEditor key={inputEditorKey} label={studioName('subject')} role={subjectRole}
@@ -1489,7 +1452,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       const all = target.sweeps.find(({ id }) => id === axis)?.values;
       return !all || all.some(({ id }) => !values.has(id));
     }).map(([axis, values]) => {
-      const sweep = plannedAxis(target.id, axis);
+      const sweep = target.sweeps.find(({ id }) => id === axis);
+      if (!sweep) throw new Error(`The plan has no axis ${axis} of step ${target.id}.`);
       const names = [...values].map((value) => sweep.values.find(({ id }) => id === value)?.valueLabel ?? axisValueText(axis, value));
       return `${sweep.label} ${names.join(', ')}`;
     })];
@@ -1580,12 +1544,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const stepId = step.id;
     const sources = [...new Set(selections.map((index) => subjectReferences[index].step))];
     const listed = listedSubject;
+    const stored = storedCheckpointRule(rule);
     void perform(async (current) => {
       const dependencies = sources.map((id) => ({ kind: 'step' as const, id }));
       let address: { kind: 'step' | 'variant'; id: string } = { kind: 'step', id: stepId };
       let patches: ProjectValueEdit[] = listed
-        ? selections.map((index) => ({ op: 'replace', path: `/inputs/subject/${index}/checkpoint`, value: rule }))
-        : [{ op: 'replace', path: '/inputs/subject/checkpoint', value: rule }];
+        ? selections.map((index) => ({ op: 'replace', path: `/inputs/subject/${index}/checkpoint`, value: stored }))
+        : [{ op: 'replace', path: '/inputs/subject/checkpoint', value: stored }];
       if (checkpointVariant && !listed) {
         const row = current.project.sweep?.rows?.[checkpointVariant];
         if (!row) return;
@@ -1593,8 +1558,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         address = { kind: 'variant', id: checkpointVariant };
         dependencies.push({ kind: 'step', id: stepId });
         patches = [row.patches
-          ? { op: key in row.patches ? 'replace' : 'add', path: authoredPointer(['patches', key]), value: { value: rule } }
-          : { op: 'add', path: '/patches', value: { [key]: { value: rule } } }];
+          ? { op: key in row.patches ? 'replace' : 'add', path: authoredPointer(['patches', key]), value: { value: stored } }
+          : { op: 'add', path: '/patches', value: { [key]: { value: stored } } }];
       }
       const files = [{ address, patches }];
       if (!await runRemoval.confirm(filesRemoval(current.project_id, current.revision, files, editor.signal))) return;
@@ -2088,7 +2053,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             };
             const objectiveDocument = value.objective_document ?? step?.id ?? '';
             const termElement = named(objectiveDocument);
-            const term = termElement && value.objective?.terms?.some(({ id }) => id === termElement.id)
+            const term = termElement && !!value.objective?.terms?.[termElement.id]
               ? { term: termElement.id, field: termElement.field } : undefined;
             // An Evaluate of a checkpoint is scored by the Objective of the Train that made it, which it shows unedited.
             const train = value.objective_source?.kind === 'train' ? plan.steps.find(({ id }) => id === value.objective_source!.step) : undefined;
@@ -2132,7 +2097,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 onClick={() => selection.select(selectStep(state, train.id))}>{train.label}</Button>,
               body: withProblem(<FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
                 onFocused={() => setFieldFocus(undefined)}>
-                <TrialObjectiveTable view={value} commit={scoring} selected={term} select={choose(objectiveDocument)} runs={runs} scores={scores} />
+                <TrialObjectiveTable view={value} commit={scoring} addTerm={train ? undefined : trial.addTerm} selected={term} select={choose(objectiveDocument)} runs={runs} scores={scores} />
               </FocusedFields>),
               drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={scoring} selected={term?.term} select={choose(objectiveDocument)} />,
               inspector: termInspector,
@@ -2166,7 +2131,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const first = selectedElements[0];
             // A term the Scene's Relate wrote is selected there, and shown in its Inspector with its Measure focused.
             const term = view === 'scene' && trial.view && first && !isModelAddress(first) && first.document === objectiveDocument &&
-              trial.view.objective?.terms?.some(({ id }) => id === first.element.id) ? first.element : undefined;
+              !!trial.view.objective?.terms?.[first.element.id] ? first.element : undefined;
             const inspector = term && trial.view ? <FocusedFields className="contents"
               request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
               onFocused={() => setFieldFocus(undefined)}>
@@ -2192,7 +2157,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               const where = exception.rule.where;
               const editable = !where?.rows && shown && variant;
               return { id: exception.id, text: [
-                ...exceptionPatchTexts(exception.rule.patches ?? {}, trainLabels, trainClasses),
+                ...exceptionPatchTexts(exception.rule.patches ?? {}, exception.field_labels ?? {}, trainLabels, trainClasses),
                 ...editable ? [] : [exceptionRuns(step, exception)],
               ].join(' · '), rule: editable && <SelectionRule scope={{ project: saved.project_id, revision: shown.revision, variant }}
                 source={step} terms={{ rule: where?.rule ?? '' }} ranked={false} picking={elements}
@@ -2237,7 +2202,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                     {subjectDocuments && <SubjectDocuments subject={subjectDocuments} project={saved.project} documents={namedDocuments}
                       onChoose={applies && wholeStep ? onCurrentPlan('chooseSubjectDocument') : undefined} />}
                     {evaluationEditor && trial.view && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
-                      domain={evaluationEditor.domain} variables={trial.view.variables} disabled={!applies} refusal={refusedAt('trials')}
+                      domain={evaluationEditor.domain} disabled={!applies} refusal={refusedAt('trials')}
                       count={ownFieldProps && <StudioStepField {...ownFieldProps} anchor={trialCount} label={studioName('count')} />}
                       onSave={(rule) => onCurrentPlan('editEvaluation')('trials', studioName('trials'),
                         { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}

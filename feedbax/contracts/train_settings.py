@@ -2,20 +2,31 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-    from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
 
 
-def normalize_train_method(
-    request: DocumentTrainingRequestSpec, registry: TrainingMethodRegistry,
-) -> tuple[DocumentTrainingRequestSpec, RegisteredTrainingMethod, BaseModel]:
+class TrainMethodSettings(Protocol):
+    @property
+    def key(self) -> str: ...
+
+    @property
+    def settings_model(self) -> type[BaseModel]: ...
+
+
+class TrainSettingsResolver[MethodT: TrainMethodSettings](Protocol):
+    def resolve(self, key: str) -> MethodT: ...
+
+
+def normalize_train_method[MethodT: TrainMethodSettings](
+    request: DocumentTrainingRequestSpec, registry: TrainSettingsResolver[MethodT],
+) -> tuple[DocumentTrainingRequestSpec, MethodT, BaseModel]:
     try:
         method = registry.resolve(request.method)
     except KeyError as error:
@@ -26,6 +37,44 @@ def normalize_train_method(
         "seed": 0 if request.seed is None else request.seed,
         "settings": settings.model_dump(mode="json"),
     }), method, settings
+
+
+def train_sweep_basis(
+    payload: dict[str, JsonValue], path: str, registry: TrainSettingsResolver[TrainMethodSettings] | None,
+) -> dict[str, JsonValue]:
+    """Expose a missing declared Train setting for a sweep replacement."""
+    from feedbax.contracts.manifest import OverridePatch
+    from feedbax.contracts.matrix_core import apply_stored_patch_copy
+
+    root, *parts = path.split(".")
+    if root != "settings" or not parts or not isinstance((settings := payload.get("settings")), dict):
+        return payload
+    value = settings
+    for index, name in enumerate(parts):
+        if not isinstance(value, dict):
+            return payload
+        if name not in value:
+            break
+        value = value[name]
+    else:
+        return payload
+    if registry is None or not isinstance((method := payload.get("method")), str):
+        return payload
+    try:
+        model = registry.resolve(method).settings_model
+        effective: JsonValue = model.model_validate(settings, extra="forbid").model_dump(mode="json")
+    except (KeyError, ValidationError):
+        return payload
+    missing = None
+    for offset, name in enumerate(parts):
+        if not isinstance(effective, dict) or name not in effective:
+            return payload
+        effective = effective[name]
+        if offset == index:
+            missing = effective
+    return apply_stored_patch_copy(payload, OverridePatch(
+        op="add", path=".".join((root, *parts[:index + 1])), value=missing,
+    ))
 
 
 def setting_schema_node(schema: dict, node: dict, value: JsonValue) -> dict:

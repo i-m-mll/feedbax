@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { completions, type FieldModel } from './fieldModel';
+import { completions, valueKind, type FieldModel } from './fieldModel';
 
 const model = {
   names: [{ id: 'speed', name: 'speed', type: { base: 'real', dimensions: {} } }],
@@ -17,4 +17,11 @@ it('offers names and functions where an identifier can stand', () => {
   expect(offered('s')).toEqual(['speed', 'sigmoid', 'sqrt']);
   expect(offered('2 * s')).toEqual(['speed', 'sigmoid', 'sqrt']);
   expect(offered('x2 + sq')).toEqual(['sqrt']);
+});
+
+it('reads a sequence rule at the field root as a Sweep and a choice over one as a Draw', () => {
+  const rule = { kind: 'sequence', rule: 'linspace', first: { kind: 'literal', value: 0 }, last: { kind: 'literal', value: 1 },
+    count: { kind: 'literal', value: 5 } } as const;
+  expect(valueKind(rule, [])).toBe('sweep');
+  expect(valueKind({ kind: 'draw', family: 'choice', args: [rule] }, [])).toBe('draw');
 });

@@ -10,7 +10,7 @@
         }
       },
       "inputs": {},
-      "id": "evaluate:dca5dfe74d597f8118425f44dd7c78bb2ea6d56a0a52b0e1626fae38b4322ff4"
+      "id": "evaluate:39fe7d61a59ff12c2ec443f6e3f635b7781d3fc9880ae72d1440d7afb3ad55c6"
     },
     {
       "kind": "evaluate",
@@ -26,8 +26,8 @@
           "seed": 731,
           "trial_policy": "paired",
           "trials": [
-            "{\"catch\":false,\"start\":[-0.10000002384185791,-0.050000011920928955],\"target\":[0.3999999761581421,-0.050000011920928955]}",
-            "{\"catch\":false,\"start\":[-0.10000002384185791,-0.050000011920928955],\"target\":[0.2117448770875089,0.34091572931308595]}"
+            "trial-1",
+            "trial-2"
           ],
           "variation": [],
           "input_bindings": {
@@ -70,7 +70,7 @@
           }
         ]
       },
-      "id": "evaluate:43c322d942d3d736903dab7ae5cf9ed766a639126be20a10aa07c21422787877"
+      "id": "evaluate:e80275df6498f8a5ed73fd06beb679c93adcf1d7b7faa2ca60c59952623a4b91"
     },
     {
       "kind": "analyze",
@@ -82,7 +82,7 @@
         }
       },
       "inputs": {},
-      "id": "analyze:ed62e39e3e415f822301acc4429b258acd7919206dcc64454f920bc8572b1422"
+      "id": "analyze:6a17dd12615526fbcc68882b6e11d6ab2d0f76ceca937590fa1ed8db297e4c50"
     },
     {
       "kind": "render",
@@ -118,7 +118,7 @@
         }
       },
       "inputs": {},
-      "id": "render:488155fc89c52ad03c318ef3554f7b6177a753379a34f32b7e8031df137ba5c2"
+      "id": "render:fb71a58cf6ecca667196db86f9542b9ab0e0026e2245bbc22f07b0dade4b6b9b"
     },
     {
       "kind": "report",
@@ -134,7 +134,7 @@
         }
       },
       "inputs": {},
-      "id": "report:3a83686d79b081d59239a668b3b55cbd53fc9311e9a53358f9a504f47d942abd"
+      "id": "report:f77a7c804c0c6832b4c5db93f65253d40db51cfcd4f7037f3d62d95fe2f9eeff"
     },
     {
       "kind": "synthesize",
@@ -176,7 +176,7 @@
         }
       },
       "inputs": {},
-      "id": "synthesize:1a72825aea96d35243d0d989cfc67ae7a9cc9cc93291c1507c6b2b1764e3ff10"
+      "id": "synthesize:31d81f72060fb7bce3d5e6ab1d415a04122c731c5aadd4b8f17bac09dd150837"
     }
   ]
 }

@@ -1,14 +1,49 @@
 from __future__ import annotations
 
+from inspect import Parameter, signature
+
 import jax
 import jax.numpy as jnp
 import optax
 import pytest
 
-from feedbax.training.optimizers import OPTIMIZERS, SCHEDULES, build_schedule, build_step_optimizer
+from feedbax.training.optimizers import (
+    OPTIMIZERS, SCHEDULES, _SIGNATURE_DEFAULTS, _UPSTREAM_ONLY_DEFAULTS, build_schedule, build_step_optimizer,
+)
 
 
 pytestmark = pytest.mark.feedbax_contract
+
+
+@pytest.mark.parametrize("key", sorted(OPTIMIZERS.keys() | SCHEDULES.keys()))
+def test_owned_defaults_agree_with_optax_signatures(key):
+    entry = (OPTIMIZERS | SCHEDULES)[key]
+    expected = {
+        name: parameter.default for name, parameter in signature(entry.factory).parameters.items()
+        if name in entry.kinds and parameter.default is not Parameter.empty
+    }
+    assert _SIGNATURE_DEFAULTS[key] == expected
+    spec = entry.model()
+    for name, default in expected.items():
+        if entry.kinds[name] == "schedule" and default is not None:
+            assert spec.model_dump()[name] == {"type": "constant_schedule", "value": default}
+        else:
+            assert getattr(spec, name) == default
+
+
+@pytest.mark.parametrize("key", sorted(_UPSTREAM_ONLY_DEFAULTS))
+def test_reviewed_upstream_parameters_do_not_expand_settings_or_optimizer_state(key):
+    entry = OPTIMIZERS[key]
+    parameters = signature(entry.factory).parameters
+    upstream = _UPSTREAM_ONLY_DEFAULTS[key]
+    assert entry.upstream_defaults == {name: parameters[name].default for name in upstream if name in parameters}
+    assert upstream.keys().isdisjoint(entry.model.model_fields)
+
+    spec = entry.model()
+    (state,) = build_step_optimizer(spec).init(jnp.ones((3, 2)))
+    assert upstream.keys().isdisjoint(state.hyperparams)
+    assert upstream.keys().isdisjoint(state.hyperparams_states)
+    assert len(state.inner_state) == 2
 
 
 @pytest.mark.parametrize("key", sorted(OPTIMIZERS))

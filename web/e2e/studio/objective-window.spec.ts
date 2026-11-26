@@ -3,7 +3,7 @@ import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonica
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-const target = { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: 'target_pos' }] };
+const target = 'sqnorm(target_pos)';
 const squared = { base: 'real', dimensions: { length: 2 } };
 
 // Catches a Window cell whose interval is stored closed (21 samples), anchored at the wrong edge of its epoch, or with
@@ -12,7 +12,7 @@ test("a term's interval, authored in its Window cell, applies on the shelf over 
   const files = await fixture('delayed-reaches-files') as { document?: { payload: Record<string, any> } }[];
   for (const file of files) {
     const payload = file.document?.payload;
-    if (payload?.terms) payload.terms.push({ id: 'pulse', name: 'pulse', measure: target, measure_type: squared });
+    if (payload?.terms) payload.terms.pulse = { label: 'pulse', measure: target, measure_type: squared };
   }
   const { snapshot } = await seedManagedProject(request, files);
   const clock = page.locator('footer.studio-window-bottom').getByRole('group', { name: 'Clock', exact: true });

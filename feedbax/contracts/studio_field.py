@@ -2,10 +2,16 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import FieldValue, Problem, UnresolvedValue
+from feedbax.contracts.expression_registry import FunctionClass, FunctionParameter
+from feedbax.contracts.expression_site import ExpressionPartSite, FieldKind
+from feedbax.contracts.expression_values import (
+    CallValue, DrawCadence, DrawValue, Level, LiteralValue, NameValue, Problem, SequenceValue, SetVariableOrigin,
+    SignalSpace, SweepList, SweepSample, UnresolvedValue, ValueBase, ValueType,
+)
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import SelectedRuns, ModelEditCommand
@@ -15,7 +21,6 @@ from feedbax.contracts.project_sweep import RangeValues, SampleValues
 from feedbax.contracts.studio_authoring import StudioRunSelection
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scope import StudioStoreChoice
-from feedbax.contracts.expression_site import SiteProjection
 from feedbax.contracts.time_units import TimeValue
 
 
@@ -68,10 +73,16 @@ class StudioSweepList(StrictModel):
     editable: bool
 
 
+class StudioSweepRangeRule(RangeValues):
+    """A rule as the field reads it, including the effective scale."""
+
+    scale: Literal["linear", "log"] = Field()
+
+
 class StudioSweepRange(StrictModel):
     kind: Literal["range"]
     id: ProjectName
-    rule: RangeValues
+    rule: StudioSweepRangeRule
     can_list: bool
 
 
@@ -90,12 +101,79 @@ class StudioDensity(StrictModel):
     values: list[float]
 
 
+class StudioDrawValue(DrawValue):
+    per: DrawCadence
+
+
+type StudioStructuredValue = Annotated[
+    LiteralValue | NameValue | CallValue | StudioDrawValue | SequenceValue | UnresolvedValue | SweepList | SweepSample,
+    Field(discriminator="kind"),
+]
+
+
 class StudioValueStructure(StrictModel):
     """The value a field's text reads as, with the text of each positional argument of its root."""
 
-    value: FieldValue
+    value: StudioStructuredValue
     arguments: list[str] = Field(default_factory=list)
     density: StudioDensity | None = None
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _studio_draw(cls, value):
+        if isinstance(value, DrawValue):
+            return StudioDrawValue.model_validate(value, from_attributes=True)
+        return value
+
+
+class StudioFieldFunction(StrictModel):
+    """The expression function information the editor presents."""
+
+    id: str
+    signature: str
+    label: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    parameters: tuple[FunctionParameter, ...] = ()
+    display_class: FunctionClass
+    min_args: int
+    max_args: int | None
+    keywords: tuple[str, ...] = ()
+
+
+class StudioFieldNameType(StrictModel):
+    base: ValueBase
+    shape: tuple[int, ...] = ()
+    space: SignalSpace | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class StudioFieldName(StrictModel):
+    id: str
+    name: str
+    type: StudioFieldNameType
+    list_count: int | None = None
+    set_entry: SetVariableOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class StudioFieldSite(StrictModel):
+    expected: ValueType
+    finest: Level
+    names: tuple[StudioFieldName, ...] = ()
+    structural: bool = False
+    list_count: int | None = None
+    repeat_count: int | None = None
+    kinds: tuple[FieldKind, ...]
+    draw_per: DrawCadence | SkipJsonSchema[None] = Field(default=None, exclude_if=lambda value: value is None)
+    """Initial cadence for a new Draw where the site offers Draw."""
+    functions: str
+    """Key in this response's function lists."""
+    parts: tuple[ExpressionPartSite, ...]
+    name_paths: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+
+
+class StudioFieldSiteTables(StrictModel):
+    """Field editor data shared by the views in one response."""
+
+    sites: dict[str, StudioFieldSite] = Field(default_factory=dict)
+    function_lists: dict[str, tuple[StudioFieldFunction, ...]] = Field(default_factory=dict)
 
 
 class StudioFieldView(StrictModel):
@@ -109,7 +187,8 @@ class StudioFieldView(StrictModel):
     unit: str | None = None
     conversion: TimeValue | None = None
     """The equivalent in the other time unit under the selected Model's Step."""
-    site: SiteProjection
+    site: str
+    """Key in this response's sites."""
     sweep: StudioSweepList | StudioSweepRange | StudioSweepSampler | None = None
     selected_value: ProjectName | None = None
     can_sweep: bool = False
@@ -122,6 +201,7 @@ class StudioFieldView(StrictModel):
 
 class ModelFieldView(StudioFieldView):
     address: ModelAddress
+    address_text: str
     problems: list[Problem] = Field(default_factory=list)
     sources: list[StudioPlanReviewSource] = Field(default_factory=list)
 
@@ -139,7 +219,7 @@ class TrainFieldRequest(StudioRunSelection):
     ] | None = None
 
 
-class TrainFieldResponse(StrictModel):
+class TrainFieldResponse(StudioFieldSiteTables):
     fields: list[TrainFieldView] = Field(default_factory=list)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
     created: list[CreateNamedDocument] = Field(default_factory=list)
@@ -151,7 +231,7 @@ class TrainFieldResponse(StrictModel):
     """Per sweep, the values whose runs the edit removes from the project."""
 
 
-class ModelFieldResponse(StrictModel):
+class ModelFieldResponse(StudioFieldSiteTables):
     fields: list[ModelFieldView] = Field(default_factory=list)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
     created: list[CreateNamedDocument] = Field(default_factory=list)

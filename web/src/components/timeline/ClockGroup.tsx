@@ -1,6 +1,6 @@
 import { PanelBottomOpen, Pause, Play, Repeat, RotateCcw, StepBack, StepForward, type LucideIcon } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
+import { studioFormat, studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { SPEED_OPTIONS, usePlaybackTransport } from '@/components/viewer/usePlaybackTransport';
 import { IconButton } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
@@ -27,15 +27,32 @@ function ClockButton({ name, icon: Icon, onClick, pressed, disabled }: {
   return <IconButton label={studioName(name)} icon={<Icon aria-hidden="true" />} pressed={pressed} disabled={disabled} onClick={onClick} />;
 }
 
+/** The replicates a recorded result holds, when it holds more than one: how many, the one read by position, and its pick. */
+export interface ClockReplicates {
+  readonly count: number;
+  readonly selected: number;
+  readonly onSelect: (replicate: number) => void;
+}
+
+/** The replicate the recorded trials are read at, as `replicate k of n`. */
+function ReplicatePicker({ count, selected, onSelect }: ClockReplicates) {
+  const items = Array.from({ length: count }, (_, index) =>
+    ({ value: String(index), label: studioFormat('replicateOf', { index: index + 1, count }) }));
+  return <Select items={items} value={String(selected)} onValueChange={(value) => onSelect(Number(value))}
+    aria-label={studioName('replicate')} />;
+}
+
 const percent = (value: number, total: number) => `${(100 * value / total).toFixed(3)}%`;
 const seconds = (value: number) => `${value.toFixed(2)} ${studioUnit('second')}`;
 
 /**
  * The bottom bar's clock, on two lines. The upper holds the scrubber, with the shown trial's epochs as bands, and the
  * readout; the scrubber's track is the extent the shelf's time axis spans. The lower holds the trial picker and how
- * its trials are shown, the transport, Loop and Speed, and the shelf's switch.
+ * its trials are shown, the replicate picker where the recorded trials have more than one replicate, the transport,
+ * Loop and Speed, and the shelf's switch.
  */
-export function ClockGroup({ timeline, time, onTimeChange, axis, shelfOpen, onShelfChange, ...picker }: TrialPickerProps & {
+export function ClockGroup({ timeline, time, onTimeChange, axis, shelfOpen, onShelfChange, replicates, ...picker }: TrialPickerProps & {
+  readonly replicates?: ClockReplicates;
   readonly timeline: ClockTimeline;
   readonly time: number;
   readonly onTimeChange: (time: number) => void;
@@ -66,6 +83,7 @@ export function ClockGroup({ timeline, time, onTimeChange, axis, shelfOpen, onSh
     </div>
     <div className="studio-clock__controls">
       <TrialPicker {...picker} />
+      {replicates && <ReplicatePicker {...replicates} />}
       <div className="flex shrink-0 items-center">
         <ClockButton name="restart" icon={RotateCcw} disabled={still} onClick={() => transport.seek(start)} />
         <ClockButton name="previousFrame" icon={StepBack} disabled={still} onClick={() => transport.step(-1)} />

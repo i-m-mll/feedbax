@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { palette, startProject } from './studioKeyboard';
 
-/** Creates a project with one new Train and returns its focused Model panel. */
+/** Creates a project with one new Train and returns its focused Model panel once its canvas is drawn. */
 export async function newModel(page: Page) {
   await startProject(page);
   await palette(page, 'newStep', 'New Step');
@@ -9,6 +9,7 @@ export async function newModel(page: Page) {
   await page.keyboard.press('Enter');
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await expect(model).toBeFocused();
+  await expect(model.locator('.react-flow__node[data-id="@inputs"]')).toBeVisible();
   return model;
 }
 

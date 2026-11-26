@@ -1,0 +1,23 @@
+{
+  "kind": "train",
+  "label": "Kicked training",
+  "base": {
+    "inline": {
+      "trial_documents": {
+        "model": {"document": "heavy-point-mass"},
+        "task": {"document": "level-task"},
+        "objective": {"document": "campaign-objective"}
+      },
+      "method": "feedbax.supervised_gradient",
+      "settings": {},
+      "training_config": {"n_batches": 2, "batch_size": 4}
+    }
+  },
+  "set_fields": {
+    "kicks": {
+      "axis": {"set": "command-kicks"},
+      "sampling": {"kind": "weighted"},
+      "condition": "not catch"
+    }
+  }
+}

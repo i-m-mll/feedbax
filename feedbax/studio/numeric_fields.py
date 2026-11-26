@@ -5,8 +5,9 @@ from dataclasses import dataclass, field as dataclass_field
 from math import isfinite
 
 from feedbax.contracts.expression_units import UNITS
+from feedbax.contracts.expression_sequence import sequence_definition
 from feedbax.contracts.expression_values import (
-    FieldValue, LiteralValue, Problem, ProblemCode, Site, SweepList, SweepRange, SweepSample, UnresolvedValue,
+    FieldValue, LiteralValue, Problem, ProblemCode, SequenceValue, Site, SweepList, SweepSample, UnresolvedValue,
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import SetProjectValue
@@ -24,6 +25,7 @@ from feedbax.contracts.expression_site import FieldKind, field_kind, project_sit
 from feedbax.contracts.expression_text import ParsedField, print_field
 from feedbax.contracts.time_units import TimeUse, TimeValue, length_steps, literal_time, paired_time, time_steps
 from feedbax.studio.authoring_sweeps import FieldSweeps, drop_axis, named_axis
+from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.studio.value_structure import value_structure
 
 _STORED_KINDS = (FieldKind.VALUE, FieldKind.SWEEP)
@@ -168,7 +170,8 @@ def _sample_axis(value: SweepSample, field: NumericField, functions: FunctionReg
 
 def project_numeric_field[View: StudioFieldView](
     view_type: type[View], field: NumericField, axis: FieldSweeps | None,
-    functions: FunctionRegistry, selected: PlannedRow | None, effective: object, *, held: Sequence[object] = (),
+    functions: FunctionRegistry, selected: PlannedRow | None, effective: object, *,
+    sites: FieldSiteIndex, held: Sequence[object] = (),
     period: float | None = None, effective_unit: str | None = None, scoped: bool = False,
     defer_parts: bool = False, **address,
 ) -> View:
@@ -186,7 +189,10 @@ def project_numeric_field[View: StudioFieldView](
     shown: FieldValue = field.value if isinstance(field.value, UnresolvedValue) else field.literal(field.value)
     if isinstance(source, RangeAxis) and not isinstance(shown, UnresolvedValue):
         rule = source.range
-        shown = SweepRange(first=field.literal(rule.start), last=field.literal(rule.stop), count=rule.count, spacing=rule.scale)
+        shown = SequenceValue(
+            rule="linspace" if rule.scale == "linear" else "geomspace",
+            first=field.literal(rule.start), last=field.literal(rule.stop), count=LiteralValue(value=rule.count),
+        )
     elif isinstance(source, SampledAxis) and not isinstance(shown, UnresolvedValue) and not isinstance(source.sampler.distribution, str):
         shown = SweepSample(draw=source.sampler.distribution, count=source.sampler.count)
     members = []
@@ -214,7 +220,7 @@ def project_numeric_field[View: StudioFieldView](
         effective=print_field(current, field.site) if current is not None
         and (current.value != field.value or current.unit != field.unit) else None,
         mixed=len(held) > 1,
-        site=site, sweep=view, selected_value=coordinate.value_id if coordinate else None,
+        site=sites.reference(site), sweep=view, selected_value=coordinate.value_id if coordinate else None,
         can_sweep=bool(own and axis and axis.can_sweep and field.stored and not isinstance(field.value, UnresolvedValue)),
         can_change_axis=bool(own and axis and axis.simple and view and (
             view.editable if view.kind == "list" else view.can_list
@@ -357,7 +363,7 @@ def _prepare(
             ),
         )
         return sweep().edit(command, field.validate)
-    if isinstance(value, SweepList | SweepRange | SweepSample):
+    if isinstance(value, SweepList | SequenceValue | SweepSample):
         if scoped:
             raise ValueError(f"{field.label} has one sweep for every run.")
         owner = sweep()
@@ -367,9 +373,10 @@ def _prepare(
         path = owner.target.generated_path
         if path is None:
             raise ValueError(f"{field.label} writes more than one setting and takes a list.")
-        if isinstance(value, SweepRange):
+        if isinstance(value, SequenceValue):
             generated = RangeAxis(path=path, range=RangeValues(
-                start=number(value.first), stop=number(value.last), count=value.count, scale=value.spacing,
+                start=number(value.first), stop=number(value.last), count=sequence_definition(value).count,
+                scale="log" if value.rule == "geomspace" else "linear",
             ))
             for member in owner.to_list(generated).values.values():
                 assert member is not None and type(member.value) in (float, int)

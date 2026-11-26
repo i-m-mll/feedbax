@@ -1,21 +1,27 @@
 """Project the selected run's compiler and task facts onto stored Model addresses."""
 
 from collections import defaultdict
+from collections.abc import Iterator
 from typing import cast, get_args
 
 from feedbax.compiler.model_document import inspect_model_signals
 from feedbax.compiler.model_edit import conserving_port_type, model_ungroup_eligibility
 from feedbax.compiler.model_ports import ModelRegistryPorts
-from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf
+from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf, intervention_operand_defaults
 from feedbax.contracts.model_address import (
-    AttachmentElement, ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement, WireElement,
+    AttachmentElement, ComponentElement, ComponentPortAddress, FieldElement, GraphElement, InputsElement,
+    ModelAddress, OutputsElement, PhysicalConnectionElement, PortElement, WireElement,
 )
-from feedbax.contracts.model_document import DelayAttachment, ModelDocument, ModelTime, PhysicalPortType, SignalType
+from feedbax.contracts.model_document import (
+    CompositeComponent, DelayAttachment, ModelDocument, ModelTime, PhysicalInterior, PhysicalPortType, SignalType,
+)
+from feedbax.contracts.stored_model import StoredModelDocument
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.time_units import length_steps
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_edit import (
-    EvaluateModelRequest, ModelPhysicalPortProjection, ModelPortProjection, ModelProjection, ModelTaskInput, StepRuns,
+    EvaluateModelRequest, ModelAttachmentDefaults, ModelAttachmentDefaultsRequest, ModelPhysicalPortProjection,
+    ModelPortProjection, ModelProjection, ModelTaskInput, StepRuns,
 )
 from feedbax.contracts.expression_check import references
 from feedbax.contracts.project import BasedDocument
@@ -42,6 +48,32 @@ def _boundary_port(composites, direction, port):
         "composites": composites,
         "element": {"kind": "port", "end": {"owner": "boundary" if direction == "physical" else direction + "s", "port": port}},
     })
+
+
+def _placed_addresses(
+    owner: ModelDocument | CompositeComponent, scope: tuple[str, ...] = (),
+) -> Iterator[ModelAddress]:
+    for element in (GraphElement(kind="graph"), InputsElement(kind="inputs"), OutputsElement(kind="outputs")):
+        yield ModelAddress(composites=scope, element=element)
+    for key, component in owner.interior.components.items():
+        yield ModelAddress(composites=scope, element=ComponentElement(kind="component", id=key))
+        for direction, ports in (("output", component.attachments.sources), ("input", component.attachments.sinks)):
+            for port, attachments in ports.items():
+                parent = _port(scope, key, direction, port).element
+                for item in attachments:
+                    element = AttachmentElement(kind="attachment", parent=parent, id=item.id)
+                    yield ModelAddress(composites=scope, element=element)
+        if isinstance(component, CompositeComponent):
+            yield from _placed_addresses(component, (*scope, key))
+    for key, wire in owner.interior.wires.items():
+        parent = WireElement(kind="wire", id=key)
+        yield ModelAddress(composites=scope, element=parent)
+        for item in wire.attachments:
+            element = AttachmentElement(kind="attachment", parent=parent, id=item.id)
+            yield ModelAddress(composites=scope, element=element)
+    if isinstance(owner.interior, PhysicalInterior):
+        for key in owner.interior.connections:
+            yield ModelAddress(composites=scope, element=PhysicalConnectionElement(kind="physical_connection", id=key))
 
 
 def _delay_steps(owner, period: float | None, scope: tuple[str, ...] = ()):
@@ -95,7 +127,7 @@ def _declared_ports(authority: ModelRegistryPorts, owner, scope=()):
 
 
 def _dumped(payload) -> dict:
-    return ModelDocument.model_validate(payload).model_dump(mode="json")
+    return StoredModelDocument.model_validate(payload).model_dump(mode="json")
 
 
 def model_differences(folders, project_id, body, snapshot, shown, layout):
@@ -158,16 +190,16 @@ def _objective_readers(objective: ObjectiveDocument | None, signals: ModelSignal
 
 def evaluate_projection(folders, project_id, body, bundle):
     from feedbax.web.services.evaluate_sources import read_evaluate_model
-    from feedbax.web.services.trial_authoring import _pairing
+    from feedbax.web.services.trial_authoring import _pairing, read_trial_view_plan
 
     key = RunKey(body.run.variant, body.run.step, body.run.row)
-    plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+    plan = read_trial_view_plan(folders, project_id, body.revision, key).plan
     reading = read_evaluate_model(
         folders, project_id, EvaluateModelRequest(
             revision=body.revision, run=body.run, scope=body.evaluate_scope or StepRuns(kind="step"),
         ), bundle.components, selected=plan, model_document=body.document,
     )
-    model = reading.state.resolved_model
+    model = reading.model
     definition = plan.selected_definitions.get(key)
     if definition is None:
         return model, (), None, {}, None
@@ -181,11 +213,7 @@ def evaluate_projection(folders, project_id, body, bundle):
     return model, model_task_signals(source, folders.python_tasks), documents.objective, documents.input_bindings, source
 
 
-def model_projection(folders, project_id, body, bundle):
-    snapshot = folders.read(project_id, revision=body.revision)
-    payload, layout = model_edit_source(snapshot, body.document)
-    authored = ModelDocument.model_validate(payload)
-    differences = model_differences(folders, project_id, body, snapshot, authored.model_dump(mode="json"), layout)
+def _model_signal_selection(folders, project_id, body, bundle, snapshot, authored):
     selected = None
     step = snapshot.project.steps.get(body.run.step) if body.run is not None else None
     if step is not None and step.kind == "evaluate":
@@ -196,13 +224,35 @@ def model_projection(folders, project_id, body, bundle):
         selected = selected_model_and_task(folders, project_id, body)
     model, task, objective, overrides, source = selected or (authored, (), None, {}, None)
     model = model or authored
-    task_signals = tuple(task_signal(item) for item in task)
     bound = matched_task_inputs(model, task, overrides)
     supplied = {port.name: signal.type for port, signal in bound}
-    authority = ModelRegistryPorts(bundle.components)
     table = inspect_model_signals(
         model, bundle.components, supplied, task=source if isinstance(source, TaskDocument) else None,
     )
+    return model, task, objective, bound, table
+
+
+def model_attachment_defaults(folders, project_id, body: ModelAttachmentDefaultsRequest, bundle) -> ModelAttachmentDefaults:
+    snapshot = folders.read(project_id, revision=body.revision)
+    payload, _ = model_edit_source(snapshot, body.document)
+    try:
+        authored = StoredModelDocument.model_validate(payload).lower(bundle.components)
+        model, _, _, _, table = _model_signal_selection(folders, project_id, body, bundle, snapshot, authored)
+        operands = intervention_operand_defaults(model, table, body.owner, body.operation)
+    except ValueError as error:
+        raise ProjectFolderInvalid(str(error)) from error
+    return ModelAttachmentDefaults(operands=operands)
+
+
+def model_projection(folders, project_id, body, bundle):
+    snapshot = folders.read(project_id, revision=body.revision)
+    payload, layout = model_edit_source(snapshot, body.document)
+    stored = StoredModelDocument.model_validate(payload)
+    authored = stored.lower(bundle.components)
+    differences = model_differences(folders, project_id, body, snapshot, stored.model_dump(mode="json"), layout)
+    model, task, objective, bound, table = _model_signal_selection(folders, project_id, body, bundle, snapshot, authored)
+    task_signals = tuple(task_signal(item) for item in task)
+    authority = ModelRegistryPorts(bundle.components)
     readers = _objective_readers(objective, table)
     ports: list[ModelPortProjection] = []
     physical_ports: list[ModelPhysicalPortProjection] = []
@@ -223,12 +273,17 @@ def model_projection(folders, project_id, body, bundle):
                 address=leaf.address, type=leaf.signal_type,
                 readers=tuple(readers.get(leaf.address.to_text(), ())),
             ))
+    placed = {address.to_text(): address.to_authored_text() for address in _placed_addresses(model)}
+    if model != authored:
+        placed.update((address.to_text(), address.to_authored_text()) for address in _placed_addresses(authored))
+    for item in (*ports, *physical_ports, *table.problems, *differences["base_differences"], *differences["value_differences"]):
+        placed[item.address.to_text()] = item.address.to_authored_text()
     return ModelProjection(
-        ports=tuple(ports), physical_ports=tuple(physical_ports), problems=table.problems, task_signals=task_signals,
+        address_texts=placed, ports=tuple(ports), physical_ports=tuple(physical_ports), problems=table.problems, task_signals=task_signals,
         delay_steps=dict(_delay_steps(model, model.step_seconds if isinstance(model.step_seconds, float) else None)),
         task_inputs=tuple(
             ModelTaskInput(composites=(), element=_boundary_port((), "input", port.id).element, signal_id=signal.id)
             for port, signal in bound
-        ), resolved_model=model,
+        ), resolved_model=StoredModelDocument.from_lowered(model, bundle.components),
         ungroup=model_ungroup_eligibility(model), **differences,
     )

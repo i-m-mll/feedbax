@@ -5,25 +5,24 @@ from copy import deepcopy
 from fastapi.testclient import TestClient
 import pytest
 
-from feedbax.contracts.expression_values import ValueType
+from feedbax.contracts.expression_values import CallValue, LiteralValue, ValueType
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
-from feedbax.contracts.expression_values import LiteralValue
-from feedbax.contracts.task_document import BLANK_TASK, Marker, TaskDocument
+from feedbax.contracts.task_document import BLANK_STORED_TASK, Marker, StoredTaskDocument
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 from tests.test_model_document_edits import _URL, _Project
 from tests.test_task_document_fields import _save
 
 TASK = "delayed-reaches-task"
-LINKED = ModelAddress.at_state((), "plant", "effector/position").to_text()
+LINKED = ModelAddress.at_state((), "plant", "effector/position")
 DURATION = {"base": "real", "dimensions": {"time": 1}}
 
 
 POINT = {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"}
 
 
-def _project(tmp_path, task=None):
+def _project(tmp_path, task: StoredTaskDocument | None = None):
     raw = managed_train_project(scenario="delayed-reaches").model_dump(mode="json", by_alias=True, exclude_unset=True)
     if task is not None:
         raw["documents"][TASK]["payload"] = task.model_dump(mode="json")
@@ -58,11 +57,11 @@ def test_shipped_task_marker_survives_reopening_without_changing_request_ids(tmp
         requests = project.ids()
         assert requests
         task = _change(project, None).task
-        assert isinstance(task, TaskDocument)
-        points = {variable.id: variable for variable in task.variables if variable.type.space == "point"}
+        assert isinstance(task, StoredTaskDocument)
+        points = {key: variable for key, variable in task.variables.items() if variable.type.space == "point"}
         assert points["start"].marker is points["target"].marker is None
-        assert "start" in {link.variable for link in task.links}
-        assert "target" not in {link.variable for link in task.links}
+        assert "start" in task.links.values()
+        assert "target" not in task.links.values()
         assert not _made(project, {
             "op": "set_variable_marker", "id": "target", "marker": marker.model_dump(mode="json"),
         })
@@ -72,9 +71,10 @@ def test_shipped_task_marker_survives_reopening_without_changing_request_ids(tmp
     project.client = TestClient(create_app(projects_dir=tmp_path))
     with project.client:
         task = _change(project, None).task
-        assert next(variable.marker for variable in task.variables if variable.id == "target") == marker
+        assert isinstance(task, StoredTaskDocument)
+        assert task.variables["target"].marker == marker
         assert not _made(project, {"op": "set_variable_marker", "id": "target", "marker": None})
-        stored = next(variable for variable in project.composed(TASK)["variables"] if variable["id"] == "target")
+        stored = project.composed(TASK)["variables"]["target"]
         assert "marker" not in stored
         assert project.ids() == requests
 
@@ -106,20 +106,18 @@ def test_evaluate_task_marker_is_visible_without_changing_the_request(tmp_path, 
     with project.client:
         before = project.ids()
         assert "evaluate" in before
-        variables = project.composed(task_name)["variables"]
-        index = next(i for i, variable in enumerate(variables) if variable["id"] == "target")
         saved = project.client.patch(_URL, json={
             "revision": project.snapshot()["revision"], "files": [{
                 "address": {"kind": "document", "id": task_name},
                 "patches": [{
-                    "op": "add", "path": f"/payload/variables/{index}/marker", "value": marker.model_dump(mode="json"),
+                    "op": "add", "path": "/payload/variables/target/marker", "value": marker.model_dump(mode="json"),
                 }],
             }],
         })
         assert saved.status_code == 200, saved.text
         task = _change(project, None, step="evaluate").task
-        assert isinstance(task, TaskDocument)
-        assert next(variable.marker for variable in task.variables if variable.id == "target") == marker
+        assert isinstance(task, StoredTaskDocument)
+        assert task.variables["target"].marker == marker
         assert project.ids() == before
 
 
@@ -140,8 +138,8 @@ def test_evaluate_structure_edit_preserves_its_task_store_scope(tmp_path, subjec
         _save(project, edit)
         for step, expected in (("evaluate", marker), ("train", None)):
             task = _change(project, None, step=step).task
-            assert isinstance(task, TaskDocument)
-            assert next(variable.marker for variable in task.variables if variable.id == "target") == expected
+            assert isinstance(task, StoredTaskDocument)
+            assert task.variables["target"].marker == expected
         assert project.ids() == before
 
 
@@ -169,13 +167,13 @@ def test_each_structural_change_leaves_a_document_that_compiles(tmp_path):
             {"op": "set_span", "signal": "extra", "cell": "hold", "first_epoch": "hold", "last_epoch": "cue"},
             {"op": "absent", "signal": "extra", "cell": "hold"},
             {"op": "remove", "member": "signal", "id": "extra"},
-            {"op": "link", "model_field": LINKED, "variable": "target"},
+            {"op": "link", "address_text": LINKED.to_authored_text(), "variable": "target"},
         ):
             assert _made(project, change) == [], change
         task = project.composed(TASK)
-        assert [item["id"] for item in task["variables"]] == ["start", "target", "catch"]
-        assert [item["id"] for item in task["epochs"]] == ["hold", "cue", "move"]
-        assert task["links"] == [{"model_field": LINKED, "variable": "target"}]
+        assert list(task["variables"]) == ["start", "target", "catch"]
+        assert list(task["epochs"]) == ["hold", "cue", "move"]
+        assert task["links"] == {LINKED.to_authored_text(): "target"}
 
 
 def test_task_rename_refuses_ambiguous_expression_names(tmp_path):
@@ -210,11 +208,12 @@ def test_a_variable_added_for_a_model_start_initializes_it_in_the_same_edit(tmp_
         skeleton = resets[ModelAddress.at_state((), "plant", "skeleton/position").to_text()]
         assert skeleton.path == ("Point mass", "skeleton", "position")
         assert skeleton.type == ValueType.model_validate(POINT) and not skeleton.required
-        change = {"op": "add", "member": "variable", "name": "origin", "type": POINT, "initializes": [LINKED]}
+        change = {"op": "add", "member": "variable", "name": "origin", "type": POINT, "initializes": [LINKED.to_text()]}
         assert _made(project, change) == []
         task = project.composed(TASK)
-        assert ValueType.model_validate(task["variables"][-1]["type"]) == ValueType.model_validate(POINT)
-        assert task["links"] == [{"model_field": LINKED, "variable": "origin"}]
+        assert next(reversed(task["variables"])) == "origin"
+        assert ValueType.model_validate(task["variables"]["origin"]["type"]) == ValueType.model_validate(POINT)
+        assert task["links"] == {LINKED.to_authored_text(): "origin"}
 
 
 def test_making_a_cell_present_keeps_the_typed_text_in_the_same_write(tmp_path):
@@ -227,22 +226,22 @@ def test_making_a_cell_present_keeps_the_typed_text_in_the_same_write(tmp_path):
         assert invalid.files and field.text == "unknown"
         assert [problem.code for problem in field.problems] == ["unknown_name"]
         _save(project, invalid)
-        extra = next(signal for signal in project.composed(TASK)["signals"] if signal["id"] == "extra")
-        assert extra["cells"][0]["value"] == {"kind": "unresolved", "text": "unknown"}
+        extra = project.composed(TASK)["signals"]["extra"]
+        assert extra["cells"]["hold"]["value"] == "unknown"
         repaired = _change(project, [
             {"op": "absent", "signal": "extra", "cell": "hold"},
             {"op": "present", "signal": "extra", "epoch": "hold", "text": "2"},
         ])
         assert not repaired.problems
         _save(project, repaired)
-        extra = next(signal for signal in project.composed(TASK)["signals"] if signal["id"] == "extra")
-        assert LiteralValue.model_validate(extra["cells"][0]["value"]).value == 2
+        extra = project.composed(TASK)["signals"]["extra"]
+        assert extra["cells"]["hold"]["value"] == 2
 
 
 def test_a_value_is_stored_in_a_task_that_already_has_problems(tmp_path):
     """Catches a value refused for the problems compiling reaches once it is mended: a new task's first variables are
     typed before their values, and its signals do not yet feed the model."""
-    project = _project(tmp_path, BLANK_TASK)
+    project = _project(tmp_path, BLANK_STORED_TASK)
     with project.client:
         for change in ({"op": "add", "member": "variable", "name": "start"},
                        {"op": "set_type", "member": "variable", "id": "start", "type": POINT}):
@@ -252,7 +251,10 @@ def test_a_value_is_stored_in_a_task_that_already_has_problems(tmp_path):
         })
         assert view.files, view.problems
         _save(project, view)
-        assert project.composed(TASK)["variables"][0]["value"]["function"] == "vector"
+        task = StoredTaskDocument.model_validate(project.composed(TASK))
+        assert task.variables["start"].value == CallValue(
+            function="vector", args=(LiteralValue(value=0, unit="m"), LiteralValue(value=0, unit="m")),
+        )
 
 
 def test_removing_an_epoch_shortens_the_cells_and_repeat_that_span_it(tmp_path):
@@ -264,17 +266,17 @@ def test_removing_an_epoch_shortens_the_cells_and_repeat_that_span_it(tmp_path):
         ]) == []
         assert _made(project, {"op": "remove", "member": "epoch", "id": "cue"}) == []
         spans = {
-            signal["id"]: [(cell["first_epoch"], cell["last_epoch"]) for cell in signal["cells"]]
-            for signal in project.composed(TASK)["signals"]
+            key: [(cell["first_epoch"], cell["last_epoch"]) for cell in signal["cells"].values()]
+            for key, signal in project.composed(TASK)["signals"].items()
         }
         assert spans["goal"] == [("hold", "hold"), ("move", "move")]
         assert spans["target_pos"] == [("move", "move")]
-        task = TaskDocument.model_validate(project.composed(TASK))
-        (repeat,) = task.repeats
+        task = StoredTaskDocument.model_validate(project.composed(TASK))
+        ((key, repeat),) = task.repeats.items()
         assert repeat.first_epoch == repeat.last_epoch == "hold"
         assert repeat.count == LiteralValue(value=1)
-        assert _made(project, {"op": "remove_repeat", "id": repeat.id}) == []
-        assert not TaskDocument.model_validate(project.composed(TASK)).repeats
+        assert _made(project, {"op": "remove_repeat", "id": key}) == []
+        assert not StoredTaskDocument.model_validate(project.composed(TASK)).repeats
 
 
 def test_epoch_instances_use_the_resolved_count_and_keep_authored_columns(tmp_path):
@@ -313,7 +315,8 @@ def test_nested_and_crossing_repeat_edits_keep_their_brackets_and_problems(tmp_p
             view = _change(project, None)
             assert view.n_steps is None and not view.epoch_instances
             assert [epoch.id for epoch in view.epochs] == ["hold", "settle", "cue", "move"]
-            stored = next(repeat for repeat in view.task.repeats if repeat.id == identifier)
+            assert isinstance(view.task, StoredTaskDocument)
+            stored = view.task.repeats[identifier]
             assert (stored.first_epoch, stored.last_epoch) == (first, last)
 
 
@@ -331,22 +334,26 @@ def test_a_list_of_changes_is_one_edit_and_a_refused_one_refuses_the_list(tmp_pa
             {"op": "absent", "signal": "goal", "cell": "hold-cue"},
             {"op": "absent", "signal": "goal", "cell": "move"},
         ]) == []
-        goal = next(signal for signal in project.composed(TASK)["signals"] if signal["id"] == "goal")
-        assert goal["cells"] == []
+        goal = project.composed(TASK)["signals"]["goal"]
+        assert goal["cells"] == {}
 
 
 def test_an_end_s_text_makes_a_rest_epoch_a_length_and_rest_makes_it_rest_again(tmp_path):
     """Catches a Rest End that a length's text cannot reach in one edit, or that `rest` does not give back."""
     project = _project(tmp_path)
+
+    def end(text):
+        return {"kind": "expression", "path": "/task/epochs/move/end/length", "edit": {"kind": "text", "text": text}}
+
+    def move():
+        return project.composed(TASK)["epochs"]["move"]["end"]
+
     with project.client:
-        end = lambda text: {"kind": "expression", "path": "/task/epochs/move/end/length",
-                            "edit": {"kind": "text", "text": text}}
-        move = lambda: next(epoch for epoch in project.composed(TASK)["epochs"] if epoch["id"] == "move")["end"]
         assert move() == {"kind": "rest"}
         view = _change(project, None, body=end("0.2 s"))
         assert view.files, view.problems
         _save(project, view)
-        assert move() == {"kind": "length", "length": {"kind": "literal", "value": 0.2, "unit": "s"}}
+        assert move() == {"kind": "length", "length": "0.2 s"}
         view = _change(project, None, body=end("rest"))
         assert view.files, view.problems
         _save(project, view)
@@ -357,7 +364,7 @@ def test_removing_a_variable_that_is_read_leaves_a_problem_where_it_is_read(tmp_
     project = _project(tmp_path)
     with project.client:
         problems = _made(project, {"op": "remove", "member": "variable", "id": "catch"})
-        assert "catch" not in [item["id"] for item in project.composed(TASK)["variables"]]
+        assert "catch" not in project.composed(TASK)["variables"]
         read = ("signals", "goal", "cells", "move", "value")
         assert any(problem.path[:len(read)] == read for problem in problems), problems
 
@@ -390,11 +397,9 @@ def test_a_variable_with_problems_marks_each_field_that_reads_it_where_it_reads_
     """Catches a bad variable whose readers go unmarked, are marked without the name's place, or hide fields that do not
     read it."""
     raw = managed_train_project(scenario="delayed-reaches").model_dump(mode="json", by_alias=True, exclude_unset=True)
-    task = TaskDocument.model_validate(raw["documents"][TASK]["payload"])
-    task = task.model_copy(update={"variables": tuple(
-        item.model_copy(update={"value": LiteralValue(value=1, unit="m")}) if item.id == "catch" else item
-        for item in task.variables
-    )})
+    task = StoredTaskDocument.model_validate(raw["documents"][TASK]["payload"])
+    catch = task.variables["catch"].model_copy(update={"value": LiteralValue(value=1, unit="m")})
+    task = task.model_copy(update={"variables": task.variables | {"catch": catch}})
     project = _project(tmp_path, task)
     with project.client:
         fields = {field.path: field for field in _change(project, None).fields}

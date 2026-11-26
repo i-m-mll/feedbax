@@ -3,9 +3,11 @@
 import os
 import shutil
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.jobs import JobService
 from feedbax.host.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -67,15 +69,15 @@ def read_weight(model: Annotated[Graph, ModelPort()], params: Settings) -> Annot
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, (str(tmp_path), os.environ.get("PYTHONPATH")))))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
 
-    host = request.getfixturevalue("host")
-    host.policy(compute=1)
+    running_host = request.getfixturevalue("host")
+    running_host.policy(compute=1)
     registries = load_application().bundle
     folders = ProjectFolder(
         tmp_path / "projects", components=registries.components, python_tasks=registries.python_tasks,
         operations=registries.operations, functions=registries.expression_functions,
         training_methods=registries.training_methods,
     )
-    jobs = JobService(host, registries)
+    jobs = JobService(running_host, registries)
     project = "checkpoint-selection"
     raw = managed_train_project(batches=3).model_dump(mode="json", by_alias=True, exclude_unset=True)
     authored = raw["steps"]["train"]["base"]["inline"]
@@ -100,14 +102,14 @@ def read_weight(model: Annotated[Graph, ModelPort()], params: Settings) -> Annot
         assert all(item.job_id is not None and item.disposition == "admitted" for item in result.items), result
 
         def settled():
-            rows = [job_row(host, item.job_id) for item in result.items]
+            rows = [job_row(running_host, item.job_id) for item in result.items]
             return rows if all(row is not None and row["outcome"] is not None for row in rows) else None
 
         return wait_until(settled)
 
     (trained,) = run(save(), "train")
     assert trained["state"] == "succeeded", trained["outcome"]
-    raw["documents"]["read-model"] = {"label": "Read model", "schema": "feedbax.analysis_document.v1", "payload": {
+    raw["documents"]["read-model"] = {"label": "Read model", "schema": ANALYSIS_SCHEMA, "payload": {
         "inputs": {"model": {"kind": "model"}},
         "operations": {"read": {
             "label": "Read",

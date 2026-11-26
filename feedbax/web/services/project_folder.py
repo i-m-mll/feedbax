@@ -4,21 +4,24 @@ from __future__ import annotations
 
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from hmac import compare_digest, digest
 import os
 from pathlib import Path
 from secrets import token_bytes
+from threading import Lock
 from typing import TYPE_CHECKING
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.project import ProjectValueEdit, Sha256
+from feedbax.contracts.project import Differences, ProjectValueEdit, Sha256, apply_differences, diff
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import PROJECT_DECLARATION_SUFFIX, TextProject, TextProjectExternalInputs
 from feedbax.contracts.project_resolution import BaseReaders, RunKey
+from feedbax.contracts.stored_model import StoredModelDocument, model_keyed_collection, model_member_order
 from feedbax.contracts.studio_project import StudioProjectDocument, StudioProjectSnapshot
 from feedbax.project_environment import PackageAvailability
 from feedbax.examples import ShippedExample
@@ -44,6 +47,7 @@ if TYPE_CHECKING:
         ModelConnectionReview, ModelConnectionReviewRequest, ModelEditRequest, ModelEditResponse, ModelUndoRequest,
     )
     from feedbax.contracts.expression_registry import FunctionRegistry
+    from feedbax.contracts.expression_values import Problem
     from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.synthesis.methods import SynthesisMethodRegistry
 from feedbax.training.methods import TrainingMethodRegistry
@@ -53,7 +57,7 @@ from feedbax.web.services.trial_expression_menus import TrialExpressionMenus
 class _ModelInverse(StrictModel):
     project: ProjectName
     document: ProjectName
-    payload: tuple[ProjectValueEdit, ...]
+    payload: Differences
     layout: tuple[ProjectValueEdit, ...]
     changed: tuple[ModelAddress, ...]
     before: Sha256
@@ -83,6 +87,24 @@ class ProjectFolderService(ProjectFolder):
         )
         self._model_undo_key = token_bytes(32)
         self.trial_expression_menus = TrialExpressionMenus()
+        self._task_choice_problems: OrderedDict[tuple[object, ...], tuple[Problem, ...]] = OrderedDict()
+        self._task_choice_lock = Lock()
+
+    def task_choice_problems(
+        self, key: tuple[object, ...], prepare: Callable[[], tuple[Problem, ...]],
+    ) -> tuple[Problem, ...]:
+        """Reuse the problems of a pairing under the same effective inputs and registries."""
+        with self._task_choice_lock:
+            if (cached := self._task_choice_problems.get(key)) is not None:
+                self._task_choice_problems.move_to_end(key)
+                return cached
+        problems = prepare()
+        with self._task_choice_lock:
+            self._task_choice_problems[key] = problems
+            self._task_choice_problems.move_to_end(key)
+            if len(self._task_choice_problems) > 128:
+                self._task_choice_problems.popitem(last=False)
+        return problems
 
     def open_selected_folder(self, folder: Path) -> StudioProjectDocument:
         """Open a folder selected through the private native control socket."""
@@ -128,13 +150,12 @@ class ProjectFolderService(ProjectFolder):
         read_pin = TextProjectExternalInputs(
             text, authority=location.path, authority_identity=location.identity,
         ).read
-        return BaseReaders(external=read_pin, figure_external=read_pin)
+        return BaseReaders(external=read_pin, figure_external=read_pin, stored_regions=self._stored_regions)
 
     def review_model_connections(
         self, project_id: str, body: ModelConnectionReviewRequest, bundle: ApplicationRegistryBundle,
     ) -> ModelConnectionReview:
         from feedbax.compiler.model_document import inspect_model_signals
-        from feedbax.contracts.model_document import ModelDocument
         from feedbax.contracts.model_edit import TaskSignalSource
         from feedbax.contracts.task_document import TaskDocument
         from feedbax.compiler.model_edit import review_model_connections
@@ -146,9 +167,9 @@ class ProjectFolderService(ProjectFolder):
 
         snapshot = self.read(project_id, revision=body.revision)
         payload, _ = model_edit_source(snapshot, body.document)
-        model = ModelDocument.model_validate(payload)
-        task, overrides, source = (), {}, None
         components = bundle.components
+        model = StoredModelDocument.model_validate(payload).lower(components)
+        task, overrides, source = (), {}, None
         task_source = body.source if isinstance(body.source, TaskSignalSource) else None
         try:
             if body.run is None and (body.rows or body.axes or body.evaluate_scope is not None):
@@ -206,7 +227,6 @@ class ProjectFolderService(ProjectFolder):
         )
 
         from feedbax.web.services.model_scope import model_edit_store
-        from feedbax.web.services.trial_bindings import input_names, preserve_renamed_bindings
         from feedbax.web.services.trial_scope import row_model
 
         project_id = self.project_id(project_id)
@@ -217,13 +237,7 @@ class ProjectFolderService(ProjectFolder):
             row = row_model(self, project_id, self.read(project_id, revision=body.revision).project, body)
 
         def store(project, body, before, after):
-            stored = model_edit_store(self, project_id, project, body, before, after, row)
-            if isinstance(stored, ModelEditAsked):
-                return stored
-            old_names, new_names = input_names(before), input_names(after)
-            if any(old_names[id_] != new_names[id_] for id_ in old_names.keys() & new_names.keys()):
-                return preserve_renamed_bindings(self, project_id, body.revision, project, stored)
-            return stored
+            return model_edit_store(self, project_id, project, body, before, after, row)
 
         result = self.apply_model_command(
             project_id, body, components, store, source=row.content if row is not None else None,
@@ -245,7 +259,6 @@ class ProjectFolderService(ProjectFolder):
     def undo_model(self, project_id: str, body: ModelUndoRequest) -> ModelEditResponse:
         from feedbax.compiler.model_document import inspect_model_signals
         from feedbax.contracts.model_edit import ModelEditApplied, ModelEditResponse
-        from feedbax.contracts.model_document import ModelDocument
         from feedbax.compiler.model_ports import ModelRegistryPorts
         from feedbax.studio.model_undo import apply_delta
 
@@ -265,8 +278,8 @@ class ProjectFolderService(ProjectFolder):
         current = model_edit_source(snapshot, edit.document)
         if self._model_edit_digest(current) != edit.before:
             raise ProjectRevisionConflict("project", snapshot.revision)
-        payload, layout = deepcopy(current)
-        apply_delta(payload, edit.payload)
+        payload = apply_differences(current[0], edit.payload, keyed_collection=model_keyed_collection)
+        layout = deepcopy(current[1])
         apply_delta(layout, edit.layout)
         token = self._model_inverse(snapshot, edit.document, current, (payload, layout), edit.changed)
         snapshot = self._write_model_change(
@@ -275,7 +288,7 @@ class ProjectFolderService(ProjectFolder):
         )
         problems = ()
         if self.components is not None:
-            model = ModelDocument.model_validate(payload)
+            model = StoredModelDocument.model_validate(payload).lower(self.components)
             found = (
                 *ModelRegistryPorts(self.components).problems(model),
                 *inspect_model_signals(model, self.components).problems,
@@ -287,7 +300,8 @@ class ProjectFolderService(ProjectFolder):
 
     @staticmethod
     def _model_edit_digest(value: tuple[dict, dict]) -> str:
-        return sha256_bytes(canonical_json_v2_bytes(list(value)))
+        orders = [[list(path), keys] for path, keys in sorted(model_member_order(value[0]))]
+        return sha256_bytes(canonical_json_v2_bytes([*value, orders]))
 
     def _model_inverse(
         self, snapshot: StudioProjectSnapshot, document: ProjectName,
@@ -299,7 +313,7 @@ class ProjectFolderService(ProjectFolder):
         assert snapshot.presentation is not None
         inverse = _ModelInverse(
             project=snapshot.project_id, document=document, before=self._model_edit_digest(after),
-            payload=tuple(inverse_delta(before[0], after[0])),
+            payload=diff(after[0], before[0], keyed_collection=model_keyed_collection),
             layout=tuple(inverse_delta(before[1], after[1])),
             changed=changed,
             had_entry=document in snapshot.presentation.documents,

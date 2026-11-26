@@ -2,12 +2,14 @@
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from itertools import chain
 
 from pydantic import JsonValue
 
-from feedbax.contracts.project import Project, base_chain
+from feedbax.contracts.project import BasedDocument, Project, RootDocument, base_chain, diff
 from feedbax.contracts.project_resolution import RunKey
+from feedbax.contracts.project_storage import stored_keyed_collection
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.studio_authoring import StudioRunSelection, StudioTrainAuthoringRequest
 from feedbax.contracts.studio_field import TrainFieldRequest
@@ -72,6 +74,19 @@ def _changed_names[T](before: Mapping[str, T], after: Mapping[str, T]) -> set[st
     return {name for name in before.keys() | after.keys() if before.get(name) != after.get(name)}
 
 
+def _same_document_order(before, after) -> bool:
+    if before is after:
+        return True
+    if isinstance(before, RootDocument) and isinstance(after, RootDocument):
+        return not (
+            isinstance(before.payload, dict) and isinstance(after.payload, dict)
+            and diff(before.payload, after.payload, keyed_collection=partial(stored_keyed_collection, before.schema_id))
+        )
+    if isinstance(before, BasedDocument) and isinstance(after, BasedDocument):
+        return tuple(before.differences) == tuple(after.differences)
+    return True
+
+
 def edited_authored_rows(before: ProjectPlan, after: ProjectPlan) -> frozenset[RunKey]:
     """The rows whose authored step or directly read documents are touched, across effective variants."""
     from feedbax.web.services.trial_scope import reached_steps, set_readers
@@ -83,6 +98,10 @@ def edited_authored_rows(before: ProjectPlan, after: ProjectPlan) -> frozenset[R
         new = after.variant_projects.get(variant, empty)
         steps = _changed_names(old.steps, new.steps)
         documents = _changed_names(old.documents, new.documents)
+        documents.update(
+            name for name in (old.documents.keys() & new.documents.keys()) - documents
+            if not _same_document_order(old.documents[name], new.documents[name])
+        )
         reached = reached_steps(old, steps) | reached_steps(new, steps)
         if documents:
             documents = documents | {

@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { Page } from '@playwright/test';
-import type { ModelDocument, ModelEditResponse } from '../../src/generated/studioContracts';
+import type { StoredModelDocument as ModelDocument, ModelEditResponse } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -87,7 +87,7 @@ test('Duplicate selects the cards it made', async ({ page, request }) => {
  */
 test('an attachment dragged onto another wire is drawn there before it is dropped', async ({ page, request }) => {
   const { model, errors, edit } = await openModel(page, request, (document) => {
-    document.interior.wires!.decode.attachments = [{ id: 'gain', kind: 'intervention', operation: 'scale', operands: { factor: { kind: 'value', value: 2 } } }];
+    document.interior.wires!.decode.attachments = { gain: { kind: 'intervention', operation: 'scale', operands: { factor: { kind: 'value', value: 2 } } } };
   });
   const attachment = model.getByRole('button', { name: 'Attachment Scale', exact: true });
   const path = model.locator('.react-flow__edge[data-id="target"] path.react-flow__edge-path');
@@ -154,7 +154,7 @@ test('a delay is a square where its wire turns dashed, and drags to another wire
     wires!.feedback = {
       source: { owner: 'component', component: 'readout', port: 'output' },
       target: { owner: 'component', component: 'cell', port: 'hidden' },
-      attachments: [{ id: 'lag', kind: 'delay', delay: { value: 5, unit: 'st' } }],
+      attachments: { lag: { kind: 'delay', delay: '5 st' } },
     };
   });
   const delay = model.getByRole('button', { name: 'Attachment Delay', exact: true });

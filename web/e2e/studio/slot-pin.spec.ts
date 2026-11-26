@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { Page } from '@playwright/test';
-import type { StudioProjectDocument } from '../../src/generated/studioContracts';
+import { analysisDocumentSchemaId, type StudioProjectDocument } from '../../src/generated/studioContracts';
 import { appendManagedFiles, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { trialPicker } from './fixtures/controls';
 
@@ -21,7 +21,7 @@ test('a Scene pinned on an Evaluate stays beside its Analyze\'s figures and foll
   const { snapshot } = await opened.json() as StudioProjectDocument;
   await appendManagedFiles(request, snapshot, [
     { kind: 'document', id: 'analysis', document: {
-      schema: 'feedbax.analysis_document.v1', label: 'Analysis', payload: { inputs: { states: { kind: 'dataset' } } },
+      schema: analysisDocumentSchemaId, label: 'Analysis', payload: { inputs: { states: { kind: 'dataset' } } },
     } },
     { kind: 'step', id: 'analyze', step: {
       kind: 'analyze', label: 'Analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },

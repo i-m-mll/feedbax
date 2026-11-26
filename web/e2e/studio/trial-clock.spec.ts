@@ -67,15 +67,7 @@ test('one clock plays every picked trial, its scrubber on the shelf\'s axis, and
 // Catches a sample refused because the Task links a variable to a field the Model lacks (the owner's 422): the link
 // is a Problem on its cell, and the trial the Task determines is still drawn.
 test('a link to a field the Model lacks does not stop a sample', async ({ page, request }) => {
-  const missing = JSON.stringify({ composites: [], element: {
-    kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['reset', 'effector', 'elsewhere'],
-  } });
-  const files = await fixture('delayed-reaches-files') as { document?: { payload: Record<string, any> } }[];
-  for (const file of files) {
-    const payload = file.document?.payload;
-    if (payload?.variables) payload.links = [{ model_field: missing, variable: 'start' }];
-  }
-  const { snapshot } = await seedManagedProject(request, files);
+  const { snapshot } = await seedManagedProject(request, await fixture('task-link-files', 'delayed-reaches', 'start', 'plant', 'reset', 'effector', 'elsewhere'));
   const clock = page.locator('footer.studio-window-bottom').getByRole('group', { name: 'Clock', exact: true });
   const picker = clock.getByRole('button', { name: /^Trial / });
   const shelf = page.getByRole('region', { name: 'Shelf', exact: true });

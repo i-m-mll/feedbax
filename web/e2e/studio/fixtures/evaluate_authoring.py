@@ -5,11 +5,13 @@ from pathlib import Path
 import sys
 
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.desktop.release import AppPaths
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_project
+from tests.support.browser_seed_actions import FileSeed, HomeSeed
 
 
 TARGET_Y = "task.variables.target.value.args.1.value"
@@ -24,12 +26,10 @@ def _train_definition():
     trial = inline["trial_documents"]
     task = documents[trial["task"]["document"]]["payload"]
     task["fixed_steps"] = 12
-    task["epochs"][0]["end"]["length"]["value"] = 12
+    task["epochs"]["move"]["end"]["length"] = "12 st"
     del task["validation_trials"]
-    (target,) = (variable for variable in task["variables"] if variable["id"] == "target")
-    target["value"] = {"kind": "call", "function": "vector", "args": [
-        {"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (0.18, 0.05)
-    ]}
+    target = task["variables"]["target"]
+    target["value"] = "[0.18 m, 0.05 m]"
     model = documents[trial["model"]["document"]]["payload"]
     model["interior"]["components"]["plant"]["fields"]["mass"] = 1.25
     inline["training_config"]["snapshot_interval"] = 1
@@ -93,7 +93,7 @@ def own_sweep_files():
     project = _train_definition()
     train = project["steps"]["train"]
     task = project["documents"][train["base"]["inline"]["trial_documents"]["task"]["document"]]["payload"]
-    task["variables"].append({"id": "gain", "name": "gain", "type": {"base": "real"}, "value": {"kind": "literal", "value": 0.5}})
+    task["variables"]["gain"] = {"label": "gain", "type": {"base": "real"}, "value": 0.5}
     train["sweep"] = {"axes": {"seed": {"values": {
         f"s{seed}": {"value": seed, "patches": {"seed": {"op": "add", "value": seed}}} for seed in (0, 1)
     }}}}
@@ -113,9 +113,16 @@ def own_sweep_files():
     ]
 
 
+ACTIONS = {
+    "files": FileSeed(files),
+    "own-sweep-files": FileSeed(own_sweep_files),
+    "seed": HomeSeed(seed_train_variants),
+}
+
+
 if __name__ == "__main__":
     arguments = sys.argv[1:]
-    if arguments == ["own-sweep-files"]:
-        print(json.dumps(own_sweep_files()))
-    else:
-        print(json.dumps(seed_train_variants(*arguments) if arguments else files()))
+    action, args = (
+        (arguments[0], []) if arguments == ["own-sweep-files"] else ("seed", arguments) if arguments else ("files", [])
+    )
+    print(json.dumps(ACTIONS[action].command(*args)))

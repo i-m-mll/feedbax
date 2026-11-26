@@ -9,11 +9,13 @@ from pydantic import AwareDatetime, Field, FiniteFloat, JsonValue, model_validat
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Document, Project, Sha256, Step, StepKind
+from feedbax.contracts.project import OrderProjectValue as OrderProjectValue
 from feedbax.contracts.project import ProjectValueEdit as ProjectValueEdit
 from feedbax.contracts.project import RemoveProjectValue as RemoveProjectValue
 from feedbax.contracts.project import SetProjectValue as SetProjectValue
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.project_io import ProjectConfiguration
+from feedbax.contracts.report_document import ReportCompleteness
 from feedbax.contracts.result_address import analysis_elements, analyze_cards, authored_analysis_payload
 
 
@@ -99,6 +101,10 @@ class StudioProjectMemberNames(StrictModel):
         )
 
 
+class StudioReportValues(StrictModel):
+    completeness: ReportCompleteness
+
+
 class StudioProjectSnapshot(StudioProjectRevision):
     project: Project
     variant_names: dict[str, StudioProjectMemberNames]
@@ -112,6 +118,8 @@ class StudioProjectSnapshot(StudioProjectRevision):
     default_keep_superseded_days: int | None = Field(default=None, ge=0)
     composed: dict[str, JsonValue] = Field(default_factory=dict)
     """The composed payload of each based document whose base chain composes."""
+    report_values: dict[ProjectName, StudioReportValues]
+    """Effective completeness of each readable Report at this revision."""
     problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 

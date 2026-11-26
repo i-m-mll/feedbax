@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 from dataclasses import replace
 from functools import wraps
+from hashlib import sha256
 
 import equinox as eqx
 import jax.random as jr
@@ -15,14 +16,21 @@ from feedbax.execution import trial_resolution as trial_execution
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution, resolve_trial_execution
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
-from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
+from feedbax.contracts.project_sweep import model_field_path
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.objective_document import (
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm, StoredObjectiveDocument,
+)
 from feedbax.contracts.project import Project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, load_text_project
 from feedbax.planner.project_plan import PlanRequests, ProjectPlanMemo, RunKey, compile_project
 from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, authored_model_payload
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID, StoredTaskDocument
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.window import Window, WindowEpoch
 from feedbax.contracts.jobs import JobStatus
 from feedbax.expression_builtins import register_builtins
@@ -170,7 +178,7 @@ def test_plan_refuses_each_row_with_an_unwired_linear_input(authored, prepared_t
     del controller["interior"]["wires"]["decode"]
     name = (
         "documents.reach-model.payload.interior.components.wrapper.interior"
-        ".components.controller.interior.components.readout.name"
+        ".components.controller.interior.components.readout.label"
     )
     raw["sweep"] = {"rows": {
         "base": {},
@@ -180,7 +188,7 @@ def test_plan_refuses_each_row_with_an_unwired_linear_input(authored, prepared_t
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
     assert plan.runs and all(run.admission_problem is not None for run in plan.runs)
     assert len(prepared_trials) == 2
-    original = controller["interior"]["components"]["readout"]["name"]
+    original = controller["interior"]["components"]["readout"]["label"]
     assert {
         (run.key.variant, run.key.step, run.key.row, issue.detail)
         for run in plan.runs for issue in run.problems
@@ -197,7 +205,7 @@ def test_plan_reports_every_component_with_invalid_parameters(authored):
     interior = raw["documents"]["reach-model"]["payload"]["interior"]
     for name in ("left", "right"):
         interior["components"][name] = {
-            "kind": "leaf", "name": name.title(), "type": "feedbax.equinox.Linear", "fields": {},
+            "kind": "leaf", "label": name.title(), "type": "feedbax.equinox.Linear", "fields": {},
         }
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
     assert sorted(
@@ -241,7 +249,9 @@ def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_
         (issue,) = run.problems
         assert issue.path.startswith("/trial_documents/model/")
         assert issue.model_address == ModelAddress.model_validate({
-            "composites": [], "element": {"kind": "component", "id": "plant"},
+            "composites": [], "element": {
+                "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
+            },
         })
 
 
@@ -329,10 +339,14 @@ def test_shared_trial_resolution_tracks_document_aliases_and_row_edits(authored)
     _two_optimizer_rates(raw)
     raw["documents"]["task-alias"] = {
         "label": "Task alias",
-        "schema": "test.alias", "payload": {"nested": {"document": "task"}},
+        "schema": TRAINING_DOCUMENT_SCHEMA_ID,
+        "payload": {
+            "method": "feedbax.supervised_gradient", "settings": {"nested": {"document": "task"}},
+            "training_config": {"n_batches": 2, "batch_size": 4},
+        },
     }
     step = raw["steps"]["train"]
-    step["base"]["inline"]["trial_documents"]["task"] = {"document": "task-alias", "pointer": "/nested"}
+    step["base"]["inline"]["trial_documents"]["task"] = {"document": "task-alias", "pointer": "/settings/nested"}
     low, high = (RunKey("default", "train", f"rate={name}") for name in ("low", "high"))
     memo = ProjectPlanMemo()
 
@@ -398,12 +412,18 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
     assert projected(window_service.ProjectPlanRead.without_history(
         folders.read_plan("cohort", revision=original.settled.revision),
     )) == before
-    variables = raw["documents"]["task"]["payload"]["validation_trials"][0]["variables"]
-    target = variables["target"]
-    assert isinstance(target, list)
-    target[:] = [1.0, -0.0]
-    after = verify(read())
-    assert after["rows"][0]["evaluation_conditions"] != conditions
+    trials = raw["documents"]["task"]["payload"]["validation_trials"]
+    first = next(iter(trials))
+    trials[first]["variables"]["target"] = "[1, 0]"
+    changed = read()
+    assert verify(changed)["rows"][0]["evaluation_conditions"] == conditions
+    assert changed.settled.plan.requests != original.settled.plan.requests
+
+    raw["documents"]["task"]["payload"]["validation_trials"] = {
+        ("renamed-trial" if key == first else key): trial for key, trial in trials.items()
+    }
+    renamed = conditions[0] | {"id": "renamed-trial"}
+    assert verify(read())["rows"][0]["evaluation_conditions"] == [renamed, *conditions[1:]]
     assert projected(original) == before
 
 
@@ -418,7 +438,7 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
     binding = "steps.train.base.inline.trial_documents.input_bindings.task-input"
     raw["sweep"] = {"rows": {
         "base": {},
-        "model": {"patches": {f"documents.reach-model.{mass.to_text()}": {"value": 2.0}}},
+        "model": {"patches": {model_field_path(mass, ("documents", "reach-model")): {"value": 2.0}}},
         "task": {"patches": {task: {"value": "alternate-task"}}},
         "objective": {"patches": {objective: {"value": 2}}},
         "bad-binding": {"patches": {binding: {"value": "missing-signal"}}},
@@ -448,15 +468,18 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
 
 
 def test_managed_train_stores_only_scientific_model_names(authored):
+    from feedbax.application.bundle import new_application_registry_bundle
+    from feedbax.compiler.model_document import complete_model_fields
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.request_identity import request_id
 
-    plan = compile_project(Project.model_validate(document_project(authored)))
+    components = new_application_registry_bundle().components
+    plan = compile_project(Project.model_validate(document_project(authored)), components=components)
     identity, data = next(iter(plan.requests.items()))
     stored = json.loads(data)
-    assert stored["schema"] == "feedbax.request.train.documents.v3"
+    assert stored["schema"] == "feedbax.request.train.documents.v4"
     model = stored["spec"]["trial_documents"]["model"]
-    assert model["ports"]["inputs"][0]["name"] == "reach_target"
+    assert "name" not in model["ports"]["inputs"][0]
     wrapper = model["interior"]["components"]["wrapper"]
     assert "name" not in wrapper
     assert all("name" not in port for port in wrapper["ports"]["inputs"])
@@ -464,30 +487,36 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     decoded = decode_request(data, plan.documents.__getitem__)
     assert decoded.id == identity
     restored = decoded.spec.trial_documents.model
-    assert restored.scientific_projection() == authored[1].scientific_projection()
+    assert restored.ports.inputs[0].name == "task-input"
+    effective = complete_model_fields(authored[1], components)
+    assert restored.scientific_projection(keyed_root_ports=True) == effective.scientific_projection(keyed_root_ports=True)
     assert encode_request(decoded.spec, decoded.inputs).data == data
     assert identity != request_id("train", stored["spec"], decoded.inputs)
 
-    previous = stored | {"schema": "feedbax.request.train.documents.v2"}
-    with pytest.raises(ValueError, match="Unsupported stored request envelope"):
-        decode_request(canonical_json_v2_bytes(previous), plan.documents.__getitem__)
+    for previous_schema in ("feedbax.request.train.documents.v2", "feedbax.request.train.documents.v3"):
+        previous = stored | {"schema": previous_schema}
+        with pytest.raises(ValueError, match="Unsupported stored request envelope"):
+            decode_request(canonical_json_v2_bytes(previous), plan.documents.__getitem__)
     wrapper["name"] = "wrapper"
     with pytest.raises(ValueError, match="did not round-trip"):
         decode_request(canonical_json_v2_bytes(stored), plan.documents.__getitem__)
 
 
 def document_project(authored, *, evaluation=False):
-    from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
-
     _, model, task, objective = authored
     raw = {
         "documents": {
-            "reach-model": {"label": "Reach model", "schema": MODEL_DOCUMENT_SCHEMA_ID, "payload": model.model_dump(mode="json")},
-            "task": {"label": "Task", "schema": TASK_DOCUMENT_SCHEMA_ID, "payload": task.model_dump(mode="json")},
+            "reach-model": {
+                "label": "Reach model", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": authored_model_payload(model),
+            },
+            "task": {
+                "label": "Task", "schema": STORED_TASK_DOCUMENT_SCHEMA_ID,
+                "payload": StoredTaskDocument.from_lowered(task).model_dump(mode="json"),
+            },
             "objective": {
                 "label": "Objective",
-                "schema": OBJECTIVE_DOCUMENT_SCHEMA_ID,
-                "payload": objective.model_dump(mode="json"),
+                "schema": STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID,
+                "payload": StoredObjectiveDocument.from_lowered(objective).model_dump(mode="json"),
             },
         },
         "steps": {
@@ -507,6 +536,71 @@ def document_project(authored, *, evaluation=False):
     if evaluation:
         raw["steps"]["baseline"] = managed_evaluation_step("train")
     return raw
+
+
+def test_cold_plan_reuses_requests_when_authored_expressions_are_respelled(tmp_path, authored):
+    project = document_project(authored, evaluation=True)
+    project["documents"]["objective"]["payload"]["terms"]["effort"]["weight"] = "1 + 1"
+    baseline = project["steps"]["baseline"]
+    baseline["base"]["inline"]["params"]["variation"] = [{
+        "op": "replace", "path": "task.epochs.hold.end.length", "value": "6 st",
+    }]
+    initial = deepcopy(baseline)
+    initial["label"] = "Initial Evaluate"
+    initial["inputs"] = {
+        "subject": {"kind": "initial_model", "source": {"document": "reach-model"}},
+        "task": {"kind": "task", "source": {"document": "task"}},
+        "objective": {"kind": "objective", "source": {"document": "objective"}},
+    }
+    initial["base"]["inline"]["params"].update(input_bindings={"task-input": "target_pos"}, variation=[])
+    project["steps"]["initial"] = initial
+
+    configuration = ProjectConfiguration(project="fixture", store="results")
+    for relative, data in dump_text_project(Project.model_validate(project), configuration).items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def read_plan():
+        plan = compile_project(load_text_project(tmp_path).project)
+        assert not plan.diagnostics, plan.diagnostics
+        assert {run.key.step for run in plan.runs} == {"train", "baseline", "initial"}
+        assert all(not row.problems for row in plan.rows)
+        return plan
+
+    before = read_plan()
+    watched = ["reach-model", "task", "objective"]
+    authored_digests = set()
+    for name in watched:
+        path = tmp_path / "documents" / f"{name}.json"
+        data = path.read_bytes()
+        file = json.loads(data)
+        authored_digests.add(sha256(data).hexdigest())
+        if name == "task":
+            file["payload"]["epochs"]["hold"]["end"]["length"] = " (U(5 st,14 st)) "
+            file["payload"]["epochs"]["hold"]["label"] = "Wait before cue"
+        elif name == "objective":
+            file["payload"]["terms"]["effort"].update(weight="(1+1)", label="Movement cost")
+        path.write_text(json.dumps(file, indent=4) + "\n")
+        authored_digests.add(sha256(path.read_bytes()).hexdigest())
+    step_path = tmp_path / "steps" / "baseline.json"
+    baseline_file = json.loads(step_path.read_bytes())
+    baseline_file["base"]["inline"]["params"]["variation"][0]["value"] = "(6 st)"
+    step_path.write_text(json.dumps(baseline_file))
+
+    after = read_plan()
+    assert (after.requests, after.documents) == (before.requests, before.documents)
+    assert after.documents.keys().isdisjoint(authored_digests)
+    assert all(
+        digest.encode() not in payload for payload in after.requests.values() for digest in authored_digests
+    )
+
+    path = tmp_path / "documents" / "objective.json"
+    file = json.loads(path.read_bytes())
+    file["payload"]["terms"]["effort"]["weight"] = "1 + 2"
+    path.write_text(json.dumps(file))
+    changed = read_plan()
+    assert set(changed.requests).isdisjoint(before.requests)
 
 
 def test_managed_host_train_and_evaluate_share_document_runtime(host, tmp_path, authored, monkeypatch):
@@ -650,9 +744,10 @@ def test_training_document_problem_is_placed_in_the_document(authored, key, valu
 
 def _two_term_project(authored, order):
     raw = document_project(authored)
-    (effort,) = raw["documents"]["objective"]["payload"]["terms"]
-    terms = {"effort": effort, "speed": {**effort, "id": "speed"}}
-    raw["documents"]["objective"]["payload"]["terms"] = [terms[name] for name in order]
+    objective = raw["documents"]["objective"]["payload"]
+    effort = objective["terms"]["effort"]
+    terms = {"effort": effort, "speed": deepcopy(effort)}
+    objective["terms"] = {name: terms[name] for name in order}
     return raw
 
 
@@ -672,12 +767,17 @@ def test_a_sweep_on_a_term_follows_the_term_when_the_terms_are_reordered(authore
         assert weights == {(("effort", 1), ("speed", 2)), (("effort", 1), ("speed", 3))}
 
 
-@pytest.mark.parametrize(("segment", "reason"), [("0", "addressed by its id"), ("pace", "not an id")])
+@pytest.mark.parametrize(("segment", "reason"), [
+    ("0", "is addressed by its id"), ("pace", "is not an id of this collection"),
+])
 def test_a_term_is_addressed_only_by_an_id_it_has(authored, segment, reason):
     raw = _two_term_project(authored, ("effort", "speed"))
     raw["steps"]["train"]["sweep"] = {"axes": {"enabled": {
         "path": f"trial_documents.objective.terms.{segment}.enabled", "values": [True, False],
     }}}
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    assert not plan.runs
     assert plan.diagnostics
-    assert all(reason in issue.detail and "effort, speed" in issue.detail and issue.step == "train" for issue in plan.diagnostics)
+    for issue in plan.diagnostics:
+        assert issue.step == "train"
+        assert f"{segment!r} {reason}; the ids are effort, speed" in issue.detail

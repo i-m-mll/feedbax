@@ -7,11 +7,12 @@ from pydantic import Field, JsonValue
 from feedbax.contracts.analysis_document import DatasetSource
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import DimensionSize, Name
-from feedbax.contracts.figure_document import FigureDocument
+from feedbax.contracts.figure_document import ContinuousPalette, OrdinalPalette, StoredFigureDocument, StoredFigureLayer
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.operation import DatasetPort, OperationDefinition
 from feedbax.contracts.project import DocumentEdit, Pointer, Sha256
-from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_inputs import NonemptyText, ProjectName
+from feedbax.contracts.stored_members import StoredMemberKey
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 
 
@@ -45,8 +46,17 @@ class StudioAnalyzeReset(StrictModel):
     paths: list[Pointer] = Field(min_length=1)
 
 
+class StudioAnalyzeAddFigureLayer(StrictModel):
+    """Add a layer to the view's inline Figure under a Service-allocated key."""
+
+    kind: Literal["add_figure_layer"]
+    view: ProjectName
+    layer: StoredFigureLayer
+
+
 type StudioAnalyzeChange = Annotated[
-    StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset, Field(discriminator="kind")
+    StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset | StudioAnalyzeAddFigureLayer,
+    Field(discriminator="kind"),
 ]
 
 
@@ -57,6 +67,21 @@ class StudioAnalyzeRequest(StrictModel):
     key: StudioSavedTrainKey
     change: StudioAnalyzeChange | None = None
     chosen_steps: list[ProjectName] = Field(default_factory=list)
+
+
+class StudioFigureLayerValues(StrictModel):
+    name: NonemptyText
+    fill_alpha: float | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class StudioFigureColorScaleValues(StrictModel):
+    legend: bool
+    palette: ContinuousPalette | OrdinalPalette
+
+
+class StudioAnalyzeFigureValues(StrictModel):
+    layers: dict[StoredMemberKey, StudioFigureLayerValues]
+    color_scales: dict[Name, StudioFigureColorScaleValues]
 
 
 class StudioAnalyzeAuthoring(StrictModel):
@@ -74,7 +99,10 @@ class StudioAnalyzeAuthoring(StrictModel):
     dimensions of a parameter that lists the dimensions a port takes whole."""
     variable_names: dict[str, str] = Field(default_factory=dict)
     """Display names for the dataset field IDs offered in ``variables``."""
-    figure: FigureDocument
+    figure: StoredFigureDocument
+    figure_values: dict[ProjectName, StudioAnalyzeFigureValues]
+    """Layer names, span styles, and color scales of the Analysis document's inline views."""
+    created_layer: StoredMemberKey | None = Field(default=None, exclude_if=lambda key: key is None)
     changed: list[Pointer] = Field(default_factory=list)
     """The pointers at which the document's composed content differs from its base's."""
     files: list[StudioProjectFilePatch] = Field(default_factory=list)

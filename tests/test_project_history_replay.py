@@ -9,7 +9,7 @@ import pytest
 
 from feedbax import project_folder
 from feedbax.contracts.jobs import StudioJobEventHistory
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_io import STUDIO_PATCH_JOURNAL_FILENAME, load_text_project
 from feedbax.contracts.studio_project import StudioProjectReplay
 from feedbax.host import HostError
@@ -36,11 +36,11 @@ def _write(root, relative, value, *, encoding="utf-8"):
     return data
 
 
-def _model(seconds):
+def _model(period):
     return {
         "label": "Document",
-        "schema": MODEL_DOCUMENT_SCHEMA_ID,
-        "payload": {"step_seconds": seconds, "ports": {}, "interior": {}},
+        "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID,
+        "payload": {"step_seconds": period, "ports": {}, "interior": {}},
     }
 
 
@@ -48,8 +48,8 @@ def _model(seconds):
 def study(tmp_path):
     root = tmp_path / "study"
     _write(root, DECLARATION_FILE, MANIFEST)
-    _write(root, "documents/model.json", _model(0.01))
-    _write(root, "documents/notes.json", {"label": "Document", "schema": "notes", "payload": "café"})
+    _write(root, "documents/model.json", _model("10 ms"))
+    _write(root, "documents/notes.json", _model("20 ms") | {"label": "Café"})
     _write(root, "presentation.json", {})
     return root, TestClient(create_app(projects_dir=tmp_path))
 
@@ -139,12 +139,12 @@ def test_replay_restores_exact_model_bytes_and_emits_one_revision(study, monkeyp
     path = root / "documents/model.json"
     original = path.read_bytes()
     before = _snapshot(client)
-    changed = _write(root, "documents/model.json", _model(0.02), encoding="utf-16")
+    changed = _write(root, "documents/model.json", _model("20 ms"), encoding="utf-16")
     outside = _snapshot(client)
     assert b64decode(_files(outside)[MODEL]["data"]) == changed
     patch = client.patch(URL, json={
         "revision": outside["revision"], "address": {"kind": "document", "id": "model"},
-        "patches": [{"op": "replace", "path": "/payload/step_seconds", "value": 0.03}],
+        "patches": [{"op": "replace", "path": "/payload/step_seconds", "value": "30 ms"}],
     })
     assert patch.status_code == 422
 
@@ -184,8 +184,10 @@ def test_replay_validates_every_target_before_publication(study):
     before = _snapshot(client)
     body = _replay_body(before, before, MODEL, STEP)
     model, step = body["files"]
-    step["after"] = b64encode(b'{"kind":"train","base":{"inline":{}}}').decode()
-    model["after"] = b64encode(json.dumps(_model(-1)).encode()).decode()
+    step["after"] = b64encode(b'{"kind":"train","label":"Fit","base":{"inline":{}}}').decode()
+    invalid_model = _model("10 ms")
+    del invalid_model["payload"]["step_seconds"]
+    model["after"] = b64encode(json.dumps(invalid_model).encode()).decode()
     assert client.post(REPLAY, json=body).status_code == 422
     step["after"] = b64encode(b'{"kind":"train","base":{"inline":{"x":1e999}}}').decode()
     model["after"] = _files(before)[MODEL]["data"]
@@ -279,7 +281,7 @@ def test_replay_refuses_a_symlinked_family(study, tmp_path: Path):
     outside.mkdir()
     (root / "steps").symlink_to(outside, target_is_directory=True)
     body = _replay_body(before, before, STEP)
-    body["files"][0]["after"] = b64encode(b'{"kind":"train","base":{"inline":{}}}').decode()
+    body["files"][0]["after"] = b64encode(b'{"kind":"train","label":"Fit","base":{"inline":{}}}').decode()
     assert client.post(REPLAY, json=body).status_code == 422
     assert list(outside.iterdir()) == []
     assert not (root / STUDIO_PATCH_JOURNAL_FILENAME).exists()

@@ -1,17 +1,19 @@
 """Author the signed Evaluate fixture and observe one selected Analysis variable."""
 
 from copy import deepcopy
+from itertools import islice
 import json
 from pathlib import Path
-import sys
 from unittest.mock import patch
 
 import numpy as np
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
@@ -22,13 +24,15 @@ from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.persistence.canonical_evaluate import RAW_STATES_SCHEMA, state_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
+from feedbax.contracts.project_sweep import model_field_path
 from tests.test_document_train_pair import authored_documents, document_project
+from tests.support.browser_seed_actions import FileSeed, HomeSeed, NonSeed, print_action
 
 
-_MASS = ModelAddress.model_validate({
+_MASS = model_field_path(ModelAddress.model_validate({
     "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
-}).to_text()
+}))
 
 
 def _evaluation_step(label: str):
@@ -93,7 +97,7 @@ def seed_eight_trials(home: str, project_id: str):
     """The evaluation project with a task of eight validation trials, which the baseline records every one of."""
     raw = _evaluation_project()
     task = raw["documents"]["task"]["payload"]
-    task["validation_trials"] = task["validation_trials"][:8]
+    task["validation_trials"] = dict(islice(task["validation_trials"].items(), 8))
     return _seed(home, project_id, raw)
 
 
@@ -101,13 +105,24 @@ def seed_sixty_four_trials(home: str, project_id: str):
     """The evaluation project with a task of 64 validation trials, each target moved a little, which the baseline records."""
     raw = _evaluation_project()
     task = raw["documents"]["task"]["payload"]
-    trials = task["validation_trials"]
-    task["validation_trials"] = [
-        deepcopy(trials[index % len(trials)]) | {"variables": trials[index % len(trials)]["variables"] | {
-            "target": [value + 0.001 * (index // len(trials)) for value in trials[index % len(trials)]["variables"]["target"]],
-        }}
-        for index in range(64)
-    ]
+    trials = tuple(task["validation_trials"].values())
+    scaled = {}
+    for index in range(64):
+        cycle, row = divmod(index, len(trials))
+        trial = deepcopy(trials[row])
+        trial["label"] = f"Trial {index + 1}"
+        target = json.loads(trial["variables"]["target"])
+        trial["variables"]["target"] = json.dumps([value + 0.001 * cycle for value in target])
+        trial["label"] = f"Trial {index + 1}"
+        scaled[f"trial-{index + 1}"] = trial
+    task["validation_trials"] = scaled
+    return _seed(home, project_id, raw)
+
+
+def seed_two_replicates(home: str, project_id: str):
+    """The evaluation project with its Train fitting two replicates, which the baseline records together."""
+    raw = _evaluation_project()
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["replicates"] = 2
     return _seed(home, project_id, raw)
 
 
@@ -115,8 +130,8 @@ def _mean_conditions_project():
     """The eight-trial evaluation project with its last four trials catch trials, so that By has two conditions."""
     raw = _evaluation_project()
     task = raw["documents"]["task"]["payload"]
-    task["validation_trials"] = task["validation_trials"][:8]
-    for trial in task["validation_trials"][4:]:
+    task["validation_trials"] = dict(islice(task["validation_trials"].items(), 8))
+    for trial in islice(task["validation_trials"].values(), 4, None):
         trial["variables"]["catch"] = True
     return raw
 
@@ -128,7 +143,7 @@ def seed_mean_conditions(home: str, project_id: str):
 def seed_mean_figure(home: str, project_id: str):
     """The two-condition project with an Analyze of the baseline that draws Speed by trial."""
     raw = _mean_conditions_project()
-    raw["documents"]["analysis"] = {"schema": "feedbax.analysis_document.v1", "label": "Analysis", "payload": {
+    raw["documents"]["analysis"] = {"schema": ANALYSIS_SCHEMA, "label": "Analysis", "payload": {
         "inputs": {"states": {"kind": "dataset"}},
         "operations": {"speed": {
             "label": "Speed",
@@ -234,7 +249,8 @@ def task_pivot_files():
         document = deepcopy(task)
         document["label"] = label
         document["payload"]["id"] = name
-        document["payload"]["validation_trials"] = document["payload"]["validation_trials"][:count]
+        trials = document["payload"]["validation_trials"]
+        document["payload"]["validation_trials"] = dict(islice(trials.items(), count))
         documents.append({"kind": "document", "id": name, "document": document})
     evaluate = _evaluation_step("Evaluate")
     evaluate["base"]["inline"]["params"]["variation"] = {"task": {
@@ -330,9 +346,10 @@ def observe(home: str, project: str, revision: str, trial_index: str):
             assert descriptor.schema_id == RAW_STATES_SCHEMA
             assert descriptor.dimensions["state_time"] == 81
             assert descriptor.dimensions["checkpoint"] == len(coordinates)
-            assert dataset.data("trial").tolist() == row.trials
-            assert len(row.trials) == 28
-            label = row.trials[trial]
+            trials = [recorded.id for recorded in row.trials]
+            assert dataset.data("trial").tolist() == trials
+            assert len(trials) == 28
+            label = trials[trial]
             assert np.isfinite(dataset.data("objective/total")).all()
             assert np.all(dataset.data("objective/coverage/effort") == 28)
             reads.clear()
@@ -373,14 +390,26 @@ def observe(home: str, project: str, revision: str, trial_index: str):
     return observed
 
 
+ACTIONS = {
+    "seed": HomeSeed(seed),
+    "seed-eight-trials": HomeSeed(seed_eight_trials),
+    "seed-sixty-four-trials": HomeSeed(seed_sixty_four_trials),
+    "seed-two-replicates": HomeSeed(seed_two_replicates),
+    "seed-mean-conditions": HomeSeed(seed_mean_conditions),
+    "seed-mean-figure": HomeSeed(seed_mean_figure),
+    "seed-step-rename": HomeSeed(seed_step_rename),
+    "observe": NonSeed(observe, "reads evaluated trial results from the Host"),
+    "walkthrough-files": FileSeed(walkthrough_files, cases=((), ("2",))),
+    "series-files": FileSeed(series_files),
+    "seed-series-variants": HomeSeed(seed_series_variants, fixed_project="series-variants"),
+    "scoped-series-files": FileSeed(scoped_series_files),
+    "measured-subset-files": FileSeed(measured_subset_files),
+    "grouped-subset-files": FileSeed(grouped_subset_files),
+    "train-measures": NonSeed(train_measures, "reads retained training metrics"),
+    "task-pivot-files": FileSeed(task_pivot_files),
+    "missing-run-files": FileSeed(missing_run_files),
+}
+
+
 if __name__ == "__main__":
-    action, *args = sys.argv[1:]
-    print(json.dumps({
-        "seed": seed, "seed-eight-trials": seed_eight_trials, "seed-sixty-four-trials": seed_sixty_four_trials,
-        "seed-mean-conditions": seed_mean_conditions,
-        "seed-mean-figure": seed_mean_figure, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
-        "series-files": series_files, "seed-series-variants": seed_series_variants,
-        "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
-        "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,
-        "task-pivot-files": task_pivot_files, "missing-run-files": missing_run_files,
-    }[action](*args)))
+    print_action(ACTIONS)

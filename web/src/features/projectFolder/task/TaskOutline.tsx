@@ -4,7 +4,7 @@ import { Tree } from '@/components/ui/Tree';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 
 /** The Outline's groups, in its order. */
-const groupOrder = ['variables', 'epochs', 'signals', 'modelInputs'] as const;
+const groupOrder = ['variables', 'epochs', 'signals', 'validationTrials', 'modelInputs'] as const;
 export type OutlineGroup = (typeof groupOrder)[number];
 
 /** An element of the task in the Outline: its name, and its first problem as its status mark. */
@@ -13,12 +13,12 @@ export interface OutlineEntry {
   readonly name: string;
   readonly reason?: string;
   readonly muted?: boolean;
-  /** Trailing text: what feeds a Model input, where its name is not the input's. */
+  /** Trailing text: what feeds a Model input, where its name is not the input's, or how many trials a family stands for. */
   readonly detail?: string;
 }
 
 /**
- * The drawer's Outline: variables, epochs and signals, and the Model's inputs where the task feeds them, each element
+ * The drawer's Outline: variables, epochs, signals and validation trials, and the Model's inputs where the task feeds them, each element
  * with its status mark; a row selects its element in the view. A group with no elements is left out.
  */
 export function TaskOutline({ sections, groups, selected, select }: {

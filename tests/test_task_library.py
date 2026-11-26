@@ -5,7 +5,8 @@ import os
 import sys
 
 from feedbax.application.composition import load_application
-from feedbax.contracts.task_document import BLANK_TASK, TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import BLANK_STORED_TASK, STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.studio.authoring import authoring_surface
 
 
@@ -14,14 +15,14 @@ def test_new_lists_an_installed_package_s_task_documents_whole_beside_feedbax_s(
     documents = plugins / "reach_library" / "examples" / "curved" / "documents"
     documents.mkdir(parents=True)
     (plugins / "reach_library" / "__init__.py").write_text("")
-    task = BLANK_TASK.model_copy(update={"id": "curved"}).model_dump(mode="json")
-    (documents / "curved-task.json").write_text(json.dumps({"label": "Document", "schema": TASK_DOCUMENT_SCHEMA_ID, "payload": task}))
+    task = BLANK_STORED_TASK.model_copy(update={"id": "curved"}).model_dump(mode="json")
+    (documents / "curved-task.json").write_text(json.dumps({"label": "Document", "schema": STORED_TASK_DOCUMENT_SCHEMA_ID, "payload": task}))
     (documents / "longer-task.json").write_text(json.dumps({
         "label": "Document",
-        "schema": TASK_DOCUMENT_SCHEMA_ID, "base": {"document": "curved-task"},
+        "schema": STORED_TASK_DOCUMENT_SCHEMA_ID, "base": {"document": "curved-task"},
         "differences": {"/fixed_steps": {"value": 40}},
     }))
-    (documents / "model.json").write_text(json.dumps({"label": "Document", "schema": "feedbax.spec.model", "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}}}))
+    (documents / "model.json").write_text(json.dumps({"label": "Document", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": {"step_seconds": "0.01 s", "ports": {}, "interior": {}}}))
     metadata = plugins / "reach_library-1.0.dist-info"
     metadata.mkdir()
     (metadata / "METADATA").write_text("Name: reach-library\nVersion: 1.0\n")
@@ -39,4 +40,4 @@ def test_new_lists_an_installed_package_s_task_documents_whole_beside_feedbax_s(
     }
     longer = offered["reach-library", "curved", "longer-task"]
     assert longer.payload == task | {"fixed_steps": 40}
-    assert catalog.blank == BLANK_TASK
+    assert catalog.blank == BLANK_STORED_TASK

@@ -11,12 +11,15 @@ from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, Artifa
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, LOADED_MODEL_SCHEMA_ID, ImportedModelSource
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument, restore_model_display_names
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
+from feedbax.contracts.model_document import ModelDocument, restore_model_display_names
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, ModelParameterModels, StoredModelDocument
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, StoredObjectiveDocument
 from feedbax.contracts.project_inputs import DocumentInputReference, InitialModelReference, LoadedModelReference, ObjectiveDocumentReference
 from feedbax.contracts.request_refs import ContentRef, ReferenceValue
 from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json, strict_validate_json
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_document import (
+    PYTHON_TASK_SCHEMA_ID, STORED_TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, StoredTaskDocument, TaskDocument,
+)
 
 if TYPE_CHECKING:
     from feedbax.contracts.project import RootDocument
@@ -37,7 +40,7 @@ class InitialModelSource(ReferenceValue):
 
     def encode(self) -> bytes:
         projection = self.model_dump(mode="json")
-        projection["document"] = self.document.scientific_projection()
+        projection["document"] = self.document.scientific_projection(keyed_root_ports=True)
         return canonical_json_v2_bytes(projection)
 
     @classmethod
@@ -46,7 +49,7 @@ class InitialModelSource(ReferenceValue):
         if not isinstance(projection, dict) or not isinstance(projection.get("document"), dict):
             raise ValueError("Invalid initial Model source")
         try:
-            restore_model_display_names(projection["document"])
+            restore_model_display_names(projection["document"], keyed_root_ports=True)
         except (AttributeError, KeyError, TypeError) as error:
             raise ValueError("Invalid initial Model document projection") from error
         source = cls.model_validate(projection)
@@ -82,26 +85,27 @@ DOCUMENT_INPUT_MEDIA_TYPES = frozenset((
 
 
 def authored_document_input(
-    reference: DocumentInputReference, document: RootDocument, *, python_tasks: PythonTaskRegistry | None = None,
+    reference: DocumentInputReference, document: RootDocument, *,
+    python_tasks: PythonTaskRegistry | None = None, components: ModelParameterModels | None = None,
 ) -> DocumentInput:
     if isinstance(reference, InitialModelReference):
-        if document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+        if document.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
             raise ValueError("Initial model input requires a Model document")
         return InitialModelSource(
-            document=ModelDocument.model_validate(document.payload), seed=reference.seed,
+            document=StoredModelDocument.model_validate(document.payload).lower(components), seed=reference.seed,
         )
     if isinstance(reference, LoadedModelReference):
         from feedbax.contracts.project import LoadedModelDocument
 
         if document.schema_id != LOADED_MODEL_SCHEMA_ID:
             raise ValueError("Loaded model input requires a Loaded Model document")
-        return LoadedModelDocument.model_validate(document.payload).source
+        return LoadedModelDocument.model_validate(document.payload).lower()
     if isinstance(reference, ObjectiveDocumentReference):
-        if document.schema_id != OBJECTIVE_DOCUMENT_SCHEMA_ID:
+        if document.schema_id != STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID:
             raise ValueError("Objective input requires an Objective document")
-        return ObjectiveDocument.model_validate(document.payload)
-    if document.schema_id == TASK_DOCUMENT_SCHEMA_ID:
-        return TaskDocument.model_validate(document.payload)
+        return StoredObjectiveDocument.model_validate(document.payload).lower()
+    if document.schema_id == STORED_TASK_DOCUMENT_SCHEMA_ID:
+        return StoredTaskDocument.model_validate(document.payload).lower()
     if document.schema_id == PYTHON_TASK_SCHEMA_ID:
         from feedbax.tasks.registry import resolve_python_task_instance
 
@@ -123,8 +127,8 @@ def encode_document_input(value: DocumentInput) -> tuple[ContentRef, bytes]:
         raw = canonical_json_v2_bytes(value.model_dump(mode="json"))
     else:
         media_type = OBJECTIVE_INPUT_MEDIA_TYPE if isinstance(value, ObjectiveDocument) else TASK_INPUT_MEDIA_TYPE
-        if isinstance(value, TaskDocument):
-            value = value.without_markers()
+        if isinstance(value, (TaskDocument, ObjectiveDocument)):
+            value = value.for_execution()
         raw = canonical_json_v2_bytes(value.model_dump(mode="json"))
     return ContentRef(sha256=sha256(raw).hexdigest(), size=len(raw), media_type=media_type), raw
 

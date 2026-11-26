@@ -7,10 +7,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
 
+from feedbax.contracts.authored_arrays import AuthoredArrayBudgetError
 from feedbax.contracts.canonical_json import CanonicalJsonError
 from feedbax.contracts.expression_site import ExpressionPartSite
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, EvaluateModelState,
+    ModelAttachmentDefaults, ModelAttachmentDefaultsRequest,
     ModelConnectionReview, ModelConnectionReviewRequest,
     ModelProjection, ModelProjectionRequest,
     ModelEditRequest, ModelEditResponse, ModelUndoRequest,
@@ -80,7 +82,7 @@ def _project_response[Result](response: Response, operation: Callable[[], Result
         snapshot = operation()
     except ProjectFolderNotFound as exc:
         raise HTTPException(404, detail=str(exc), headers=_NO_STORE) from exc
-    except (ProjectFolderInvalid, CanonicalJsonError) as exc:
+    except (ProjectFolderInvalid, CanonicalJsonError, AuthoredArrayBudgetError) as exc:
         raise HTTPException(422, detail=str(exc), headers=_NO_STORE) from exc
     except ProjectRevisionConflict as exc:
         raise HTTPException(
@@ -405,6 +407,18 @@ def edit_model(
     return _project_response(
         response, lambda: request.app.state.project_folders.edit_model(project_id, body, components)
     )
+
+
+@router.post("/{project_id}/model/attachment-defaults")
+def read_model_attachment_defaults(
+    project_id: ProjectName, body: ModelAttachmentDefaultsRequest, request: Request, response: Response,
+) -> ModelAttachmentDefaults:
+    from feedbax.web.services.model_projection import model_attachment_defaults
+
+    bundle = request.app.state.bootstrap_state.bundle
+    return _project_response(response, lambda: model_attachment_defaults(
+        request.app.state.project_folders, project_id, body, bundle,
+    ))
 
 
 @router.post("/{project_id}/model/fields")

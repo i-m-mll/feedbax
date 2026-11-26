@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from feedbax.compiler.model_document import lower_model_document
-from feedbax.contracts.expression_values import CallValue
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
@@ -15,7 +14,8 @@ from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-from feedbax.contracts.task_document import PythonTaskSelection
+from feedbax.contracts.stored_model import StoredModelDocument
+from feedbax.contracts.task_document import PythonTaskSelection, StoredTaskDocument
 from feedbax.host import HostClient
 from feedbax.jobs import JobService, PlanJobReader
 from feedbax.persistence.array_container import ArrayContainerReader
@@ -42,12 +42,8 @@ def _saved_variants():
     steps = definition["steps"]
     baseline = steps["baseline"]
     task = deepcopy(definition["documents"]["task"])
-    signal = next(signal for signal in task["payload"]["signals"] if signal["id"] == "target_pos")
-    signal["cells"][0]["value"] = {
-        "kind": "call",
-        "function": "vector",
-        "args": [{"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (-0.05, 0.10)],
-    }
+    signal = task["payload"]["signals"]["target_pos"]
+    next(iter(signal["cells"].values()))["value"] = "vector(-0.05 m, 0.10 m)"
     definition["documents"]["replacement-task"] = task
 
     def step(variation):
@@ -55,12 +51,12 @@ def _saved_variants():
         result["base"]["inline"]["params"]["variation"] = variation
         return result
 
-    selection = _patch("task", {"document": "replacement-task"})
-    replacement = step([selection])
-    perturbed = step([selection])
+    selection = {"select-task": _patch("task", {"document": "replacement-task"})}
+    replacement = step(selection)
+    perturbed = step(selection)
     incompatible = deepcopy(task["payload"])
-    incompatible["signals"] = [signal for signal in incompatible["signals"] if signal["id"] != "target_pos"]
-    dtype = step([])
+    del incompatible["signals"]["target_pos"]
+    dtype = step({})
     dtype_change = [{
         "op": "set_field",
         "address": {
@@ -72,7 +68,7 @@ def _saved_variants():
     definition["steps"] = {
         "train": steps["train"], "baseline": baseline, "replacement": replacement, "perturbed": perturbed,
         "different-dtype": dtype,
-        "incompatible": step([_patch("task", incompatible)]),
+        "incompatible": step({"select-task": _patch("task", incompatible)}),
     }
     trained = steps["train"]["base"]["inline"]["trial_documents"]["model"]["document"]
     components = new_application_registry_bundle().components
@@ -87,11 +83,8 @@ def _saved_variants():
 def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
     definition = managed_evaluation_definition()
     registries = new_application_registry_bundle()
-    from feedbax.contracts.model_document import ModelDocument
-    from feedbax.contracts.task_document import TaskDocument
-
-    model = ModelDocument.model_validate(definition["documents"]["reach-model"]["payload"])
-    task = TaskDocument.model_validate(definition["documents"]["task"]["payload"])
+    model = StoredModelDocument.model_validate(definition["documents"]["reach-model"]["payload"]).lower()
+    task = StoredTaskDocument.model_validate(definition["documents"]["task"]["payload"]).lower()
     graph = lower_model_document(model, registries.components).graph
     first = next(wire for wire in graph.wires if wire.target_node == "plant")
     second = next(wire for wire in graph.wires if wire.target_node == "wrapper")
@@ -105,7 +98,7 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
         axes[name] = {"values": {"inserted": {"patches": {
             f"documents.reach-model.payload.interior.wires.{identity}.attachments": {
                 "op": "replace" if "attachments" in authored else "add",
-                "value": [attachment, *authored.get("attachments", [])],
+                "value": {name: attachment, **authored.get("attachments", {})},
             },
         }}}}
     baseline["sweep"] = {"axes": axes}
@@ -140,8 +133,8 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
 
 
 @pytest.mark.parametrize(("scope", "site", "stored_path"), [
-    ("inline", "bad~edit", "/base/inline/params/variation/bad~0edit/path"),
-    ("axis", "0", "/sweep/axes/mass/values/heavy/patches/params.variation/value/0/path"),
+    ("inline", "bad-edit", "/base/inline/params/variation/bad-edit/path"),
+    ("axis", "bad-edit", "/sweep/axes/mass/values/heavy/patches/params.variation/value/bad-edit/path"),
     ("exception", "bad-edit", "/sweep/exceptions/heavy/patches/params.variation.bad-edit/value/path"),
 ])
 def test_saved_raw_graph_edit_refuses_at_its_exact_author(tmp_path, scope, site, stored_path):
@@ -153,7 +146,7 @@ def test_saved_raw_graph_edit_refuses_at_its_exact_author(tmp_path, scope, site,
         step["base"]["inline"]["params"]["variation"] = {site: edit}
     elif scope == "axis":
         step["sweep"] = {"axes": {"mass": {"values": {"heavy": {
-            "patches": {"params.variation": {"value": [edit]}},
+            "patches": {"params.variation": {"value": {site: edit}}},
         }}}}}
     else:
         step["base"]["inline"]["params"]["variation"] = {}
@@ -175,8 +168,8 @@ def test_saved_raw_graph_edit_refuses_at_its_exact_author(tmp_path, scope, site,
     (key,) = (row.key for row in settled.plan.rows if row.kind == "evaluate")
     selected = folders.read_plan("raw", revision=settled.revision, source_runs=(key,)).plan
     definition = selected.selected_definitions[key]
-    variation = definition.payload["params"]["variation"]
-    assert (variation[int(site)] if isinstance(variation, list) else variation[site]) == edit
+    selected_edit = definition.payload["params"]["variation"][site]
+    assert OverridePatch.model_validate(selected_edit) == OverridePatch.model_validate(edit)
     assert definition.sources["/payload" + problem.path].path == stored_path
     assert selected.diagnostics == settled.plan.diagnostics
     assert target.read_bytes() == saved
@@ -207,12 +200,10 @@ def _short_reaches(steps):
     )
     payload = task["payload"]
     payload["fixed_steps"] = steps
-    payload["epochs"][0]["end"]["length"]["value"] = steps
+    payload["epochs"]["move"]["end"]["length"] = f"{steps} st"
     del payload["validation_trials"]
-    (target,) = (variable for variable in payload["variables"] if variable["id"] == "target")
-    target["value"] = {"kind": "call", "function": "vector", "args": [
-        {"kind": "literal", "value": 0.1, "unit": "m"}, {"kind": "literal", "value": 0.0, "unit": "m"},
-    ]}
+    target = payload["variables"]["target"]
+    target["value"] = "vector(0.1 m, 0 m)"
     return task
 
 
@@ -223,7 +214,7 @@ def test_timed_intervention_uses_the_exact_trained_checkpoint(host, tmp_path):
 
     raw = managed_evaluation_definition()
     raw["documents"]["task"] = _short_reaches(5)
-    raw["documents"]["objective"]["payload"]["terms"][0].pop("window")
+    raw["documents"]["objective"]["payload"]["terms"]["effort"].pop("window")
     train = raw["steps"]["train"]
     baseline = raw["steps"]["baseline"]
     baseline["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": 1}
@@ -236,13 +227,14 @@ def test_timed_intervention_uses_the_exact_trained_checkpoint(host, tmp_path):
     ):
         raw["steps"][name] = deepcopy(baseline)
         read_changed_model(raw, name, [{
-            "op": "add", "owner": owner, "after": None,
+            "op": "add", "after": None,
+            "address": owner | {"element": {"kind": "attachment", "parent": owner["element"], "id": "pulse"}},
             "attachment": {
-                "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+                "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": "vector(0.5, 0)"}},
                 "window": {"spans": [{
                     "kind": "interval",
-                    "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
-                    "end": {"offset": {"value": 2, "unit": "st"}},
+                    "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": "2 st"},
+                    "end": {"offset": "2 st"},
                 }]},
             },
         }], base="reach-model", components=registries.components)
@@ -290,7 +282,7 @@ def _selected_task_variants():
     raw = managed_evaluation_definition()
     train = raw["steps"]["train"]
     raw["documents"]["task"] = _short_reaches(5)
-    raw["documents"]["objective"]["payload"]["terms"][0].pop("window")
+    raw["documents"]["objective"]["payload"]["terms"]["effort"].pop("window")
     train["sweep"] = {"axes": {"target": {"values": {
         name: {"patches": {"trial_documents.task.variables.target.value.args.1.value": {"value": y}}}
         for name, y in (("low", -0.2), ("high", 0.3))
@@ -385,7 +377,7 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     reviewed = folders.read_plan(project, revision=None)
     assert not reviewed.plan.diagnostics
     ((step, (problem,)),) = [(run.key.step, run.problems) for run in reviewed.plan.runs if run.problems]
-    assert (step, problem.path) == ("incompatible", "/params/variation/0")
+    assert (step, problem.path) == ("incompatible", "/params/variation/select-task")
     assert "target_pos" in problem.detail
     planned = {run.key.step: run for run in reviewed.plan.runs}
     cases = ["baseline", "replacement", "perturbed", "different-dtype"]
@@ -507,9 +499,7 @@ def test_an_evaluate_variation_edits_a_task_document_field_by_id():
     """An Evaluate changes one field of its subject's Task document, addressed by ids; a variation naming a member
     the document lacks is refused at that variation."""
     raw = managed_evaluation_definition()
-    target = {"kind": "call", "function": "vector", "args": [
-        {"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (0.25, -0.1)
-    ]}
+    target = "vector(0.25 m, -0.1 m)"
     evaluate = raw["steps"]["baseline"]
     evaluate["base"]["inline"]["params"]["variation"] = {"far": _patch("task.variables.target.value", target)}
     missing = deepcopy(evaluate)
@@ -528,4 +518,4 @@ def test_an_evaluate_variation_edits_a_task_document_field_by_id():
         components=new_application_registry_bundle().components,
     )
     (variable,) = (item for item in variant.task.variables if item.id == "target")
-    assert variable.value == CallValue.model_validate(target)
+    assert [(coordinate.value, coordinate.unit) for coordinate in variable.value.args] == [(0.25, "m"), (-0.1, "m")]

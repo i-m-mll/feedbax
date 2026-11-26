@@ -80,10 +80,10 @@ class MakePresent(StrictModel):
 
 
 class SetLink(StrictModel):
-    """``model_field`` takes ``variable``'s value, or no variable's when None."""
+    """The Model field at compact ``address_text`` takes ``variable``'s value, or no variable's when None."""
 
     op: Literal["link"]
-    model_field: str
+    address_text: str
     variable: str | None
 
 

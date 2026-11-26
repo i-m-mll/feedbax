@@ -10,6 +10,8 @@ from tests.test_document_task_parity import _model_payload, _pair_model, example
 from feedbax.contracts.expression_values import LENGTH, CallValue, NameValue, ValueBase, ValueType
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
+from feedbax.contracts.stored_model import StoredModelDocument
+from feedbax.contracts.task_document import StoredTaskDocument
 from feedbax.contracts.window import Window, WindowEpoch
 from feedbax.expression_builtins import register_builtins
 from feedbax.contracts.expression_registry import FunctionRegistry
@@ -114,13 +116,14 @@ def test_a_saved_evaluate_sample_uses_its_own_window(tmp_path):
     raw["steps"]["late"] = managed_evaluation_step("train")
     owner = {"composites": [], "element": {"kind": "wire", "id": "drive"}}
     read_changed_model(raw, "late", [{
-        "op": "add", "owner": owner, "after": None,
+        "op": "add", "after": None,
+        "address": owner | {"element": {"kind": "attachment", "parent": owner["element"], "id": "pulse"}},
         "attachment": {
-            "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+            "kind": "intervention", "operation": "add", "operands": {"value": {"kind": "value", "value": "vector(0.5, 0)"}},
             "window": {"spans": [{
                 "kind": "interval",
-                "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 0.2, "unit": "s"}},
-                "end": {"offset": {"value": 2, "unit": "st"}},
+                "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": "0.2 s"},
+                "end": {"offset": "2 st"},
             }]},
         },
     }], base="point-mass", components=new_application_registry_bundle().components)
@@ -217,9 +220,11 @@ def test_nominal_trial_uses_representative_values_and_the_same_task_timeline(cli
 def test_shipped_nominal_reach_has_a_target_apart_from_the_hand(client, kind):
     """Relate must have distinct hand and target positions in the first trial Studio draws."""
     documents = load_shipped_projects()["point-mass-reaching"].documents
+    model = StoredModelDocument.model_validate(documents["point-mass"].payload).lower()
+    task = StoredTaskDocument.model_validate(documents[f"{kind}-task"].payload).lower()
     response = client.post("/api/execution/task-trials/sample", json={
-        "model": documents["point-mass"].payload,
-        "task": documents[f"{kind}-task"].payload,
+        "model": model.model_dump(mode="json"),
+        "task": task.model_dump(mode="json"),
         "input_bindings": {"target_pos": "target_pos"},
         "nominal": True, "seed": 0, "count": 1,
     })

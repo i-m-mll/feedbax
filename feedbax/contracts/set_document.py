@@ -8,28 +8,30 @@ from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.member_family import FamilyProblem, StoredFamilyMember, expand_members
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
-    DifferenceNotApplied, Differences, Document, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
-    SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts,
+    DifferenceNotApplied, Document, EditDifferences, LoadedModelDocument, Payload, Project, RemoveDocumentValue,
+    SetDocumentValue, check_disjoint, json_pointer_parts,
 )
-from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, ProjectName, StepReference
+from feedbax.contracts.project_inputs import InitialModelReference, LoadedModelReference, NonemptyText, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolvedStep, compose_document, compose_step
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
     AxisCondition, AxisValue, NamedAxis, RemoveValue, SetAxis, SetValue, Sweep, SweepExpansionCode,
-    SweepExpansionError,
+    SweepCoordinate, SweepExpansionError, sweep_value_labels,
 )
-from feedbax.contracts.task_document import TaskAdditions
+from feedbax.contracts.stored_members import StoredMembers
+from feedbax.contracts.task_document import StoredTaskAdditions
 
-SET_DOCUMENT_SCHEMA_ID = "feedbax.set_document.v1"
+SET_DOCUMENT_SCHEMA_ID = "feedbax.set_document.v2"
 MODEL_SLOT = "payload.trial_documents.model"
 """Where a Train or Evaluate step reads its Model document."""
 
 
-class SetEntry(TaskAdditions):
-    label: str | None = None
-    differences: Differences = Field(default_factory=dict)
+class SetEntry(StoredTaskAdditions, StoredFamilyMember):
+    label: NonemptyText
+    differences: EditDifferences = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _disjoint(self) -> SetEntry:
@@ -38,7 +40,7 @@ class SetEntry(TaskAdditions):
 
 
 class SetDocument(StrictModel):
-    entries: dict[ProjectName, SetEntry]
+    entries: StoredMembers[SetEntry]
 
 
 class SetMisfit(ValueError):
@@ -80,9 +82,11 @@ def _present(payload: Payload, path: str) -> bool:
 
 def check_fit(document: SetDocument, payload: Payload) -> None:
     """Raise SetMisfit for the first entry whose differences do not apply to ``payload``."""
+    from feedbax.contracts.project_storage import apply_document_differences
+
     for key, entry in document.entries.items():
         try:
-            apply_differences(payload, entry.differences)
+            apply_document_differences(STORED_MODEL_DOCUMENT_SCHEMA_ID, payload, entry.differences)
         except DifferenceNotApplied as error:
             raise SetMisfit(key, error.path, str(error)) from error
 
@@ -92,7 +96,8 @@ def axis_from_set(
 ) -> NamedAxis:
     """The inline axis of patches into ``model``'s payload that applies each entry's differences to ``payload``."""
     values = {}
-    for key, entry in document.entries.items():
+    for member in expand_members(document.entries, unique_labels=True):
+        key, entry = member.key, member.value
         patches = {
             _target(model, path): (
                 SetValue(value=difference.value, op="replace" if _present(payload, path) else "add")
@@ -100,27 +105,31 @@ def axis_from_set(
             )
             for path, difference in entry.differences.items()
         }
-        label = {"label": entry.label} if entry.label is not None else {}
-        values[key] = AxisValue(patches=patches, task_variables=entry.task_variables, task_links=entry.task_links, **label)
+        value = AxisValue(
+            label=entry.label, patches=patches, task_variables=entry.task_variables, task_links=entry.task_links,
+        )
+        value._set_source_key = member.source_key
+        values[key] = value
     return NamedAxis(values=values) if where is None else NamedAxis(values=values, where=where)
 
 
 def set_from_axis(axis: NamedAxis, model: str) -> SetDocument:
     """The Set document holding an inline axis's patches into ``model``'s payload as differences."""
     entries = {}
-    for key, value in axis.values.items():
-        if value is None:
-            continue
+    values = ((key, value) for key, value in axis.values.items() if value is not None)
+    for number, (key, value) in enumerate(values, 1):
         if value.value is not None:
             raise ValueError(f"value {key!r} carries a coordinate value a set entry cannot hold")
-        differences: Differences = {
+        differences: EditDifferences = {
             entry_pointer(model, target): (
                 SetDocumentValue(value=write.value) if isinstance(write, SetValue) else RemoveDocumentValue(op="remove")
             )
             for target, write in value.patches.items() if write is not None
         }
+        coordinate = SweepCoordinate(key, value.label, number=number, explicit_null="value" in value.model_fields_set)
+        _, label = sweep_value_labels(coordinate)
         entries[key] = SetEntry(
-            label=value.label, differences=differences, task_variables=value.task_variables, task_links=value.task_links,
+            label=label, differences=differences, task_variables=value.task_variables, task_links=value.task_links,
         )
     return SetDocument(entries=entries)
 
@@ -172,6 +181,8 @@ def resolve_set_axes(
             raise
         except SetMisfit as error:
             raise SetProblem(axis.set, ("entries", error.entry, "differences", error.path), path, str(error)) from error
+        except FamilyProblem as error:
+            raise SetProblem(axis.set, ("entries", error.source_key, *error.path), path, str(error)) from error
         except ValueError as error:
             raise SweepExpansionError(SweepExpansionCode.INVALID_SET, f"{path}.set", str(error)) from error
     return resolved
@@ -186,7 +197,7 @@ def document_subject_model(
     if authored is None or not isinstance(subject, InitialModelReference | LoadedModelReference):
         return None
     if isinstance(subject, InitialModelReference):
-        if subject.source.pointer is None and authored.schema_id == MODEL_DOCUMENT_SCHEMA_ID and isinstance(authored.payload, dict):
+        if subject.source.pointer is None and authored.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID and isinstance(authored.payload, dict):
             return subject.source.document, authored.payload
         return None
     if authored.schema_id != LOADED_MODEL_SCHEMA_ID:
@@ -195,7 +206,7 @@ def document_subject_model(
     if model.pointer is not None or model.unresolved:
         return None
     root = compose_document(read_document, model.document)
-    if not isinstance(root, ProjectDiagnostic) and root.schema_id == MODEL_DOCUMENT_SCHEMA_ID and isinstance(root.payload, dict):
+    if not isinstance(root, ProjectDiagnostic) and root.schema_id == STORED_MODEL_DOCUMENT_SCHEMA_ID and isinstance(root.payload, dict):
         return model.document, root.payload
     return None
 

@@ -1,94 +1,141 @@
 """A stored key must affect what the project reads, and each write must be stable."""
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
-from functools import reduce
+from functools import partial, reduce
 import json
 from operator import getitem
 from pathlib import Path
+from typing import get_args
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 import pytest
 
+from feedbax.application.project_parsimony import authored_key_paths, project_file_meaning, without_authored_key
+from feedbax.application.project_writer import dump_text_project, stored_defaults_manifest, write_project_file
+from feedbax.application.stored_regions import StoredRegionRegistries, compose_document
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.canonical_json import CanonicalJsonError, canonical_json_v2_bytes
-from feedbax.contracts.project import Project, RootDocument
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureDocument
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.project import (
+    BasedDocument, Project, RootDocument, Step, StepKind, apply_differences, diff, json_pointer_parts,
+)
 from feedbax.contracts.project_io import (
-    STUDIO_PRESENTATION_FILENAME, ProjectConfiguration, ProjectReadError, dump_text_project, parse_text_project_files,
+    STUDIO_PRESENTATION_FILENAME,
+    ProjectConfiguration,
+    parse_text_project_files,
     TextProjectManifest,
 )
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
-from feedbax.contracts.project_storage import stored_defaults_manifest, stored_document_models, write_project_file
-from feedbax.contracts.project_sweep import AxisValue, NamedAxis, Row, Sweep, SweepException
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
+from feedbax.contracts.project_storage import (
+    stored_document_models, stored_keyed_collection, stored_project_value,
+)
+from feedbax.contracts.rollout import ROLLOUT_TYPE
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.studio_project import PresentationDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import project_variants
+from tests.support.python_task import REACHING_TASK, reaching_python_task  # noqa: F401
 
 _SHA = "d" * 64
-_OBJECT = {"object_id": f"content-object://sha256/{_SHA}", "sha256": _SHA, "size_bytes": 42}
+_OBJECT = {"sha256": _SHA, "size_bytes": 42}
 _TASK = {
-    "id": "task", "variables": [], "signals": [], "fixed_steps": None,
-    "epochs": [{"id": "trial", "name": "Trial", "end": {"kind": "length", "length": {"kind": "literal", "value": 1}}}],
+    "id": "task", "variables": {}, "signals": {}, "fixed_steps": None,
+    "epochs": {"trial": {"label": "Trial", "end": {"kind": "length", "length": "1 st"}}},
+}
+_FIGURE = {
+    "data": ["summary"], "theme": "plotly_white",
+    "layout": {"velocity": {"row": 1, "col": 1}, "markers": {"row": 1, "col": 2}},
+    "layers": {
+        "mean": {"mark": "line", "role": "summary", "panel": "velocity", "encode": {"x": "time", "y": "mean"}},
+        "bounds": {
+            "mark": "band", "role": "summary", "panel": "velocity", "style": {"band_alpha": 0.2},
+            "encode": {"x": "time", "y": "mean", "lower": "lower", "upper": "upper"},
+        },
+        "zero": {"mark": "rule", "role": "summary", "panel": "markers", "encode": {"axis": "x", "at": 0.0}},
+    },
+}
+_TIME = "200 ms"
+_MODEL = {
+    "step_seconds": "0.01 s", "ports": {}, "interior": {"components": {
+        "cell": {"kind": "leaf", "label": "Cell", "type": "feedbax.VanillaRNN", "fields": {"hidden_size": 4, "tau": _TIME}},
+    }},
+}
+_METHOD = "feedbax.supervised_gradient"
+_TRAIN_SETTINGS = {
+    "grad_clip": 1.0,
+    "optimizer": {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.01}, "b1": 0.9},
+}
+_ANALYSIS = {
+    "inputs": {"states": {"kind": "dataset", "cardinality": "many"}},
+    "operations": {"summary": {
+        "label": "Velocity", "operation": "feedbax.summarize_velocity",
+        "params": {"ddof": 0, "bounds_scale": 1.0, "variable": "parallel_velocity"},
+        "inputs": {"states": {"input": "states"}},
+    }},
+    "views": {"profile": {"label": "Profile", "figure": _FIGURE, "inputs": {"summary": {"input": "states"}}}},
+}
+_REPORT = {
+    "title": "Report", "blocks": [{"markdown": "## Summary"}, {"figure": "velocity", "caption": None}],
+    "completeness": "complete",
 }
 _DOCUMENT_FIXTURES = {
-    "feedbax.spec.model": {"step_seconds": 0.01, "ports": {}, "interior": {}},
-    "feedbax.spec.task_document": _TASK,
-    "feedbax.spec.python_task": {"type": "feedbax.example_task", "params": {}},
-    "feedbax.spec.objective_document": {"id": "score", "terms": [
-        {"id": "effort", "enabled": True, "weight": {"kind": "literal", "value": 1.0},
-         "measure": {"kind": "literal", "value": 2.0}, "reduction": "mean"},
-    ]},
+    STORED_MODEL_DOCUMENT_SCHEMA_ID: _MODEL,
+    STORED_TASK_DOCUMENT_SCHEMA_ID: _TASK,
+    "feedbax.spec.python_task": {"type": REACHING_TASK, "params": {"n_steps": 50, "x": 0.15, "y": 0.0}},
+    STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID: {"id": "score", "terms": {
+        "effort": {"enabled": True, "weight": 1, "measure": 2, "reduction": "mean"},
+    }},
     "feedbax.spec.training_document": {
-        "method": "feedbax.example_training", "settings": {"schedule": {"value": False, "scale": 1.0}},
+        "method": _METHOD, "settings": _TRAIN_SETTINGS,
         "training_config": {"batch_size": 128, "snapshot_interval": 100, "replicates": 1},
     },
-    "feedbax.spec.loaded_model": {
-        "schema_version": "feedbax.spec.loaded_model.v1", "model": {"document": "model"}, "archive": None,
-        "source": {"kind": "imported", "model": _OBJECT,
-                   "weights": {"tree_id": f"content-tree://sha256/{_SHA}", "descriptor": _OBJECT},
-                   "encoding": {"descriptor_sha256": _SHA}},
+    LOADED_MODEL_SCHEMA_ID: {
+        "model": {"document": "model"}, "model_revision": _OBJECT, "archive": None,
+        "weights": {"sha256": "e" * 64, "size_bytes": 54}, "encoding_sha256": "f" * 64,
     },
-    "feedbax.set_document.v1": {"entries": {"nominal": {"label": "Nominal", "differences": {}}}},
-    "feedbax.analysis_document.v1": {
-        "inputs": {"states": {"kind": "dataset", "cardinality": "many"}},
-        "operations": {"align": {
-            "label": "Align", "operation": "feedbax.aligned_velocity", "params": {}, "inputs": {"states": {"input": "states"}},
-        }},
-    },
-    "feedbax.figure_document.v1": {
-        "data": ["summary"], "theme": "plotly_white", "layout": [{"name": "velocity", "row": 1, "col": 1}],
-        "layers": [{"name": "bounds", "mark": "band", "role": "summary", "panel": "velocity",
-                    "encode": {"x": "time", "y": "mean", "lower": "lower", "upper": "upper"}}],
-    },
-    "feedbax.report_document.v1": {
-        "title": "Report", "blocks": [{"markdown": "## Summary"}, {"figure": "velocity", "caption": None}],
-        "completeness": "complete",
-    },
+    "feedbax.set_document.v2": {"entries": {"nominal": {
+        "label": "Nominal",
+        "differences": {
+            "/interior/components/cell/fields/tau": {"value": _TIME},
+            "/interior/components/cell/fields/hidden_size": {"value": 4},
+        },
+    }}},
+    ANALYSIS_SCHEMA: _ANALYSIS,
+    STORED_FIGURE_DOCUMENT_SCHEMA_ID: _FIGURE,
+    "feedbax.report_document.v1": _REPORT,
     "subset": {"rule": "", "clauses": [{"noise": [{"id": "nominal", "label": "Nominal"}]}]},
 }
 
-type _Path = tuple[str | int, ...]
+_TRIALS = {"model": _MODEL, "task": _TASK, "objective": _DOCUMENT_FIXTURES[STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID]}
+_STEP_FIXTURES = {
+    "train": {"method": _METHOD, "training_config": {"n_batches": 3, "replicates": 1}, "settings": _TRAIN_SETTINGS,
+              "trial_documents": _TRIALS | {"input_bindings": {}}},
+    "synthesize": _TRIALS | {"method": "feedbax.constant_parameters", "settings": {"value": 0.0}},
+    "evaluate": {"evaluation_type": ROLLOUT_TYPE, "params": {
+        "seed": 7, "trial_policy": "paired", "variation": [], "retention": "raw_states",
+        "trial_set": {"kind": "every_condition"},
+    }},
+    "analyze": _ANALYSIS,
+    "report": _REPORT,
+}
+_PRESENTATION = {
+    "documents": {"model": {
+        "positions": {"component.point": {"x": -0.0, "y": 1.0}},
+        "flipped": {"component.point": True},
+        "collapsed": {"controller/graph": True},
+        "waypoints": {"wire.route": [{"x": 1.0, "y": 2.0}]},
+        "camera": {"x": 0, "y": 0, "zoom": 0.5},
+    }},
+    "steps": {"train": {"sweep_order": ["length"], "model_positions": {"model": {"component.point": {"x": 2, "y": 0}}}}},
+    "visible_groups": ["trial"],
+}
+
 type _Observe = Callable[[Project], object]
-
-
-def _refinement_fields(value: object, path: _Path = ()) -> Iterator[tuple[_Path, tuple[str, ...]]]:
-    if isinstance(value, BaseModel):
-        if isinstance(value, (Sweep, NamedAxis, AxisValue, Row, SweepException)):
-            yield path, tuple(sorted(value.model_fields_set))
-        for field in type(value).model_fields:
-            yield from _refinement_fields(getattr(value, field), (*path, field))
-    elif isinstance(value, dict):
-        for key, child in value.items():
-            yield from _refinement_fields(child, (*path, key))
-    elif isinstance(value, (list, tuple)):
-        for index, child in enumerate(value):
-            yield from _refinement_fields(child, (*path, index))
-
-
-def _meaning(model: BaseModel) -> tuple[bytes, tuple]:
-    """Read values with defaults filled, retaining which refinement fields the author set."""
-    value = model.model_dump(mode="json", by_alias=True)
-    if isinstance(model, RootDocument) and (payload_model := stored_document_models()[model.schema_id]) is not None:
-        value["payload"] = payload_model.model_validate(model.payload).model_dump(mode="json", by_alias=True)
-    return canonical_json_v2_bytes(value), tuple(_refinement_fields(model))
+_meaning = partial(project_file_meaning, registries=StoredRegionRegistries())
 
 
 def _read(files: Mapping[str, bytes], root: Path, observe: _Observe | None):
@@ -105,60 +152,230 @@ def _read(files: Mapping[str, bytes], root: Path, observe: _Observe | None):
     return text, presentation, meaning
 
 
-def _positions_of_keys(value: object, prefix: _Path = ()) -> Iterator[_Path]:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            path = (*prefix, key)
-            yield path
-            yield from _positions_of_keys(child, path)
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            yield from _positions_of_keys(child, (*prefix, index))
-
-
 def _verify_parsimony(root: Path, project: Project, *, observe: _Observe | None = None) -> dict[str, bytes]:
     configuration = ProjectConfiguration(project="fixture", store="results", settings={})
-    presentation = PresentationDocument.model_validate({
-        "documents": {"model": {"positions": {"point": {"x": -0.0, "y": 1.0}}, "flipped": {}}},
-    })
+    presentation = PresentationDocument.model_validate(_PRESENTATION)
     files = dump_text_project(project, configuration) | {STUDIO_PRESENTATION_FILENAME: write_project_file(presentation)}
     reopened, shown, expected = _read(files, root, observe)
     assert {key: _meaning(value) for key, value in reopened.project.documents.items()} == {
         key: _meaning(value) for key, value in project.documents.items()
+    }
+    assert {key: _meaning(value) for key, value in reopened.project.steps.items()} == {
+        key: _meaning(value) for key, value in project.steps.items()
     }
     if observe is not None:
         assert observe(reopened.project) == observe(project)
     rewritten = dump_text_project(reopened.project, reopened.configuration)
     assert rewritten | {STUDIO_PRESENTATION_FILENAME: write_project_file(shown)} == files
 
-    for relative, data in files.items():
-        original = json.loads(data)
-        for path in _positions_of_keys(original):
-            edited = deepcopy(original)
-            del reduce(getitem, path[:-1], edited)[path[-1]]
-            candidate = files | {relative: json.dumps(edited).encode()}
-            try:
-                _, _, changed = _read(candidate, root, observe)
-            except (ProjectReadError, ValidationError):
-                continue
-            assert changed != expected, f"{relative} repeats a default at {path}"
+    _verify_essential_keys(files, root, observe, expected)
     return files
 
 
+def _verify_essential_keys(files, root, observe, expected):
+    for relative, data in files.items():
+        original = json.loads(data)
+        for path in authored_key_paths(original):
+            edited = without_authored_key(original, path)
+            candidate = files | {relative: json.dumps(edited).encode()}
+            try:
+                _, _, changed = _read(candidate, root, observe)
+            except ValueError:
+                continue
+            assert changed != expected, f"{relative} repeats a default at {path}"
+
+
+@pytest.mark.usefixtures("reaching_python_task")
 @pytest.mark.parametrize("schema", sorted(stored_document_models()))
 def test_each_registered_document_has_a_parsimonious_file(tmp_path, schema):
+    assert stored_document_models()[schema] is not None, f"{schema} has no stored payload model"
     assert schema in _DOCUMENT_FIXTURES, f"Register a document harness fixture for {schema}."
     document = RootDocument(schema=schema, label="Fixture", payload=_DOCUMENT_FIXTURES[schema])
     files = _verify_parsimony(tmp_path, Project(documents={"fixture": document}))
-    if schema == "feedbax.spec.objective_document":
-        # The existing expression tree's scalar type can change whether the checker accepts it.
-        term, = json.loads(files["documents/fixture.json"])["payload"]["terms"]
-        assert type(term["measure"]["value"]) is float
+    if schema == STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID:
+        term = json.loads(files["documents/fixture.json"])["payload"]["terms"]["effort"]
+        assert type(term["measure"]) is int and term["measure"] == 2
+
+
+@pytest.mark.parametrize("kind", get_args(StepKind.__value__))
+def test_each_inline_step_has_a_parsimonious_file(tmp_path, kind):
+    assert kind in _STEP_FIXTURES, f"Register an inline step harness fixture for {kind}."
+    step = Step.model_validate({"kind": kind, "label": kind.title(), "base": {"inline": _STEP_FIXTURES[kind]}})
+    _verify_parsimony(tmp_path, Project(steps={kind: step}))
+
+
+@pytest.mark.parametrize("sequence", ["0..{last}", "linspace(1, 2, {count})", "geomspace(1, 2, {count})"])
+@pytest.mark.parametrize(("schema", "payload", "path", "expression"), [
+    pytest.param(STORED_TASK_DOCUMENT_SCHEMA_ID, _TASK | {"variables": {"sample": {
+        "label": "Sample", "type": {"base": "real"}, "value": None,
+    }}}, ("variables", "sample", "value"), "choice({rule})", id="sequence-expression"),
+    pytest.param(STORED_TASK_DOCUMENT_SCHEMA_ID, _TASK | {"validation_trials": {"reach": {
+        "label": "Reach {k}", "over": {"k": None},
+    }}}, ("validation_trials", "reach", "over", "k"), "{rule}", id="trial-family"),
+    pytest.param(STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, {"id": "score", "terms": {"effort": {
+        "label": "Effort", "measure": "k", "over": {"k": None},
+    }}}, ("terms", "effort", "over", "k"), "{rule}", id="objective-family"),
+    pytest.param(SET_DOCUMENT_SCHEMA_ID, {"entries": {"shift": {
+        "label": "Shift {k}", "over": {"k": None},
+    }}}, ("entries", "shift", "over", "k"), "{rule}", id="set-family"),
+])
+def test_rule_storage_grows_only_with_count_digits(tmp_path, schema, payload, path, expression, sequence):
+    def write(count):
+        authored = deepcopy(payload)
+        rule = sequence.format(count=count, last=count - 1)
+        reduce(getitem, path[:-1], authored)[path[-1]] = expression.format(rule=rule)
+        document = RootDocument(schema=schema, label="Fixture", payload=authored)
+        files = _verify_parsimony(tmp_path, Project(documents={"fixture": document}))
+        # The writer can wrap at 100 columns as the count gains digits.
+        return canonical_json_v2_bytes(json.loads(files["documents/fixture.json"]))
+
+    assert len(write(1000)) - len(write(10)) == 2
+
+
+def test_set_fields_deltas_and_variant_refinements_are_parsimonious(tmp_path):
+    project = Project.model_validate({
+        "documents": {"perturbations": {
+            "schema": "feedbax.set_document.v2",
+            "label": "Perturbations",
+            "payload": _DOCUMENT_FIXTURES["feedbax.set_document.v2"],
+        }},
+        "steps": {"train": {
+            "kind": "train",
+            "label": "Train",
+            "base": {"inline": _STEP_FIXTURES["train"] | {"seed": 0}},
+            "set_fields": {"perturbation": {
+                "axis": {"set": "perturbations", "optional": False},
+                "sampling": {"kind": "weighted", "weights": {"nominal": 2.0}, "none": 1.0},
+                "condition": True,
+            }},
+            "deltas": [{
+                "layer_id": "seed",
+                "patches": [{"path": "seed", "value": 7}],
+                "acknowledges_ancestor_paths": [],
+                "schema_id": None,
+                "schema_version": None,
+            }],
+            "sweep": {"axes": {"length": {"values": {"long": {
+                "patches": {"training_config.n_batches": {"value": 4}},
+            }}}}},
+        }},
+        "sweep": {"rows": {"longer": {"patches": {"steps.train.base.inline.training_config.n_batches": {"value": 5}}}}},
+    })
+    files = _verify_parsimony(tmp_path, project)
+    train = json.loads(files["steps/train.json"])
+    assert train["base"]["inline"]["seed"] == 0
+    assert train["set_fields"]["perturbation"]["condition"] is True
+    assert json.loads(files["variants/longer.json"])["patches"]
+
+
+def test_a_based_objective_retains_the_expression_and_default_it_writes(tmp_path):
+    schema = STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
+    term = deepcopy(_DOCUMENT_FIXTURES[schema]["terms"]["effort"])
+    project = Project.model_validate({"documents": {
+        "objective": {"schema": schema, "label": "Objective", "payload": _DOCUMENT_FIXTURES[schema]},
+        "alternative": {"schema": schema, "label": "Alternative", "base": {"document": "objective"},
+                        "differences": {"/terms/alternate": {"value": term}}},
+    }})
+
+    def observe(project: Project):
+        document = compose_document(project.documents.get, "alternative")
+        return _meaning(document) if isinstance(document, RootDocument) else document
+
+    files = _verify_parsimony(tmp_path, project, observe=observe)
+    derived = json.loads(files["documents/alternative.json"])
+    assert derived["differences"]["/terms/alternate"]["value"] == term
+
+
+@pytest.mark.usefixtures("reaching_python_task")
+@pytest.mark.parametrize(("family", "name", "path", "value"), [
+    ("documents", STORED_MODEL_DOCUMENT_SCHEMA_ID, ("payload", "interior", "components", "cell", "fields", "hidden_size"), 4),
+    ("documents", "feedbax.spec.python_task", ("payload", "params", "x"), 0.15),
+    ("documents", "feedbax.spec.training_document", ("payload", "settings", "grad_clip"), 1.0),
+    ("documents", ANALYSIS_SCHEMA, ("payload", "operations", "summary", "params", "bounds_scale"), 1.0),
+    ("documents", STORED_FIGURE_DOCUMENT_SCHEMA_ID, ("payload", "theme"), "plotly_white"),
+    ("steps", "synthesize", ("base", "inline", "settings"), {"value": 0.0}),
+    ("steps", "evaluate", ("base", "inline", "params", "trial_policy"), "paired"),
+])
+def test_the_harness_refuses_a_restated_registry_default(tmp_path, family, name, path, value):
+    if family == "documents":
+        document = RootDocument(schema=name, label="Fixture", payload=_DOCUMENT_FIXTURES[name])
+        project = Project(documents={"fixture": document})
+    else:
+        step = Step.model_validate({"kind": name, "label": "Fixture", "base": {"inline": _STEP_FIXTURES[name]}})
+        project = Project(steps={"fixture": step})
+    files = _verify_parsimony(tmp_path, project)
+    relative = f"{family}/fixture.json"
+    authored = json.loads(files[relative])
+    reduce(getitem, path[:-1], authored)[path[-1]] = value
+    redundant = files | {relative: json.dumps(authored).encode()}
+    _, _, expected = _read(redundant, tmp_path, None)
+    with pytest.raises(AssertionError, match="repeats a default"):
+        _verify_essential_keys(redundant, tmp_path, None, expected)
 
 
 def test_stored_defaults_have_a_pinned_schema_contract():
     path = Path(__file__).resolve().parents[1] / "feedbax/contracts/stored_defaults_contract.json"
     assert canonical_json_v2_bytes(stored_defaults_manifest()) == canonical_json_v2_bytes(json.loads(path.read_bytes()))
+
+
+def test_a_based_figure_writes_one_layer_edit_and_keeps_member_order(tmp_path):
+    schema = STORED_FIGURE_DOCUMENT_SCHEMA_ID
+    keyed = partial(stored_keyed_collection, schema)
+    base = stored_project_value(StoredFigureDocument.model_validate(_FIGURE))
+    assert isinstance(base, dict)
+    target = deepcopy(base)
+    target["layers"]["bounds"]["encode"]["upper"] = "upper95"
+    changes = diff(base, target, keyed_collection=keyed)
+    assert list(changes) == ["/layers/bounds/encode/upper"]
+    assert changes["/layers/bounds/encode/upper"].value == "upper95"
+    reordered = base | {"layers": dict(reversed(list(base["layers"].items())))}
+    ordering = diff(base, reordered, keyed_collection=keyed)
+    assert list(ordering) == ["/layers"]
+    assert ordering["/layers"].order == ["zero", "bounds", "mean"]
+
+    later = deepcopy(base)
+    later["layout"]["markers"]["title"] = "Crossings"
+    later["layers"]["mean"]["encode"]["y"] = "average"
+    for index in range(20):
+        later["layers"][f"marker-{index}"] = deepcopy(later["layers"]["zero"])
+    widened = deepcopy(later)
+    widened["layers"]["bounds"]["encode"]["upper"] = "upper95"
+    assert diff(later, widened, keyed_collection=keyed) == changes
+    ordered = apply_differences(later, ordering, keyed_collection=keyed)
+    assert list(ordered["layers"]) == ["zero", "bounds", "mean", *(f"marker-{index}" for index in range(20))]
+
+    project = Project(documents={
+        "reach-velocity": RootDocument(schema=schema, label="Reach velocity", payload=later | {"theme": "plotly_white"}),
+        "with-bounds": BasedDocument(schema=schema, label="With bounds", base={"document": "reach-velocity"},
+                                    differences=changes),
+    })
+
+    def observe(project):
+        composed = compose_document(project.documents.get, "with-bounds")
+        if isinstance(composed, ProjectDiagnostic):
+            return composed
+        return StoredFigureDocument.model_validate(composed.payload).lower()
+
+    files = _verify_parsimony(tmp_path, project, observe=observe)
+    assert "theme" not in json.loads(files["documents/reach-velocity.json"])["payload"]
+    assert json.loads(files["documents/with-bounds.json"])["differences"] == {
+        "/layers/bounds/encode/upper": {"value": "upper95"},
+    }
+    figure = observe(project)
+    assert [panel.name for panel in figure.layout] == ["velocity", "markers"]
+    assert [layer.name for layer in figure.layers] == [*later["layers"]]
+    assert figure.layout[1].title == "Crossings"
+    assert figure.layers[0].encode.y == "average"
+    assert figure.layers[1].encode.upper == "upper95"
+
+
+@pytest.mark.parametrize(("old", "current"), [
+    ("feedbax.figure_document.v1", STORED_FIGURE_DOCUMENT_SCHEMA_ID),
+    ("feedbax.analysis_document.v1", ANALYSIS_SCHEMA),
+])
+def test_rejects_obsolete_authored_figure_and_analysis_versions(old, current):
+    with pytest.raises(ValidationError, match=f"Expected {current!r}"):
+        RootDocument(schema=old, label="Obsolete", payload={})
 
 
 def test_refinement_keeps_the_default_an_author_explicitly_set(tmp_path):
@@ -170,6 +387,8 @@ def test_refinement_keeps_the_default_an_author_explicitly_set(tmp_path):
             "child": {"kind": "train", "label": "Child", "base": {"step": "base"}, "sweep": {
                 "axes": {"treatment": {"values": {"one": {"label": None}}, "optional": False}},
             }},
+            "grandchild": {"kind": "train", "label": "Grandchild", "base": {"step": "child"},
+                           "sweep": {"axes": {}}},
         },
         "sweep": {"rows": {"baseline": {"patches": {}}, "check": {"label": "Check"}}},
     })
@@ -177,14 +396,15 @@ def test_refinement_keeps_the_default_an_author_explicitly_set(tmp_path):
     treatment = json.loads(files["steps/child.json"])["sweep"]["axes"]["treatment"]
     assert treatment["optional"] is False
     assert treatment["values"]["one"]["label"] is None
+    assert "sweep" not in json.loads(files["steps/grandchild.json"])
 
 
 def test_a_default_retains_its_presence_when_other_files_observe_it(tmp_path):
     project = Project.model_validate({
         "documents": {
-            "base": {"schema": "feedbax.spec.task_document", "label": "Base", "payload": _TASK},
+            "base": {"schema": STORED_TASK_DOCUMENT_SCHEMA_ID, "label": "Base", "payload": _TASK},
             "derived": {
-                "schema": "feedbax.spec.task_document", "label": "Derived", "base": {"document": "base"},
+                "schema": STORED_TASK_DOCUMENT_SCHEMA_ID, "label": "Derived", "base": {"document": "base"},
                 "differences": {"/fixed_steps": {"op": "remove"}},
             },
         },
@@ -203,24 +423,37 @@ def test_a_default_retains_its_presence_when_other_files_observe_it(tmp_path):
     assert json.loads(files["documents/base.json"])["payload"]["fixed_steps"] is None
 
 
-def test_opaque_patch_values_keep_types_the_legacy_expression_checker_reads(tmp_path):
-    schema = "feedbax.spec.objective_document"
+def test_based_and_variant_patches_read_stored_objective_expressions(tmp_path):
+    schema = STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
     base = _DOCUMENT_FIXTURES[schema]
-    path = "documents.base.payload.terms.effort.measure.value"
+    terms = deepcopy(base["terms"])
+    terms["effort"]["measure"] = "abs(-2)"
+    path = "documents.base.payload.terms.effort.measure"
     project = Project.model_validate({
         "documents": {
             "base": {"schema": schema, "label": "Base", "payload": base},
             "derived": {
                 "schema": schema, "label": "Derived", "base": {"document": "base"},
-                "differences": {"/terms": {"value": base["terms"]}},
+                "differences": {"/terms": {"value": terms}},
             },
         },
-        "sweep": {"rows": {"larger": {"patches": {path: {"op": "replace", "value": 3.0}}}}},
+        "sweep": {"rows": {"larger": {"patches": {path: {"op": "replace", "value": 3}}}}},
     })
-    files = _verify_parsimony(tmp_path, project)
-    terms = json.loads(files["documents/derived.json"])["differences"]["/terms"]["value"]
-    assert type(terms[0]["measure"]["value"]) is float
-    assert type(json.loads(files["variants/larger.json"])["patches"][path]["value"]) is float
+    def observe(project):
+        derived = compose_document(project.documents.get, "derived")
+        variant = project_variants(project).get("larger")
+        varied = compose_document(variant.documents.get, "base") if variant is not None else None
+        return tuple(_meaning(value) if isinstance(value, RootDocument) else value for value in (derived, varied))
+
+    derived, varied = observe(project)
+    assert derived == _meaning(RootDocument(schema=schema, label="Derived", payload=base | {"terms": terms}))
+    variant_terms = deepcopy(base["terms"])
+    variant_terms["effort"]["measure"] = 3
+    assert varied == _meaning(RootDocument(schema=schema, label="Base", payload=base | {"terms": variant_terms}))
+    files = _verify_parsimony(tmp_path, project, observe=observe)
+    difference = json.loads(files["documents/derived.json"])["differences"]["/terms"]
+    assert difference["value"] == terms
+    assert json.loads(files["variants/larger.json"])["patches"][path]["value"] == 3
 
 
 def test_project_numbers_round_trip_without_rounding_or_accepting_unsafe_integers():
@@ -260,3 +493,131 @@ def test_project_layout_counts_code_points_and_keeps_long_strings_intact():
     assert inline_start - filled_start == 4
     assert len(lines[inline_start].encode()) > 100 >= len(lines[inline_start])
     assert [line.split('"')[1] for line in lines if len(line) > 100] == ["long"]
+
+
+@pytest.mark.usefixtures("reaching_python_task")
+@pytest.mark.parametrize(("schema", "path", "value"), [
+    (STORED_MODEL_DOCUMENT_SCHEMA_ID, "/ports/outputs/aux", {"label": "Aux", "type": {}}),
+    (STORED_TASK_DOCUMENT_SCHEMA_ID, "/validation_trials/first", {"label": "First"}),
+    ("feedbax.spec.python_task", "/params/x", 0.3),
+    (STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "/terms/effort/weight", 3),
+    ("feedbax.spec.training_document", "/settings/optimizer/type", "adabelief"),
+    (LOADED_MODEL_SCHEMA_ID, "/weights/size_bytes", 55),
+    ("feedbax.set_document.v2", "/entries/nominal/task_variables/gain", {"label": "Gain", "type": {"base": "real"}, "value": 1}),
+    (ANALYSIS_SCHEMA, "/operations/summary/params/bounds_scale", 2),
+    (STORED_FIGURE_DOCUMENT_SCHEMA_ID, "/layers/mean/style/opacity", 0.5),
+    ("feedbax.report_document.v1", "/completeness", "allow_omissions"),
+    ("subset", "/rule", "loss < 1"),
+])
+def test_each_registered_based_document_reads_defaults_without_rewriting_its_base(tmp_path, schema, path, value):
+    base_payload = deepcopy(_DOCUMENT_FIXTURES[schema])
+    if schema == "feedbax.spec.training_document":
+        base_payload["settings"] = {}
+    if schema == ANALYSIS_SCHEMA:
+        base_payload["operations"]["summary"]["params"] = {}
+    base = RootDocument(schema=schema, label="Base", payload=base_payload)
+    configuration = ProjectConfiguration(project="fixture", store="results")
+    before = dump_text_project(Project(documents={"base": base}), configuration)
+    canonical = parse_text_project_files(tmp_path, before).project
+    canonical.documents["derived"] = BasedDocument(
+        schema=schema, label="Derived", base={"document": "base"}, differences={path: {"value": value}},
+    )
+    files = dump_text_project(canonical, configuration)
+    assert files["documents/base.json"] == before["documents/base.json"]
+    assert json.loads(files["documents/derived.json"])["differences"] == {path: {"value": value}}
+    saved = parse_text_project_files(tmp_path, files).project
+    document = compose_document(saved.documents.get, "derived")
+    assert isinstance(document, RootDocument), document
+    assert reduce(getitem, json_pointer_parts(path), document.payload) == value
+
+
+@pytest.mark.parametrize(("schema", "path"), [
+    (STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, "/terms/missing/weight"),
+    (LOADED_MODEL_SCHEMA_ID, "/archive/path"),
+    ("feedbax.report_document.v1", "/blocks/0/markdown"),
+    ("subset", "/clauses/0/noise"),
+])
+def test_based_defaults_do_not_create_missing_members_or_descend_into_atomic_arrays(schema, path):
+    documents = {
+        "base": RootDocument(schema=schema, label="Base", payload=_DOCUMENT_FIXTURES[schema]),
+        "derived": BasedDocument(
+            schema=schema, label="Derived", base={"document": "base"}, differences={path: {"value": {}}},
+        ),
+    }
+    problem = compose_document(documents.get, "derived")
+    assert isinstance(problem, ProjectDiagnostic)
+    assert problem.code == ResolutionCode.INVALID_DELTA
+
+
+def test_based_default_objects_preserve_authored_overrides_through_a_chain():
+    schema = "feedbax.spec.training_document"
+    root = RootDocument(schema=schema, label="Base", payload={
+        "method": _METHOD, "settings": {"optimizer": {"type": "adam", "b1": 0.8}}, "training_config": {},
+    })
+    first = BasedDocument(
+        schema=schema, label="Rate", base={"document": "base"},
+        differences={"/settings/optimizer/learning_rate/value": {"value": 0.003}},
+    )
+    second = BasedDocument(
+        schema=schema, label="Momentum", base={"document": "rate"},
+        differences={"/settings/optimizer/b2": {"value": 0.98}},
+    )
+    assert root.payload["settings"]["optimizer"] == {"type": "adam", "b1": 0.8}
+    result = compose_document({"base": root, "rate": first, "momentum": second}.get, "momentum")
+    assert isinstance(result, RootDocument), result
+    assert result.payload["settings"]["optimizer"] == {
+        "type": "adam", "b1": 0.8, "b2": 0.98, "learning_rate": {"type": "constant_schedule", "value": 0.003},
+    }
+
+
+def test_known_analysis_defaults_do_not_resolve_opaque_operation_shapes():
+    base = deepcopy(_ANALYSIS)
+    operations = base["operations"]
+    operations["summary"].pop("params")
+    operations["unavailable"] = operations["summary"] | {"operation": "example.missing", "params": {"raw": 42}}
+    documents = {
+        "base": RootDocument(schema=ANALYSIS_SCHEMA, label="Base", payload=base),
+        "known": BasedDocument(
+            schema=ANALYSIS_SCHEMA, label="Known", base={"document": "base"},
+            differences={"/operations/summary/params/bounds_scale": {"value": 2}},
+        ),
+        "unknown": BasedDocument(
+            schema=ANALYSIS_SCHEMA, label="Unknown", base={"document": "base"},
+            differences={"/operations/unavailable/params/filter/value": {"value": 2}},
+        ),
+    }
+    composed = compose_document(documents.get, "known")
+    assert isinstance(composed, RootDocument), composed
+    assert composed.payload["operations"]["summary"]["params"] == {"bounds_scale": 2}
+    assert composed.payload["operations"]["unavailable"] == operations["unavailable"]
+    problem = compose_document(documents.get, "unknown")
+    assert isinstance(problem, ProjectDiagnostic)
+    assert problem.code == ResolutionCode.INVALID_DELTA
+
+
+def test_a_based_type_switch_with_new_shape_replaces_the_typed_object():
+    schema = "feedbax.spec.training_document"
+    base = RootDocument(schema=schema, label="Base", payload={
+        "method": _METHOD, "settings": {"optimizer": {"type": "adadelta"}}, "training_config": {},
+    })
+    optimizer = {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.002}}
+    documents = {
+        "base": base,
+        "sibling-edits": BasedDocument(
+            schema=schema, label="Sibling edits", base={"document": "base"}, differences={
+                "/settings/optimizer/type": {"value": "adam"},
+                "/settings/optimizer/learning_rate/value": {"value": 0.002},
+            },
+        ),
+        "replacement": BasedDocument(
+            schema=schema, label="Replacement", base={"document": "base"},
+            differences={"/settings/optimizer": {"value": optimizer}},
+        ),
+    }
+    problem = compose_document(documents.get, "sibling-edits")
+    assert isinstance(problem, ProjectDiagnostic)
+    assert problem.code == ResolutionCode.INVALID_DELTA
+    assert problem.document_path == "differences./settings/optimizer/learning_rate/value"
+    result = compose_document(documents.get, "replacement")
+    assert isinstance(result, RootDocument), result
+    assert result.payload["settings"]["optimizer"] == optimizer

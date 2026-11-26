@@ -458,7 +458,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   expect(carried.request().postDataJSON()).toMatchObject({ address: { kind: 'step', id: childId } });
   snapshot = await carried.json() as StudioProjectSnapshot;
   expect(snapshot.project.steps?.[childId]?.inputs?.checkpoint).toEqual(checkpointInput);
-  expect(snapshot.project.steps?.[childId]?.deltas?.[1]?.patches).toEqual([
+  expect(snapshot.project.steps?.[childId]?.deltas?.[1]?.patches?.map(({ op = 'replace', ...patch }) => ({ op, ...patch }))).toEqual([
     { op: 'replace', path: carryoverPath, value: {
       mode: 'continue_from', source_completed_updates: 2, state: 'preserve', rng: 'carry', schedule: 'continue',
     } },

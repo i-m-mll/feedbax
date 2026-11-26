@@ -15,6 +15,7 @@ from feedbax.orchestration.venue_jobs import VenueJobs
 from feedbax.web.app import create_app
 from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue, StudioVenueQuote
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider, verify_authorization
+from tests.support.browser_seed_actions import NonSeed
 from tests.support.store_transport import loopback_store
 from tests.test_session_rehearsal import ISSUER_KEY, _authorization
 
@@ -111,9 +112,16 @@ def __getattr__(name: str):
     return app
 
 
-if __name__ == "__main__":
+def serve() -> int:
     from scripts.studio_dev import main
 
     if "FEEDBAX_OWNER_PID" not in os.environ:
         raise SystemExit("The machine fixture requires an owning test runner.")
-    raise SystemExit(main(backend_app="web.e2e.studio.fixtures.remote_runs_backend:app"))
+    return main(backend_app="web.e2e.studio.fixtures.remote_runs_backend:app")
+
+
+ACTIONS = {"serve": NonSeed(serve, "starts the isolated remote-run Studio backend")}
+
+
+if __name__ == "__main__":
+    raise SystemExit(ACTIONS["serve"].command())

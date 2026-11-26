@@ -10,10 +10,10 @@ import pytest
 from feedbax.cli import main
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.project import Project
+from feedbax.application.project_writer import dump_text_project
 from feedbax.contracts.project_io import (
     STUDIO_WRITE_LOCK_FILENAME,
     ProjectConfiguration,
-    dump_text_project,
 )
 from feedbax.planner.project_plan import PlanRequest, PlanRequests, RunKey, compile_project, diff_plan_requests
 from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
@@ -55,13 +55,17 @@ def _edit(root, files, document, mutate):
 def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
     root = tmp_path / "mixed"
     base = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    model = base["documents"]["point-mass"]["payload"]
+    model["interior"]["components"]["plant"]["fields"]["mass"] = 1.25
     steps = base["steps"]
     train = steps["train"]
+    train["label"] = "Source training"
     train["base"]["inline"]["seed"] = 0
     train["base"]["inline"]["settings"]["grad_clip"] = 1.0
     train["sweep"] = {
-        "axes": {"seed": {"values": {
-            tag: {"patches": {"seed": {"value": value}}} for tag, value in (("a", 1), ("b", 2))
+        "axes": {"seed": {"label": "Seed choice", "values": {
+            tag: {"label": f"Seed {value}", "patches": {"seed": {"value": value}}}
+            for tag, value in (("a", 1), ("b", 2))
         }}},
         "exceptions": {"restore": {
             "where": {"rows": ["seed=a"]},
@@ -74,7 +78,7 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
         "clauses": [{"seed": [{"id": "a", "label": "a"}]}],
     }
     variant_path = "steps.train.base.inline.training_config.batch_size"
-    base["sweep"] = {"rows": {"control": {}, "variant": {"patches": {
+    base["sweep"] = {"rows": {"control": {}, "variant": {"label": "Larger batch", "patches": {
         variant_path: {"value": 8},
     }}}}
 
@@ -86,8 +90,8 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
 
-    def source(kind, key, path, **coordinates):
-        return {"kind": kind, "key": key, "path": path, **coordinates}
+    def source(kind, key, path, name, **coordinates):
+        return {"kind": kind, "key": key, "path": path, "name": name, **coordinates}
 
     mass = ("documents", "point-mass", "payload", "interior", "components", "plant", "fields", "mass")
     batch_size = ("steps", "train", "base", "inline", "training_config", "batch_size")
@@ -95,16 +99,16 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
     exception = ("steps", "train", "sweep", "exceptions", "restore", "patches", "settings.grad_clip", "value")
     variant = ("sweep", "rows", "variant", "patches", variant_path, "value")
     subject = ("steps", "evaluate", "inputs", "subject", "where", "clauses", 0, "seed")
-    model_source = source("document", "point-mass", "/interior/components/plant/fields/mass")
-    step_source = source("step", "train", "/base/inline/training_config/batch_size", step="train")
+    model_source = source("document", "point-mass", "/interior/components/plant/fields/mass", base["documents"]["point-mass"]["label"])
+    step_source = source("step", "train", "/base/inline/training_config/batch_size", "Source training", step="train")
     sweep_source = source(
-        "sweep_value", "b", "/sweep/axes/seed/values/b/patches/seed/value",
-        step="train", axis="seed", value="b",
+        "sweep_value", "b", "/sweep/axes/seed/values/b/patches/seed/value", "Seed 2",
+        step="train", axis="seed", value="b", axis_name="Seed choice",
     )
-    exception_source = source("exception", "restore", "/sweep/exceptions/restore/patches/settings.grad_clip/value", step="train")
-    variant_source = source("variant", "variant", "/steps/train/base/inline/training_config/batch_size", variant="variant")
+    exception_source = source("exception", "restore", "/sweep/exceptions/restore/patches/settings.grad_clip/value", "Exception", step="train")
+    variant_source = source("variant", "variant", "/steps/train/base/inline/training_config/batch_size", "Larger batch", variant="variant")
     def upstream(row):
-        return source("upstream", "child", "", step="child", variant="control", row=row)
+        return source("upstream", "child", "", "Child", step="child", variant="control", row=row)
 
     cases = (
         (mass, 3, RunKey("control", "child", "seed=a"), model_source, model_source),
@@ -127,6 +131,9 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
         for part in path[:-1]:
             target = target[part]
         target[path[-1]] = value
+        if path == batch_size:
+            edited["steps"]["train"]["label"] = "Revised training"
+            after = after | {"name": "Revised training"}
         save(edited)
         assert main(["plan", str(root), "--check", str(baseline), "--json"]) == 1
         rows = json.loads(capsys.readouterr().out)["review"]
@@ -146,13 +153,13 @@ def test_saved_source_snapshot_does_not_follow_project_mutations():
 
 def test_cli_review_locates_derived_trials_and_addressed_model_field(tmp_path, capsys):
     from feedbax.contracts.model_address import ModelAddress
-    from feedbax.contracts.task_document import TaskDocument
+    from feedbax.contracts.task_document import StoredTaskDocument
 
     root = tmp_path / "derived"
     project = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
-    first, second, *_ = TaskDocument.model_validate(
+    first, second, *_ = StoredTaskDocument.model_validate(
         project["documents"]["simple-reaches-task"]["payload"]
-    ).condition_ids
+    ).lower().condition_ids
     evaluate = managed_evaluation_step("train")
     params = evaluate["base"]["inline"]["params"]
     params["trial_set"] = {"kind": "conditions", "ids": [first, second]}
@@ -187,11 +194,13 @@ def test_cli_review_locates_derived_trials_and_addressed_model_field(tmp_path, c
     assert train["path"].endswith(".plant.fields.mass")
     assert train["before_source"] == train["after_source"] == {
         "kind": "document", "key": changed, "path": "/interior/components/plant/fields/mass",
+        "name": project["documents"][changed]["label"],
     }
     evaluation = review["evaluate"]
     assert evaluation["path"] == "payload.params.trials.0"
     assert evaluation["before_source"] == evaluation["after_source"] == {
         "kind": "step", "key": "evaluate", "step": "evaluate", "path": "/base/inline/params/trial_set/ids/0",
+        "name": evaluate["label"],
     }
 
 
@@ -222,8 +231,12 @@ def test_cli_review_uses_saved_pinned_source_without_reopening_it(tmp_path, caps
     review = next(item for item in reviews if item.get("element") == "profile")
     assert review["before_source"] == {
         "kind": "document", "key": "../shared-figure.json", "path": "/payload/theme",
+        "name": "../shared-figure.json",
     }
-    assert review["after_source"] == {"kind": "document", "key": "velocity-figure", "path": "/theme"}
+    assert review["after_source"] == {
+        "kind": "document", "key": "velocity-figure", "path": "/theme",
+        "name": project.documents["velocity-figure"].label,
+    }
     truncated = json.loads(baseline.read_bytes())
     truncated["sources"]["externals"].clear()
     baseline.write_text(json.dumps(truncated))
@@ -480,7 +493,7 @@ def test_plan_writes_each_problem_that_keeps_a_row_from_running(tmp_path, capsys
 
     raw = _one_bad_train_row()
     del raw["steps"]["baseline"]
-    for term in raw["documents"]["objective"]["payload"]["terms"]:
+    for term in raw["documents"]["objective"]["payload"]["terms"].values():
         term["enabled"] = False
     root = tmp_path / "refused"
     for relative, data in dump_text_project(

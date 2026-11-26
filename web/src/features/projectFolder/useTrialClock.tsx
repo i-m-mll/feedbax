@@ -16,7 +16,7 @@ import { studioRegionIssue, StudioRegion } from '@/components/activity/StudioReg
 import type { SceneTrial } from '@/components/scene/trialScene';
 import { frameAt } from '@/components/timeline/trialClock';
 import type {
-  Problem, StudioSavedEvaluationRow, StudioSavedTrainKey, TaskDocument, TrialMean, TrialRecord,
+  Problem, StudioSavedEvaluationRow, StudioSavedTrainKey, StoredTaskDocument, TrialMean, TrialRecord,
 } from '@/generated/studioContracts';
 import { selectElement, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { showProjectWindowView, type ProjectWindowState, type ProjectWindowView } from '@/features/projectWindow/projectWindowState';
@@ -27,6 +27,7 @@ import { modelRegistry } from './model/modelGraph';
 import { batchRows, meanRows, nominalRows, trialRows, trialTermRows, type ShelfTask } from './task/shelfRows';
 import { shelfTask, taskDocumentOf, useNominalTrial, useTaskBatch, useTaskSamples, type SampledRun } from './task/taskTrials';
 import type { TrialShown, TrialsUnavailable } from './task/trialSample';
+import { hasMember } from './memberKeys';
 
 interface TrialClockInputs {
   readonly windowState: ProjectWindowState;
@@ -52,13 +53,12 @@ interface TrialClockInputs {
 }
 
 /** The element of the task document a Problem is about, as the Task view names it: `variable:<id>`, `epoch:<id>`, `signal:<id>`. */
-function problemElement(task: TaskDocument, problem: Problem): string | undefined {
+function problemElement(task: StoredTaskDocument, problem: Problem): string | undefined {
   if (problem.variable) return `variable:${problem.variable}`;
-  const [group, index] = problem.path ?? [];
-  if (typeof index !== 'number') return undefined;
-  if (group === 'variables') return task.variables[index] && `variable:${task.variables[index].id}`;
-  if (group === 'epochs') return task.epochs[index] && `epoch:${task.epochs[index].id}`;
-  if (group === 'signals') return task.signals[index] && `signal:${task.signals[index].id}`;
+  const [group, key] = (problem.path ?? []).map(String);
+  if (group === 'variables') return hasMember(task.variables, key) ? `variable:${key}` : undefined;
+  if (group === 'epochs') return hasMember(task.epochs, key) ? `epoch:${key}` : undefined;
+  if (group === 'signals') return hasMember(task.signals, key) ? `signal:${key}` : undefined;
   return undefined;
 }
 
@@ -163,7 +163,7 @@ export function useTrialClock({
   shelfView, elements, playhead,
 }: TrialClockInputs) {
   const clock = windowState.clock ?? defaultTrialClock;
-  const recorded = recordedTrials(evaluation, view?.variables);
+  const recorded = recordedTrials(evaluation);
   const period = view?.period_seconds;
   const task = view && taskDocumentOf(view);
   const offer: TrialOffer = {
@@ -171,7 +171,7 @@ export function useTrialClock({
   };
   const pick = shownPick(clock, offer);
   const replay = useSavedEvaluationScene(projectId, revision, evaluation,
-    pick?.trials === 'recorded' ? pick.showing : undefined, { by: clock.mean.by && [...clock.mean.by], align: clock.mean.align }, playhead);
+    pick?.trials === 'recorded' ? pick.showing : undefined, { by: clock.mean.by && [...clock.mean.by], align: clock.mean.align }, playhead, clock.replicate);
   const meanOptions = replay.meanOptions && view && {
     by: replay.meanOptions.by.map(({ id }) => ({ id, label: referentName(view.variables.find((variable) => variable.id === id), id) })),
     align: replay.meanOptions.align.map(({ id }) => ({ id, label: referentName(view.epochs.find((epoch) => epoch.id === id), id) })),
@@ -253,7 +253,9 @@ export function useTrialClock({
     trial: shown?.kind === 'problems' ? undefined : shown,
     /** The Mean every figure draws, while Mean is picked. */
     mean: meanSelection(clock),
-    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} recordedOutOfDate={recorded.outOfDate} meanOptions={meanOptions} onChange={change}
+    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedNames={recorded.names} recordedOutOfDate={recorded.outOfDate} meanOptions={meanOptions} onChange={change}
+      replicates={pick.trials === 'recorded' && replay.replicates
+        ? { ...replay.replicates, onSelect: (replicate) => change({ ...clock, replicate }) } : undefined}
       timeline={timeline} time={time} onTimeChange={setTime} axis={axis} shelfOpen={open}
       onShelfChange={(next) => shelfView && change({ ...clock, shelf: { ...clock.shelf, [shelfView]: next } })} />,
     shelf: pick && open && timeline.duration > 0 && (rows

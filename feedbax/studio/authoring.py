@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin, overload
@@ -13,17 +13,18 @@ import optax
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
+from feedbax.application.stored_regions import StoredRegionRegistries, compose_document
 from feedbax.compiler.model_templates import with_model_placement_reason
 from feedbax.contracts.train_settings import setting_schema_node
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
-from feedbax.contracts.task_document import BLANK_TASK, TASK_DOCUMENT_SCHEMA_ID, VALUE_TYPES, TaskDocument
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+from feedbax.contracts.task_document import BLANK_STORED_TASK, STORED_TASK_DOCUMENT_SCHEMA_ID, VALUE_TYPES, StoredTaskDocument
 from feedbax.studio.library import installed_library_sources
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, StoredObjectiveDocument
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
-from feedbax.contracts.analysis_document import AnalysisDocument
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, AnalysisDocument
 from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
-from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureSource
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureSource
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.contracts.project import (
@@ -34,9 +35,10 @@ from feedbax.contracts.project_sweep import SweepCoordinate
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.planner.project_plan import ProjectPlan, RunKey, analyze_input_roles, step_input_roles
 from feedbax.contracts.project_resolution import (
-    ProjectDiagnostic, ResolvedStep, StepTemplate, compose_document, compose_step, document_write_target,
+    BaseReaders, ProjectDiagnostic, ResolvedStep, StepTemplate, compose_step, document_write_target,
 )
 from feedbax.contracts.project_sources import ValueSource, pointer
+from feedbax.contracts.project_storage import document_difference_basis
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import REQUEST_KINDS, decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, TrainContinuation
@@ -72,6 +74,7 @@ from feedbax.application.bundle import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.studio.authoring_sweeps import SelectedValues, SweepTarget, FieldSweeps
 from feedbax.studio.class_fields import ClassField, edit_class_sweep
+from feedbax.studio.field_sites import FieldSiteIndex
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import StoredEdit, TrainSelection
 from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
@@ -80,9 +83,9 @@ from feedbax.training.optimizers import OPTIMIZERS, SCHEDULES
 
 _TRAIN = REQUEST_KINDS["train"].spec_type
 _TRAIN_DOCUMENT_MODELS = {
-    "model": (MODEL_DOCUMENT_SCHEMA_ID, ModelDocument),
-    "task": (TASK_DOCUMENT_SCHEMA_ID, TaskDocument),
-    "objective": (OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument),
+    "model": (STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument),
+    "task": (STORED_TASK_DOCUMENT_SCHEMA_ID, StoredTaskDocument),
+    "objective": (STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, StoredObjectiveDocument),
     "training": (TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument),
 }
 _STEP_DOCUMENT_FAMILY = {"analyze": "analysis", "report": "report"}
@@ -169,10 +172,10 @@ def authoring_surface(
         name: StudioAuthoredDocumentFamily(schema_id=schema_id, payload_schema=payload)
         for name, (schema_id, payload) in train_documents.items()
     } | {
-        "analysis": _family(AnalysisDocument, AnalysisDocument.model_fields["schema_version"].default),
+        "analysis": _family(AnalysisDocument, ANALYSIS_SCHEMA),
         "figure": StudioAuthoredDocumentFamily(
-            schema_id=FIGURE_DOCUMENT_SCHEMA,
-            payload_schema=TypeAdapter(FigureSource | ExternalBase).json_schema(),
+            schema_id=STORED_FIGURE_DOCUMENT_SCHEMA_ID,
+            payload_schema=TypeAdapter(StoredFigureSource | ExternalBase).json_schema(),
         ),
         "report": _family(ReportDocument, ReportDocument.model_fields["schema_version"].default),
         "subset": _family(SubsetTerms, "subset"),
@@ -259,12 +262,12 @@ def _task_catalog() -> StudioTaskCatalog:
         for name, document in source.documents().items():
             if isinstance(document, ProjectDiagnostic):
                 raise ValueError(f"{source.distribution} ships {source.name}/{name}, which does not compose: {document.detail}")
-            if document.schema_id == TASK_DOCUMENT_SCHEMA_ID:
+            if document.schema_id == STORED_TASK_DOCUMENT_SCHEMA_ID:
                 documents.append(StudioLibraryDocument(
                     distribution=source.distribution, library=source.name, name=name, document=document,
                 ))
     return StudioTaskCatalog(
-        blank=BLANK_TASK, documents=documents,
+        blank=BLANK_STORED_TASK, documents=documents,
         value_types=[StudioNamedValueType(name=name, type=value_type) for name, value_type in VALUE_TYPES],
     )
 
@@ -337,7 +340,7 @@ def _effective(payload: dict[str, JsonValue], registry: TrainingMethodRegistry) 
     return effective
 
 
-def _differences(values: list[JsonValue], at: _Path = ()) -> set[str]:
+def _differences(values: Sequence[JsonValue], at: _Path = ()) -> set[str]:
     """Pointers below ``at`` where ``values`` differ: each differing leaf, and each entry some of them lack."""
     if all(value == values[0] for value in values):
         return set()
@@ -398,8 +401,8 @@ class _StepFields:
     """A Train or Evaluate step's own fields as the selected runs have them.
 
     ``current`` is the definition a write is made against, the step's own when absent. ``selected`` are the selected
-    runs' definitions and ``shown`` the one fields are drawn from; a class-valued field draws the parameters every
-    selected run's class has.
+    runs' effective definitions and ``shown`` the effective definition fields are drawn from. A class-valued field
+    draws the parameters every selected run's class has.
     """
 
     def __init__(
@@ -424,7 +427,10 @@ class _StepFields:
             and checkpoint.checkpoint == "last"
         )
         self.registry = registry
-        template = compose_step(project, step_id, track_sources=True)
+        template = compose_step(
+            project, step_id, readers=BaseReaders(stored_regions=StoredRegionRegistries(training_methods=registry)),
+            track_sources=True, training_methods=registry,
+        )
         resolved = (
             template.resolve(include_sources=True) if isinstance(template, StepTemplate) else None
         )
@@ -438,8 +444,13 @@ class _StepFields:
         # The definition as the step's runs read it: each named document it refers to read in place.
         self.payload = resolved.payload if isinstance(resolved, ResolvedStep) else self.authored
         self.current = self.payload if current is None else current
-        self.shown = shown if shown is not None else selected[0] if selected else self.payload
-        self.selected = selected or (self.shown,)
+        self.defaulted = self.effective(self.payload)
+        self.selected = tuple(self.effective(payload) for payload in selected)
+        self.shown = (
+            self.effective(shown) if shown is not None else self.selected[0] if self.selected else self.defaulted
+        )
+        if not self.selected:
+            self.selected = (self.shown,)
         self.runs = runs
         self.sources = (resolved.sources or {}) if isinstance(resolved, ResolvedStep) else {}
         self.fields: dict[str, _Field] = {}
@@ -456,7 +467,16 @@ class _StepFields:
         """Replace the value at ``path`` with ``model``'s."""
         current = _get(self.current, path)
         value = replacement(model, current)
-        return _changes(path, current, value) if isinstance(current, dict) else [self.set(path, value)]
+        return _changes(path, current, value) if isinstance(current, dict) else [self.set_setting(path, value)]
+
+    def set_setting(self, path: _Path, value: JsonValue) -> OverridePatch:
+        """Write through the first omitted setting, retaining its other effective values."""
+        for length in range(2, len(path)):
+            parent = path[:length]
+            if _get(self.current, parent) is None:
+                default = _get(self.effective(self.current), parent)
+                return self.set(parent, _set_in(default, path[length:], value))
+        return self.set(path, value)
 
     def field_label(self, path: _Path) -> str:
         field = self.fields.get(pointer(path))
@@ -681,6 +701,8 @@ class _StepFields:
                         (name, _title(declared, name), single) if tag is not None else None, shared,
                     )
                 elif type(leaf) in (int, float) and props.get("type") in ("number", "integer"):
+                    baseline = _get(self.defaulted, site)
+
                     def write(value: _Scalar, site=site, inner=inner) -> list[OverridePatch]:
                         if inner is None:
                             return [self.set(site, value)]
@@ -688,7 +710,8 @@ class _StepFields:
                         return [self.set(root, _set_in(default, site[len(root):], value))]
 
                     self.field(
-                        site, owner[1] if owner is not None and owner[2] else _title(props, name), leaf,
+                        site, owner[1] if owner is not None and owner[2] else _title(props, name),
+                        baseline if type(baseline) in (int, float) else leaf,
                         StudioAuthoringNumber(
                             kind="number", min=props.get("minimum"), max=props.get("maximum"),
                             step=1 if props.get("type") == "integer" else None,
@@ -811,7 +834,7 @@ def project_train_fields(
     definition = _StepFields(project, step_id, registry, selection.current, selected=payloads, runs=selection.coordinates)
     definition.own(read_plan)
     settings = definition.shown.get("settings")
-    mixed = _differences([definition.effective(payload) for payload in payloads]) if payloads else set()
+    mixed = _differences(definition.selected)
     stored = StoredEdit([])
     removed: dict[str, list[str]] = {}
     documents: set[str] = set()
@@ -821,7 +844,7 @@ def project_train_fields(
         made = _class_sweep_edit(definition, class_sweep, selection)
         stored, removed = made.stored, made.removed
     if reset is not None:
-        stored = selection.store(reset_writes(project, step_id, reset))
+        stored = selection.store(reset_writes(project, step_id, reset, registry))
     if change is not None:
         field = definition.fields.get(change.field)
         patches: _Edit = []
@@ -878,7 +901,7 @@ def _changed_definition(project: Project, step_id: str, definition: _StepFields,
     changed = changed_fields(project, step_id, [
         *definition.fields, *definition.classes, *tags,
         *(f"/settings{pointer}" for pointer in _pointers(settings)),
-    ])
+    ], definition.registry)
     return changed | {tags[at] for at in changed & tags.keys()}
 
 
@@ -933,26 +956,27 @@ def _settings_edit(definition: _StepFields, change: StudioAuthoringChange) -> _E
     missing = ValueError(f"Train step {definition.step_id!r} has no field {change.field!r}")
     if len(path) < 2 or path[0] != "settings" or method is None or not isinstance(settings, dict):
         raise missing
-    owner = _class_at(method.settings_model, settings, path[1:-1])
+    effective = definition.effective(definition.current).get("settings")
+    owner = _class_at(method.settings_model, effective, path[1:-1])
     if owner is None or path[-1] not in owner.model_fields:
         raise missing
-    choice = _class_choice_at(method.settings_model, settings, path[1:])
+    choice = _class_choice_at(method.settings_model, effective, path[1:])
     if choice is not None:
         below, tag, members = choice
         chosen = next((member for key, member in members.items() if key == change.value), None)
         if chosen is None:
             raise ValueError(f"{definition.field_label(('settings', *below))} has no class {change.value!r}")
-        if _get(settings, (*below, tag)) == change.value:
+        if _get(effective, (*below, tag)) == change.value:
             return []
         swept = definition.classes.get(pointer(("settings", *below)))
         if swept is not None and swept.covered:
             raise ValueError(f"{swept.label} is swept; its classes are the sweep's members")
         edit = definition.choose_class(("settings", *below), chosen)
     else:
-        parent = _get(settings, path[1:-1])
+        parent = _get(effective, path[1:-1])
         if isinstance(parent, dict) and parent.get(path[-1], _MISSING) == change.value:
             return []
-        edit = [definition.set(path, change.value)]
+        edit = [definition.set_setting(path, change.value)]
     if isinstance(edit, list):
         before = {_error_key(error) for error in _setting_errors(method.settings_model, settings)}
         edited = apply_override_patches({"settings": settings}, edit)["settings"]
@@ -989,12 +1013,13 @@ def project_numeric_fields(
         project, step_id, registry, shown=selection.current, selected=selection.payloads, runs=selection.coordinates,
     )
     definition.own(read_plan)
-    effective = [definition.effective(payload) for payload in selection.payloads]
+    effective = definition.selected if selection.payloads else ()
     selected = (
-        SelectedValues(selection.values, selection.current)
+        SelectedValues(selection.values, selection.current, selection.authored_additions)
         if selection.values is not None and selection.current is not None else None
     )
     fields = []
+    sites = FieldSiteIndex()
     targets = {}
     for field_id, field in definition.fields.items():
         view = field.view
@@ -1003,7 +1028,16 @@ def project_numeric_fields(
         path = json_pointer_parts(field_id)
         def step_writes(value, field=field):
             return _step_writes(field.number_write(value))
-        target = SweepTarget.from_field(view.value, view.control, step_writes) if not definition.inherits else None
+        default_path = (
+            ".".join(path) if path[0] == "settings" and _get(definition.payload, path) is None
+            and type(_get(definition.defaulted, path)) in (int, float) else None
+        )
+        target = None
+        if not definition.inherits:
+            target = (
+                SweepTarget(view.value, step_writes, default_path) if default_path is not None
+                else SweepTarget.from_field(view.value, view.control, step_writes)
+            )
         axis = FieldSweeps(
             definition.step, target, view.label, field.name, integer=view.control.step == 1, selected=selected,
             runs=selection.coordinates,
@@ -1017,26 +1051,33 @@ def project_numeric_fields(
         values = [json.loads(value) for value in dict.fromkeys(json.dumps(_get(payload, path)) for payload in effective)]
         fields.append(project_numeric_field(
             TrainFieldView, numeric, axis, functions, selection.row,
-            values[0] if len(values) == 1 else None, held=values,
+            values[0] if len(values) == 1 else None, sites=sites, held=values,
             scoped=selection.scoped, id=field_id,
         ))
-        targets[field_id] = field, numeric, axis
-    changed = changed_fields(project, step_id, [view.id for view in fields])
+        targets[field_id] = field, numeric, axis, default_path
+    changed = changed_fields(project, step_id, [view.id for view in fields], registry)
     fields = [view.model_copy(update={"changed": view.id in changed}) for view in fields]
     if body.edit is None:
-        return TrainFieldResponse(fields=fields)
+        return TrainFieldResponse(fields=fields, **sites.tables(fields))
     if body.field not in targets:
         raise ValueError(f"Step {step_id!r} has no number field {body.field!r}")
-    field, numeric, axis = targets[body.field]
+    field, numeric, axis, default_path = targets[body.field]
     if isinstance(body.edit, FieldResetEdit):
-        stored = selection.store(reset_writes(project, step_id, body.field))
+        stored = selection.store(reset_writes(project, step_id, body.field, registry))
         return TrainFieldResponse(files=stored.files, created=list(stored.created), dependencies=list(field.documents))
     prepared = prepare_numeric_field(numeric, axis, body.edit, functions, scoped=selection.scoped)
     result = prepared.result
     if isinstance(result, tuple):
         return TrainFieldResponse(problems=list(result))
     if isinstance(result, list):
-        stored = (selection.store(prepared.keep) if prepared.keep else StoredEdit([])).then(
+        keep = [
+            retained
+            for write in prepared.keep
+            for retained in (
+                field.number_write(write.value) if write.path == default_path and write.op != "remove" else [write]
+            )
+        ]
+        stored = (selection.store(keep) if keep else StoredEdit([])).then(
             [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)] if result else [],
         )
     elif definition.step.sweep and axis is None:
@@ -1053,10 +1094,13 @@ def project_numeric_fields(
     )
 
 
-def changed_fields(project: Project, step_id: str, fields: Iterable[str]) -> set[str]:
+def changed_fields(
+    project: Project, step_id: str, fields: Iterable[str], registry: TrainingMethodRegistry,
+) -> set[str]:
     """Those of ``fields``, pointers in the Train definition, whose value is a difference of the document based on
     another that they are read from."""
-    template = compose_step(project, step_id)
+    regions = StoredRegionRegistries(training_methods=registry)
+    template = compose_step(project, step_id, readers=BaseReaders(stored_regions=regions))
     if isinstance(template, ProjectDiagnostic):
         return set()
     payload = template.authored_payload()
@@ -1072,10 +1116,13 @@ def changed_fields(project: Project, step_id: str, fields: Iterable[str]) -> set
     return changed
 
 
-def reset_writes(project: Project, step_id: str, field: str) -> list[OverridePatch]:
+def reset_writes(
+    project: Project, step_id: str, field: str, registry: TrainingMethodRegistry,
+) -> list[OverridePatch]:
     """The write that gives ``field``, a pointer in the Train definition, the value of the base of the document it
     passes through."""
-    template = compose_step(project, step_id)
+    regions = StoredRegionRegistries(training_methods=registry)
+    template = compose_step(project, step_id, readers=BaseReaders(stored_regions=regions))
     if isinstance(template, ProjectDiagnostic):
         raise ValueError(template.detail)
     parts = json_pointer_parts(field)
@@ -1083,11 +1130,12 @@ def reset_writes(project: Project, step_id: str, field: str) -> list[OverridePat
     document = project.documents.get(target[0]) if target is not None else None
     if not isinstance(document, BasedDocument):
         raise ValueError(f"{field} is not read from a document based on another.")
-    base = compose_document(project.documents.get, document.base.document)
+    base = compose_document(project.documents.get, document.base.document, regions=regions)
     if isinstance(base, ProjectDiagnostic):
         raise ValueError(base.detail)
-    value: Any = base.payload
-    for part in target[1].split("."):
+    path = tuple(target[1].split("."))
+    value: Any = document_difference_basis(base.schema_id, base.payload, (path[:-1],), registries=regions)
+    for part in path:
         if not isinstance(value, dict) or part not in value:
             return [OverridePatch(op="remove", path=".".join(parts))]
         value = value[part]
@@ -1098,7 +1146,9 @@ def training_document_choice(
     project: Project, step_id: str, registry: TrainingMethodRegistry, document: str,
 ) -> list[OverridePatch]:
     """The writes that point the Train step at the Training document ``document``."""
-    entry = compose_document(project.documents.get, document)
+    entry = compose_document(
+        project.documents.get, document, regions=StoredRegionRegistries(training_methods=registry),
+    )
     if (
         isinstance(entry, ProjectDiagnostic) or entry.schema_id != TRAINING_DOCUMENT_SCHEMA_ID
         or not isinstance(entry.payload, dict)

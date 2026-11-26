@@ -10,11 +10,13 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.contracts.jobs import JobReceipt
+from feedbax.contracts.rollout import CannotRun
 from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanOptions, TrialMeanSelection
 from feedbax.contracts.trial_record import TaskTimelineCue, TrialRecord, TrialTerm
 from feedbax.execution.trial_clock import mean_trial_paths
 from feedbax.execution.trial_record import aggregate_trials
 from feedbax.dataset import Dataset, Variable
+from feedbax.dataset_replicates import stack_replicates
 from feedbax.persistence.canonical_evaluate import EvaluationResult
 from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout
 
@@ -117,12 +119,17 @@ def test_mean_shelf_pools_epoch_rows_and_held_samples_on_the_alignment_clock():
     assert (move.start.mean, move.end.mean, move.end.lower, move.end.upper) == (0, 2, 1, 3)
 
 
-def test_saved_mean_groups_discrete_values_and_intersects_aligned_times(unequal_epochs, tmp_path, monkeypatch):
+@pytest.fixture
+def saved_evaluation(tmp_path):
     sha = "a" * 64
-    result = EvaluationResult(
+    return EvaluationResult(
         tmp_path, "job", "request", JobReceipt(manifest_id="manifest", manifest_sha256=sha),
         manifest_object=ContentObjectRef(object_id=f"content-object://sha256/{sha}", sha256=sha, size_bytes=0),
     )
+
+
+def test_saved_mean_groups_discrete_values_and_intersects_aligned_times(unequal_epochs, saved_evaluation, monkeypatch):
+    result = saved_evaluation
     monkeypatch.setattr(result, "open_states", lambda: nullcontext(unequal_epochs))
 
     one = result.replay("second")
@@ -157,6 +164,65 @@ def test_saved_mean_groups_discrete_values_and_intersects_aligned_times(unequal_
     (condition,) = pooled.mean.conditions
     assert condition.values == {}
     assert condition.time == _reference((0, 1, 2), (0, 0, 0))[0]
+
+
+def test_saved_replay_selects_one_replicate_before_checkpoint_and_trial_views(
+    unequal_epochs, saved_evaluation, monkeypatch,
+):
+    descriptor = unequal_epochs.descriptor
+    direction = "/v1/task/variable/direction"
+
+    def checkpoints(offset):
+        updates = (10, 20)
+        variables = {}
+        for name, field in descriptor.variables.items():
+            values = unequal_epochs.data(name)
+            slices = [values + (offset + update if name in {_POSITION, direction} else 0) for update in updates]
+            variables[name] = Variable.from_field(np.stack(slices), field, ("update", *field.dims))
+        return Dataset.from_arrays(
+            variables,
+            coords={
+                "update": Variable(np.array(updates), ("update",)),
+                **{
+                    name: Variable.from_field(unequal_epochs.data(name), field, field.dims)
+                    for name, field in descriptor.coords.items()
+                },
+            },
+            attrs=descriptor.attrs,
+        )
+
+    stacked = stack_replicates(("first-seed", "second-seed"), (checkpoints(0), checkpoints(100)), after="update")
+    monkeypatch.setattr(saved_evaluation, "open_states", lambda: nullcontext(stacked))
+    for position, offset in enumerate((20, 120)):
+        selected = saved_evaluation.replay("second", replicate=position, checkpoint=20)
+        assert selected.drawn.kind == "trials" and selected.position is not None
+        (trial,) = selected.drawn.trials
+        assert trial.id == "second"
+        np.testing.assert_array_equal(trial.states[selected.position].samples, unequal_epochs.data(_POSITION)[0, 1] + offset)
+
+        all_trials = saved_evaluation.replay(
+            replicate=position, checkpoint=20, mean=TrialMeanSelection(align="move", by=[]),
+        )
+        assert all_trials.drawn.kind == "trials"
+        assert [trial.id for trial in all_trials.drawn.trials] == list(_TRIALS)
+        assert all_trials.mean is not None
+        (cohort,) = all_trials.mean.conditions
+        time, mean, _, _ = _reference((0, 1, 2), _START)
+        assert cohort.time == time
+        np.testing.assert_allclose(cohort.states[selected.position].mean, np.array(mean) + offset)
+
+        aggregate = saved_evaluation.replay(replicate=position, checkpoint=20, aggregate=True).drawn
+        assert aggregate.kind == "aggregate"
+        assert (aggregate.variables["direction"].least, aggregate.variables["direction"].greatest) == (offset, offset + 1)
+
+    with pytest.raises(CannotRun, match="/replicate: choose a retained replicate for replay"):
+        saved_evaluation.replay()
+    for invalid in (-1, 2):
+        with pytest.raises(CannotRun, match="/replicate: the chosen replicate is absent"):
+            saved_evaluation.replay(replicate=invalid, checkpoint=20)
+    monkeypatch.setattr(saved_evaluation, "open_states", lambda: nullcontext(unequal_epochs))
+    with pytest.raises(CannotRun, match="/replicate: the retained result has no replicate dimension"):
+        saved_evaluation.replay(replicate=0)
 
 
 def test_saved_figure_mean_uses_the_same_aligned_sample_reference(unequal_epochs, tmp_path):
@@ -246,3 +312,77 @@ def test_stacked_figure_matches_the_bound_member_with_repeated_trial_ids(unequal
     trial, _ = source.project({"mass": (1,), "trial": (1,)})
     assert trial.id == "second"
     assert trial.timeline[1].start == 3
+
+
+def test_loaded_linear_state_replay_poses_and_averages_retained_replicates(
+    tmp_path, unequal_epochs, saved_evaluation, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.contracts.artifact_custody import ContentTree, ContentTreeFile
+    from feedbax.contracts.loaded_model import ImportedModelSource, encode_imported_model_document
+    from feedbax.contracts.model_input import encode_document_input
+    from feedbax.contracts.project import Project
+    from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.studio.scene_geometry import prepare_scene_geometry
+
+    registry = ComponentRegistry()
+    payload = {
+        "step_seconds": "10 ms", "ports": {},
+        "interior": {"components": {"plant": {
+            "kind": "leaf", "label": "Point mass", "type": "feedbax.LinearStateSpace",
+            "fields": {"pos_slice": [0, 2], "initial_state": [99, 3, 5, -99]},
+        }}},
+    }
+    store = ImmutableArtifactBlobProvider(tmp_path)
+    model = StoredModelDocument.model_validate(payload).lower(registry)
+    model_pin = store.store_object(encode_imported_model_document(model))
+    tree = store.store_tree(ContentTree(files=(ContentTreeFile(relative_path="graph.json", object=model_pin),)))
+    ref, raw = encode_document_input(ImportedModelSource(
+        kind="imported", model=model_pin, weights=tree, encoding={"descriptor_sha256": "a" * 64},
+    ))
+    assert store.store_object(raw).sha256 == ref.sha256
+    manifest = SimpleNamespace(evaluation_spec=SimpleNamespace(inline={
+        "evaluation_type": "feedbax.rollout", "params": {"seed": 0, "trials": list(_TRIALS), "variation": [
+            {"path": "graph.nodes.plant.params.pos_slice", "op": "replace", "value": [1, 3]},
+        ]},
+    }))
+    monkeypatch.setattr(saved_evaluation, "_verified_manifest", lambda _: (manifest, ref))
+    descriptor = unequal_epochs.descriptor
+    vector = "/v1/model/state/plant/vector"
+    samples = unequal_epochs.data(_POSITION)
+
+    def replicate(offset):
+        return Dataset.from_arrays(
+            {name: Variable.from_field(unequal_epochs.data(name), field, field.dims)
+             for name, field in descriptor.variables.items() if name != _POSITION} | {
+                vector: Variable(np.pad(samples + offset, [(0, 0), (0, 0), (0, 0), (1, 1)], constant_values=99),
+                                 ("condition", "trial", "state_time", "plant:unit")),
+            },
+            coords={name: Variable.from_field(unequal_epochs.data(name), field, field.dims)
+                    for name, field in descriptor.coords.items()},
+            attrs={"trial_record": descriptor.attrs["trial_record"] | {"positions": []}},
+        )
+
+    dataset = stack_replicates(("alpha", "beta"), (replicate(0), replicate(100)))
+    monkeypatch.setattr(saved_evaluation, "open_states", lambda: nullcontext(dataset))
+    replay = saved_evaluation.replay("second", replicate=1, components=registry)
+    assert replay.position is not None
+    [trial] = replay.drawn.trials
+    track = trial.states[replay.position]
+    assert (track.frame, track.units) == ("world", "m")
+    assert track.samples == (samples[0, 1] + 100).tolist()
+    mean = saved_evaluation.replay(replicate=1, mean=TrialMeanSelection(by=[]), components=registry)
+    assert mean.mean.conditions[0].states[replay.position].mean[0] == [110, 105]
+
+    payload["interior"]["components"]["plant"]["fields"]["pos_slice"] = [1, 3]
+    project = Project.model_validate({"documents": {"fitted": {
+        "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "label": "Fitted Model", "payload": payload,
+    }}})
+    rest, moved = prepare_scene_geometry(project, "fitted", [{}, {replay.position: track.samples[-1]}], registry)
+    assert not rest.diagnostics and not moved.diagnostics
+    assert rest.mechanisms[0].name == "Point mass"
+    assert rest.mechanisms[0].position == (3, 5)
+    assert moved.mechanisms[0].position == tuple(track.samples[-1])

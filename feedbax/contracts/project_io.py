@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from os import fdopen, listdir, stat as stat_at
 from os.path import lexists
 from pathlib import Path
 import stat
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import Field, JsonValue, TypeAdapter, ValidationError
 
 from feedbax._secure_fs import (
     SecurePathRigor,
@@ -22,14 +22,19 @@ from feedbax._secure_fs import (
     recheck_directory_chain,
 )
 from feedbax.contracts._authoring_inputs import AuthoringInputs
+from feedbax.contracts.authored_arrays import check_authored_array_budget
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.project import DOCUMENT, Payload, Project, Step
+from feedbax.contracts.project import DOCUMENT, Document, Payload, Project, Step
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
-from feedbax.contracts.project_storage import write_project_file
+from feedbax.contracts.project_storage import StoredPath, write_project_file
 from feedbax.contracts.project_storage_dependencies import protected_project_fields
 from feedbax.contracts.project_sweep import Row, Sweep
 from feedbax.contracts.strict_json import strict_json_loads
+
+if TYPE_CHECKING:
+    from feedbax.contracts.stored_regions import StoredRegionResolver
+
 
 PROJECT_SCHEMA_VERSION = "feedbax.project.v1"
 PROJECT_DECLARATION_SUFFIX = ".feedbax"
@@ -136,11 +141,15 @@ class ProjectReadError(ValueError):
         super().__init__(f"{self.source}: {message}")
 
 
+def _validate[Model](model: type[Model] | TypeAdapter[Model], value: JsonValue) -> Model:
+    check_authored_array_budget(value)
+    return model.validate_python(value) if isinstance(model, TypeAdapter) else model.model_validate(value)  # type: ignore[attr-defined]
+
+
 def _parse[Model](model: type[Model] | TypeAdapter[Model], data: bytes, source: str | Path) -> Model:
     try:
-        value = strict_json_loads(data, ref=str(source))
-        return model.validate_python(value) if isinstance(model, TypeAdapter) else model.model_validate(value)  # type: ignore[attr-defined]
-    except (ValueError, UnicodeError) as error:
+        return _validate(model, strict_json_loads(data, ref=str(source)))
+    except (ValueError, RecursionError) as error:
         raise ProjectReadError(source, str(error)) from error
 
 
@@ -297,8 +306,7 @@ def load_text_project(root: Path | str) -> TextProject:
     return parse_text_project_files(root, files)
 
 
-def _parse_manifest(data: bytes, path: Path) -> TextProjectManifest:
-    manifest = _parse(TextProjectManifest, data, path)
+def _checked_manifest(manifest: TextProjectManifest, path: Path) -> TextProjectManifest:
     variants = manifest.variants
     if len(set(variants)) != len(variants):
         raise ProjectReadError(path, "variant names must be unique")
@@ -307,6 +315,21 @@ def _parse_manifest(data: bytes, path: Path) -> TextProjectManifest:
     if manifest.sweep is not None and manifest.sweep.rows:
         raise ProjectReadError(path, "variant rows belong in variants/*.json")
     return manifest
+
+
+def _parse_manifest(data: bytes, path: Path) -> TextProjectManifest:
+    return _checked_manifest(_parse(TextProjectManifest, data, path), path)
+
+
+def parse_text_project_file(source: Path, value: JsonValue) -> TextProjectManifest | Document | Step | Row:
+    """Validate one decoded authored file through the text project codec."""
+    if source.suffix == PROJECT_DECLARATION_SUFFIX:
+        return _checked_manifest(_validate(TextProjectManifest, value), source)
+    if source.parent.name == "documents":
+        return _validate(DOCUMENT, value)
+    if source.parent.name == "steps":
+        return _validate(Step, value)
+    return _validate(Row, value)
 
 
 def parse_text_project_files(root: Path, files: Mapping[str, bytes]) -> TextProject:
@@ -383,14 +406,14 @@ def _revision_bytes(model: StrictModel, *, exclude: set[str] | None = None) -> b
     ).encode("utf-8")
 
 
-def dump_studio_project(project_file: StudioProjectFile) -> bytes:
+def dump_studio_project(project_file: StudioProjectFile, *, registries: StoredRegionResolver) -> bytes:
     """Serialize the semantic model beside its presentation."""
     protected = (
         ("project", family, name, *path)
-        for (family, name), paths in protected_project_fields(project_file.project).items()
+        for (family, name), paths in protected_project_fields(project_file.project, registries=registries).items()
         for path in paths
     )
-    return write_project_file(project_file, protected=protected)
+    return write_project_file(project_file, protected=protected, registries=registries, source="Studio project")
 
 
 def project_semantic_root(project: Project) -> str:
@@ -398,8 +421,9 @@ def project_semantic_root(project: Project) -> str:
     return sha256_bytes(_revision_bytes(project))
 
 
-def dump_text_project(project: Project, configuration: ProjectConfiguration) -> dict[str, bytes]:
-    """Produce the complete set of relative paths and bytes for a text project."""
+def _text_project_models(
+    project: Project, configuration: ProjectConfiguration, *, registries: StoredRegionResolver,
+) -> dict[str, tuple[StrictModel, Collection[StoredPath]]]:
     sweep = project.sweep
     rows = sweep.rows if sweep is not None else {}
     declaration_sweep = sweep.model_copy(update={"rows": {}}) if sweep is not None else None
@@ -411,19 +435,64 @@ def dump_text_project(project: Project, configuration: ProjectConfiguration) -> 
         sweep=declaration_sweep,
         variants=list(rows),
     )
-    protected = protected_project_fields(project)
+    protected = protected_project_fields(project, registries=registries)
     return {
-        project_declaration_name(configuration.project): write_project_file(manifest),
+        project_declaration_name(configuration.project): (manifest, ()),
         **{
-            f"documents/{name}.json": write_project_file(document, protected=protected.get(("documents", name), ()))
+            f"documents/{name}.json": (document, protected.get(("documents", name), ()))
             for name, document in project.documents.items()
         },
         **{
-            f"steps/{name}.json": write_project_file(step, protected=protected.get(("steps", name), ()))
+            f"steps/{name}.json": (step, protected.get(("steps", name), ()))
             for name, step in project.steps.items()
         },
-        **{f"variants/{name}.json": write_project_file(row) for name, row in rows.items() if row is not None},
+        **{f"variants/{name}.json": (row, ()) for name, row in rows.items() if row is not None},
     }
+
+
+def dump_text_project(
+    project: Project, configuration: ProjectConfiguration, *, registries: StoredRegionResolver,
+    only: Collection[str] | None = None,
+) -> dict[str, bytes]:
+    """Produce authored project file bytes, optionally for the paths being created."""
+    return {
+        name: write_project_file(model, protected=protected, registries=registries, source=name)
+        for name, (model, protected) in _text_project_models(project, configuration, registries=registries).items()
+        if only is None or name in only
+    }
+
+
+def text_project_changes(
+    before: TextProject, after: Project, *, registries: StoredRegionResolver,
+    only: Collection[str] | None = None,
+) -> dict[str, bytes | None]:
+    """Write changed authored values and use the exact preimage of a repaired invalid file."""
+    old = _text_project_models(before.project, before.configuration, registries=registries)
+    new = _text_project_models(after, before.configuration, registries=registries)
+    changes = {}
+    for name in only if only is not None else sorted(old.keys() | new.keys()):
+        if name not in old and name not in new:
+            continue
+        if name not in new:
+            changes[name] = None
+            continue
+        model, protected = new[name]
+        previous = old.get(name)
+        if previous is not None:
+            old_model, old_protected = previous
+            if old_protected == protected and _revision_bytes(old_model) == _revision_bytes(model):
+                continue
+        content = write_project_file(model, protected=protected, registries=registries, source=name)
+        if previous is not None:
+            try:
+                prior_content = write_project_file(old_model, protected=old_protected, registries=registries, source=name)
+            except ValidationError:
+                prior_content = before.files[name]
+            if prior_content == content:
+                continue
+        changes[name] = content
+    return changes
+
 
 _SWEEP_DECLARATION_FIELDS = {"sweep", "variants"}
 _PROJECT_CONFIGURATION_FIELDS = set(TextProjectManifest.model_fields) - _SWEEP_DECLARATION_FIELDS
@@ -433,8 +502,8 @@ def authored_declaration_revision(manifest: TextProjectManifest) -> str:
     return sha256_bytes(_revision_bytes(manifest, exclude=_PROJECT_CONFIGURATION_FIELDS))
 
 
-def text_project_settings_edit(manifest: TextProjectManifest, settings: Payload) -> bytes:
-    return write_project_file(manifest.model_copy(update={"settings": settings}))
+def text_project_settings_edit(manifest: TextProjectManifest, settings: Payload, *, declaration: str) -> bytes:
+    return write_project_file(manifest.model_copy(update={"settings": settings}), source=declaration)
 
 
 def replay_text_project_declaration(current: TextProjectManifest, data: bytes, *, declaration: str) -> bytes:
@@ -446,4 +515,4 @@ def replay_text_project_declaration(current: TextProjectManifest, data: bytes, *
     return write_project_file(TextProjectManifest.model_validate({
         **current.model_dump(exclude_unset=True, include=_PROJECT_CONFIGURATION_FIELDS),
         **target.model_dump(exclude_unset=True, include=_SWEEP_DECLARATION_FIELDS),
-    }))
+    }), source=declaration)

@@ -4,11 +4,12 @@ Members are addressed by id, and expressions refer to variables by id, so a rena
 variable stays referenced where it was read: the document still compiles to Problems there, and is returned.
 """
 
+import re
 from typing import assert_never
 
-from feedbax.contracts.expression_values import (
-    RESERVED_NAMES, LiteralValue, Problem, ProblemCode, UnresolvedValue, ValueBase, ValueType,
-)
+from feedbax.contracts.expression_storage import EXPRESSION_MEMBER_RESERVED_KEYS
+from feedbax.contracts.expression_values import LiteralValue, Problem, ProblemCode, UnresolvedValue, ValueBase, ValueType
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.task_document import Cell, Epoch, Length, Link, Repeat, Signal, TaskDocument, Variable
 from feedbax.contracts.task_structure import (
     AddMember, MakeAbsent, MakePresent, MoveMember, RemoveMember, RenameMember, SetLink, SetSpan, SetType,
@@ -49,9 +50,13 @@ def restructure(document: TaskDocument, change: TaskStructureChange) -> TaskDocu
                 for item in document.signals
             )})
         case SetLink():
-            links = tuple(link for link in document.links if link.model_field != change.model_field)
+            try:
+                field = ModelAddress.from_authored_text(change.address_text).to_text()
+            except ValueError as error:
+                return Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=("links", change.address_text))
+            links = tuple(link for link in document.links if link.model_field != field)
             if change.variable is not None:
-                links = (*links, Link(model_field=change.model_field, variable=change.variable))
+                links = (*links, Link(model_field=field, variable=change.variable))
             return document.model_copy(update={"links": links})
         case RepeatEpochs():
             order = tuple(epoch.id for epoch in document.epochs)
@@ -101,7 +106,11 @@ def _fresh(name: str, taken: set[str]) -> str:
 def _add(document: TaskDocument, change: AddMember) -> TaskDocument:
     field = _FIELDS[change.member]
     members = getattr(document, field)
-    id = _fresh(change.name, {item.id for item in members})
+    peers = document.variables + document.signals if change.member != "epoch" else members
+    key = re.sub(r"[^A-Za-z0-9_-]+", "-", change.name).strip("-")
+    if not key or not (key[0].isalpha() or key[0] == "_"):
+        key = f"{change.member}-{key}" if key else change.member
+    id = _fresh(key, {item.id for item in peers} | EXPRESSION_MEMBER_RESERVED_KEYS)
     value_type = change.type or _NUMBER
     added = {
         "variable": lambda: Variable(id=id, name=change.name, type=value_type, value=zero(value_type.base, value_type.shape)),
@@ -109,11 +118,11 @@ def _add(document: TaskDocument, change: AddMember) -> TaskDocument:
         "signal": lambda: Signal(id=id, name=change.name, type=value_type, cells=()),
     }[change.member]()
     index = len(members) if change.index is None else min(change.index, len(members))
-    links = tuple(link for link in document.links if link.model_field not in change.initializes)
-    return document.model_copy(update={
-        field: (*members[:index], added, *members[index:]),
-        "links": (*links, *(Link(model_field=address, variable=id) for address in change.initializes)),
-    })
+    updates = {field: (*members[:index], added, *members[index:])}
+    if change.initializes:
+        links = tuple(link for link in document.links if link.model_field not in change.initializes)
+        updates["links"] = (*links, *(Link(model_field=address, variable=id) for address in change.initializes))
+    return document.model_copy(update=updates)
 
 
 def _edit_member(
@@ -130,7 +139,7 @@ def _edit_member(
             elif change.member == "signal":
                 peers += document.variables
             place = (field, item.id, "name")
-            if change.name in RESERVED_NAMES:
+            if change.name in EXPRESSION_MEMBER_RESERVED_KEYS:
                 return Problem(
                     code=ProblemCode.DUPLICATE_NAME, reason=f"The name {change.name!r} is reserved.", path=place,
                 )

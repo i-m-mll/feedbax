@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef, ContentRetentionTarget
@@ -13,11 +14,11 @@ from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GraphSpec
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_io import TextProject
-from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import STORED_TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import compile_project
-from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
@@ -78,7 +79,7 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
     roots = []
     graph_schemas = {GRAPH_SPEC_SCHEMA_ID: GraphSpec, ACAUSAL_GRAPH_SCHEMA_ID: AcausalGraphSpec}
     for name, document in text.project.documents.items():
-        if document.schema_id in (TASK_DOCUMENT_SCHEMA_ID, OBJECTIVE_DOCUMENT_SCHEMA_ID, TRAINING_DOCUMENT_SCHEMA_ID):
+        if document.schema_id in (STORED_TASK_DOCUMENT_SCHEMA_ID, STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, TRAINING_DOCUMENT_SCHEMA_ID):
             continue
         model = graph_schemas.get(document.schema_id)
         loaded = document.schema_id == LOADED_MODEL_SCHEMA_ID
@@ -91,7 +92,7 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
             continue
         try:
             if loaded:
-                source = LoadedModelDocument.model_validate(composed.payload).source
+                source = LoadedModelDocument.model_validate(composed.payload).lower()
                 roots.append(RootObservation(f"document:{name}", (
                     object_target(source.model), ContentRetentionTarget(ref_kind="tree", tree=source.weights),
                 )))

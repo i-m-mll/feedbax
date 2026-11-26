@@ -17,14 +17,14 @@ from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import ModelEditRequest
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.objective_document import ObjectiveTerm
+from feedbax.contracts.objective_document import ObjectiveTerm, StoredObjectiveDocument
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import ResolvedRolloutBinding, RolloutParameters
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-from feedbax.contracts.task_document import Cell, Signal
+from feedbax.contracts.task_document import Cell, Signal, StoredTaskDocument
 from feedbax.jobs import JobService
 from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.application.bundle import new_application_registry_bundle
@@ -43,7 +43,6 @@ from tests.test_model_document_plan import (
     _attachment_owner,
     _end,
     _model_controller,
-    _port,
     _scale_attachment,
     _wire,
 )
@@ -60,10 +59,10 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     project = "addressed-condition"
     raw = document_project(authored, evaluation=True)
     raw["steps"]["condition"] = deepcopy(raw["steps"]["baseline"])
-    _model_controller(raw)["wires"]["read"]["attachments"] = [
-        _scale_attachment("retain", 0.8),
-        _scale_attachment("remove", 0.5),
-    ]
+    _model_controller(raw)["wires"]["read"]["attachments"] = {
+        "retain": _scale_attachment(0.8),
+        "remove": _scale_attachment(0.5),
+    }
     _save_project(folders, project, Project.model_validate(raw))
     authored_documents = folders.read(project).project.documents
     original = folders.read_plan(project, revision=None)
@@ -85,11 +84,11 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
 
     assert edit(_add_attachment(owner, "invalid", "missing")).status == "refused"
     for difference in (
-        _add_attachment(owner, "add", "retain", 0.4),
+        _add_attachment(owner, "add", "remove", 0.4),
         {
             "op": "change",
             "address": _attachment_address(owner, "retain"),
-            "attachment": _scale_attachment("retain", 0.6),
+            "attachment": _scale_attachment(0.6),
         },
         {"op": "remove", "address": _attachment_address(owner, "remove")},
     ):
@@ -198,7 +197,7 @@ def _set_model_field(address, value):
 
 
 def _thelen_project(documents):
-    _, _, task, objective = documents
+    _, source_model, task, objective = documents
     raw = document_project(documents, evaluation=True)
     model = raw["documents"]["reach-model"]["payload"]
     config = {
@@ -209,19 +208,19 @@ def _thelen_project(documents):
         "initial_activation": 0.25,
     }
     model["interior"]["components"]["muscle"] = {
-        "kind": "leaf", "name": "Muscle", "type": "feedbax.RigidTendonHillMuscleThelen",
+        "kind": "leaf", "label": "Muscle", "type": "feedbax.RigidTendonHillMuscleThelen",
         "fields": config | {"vmax_factor": 10.0},
     }
     samples = {"excitation": 0.5, "musculotendon_length": 0.36, "musculotendon_velocity": -0.31}
     signals = list(task.signals)
     for port, sample in samples.items():
-        model["ports"]["inputs"].append(_port(port, port, shape=[]))
+        model["ports"]["inputs"][port] = {"label": port, "type": {"shape": []}}
         model["interior"]["wires"][port] = _wire({"owner": "inputs", "port": port}, _end("muscle", port))
         signals.append(Signal(
             id=port, name=port, type=ValueType(base=ValueBase.REAL),
             cells=(Cell(id="hold-move", first_epoch="hold", last_epoch="move", value=LiteralValue(value=sample)),),
         ))
-    model["ports"]["outputs"].append(_port("muscle-force", "muscle_force", shape=[]))
+    model["ports"]["outputs"]["muscle-force"] = {"label": "Muscle force", "type": {"shape": []}}
     model["interior"]["wires"]["muscle-force"] = _wire(
         _end("muscle", "force"), {"owner": "outputs", "port": "muscle-force"},
     )
@@ -230,10 +229,12 @@ def _thelen_project(documents):
         "element": {"kind": "port", "end": {"owner": "outputs", "port": "muscle-force"}},
     })
     term = ObjectiveTerm(id="muscle-force", measure=NameValue(reference=address.to_text()))
-    raw["documents"]["objective"]["payload"] = objective.model_copy(
-        update={"terms": (*objective.terms, term)},
+    raw["documents"]["objective"]["payload"] = StoredObjectiveDocument.from_lowered(
+        objective.model_copy(update={"terms": (*objective.terms, term)}),
     ).model_dump(mode="json")
-    raw["documents"]["task"]["payload"] = task.model_copy(update={"signals": tuple(signals)}).model_dump(mode="json")
+    raw["documents"]["task"]["payload"] = StoredTaskDocument.from_lowered(
+        task.model_copy(update={"signals": tuple(signals)}),
+    ).model_dump(mode="json")
     components = new_application_registry_bundle().components
     trained = read_changed_model(
         raw, "train", [_set_model_field(_owner_field("muscle", "vmax_factor"), config["vmax_factor"])],
@@ -246,7 +247,7 @@ def _thelen_project(documents):
         raw, "condition", [_set_model_field(_owner_field("muscle", "optimal_muscle_length"), 0.24)],
         base=trained, components=components,
     )
-    return raw, config | {"dt": model["step_seconds"]}, samples
+    return raw, config | {"dt": source_model.step_seconds}, samples
 
 
 def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  # noqa: F811
@@ -354,7 +355,7 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
 
     controller = _model_controller(raw)
     controller["components"]["passthrough"] = {
-        "kind": "leaf", "name": "Passthrough", "type": "feedbax.Activation", "fields": {"activation": "identity"},
+        "kind": "leaf", "label": "Passthrough", "type": "feedbax.Activation", "fields": {"activation": "identity"},
     }
     original = controller["wires"]["read"]
     original["target"], output = _end("passthrough", "input"), original["target"]
@@ -397,7 +398,7 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
 
 def test_a_model_document_that_changes_the_trained_clock_is_refused_at_its_field(tmp_path, authored):  # noqa: F811
     raw = document_project(authored, evaluation=True)
-    step = raw["documents"]["reach-model"]["payload"]["step_seconds"] * 3
+    step = f"{authored[1].step_seconds * 3} s"
     raw["documents"]["slow-model"] = {
         "label": "Slow model",
         "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
@@ -421,7 +422,7 @@ def _curl_addition():
             "op": "add_component",
             "address": {"composites": [], "element": {"kind": "component", "id": "curl"}},
             "component": {
-                "kind": "leaf", "name": "Curl field", "type": "feedbax.CurlField",
+                "kind": "leaf", "label": "Curl field", "type": "feedbax.CurlField",
                 "fields": {"active": True, "scale": 2.0},
             },
         },
@@ -444,8 +445,8 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     jobs = JobService(host, registry)
     raw = document_project(authored, evaluation=True)
     steps = raw["steps"]
-    selected = [raw["documents"]["task"]["payload"]["validation_trials"][0]]
-    raw["documents"]["task"]["payload"]["validation_trials"] = selected
+    task = raw["documents"]["task"]["payload"]
+    task["validation_trials"] = dict(list(task["validation_trials"].items())[:1])
 
     def step(variation):
         result = deepcopy(steps["baseline"])

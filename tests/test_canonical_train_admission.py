@@ -35,7 +35,7 @@ from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput, ver
 from feedbax.persistence.evidence import evidence_objects
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
-from tests.support.managed_train_fixture import managed_train_payload
+from tests.support.managed_train_fixture import managed_stored_train_payload
 from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
 
 
@@ -52,7 +52,7 @@ def test_completed_train_metrics_return_every_retained_update(host, tmp_path, mo
             "revision": snapshot.revision,
             "file": {
                 "kind": "step", "id": "train",
-                "step": {"label": "Train", "kind": "train", "base": {"inline": managed_train_payload(batches=3)}},
+                "step": {"label": "Train", "kind": "train", "base": {"inline": managed_stored_train_payload(batches=3)}},
             },
         })).snapshot
         gate = run_job(token("metric-history-gate"), held_until_released(release), project=project)
@@ -114,7 +114,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     )
     snapshot = folders.new("admission").snapshot
     project = snapshot.project_id
-    payload = managed_train_payload()
+    payload = managed_stored_train_payload()
     for name in ("train", "stable"):
         snapshot = folders.create_file(
             project,
@@ -413,7 +413,8 @@ _CHAIN_UPDATES = 64
 
 def _saved_chain(folders):
     snapshot = folders.new("saved-chain").snapshot
-    payload = managed_train_payload(batches=_CHAIN_UPDATES)
+    payload = managed_stored_train_payload(batches=_CHAIN_UPDATES)
+    payload["settings"]["optimizer"] = {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.002}}
     payload["training_config"]["snapshot_interval"] = 16
     snapshot = _saved_step(
         folders,
@@ -562,7 +563,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
         training_methods=registries.training_methods,
     )
     snapshot = folders.new("authored-source").snapshot
-    source_payload = managed_train_payload(batches=4)
+    source_payload = managed_stored_train_payload(batches=4)
     source_payload["seed"] = 12
     snapshot = _saved_step(folders, snapshot, "prefix", {
         "label": "Train",

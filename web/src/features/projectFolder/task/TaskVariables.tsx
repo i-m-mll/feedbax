@@ -2,6 +2,7 @@ import { appTip } from '@window-shell/browser/tooltip';
 import { Activity, Layers } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { studioAccessibleName, studioName, studioReason, studioValueType } from '@/components/activity/studioVocabulary';
+import { FamilyCount, familyText } from '../FamilyOver';
 import { ChangeMark } from '@/components/ui/ChangeMark';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -14,7 +15,7 @@ import { TreeChoice } from '@/components/ui/TreeChoice';
 import { changeTip, ValueField } from '@/components/values/ValueField';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import type {
-  TaskSelection, TaskSetVariable, TaskVariable, UnstartedValue, VariableInitializes, WeightEdit, WeightSide,
+  EntryName, TaskSelection, TaskSetVariable, TaskVariable, UnstartedValue, VariableInitializes, WeightEdit, WeightSide,
 } from './taskModel';
 
 /** A refusal of a variable's edit, or nothing once it is made. */
@@ -43,10 +44,11 @@ export function LevelMark({ variable }: { variable: Pick<TaskVariable, 'level'> 
     className="inline-flex shrink-0 text-shell-muted [&_svg]:size-[1em]"><Activity aria-hidden="true" /></span>;
 }
 
-/** The mark of a variable the selected Set entry adds, named by the entry. */
-function EntryMark({ entry }: { entry?: string }) {
+/** The mark of a variable a Set entry adds, named by the entry with its count where it is a family. */
+function EntryMark({ entry }: { entry?: EntryName }) {
   if (entry === undefined) return null;
-  return <span role="img" aria-label={studioAccessibleName('setEntry', entry)} {...appTip(studioAccessibleName('setEntry', entry))}
+  const name = familyText(entry.label, entry.members);
+  return <span role="img" aria-label={studioAccessibleName('setEntry', name)} {...appTip(studioAccessibleName('setEntry', name))}
     className="inline-flex shrink-0 text-shell-muted [&_svg]:size-[1em]"><Layers aria-hidden="true" /></span>;
 }
 
@@ -170,10 +172,11 @@ function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: St
     <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
     <TableCell>
       <ul aria-label={studioAccessibleName('values', set.name)} className="flex h-full min-w-0 items-center gap-x-3 overflow-x-auto">
-        {set.entries.map(({ id, label, weight }) => {
+        {set.entries.map(({ id, label, weight, members }) => {
           const part = (side?: WeightSide) => weigh && ((value: number) => weigh(id, side, value));
           return <li key={id ?? ''} className="flex h-full shrink-0 items-center gap-1">
             <span>{label}</span>
+            <FamilyCount count={members} />
             {typeof weight === 'number' && <WeightField weight={weight} entry={label} weigh={part()} />}
             {typeof weight === 'object' && <>
               <WeightField weight={weight.on} entry={label} side="on" weigh={part('on')} />

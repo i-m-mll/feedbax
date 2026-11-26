@@ -59,49 +59,39 @@ export function studioReplayLabel(update: number) {
   return studioFormat('replayUpdate', { name: studioName('replay'), update });
 }
 
-/** How text about where a value comes from names the project's members it refers to. */
-export interface SourceNames {
-  step(key: string): string;
-  document(key: string): string;
-  /** Sweep axis `axis` of step `step`. */
-  axis(step: string, axis: string): string;
-  /** Value `value` of sweep axis `axis` of step `step`. */
-  value(step: string, axis: string, value: string): string;
-}
-
 /** Where a value an Evaluate step reads comes from, with the label of the step that trains or changes it. */
 export interface EvaluateOrigin {
   readonly kind: StudioEvaluateValueSource['kind'];
   readonly step: string;
 }
 
-/** `source`, its step named by `step`. */
-export function evaluateOrigin(source: StudioEvaluateValueSource, step: SourceNames['step']): EvaluateOrigin {
-  return { kind: source.kind, step: step(source.reference.key) };
+export function evaluateOrigin(source: StudioEvaluateValueSource): EvaluateOrigin {
+  return { kind: source.kind, step: source.name };
 }
 
 export function studioEvaluateValueSource(origin: EvaluateOrigin) {
   return studioFormat(origin.kind === 'trained' ? 'trainedValue' : 'evaluateChangedValue', { step: origin.step });
 }
 
-/** Where a value comes from. An exception reads by the runs it picks (`runs`, as the Exceptions list reads them). */
-export function studioPlanValueSource(source: StudioPlanReviewSource, names: SourceNames, runs?: string) {
+/** Where a value comes from, by the names the source carries. An exception reads by the runs it picks (`runs`, as the Exceptions list reads them). */
+export function studioPlanValueSource(source: StudioPlanReviewSource, runs?: string) {
   switch (source.kind) {
     case 'exception':
       return runs ? studioFormat('fieldSource', { kind: studioName('exception'), name: runs }) : studioName('exception');
     case 'sweep_value': {
-      const { step, axis, value } = source;
-      if (!step || !axis || !value) throw new Error(`Sweep value source ${source.key} names no step, axis and value.`);
-      return studioFormat('fieldSource', { kind: names.axis(step, axis), name: names.value(step, axis, value) });
+      if (!source.axis_name) throw new Error(`Sweep value source ${source.key} names no axis.`);
+      const name = source.member_count == null ? source.name
+        : `${source.name} ${studioFormat('memberCount', { count: source.member_count })}`;
+      return studioFormat('fieldSource', { kind: source.axis_name, name });
     }
     case 'upstream':
-      return studioFormat('trainedValue', { step: names.step(source.step ?? source.key) });
+      return studioFormat('trainedValue', { step: source.name });
     case 'step':
-      return studioFormat('fieldSource', { kind: studioName('step'), name: names.step(source.key) });
+      return studioFormat('fieldSource', { kind: studioName('step'), name: source.name });
     case 'document':
-      return studioFormat('fieldSource', { kind: studioName('document'), name: names.document(source.key) });
+      return studioFormat('fieldSource', { kind: studioName('document'), name: source.name });
     case 'variant':
-      return studioFormat('fieldSource', { kind: studioName('variant'), name: source.key });
+      return studioFormat('fieldSource', { kind: studioName('variant'), name: source.name });
   }
 }
 

@@ -1,13 +1,14 @@
 """Publish fitted native weights and export retained model products."""
 
+from feedbax.application.stored_regions import compose_document
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentTreeRef
 from feedbax.contracts.effective_success import success_content_ref
-from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, LOADED_MODEL_SCHEMA_VERSION, ModelFitReport
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, ModelFitReport
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_inputs import DocumentReference
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document, composed_loaded_model_projection
+from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.studio_loaded_model import (
     StudioLoadedModelDoesNotFit, StudioLoadedModelExportRequest, StudioLoadedModelImported,
     StudioLoadedModelImportQuery, StudioLoadedModelImportResult, StudioLoadedModelUnreadableArchive,
@@ -21,7 +22,9 @@ from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifes
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE
 from feedbax.planner.project_plan import RunKey
 from feedbax.project_folder import ProjectFileExists, ProjectFolderInvalid, ProjectFolderNotFound
-from feedbax.project_model_assets import ModelAssetError, read_pinned_project_model, stage_project_archive
+from feedbax.project_model_assets import (
+    ModelAssetError, composed_loaded_model_projection, read_pinned_project_model, stage_project_archive,
+)
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 
@@ -29,10 +32,12 @@ from feedbax.web.services.project_plan import ProjectPlanService
 def import_loaded_model(
     folders: ProjectFolderService, project: str, query: StudioLoadedModelImportQuery, raw: bytes,
 ) -> StudioLoadedModelImportResult:
+    from feedbax.compiler.model_document import complete_model_fields
     from feedbax.host.model_archive import UnreadableModelArchive
 
     authored = folders.read_authored_snapshot(project, revision=query.revision)
     read = authored.project.documents.get
+    assert folders.components is not None
     reference = DocumentReference(document=query.model)
     if read(query.name) is not None:
         saved = compose_document(read, query.name)
@@ -43,7 +48,8 @@ def import_loaded_model(
             raise ProjectFileExists(f"documents/{query.name}.json")
         try:
             model = read_pinned_project_model(
-                authored.root, authored.store_path, existing, composed_loaded_model_projection(existing, read),
+                authored.root, authored.store_path, existing.lower(),
+                lambda: composed_loaded_model_projection(existing, read, folders.components),
             )
         except (ModelAssetError, ArtifactBlobCustodyError) as error:
             raise ProjectFolderInvalid(str(error)) from error
@@ -52,10 +58,10 @@ def import_loaded_model(
         composed = compose_document(read, query.model)
         if isinstance(composed, ProjectDiagnostic):
             raise ProjectFolderInvalid(composed.detail)
-        if composed.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+        if composed.schema_id != STORED_MODEL_DOCUMENT_SCHEMA_ID:
             raise ProjectFolderInvalid("Choose a Model document to fit the archive.")
-        model = ModelDocument.model_validate(composed.payload)
-    assert folders.components is not None
+        model = StoredModelDocument.model_validate(composed.payload).lower(folders.components).with_keyed_root_ports()
+        model = complete_model_fields(model, folders.components)
     with stage_project_archive(raw, model, folders.components) as (staging, staged):
         if isinstance(staged, ModelFitReport):
             if existing is not None:
@@ -65,10 +71,7 @@ def import_loaded_model(
             return StudioLoadedModelImportResult(StudioLoadedModelUnreadableArchive(
                 status="unreadable_archive", path=staged.path, detail=staged.detail,
             ))
-        payload = LoadedModelDocument(
-            schema_version=LOADED_MODEL_SCHEMA_VERSION, model=reference, source=staged,
-            archive=f"models/{query.name}.feedbax-model",
-        )
+        payload = LoadedModelDocument.from_source(reference, staged)
         snapshot = folders.publish_loaded_model(
             project, revision=query.revision, name=query.name, label=query.label, model=payload, staging=staging, raw_archive=raw,
         )

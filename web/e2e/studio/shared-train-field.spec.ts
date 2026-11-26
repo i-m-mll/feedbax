@@ -2,6 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
+import { trainSettings } from './fixtures/serviceViews';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -46,10 +47,7 @@ test('the inspector edits the saved values for the step and its selected runs, a
   await expect(page.getByRole('menuitemradio', { name: 'Sweep', exact: true })).toBeEnabled();
   await page.keyboard.press('Escape');
   await pick(optimizer.getByRole('combobox', { name: 'Optimizer', exact: true }), 'SGD');
-  await expect.poll(async () => {
-    const base = (await saved()).project.steps?.train.base;
-    return base && 'inline' in base ? (base.inline as { settings: { optimizer: { type: string } } }).settings.optimizer.type : undefined;
-  }).toBe('sgd');
+  await expect.poll(async () => (await trainSettings(request, projectPath))?.optimizer).toMatchObject({ type: 'sgd' });
   await enter(rateText, 'geomspace(1e-4, 1e-2, 5)');
   await expect(card.getByRole('button', { name: 'Sweep Learning Rate 5', exact: true })).toBeVisible();
   await enter(rateText, '1e-3, 2e-3, 3e-3');

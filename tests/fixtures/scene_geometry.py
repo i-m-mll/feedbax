@@ -4,9 +4,11 @@ import json
 from pathlib import Path
 import sys
 
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
+from tests.support.browser_seed_actions import FileSeed, FolderSeed
 
 
 _LINKS = ("upper", "forearm", "hand")
@@ -15,7 +17,7 @@ _JOINTS = ("shoulder", "elbow", "wrist")
 
 def _model(count: int) -> dict:
     def node(kind: str, **fields) -> dict:
-        return {"kind": "leaf", "name": kind, "type": f"feedbax.{kind}", "fields": fields}
+        return {"kind": "leaf", "label": kind, "type": f"feedbax.{kind}", "fields": fields}
 
     nodes = {
         "base": node("WorldFrame"),
@@ -52,22 +54,22 @@ def _model(count: int) -> dict:
         )
 
     for name, value in nodes.items():
-        value["name"] = name
+        value["label"] = name
 
     def end(component, port):
         return {"owner": "component", "component": component, "port": port}
 
     def port(name, size):
-        return {"id": name, "name": name, "type": {"base": "real", "shape": [size]}}
+        return {"label": name, "type": {"base": "real", "shape": [size]}}
 
     return {
-        "step_seconds": 0.002,
+        "step_seconds": "0.002 s",
         "ports": {},
         "interior": {"components": {"mechanics": {
-            "kind": "composite", "name": "Mechanics",
+            "kind": "composite", "label": "Mechanics",
             "ports": {
-                "inputs": [{**port("force", count), "default": {"value": [0.0] * count}}],
-                "outputs": [port("effector", 2)],
+                "inputs": {"force": {**port("force", count), "default": {"value": [0.0] * count}}},
+                "outputs": {"effector": port("effector", 2)},
             },
             "interior": {
                 "physical_domain": "planar_multibody", "components": nodes,
@@ -84,7 +86,7 @@ def scene_files():
     return [
         {"kind": "document", "id": name, "document": {
             "label": label,
-            "schema": MODEL_DOCUMENT_SCHEMA_ID, "payload": _model(count),
+            "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": _model(count),
         }}
         for name, label, count in (("single", "Single", 1), ("chain", "Chain", 3))
     ]
@@ -104,12 +106,17 @@ def seed_scene_project(root: Path, files: list[dict] | None = None) -> None:
         path.write_bytes(content)
 
 
+ACTIONS = {
+    "files": FileSeed(scene_files),
+    "seed": FolderSeed(seed_scene_project),
+}
+
+
 if __name__ == "__main__":
     action, *paths = sys.argv[1:]
-    if action == "files":
-        print(json.dumps(scene_files()))
-    elif action == "seed":
-        [path] = paths
-        seed_scene_project(Path(path))
+    selected = ACTIONS[action]
+    if isinstance(selected, FileSeed):
+        print(json.dumps(selected.command(*paths)))
     else:
-        raise ValueError(f"Unknown Scene fixture action {action!r}")
+        [path] = paths
+        selected.command(Path(path))

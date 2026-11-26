@@ -4,18 +4,20 @@ from typing import Any
 
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.model_attachment import MODEL_DIFFERENCE_BATCHES
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.project import Project, diff
 from feedbax.planner.project_plan import _builtin_model_registry
 from feedbax.contracts.project_resolution import compose_document
+from feedbax.contracts.stored_model import (
+    STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, model_keyed_collection,
+)
 
 
 def changed_model(payload: dict[str, Any], records: list[dict[str, Any]], components=None) -> dict[str, Any]:
     """``payload`` with the addressed Model ``records`` applied, in its normalized spelling."""
     differences = MODEL_DIFFERENCE_BATCHES.validate_python({"records": records})["records"]
-    return resolve_effective_model(
-        ModelDocument.model_validate(payload), components or _builtin_model_registry(), tuple(differences),
-    ).model_dump(mode="json")
+    return StoredModelDocument.from_lowered(resolve_effective_model(
+        StoredModelDocument.model_validate(payload).lower(), components or _builtin_model_registry(), tuple(differences),
+    )).model_dump(mode="json", exclude_defaults=True)
 
 
 def read_changed_model(
@@ -30,14 +32,15 @@ def read_changed_model(
     slots = inline.setdefault("trial_documents", {})
     base = base or slots["model"]["document"]
     payload = compose_document(Project.model_validate({"documents": raw["documents"]}).documents.get, base).payload
-    normalized = ModelDocument.model_validate(payload).model_dump(mode="json")
     name = name or f"{base}-{step}"
     raw["documents"][name] = {
         "label": "Document",
-        "schema": MODEL_DOCUMENT_SCHEMA_ID, "base": {"document": base},
+        "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "base": {"document": base},
         "differences": {
             path: record.model_dump(mode="json")
-            for path, record in diff(normalized, changed_model(payload, records, components)).items()
+            for path, record in diff(
+                payload, changed_model(payload, records, components), keyed_collection=model_keyed_collection,
+            ).items()
         },
     }
     slots["model"] = {"document": name}

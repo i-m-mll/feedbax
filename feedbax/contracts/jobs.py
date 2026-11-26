@@ -138,11 +138,17 @@ class StudioBoundBestSubject(StrictModel):
     selection_sha256: str = Field(pattern=_DigestPattern)
 
 
+class StudioTrialName(StrictModel):
+    id: str
+    name: str | None
+
+
 class StudioSavedEvaluationResult(StrictModel):
     job_id: str
     request_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
-    trials: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    trials: list[StudioTrialName] | None = Field(default=None, exclude_if=lambda value: value is None)
+    replicates: int | None = Field(default=None, ge=1, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
     loaded_model: ImportedModelProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -166,7 +172,7 @@ class StudioSavedEvaluationRow(StrictModel):
     status: JobStatus
     reason: str | None
     can_run: bool
-    trials: list[str]
+    trials: list[StudioTrialName]
     result: StudioSavedEvaluationResult | None
     previous: StudioSavedEvaluationResult | None = Field(default=None, exclude_if=lambda value: value is None)
     subject_rank_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -191,6 +197,7 @@ class StudioSavedEvaluationReplayRequest(StudioSavedEvaluationRead):
     """When absent, select every retained trial at the checkpoint."""
     aggregate: bool = False
     checkpoint: int | None = Field(default=None, ge=0)
+    replicate: int | None = Field(default=None, ge=0)
     mean: TrialMeanSelection | None = None
 
 
@@ -315,7 +322,7 @@ class StudioProjectWindowMapRow(StrictModel):
     reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
     opening_step: OpeningStep | None = Field(default=None, exclude_if=lambda value: value is None)
     collection_progress: StoreTransferProgress | None = Field(default=None, exclude_if=lambda value: value is None)
-    evaluation_conditions: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    evaluation_conditions: list[StudioTrialName] | None = Field(default=None, exclude_if=lambda value: value is None)
     origin: int | None = Field(default=None, exclude_if=lambda value: value is None)
     """A Train row's completed-update count at its start (0 when fresh); its readers select updates after it."""
     target_total: int | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -355,6 +362,8 @@ class StudioProjectWindowMapException(StrictModel):
     id: str
     count: int
     rule: SweepException
+    field_labels: dict[str, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    """Display names for Model fields, keyed by the exact exception patch path."""
 
 
 class StudioProjectWindowMapAxisValue(StrictModel):
@@ -457,6 +466,9 @@ class StudioPlanRequest(StudioPlanRequestAddress):
 class StudioPlanReviewSource(StrictModel):
     kind: SourceKind
     key: str
+    name: str
+    axis_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    member_count: int | None = Field(default=None, exclude_if=lambda value: value is None)
     path: str
     step: str | None = Field(default=None, exclude_if=lambda value: value is None)
     axis: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -466,10 +478,14 @@ class StudioPlanReviewSource(StrictModel):
 
 
     @classmethod
-    def from_source(cls, source: ValueSource) -> StudioPlanReviewSource:
+    def from_source(
+        cls, source: ValueSource, *, name: str, kind: SourceKind | None = None,
+        axis_name: str | None = None, member_count: int | None = None,
+    ) -> StudioPlanReviewSource:
         return cls(
-            kind=source.kind, key=source.name, path=source.path, step=source.step,
+            kind=kind or source.kind, key=source.name, name=name, path=source.path, step=source.step,
             axis=source.axis, value=source.value, variant=source.variant, row=source.row,
+            axis_name=axis_name, member_count=member_count,
         )
 
 

@@ -6,7 +6,8 @@ import pytest
 
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_sweep import CHECKPOINT_RULE_TARGET
+from feedbax.contracts.project_sweep import CHECKPOINT_RULE_TARGET, model_field_path
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.examples import load_shipped_projects
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
@@ -20,7 +21,7 @@ _PROJECT = "stored-problems"
 _URL = f"/api/projects/{_PROJECT}"
 _GRAPH = {"composites": [], "element": {"kind": "graph"}}
 _PLANT = {"composites": [], "element": {"kind": "component", "id": "plant"}}
-_MASS_TARGET = ModelAddress.model_validate(MASS).to_text()
+_MASS_TARGET = model_field_path(ModelAddress.model_validate(MASS))
 
 
 def _json(response):
@@ -76,14 +77,14 @@ class _Studio:
 
 
 def _graph_project():
-    return {"documents": {"model": {"label": "Model", "schema": "feedbax.spec.model", "payload": {
-        "step_seconds": 0.01,
+    return {"documents": {"model": {"label": "Model", "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "payload": {
+        "step_seconds": "10 ms",
         "ports": {
-            "inputs": [
-                {"id": "vector", "name": "Vector", "type": {"shape": [2]}},
-                {"id": "scalar", "name": "Scalar", "type": {"shape": []}},
-            ],
-            "outputs": [{"id": "out", "name": "Out", "type": {"shape": [2]}}],
+            "inputs": {
+                "vector": {"label": "Vector", "type": {"shape": [2]}},
+                "scalar": {"label": "Scalar", "type": {"shape": []}},
+            },
+            "outputs": {"out": {"label": "Out", "type": {"shape": [2]}}},
         },
         "interior": {},
     }}}}
@@ -108,7 +109,7 @@ def _duplicate_ports(studio):
     }})
     reopened = studio.reopen(edit["snapshot"], "document", "model")
     ports = reopened["project"]["documents"]["model"]["payload"]["ports"]["inputs"]
-    assert [(port["id"], port["name"]) for port in ports] == [("vector", "Vector"), ("scalar", "Vector")]
+    assert [(key, port["label"]) for key, port in ports.items()] == [("vector", "Vector"), ("scalar", "Vector")]
     assert {problem["address"]["element"]["end"]["port"] for problem in edit["problems"]
             if problem["address"]["element"]["kind"] == "port"} == {"vector", "scalar"}
 
@@ -120,19 +121,19 @@ def _typed_signal_project():
     model = project["documents"]["point-mass"]["payload"]
     for key, leaf in (("position", "pos"), ("velocity", "vel")):
         model["interior"]["components"][key] = {
-            "kind": "leaf", "name": key, "type": "feedbax.SelectState", "fields": {"paths": [leaf]},
+            "kind": "leaf", "label": key, "type": "feedbax.SelectState", "fields": {"paths": [leaf]},
         }
         model["interior"]["wires"][f"select-{key}"] = {
             "source": {"owner": "component", "component": "plant", "port": "effector"},
             "target": {"owner": "component", "component": key, "port": "state"},
         }
-    model["ports"]["inputs"][0]["type"] = {"shape": [2]}
+    model["ports"]["inputs"]["target_pos"]["type"] = {"shape": [2]}
     model["interior"]["components"]["point_receiver"] = {
-        "kind": "composite", "name": "Point receiver",
-        "ports": {"inputs": [
-            {"id": "in", "name": "Point", "type": {"shape": [2], "space": "point"}},
-            {"id": "free", "name": "Free", "type": {"shape": [2], "space": "free"}},
-        ]},
+        "kind": "composite", "label": "Point receiver",
+        "ports": {"inputs": {
+            "in": {"label": "Point", "type": {"shape": [2], "space": "point"}},
+            "free": {"label": "Free", "type": {"shape": [2], "space": "free"}},
+        }},
         "interior": {},
     }
     return project
@@ -214,7 +215,7 @@ def _invalid_model_field(studio):
     edit = studio.model_edit("model", prepared["command"], files=prepared["files"])
     reopened = studio.reopen(edit["snapshot"], "document", "model")
     fields = reopened["project"]["documents"]["model"]["payload"]["interior"]["components"]["plant"]["fields"]
-    assert fields["mass"] == {"kind": "unresolved", "text": text}
+    assert fields["mass"] == text
     view = studio.post("/model/fields", **field, revision=reopened["revision"])
     [saved] = [item for item in view["fields"] if item["address"] == MASS]
     assert saved["text"] == text
@@ -260,7 +261,7 @@ def _invalid_checkpoint(studio):
     assert any(problem["path"] == "inputs.subject.checkpoint" for problem in prepared["problems"])
     reopened = studio.reopen(studio.write(prepared["files"]), "step", "baseline")
     [exception] = reopened["project"]["steps"]["baseline"]["sweep"]["exceptions"].values()
-    assert exception["patches"][CHECKPOINT_RULE_TARGET]["value"] == held
+    assert exception["patches"][CHECKPOINT_RULE_TARGET]["value"] == held["text"]
     assert any(
         (problem["address"], problem["path"]) == ("steps/baseline.json", "inputs.subject.checkpoint")
         and (problem.get("authored_path") or "").endswith("/value")
@@ -294,7 +295,9 @@ def _missing_sweep_target(studio):
 
 def _set_project():
     raw = _data()
-    raw["documents"]["draft"] = {"label": "Draft", "schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}}}}
+    raw["documents"]["draft"] = {
+        "label": "Draft", "schema": "feedbax.set_document.v2", "payload": {"entries": {"one": {"label": "One"}}},
+    }
     raw["steps"]["fee"]["sweep"] = {"axes": {"draft": {"set": "draft"}}}
     return raw
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.matrix_core import MirrorList, apply_override_patch_copy
+from feedbax.contracts.matrix_core import ExpressionNodePatch, MirrorList, replay_stored_patch_copy
 
 SourceKind = Literal["document", "step", "sweep_value", "exception", "variant", "upstream"]
 type Path = tuple[str, ...]
@@ -49,16 +49,31 @@ class SourceList(MirrorList):
         self.source = source
 
 
-def source_shape(value: Any, source: ValueSource | None, override: Any = None) -> Any:
+@dataclass(frozen=True)
+class ExpressionSources:
+    """Origins inside a parsed expression whose stored representation is one scalar."""
+
+    source: ValueSource | None
+    nodes: Any
+
+
+def source_shape(
+    value: Any, source: ValueSource | None, override: Any = None, *, single_field: bool = False,
+) -> Any:
     """Mirror the value's containers so the patch engine also moves their origins."""
     if isinstance(override, ValueSource):
         source, override = override, None
+    if isinstance(override, ExpressionSources):
+        return replace(override, source=override.source or source)
+
+    split_origin = source is not None and not single_field
     if isinstance(value, dict):
         return SourceObject(
             getattr(override, "source", None) or source,
             {
                 key: source_shape(
-                    item, source.child(key) if source else None, source_at(override, (key,))
+                    item, source.child(key) if split_origin and source else source, source_at(override, (key,)),
+                    single_field=single_field
                 )
                 for key, item in value.items()
             },
@@ -78,7 +93,9 @@ def source_shape(value: Any, source: ValueSource | None, override: Any = None) -
 
 
 def source_at(shape: Any, path: Path) -> Any:
-    for part in path:
+    for index, part in enumerate(path):
+        if isinstance(shape, ExpressionSources):
+            return source_at(shape.nodes, path[index:]) or shape.source
         if isinstance(shape, dict):
             shape = shape.get(part)
         elif isinstance(shape, list) and part.isdigit() and int(part) < len(shape):
@@ -129,6 +146,8 @@ def place_source(shape: Any, parts: tuple[str, ...], source: Any) -> Any:
 def first_source(shape: Any) -> ValueSource | None:
     if isinstance(shape, ValueSource):
         return shape
+    if isinstance(shape, ExpressionSources):
+        return shape.source or first_source(shape.nodes)
     if isinstance(shape, (SourceObject, SourceList)):
         if shape.source is not None:
             return shape.source
@@ -137,9 +156,38 @@ def first_source(shape: Any) -> ValueSource | None:
     return None
 
 
+def expression_source_leaves(
+    shape: Any, default: ValueSource | None, path: Path = (),
+) -> Iterator[tuple[Path, ValueSource]]:
+    """Read node origins, inheriting the expression's field origin for unwritten nodes."""
+    if isinstance(shape, ValueSource):
+        yield path, shape
+    elif isinstance(shape, dict):
+        for key, child in shape.items():
+            yield from expression_source_leaves(child, default, (*path, key))
+    elif isinstance(shape, list):
+        for index, child in enumerate(shape):
+            yield from expression_source_leaves(child, default, (*path, str(index)))
+    elif default is not None:
+        yield path, default
+
+
 def patch_source(
-    shape: dict[str, Any], patch: OverridePatch, source: Any = None
+    shape: dict[str, Any], patch: OverridePatch, source: Any = None, *, expression: ExpressionNodePatch | None = None,
 ) -> dict[str, Any]:
+    """Replay a payload patch on its parallel tree of origins."""
+    if expression is not None:
+        original = source_at(shape, expression.field)
+        previous = original.nodes if isinstance(original, ExpressionSources) else None
+        nodes = source_shape(expression.before, None, previous)
+        node = expression.node
+        if node.op != "remove":
+            node = node.model_copy(update={"value": source_shape(node.value, first_source(source), single_field=True)})
+        nodes = replay_stored_patch_copy(nodes, node)
+        return place_source(shape, expression.field, ExpressionSources(
+            original.source if isinstance(original, ExpressionSources) else first_source(original),
+            nodes,
+        ))
     if patch.op != "remove":
         patch = patch.model_copy(update={"value": source})
-    return apply_override_patch_copy(shape, patch)
+    return replay_stored_patch_copy(shape, patch)

@@ -1,24 +1,31 @@
 """Model edits, and an Evaluate step's edits of its Model and Task, are stored by the document rule."""
 
 from copy import deepcopy
+import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_document import ModelTime
 from feedbax.contracts.project import BasedDocument, Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
-from feedbax.planner.project_plan import compile_project
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, load_text_project
 from feedbax.contracts.project_resolution import compose_document
+from feedbax.contracts.project_sweep import model_field_path, model_field_target
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
+from feedbax.contracts.time_units import TimeValue
+from feedbax.planner.project_plan import compile_project
 from feedbax.web.app import create_app
 from feedbax.web.services.project_plan import row_problems
 from tests.support.managed_train_fixture import managed_evaluation_step
-from tests.test_evaluate_documents import FEE, MASS, TASK, _based, _data, _model, _with_mass, _with_push
+from tests.test_evaluate_documents import MASS, TASK, _based, _data, _model, _with_mass, _with_push
 
 _URL = "/api/projects/reach"
 _PLANT = {"composites": [], "element": {"kind": "component", "id": "plant"}}
-_MASS_TEXT = ModelAddress.model_validate(MASS).to_text()
+_MASS_TEXT = model_field_path(ModelAddress.model_validate(MASS))
+_START_EDIT = {"op": "replace", "path": "/variables/start/value", "value": "[U(-0.5, 0.5), U(-0.3, 0.45)]"}
 
 
 class _Project:
@@ -97,6 +104,96 @@ def _two_readers(data):
     return data
 
 
+def test_wiring_new_outputs_assigns_names_used_by_objective_authoring(tmp_path):
+    project = _Project(tmp_path, _data())
+    graph = {"composites": [], "element": {"kind": "graph"}}
+    operation = {
+        "op": "connect", "graph": graph,
+        "source": {"owner": "component", "component": "readout", "port": "output"},
+        "target": {"owner": "outputs", "port": "__new_port__"},
+        "grow_target": True,
+    }
+    with project.client:
+        project.edit(operation)
+        project.edit(operation)
+        ports = project.composed("model")["ports"]["outputs"]
+        added = list(ports)[-2:]
+        assert [ports[key]["label"] for key in added] == ["Output", "Output 2"]
+        assert all(key != ports[key]["label"] for key in added)
+
+        response = project.client.post(f"{_URL}/authoring/trials", json={
+            "revision": project.snapshot()["revision"], "run": project.run("fee"),
+        })
+        assert response.status_code == 200, response.text
+        names = {item["value"]["name"] for item in response.json()["outputs"]}
+        assert {"Output", "Output 2"} <= names
+        assert not names.intersection(added)
+
+
+def test_studio_authorizes_attachment_defaults_from_the_source_shape(tmp_path):
+    shapes = {"scalar": [], "single": [1], "vector": [3]}
+    inputs = {name: {"label": name.title(), "type": {"base": "real", "shape": shape}}
+              for name, shape in shapes.items()}
+    outputs = {f"out-{name}": port for name, port in inputs.items()}
+    project = _Project(tmp_path, {"documents": {"model": {
+        "schema": STORED_MODEL_DOCUMENT_SCHEMA_ID, "label": "Model",
+        "payload": {"step_seconds": "0.01 s", "ports": {"inputs": inputs, "outputs": outputs}, "interior": {
+            "wires": {name: {"source": {"owner": "inputs", "port": name},
+                             "target": {"owner": "outputs", "port": f"out-{name}"}} for name in shapes},
+        }},
+    }}})
+
+    def wire(name):
+        return {"composites": [], "element": {"kind": "wire", "id": name}}
+
+    def defaults(owner, operation, *, status=200):
+        response = project.client.post(f"{_URL}/model/attachment-defaults", json={
+            "revision": project.snapshot()["revision"], "document": "model", "owner": owner, "operation": operation,
+        })
+        assert response.status_code == status, response.text
+        return response.json()
+
+    def attachment(name, key, value, *, op="add", **position):
+        address = {"composites": [], "element": {"kind": "attachment", "parent": wire(name)["element"], "id": key}}
+        return {"op": "set_attachment", "difference": {"op": op, "address": address, "attachment": value, **position}}
+
+    with project.client:
+        for name, expected in (("scalar", 0), ("single", "[0]"), ("vector", "[0, 0, 0]")):
+            assert defaults(wire(name), "add") == {"operands": {"value": {"kind": "value", "value": expected}}}
+        source_port = {"composites": [], "element": {"kind": "port", "end": {"owner": "inputs", "port": "vector"}}}
+        assert defaults(source_port, "scale")["operands"] == {"factor": {"kind": "value", "value": 1}}
+        bounds = {"low": {"kind": "value", "value": -1}, "high": {"kind": "value", "value": 1}}
+        assert defaults(wire("scalar"), "clamp")["operands"] == bounds
+        assert "wire 'missing' does not exist" in defaults(wire("missing"), "add", status=422)["detail"]
+
+        project.edit(attachment("vector", "delay", {"kind": "delay"}, after=None))
+        add = {"kind": "intervention", "operation": "add"}
+        project.edit(attachment("vector", "shift", add, after="delay"))
+        saved_file = project.root / "documents" / "model.json"
+        saved = json.loads(saved_file.read_bytes())["payload"]
+        chain = saved["interior"]["wires"]["vector"]["attachments"]
+        assert chain["delay"] == {"kind": "delay"}
+        assert chain["shift"]["operands"] == {"value": {"kind": "value", "value": "[0, 0, 0]"}}
+
+        draft = {"value": {"kind": "wire"}}
+        project.edit(attachment("vector", "shift", add | {"operands": draft}, op="change"))
+        window = {"spans": [{"kind": "interval", "start": {"anchor": {"kind": "trial", "edge": "start"}}, "end": {}}]}
+        project.edit(attachment("vector", "shift", add | {"window": window}, op="change"))
+        saved = project.composed("model")
+        assert saved["interior"]["wires"]["vector"]["attachments"]["shift"] == add | {"operands": draft, "window": window}
+        delay, intervention = StoredModelDocument.model_validate(saved).lower().interior.wires["vector"].attachments
+        assert delay.delay == ModelTime(value=1, unit="st")
+        interval, = intervention.window.spans
+        assert interval.start.offset is None
+        assert interval.end.offset == TimeValue(value=1, unit="st")
+
+        project.edit(attachment("vector", "shift", {"kind": "intervention", "operation": "clamp"}, op="change"))
+        project.edit(attachment("vector", "delay", {"kind": "delay", "delay": "2 st"}, op="change"))
+        chain = json.loads(saved_file.read_bytes())["payload"]["interior"]["wires"]["vector"]["attachments"]
+        assert chain["shift"]["operands"] == bounds
+        assert chain["delay"] == {"kind": "delay", "delay": "2 st"}
+
+
 def test_editing_the_base_for_its_remaining_reader_preserves_an_unselected_copy(tmp_path):
     data = _two_readers(_data())
     del data["steps"]["check"]
@@ -105,13 +202,14 @@ def test_editing_the_base_for_its_remaining_reader_preserves_an_unselected_copy(
     project = _Project(tmp_path, data)
     with project.client:
         prior = project.ids()
+        original = project.composed("model")
         based = project.project().documents["model-2"]
         result = project.edit(_mass(3.0), step="other")
         assert not result["created"]
         assert project.project().documents["model-2"] == based
         assert project.ids()["fee"] == prior["fee"]
         assert project.ids()["other"] != prior["other"]
-        assert project.composed("model") == _with_mass(_model(data), 3.0)
+        assert project.composed("model") == _with_mass(original, 3.0)
 
 
 def test_an_evaluation_field_edit_makes_a_document_based_on_its_subjects(tmp_path):
@@ -142,10 +240,12 @@ def test_an_evaluation_edit_with_its_subject_chosen_is_written_to_the_subjects_d
     project = _Project(tmp_path, _data())
     with project.client:
         prior = project.ids()
+        original = project.composed("model")
         result = project.edit(_mass(2.0), step="check", chosen=("fee",))
         assert result["created"] == []
         assert set(project.project().documents) == set(_data()["documents"])
-        assert project.composed("model") == _with_mass(_model(_data()), 2.0)
+        original["interior"]["components"]["plant"].setdefault("fields", {})["mass"] = 2.0
+        assert project.composed("model") == original
         assert project.reads("check") == "model" and project.ids()["fee"] != prior["fee"]
 
 
@@ -307,12 +407,10 @@ def test_connection_review_reads_the_topology_on_the_selected_sweep_value(tmp_pa
 def test_an_evaluation_task_edit_makes_a_document_based_on_its_subjects(tmp_path):
     project = _Project(tmp_path, _data())
     with project.client:
-        task = project.composed(TASK)
-        bound = task["variables"][0]["value"]["args"][0]["args"][0]
-        path = "/variables/0/value/args/0/args/0/value"
+        original = project.ids()["fee"]
         response = project.client.post(f"{_URL}/authoring/trials", json={
             "revision": project.snapshot()["revision"], "run": project.run("check"),
-            "change": {"kind": "task", "edits": [{"op": "replace", "path": path, "value": bound["value"] - 0.1}]},
+            "change": {"kind": "task", "edits": [_START_EDIT]},
             "scope": {"kind": "step"},
         })
         assert response.status_code == 200, response.text
@@ -325,7 +423,7 @@ def test_an_evaluation_task_edit_makes_a_document_based_on_its_subjects(tmp_path
         saved = project.client.patch(_URL, json={"revision": project.snapshot()["revision"], "files": body["files"]})
         assert saved.status_code == 200, saved.text
         assert project.reads("check", "task") == f"{TASK}-2"
-        assert project.ids()["fee"] == FEE
+        assert project.ids()["fee"] == original
 
 
 def test_a_variant_s_evaluation_task_edit_is_a_document_only_its_row_points_at(tmp_path):
@@ -335,11 +433,9 @@ def test_a_variant_s_evaluation_task_edit_is_a_document_only_its_row_points_at(t
     with project.client:
         before = {run.key: run.request_id for run in project.plan().runs}
         steps = project.project().steps
-        path = "/variables/0/value/args/0/args/0/value"
-        bound = project.composed(TASK)["variables"][0]["value"]["args"][0]["args"][0]
         response = project.client.post(f"{_URL}/authoring/trials", json={
             "revision": project.snapshot()["revision"], "run": project.run("check") | {"variant": "treated"},
-            "change": {"kind": "task", "edits": [{"op": "replace", "path": path, "value": bound["value"] - 0.1}]},
+            "change": {"kind": "task", "edits": [_START_EDIT]},
             "scope": {"kind": "step"},
         })
         assert response.status_code == 200, response.text
@@ -454,9 +550,7 @@ def test_invalid_model_field_survives_reopen_and_can_be_repaired(tmp_path):
         before = project.snapshot()["revision"]
         saved = project.edit(recipe["command"]["operation"], files=recipe["files"])
         assert saved["snapshot"]["revision"] != before
-        assert project.composed("model")["interior"]["components"]["plant"]["fields"]["mass"] == {
-            "kind": "unresolved", "text": text,
-        }
+        assert project.composed("model")["interior"]["components"]["plant"]["fields"]["mass"] == text
         (fee,) = [run for run in project.plan().runs if run.key.step == "fee"]
         assert fee.admission_problem is not None
         assert any(problem.model_address == ModelAddress.model_validate(MASS) for problem in fee.problems)
@@ -473,7 +567,7 @@ def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path
     address = ModelAddress.model_validate({"composites": [], "element": {
         "kind": "field", "parent": owner["element"], "path": ["fields", "hidden_size"],
     }})
-    path = address.to_text()
+    path = model_field_path(address)
     entries = {
         f"value-{index}": {"value": value, "patches": {path: {"value": value}, _MASS_TEXT: {"value": 2.0}}}
         for index, value in enumerate((64, 100, 128), start=1)
@@ -484,6 +578,7 @@ def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path
     project = _Project(tmp_path, data)
 
     with project.client:
+        original = project.composed("model")
         revision = project.snapshot()["revision"]
         before = project.plan()
         assert len(before.runs) == 3 and all(not row.problems for row in before.runs)
@@ -508,11 +603,11 @@ def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path
 
         reopened = project.project()
         values = reopened.steps["fee"].sweep.axes["hidden-size"].values
-        unresolved = {"kind": "unresolved", "text": "U(0, 1)"}
+        unresolved = "U(0, 1)"
         assert values["value-1"].value == values["value-1"].patches[path].value == unresolved
         assert values["value-1"].patches[_MASS_TEXT].value == 2.0
         assert [values[member].value for member in ("value-2", "value-3")] == [100, 128]
-        assert reopened.documents["model"].payload == data["documents"]["model"]["payload"]
+        assert reopened.documents["model"].payload == original
         after = project.plan()
         (problem,) = row_problems(after)
         assert problem.path == "sweep.axes.hidden-size.values.value-1"
@@ -548,7 +643,7 @@ def test_grouping_a_swept_model_field_rewrites_its_target_by_identity(tmp_path):
     project = _Project(tmp_path, data)
     with project.client:
         result = project.edit({"op": "group", "selection": [_PLANT], "name": "Plant"})
-        target = ModelAddress.from_text(project.project().steps["fee"].sweep.axes["mass"].path)
+        target = model_field_target(project.project().steps["fee"].sweep.axes["mass"].path).address
         assert target.composites and target.element == ModelAddress.model_validate(MASS).element
         (group,) = target.composites
         assert project.composed("model")["interior"]["components"][group]["interior"]["components"]["plant"]
@@ -568,7 +663,7 @@ def test_place_registered_template_as_an_editable_composite(tmp_path, name, hidd
 
     data = _data()
     data["steps"] = {}
-    data["documents"]["model"]["payload"] = {"step_seconds": 0.01, "ports": {}, "interior": {}}
+    data["documents"]["model"]["payload"] = {"step_seconds": "0.01 s", "ports": {}, "interior": {}}
     project = _Project(tmp_path, data)
     position = {"x": 20, "y": 30}
     address = ModelAddress.model_validate({"composites": [], "element": {"kind": "component", "id": "controller"}})
@@ -578,9 +673,9 @@ def test_place_registered_template_as_an_editable_composite(tmp_path, name, hidd
             "op": "add_component", "graph": {"composites": [], "element": {"kind": "graph"}}, "id": "controller",
             "component": {"kind": "definition", "definition": f"feedbax.{name}"}, "position": position,
         })
-        assert project.snapshot()["presentation"]["documents"]["model"]["positions"][address.to_text()] == position
+        assert project.snapshot()["presentation"]["documents"]["model"]["positions"][address.to_authored_text()] == position
 
-    model = ModelDocument.model_validate(project.composed("model"))
+    model = StoredModelDocument.model_validate(project.composed("model")).lower()
     component = model.interior.components["controller"]
     assert isinstance(component, CompositeComponent)
     assert component.name == name
@@ -665,10 +760,10 @@ def test_insert_registered_template_routes_the_wire_through_its_composite_ports(
     source = {"owner": "inputs", "port": "in"}
     target = {"owner": "outputs", "port": "out"}
     data["documents"]["model"]["payload"] = {
-        "step_seconds": 0.01,
+        "step_seconds": "0.01 s",
         "ports": {
-            "inputs": [{"id": "in", "name": "Input", "type": {}}],
-            "outputs": [{"id": "out", "name": "Output", "type": {}}],
+            "inputs": {"in": {"label": "Input", "type": {}}},
+            "outputs": {"out": {"label": "Output", "type": {}}},
         },
         "interior": {"wires": {"straight": {"source": source, "target": target}}},
     }
@@ -707,10 +802,9 @@ def test_equations_edits_store_and_run_like_a_direct_document(
     from feedbax.compiler import GraphDocument, compile_graph
     from feedbax.compiler.model_document import lower_model_document
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.contracts.model_document import ModelDocument
 
     def leaf(type_, **fields):
-        return {"kind": "leaf", "name": type_, "type": f"feedbax.{type_}", "fields": fields}
+        return {"kind": "leaf", "label": type_, "type": f"feedbax.{type_}", "fields": fields}
 
     def end(component, port="flange"):
         return {"owner": "component", "component": component, "port": port}
@@ -728,18 +822,18 @@ def test_equations_edits_store_and_run_like_a_direct_document(
     inner = {"composites": ["equations"], "element": {"kind": "graph"}}
     position = {"x": 20, "y": 30}
     model = {
-        "step_seconds": 0.01,
+        "step_seconds": "0.01 s",
         "ports": {
-            "inputs": [{"id": "drive", "name": "drive", "type": {"shape": []}}],
-            "outputs": [{"id": "read", "name": "read", "type": {"shape": []}}],
+            "inputs": {"drive": {"label": "drive", "type": {"shape": []}}},
+            "outputs": {"read": {"label": "read", "type": {"shape": []}}},
         },
         "interior": {},
     }
     shell = {
-        "kind": "composite", "name": "Equations",
+        "kind": "composite", "label": "Equations",
         "ports": {
-            "inputs": [{"id": "in", "name": "Input", "type": {"shape": []}}],
-            "outputs": [{"id": "out", "name": "Output", "type": {"shape": []}}],
+            "inputs": {"in": {"label": "Input", "type": {"shape": []}}},
+            "outputs": {"out": {"label": "Output", "type": {"shape": []}}},
         },
         "interior": {"physical_domain": domain},
     }
@@ -839,7 +933,7 @@ def test_equations_edits_store_and_run_like_a_direct_document(
     assert edited["connections"][straight["element"]["id"]] == routed
     assert added_edge in edited["connections"].values()
     direct = model | {"interior": {"wires": root_wires, "components": {"equations": shell | {
-        "ports": shell["ports"] | {"physical": [free]},
+        "ports": shell["ports"] | {"physical": {"free": {"label": free["name"], "type": domain}}},
         "interior": shell["interior"] | {
             "components": leaves, "wires": inner_wires,
             "connections": physical | {"spring-free": added_edge, "spring-body": routed, "spring-wall": spring_ground},
@@ -848,7 +942,7 @@ def test_equations_edits_store_and_run_like_a_direct_document(
 
     def rollout(document):
         registry = ComponentRegistry()
-        lowered = lower_model_document(ModelDocument.model_validate(document), registry)
+        lowered = lower_model_document(StoredModelDocument.model_validate(document).lower(), registry)
         graph = compile_graph(GraphDocument(graph=lowered.graph), registry, {
             lowered.graph.input_bindings["drive"]: jax.ShapeDtypeStruct((), jnp.float32),
         }).graph

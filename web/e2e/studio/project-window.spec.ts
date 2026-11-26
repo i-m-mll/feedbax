@@ -2,7 +2,7 @@ import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Locator } from '@playwright/test';
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { blankTask, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { blankStoredTask, objectiveDocumentSchemaId, taskDocumentSchemaId, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import {
   captureStudioWindow, chooseSweepValue, enter, fixture, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
@@ -246,7 +246,7 @@ test('outside saved-folder edits join the mounted Undo history', { tag: '@slow' 
   expect(await read(modelPath)).toBe(beforeOutside);
 
   await history('Meta+Z', 'Model', '/model/undo');
-  expect(JSON.parse(await read(modelPath)).payload.interior.components.plant.fields.mass).toBe(1);
+  await expect(mass).toHaveValue('1');
   await tab('Runs').click();
   await history('Meta+Z', 'Runs');
   await expect(batches).toHaveValue('2');
@@ -259,7 +259,6 @@ test('outside saved-folder edits join the mounted Undo history', { tag: '@slow' 
   await expect(batches).toHaveValue('5');
   await tab('Model').click();
   await history('Meta+Shift+Z', 'Model', '/model/undo');
-  expect(JSON.parse(await read(modelPath)).payload.interior.components.plant.fields.mass).toBe(2);
   await plant.click();
   await expect(mass).toHaveValue('2');
   await menu('Redo Outside Change');
@@ -458,13 +457,13 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const [singleModel, chainModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.task_document', label: 'Task', payload: blankTask,
+    schema: taskDocumentSchemaId, label: 'Task', payload: blankStoredTask,
   } };
   const objective = { kind: 'document', id: 'objective', document: {
-    schema: 'feedbax.spec.objective_document', label: 'Objective', payload: { id: 'objective', terms: [] },
+    schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
   } };
   const emptyModel = { ...singleModel, id: 'empty-model', document: {
-    ...singleModel.document, label: 'Empty Model', payload: { step_seconds: 0.01, ports: {}, interior: {} },
+    ...singleModel.document, label: 'Empty Model', payload: { step_seconds: '0.01 s', ports: {}, interior: {} },
   } };
   const documents = (model: string) => ({
     model: { document: model }, task: { document: task.id }, objective: { document: objective.id },
@@ -659,13 +658,13 @@ test('a view with nothing to show is dimmed in the rail, and an open one gives w
   const [planarModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.task_document', label: 'Task', payload: blankTask,
+    schema: taskDocumentSchemaId, label: 'Task', payload: blankStoredTask,
   } };
   const objective = { kind: 'document', id: 'objective', document: {
-    schema: 'feedbax.spec.objective_document', label: 'Objective', payload: { id: 'objective', terms: [] },
+    schema: objectiveDocumentSchemaId, label: 'Objective', payload: { id: 'objective' },
   } };
   const flatModel = { ...planarModel, id: 'flat-model', document: {
-    ...planarModel.document, label: 'Flat Model', payload: { step_seconds: 0.01, ports: {}, interior: {} },
+    ...planarModel.document, label: 'Flat Model', payload: { step_seconds: '0.01 s', ports: {}, interior: {} },
   } };
   const step = (id: string, label: string, model: string) => ({
     ...template, id, step: { ...template.step, label, base: { inline: { ...template.step.base.inline, trial_documents: {

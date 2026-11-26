@@ -180,10 +180,10 @@ def test_measures_share_post_step_velocity_and_record_its_origin_once(tmp_path):
     from feedbax.compiler.model_signals import boundary_signal_port
     from feedbax.contracts.expression_values import LENGTH, TIME, NameValue, ValueBase, ValueType
     from feedbax.contracts.model_address import ModelAddress
-    from feedbax.contracts.model_document import ModelDocument
+    from feedbax.contracts.stored_model import StoredModelDocument
     from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
     from feedbax.contracts.semantic_values import semantic_key
-    from feedbax.contracts.task_document import TaskDocument
+    from feedbax.contracts.task_document import StoredTaskDocument
     from feedbax.examples import load_shipped_projects
     from feedbax.objectives.document import ObjectiveUse, compile_objective
     from feedbax.persistence.dataset import open_stored_dataset
@@ -191,12 +191,12 @@ def test_measures_share_post_step_velocity_and_record_its_origin_once(tmp_path):
 
     project = load_shipped_projects()["point-mass-reaching"]
     raw = project.documents["point-mass"].payload
-    raw["ports"]["outputs"] = [
-        {"id": name, "name": name, "type": {}} for name in ("velocity", "effector")
-    ]
+    raw["ports"]["outputs"] = {
+        name: {"label": name, "type": {}} for name in ("velocity", "effector")
+    }
     graph = raw["interior"]
     graph["components"]["observed-velocity"] = {
-        "kind": "leaf", "name": "Observed velocity", "type": "feedbax.SelectState", "fields": {"paths": ["vel"]},
+        "kind": "leaf", "label": "Observed velocity", "type": "feedbax.SelectState", "fields": {"paths": ["vel"]},
     }
     effector = {"owner": "component", "component": "plant", "port": "effector"}
     graph["wires"] = {
@@ -211,8 +211,8 @@ def test_measures_share_post_step_velocity_and_record_its_origin_once(tmp_path):
         },
         "observation-effector": {"source": effector, "target": {"owner": "outputs", "port": "effector"}},
     }
-    model = ModelDocument.model_validate(raw)
-    task = TaskDocument.model_validate(project.documents["simple-reaches-task"].payload)
+    model = StoredModelDocument.model_validate(raw).lower()
+    task = StoredTaskDocument.model_validate(project.documents["simple-reaches-task"].payload).lower()
     root = boundary_signal_port((), "outputs", "velocity")
     structured = ModelAddress.model_validate({
         "composites": [], "element": {

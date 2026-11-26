@@ -3,30 +3,32 @@
 from copy import deepcopy
 
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sweep import model_field_path
 from feedbax.contracts.project import Project, diff
 from feedbax.planner.project_plan import ProjectPlanMemo, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_refs import LastMember
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
-# Request identities for the shipped point-mass Task, with its signal labels projected by ID.
+# Request identities for the shipped point-mass fixture, with Model defaults filled and keyed Task trials.
 # These witnesses hold the same changes expressed on the Evaluate step or in its Model and Task documents.
-FEE = "train:7ee0aec47e9eb5d0408a91707503e31114c55bf912e95406f206bd654db1bbe4"
-DEFAULT = "evaluate:7c6fad3f13cb972b160877409c34fda69843e13141ffdaf788250959b0289647"
-FIELD_CHANGED = "evaluate:36403904c6fbf41fda182a0997b17ef9afb0bb92f6034ab11ab1217c60775884"
-ATTACHMENT_ADDED = "evaluate:fb014cda6d2da4cb22047330a52f6013a32f812d968fbae93e78d45b5ece424b"
+FEE = "train:52d8987cbf9cea9e6706ab37025a8b6d00c1063bd6f73cef8ba46ba0d1f6feec"
+DEFAULT = "evaluate:514c6ccf4b7b76dd3af60b5ed619de36ead2e541e865c933a4597778b5388694"
+FIELD_CHANGED = "evaluate:86580f29b2edcad563ddcdf7af55bd40ee65f0a175b433cb1062137283822774"
+ATTACHMENT_ADDED = "evaluate:4957f6e7585d7c1a725c6ac7e2ce5f84b62f21d9fb750e78402d80859cad7805"
 # The replacement Task now pairs target_pos by stable ID without a generated override.
-FEWER_CONDITIONS = "evaluate:aef41d53a6e65f832f58a1281f33d810626c951e894423d6faf73053a3ecf563"
+FEWER_CONDITIONS = "evaluate:6bff30ca35c87f7a9c4db2dccc3875a42dc5500005c0c4ead5b6d72d0c5f371d"
 SWEPT_PUSHED = (
     ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
-     "evaluate:dcf3f064b759cc1bfc8cc90b3f6f76b6af6947a432b708e288456a53967fa04a"),
+     "evaluate:489ba0f6bb0478121871baab6c167d474ac28e35dc70474630ac94b9dece99eb"),
     ("trained==abb0ffe5124ac74b8d431462660c668b987dd969c5bf76fc07a20894a2b46eea",
-     "evaluate:26c6ab856a6094343bbcbb74ed40ef5d75fae9d3316a0ecaf3fd4bac061a3216"),
+     "evaluate:337ed9ae58ac63a634efda4cd1a0f5c0307aa8b78636602e6975fc617038ce0e"),
 )
 NEAREST_SHARED = {
-    "fee": "train:4e5dbd251fb8ae4d207e7a6223b5daec96cdb92517047cbbe3a0b734ed92318b",
+    "fee": "train:f917ec7c972f5c6905bb219c09b774bc7cf919de5cd19b0a9e6654c16ddf20bc",
     "other": FEE,
-    "check": "evaluate:a2dc720dec386e1fd5951caece29c1570d6f7589a5ce512d34fe54676127552c",
+    "check": "evaluate:18ba9ba2989d3cc138878c9c0d96605512ad2b16fc769681cfd8ff908fd056ae",
 }
 UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
@@ -50,12 +52,14 @@ def _model(data, name="model"):
 
 
 def _with_mass(payload, mass):
-    payload["interior"]["components"]["plant"]["fields"]["mass"] = mass
+    payload["interior"]["components"]["plant"].setdefault("fields", {})["mass"] = mass
     return payload
 
 
 def _with_push(payload):
-    payload["interior"]["wires"]["drive"]["attachments"] = [deepcopy(PUSH)]
+    payload["interior"]["wires"]["drive"]["attachments"] = {
+        PUSH["id"]: {key: deepcopy(value) for key, value in PUSH.items() if key != "id"},
+    }
     return payload
 
 
@@ -119,7 +123,7 @@ def test_an_evaluation_names_the_documents_it_reads_and_reads_its_subjects_as_a_
 
 
 def test_an_evaluation_keeps_its_subjects_swept_value_under_its_documents_change():
-    mass = ModelAddress.model_validate(MASS).to_text()
+    mass = model_field_path(ModelAddress.model_validate(MASS))
 
     def swept():
         data = _data()
@@ -132,11 +136,25 @@ def test_an_evaluation_keeps_its_subjects_swept_value_under_its_documents_change
     _reads(data, "check", "model", "model-2")
     plan = _plan(data)
     assert tuple(sorted((run.key.row, run.request_id) for run in plan.runs if run.kind == "evaluate")) == SWEPT_PUSHED
-    trained = {run.request_id for run in plan.runs if run.kind == "train"}
+    trained = {
+        run.request_id: decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        for run in plan.runs if run.kind == "train"
+    }
+    measured = set()
     for run in (run for run in plan.runs if run.kind == "evaluate"):
-        spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-        assert run.inputs["subject"].member.reference.request_id in trained
-        assert all("mass" not in edit["path"] for edit in spec.params["variation"])
+        request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
+        (subject,) = request.inputs["subject"]
+        checkpoint = subject.reference
+        assert checkpoint.role == "checkpoint" and checkpoint.select == LastMember(kind="last")
+        paired = trained[checkpoint.request_id].trial_documents
+        measured.add(paired.model.interior.components["plant"].fields["mass"])
+        assert request.spec.params["trials"] == list(paired.task.condition_ids)
+        variation = request.spec.params["variation"]
+        assert all("mass" not in edit["path"] for edit in variation)
+        (push,) = [edit for edit in variation if edit["path"].startswith("graph.nodes.")]
+        assert push["op"] == "add" and push["value"]["type"] == "feedbax.Scale"
+        assert push["value"]["params"] == {"fixed": True, "scale": 0.5}
+    assert measured == {1.5, 3.0}
 
 
 def test_evaluate_ungroup_eligibility_reads_the_selected_axis_model(tmp_path):
@@ -148,10 +166,11 @@ def test_evaluate_ungroup_eligibility_reads_the_selected_axis_model(tmp_path):
     from tests.test_canonical_evaluate_admission import _save_project
 
     data = _data()
+    data["steps"]["fee"]["label"] = "Training source"
     wrapper = "idle-wrapper"
     data["documents"]["model"]["payload"]["interior"]["components"][wrapper] = {
-        "kind": "composite", "name": "Idle wrapper",
-        "ports": {"inputs": [{"id": "in", "name": "In", "type": {}}]}, "interior": {},
+        "kind": "composite", "label": "Idle wrapper",
+        "ports": {"inputs": {"in": {"label": "In", "type": {}}}}, "interior": {},
     }
     _reads(data, "check", "model", "model")
     default = f"trial_documents.model.interior.components.{wrapper}.ports.inputs.in.default"
@@ -174,6 +193,9 @@ def test_evaluate_ungroup_eligibility_reads_the_selected_axis_model(tmp_path):
             })
             assert response.status_code == 200, response.text
             state = response.json()
+            assert state["source"] == {
+                "kind": "trained", "reference": {"kind": "step", "key": "fee"}, "name": "Training source",
+            }
             assert state["resolved_model"] is not None, state["problems"]
             assert wrapper in state["resolved_model"]["interior"]["components"]
             return next(item["reason"] for item in state["ungroup"] if item["address"] == address)
@@ -233,11 +255,15 @@ def test_a_task_document_replaces_the_subjects_task_unless_it_holds_the_same_con
     assert _ids(data) == {"fee": FEE, "check": DEFAULT}
 
     shorter = data["documents"]["task-2"]["payload"]
-    shorter["validation_trials"] = shorter["validation_trials"][:-1]
-    assert _ids(data) == {"fee": FEE, "check": FEWER_CONDITIONS}
+    shorter["validation_trials"].popitem()
+    plan = _plan(data)
+    assert {run.key.step: run.request_id for run in plan.runs} == {"fee": FEE, "check": FEWER_CONDITIONS}
+    request = decode_request(plan.requests[FEWER_CONDITIONS], plan.documents.__getitem__)
+    assert request.inputs["subject"][0].reference.request_id == FEE
+    assert request.spec.params["trials"] == list(shorter["validation_trials"])
 
     shorter["validation_trials"] = deepcopy(data["documents"][TASK]["payload"]["validation_trials"])
-    shorter["signals"] = [signal for signal in shorter["signals"] if signal["id"] != "target_pos"]
+    del shorter["signals"]["target_pos"]
     plan = _plan(data)
     assert not plan.diagnostics
     check = next(run for run in plan.runs if run.key.step == "check")

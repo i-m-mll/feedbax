@@ -7,12 +7,16 @@ from pathlib import Path
 import sys
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.contracts.project_sweep import model_field_path
+from feedbax.application.project_writer import dump_text_project
+from feedbax.contracts.project_io import ProjectConfiguration
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.desktop.release import AppPaths
+from feedbax.examples import load_shipped_projects
 from feedbax.host import HostClient
 from feedbax.host.plan_history import plan_run_key
 from feedbax.host.job_completion import verify_bound_training_completion
@@ -24,6 +28,7 @@ from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
+from tests.support.browser_seed_actions import FileSeed, HomeSeed, NonSeed, print_action
 from tests.support.managed_train_fixture import managed_train_project
 
 
@@ -66,6 +71,101 @@ def ordinary_files(batches: str, *rates: str, scenario: str = "simple-reaches"):
         for name in names
     ]
     files.append({"kind": "step", "id": "train", "step": step})
+    return files
+
+
+HOLD_CAMPAIGN_MODEL = "campaign-point-mass"
+HOLD_CAMPAIGN_TASK = "campaign-task"
+HOLD_CAMPAIGN_OBJECTIVE = "campaign-objective"
+HOLD_CAMPAIGN_LOADED = "loaded-controllers"
+
+
+def hold_campaign_files():
+    """The installed hold campaign as Studio create-file envelopes."""
+    project = load_shipped_projects()["point-mass-set-campaign"]
+    return [
+        {"kind": kind, "id": name, kind: value.model_dump(mode="json", by_alias=True, exclude_unset=True)}
+        for kind, members in (("document", project.documents), ("step", project.steps))
+        for name, value in members.items()
+    ]
+
+
+def hold_campaign_archive() -> str:
+    """A two-replicate model archive of the hold campaign's Model, base64-encoded for Load."""
+    import base64
+    import tempfile
+
+    from feedbax.compiler.model_document import complete_model_fields
+    from feedbax.contracts.stored_model import StoredModelDocument
+    from feedbax.contracts.task_document import StoredTaskDocument
+    from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
+    from feedbax.host.model_archive import export_model_archive
+    from feedbax.host.model_checkpoint import SemanticModelWriter
+    from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE
+
+    documents = {file["id"]: file["document"] for file in hold_campaign_files() if file["kind"] == "document"}
+    registry = new_application_registry_bundle()
+    # Lowered as Load lowers the Model it fits an archive to, so that its root ports are its keys.
+    model = complete_model_fields(StoredModelDocument.model_validate(documents[HOLD_CAMPAIGN_MODEL]["payload"]).lower(
+        registry.components).with_keyed_root_ports(), registry.components)
+    task = StoredTaskDocument.model_validate(documents[HOLD_CAMPAIGN_TASK]["payload"]).lower()
+    trial = compile_trial_execution(
+        model, task, registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
+        input_bindings={"target_pos": "target_pos"},
+    )
+    assert isinstance(trial, PreparedTrialExecution), trial
+    graph = trial.executable.graph
+    writer = SemanticModelWriter.for_graph(trial.executable.resolved.graph, None, registry.components)
+    assert writer is not None
+    with tempfile.TemporaryDirectory() as transaction:
+        checkpoint = writer.publish(Path(transaction), (graph, graph), templates=(graph, graph), replica_ids=("a", "b"))
+        archive = export_model_archive(
+            ImmutableArtifactBlobProvider(Path(transaction) / MODEL_CHECKPOINT_STORE), checkpoint.tree, checkpoint.encoding,
+        )
+    assert isinstance(archive, bytes), archive
+    return base64.b64encode(archive).decode()
+
+
+def loaded_check_file(loaded: str = HOLD_CAMPAIGN_LOADED):
+    """An Evaluate step of the hold campaign whose subject is the Loaded Model ``loaded`` and which lists its Set."""
+    return {"kind": "step", "id": "loaded-check", "step": {
+        "kind": "evaluate", "label": "Loaded check",
+        "base": {"inline": {
+            "evaluation_type": "feedbax.rollout",
+            "params": {"seed": 1, "trial_set": {"kind": "every_condition"}},
+        }},
+        "set_fields": {"loaded-bank": {"axis": {"set": "command-kicks"}, "sampling": {"kind": "listed"}}},
+        "inputs": {
+            "subject": {"kind": "loaded_model", "source": {"document": loaded}},
+            "task": {"kind": "task", "source": {"document": HOLD_CAMPAIGN_TASK}},
+            "objective": {"kind": "objective", "source": {"document": HOLD_CAMPAIGN_OBJECTIVE}},
+        },
+    }}
+
+
+def _field(component: str, *path: str) -> ModelAddress:
+    return ModelAddress.model_validate({
+        "composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": component}, "path": list(path)},
+    })
+
+
+def mass_range_files(start: str, stop: str, count: str):
+    """Ordinary files whose Train sweeps the point mass's mass over a range."""
+    *documents, train = ordinary_files("2")
+    train["step"]["sweep"] = {"axes": {"mass": {
+        "path": model_field_path(_field("plant", "fields", "mass")),
+        "range": {"start": float(start), "stop": float(stop), "count": int(count)},
+    }}}
+    return [*documents, train]
+
+
+def task_link_files(scenario: str, variable: str, component: str, *path: str):
+    """Ordinary files whose Task links only ``variable`` to the field at ``path`` of ``component``."""
+    files = ordinary_files("2", scenario=scenario)
+    for file in files:
+        payload = file.get("document", {}).get("payload", {})
+        if "variables" in payload:
+            payload["links"] = {_field(component, *path).to_authored_text(): variable}
     return files
 
 
@@ -310,28 +410,28 @@ def run_saved_cli(home: str, folder_name: str, label: str) -> None:
     os.execv(sys.executable, [sys.executable, "-m", "feedbax.cli", "run", str(project), "train", "--label", label])
 
 
+ACTIONS = {
+    "managed-files": FileSeed(lambda: [*ordinary_files("2"), successor_file()]),
+    "ordinary-files": FileSeed(ordinary_files, cases=(("2",), ("2", "0.001", "0.01"))),
+    "delayed-reaches-files": FileSeed(lambda: ordinary_files("2", scenario="delayed-reaches")),
+    "hold-campaign-files": FileSeed(hold_campaign_files),
+    "hold-campaign-archive": NonSeed(hold_campaign_archive, "returns a model archive to Load, not authored content"),
+    "loaded-check-files": FileSeed(lambda: [loaded_check_file()]),
+    "mass-range-files": FileSeed(mass_range_files, cases=(("1.000123456789", "2.000987654321", "3"),)),
+    "task-link-files": FileSeed(task_link_files, cases=(
+        ("delayed-reaches", "start", "plant", "reset", "effector", "elsewhere"),
+        ("simple-reaches", "start", "nowhere", "state", "effector/position"),
+        ("simple-reaches", "ghost", "plant", "state", "effector/position"),
+    )),
+    "run-saved-cli": NonSeed(run_saved_cli, "executes the CLI to submit a saved Train"),
+    "seed-variants": HomeSeed(seed_variants),
+    "history-files": FileSeed(history_files),
+    "observe": NonSeed(lambda home, *args: observe(Path(home), *args), "reads saved Train attempts"),
+    "observe-history": NonSeed(lambda home, *args: observe_history(Path(home), *args), "reads Train attempt history"),
+    "observe-swept": NonSeed(lambda home, project, *args: observe_swept(Path(home), project, args),
+                             "reads swept Train attempts"),
+}
+
+
 if __name__ == "__main__":
-    action, *arguments = sys.argv[1:]
-    if action == "managed-files" and not arguments:
-        print(json.dumps([*ordinary_files("2"), successor_file()]))
-    elif action == "ordinary-files":
-        print(json.dumps(ordinary_files(*arguments)))
-    elif action == "delayed-reaches-files" and not arguments:
-        print(json.dumps(ordinary_files("2", scenario="delayed-reaches")))
-    elif action == "run-saved-cli":
-        run_saved_cli(*arguments)
-    elif action == "seed-variants":
-        print(json.dumps(seed_variants(*arguments)))
-    elif action == "history-files" and not arguments:
-        print(json.dumps(history_files()))
-    elif action == "observe":
-        home, project, revision, attempt, stopped_attempt, successor_attempt = arguments
-        print(json.dumps(observe(Path(home), project, revision, attempt, stopped_attempt, successor_attempt)))
-    elif action == "observe-history":
-        home, project, revision = arguments
-        print(json.dumps(observe_history(Path(home), project, revision)))
-    elif action == "observe-swept":
-        home, project, *successors = arguments
-        print(json.dumps(observe_swept(Path(home), project, successors)))
-    else:
-        raise ValueError(f"Unknown canonical Train fixture action {action!r}")
+    print_action(ACTIONS)

@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
+from feedbax.application.stored_regions import StoredRegionRegistries, compose_document
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patches
@@ -16,7 +17,9 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.project import (
     BasedDocument, Differences, Document, DocumentBase, DocumentEdit, DocumentReference, InlineBase, Payload, Project,
-    DifferenceNotApplied, RemoveDocumentValue, RemoveProjectValue, SetDocumentValue, SetProjectValue, StepBase,
+    DifferenceNotApplied, KeyedCollectionPath, OrderDocumentMembers, OrderProjectValue,
+    RemoveDocumentValue, RemoveProjectValue,
+    SetDocumentValue, SetProjectValue, StepBase,
     apply_differences,
     apply_document_edit, based_on, diff,
     document_edit_value, json_pointer_parts, member_name, same_json,
@@ -25,13 +28,18 @@ from feedbax.contracts.project_inputs import ObjectiveDocumentReference, SweepEx
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import (
-    ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
+    BaseReaders, ProjectDiagnostic, StepTemplate, compose_step, document_write_target,
 )
 from feedbax.contracts.project_sources import ValueSource, pointer
+from feedbax.contracts.project_storage import (
+    apply_document_differences, difference_parent_paths, document_difference_basis, stored_keyed_collection, stored_project_value,
+)
 from feedbax.contracts.project_sweep import (
     AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
+from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument, model_keyed_collection
+from feedbax.contracts.stored_regions import StoredRegionResolver
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.project_members import generated_name, numbered_document_label
 from feedbax.project_folder import _free_member_name, document_file
@@ -297,8 +305,8 @@ def preview_stored(project: Project, stored: StoredEdit) -> Project:
     return preview_authored_files(project, stored.files)
 
 
-def _composed(project: Project, name: str) -> Payload:
-    entry = compose_document(project.documents.get, name)
+def _composed(project: Project, name: str, *, regions: StoredRegionResolver | None = None) -> Payload:
+    entry = compose_document(project.documents.get, name, regions=regions)
     if isinstance(entry, ProjectDiagnostic):
         raise ProjectFolderInvalid(entry.detail)
     if not isinstance(entry.payload, dict):
@@ -306,7 +314,7 @@ def _composed(project: Project, name: str) -> Payload:
     return entry.payload
 
 
-def _edited(content: Payload, edits: Sequence[DocumentEdit], name: str) -> Payload:
+def _edited(content: Payload, edits: Sequence[DocumentEdit], name: str, keyed_collection: KeyedCollectionPath) -> Payload:
     """``content`` with ``edits``: a value set or removed at each path, whatever the document held there."""
     result = deepcopy(content)
     for edit in edits:
@@ -320,7 +328,7 @@ def _edited(content: Payload, edits: Sequence[DocumentEdit], name: str) -> Paylo
             if isinstance(edit, SetProjectValue):
                 edit = edit.model_copy(update={"op": "replace" if parts[-1] in parent else "add"})
         try:
-            apply_document_edit(result, edit, document_edit_value(edit))
+            apply_document_edit(result, edit, document_edit_value(edit), keyed_collection=keyed_collection)
         except ValueError as error:
             raise ProjectFolderInvalid(f"The edit does not apply to {name}: {error}") from error
     return result
@@ -352,7 +360,8 @@ class _DocumentStores:
 
 def _document_stores(
     project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: frozenset[str] | None, readers: DocumentUsers,
-    taken: set[str], adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
+    taken: set[str], adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None, *, fork_ordered: bool = False,
+    regions: StoredRegionResolver | None = None,
 ) -> _DocumentStores:
     """Where ``edits`` of ``shown`` are stored for the ``chosen`` steps, every step when None.
 
@@ -365,23 +374,30 @@ def _document_stores(
         name = member_name(documents, shown)
         raise ProjectFolderInvalid(f"A chosen step does not read {name} or a document based on it.")
     stores = _DocumentStores([], [], {}, {})
+    if regions is None:
+        regions = StoredRegionRegistries()
     before: dict[str, Payload] = {}
     after: dict[str, Payload] = {}
 
     def old(name: str) -> Payload:
         if name not in before:
-            before[name] = _composed(project, name)
+            before[name] = _composed(project, name, regions=regions)
         return before[name]
+
+    def changes(name: str, base: Payload, content: Payload) -> Differences:
+        return diff(base, content, keyed_collection=partial(stored_keyed_collection, documents[name].schema_id))
 
     def changed(name: str, content: Payload | None, seen: tuple[str, ...]) -> frozenset[str]:
         """The steps whose content changes when ``name`` composes to ``content``, its children keeping their
         differences; None is content their differences no longer apply to."""
         if name in seen:
             return frozenset()
-        steps = set(readers(name)) if content is None or not same_json(content, old(name)) else set()
+        steps = set(readers(name)) if content is None or changes(name, old(name), content) else set()
         for child in based_on(documents, name):
             try:
-                inherited = None if content is None else apply_differences(content, documents[child].differences)
+                inherited = None if content is None else apply_document_differences(
+                    documents[child].schema_id, content, documents[child].differences, registries=regions,
+                )
             except DifferenceNotApplied:
                 inherited = None
             steps |= changed(child, inherited, (*seen, name))
@@ -392,15 +408,19 @@ def _document_stores(
         inherits = isinstance(document, BasedDocument) and document.base.document in after
         if name in seen or chosen is not None and not inherits and not lit_steps(documents, readers, name) & chosen:
             return
-        content = _edited(old(name), edits if adapt is None else adapt(old(name)), member_name(documents, name))
-        if chosen is None or changed(name, content, ()) <= chosen:
-            if not same_json(content, old(name)):
+        keyed = partial(stored_keyed_collection, document.schema_id)
+        document_edits = edits if adapt is None else adapt(old(name))
+        content = _edited(old(name), document_edits, member_name(documents, name), keyed)
+        delta = changes(name, old(name), content)
+        order = fork_ordered and any(isinstance(edit, OrderDocumentMembers) for edit in delta.values())
+        if chosen is None or not order and changed(name, content, ()) <= chosen:
+            if delta:
                 after[name] = content
                 stores.written[name] = (old(name), content)
             base = None
             if isinstance(document, BasedDocument):
                 base = after.get(document.base.document) or old(document.base.document)
-            file = document_file(name, document, content, base)
+            file = document_file(name, document, content, base, regions=regions, edits=document_edits)
             if file is not None:
                 stores.files.append(file)
         elif direct := frozenset(readers(name)) & chosen:
@@ -410,7 +430,7 @@ def _document_stores(
             label = numbered_document_label(named, document.schema_id, member_name(documents, name))
             stores.created.append(CreateNamedDocument(kind="document", id=variant, document=BasedDocument(
                 schema=document.schema_id, label=label,
-                base=DocumentBase(document=name), differences=diff(old(name), content),
+                base=DocumentBase(document=name), differences=delta,
             )))
             for step in direct:
                 stores.pointing.setdefault(step, {})[name] = variant
@@ -488,12 +508,13 @@ class _Store:
             self.files.extend(stores.files)
         else:
             self.row.extend(
-                OverridePatch(path=".".join(("documents", name, "payload", *json_pointer_parts(path))), op="remove")
-                if isinstance(record, RemoveDocumentValue) else OverridePatch(
-                    path=".".join(("documents", name, "payload", *json_pointer_parts(path))),
-                    op="replace" if _holds(before, json_pointer_parts(path)) else "add", value=record.value,
+                OverridePatch(path=".".join(("documents", name, "payload", *json_pointer_parts(edit.path))), op="remove")
+                if isinstance(edit, RemoveProjectValue) else OverridePatch(
+                    path=".".join(("documents", name, "payload", *json_pointer_parts(edit.path))),
+                    op="replace" if _holds(before, json_pointer_parts(edit.path)) else "add", value=edit.value,
                 )
-                for name, (before, after) in stores.written.items() for path, record in diff(before, after).items()
+                for name, (before, after) in stores.written.items()
+                for edit in content_edits(before, after, dotted=True)
             )
         self.view = preview_stored(self.view, StoredEdit(
             stores.files if self.variant is None else [], tuple(stores.created),
@@ -696,19 +717,45 @@ def document_write(
     if variant is not None and view is None:
         raise ValueError("An edit in a variant reads the variant's project.")
     store = _Store(project, variant, view or project)
-    stores = _document_stores(store.view, shown, edits, chosen, readers, set(), adapt)
+    stores = _document_stores(
+        store.view, shown, edits, chosen, readers, set(), adapt, fork_ordered=variant is not None,
+    )
     store.documents(stores)
     store.point(stores.pointing, named)
     return store.stored(chosen)
 
 
-def content_edits(before: Payload, after: Payload) -> list[DocumentEdit]:
-    """The edits that turn a document's composed content ``before`` into ``after``."""
-    return [
-        RemoveProjectValue(op="remove", path=path) if isinstance(record, RemoveDocumentValue)
-        else SetProjectValue(op="replace", path=path, value=record.value)
-        for path, record in diff(before, after).items()
-    ]
+def content_edits(
+    before: Payload, after: Payload, *, schema_id: str | None = None, dotted: bool = False,
+) -> list[DocumentEdit]:
+    """Express composed differences as editor patches on the stored keys."""
+    differences = (
+        diff(before, after, keyed_collection=partial(stored_keyed_collection, schema_id))
+        if schema_id is not None else diff(before, after)
+    )
+    whole = set()
+    for path, difference in differences.items():
+        parts = json_pointer_parts(path)
+        if dotted and isinstance(difference, OrderDocumentMembers):
+            raise ProjectFolderInvalid("Reorder members in their document. A sweep patch cannot store their order.")
+        if dotted and (boundary := next((index for index, part in enumerate(parts) if "." in part), None)) is not None:
+            whole.add(parts[:boundary])
+    edits: list[DocumentEdit] = []
+    written = set()
+    for path, difference in differences.items():
+        parts = json_pointer_parts(path)
+        replacement = next((parts[:index] for index in range(len(parts) + 1) if parts[:index] in whole), None)
+        if replacement is not None:
+            if replacement not in written:
+                edits.append(SetProjectValue(op="replace", path=pointer(replacement), value=_member(after, replacement)))
+                written.add(replacement)
+        elif isinstance(difference, OrderDocumentMembers):
+            edits.append(OrderProjectValue(op="order", path=path, order=difference.order))
+        elif isinstance(difference, RemoveDocumentValue):
+            edits.append(RemoveProjectValue(op="remove", path=path))
+        else:
+            edits.append(SetProjectValue(op="replace", path=path, value=difference.value))
+    return edits
 
 
 def changed_from_base(project: Project, document: str | None) -> list[str]:
@@ -722,7 +769,17 @@ def changed_from_base(project: Project, document: str | None) -> list[str]:
     composed = [compose_document(project.documents.get, name) for name in (entry.base.document, document)]
     if any(isinstance(item, ProjectDiagnostic) for item in composed):
         return []
-    return sorted(set(_differing(composed[0].payload, composed[1].payload)) - {""})
+    old, new = composed[0].payload, composed[1].payload
+    if isinstance(old, dict):
+        old = document_difference_basis(
+            entry.schema_id, old, difference_parent_paths(entry.differences), registries=StoredRegionRegistries(),
+        )
+    paths = set(_differing(old, new))
+    if isinstance(old, dict) and isinstance(new, dict):
+        paths.update(path for path, difference in diff(
+            old, new, keyed_collection=partial(stored_keyed_collection, entry.schema_id),
+        ).items() if isinstance(difference, OrderDocumentMembers))
+    return sorted(paths - {""})
 
 
 def _differing(before, after, at: str = ""):
@@ -745,6 +802,9 @@ def base_value_edits(project: Project, document: str, paths: Sequence[str]) -> l
     if not isinstance(entry, BasedDocument):
         raise ProjectFolderInvalid(f"{member_name(project.documents, document)} is not based on another document.")
     base = _composed(project, entry.base.document)
+    base = document_difference_basis(
+        entry.schema_id, base, (json_pointer_parts(path)[:-1] for path in paths), registries=StoredRegionRegistries(),
+    )
     edits: list[DocumentEdit] = []
     for path in paths:
         value: Any = base
@@ -765,7 +825,7 @@ _ABSENT = object()
 
 def evaluation_document_write(
     project: Project, plan, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], slot: str,
-    variant: str | None = None,
+    variant: str | None = None, *, adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
 ) -> StoredEdit:
     """:func:`document_write` of ``shown`` for the ``chosen`` steps of ``variant``, among which an Evaluate step may
     read it through its subject at ``trial_documents.<slot>``.
@@ -792,7 +852,9 @@ def evaluation_document_write(
     def readers(name: str) -> frozenset[str]:
         return plan.document_users(variant_id, name) | (frozenset(named) if name == shown else frozenset())
 
-    return document_write(project, shown, edits, chosen, readers, variant, named, variant_view(plan, project, variant))
+    return document_write(
+        project, shown, edits, chosen, readers, variant, named, variant_view(plan, project, variant), adapt=adapt,
+    )
 
 
 def _holds(payload: Any, parts: Sequence[str]) -> bool:
@@ -812,14 +874,16 @@ def _in_form_of(before: Payload, after: Payload, reference: Payload | None = Non
     A member ``before`` lacks is spelled as the Model ``reference`` spells it, when it means the same there, so that
     restoring what a document differs from leaves no difference.
     """
-    from feedbax.contracts.model_document import ModelDocument
-
     def normalized(payload: Payload) -> Payload:
-        return ModelDocument.model_validate(payload).model_dump(mode="json")
+        return StoredModelDocument.model_validate(payload).model_dump(mode="json")
 
     result = deepcopy(before)
     lacked: list[tuple[str, ...]] = []
-    for path, record in diff(normalized(before), after).items():
+    orders: Differences = {}
+    for path, record in diff(normalized(before), after, keyed_collection=model_keyed_collection).items():
+        if isinstance(record, OrderDocumentMembers):
+            orders[path] = record
+            continue
         target, source = result, after
         parts = json_pointer_parts(path)
         for index, part in enumerate(parts):
@@ -832,13 +896,15 @@ def _in_form_of(before: Payload, after: Payload, reference: Payload | None = Non
                     target[part] = deepcopy(source[part])
                 break
             target, source = target[part], source[part]
+    if orders:
+        result = apply_differences(result, orders, keyed_collection=model_keyed_collection)
     if reference is None or not lacked:
         return result
     spelled = deepcopy(result)
     for parts in lacked:
         if (member := _member(reference, parts)) is not _ABSENT:
             _member(spelled, parts[:-1])[parts[-1]] = deepcopy(member)
-    return spelled if normalized(spelled) == normalized(result) else result
+    return result if diff(normalized(spelled), normalized(result), keyed_collection=model_keyed_collection) else spelled
 
 
 def _member(payload: Any, parts: Sequence[str]) -> Any:
@@ -849,13 +915,38 @@ def _member(payload: Any, parts: Sequence[str]) -> Any:
     return payload
 
 
+def model_content_edits(
+    before: Payload, after: Payload, base: Payload | None = None, *, components=None,
+) -> list[DocumentEdit]:
+    target = _in_form_of(before, after, base)
+    if base is not None:
+        restored = [
+            parts for path, change in diff(before, target).items()
+            if isinstance(change, SetDocumentValue)
+            and (parts := json_pointer_parts(path))[-4:-3] == ("components",)
+            and parts[-2:-1] == ("fields",)
+            and _member(base, parts) is _ABSENT
+        ]
+        if restored:
+            canonical = stored_project_value(
+                StoredModelDocument.model_validate(target), registries=StoredRegionRegistries(components=components),
+            )
+            for parts in restored:
+                if _member(canonical, parts) is _ABSENT:
+                    fields = _member(target, parts[:-1])
+                    del fields[parts[-1]]
+                    if not fields and _member(base, parts[:-1]) is _ABSENT:
+                        del _member(target, parts[:-2])["fields"]
+    return content_edits(before, target, schema_id=STORED_MODEL_DOCUMENT_SCHEMA_ID)
+
+
 def model_document_store(folders, project_id: str, project: Project, body, before: Payload, after: Payload) -> StoredEdit:
     """Store a Model edit of ``body.document`` by the document rule, after the request's step files."""
     head = StoredEdit(list(body.files), reached=frozenset(file.address.id for file in body.files))
     project = preview_authored_files(project, body.files)
     entry = project.documents[body.document]
     base = _composed(project, entry.base.document) if isinstance(entry, BasedDocument) else None
-    edits = content_edits(before, _in_form_of(before, after, base))
+    edits = model_content_edits(before, after, base, components=folders.components)
     if body.step is None:
         return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set()).files)
     plan = folders.read_plan(project_id, revision=body.revision).plan
@@ -875,17 +966,17 @@ def _document_edit(patch: OverridePatch, document_path: str, payload) -> Documen
     return SetProjectValue(op="replace" if exists else "add", path=pointer(parts), value=patch.value)
 
 
-def authored_payload(project: Project, step_id: str):
+def authored_payload(project: Project, step_id: str, *, regions: StoredRegionResolver | None = None):
     authored = project.steps[step_id]
     if isinstance(authored.base, InlineBase):
         return authored.base.inline
-    template = compose_step(project, step_id)
+    template = compose_step(project, step_id, readers=BaseReaders(stored_regions=regions))
     return template.authored_payload() if isinstance(template, StepTemplate) else None
 
 
 def scoped_file(
     project, step_id, scope: RunScope, writes, *, chosen: Collection[str] = (), users: DocumentUsers | None = None,
-    view: Project | None = None,
+    view: Project | None = None, regions: StoredRegionResolver | None = None,
 ) -> StoredEdit:
     """What stores ``writes``, paths in the step's definition, for the runs ``scope`` selects.
 
@@ -903,7 +994,7 @@ def scoped_file(
     if variant is not None and view is None:
         raise ValueError("An edit in a variant reads the variant's project.")
     store = _Store(project, variant, view or project)
-    payload = authored_payload(store.view, step_id)
+    payload = authored_payload(store.view, step_id, regions=regions)
     through: dict[str, list[tuple[OverridePatch, str]]] = {}
     direct = []
     for patch in writes:
@@ -925,9 +1016,9 @@ def scoped_file(
         taken: set[str] = set()
         pointing: dict[str, dict[str, str]] = {}
         for document, patches in through.items():
-            shown = _composed(store.view, document)
+            shown = _composed(store.view, document, regions=regions)
             edits = [_document_edit(patch, path, shown) for patch, path in patches]
-            found = _document_stores(store.view, document, edits, chosen, users, taken)
+            found = _document_stores(store.view, document, edits, chosen, users, taken, regions=regions)
             store.documents(found)
             for step, mapping in found.pointing.items():
                 pointing.setdefault(step, {}).update(mapping)
@@ -1001,7 +1092,10 @@ def train_selection(
 
         settled = folders.read_plan(project_id, revision=revision)
         view = variant_view(settled.plan, project, scope.variant if variant else None)
-        stored = scoped_file(project, step_id, scope, writes, chosen=tuple(chosen_steps), users=users, view=view)
+        stored = scoped_file(
+            project, step_id, scope, writes, chosen=tuple(chosen_steps), users=users, view=view,
+            regions=settled.readers.stored_regions,
+        )
         if not defer_scope and (stored.files or stored.created):
             candidate = compile_project(
                 preview_stored(project, stored), readers=settled.readers,
@@ -1040,12 +1134,19 @@ def train_selection(
         )) if isinstance(scope, AxisValueRuns)
         else AxisCondition(rule=scope.rule) if isinstance(scope, SweepValuesRuns) else None
     )
+    additions = frozenset()
+    if isinstance(scope, AxisValueRuns) and (sweep := project.steps[step_id].sweep) is not None:
+        axis = sweep.axes.get(scope.axis)
+        if isinstance(axis, NamedAxis) and (entry := axis.values.get(scope.value)) is not None:
+            additions = frozenset(path for path, write in entry.patches.items()
+                                  if isinstance(write, SetValue) and write.op == "add")
     return TrainSelection(
         payloads, next((row for row in plan.rows if row.key == key), None),
         named.payload if isinstance(scope, SweepValuesRuns | AxisValueRuns | ListedRuns)
         and named is not None else None, scoped,
         partial(checked, scope, _scoped_runs(project, plan, key, scope, chosen)), values,
         tuple(row.coordinates for row in plan.rows if row.key in shown and row.key.step == step_id),
+        authored_additions=additions,
     )
 
 
@@ -1195,16 +1296,23 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
     On one value of a named axis the value holds its differences from the document: on its patches when the axis is
     inline, on the set's entry when it reads a set, which is then an edit of the set for the chosen steps. Any other
     selection holds the change on the sweep's exception for it.
+
+    A named value can restore inherited order by dropping a removal, even when the row-relative edit needs Order.
     """
     step = body.step
     document = body.document
-    delta = diff(row.content, _in_form_of(row.content, after, _composed(project, document)))
+    delta = diff(
+        row.content, _in_form_of(row.content, after, _composed(project, document)),
+        keyed_collection=model_keyed_collection,
+    )
     address = AuthoredFileAddress(kind="step", id=step)
     authored = project.steps[step]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
     stored = StoredEdit([], reached=frozenset({step}))
     named = selected_value(project, step, row.scope)
     if named is None:
+        if any(isinstance(record, OrderDocumentMembers) for record in delta.values()):
+            raise ProjectFolderInvalid("Reorder members in the Model document. A run-scoped patch cannot store their order.")
         writes = [
             OverridePatch(path=_payload_target(document, path), op="remove") if isinstance(record, RemoveDocumentValue)
             else OverridePatch(
@@ -1217,11 +1325,24 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
             stored = stored.then([_selection_file(address, raw, authored, row.scope, writes)])
     else:
         base = _composed(project, document)
+        previous = _value_differences(project, step, named, document)
         try:
-            edited = apply_differences(value_model(project, step, named, document), delta)
+            edited = apply_differences(
+                apply_differences(base, previous), delta, keyed_collection=model_keyed_collection,
+            )
+            restored = {
+                path for path, record in delta.items()
+                if isinstance(record, SetDocumentValue) and isinstance(previous.get(path), RemoveDocumentValue)
+            }
+            remaining = {path: record for path, record in previous.items() if path not in restored}
+            if restored and not diff(apply_differences(base, remaining), edited, keyed_collection=model_keyed_collection):
+                differences = remaining
+            else:
+                differences = diff(base, edited, keyed_collection=model_keyed_collection)
         except DifferenceNotApplied as error:
             raise ProjectFolderInvalid(f"The edit does not apply to the selected value: {error}") from error
-        differences = diff(base, edited)
+        if any(isinstance(record, OrderDocumentMembers) for record in differences.values()):
+            raise ProjectFolderInvalid("Reorder members in the Model document. A sweep value cannot store their order.")
         if named.set is None:
             value = raw["sweep"]["axes"][named.axis]["values"][named.value]
             prefix = f"documents.{document}.payload."

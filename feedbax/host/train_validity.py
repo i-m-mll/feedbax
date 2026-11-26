@@ -33,6 +33,7 @@ from feedbax.validity.computation import (
 
 if TYPE_CHECKING:
     from feedbax.contracts.code_validity import ComputationUnavailable
+    from feedbax.contracts.effective_success import Bindings
     from feedbax.contracts.receipt_validity import CheckOutcome, ValidityCheckDelivery, ValidityCheckEvidence
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.application.bundle import ApplicationRegistryBundle
@@ -212,7 +213,7 @@ def checkpoint_evidence(store: ImmutableArtifactBlobProvider, tree: ContentTreeR
 
 def _reprepare(
     store: ImmutableArtifactBlobProvider, replay: TrainReplay, registries: ApplicationRegistryBundle,
-    views: ExitStack, *, owner: str,
+    views: ExitStack, *, owner: str, inputs: Bindings,
 ) -> _PreparedTrain:
     from feedbax.contracts.effective_success import read_success_request
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
@@ -226,14 +227,21 @@ def _reprepare(
 
     request = replay.request
     documents = {ref.sha256: ref for ref in request.documents}
-    spec, checkpoint, imported_model = _decode_train(
+    spec, checkpoint, imported_model, model = _decode_train(
         request.id, store.get_object(request.object), lambda digest: store.get_object(documents[digest]),
     )
+    model_receipt = None
+    if model is not None:
+        (source,) = inputs["checkpoint"]
+        if source.selection is None:
+            raise ValueError("Train receipt does not pin its synthesized starting model.")
+        model_receipt = source.selection.receipt
     spec, _, _ = normalize_train_method(spec, registries.training_methods)
     launch = BoundStudioTrainingJobInput(
         spec=spec, project_id="validity-check", request_id=request.id, manifest_root=store.root,
         canonical_request=CanonicalTrainRequestBinding(
             request=request.object, documents=request.documents, checkpoint=checkpoint, imported_model=imported_model,
+            model=model, model_receipt=model_receipt,
         ), checkpoint_catalog=replay.checkpoint_catalog,
     )
     binding = resolve_training_request_binding(launch, registries=registries)
@@ -364,7 +372,7 @@ def recheck_train(delivery: ValidityCheckDelivery, registries: ApplicationRegist
                 if replay.request != receipt.request or start.binding_inputs != replay.contents:
                     raise ValueError("Train recheck recipe differs from its retained request and input closure")
                 with ExitStack() as views:
-                    prepared = _reprepare(store, replay, registries, views, owner=owner)
+                    prepared = _reprepare(store, replay, registries, views, owner=owner, inputs=receipt.inputs)
                     arguments = capture_train_start(prepared.loop, prepared.state, next(prepared.schedule.blocks()))
                     present = previous.model_copy(update={
                         "driver": TRAIN_DRIVER, "starts": (start.model_copy(update={"arguments": arguments}),),

@@ -1,10 +1,26 @@
 import type {
-  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView, StudioPlanReviewSource,
+  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldFunction, StudioFieldSite, StudioFieldView,
+  StudioPlanReviewSource,
 } from '@/generated/studioContracts';
 import {
-  studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason, type EvaluateOrigin, type SourceNames,
+  studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason, type EvaluateOrigin,
 } from '@/components/activity/studioVocabulary';
 import { evaluateChange, valueKind, withReset, type ChangeMark, type FieldModel, type FieldRefusal } from '../fieldModel';
+
+/** The sites and function lists a field view response states once, which its fields name by key. */
+export interface FieldSites {
+  readonly sites?: Readonly<Record<string, StudioFieldSite>>;
+  readonly function_lists?: Readonly<Record<string, readonly StudioFieldFunction[]>>;
+}
+
+/** A field's site with its function list, from the response that emitted the field. */
+export function fieldSite(tables: FieldSites, key: string) {
+  const site = tables.sites?.[key];
+  if (!site) throw new Error(`The response emitted a field whose site ${key} it does not hold`);
+  const functions = tables.function_lists?.[site.functions];
+  if (!functions) throw new Error(`The response holds site ${key} but not its function list ${site.functions}`);
+  return { ...site, functions };
+}
 
 export type ProjectedEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit;
 
@@ -18,7 +34,6 @@ export type ExceptionMentions = (source: StudioPlanReviewSource) => ExceptionMen
 
 /** How a field names where the plan says its value comes from. */
 export interface SourceNaming {
-  readonly names: SourceNames;
   readonly exceptions?: ExceptionMentions;
 }
 
@@ -42,28 +57,29 @@ export interface FieldViewOptions {
 
 function origin({ planSources, source, changed }: FieldViewOptions) {
   if (!planSources?.sources.length) return { text: source?.kind === 'trained' && !changed ? studioEvaluateValueSource(source) : undefined };
-  const { sources, names, exceptions } = planSources;
+  const { sources, exceptions } = planSources;
   const mentions = sources.map((item) => item.kind === 'exception' ? exceptions?.(item) : undefined);
   const named = new Map(sources.flatMap((item, index) => {
     const mention = mentions[index];
     return mention ? [[JSON.stringify([item.step, item.variant, item.key]), mention] as const] : [];
   }));
   return {
-    text: [...new Set(sources.map((item, index) => studioPlanValueSource(item, names, mentions[index]?.runs)))].join(', '),
+    text: [...new Set(sources.map((item, index) => studioPlanValueSource(item, mentions[index]?.runs)))].join(', '),
     reveal: named.size === 1 ? [...named.values()][0].reveal : undefined,
   };
 }
 
 /** A field the server projects (`StudioFieldView`): the server parses its text and reports refusals. */
-export function fromFieldView(field: StudioFieldView, options: FieldViewOptions): FieldModel {
+export function fromFieldView(field: StudioFieldView, tables: FieldSites, options: FieldViewOptions): FieldModel {
   const { label, sweep, unit } = field;
+  const site = fieldSite(tables, field.site);
   const { rowSelection = false, multipleRows = false } = options;
   const project = options.commit;
   const commit = withReset(project && ((edit) => edit.kind === 'add_member' || edit.kind === 'remove_member' || edit.kind === 'reset'
     ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit)), options.changed);
   const readOnly = !commit;
   const rule = readOnly || !field.can_change_axis ? undefined : commit;
-  const kind = sweep ? 'sweep' : field.structure ? valueKind(field.structure.value, field.site.functions) : options.kind ?? 'value';
+  const kind = sweep ? 'sweep' : field.structure ? valueKind(field.structure.value, site.functions) : options.kind ?? 'value';
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
   /** A member as written: a number in the field's unit, or its own text. */
@@ -89,7 +105,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     part('stop', 'last', String(range.stop), (text) => updateRange('stop', text)),
     part('count', 'count', String(range.count), (text) => updateRange('count', text), true),
     {
-      ...base, id: 'scale', label: studioName('spacing'), text: null, value: range.scale ?? 'linear', kind: 'value',
+      ...base, id: 'scale', label: studioName('spacing'), text: null, value: range.scale, kind: 'value',
       type: { kind: 'choice', options: [
         { value: 'linear', label: studioName('linear') }, { value: 'log', label: studioName('logarithmic') },
       ] },
@@ -115,11 +131,11 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   return {
     id: options.id,
     label,
-    type: { kind: field.site.site.expected.base === 'integer' ? 'integer' : 'number' },
+    type: { kind: site.expected.base === 'integer' ? 'integer' : 'number' },
     unit: unit ?? undefined,
     text,
     kind,
-    kinds: field.site.kinds.map((value) => ({
+    kinds: site.kinds.map((value) => ({
       kind: value,
       // The server says whether the selected rows take a sweep of their own (`can_sweep`) or can end theirs.
       enabled: !(readOnly || rowSelection && value !== kind && value !== 'sweep' && value !== 'value' ||
@@ -138,11 +154,12 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     change,
     revealOrigin: source.reveal,
     structure: field.structure ?? undefined,
-    finest: field.site.site.finest,
-    names: field.site.site.names ?? [],
-    functions: field.site.functions,
-    menus: { kind: 'listed', parts: field.site.parts },
-    namePaths: field.site.name_paths,
+    finest: site.finest,
+    drawPer: site.draw_per,
+    names: site.names ?? [],
+    functions: site.functions,
+    menus: { kind: 'listed', parts: site.parts },
+    namePaths: site.name_paths,
     commit,
   };
 }

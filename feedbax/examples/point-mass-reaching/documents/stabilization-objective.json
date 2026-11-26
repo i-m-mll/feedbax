@@ -1,96 +1,21 @@
 {
-  "schema": "feedbax.spec.objective_document",
+  "schema": "feedbax.spec.objective_document.v2",
   "label": "Stabilization",
   "payload": {
     "id": "stabilization",
-    "terms": [
-      {
-        "id": "effector_position",
-        "measure": {
-          "kind": "call",
-          "function": "sqnorm",
-          "args": [
-            {
-              "kind": "call",
-              "function": "sub",
-              "args": [
-                {
-                  "kind": "name",
-                  "reference": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"end\":{\"owner\":\"outputs\",\"port\":\"effector\"},\"kind\":\"port\"},\"path\":[\"pos\"]}}"
-                },
-                {
-                  "kind": "name",
-                  "reference": "goal"
-                }
-              ]
-            }
-          ]
-        },
-        "measure_type": {
-          "base": "real",
-          "dimensions": {
-            "length": 2
-          }
-        },
+    "terms": {
+      "effector_position": {
+        "measure": "sqnorm(outputs.effector.pos - goal)",
+        "measure_type": {"base": "real", "dimensions": {"length": 2}},
         "reduction": "sum"
       },
-      {
-        "id": "effector_final_velocity",
-        "measure": {
-          "kind": "call",
-          "function": "sqnorm",
-          "args": [
-            {
-              "kind": "name",
-              "reference": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"end\":{\"owner\":\"outputs\",\"port\":\"effector\"},\"kind\":\"port\"},\"path\":[\"vel\"]}}"
-            }
-          ]
-        },
-        "measure_type": {
-          "base": "real",
-          "dimensions": {
-            "length": 2,
-            "time": -2
-          }
-        },
+      "effector_final_velocity": {
+        "measure": "sqnorm(outputs.effector.vel)",
+        "measure_type": {"base": "real", "dimensions": {"length": 2, "time": -2}},
         "reduction": "last"
       },
-      {
-        "id": "nn_output",
-        "measure": {
-          "kind": "call",
-          "function": "sqnorm",
-          "args": [
-            {
-              "kind": "name",
-              "reference": "{\"composites\":[],\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"command\"},\"kind\":\"port\"}}"
-            }
-          ]
-        },
-        "weight": {
-          "kind": "literal",
-          "value": 1e-05
-        },
-        "reduction": "sum"
-      },
-      {
-        "id": "nn_hidden",
-        "measure": {
-          "kind": "call",
-          "function": "sqnorm",
-          "args": [
-            {
-              "kind": "name",
-              "reference": "{\"composites\":[],\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"activity\"},\"kind\":\"port\"}}"
-            }
-          ]
-        },
-        "weight": {
-          "kind": "literal",
-          "value": 1e-05
-        },
-        "reduction": "sum"
-      }
-    ]
+      "nn_output": {"measure": "sqnorm(outputs.command)", "weight": 0.00001, "reduction": "sum"},
+      "nn_hidden": {"measure": "sqnorm(outputs.activity)", "weight": 0.00001, "reduction": "sum"}
+    }
   }
 }

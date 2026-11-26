@@ -63,6 +63,7 @@ def test_managed_light_request_identity_corpus_round_trips():
         spec_type = REQUEST_KINDS[row["kind"]].spec_type
         spec = spec_type.model_validate_json(json.dumps(row["spec"]))
         request = encode_request(spec, row["inputs"])
+        assert json.loads(request.data)["schema"] == "feedbax.request.v2"
         stored = decode_request(request.data, request.documents.__getitem__)
         assert stored.id == request.id == row["id"], row["source"]
         assert encode_request(stored.spec, stored.inputs) == request
@@ -309,9 +310,10 @@ def test_managed_training_preserves_seed_and_factored_settings():
     assert another.id != request.id
 
 
-def test_retired_train_envelope_is_refused():
+@pytest.mark.parametrize("kind", ["train", "evaluate"])
+def test_retired_generic_envelope_is_refused(kind):
     data = canonical_json_v2_bytes(
-        {"schema": "feedbax.request.v1", "kind": "train", "spec": {}, "inputs": {}}
+        {"schema": "feedbax.request.v1", "kind": kind, "spec": {}, "inputs": {}}
     )
     with pytest.raises(ValueError, match="Unsupported stored request envelope"):
         decode_request(data, {}.__getitem__)

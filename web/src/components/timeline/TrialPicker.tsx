@@ -19,8 +19,8 @@ export interface TrialPickerProps {
   readonly offer: TrialOffer;
   readonly clock: TrialClock;
   readonly shown: TrialPick;
-  /** A recorded trial's condition, by its index, drawn after its entry. */
-  readonly recordedLabels?: readonly ShownText[];
+  /** A recorded trial's name, by its index, drawn after its entry; none for a trial the current rules no longer name. */
+  readonly recordedNames?: readonly (string | null)[];
   /** Whether the recorded trials are a result an edit put out of date, which their entries and the shown text mark. */
   readonly recordedOutOfDate?: boolean;
   /** Mean's By options, once the Service has answered a Mean. */
@@ -75,7 +75,7 @@ const byLabels = (options: MeanChoices | undefined, by: readonly string[] | null
  * start unless chosen). The seed and the
  * count the samples are drawn with are at its foot while samples are offered.
  */
-export function TrialPicker({ offer, clock, shown, recordedLabels, recordedOutOfDate, meanOptions, onChange }: TrialPickerProps) {
+export function TrialPicker({ offer, clock, shown, recordedNames, recordedOutOfDate, meanOptions, onChange }: TrialPickerProps) {
   const [open, setOpen] = useState(false);
   const count = sampleCount(clock, offer);
   const text = (pick: TrialPick) => pickText(pick, clock, offer);
@@ -105,7 +105,7 @@ export function TrialPicker({ offer, clock, shown, recordedLabels, recordedOutOf
       return <Entry key={text(one)} role="radio" checked={samePick(one, shown)} onClick={() => { pick(one); setOpen(false); }}>
         <span className={clsx(primaryText, 'flex-none')}>{text(one)}</span>
         {recordedOutOfDate && one.trials === 'recorded' && <StatusMark status="stale" label={studioRunStatus('stale')} />}
-        {one.trials === 'recorded' && recordedLabels?.[at] && <span className={secondaryText}><Shown text={recordedLabels[at]} /></span>}
+        {one.trials === 'recorded' && recordedNames?.[at] && <span className={secondaryText}>{recordedNames[at]}</span>}
       </Entry>;
     })}
   </div>))

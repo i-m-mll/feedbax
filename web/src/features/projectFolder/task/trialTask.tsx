@@ -3,20 +3,23 @@ import { studioAccessibleName, studioFormat, studioName, studioValueType } from 
 import { reasonOf, type FieldModel } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
 import {
-  ModelAddressSchema, type Link, type StudioNamedValueType, type SetVariableOrigin, type StudioTrialReset, type TaskDocument, type ValueType, type Variable,
+  type StudioNamedValueType, type SetVariableOrigin, type StoredTaskDocument, type StoredVariable, type StudioTrialReset,
+  type ValueType,
 } from '@/generated/studioContracts';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { authoredPointer } from '../authoredEdits';
+import { freshKey, hasMember } from '../memberKeys';
 import { addressKey } from '../model/modelGraph';
 import {
-  changedAt, expressionKind, initializesAnchor, startAnchor, trialField, variableAnchor, type Commit, type TrialRuns, type TrialView,
+  changedAt, initializesAnchor, startAnchor, trialField, variableAnchor, type Commit, type TrialRuns, type TrialView,
 } from '../StudioTrialAuthoring';
+import { taskVariableName } from './setEntries';
 import { VariableInspector } from './TaskInspector';
 import { TrialTaskGrid } from './trialGrid';
 import { TaskVariables, type VariableEdits } from './TaskVariables';
 import { TaskDocumentBody } from './TaskView';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
-import type { WeightPart } from '@/generated/studioContracts';
+import type { StudioSetEntryParts, WeightPart } from '@/generated/studioContracts';
 import type { EntryTask, ModelStart, SetEntryWeight, TaskSelection, TaskSetVariable, TaskVariable, UnstartedValue, VariableInitializes } from './taskModel';
 
 const sameType = (a: ValueType, b: ValueType) => studioValueType(a) === studioValueType(b);
@@ -38,11 +41,13 @@ const fits = (field: ValueType, variable: ValueType) => {
 const typeName = (type: ValueType, types: readonly StudioNamedValueType[]) =>
   types.find((named) => sameType(named.type, type))?.name ?? studioValueType(type);
 
-/** The Set entry that adds a variable, with the variable's id there. */
+/** The Set entry that adds a variable, with the variable's key there. */
 interface Owner {
   readonly entry: EntryTask;
   readonly variable: string;
 }
+
+const variableName = (view: TrialView, key: string, variable: StoredVariable) => taskVariableName(view, key, variable).name;
 
 /** Each variable a Set entry adds, by its id in the trials, with its entry as the read names it. */
 function owners(view: TrialView, entryOf?: (origin: SetVariableOrigin) => EntryTask | undefined): ReadonlyMap<string, Owner> {
@@ -52,122 +57,119 @@ function owners(view: TrialView, entryOf?: (origin: SetVariableOrigin) => EntryT
   }));
 }
 
-/** The entry's variables with `id` replaced by `update`'s result, or left out where that is none. */
-const updated = (entry: EntryTask, id: string, update: (variable: Variable) => Variable | undefined): Variable[] =>
-  entry.variables.flatMap((variable) => {
-    if (variable.id !== id) return [variable];
+/** The entry's variables with `key`'s replaced by `update`'s result, or left out where that is none. */
+const updated = (entry: EntryTask, key: string, update: (variable: StoredVariable) => StoredVariable | undefined) =>
+  Object.fromEntries(Object.entries(entry.variables).flatMap(([own, variable]) => {
+    if (own !== key) return [[own, variable]];
     const next = update(variable);
-    return next ? [next] : [];
-  });
+    return next ? [[own, next]] : [];
+  }));
 
 function startOf(reset: StudioTrialReset): ModelStart {
   const components = (reset.address.composites?.length ?? 0) + 1;
   const name = [...reset.path.slice(0, components), reset.path.slice(components).join(' ')].join(' · ');
-  return { id: addressKey(reset.address), name, path: reset.path };
+  return { id: reset.address_text, name, path: reset.path };
 }
 
-/** A linked Model field the paired Model does not have: its component's id and its path. */
-function missingStart(id: string): ModelStart {
-  const { element } = ModelAddressSchema.parse(JSON.parse(id));
-  if (element.kind !== 'field' || element.parent.kind !== 'component') return { id, name: id, path: [id] };
-  const [kind, ...members] = element.path;
-  const segments = kind === 'state' ? String(members[0]).split('/') : members.map(String);
-  return { id, name: `${element.parent.id} · ${segments.join(' ')}`, path: [element.parent.id, ...segments] };
+/** A linked Model field the paired Model does not have, by the path the Service names it with. */
+function missingStart(view: TrialView, id: string): ModelStart {
+  const path = view.unresolved_links.find(({ key }) => key === id)?.path;
+  if (!path) throw new Error(`The Task view links ${id}, which it neither resolves nor names as unresolved`);
+  const [component, ...segments] = path;
+  return { id, name: [component, segments.join(' ')].filter(Boolean).join(' · '), path };
 }
 
-/** The Model values `variable` initializes, the choice of those its type fits, and its links' problem and change. */
-function initializes(view: TrialView, task: TaskDocument, variable: TaskDocument['variables'][number],
+/** The Model values the variable `key` initializes, the choice of those its type fits, and its links' problem and change. */
+function initializes(view: TrialView, task: StoredTaskDocument, key: string, variable: StoredVariable,
   commit?: Commit, owner?: Owner): VariableInitializes {
-  const links = task.links ?? [];
-  const starts = new Map(view.resets.map((reset) => [addressKey(reset.address), reset]));
-  const own = links.flatMap((link, index) => link.variable === variable.id ? [index] : []);
-  const fields = new Set(own.map((index) => links[index].model_field));
+  const starts = new Map(view.resets.map((reset) => [reset.address_text, reset]));
+  const fields = new Set(Object.entries(task.links ?? {}).flatMap(([field, linked]) => linked === key ? [field] : []));
   const reason = view.problems.find(({ path = [] }) => path[0] === 'links' && fields.has(String(path[1])))?.reason;
   const from = view.changedFrom.task;
-  const differs = from && view.task_changed?.some((path) =>
-    own.some((index) => path === `/links/${index}` || path.startsWith(`/links/${index}/`)));
+  const pointers = [...fields].map((field) => authoredPointer(['links', field]));
+  const differs = from && view.task_changed?.some((path) => path === '/links' || pointers.includes(path));
   return {
-    anchor: initializesAnchor(variable.id),
-    chosen: [...fields].map((field) => { const reset = starts.get(field); return reset ? startOf(reset) : missingStart(field); }),
+    anchor: initializesAnchor(key),
+    chosen: [...fields].map((field) => { const reset = starts.get(field); return reset ? startOf(reset) : missingStart(view, field); }),
     options: view.resets.filter((reset) => fits(reset.type, variable.type)).map(startOf),
     reason,
     changed: differs ? {
       from, reset: commit && (() => commit(studioName('reset'), { kind: 'reset', document: 'task', paths: ['/links'] })),
     } : undefined,
     toggle: owner ? owner.entry.write && ((field) => owner.entry.write!(studioAccessibleName('set', studioName('initializes')), {
-      task_links: [
-        ...owner.entry.links.filter(({ model_field }) => model_field !== field),
-        ...fields.has(field) ? [] : [{ model_field: field, variable: owner.variable } satisfies Link],
-      ],
+      task_links: Object.fromEntries([
+        ...Object.entries(owner.entry.links).filter(([linked]) => linked !== field),
+        ...fields.has(field) ? [] : [[field, owner.variable]],
+      ]),
     })) : commit && (async (field) => reasonOf(await commit(studioAccessibleName('set', studioName('initializes')), {
-      kind: 'structure', changes: [{ op: 'link', model_field: field, variable: fields.has(field) ? null : variable.id }],
+      kind: 'structure', changes: [{ op: 'link', address_text: field, variable: fields.has(field) ? null : key }],
     }))),
   };
 }
 
 /** The paired Model's values no variable of `task` initializes that the Task has a problem with. */
-function unstarted(view: TrialView, task: TaskDocument, types: readonly StudioNamedValueType[], commit?: Commit): UnstartedValue[] {
-  const variables = new Set(task.variables.map(({ id }) => id));
-  const linked = new Set((task.links ?? []).flatMap(({ model_field, variable }) => variables.has(variable) ? [model_field] : []));
+function unstarted(view: TrialView, task: StoredTaskDocument, types: readonly StudioNamedValueType[], commit?: Commit): UnstartedValue[] {
+  const linked = new Set(Object.entries(task.links ?? {}).flatMap(([field, variable]) => hasMember(task.variables, variable) ? [field] : []));
   return view.resets.flatMap((reset) => {
-    const id = addressKey(reset.address);
+    const id = reset.address_text;
     const reason = view.problems.find(({ path = [] }) => path[0] === 'links' && path[1] === id)?.reason;
     if (linked.has(id) || !reason) return [];
     return [{
-      ...startOf(reset), anchor: startAnchor(id), reason, type: typeName(reset.type, types), valueType: reset.type,
-      variables: task.variables.filter((variable) => fits(reset.type, variable.type)).map(({ id, name }) => ({ id, name })),
+      ...startOf(reset), anchor: startAnchor(addressKey(reset.address)), reason, type: typeName(reset.type, types), valueType: reset.type,
+      variables: Object.entries(task.variables).flatMap(([key, variable]) =>
+        fits(reset.type, variable.type) ? [{ id: key, name: variableName(view, key, variable) }] : []),
       initialize: commit && (async (variable: string) => reasonOf(await commit(studioAccessibleName('set', studioName('initializes')), {
-        kind: 'structure', changes: [{ op: 'link', model_field: id, variable }],
+        kind: 'structure', changes: [{ op: 'link', address_text: id, variable }],
       }))),
     }];
   });
 }
 
 /** The variables of the task document the step reads, each with its Type and Value fields. */
-function variables(view: TrialView, task: TaskDocument, types: readonly StudioNamedValueType[], commit?: Commit,
+function variables(view: TrialView, task: StoredTaskDocument, types: readonly StudioNamedValueType[], commit?: Commit,
   runs?: TrialRuns, owned: ReadonlyMap<string, Owner> = new Map()): TaskVariable[] {
   const levels = new Map(view.variables.map(({ id, level }) => [id, level]));
-  return task.variables.map((variable, index): TaskVariable => {
-    const owner = owned.get(variable.id);
+  return Object.entries(task.variables).map(([key, variable]): TaskVariable => {
+    const owner = owned.get(key);
+    const stored = (field: string) => authoredPointer(['variables', key, field]);
     const named = types.find(({ type }) => sameType(type, variable.type));
     const name = typeName(variable.type, types);
     const options = [...named ? [] : [{ value: name, label: name }], ...types.map(({ name }) => ({ value: name, label: name }))];
     const typeChoice = rawField({
-      id: `type:${variable.id}`, label: studioName('type'), value: name, type: { kind: 'choice', options },
-      changed: changedAt(view, 'task', `/variables/${index}/type`, commit),
+      id: `type:${key}`, label: studioName('type'), value: name, type: { kind: 'choice', options },
+      changed: changedAt(view, 'task', stored('type'), commit),
       change: (owner ? owner.entry.write : commit) && (async (chosen) => {
         const type = types.find((item) => item.name === chosen)?.type;
         if (!type) return undefined;
         if (owner) return owner.entry.write!(studioAccessibleName('set', studioName('type')),
           { task_variables: updated(owner.entry, owner.variable, (own) => ({ ...own, type })) });
         return reasonOf(await commit!(studioAccessibleName('set', studioName('type')),
-          { kind: 'structure', changes: [{ op: 'set_type', member: 'variable', id: variable.id, type }] }));
+          { kind: 'structure', changes: [{ op: 'set_type', member: 'variable', id: key, type }] }));
       }),
     });
-    const path = authoredPointer(['task', 'variables', variable.id, 'value']);
+    const path = authoredPointer(['task', 'variables', key, 'value']);
     const projection = view.fields.find((field) => field.path === path);
     const sweep = projection?.sweep?.id;
     const value: FieldModel = projection ? {
       ...trialField(view, projection, studioName('value'), runs, {
-        id: `value:${variable.id}`, kind: expressionKind(variable.value),
-        changed: changedAt(view, 'task', `/variables/${index}/value`, commit), source: view.origin(view.task_source),
-        commit: commit && ((edit) => commit(studioAccessibleName('set', variable.name), { kind: 'expression', path, edit })),
+        id: `value:${key}`,
+        changed: changedAt(view, 'task', stored('value'), commit), source: view.origin(view.task_source),
+        commit: commit && ((edit) => commit(studioAccessibleName('set', variableName(view, key, variable)), { kind: 'expression', path, edit })),
         selectedMembers: sweep ? runs?.values(sweep) : undefined,
         chooseMember: sweep && runs?.choose ? (member, extend) => runs.choose!(sweep, member, extend) : undefined,
       }),
-      anchor: variableAnchor(variable.id),
-    } : rawField({ id: `value:${variable.id}`, label: studioName('value'), value: '', type: { kind: 'readOnly' } });
-    const countPath = authoredPointer(['task', 'variables', variable.id, 'count']);
+      anchor: variableAnchor(key),
+    } : rawField({ id: `value:${key}`, label: studioName('value'), value: '', type: { kind: 'readOnly' } });
+    const countPath = authoredPointer(['task', 'variables', key, 'count']);
     const countProjection = variable.count ? view.fields.find((field) => field.path === countPath) : undefined;
     const count = variable.count ? countProjection ? trialField(view, countProjection, studioName('count'), runs, {
-      id: `count:${variable.id}`, kind: expressionKind(variable.count),
-      changed: changedAt(view, 'task', `/variables/${index}/count`, commit),
+      id: `count:${key}`,
+      changed: changedAt(view, 'task', stored('count'), commit),
       commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('count')), { kind: 'expression', path: countPath, edit })),
-    }) : rawField({ id: `count:${variable.id}`, label: studioName('count'), value: '', type: { kind: 'readOnly' } }) : undefined;
+    }) : rawField({ id: `count:${key}`, label: studioName('count'), value: '', type: { kind: 'readOnly' } }) : undefined;
     return {
-      id: variable.id, name: variable.name, type: name, valueType: variable.type, typeChoice, value, count,
-      level: levels.get(variable.id) === 2 ? 'step' : 'trial', initializes: initializes(view, task, variable, commit, owner),
-      entry: owner?.entry.label,
+      id: key, ...taskVariableName(view, key, variable), type: name, valueType: variable.type, typeChoice, value, count,
+      level: levels.get(key) === 2 ? 'step' : 'trial', initializes: initializes(view, task, key, variable, commit, owner),
     };
   });
 }
@@ -176,27 +178,30 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
  * The edits of the Variables table: those of a variable a Set entry adds (`owned`) store that entry's variables, and so
  * does Add while one entry is selected (`selected`); the rest edit the Task.
  */
-export function variableEdits(task: TaskDocument, commit?: Commit, owned: ReadonlyMap<string, Owner> = new Map(),
+export function variableEdits(task: StoredTaskDocument, commit?: Commit, owned: ReadonlyMap<string, Owner> = new Map(),
   selected?: EntryTask): VariableEdits {
   if (!commit) return {};
   const structure = async (name: string, change: Parameters<Commit>[1] & { kind: 'structure' }, removes?: boolean) =>
     reasonOf(await commit(name, change, removes));
-  const named = (id: string) => task.variables.find((variable) => variable.id === id)?.name;
+  const named = (id: string) => task.variables[id]?.label;
   return {
-    add: (name) => selected ? selected.write?.(studioName('addVariable'), { task_variables: [...selected.variables, {
-      id: fresh(name, [...task.variables, ...selected.variables]), name, type: { base: 'real', shape: [] }, value: { kind: 'literal', value: 0 },
-    }] }) : structure(studioName('addVariable'), { kind: 'structure', changes: [{ op: 'add', member: 'variable', name }] }),
+    add: (name) => selected ? selected.write?.(studioName('addVariable'), { task_variables: {
+      ...selected.variables,
+      [freshKey(name, [...Object.keys(task.variables), ...Object.keys(selected.variables)])]: {
+        label: name, type: { base: 'real', shape: [] }, value: 0,
+      },
+    } }) : structure(studioName('addVariable'), { kind: 'structure', changes: [{ op: 'add', member: 'variable', name }] }),
     rename: (id, name) => {
       const owner = owned.get(id);
       return owner ? owner.entry.write?.(studioAccessibleName('rename', named(id)),
-        { task_variables: updated(owner.entry, owner.variable, (own) => ({ ...own, name })) })
+        { task_variables: updated(owner.entry, owner.variable, (own) => ({ ...own, label: name })) })
         : structure(studioAccessibleName('rename', named(id)), { kind: 'structure', changes: [{ op: 'rename', member: 'variable', id, name }] });
     },
     remove: (id) => {
       const owner = owned.get(id);
       return owner ? owner.entry.write?.(studioAccessibleName('remove', named(id)), {
         task_variables: updated(owner.entry, owner.variable, () => undefined),
-        task_links: owner.entry.links.filter(({ variable }) => variable !== owner.variable),
+        task_links: Object.fromEntries(Object.entries(owner.entry.links).filter(([, variable]) => variable !== owner.variable)),
       }) : structure(studioAccessibleName('remove', named(id)),
         { kind: 'structure', changes: [{ op: 'remove', member: 'variable', id }] }, true);
     },
@@ -205,14 +210,6 @@ export function variableEdits(task: TaskDocument, commit?: Commit, owned: Readon
     list: (id, list) => structure(studioAccessibleName('set', studioName('list')), { kind: 'structure', changes: [
       { op: 'set_variable_count', id, count: list ? { kind: 'literal', value: 2 } : null }] }),
   };
-}
-
-/** `name`, or the first of `name-2`, `name-3` and on that no variable has as its id. */
-function fresh(name: string, variables: readonly Variable[]) {
-  const taken = new Set(variables.map(({ id }) => id));
-  let id = name;
-  for (let count = 2; taken.has(id); count += 1) id = `${name}-${count}`;
-  return id;
 }
 
 /** Where the Task view finds the Set entries the trials read: by a variable's origin, and the one the runs select. */
@@ -231,8 +228,7 @@ function useVariables(view: TrialView, commit?: Commit, runs?: TrialRuns, entrie
   };
 }
 
-const entryWeight = (weight: WeightPart | { on?: WeightPart; off?: WeightPart } | null | undefined): SetEntryWeight | undefined =>
-  weight == null || typeof weight === 'number' ? weight ?? undefined : { on: weight.on ?? 1, off: weight.off ?? 1 };
+const entryWeight = (weight: WeightPart | StudioSetEntryParts | null): SetEntryWeight | undefined => weight ?? undefined;
 
 /**
  * The Sets the step's trials apply, as the service lists them, each weighed by `weigh` with its axis and limited by
@@ -246,12 +242,13 @@ function setVariables(view: TrialView, setName: (set: string) => string, weigh?:
     return {
       axis, name: setName(set), weigh: weigh?.(axis),
       condition: projection && trialField(view, projection, studioName('condition'), runs, {
-        id: `condition:${axis}`, kind: expressionKind(condition ?? undefined),
+        id: `condition:${axis}`,
         commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('condition')), { kind: 'expression', path, edit })),
       }),
       entries: [...entries.filter(({ entry }) => entry !== null), ...entries.filter(({ entry }) => entry === null)]
-        .map(({ entry, label, weight }) => ({
-          id: entry, label: entry === null ? studioName('none') : label || entry, weight: entryWeight(weight),
+        .map(({ entry, label, weight, member_count }) => ({
+          id: entry, label: label ?? studioName('none'), weight: entryWeight(weight),
+          ...member_count != null && { members: member_count },
         })),
     };
   });
@@ -298,8 +295,13 @@ export function TrialVariableInspector({ view, commit, runs, entries, id }: {
  */
 export function unfedTasks(view: TrialView): ReadonlyMap<string, string> {
   const inputs = new Map(view.inputs.map(({ address, name }) => [JSON.stringify(address), name]));
-  return new Map(view.tasks.flatMap(({ document, problems }) => {
-    const unfed = problems.find(({ path = [], model_address }) => path[0] === 'model' && path[1] === 'inputs' && model_address);
+  const problemAt = (index: number) => {
+    const problem = view.task_problems[index];
+    if (!problem) throw new Error(`The Task view names problem ${index} of ${view.task_problems.length}`);
+    return problem;
+  };
+  return new Map(view.tasks.flatMap(({ document, problem_indices }) => {
+    const unfed = problem_indices.map(problemAt).find(({ path = [], model_address }) => path[0] === 'model' && path[1] === 'inputs' && model_address);
     const name = unfed && inputs.get(JSON.stringify(unfed.model_address));
     return name ? [[document, studioFormat('leavesUnfed', { name })] as const] : [];
   }));

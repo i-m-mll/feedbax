@@ -1,12 +1,15 @@
 """Duplicate Run, edits of a selected value, Save Set and Inline Set through the API, as Studio stores them."""
 
 from copy import deepcopy
+import json
 
 import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_sweep import Sweep
 from feedbax.jobs import _plan_run_data
+from feedbax.planner.project_plan import compile_project
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanRead
@@ -17,7 +20,7 @@ from tests.test_document_train_pair import authored_documents, document_project
 PROJECT = "sets"
 BASE = f"/api/projects/{PROJECT}"
 GAIN = {
-    "kind": "leaf", "name": "Gain", "type": "feedbax.Scale", "revision": None, "fields": {"scale": 0.5},
+    "kind": "leaf", "label": "Gain", "type": "feedbax.Scale", "revision": None, "fields": {"scale": 0.5},
     "port_counts": {}, "attachments": {"sources": {}, "sinks": {}},
 }
 INSERT = {"op": "insert_component", "address": {"composites": [], "element": {"kind": "wire", "id": "effector-wire"}},
@@ -256,8 +259,7 @@ def test_removing_the_last_copy_removes_the_axis(studio):
     before = _runs(folders, "baseline")
     _duplicate(folders, client, "baseline")
     _set_edit(folders, client, {"kind": "remove_value", "step": "baseline", "axis": "run", "value": "run-2"})
-    assert folders.read(PROJECT).project.steps["baseline"].sweep is None or not folders.read(
-        PROJECT).project.steps["baseline"].sweep.axes
+    assert folders.read(PROJECT).project.steps["baseline"].sweep is None
     assert _runs(folders, "baseline") == before
 
 
@@ -343,11 +345,11 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
     entry = _duplicate(folders, client, "other", ["default"])["value"]
     _set_edit(folders, client, {"kind": "save_set", "step": "other", "axis": "run"})
     variable = {
-        "id": "onset", "name": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
-        "value": {"kind": "literal", "value": 0.03, "unit": "s"},
+        "label": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
+        "value": "0.03 s",
     }
     _set_edit(folders, client, {
-        "kind": "set_entry_task", "step": "other", "axis": "run", "entry": entry, "task_variables": [variable],
+        "kind": "set_entry_task", "step": "other", "axis": "run", "entry": entry, "task_variables": {"onset": variable},
     })
 
     def selected(row, change=None):
@@ -368,29 +370,33 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
         assert response.status_code == 200, response.text
 
     field = folders.read(PROJECT).project.steps["other"].sweep.axes["run"]
-    origin = {"step": "other", "axis": "run", "set": field.set, "entry": entry, "variable": "onset"}
+    saved_entry = folders.read(PROJECT).project.documents[field.set].payload["entries"][entry]
+    origin = {
+        "step": "other", "axis": "run", "set": field.set, "entry": entry, "variable": "onset",
+        "label": saved_entry["label"], "member_count": None,
+    }
     for row in _rows(folders, "other"):
         read = selected(row)
-        for variables in (read["variables"], read["task"]["variables"]):
-            assert any(item["id"] == variable["id"] for item in variables) == (row == f"run={entry}")
+        on_entry = row == f"run={entry}"
+        assert any(item["id"] == "onset" for item in read["variables"]) == on_entry
+        assert ("onset" in read["task"]["variables"]) == on_entry
         assert [item["set_entry"] for item in read["variables"] if "set_entry" in item] == (
             [origin] if row == f"run={entry}" else []
         )
     set_expression(f"run={entry}", "onset", "0.04 s")
-    assert selected(f"run={entry}")["task"]["variables"][-1]["value"]["value"] == 0.04
+    assert selected(f"run={entry}")["task"]["variables"]["onset"]["value"] == "0.04 s"
     _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
     read = selected("default")
-    for variables in (read["variables"], read["task"]["variables"]):
-        assert len([item for item in variables if item["name"] == f"{entry} · Onset"]) == 1
-    projected = next(item for item in read["variables"] if item["name"] == f"{entry} · Onset")
+    (projected,) = [item for item in read["variables"] if item["name"] == "Onset"]
     assert projected["set_entry"] == origin
     scoped = projected["id"]
+    assert read["task"]["variables"][scoped]["label"] == "Onset"
     set_expression("default", scoped, "0.07 s")
     field = folders.read(PROJECT).project.steps["other"].set_fields["run"]
     project = folders.read(PROJECT).project
     source = project.documents[field.axis.set].payload["entries"][entry]
-    assert source["task_variables"][0]["id"] == "onset"
-    assert source["task_variables"][0]["value"]["value"] == 0.07
+    assert set(source["task_variables"]) == {"onset"}
+    assert source["task_variables"]["onset"]["value"] == "0.07 s"
 
 
 def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
@@ -404,14 +410,14 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         raw["documents"][bank] = {
             "label": "Document",
             "schema": SET_DOCUMENT_SCHEMA_ID,
-            "payload": {"entries": {"shift": {"task_variables": [{
-                "id": "amount", "name": "Amount", "type": {"base": "real"},
-                "value": {"kind": "literal", "value": value},
-            }]}}},
+            "payload": {"entries": {"shift": {"label": "Shift", "task_variables": {"amount": {
+                "label": "Amount", "type": {"base": "real"},
+                "value": value,
+            }}}}},
         }
-    raw["documents"]["reach-bank"]["payload"]["entries"]["shift"]["task_variables"].append({
-        "id": "other", "name": "Other", "type": {"base": "real"}, "value": {"kind": "literal", "value": 3.0},
-    })
+    raw["documents"]["reach-bank"]["payload"]["entries"]["shift"]["task_variables"]["other"] = {
+        "label": "Other", "type": {"base": "real"}, "value": "amount + 3",
+    }
 
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         folders = client.app.state.project_folders
@@ -422,13 +428,18 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         body = {"revision": reviewed.revision, "run": {"variant": "default", "step": "train", "row": "default"}}
         response = client.post(f"{BASE}/authoring/trials", json=body)
         assert response.status_code == 200, response.text
-        variables = {item["name"]: item for item in response.json()["variables"] if item.get("set_entry")}
-        assert set(variables) == {"reach · shift · Amount", "hold · shift · Amount", "shift · Other"}
-        reach, hold = (variables[f"{axis} · shift · Amount"] for axis in ("reach", "hold"))
+        variables = {
+            (origin["axis"], origin["variable"]): item
+            for item in response.json()["variables"] if (origin := item.get("set_entry")) is not None
+        }
+        assert set(variables) == {("reach", "amount"), ("hold", "amount"), ("reach", "other")}
+        reach, hold = (variables[axis, "amount"] for axis in ("reach", "hold"))
         assert reach["id"] != hold["id"]
         for axis, item in (("reach", reach), ("hold", hold)):
+            assert item["name"] == "Amount"
             assert item["set_entry"] == {
                 "step": "train", "axis": axis, "set": f"{axis}-bank", "entry": "shift", "variable": "amount",
+                "label": "Shift", "member_count": None,
             }
         response = client.post(f"{BASE}/authoring/trials", json=body | {"change": {
             "kind": "expression", "path": f"/task/variables/{hold['id']}/value", "edit": {"kind": "text", "text": "4"},
@@ -440,8 +451,41 @@ def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
         assert written.status_code == 200, written.text
         stored = folders.read(PROJECT).project.documents
         for bank, value in (("reach-bank", 1.0), ("hold-bank", 4)):
-            (amount, *_) = stored[bank].payload["entries"]["shift"]["task_variables"]
-            assert amount["name"] == "Amount" and amount["value"]["value"] == value
+            amount = stored[bank].payload["entries"]["shift"]["task_variables"]["amount"]
+            assert amount["label"] == "Amount" and amount["value"] == value
+        revision = written.json()["revision"]
+        weight = client.post(f"{BASE}/authoring/trials", json=body | {"revision": revision, "change": {
+            "kind": "expression", "path": "/objective/terms/effort/weight",
+            "edit": {"kind": "text", "text": "set.hold.shift.amount"},
+        }})
+        assert weight.status_code == 200, weight.text
+        shown = weight.json()
+        assert not shown["problems"] and shown["files"], shown
+        field = next(field for field in shown["fields"] if field["path"] == "/objective/terms/effort/weight")
+        hints = shown["sites"][field["site"]]["names"]
+        hint = next(name for name in hints if name["id"] == hold["id"])
+        assert hint["set_entry"] == {key: hold["set_entry"][key] for key in (
+            "step", "axis", "set", "entry", "variable",
+        )}
+        assert hint["name"] == "set.hold.shift.amount"
+        saved = client.patch(BASE, json={"revision": revision, "files": shown["files"]})
+        assert saved.status_code == 200, saved.text
+        objective = folders.read(PROJECT).project.documents["objective"].payload
+        assert objective["terms"]["effort"]["weight"] == "set.hold.shift.amount"
+        other = variables["reach", "other"]
+        assert other["name"] == "Other"
+        revision = saved.json()["revision"]
+        own = client.post(f"{BASE}/authoring/trials", json=body | {"revision": revision, "change": {
+            "kind": "expression", "path": f"/task/variables/{other['id']}/value",
+            "edit": {"kind": "text", "text": "Amount + 4"},
+        }})
+        assert own.status_code == 200, own.text
+        shown = own.json()
+        assert not shown["problems"] and shown["files"], shown
+        saved = client.patch(BASE, json={"revision": revision, "files": shown["files"]})
+        assert saved.status_code == 200, saved.text
+        entry = folders.read(PROJECT).project.documents["reach-bank"].payload["entries"]["shift"]
+        assert entry["task_variables"]["other"]["value"] == "amount + 4"
 
 
 def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
@@ -449,12 +493,15 @@ def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
 
     raw = document_project(authored_documents(), evaluation=True)
     variable = {
-        "id": "onset", "name": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
-        "value": {"kind": "literal", "value": 0.03, "unit": "s"},
+        "label": "Onset", "type": {"base": "real", "dimensions": {"time": 1}},
+        "value": "0.03 s",
     }
     raw["documents"]["entry-set"] = {
         "label": "Entry set",
-        "schema": SET_DOCUMENT_SCHEMA_ID, "payload": {"entries": {"ordinary": {}, "pulse": {"task_variables": [variable]}}},
+        "schema": SET_DOCUMENT_SCHEMA_ID,
+        "payload": {"entries": {
+            "ordinary": {"label": "Ordinary"}, "pulse": {"label": "Pulse", "task_variables": {"onset": variable}},
+        }},
     }
     raw["steps"]["baseline"]["sweep"] = {"axes": {"window": {"set": "entry-set"}}}
     with TestClient(create_app(projects_dir=tmp_path)) as client:
@@ -474,8 +521,9 @@ def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
 
         for row in before:
             read = author(row)
-            for projected in (read["variables"], read["task"]["variables"]):
-                assert any(item["id"] == "onset" for item in projected) == (row == "window=pulse")
+            on_entry = row == "window=pulse"
+            assert any(item["id"] == "onset" for item in read["variables"]) == on_entry
+            assert ("onset" in read["task"]["variables"]) == on_entry
         edit = author("window=pulse", {
             "kind": "expression", "path": "/task/variables/onset/value", "edit": {"kind": "text", "text": "0.04 s"},
         })
@@ -487,18 +535,39 @@ def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
         assert after["window=pulse"] != before["window=pulse"]
 
 
-def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
+@pytest.mark.parametrize("policy", [{}, {"inherit_rows": False}], ids=["last-axis", "keep-row-policy"])
+def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio, policy):
     folders, client = studio
     train_before = _runs(folders, "train")
     for _ in range(3):
         _duplicate(folders, client, "other", ["default"])
     _set_edit(folders, client, {"kind": "save_set", "step": "other", "axis": "run"})
+    if policy:
+        reply = client.patch(BASE, json={
+            "revision": folders.read(PROJECT).revision,
+            "files": [{
+                "address": {"kind": "step", "id": "other"},
+                "patches": [{"op": "add", "path": f"/sweep/{key}", "value": value}
+                            for key, value in policy.items()],
+            }],
+        })
+        assert reply.status_code == 200, reply.text
     before = folders.read(PROJECT).project.steps["other"].sweep.axes["run"]
     sweep = _runs(folders, "other")
     assert len(sweep) == 4
 
     _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
-    assert list(_runs(folders, "other")) == ["default"]
+    after = _runs(folders, "other")
+    assert list(after) == ["default"], folders.read_plan(PROJECT, revision=None).plan.diagnostics
+    stored = json.loads((folders.root / PROJECT / "steps" / "other.json").read_bytes())
+    if policy:
+        assert stored["sweep"] == policy
+    else:
+        assert "sweep" not in stored
+        project = folders.read(PROJECT).project
+        steps = project.steps | {"other": project.steps["other"].model_copy(update={"sweep": Sweep()})}
+        explicit_empty = compile_project(project.model_copy(update={"steps": steps}))
+        assert after == {run.key.row: run.request_id for run in explicit_empty.runs if run.key.step == "other"}
     revision = folders.read(PROJECT).revision
     reply = client.post(f"{BASE}/authoring/trials", json={
         "revision": revision, "run": {"variant": "default", "step": "other", "row": "default"},
@@ -532,17 +601,17 @@ def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, sub
         step["base"]["inline"]["params"]["input_bindings"] = train["input_bindings"]
     raw["documents"]["loads"] = {
         "label": "Loads",
-        "schema": "feedbax.set_document.v1",
-        "payload": {"entries": {"pulse": {"differences": {
-            "/interior/wires/effector-wire/attachments": {"value": [{
-                "id": "pulse", "kind": "intervention", "operation": "Add",
-                "operands": {"value": {"kind": "value", "value": [2, 0]}},
+        "schema": "feedbax.set_document.v2",
+        "payload": {"entries": {"pulse": {"label": "Pulse", "differences": {
+            "/interior/wires/effector-wire/attachments": {"value": {"pulse": {
+                "kind": "intervention", "operation": "Add",
+                "operands": {"value": {"kind": "value", "value": "[2, 0]"}},
                 "window": {"spans": [{
                     "kind": "interval",
                     "start": {"anchor": {"kind": "epoch", "edge": "start", "epoch": "move"}},
-                    "end": {"offset": {"value": 2, "unit": "st"}},
+                    "end": {"offset": "2 st"},
                 }]},
-            }]},
+            }}},
         }}}},
     }
     with TestClient(create_app(projects_dir=tmp_path)) as client:
@@ -571,8 +640,10 @@ def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, sub
         projected = reply.json()
         (field,) = projected["set_fields"]
         assert field["sampling"]["kind"] == sampling and not projected["problems"], projected["problems"]
+        effective = {item["entry"]: item["weight"] for item in field["entries"]}
+        assert effective == ({None: 0, "pulse": 1} if sampling == "weighted" else {"pulse": None})
         if sampling == "weighted":
-            assert field["entries"][0]["entry"] is None and field["entries"][0]["weight"] == 0
+            assert field["entries"][0]["entry"] is None
             change = {"kind": "expression", "path": "/set_fields/loads/condition",
                       "edit": {"kind": "text", "text": "catch"}}
             edit = client.post(f"{BASE}/authoring/trials", json={"revision": revision, "run": key, "change": change})
@@ -586,16 +657,18 @@ def test_evaluate_set_fields_use_the_subject_task_and_plan_one_run(tmp_path, sub
 
 def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
     raw = document_project(authored_documents())
-    raw["documents"]["task"]["payload"]["variables"].append({
-        "id": "is_catch", "name": "is_catch", "type": {"base": "boolean"},
-        "value": {"kind": "literal", "value": False},
-    })
-    raw["documents"]["loads"] = {"label": "Loads", "schema": "feedbax.set_document.v1", "payload": {"entries": {"heavy": {}}}}
+    raw["documents"]["task"]["payload"]["variables"]["is_catch"] = {
+        "label": "is_catch", "type": {"base": "boolean"},
+        "value": False,
+    }
+    raw["documents"]["loads"] = {
+        "label": "Loads", "schema": "feedbax.set_document.v2", "payload": {"entries": {"heavy": {"label": "Heavy"}}},
+    }
     raw["steps"]["train"]["set_fields"] = {
         "load": {"axis": {"set": "loads"}, "sampling": {"kind": "weighted"}},
         "listed": {
             "axis": {"set": "loads"}, "sampling": {"kind": "listed"},
-            "condition": {"kind": "literal", "value": True},
+            "condition": True,
         },
     }
     folders = ProjectFolderService(tmp_path)
@@ -619,9 +692,10 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
                 assert written.status_code == 200, written.text
             return payload, next(item for item in payload["fields"] if item["path"] == path)
 
-        _, blank = author("load")
-        assert blank["text"] == "" and blank["site"]["site"]["expected"]["base"] == "boolean"
-        assert "is_catch" in {name["id"] for name in blank["site"]["site"]["names"]}
+        view, blank = author("load")
+        site = view["sites"][blank["site"]]
+        assert blank["text"] == "" and site["expected"]["base"] == "boolean"
+        assert "is_catch" in {name["id"] for name in site["names"]}
         _, listed = author("listed")
         assert "Weighted or Co-occurring" in listed["problems"][0]["reason"]
         assert listed["problems"][0]["span"] == {"start": 0, "end": 4}
@@ -640,7 +714,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
         _, valid = author("load", {"kind": "text", "text": "not is_catch"}, save=True)
         assert not valid["problems"] and valid["text"] == "not is_catch"
         view, field = author("load")
-        assert not field["site"]["parts"]
+        assert not view["sites"][field["site"]]["parts"]
         menu = client.post(f"{BASE}/authoring/trials/expression-menu", json={
             "revision": view["revision"], "run": run, "expression_context": view["expression_context"],
             "field": field["path"], "part": ["args", 0],
@@ -649,6 +723,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
         assert menu.json()["names"] == ["catch", "is_catch"]
         saved = folders.read(PROJECT).project.steps["train"].set_fields["load"]
         assert saved.condition.args[0].reference == "is_catch"
+        assert saved.model_dump(mode="json")["condition"] == "not is_catch"
         assert _runs(folders, "train")
 
         _, cleared = author("load", {"kind": "text", "text": " "}, save=True)
@@ -658,7 +733,7 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
 
 @pytest.mark.parametrize(("sampling", "edits", "weights", "variants"), [
     (
-        {"kind": "weighted", "weights": {"nominal": 3}, "none": 4},
+        {"kind": "weighted", "weights": {"nominal": 3}},
         [{"entry": "heavy", "weight": 2}, {"entry": None, "weight": 0}],
         {None: 0, "heavy": 2, "nominal": 3},
         True,
@@ -674,7 +749,7 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
     raw = document_project(authored_documents())
     raw["documents"]["loads"] = {
         "label": "Loads",
-        "schema": "feedbax.set_document.v1", "payload": {"entries": {"heavy": {}, "nominal": {}}},
+        "schema": "feedbax.set_document.v2", "payload": {"entries": {"heavy": {"label": "Heavy"}, "nominal": {"label": "Nominal"}}},
     }
     raw["steps"]["train"]["set_fields"] = {"load": {"axis": {"set": "loads"}, "sampling": sampling}}
     raw["steps"]["other"] = deepcopy(raw["steps"]["train"])
@@ -685,6 +760,18 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
     before = folders.read(PROJECT)
     train, other = (_runs(folders, step) for step in ("train", "other"))
     with TestClient(create_app(projects_dir=tmp_path)) as client:
+        run = {"variant": "base" if variants else "default", "step": "train", "row": "default"}
+        original = client.post(f"{BASE}/authoring/trials", json={"revision": before.revision, "run": run})
+        assert original.status_code == 200, original.text
+        (field,) = original.json()["set_fields"]
+        effective = {item["entry"]: item["weight"] for item in field["entries"]}
+        if sampling["kind"] == "weighted":
+            assert effective == {None: 1, "heavy": 1, "nominal": 3}
+        else:
+            assert effective == {"heavy": {"on": 1, "off": 3}, "nominal": {"on": 4, "off": 1}}
+        stored = json.loads((tmp_path / PROJECT / "steps" / "train.json").read_bytes())
+        assert stored["set_fields"]["load"]["sampling"] == sampling
+
         for edit in edits:
             result = _set_edit(folders, client, {
                 "kind": "set_field_weight", "step": "train", "axis": "load", **edit,
@@ -692,8 +779,7 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
             assert [file["address"] for file in result["files"]] == [{"kind": "step", "id": "train"}]
         saved = folders.read(PROJECT)
         reply = client.post(f"{BASE}/authoring/trials", json={
-            "revision": saved.revision,
-            "run": {"variant": "base" if variants else "default", "step": "train", "row": "default"},
+            "revision": saved.revision, "run": run,
         })
         assert reply.status_code == 200, reply.text
         (field,) = reply.json()["set_fields"]
@@ -708,7 +794,7 @@ def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_
 def test_required_set_can_be_emptied_and_repaired(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["documents"]["draft"] = {
-        "label": "Draft", "schema": "feedbax.set_document.v1", "payload": {
+        "label": "Draft", "schema": "feedbax.set_document.v2", "payload": {
             "entries": {"one": {"label": "One"}, "two": {"label": "Two"}},
         },
     }
@@ -731,13 +817,41 @@ def test_required_set_can_be_emptied_and_repaired(tmp_path):
                    for problem in folders.read_plan(PROJECT, revision=None).plan.diagnostics)
         repaired = _set_edit(folders, client, {"kind": "add_set_entry", "step": "train", "axis": "draft"})
         assert repaired["files"] and not repaired["problems"] and _runs(folders, "train")
+        entry, = folders.read(PROJECT).project.documents["draft"].payload["entries"].values()
+        assert entry["label"] == "Run 2"
+
+
+def test_removing_a_shared_set_entry_can_keep_the_other_reader(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["documents"]["draft"] = {
+        "label": "Draft", "schema": "feedbax.set_document.v2", "payload": {
+            "entries": {"one": {"label": "One"}, "two": {"label": "Two"}},
+        },
+    }
+    raw["steps"]["train"]["sweep"] = {"axes": {"draft": {"set": "draft", "label": "Draft"}}}
+    raw["steps"]["other"] = deepcopy(raw["steps"]["train"])
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        before = {step: _runs(folders, step) for step in ("train", "other")}
+        command = {"kind": "remove_value", "step": "train", "axis": "draft", "value": "one"}
+        response = client.post(f"{BASE}/authoring/sets", json={
+            "revision": folders.read(PROJECT).revision, "command": command,
+        })
+        assert response.status_code == 200, response.text
+        choices = {item["kind"]: item["runs"] for item in response.json()["store_choices"]}
+        assert {item["step"] for item in choices["set_entry"]} == {"train", "other"}
+        assert choices["selected_readers"] == [{"variant": "default", "step": "train", "row": "draft=one"}]
+        _set_edit(folders, client, command, store="selected_readers")
+        assert _runs(folders, "train") == {"draft=two": before["train"]["draft=two"]}
+        assert _runs(folders, "other") == before["other"]
 
 
 def test_applying_an_inapplicable_set_stores_the_reference_and_marks_the_difference(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     pointer = "/interior/components/removed/fields/mass"
-    raw["documents"]["draft"] = {"label": "Draft", "schema": "feedbax.set_document.v1", "payload": {
-        "entries": {"heavy": {"differences": {pointer: {"value": 2.0}}}},
+    raw["documents"]["draft"] = {"label": "Draft", "schema": "feedbax.set_document.v2", "payload": {
+        "entries": {"heavy": {"label": "Heavy", "differences": {pointer: {"value": 2.0}}}},
     }}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, PROJECT, Project.model_validate(raw))

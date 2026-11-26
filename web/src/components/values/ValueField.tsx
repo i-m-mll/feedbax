@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { ArrowRightToLine, Dices, Hourglass, Link, Sigma, Spline } from 'lucide-react';
+import { ArrowRightToLine, Dices, Hourglass, Layers, Link, Sigma, Spline } from 'lucide-react';
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { appTip } from '@window-shell/browser/tooltip';
@@ -623,6 +623,8 @@ function CompletionList({ id, anchor, items, highlight, onChoose }: {
       data-highlighted={index === highlight ? '' : undefined} className={popupItem}
       onMouseDown={(event) => { event.preventDefault(); onChoose(item); }}>
       <span className={primaryText}>{item.label}</span>
+      {item.mark && <span className={secondaryText}>
+        <Layers aria-hidden="true" className="inline size-[1em] align-[-0.125em]" /> {item.mark}</span>}
       <span className={secondaryText}>{item.detail}</span>
     </div>)}
   </div>, layer);

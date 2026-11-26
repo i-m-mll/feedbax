@@ -15,6 +15,7 @@ from feedbax.builtins.figure_templates import SpeedByTrial, SpeedByTrialSettings
 from feedbax.cli import main
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.code_validity import SourcePath
+from feedbax.contracts.figure_document import StoredFigureDocument
 from feedbax.contracts.project import Project
 from feedbax.contracts.receipt_validity import FileDifference, ReceiptValidity
 from feedbax.planner.project_plan import ElementKey, RunKey, compile_project
@@ -44,15 +45,14 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     raw = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task = raw["documents"]["simple-reaches-task"]["payload"]
-    target = next(signal for signal in task["signals"] if signal["id"] == "target_pos")
-    target["name"] = "Requested target"
-    task["validation_trials"] = task["validation_trials"][:1]
+    task["signals"]["target_pos"]["label"] = "Requested target"
+    task["validation_trials"] = {"trial-1": task["validation_trials"]["trial-1"]}
     raw["steps"] = {
         "rollout": {
             "label": "Rollout",
             "kind": "evaluate",
             "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
-                "seed": 17, "trial_policy": "paired", "variation": [],
+                "seed": 17, "trial_policy": "paired",
                 "trial_set": {"kind": "every_condition"},
                 "input_bindings": {"target_pos": "target_pos"},
             }}},
@@ -71,14 +71,14 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
                     "inputs": {"states": {"input": "states"}},
                     "figure": {
                         "data": ["states"],
-                        "layout": [{"name": "position", "row": 1, "col": 1}],
-                        "layers": [{
-                            "name": "target-x", "role": "states", "panel": "position", "mark": "line",
+                        "layout": {"position": {"row": 1, "col": 1}},
+                        "layers": {"target-x": {
+                            "role": "states", "panel": "position", "mark": "line",
                             "encode": {
                                 "x": "transition_start",
                                 "y": {"variable": "/v1/task/output/target_pos", "select": {"xy": "x"}},
                             },
-                        }],
+                        }},
                     },
                 }},
             }},
@@ -106,19 +106,16 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
             (request,) = next(item for item in window["analysis_elements"] if item["name"] == "target")["requests"]
             return request
 
-        def draw(name):
-            assert element()["status"] in ("not_run", "waiting", "stale")
-            submitted = json_object(client.post(f"{url}/train-runs", json={
-                "revision": revision, "token": token(name), "run_keys": [rollout, plot],
-            }), 202)
-            for item in submitted["items"]:
-                job = wait_until(lambda: (
-                    job if (job := job_row(host, item["job_id"])) and job["outcome"] is not None else None
-                ))
-                assert job["state"] == "succeeded", job["outcome"]
-            return json_object(client.get(element()["result"]["products"]["figure"]))
-
-        before = draw("before")
+        submitted = json_object(client.post(f"{url}/train-runs", json={
+            "revision": revision, "token": token("signal-figure"), "run_keys": [rollout, plot],
+        }), 202)
+        for item in submitted["items"]:
+            job = wait_until(lambda: (
+                job if (job := job_row(host, item["job_id"])) and job["outcome"] is not None else None
+            ))
+            assert job["state"] == "succeeded", job["outcome"]
+        original = element()
+        before = json_object(client.get(original["result"]["products"]["figure"]))
         assert before["layout"]["yaxis"]["title"]["text"] == "Requested target (m)"
         changed = json_object(client.post(f"{url}/authoring/trials", json={
             "revision": revision, "run": rollout,
@@ -128,8 +125,14 @@ def test_saved_figure_keeps_its_task_signal_after_a_studio_rename(host, tmp_path
         }))
         saved = json_object(client.patch(url, json={"revision": revision, "files": changed["files"]}))
         revision = saved["revision"]
-        after = draw("after")
+        current = element()
+        assert current["status"] == "succeeded"
+        assert current["request_id"] == original["request_id"]
+        assert current["result"]["job_id"] == original["result"]["job_id"]
+        assert current["result"]["receipt"] == original["result"]["receipt"]
+        after = json_object(client.get(current["result"]["products"]["figure"]))
         assert after["layout"]["yaxis"]["title"]["text"] == "Renamed target (m)"
+        assert after["layout"]["meta"] == before["layout"]["meta"]
         assert [(trace["x"], trace["y"]) for trace in after["data"]] == [
             (trace["x"], trace["y"]) for trace in before["data"]
         ]
@@ -142,13 +145,13 @@ def _saved_light_definition(*, paired=False):
     task = load_shipped_projects()["point-mass-reaching"].documents["simple-reaches-task"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     task["payload"]["fixed_steps"] = 8
     del task["payload"]["validation_trials"]
-    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"] = "8 st"
     evaluation["documents"]["task"] = task
     project["documents"] = evaluation["documents"] | {
         name: project["documents"][name]
         for name in ("velocity-analysis", "velocity-figure", "velocity-report")
     }
-    project["documents"]["velocity-figure"]["payload"]["layers"][0]["style"] = {"label": "{condition}"}
+    project["documents"]["velocity-figure"]["payload"]["layers"]["bounds"]["style"] = {"label": "{condition}"}
     project["steps"]["train"] = train
     step = "conditions" if paired else "baseline"
     project["steps"][step] = evaluation["steps"][step]
@@ -170,7 +173,7 @@ def test_saved_operation_products_can_be_read_without_a_figure(host, tmp_path, m
     task = shipped["documents"]["simple-reaches-task"]
     del task["payload"]["validation_trials"]
     task["payload"]["fixed_steps"] = 8
-    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    task["payload"]["epochs"]["move"]["end"]["length"] = "8 st"
     definition["documents"] = {
         "point-mass": shipped["documents"]["point-mass"], "task": task,
         "velocity-analysis": definition["documents"]["velocity-analysis"],
@@ -268,7 +271,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
     project = "reaching"
     definition = _saved_light_definition()
     model_key = definition["steps"]["train"]["base"]["inline"]["trial_documents"]["model"]["document"]
-    definition["documents"][model_key]["payload"]["interior"]["components"]["plant"]["name"] = "Point mass"
+    definition["documents"][model_key]["payload"]["interior"]["components"]["plant"]["label"] = "Point mass"
     folders = ProjectFolderService(projects)
     _save_project(folders, project, Project.model_validate(definition))
     project_id = folders.open(project).snapshot.project_id
@@ -524,6 +527,10 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
 
         assert all(job["state"] == "succeeded" for job in wait_until(finished))
         before = plan(revision)
+        baseline = next(row for row in before["window_map"]["evaluations"] if row["key"]["step"] == "baseline")
+        saved_trials = baseline["result"]["trials"]
+        assert [trial["id"] for trial in saved_trials] == _TRIALS
+        assert [trial["name"] for trial in saved_trials] == ["Trial 1", "Trial 2"]
         replayed = replay(revision, evaluate["job_id"], "baseline")
         figure = next(
             request["result"] for element in before["window_map"]["analysis_elements"]
@@ -575,7 +582,7 @@ def test_model_edit_retains_exact_saved_attempts_and_waits_on_the_train(host, tm
             assert row["result"] is None and row["request_id"] != row["previous"]["request_id"]
             assert row["previous"]["job_id"] == evaluate["job_id"]
             assert row["previous"]["revision"] == before["revision"]
-            assert row["previous"]["trials"] == _TRIALS
+            assert row["previous"]["trials"] == saved_trials
             assert row["previous"]["checkpoint_source"]["job_id"] == train["job_id"]
             assert replay(changed, evaluate["job_id"], step) == replayed
         replay(changed, evaluate["job_id"], "analyze", code=404)
@@ -641,11 +648,13 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         "inputs": {"states": {"input": "states"}},
     }
     analysis["views"]["profile"]["figure"] = {"template": "feedbax.VelocitySummary"}
-    speed_figure = SpeedByTrial(SpeedByTrialSettings()).model_dump(mode="json", exclude_unset=True)
+    speed_figure = StoredFigureDocument.from_lowered(SpeedByTrial(SpeedByTrialSettings())).model_dump(
+        mode="json", exclude_unset=True,
+    )
     color = {"field": "mass.value", "scale": "load"}
     scales = {"load": {"kind": "continuous", "legend": False}}
     speed_figure["color_scales"] = scales
-    speed_figure["layers"][0]["encode"]["color"] = color
+    speed_figure["layers"]["trial-speed"]["encode"]["color"] = color
     analysis["views"]["by_trial"] = {
         "label": "By trial",
         "figure": speed_figure,
@@ -654,10 +663,10 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     analysis["views"]["motion"] = {
         "label": "Motion",
         "figure": {
-            "data": ["states"], "layout": [{"name": "motion", "row": 1, "col": 1}],
+            "data": ["states"], "layout": {"motion": {"row": 1, "col": 1}},
             "color_scales": scales,
-            "layers": [{
-                "name": "motion", "mark": "trajectory", "role": "states", "panel": "motion",
+            "layers": {"motion": {
+                "mark": "trajectory", "role": "states", "panel": "motion",
                 "group": ["member", "condition", "trial"], "select": {"checkpoint": {"index": 0}},
                 "encode": {
                     axis: {
@@ -665,7 +674,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
                         "select": {"xy": {"index": index}},
                     } for index, axis in enumerate(("x", "y"))
                 } | {"color": color},
-            }],
+            }},
         },
         "inputs": {"states": {"input": "states"}},
     }
