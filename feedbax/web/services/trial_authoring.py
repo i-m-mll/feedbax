@@ -95,9 +95,10 @@ from feedbax.web.services.store_choice import EditStore, all_readers_store, choo
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.numeric_fields import project_numeric_field, time_conversion
 from feedbax.web.services.trial_fields import (
-    ObjectiveEditor, TrialFieldSweep, at, family_indices, family_problem, family_reason, index_pointer, is_family_rule, is_window_offset,
-    numeric_nodes, objective_editor, routes_to_sweep, with_family_indices,
-    site_expression, trial_field_sweep, trial_field_sweep_edit, trial_time_use,
+    FamilyEditor, FamilyField, TrialFieldSweep, at, family_indices, family_problem, index_pointer,
+    family_rule_edits, is_family_member_path, is_family_rule, is_family_rule_edit, is_window_offset, numeric_nodes,
+    objective_editor, routes_to_sweep,
+    site_expression, trial_field_sweep, trial_field_sweep_edit, trial_time_use, validation_editor, with_family_indices,
 )
 from feedbax.web.services.trial_scope import (
     authored_payload, base_value_edits, changed_from_base, content_edits, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, scoped_file,
@@ -149,7 +150,7 @@ class _Projection:
     output_paths: dict[str, tuple[str, ...]] = field(default_factory=dict)
     set_condition_variables: tuple[Variable, ...] | None = None
     stored_task: StoredTaskDocument | PythonTaskSelection | None = None
-    objective_editor: ObjectiveEditor | None = None
+    family_editor: FamilyEditor = field(default_factory=FamilyEditor)
     set_variables: dict[str, _SetVariableView] = field(default_factory=dict)
 
 
@@ -265,7 +266,7 @@ def _project_task_drafts(documents, task: StoredTaskDocument, show_objective: bo
     try:
         task.lower(first=True)
     except StoredTaskDraftError as error:
-        if error.path[:1] == ("validation_trials",):
+        if error.path[:1] == ("validation_trials",) and error.path[2:3] not in (("over",), ("combination",), ("label",)):
             problems.append(Problem(code=ProblemCode.STRUCTURE, path=("task", *error.path), reason=str(error)))
     return _Projection(None, variables, signals, epochs, fields, tuple(problems), stored_task=task)
 
@@ -599,7 +600,8 @@ def _field_sweep(project, key, path, site, label, sweep_source) -> TrialFieldSwe
     """The number at ``path`` of a document the step reads whole, when the step can sweep it."""
     role, *rest = path
     if (
-        role == "objective" and rest[2:3] == ["over"] or is_window_offset(role, tuple(rest[:7]))
+        is_family_member_path(tuple(path)) and (role == "task" or rest[2:3] == ["over"])
+        or is_window_offset(role, tuple(rest[:7]))
         or (source := sweep_source(role)) is None
     ):
         return None
@@ -644,6 +646,8 @@ def _edit_patches(prefix, change):
 
 
 def _value_writes(prefix, raw, change):
+    edits = family_rule_edits(raw, change.kind, change.edits)
+    change = change.model_copy(update={"edits": edits})
     if change.kind == "task" and any(json_pointer_parts(edit.path)[:1] == ("links",) for edit in change.edits):
         edited = _edit_value(raw, change)
         edits = content_edits(raw, edited, schema_id=STORED_TASK_DOCUMENT_SCHEMA_ID, dotted=True)
@@ -1008,28 +1012,30 @@ def _stored_objective_view(plan, key, definition, objective=None) -> StoredObjec
 def _pairing(plan, key, bundle, *, definition=None, first: bool = True):
     if definition is None:
         definition = _definition(plan, key)
-    editor = (
-        objective_editor(stored, bundle.expression_functions)
+    families = FamilyEditor()
+    objective = (
+        objective_editor(stored, families, bundle.expression_functions)
         if first and (stored := _stored_objective_view(plan, key, definition)) is not None else None
     )
     documents, projected, graph = _pairing_documents(
-        plan, key, bundle, definition, first=first, objective=editor.objective if editor else None,
+        plan, key, bundle, definition, first=first, objective=objective,
     )
-    if editor is not None:
-        def site(path, current):
-            return with_family_indices(current, editor.names.get(path[2], ())) if path[:2] == ("objective", "terms") else current
-
-        def problem(value):
-            coordinates = editor.coordinates.get(value.path[2]) if value.path[:2] == ("objective", "terms") and len(value.path) > 2 else None
-            return value.model_copy(update={"reason": family_reason(value.reason, coordinates)}) if coordinates else value
-
+    if first:
+        stored_task = projected.stored_task or _stored_task_view(
+            plan, definition, documents.task_source, scopes=_set_spellings(projected.variables),
+        )
+        if isinstance(stored_task, StoredTaskDocument) and _effective_task_payload(plan, definition) is not None:
+            validation_editor(stored_task, families, projected.variables, bundle.expression_functions)
+        fields = {
+            path: with_family_indices(site, families.names.get(path[:3], ()))
+            if path[:2] == ("objective", "terms") else site
+            for path, site in projected.fields.items()
+            if path[:1] != ("validation_trials",)
+        }
         projected = replace(
-            projected,
-            fields={path: site(path, current) for path, current in projected.fields.items()} | {
-                path: current for path, (current, _) in editor.rules.items()
-            },
-            problems=(*map(problem, projected.problems), *editor.problems),
-            objective_editor=editor,
+            projected, fields=fields | {path: authored.site for path, authored in families.fields.items()},
+            problems=(*map(families.problem, projected.problems), *families.problems),
+            family_editor=families, stored_task=stored_task,
         )
     origins = _set_origins(plan, key, definition, projected)
 
@@ -1398,11 +1404,12 @@ def _prepare_edits(
         raw = stored_project_value(shown, keep_explicit=True)
 
         def adapt(target):
+            edits = family_rule_edits(target, change.kind, change.edits)
             if change.kind == "objective":
-                return _objective_edits(target, change)
+                return _objective_edits(target, change.model_copy(update={"edits": edits}))
             if structural:
                 return _task_structure_edits(raw, target, change)
-            return change.edits
+            return edits
 
         def write_for(members):
             return document_write(project, document, change.edits, members, readers, variant, view=view, adapt=adapt)
@@ -1539,7 +1546,10 @@ def _evaluate_task_write(project, plan, key, chosen, change, variant: str | None
     document = row.document_ids.get(EVALUATION_TASK) or row.document_ids.get("payload.trial_documents.python_task")
     if document is None:
         raise ProjectFolderInvalid("The selected Evaluate reads no Task document.")
-    return evaluation_document_write(project, plan, document, list(change.edits), chosen, "task", variant)
+    return evaluation_document_write(
+        project, plan, document, change.edits, chosen, "task", variant,
+        adapt=lambda target: family_rule_edits(target, "task", change.edits),
+    )
 
 
 def _present_ops(raw, change):
@@ -1557,7 +1567,8 @@ def _present_ops(raw, change):
 
     return change.model_copy(update={"edits": [
         edit.model_copy(update={"op": "replace" if holds(json_pointer_parts(edit.path)) else "add"})
-        if isinstance(edit, SetProjectValue) else edit for edit in change.edits
+        if isinstance(edit, SetProjectValue) and not is_family_rule_edit(change.kind, json_pointer_parts(edit.path))
+        else edit for edit in change.edits
     ]})
 
 
@@ -1723,14 +1734,18 @@ def _held_problems(path, problems) -> list[Problem]:
     return [problem for problem in problems if any(problem.path[:len(at)] == at for at in own)]
 
 
-def _field_problems(path, site: Site, text: str, functions, problems) -> list[Problem]:
+def _field_problems(path, site: Site, text: str, functions, problems, *, family=False) -> list[Problem]:
     """The field's problems, each at the field's path; one about a term of its text carries the term's place there."""
     held = _held_problems(path, problems)
     if not held or not text:
         return [problem.model_copy(update={"path": path}) for problem in held]
     read = read_field(text, site, functions)
     if isinstance(read, tuple):
-        termed = read if any(problem.span for problem in read) else held
+        if family:
+            span = next((problem.span for problem in read if problem.span is not None), None)
+            termed = [problem.model_copy(update={"span": problem.span or span}) for problem in held]
+        else:
+            termed = read if any(problem.span for problem in read) else held
         return [problem.model_copy(update={"path": path}) for problem in termed]
     within = len(path) - 1 if path[0] == "task" else len(path)
     return [
@@ -1742,7 +1757,7 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
 def _trial_fields(
     path, site: Site, expression, functions, sweep, row, problems, name_paths, period,
     menu_fields: dict[str, TrialExpressionField], sites: FieldSiteIndex,
-    *, objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
+    *, objective_use: ObjectiveUse = ObjectiveUse.TRAIN, authored: FamilyField | None = None, family=False,
 ) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
@@ -1773,7 +1788,7 @@ def _trial_fields(
             fields.append(view)
         elif view.sweep is not None or view.can_sweep:
             return [view.model_copy(update={
-                "site": sites.reference(projection), "problems": _field_problems(path, site, view.text, functions, problems),
+                "site": sites.reference(projection), "problems": _field_problems(path, site, view.text, functions, problems, family=family),
             })]
     if _epoch_end_field(path, "limit"):
         projection = projection.model_copy(update={"kinds": (FieldKind.VALUE,), "functions": (), "parts": ()})
@@ -1785,15 +1800,16 @@ def _trial_fields(
         ScopedValue(id=reference, name=stored_reference(reference), type=ValueType(base=ValueBase.REAL), level=Level.RUN)
         for reference in sorted(missing)
     ))})
-    text = print_field(expression, printed) if expression is not None else ""
-    marks = _field_problems(path, site, text, functions, problems)
+    text = print_field(expression, printed, fragment=authored is not None) if expression is not None else ""
+    marks = _field_problems(path, site, text, functions, problems, family=family)
     reports_missing = path[0] != "objective" or objective_use != ObjectiveUse.INHERITED
     if not marks and (missing and reports_missing or isinstance(expression, UnresolvedValue)):
         found = read_field(text, site, functions)
         if isinstance(found, tuple):
             marks = [problem.model_copy(update={"path": path}) for problem in found]
     return [StudioTrialField(
-        path=field_path, label=_field_label(path), site=sites.reference(projection), text=text,
+        path=field_path, label=authored.label if authored is not None else _field_label(path),
+        site=sites.reference(projection), text=text,
         structure=value_structure(expression, site, functions) if shown else None,
         conversion=time_conversion(expression, period, trial_time_use(path[0], path[1:])),
         problems=marks,
@@ -2001,8 +2017,8 @@ def trial_authoring(
     )
 
     def expression(path):
-        if projected.objective_editor is not None and (rule := projected.objective_editor.rules.get(path)) is not None:
-            return rule[1]
+        if (authored := projected.family_editor.fields.get(path)) is not None:
+            return authored.expression
         document = _field_document(documents, path[0])
         if (path[:2] == ("task", "variables") and len(path) == 4 and path[3] in ("value", "count")
                 and (entry := projected.set_variables.get(path[2])) is not None and entry.source.over is not None):
@@ -2042,13 +2058,13 @@ def trial_authoring(
         else ObjectiveUse.TRAIN
     )
     for path, site in projected.fields.items():
-        if path[1:2] == ("validation_trials",):
-            continue
         if path[:2] == ("task", "signals") and path[2] not in authored_signals:
             continue  # Internal gate and operand signals are not editable Task fields.
         fields.extend(_trial_fields(
             path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems,
             output_paths, period, menu_fields, sites, objective_use=objective_use,
+            authored=projected.family_editor.fields.get(path),
+            family=pointer(path[:3]) in projected.family_editor.families,
         ))
     set_fields = trial_set_fields(project, key.step)
     if set_fields:
@@ -2084,6 +2100,7 @@ def trial_authoring(
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=objective_document,
         task=stored_task, objective=stored_objective, objective_source=objective_source,
+        families=projected.family_editor.families,
         task_changed=changed_from_base(project, _whole_document(definition, task_path) if task_path else None),
         objective_changed=changed_from_base(project, _whole_document(
             definition, objective_path,
