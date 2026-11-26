@@ -43,7 +43,6 @@ from feedbax.contracts.task_document import (
     Signal as Signal,
     TaskDocument as TaskDocument,
     ValidationTrial as ValidationTrial,
-    ValidationValue,
     Variable as Variable,
 )
 from feedbax.contracts.expression_check import Checked, check, dependency_order, references
@@ -436,7 +435,7 @@ class DocumentTask:
         return self.finish(parameters, variables, final, samples, {})
 
     def validation(self, parameters, key) -> Trial | PendingTrial:
-        keys = validation_trial_keys(key, len(self.validation_rows))
+        keys = validation_trial_keys(key, len(self.validation_rows), ids=self.condition_ids)
         return self._sample_rows(self.validation_rows, parameters, key, keys)
 
     def evaluation(self, parameters, key, trial_ids, trial_keys) -> Trial | PendingTrial:
@@ -455,12 +454,6 @@ class DocumentTask:
 
     def model_inputs(self, trial: Trial) -> dict[str, jax.Array]:
         return {port: trial.inputs[signal] for port, signal in self.input_bindings}
-
-
-def _validation_expression(value: ValidationValue) -> Expression:
-    if isinstance(value, tuple):
-        return CallValue(function="vector", args=tuple(map(_validation_expression, value)))
-    return LiteralValue(value=value)
 
 
 def zero(base, shape) -> Expression:
@@ -587,9 +580,9 @@ def compile_task(
     """The variables with problems of their own or read from another that has them."""
 
     def lower(tree, expected, finest, scope, address, *, epoch=False, discrete=False,
-              list_count=None, repeat_count=None):
+              list_count=None, repeat_count=None, structural=False):
         site = Site(
-            expected=expected, finest=finest, names=tuple(scope),
+            expected=expected, finest=finest, names=tuple(scope), structural=structural,
             list_count=list_count, repeat_count=repeat_count,
         )
         if sites is not None:
@@ -975,8 +968,8 @@ def compile_task(
             )
     rows = []
     first = document.validation_trials[0]
-    for index, row in enumerate(document.validation_trials):
-        path = ("validation_trials", index)
+    for row in document.validation_trials:
+        path = ("validation_trials", row.id or 0)
         if (
             row.variables.keys() != first.variables.keys()
             or row.epoch_steps.keys() != first.epoch_steps.keys()
@@ -996,13 +989,14 @@ def compile_task(
                 )
                 continue
             code = lower(
-                _validation_expression(value),
+                value,
                 variable.type if variable.list_count is None else variable.type.model_copy(
                     update={"shape": (variable.list_count, *variable.type.shape)}
                 ),
                 Level.RUN,
                 (),
                 (*path, "variables", key),
+                structural=True,
             )
             if code is not None:
                 literal_inputs = Inputs(code.code.parameters, {}, None, None)

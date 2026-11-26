@@ -256,8 +256,12 @@ def reference_metadata():
 
 def validation_rows(kind):
     return tuple(
-        ValidationTrial.model_validate(row)
-        for row in reference_metadata()["tasks"][kind]["validation_rows"]
+        ValidationTrial(
+            id=f"trial-{index}",
+            variables={name: expression(json.dumps(value)) for name, value in row["variables"].items()},
+            epoch_steps=row["epoch_steps"],
+        )
+        for index, row in enumerate(reference_metadata()["tasks"][kind]["validation_rows"], 1)
     )
 
 
