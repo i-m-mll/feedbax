@@ -13,7 +13,7 @@ _DENSITY_POINTS = 48
 def value_structure(value: FieldValue, site: Site, functions: FunctionRegistry) -> StudioValueStructure:
     arguments = value.args if isinstance(value, DrawValue | CallValue) else ()
     return StudioValueStructure(
-        value=value, arguments=[print_field(argument, site) for argument in arguments],
+        value=value, arguments=[print_field(argument, site, fragment=True) for argument in arguments],
         density=_density(value, functions) if isinstance(value, DrawValue) else None,
     )
 

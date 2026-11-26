@@ -1,0 +1,484 @@
+{
+  "feedbax.contracts.analysis_document.AnalysisPayload[JsonValue]": {
+    "schema_version": "feedbax.analysis_document.v1",
+    "inputs": {},
+    "operations": {},
+    "views": {}
+  },
+  "feedbax.contracts.analysis_document.AnalyzeDatasetInput": {
+    "cardinality": "many"
+  },
+  "feedbax.contracts.analysis_document.AnalyzeModelInput": {},
+  "feedbax.contracts.analysis_document.AnalyzeTaskInput": {},
+  "feedbax.contracts.analysis_document.FigureElement[JsonValue]": {},
+  "feedbax.contracts.analysis_document.OperationDataset": {
+    "unresolved": null
+  },
+  "feedbax.contracts.analysis_document.OperationElement": {
+    "params": {}
+  },
+  "feedbax.contracts.analysis_document.StepInput": {},
+  "feedbax.contracts.artifact_custody.ContentObjectRef": {
+    "schema_id": "feedbax.spec.content_object_ref",
+    "schema_version": "feedbax.spec.content_object_ref.v1"
+  },
+  "feedbax.contracts.artifact_custody.ContentTreeRef": {
+    "schema_id": "feedbax.spec.content_tree_ref",
+    "schema_version": "feedbax.spec.content_tree_ref.v1"
+  },
+  "feedbax.contracts.expression_values.CallValue": {
+    "args": [],
+    "kwargs": {}
+  },
+  "feedbax.contracts.expression_values.Dimensions": {
+    "length": 0,
+    "mass": 0,
+    "time": 0,
+    "current": 0,
+    "temperature": 0,
+    "amount": 0,
+    "luminosity": 0,
+    "angle": 0
+  },
+  "feedbax.contracts.expression_values.DrawValue": {
+    "per": "trial",
+    "weights": null
+  },
+  "feedbax.contracts.expression_values.LiteralValue": {
+    "unit": null
+  },
+  "feedbax.contracts.expression_values.NameValue": {},
+  "feedbax.contracts.expression_values.UnresolvedValue": {},
+  "feedbax.contracts.expression_values.ValueType": {
+    "shape": [],
+    "dimensions": {
+      "length": 0,
+      "mass": 0,
+      "time": 0,
+      "current": 0,
+      "temperature": 0,
+      "amount": 0,
+      "luminosity": 0,
+      "angle": 0
+    },
+    "space": null
+  },
+  "feedbax.contracts.loaded_model.ImportedModelSource": {},
+  "feedbax.contracts.manifest.OverridePatch": {
+    "value": null
+  },
+  "feedbax.contracts.model_address.ComponentPortEnd": {},
+  "feedbax.contracts.model_address.InputBoundaryEnd": {},
+  "feedbax.contracts.model_address.OutputBoundaryEnd": {},
+  "feedbax.contracts.model_address.PhysicalBoundaryEnd": {},
+  "feedbax.contracts.model_checkpoint.SemanticModelEncoding": {},
+  "feedbax.contracts.model_document.CompositeComponent": {
+    "substeps": 1,
+    "attachments": {
+      "sources": {},
+      "sinks": {}
+    }
+  },
+  "feedbax.contracts.model_document.DelayAttachment": {
+    "initial_source": {
+      "kind": "value",
+      "value": 0.0
+    }
+  },
+  "feedbax.contracts.model_document.DelayInitialTask": {},
+  "feedbax.contracts.model_document.DelayInitialValue": {},
+  "feedbax.contracts.model_document.DelayInitialWire": {
+    "source": null
+  },
+  "feedbax.contracts.model_document.GraphInterior": {
+    "components": {},
+    "wires": {},
+    "attachments": {
+      "sources": {},
+      "sinks": {}
+    },
+    "physical_domain": null
+  },
+  "feedbax.contracts.model_document.HoldAttachment": {},
+  "feedbax.contracts.model_document.InputDefault": {},
+  "feedbax.contracts.model_document.InterventionAttachment": {
+    "operands": {},
+    "window": null
+  },
+  "feedbax.contracts.model_document.LeafComponent": {
+    "revision": null,
+    "fields": {},
+    "port_counts": {},
+    "attachments": {
+      "sources": {},
+      "sinks": {}
+    }
+  },
+  "feedbax.contracts.model_document.ModelDocument": {
+    "schema_version": "feedbax.spec.model.v1",
+    "world": null
+  },
+  "feedbax.contracts.model_document.ModelPhysicalConnection": {},
+  "feedbax.contracts.model_document.ModelPortAttachments": {
+    "sources": {},
+    "sinks": {}
+  },
+  "feedbax.contracts.model_document.ModelPorts": {
+    "inputs": [],
+    "outputs": [],
+    "physical": []
+  },
+  "feedbax.contracts.model_document.ModelTime": {},
+  "feedbax.contracts.model_document.ModelWire": {
+    "attachments": []
+  },
+  "feedbax.contracts.model_document.ModelWorld": {},
+  "feedbax.contracts.model_document.PhysicalInterior": {
+    "components": {},
+    "wires": {},
+    "attachments": {
+      "sources": {},
+      "sinks": {}
+    },
+    "connections": {}
+  },
+  "feedbax.contracts.model_document.PhysicalPort": {},
+  "feedbax.contracts.model_document.ProbeAttachment": {},
+  "feedbax.contracts.model_document.SignalInput": {
+    "default": null
+  },
+  "feedbax.contracts.model_document.SignalOutput": {},
+  "feedbax.contracts.model_document.SignalType": {
+    "base": null,
+    "shape": null,
+    "unit": null,
+    "space": null
+  },
+  "feedbax.contracts.objective_document.ObjectiveDocument": {
+    "terms": []
+  },
+  "feedbax.contracts.objective_document.ObjectiveTerm": {
+    "measure_type": {
+      "base": "real",
+      "shape": [],
+      "dimensions": {
+        "length": 0,
+        "mass": 0,
+        "time": 0,
+        "current": 0,
+        "temperature": 0,
+        "amount": 0,
+        "luminosity": 0,
+        "angle": 0
+      }
+    },
+    "weight": {
+      "kind": "literal",
+      "value": 1,
+      "unit": null
+    },
+    "reduction": "mean",
+    "window": null,
+    "enabled": true,
+    "name": null
+  },
+  "feedbax.contracts.project.BasedDocument": {
+    "differences": {}
+  },
+  "feedbax.contracts.project.DocumentBase": {
+    "unresolved": null
+  },
+  "feedbax.contracts.project.ExternalBase": {
+    "pointer": null
+  },
+  "feedbax.contracts.project.InlineBase": {},
+  "feedbax.contracts.project.LoadedModelDocument": {
+    "archive": null
+  },
+  "feedbax.contracts.project.Project": {
+    "documents": {},
+    "steps": {},
+    "sweep": null
+  },
+  "feedbax.contracts.project.RemoveDocumentValue": {},
+  "feedbax.contracts.project.RootDocument": {},
+  "feedbax.contracts.project.RunBase": {},
+  "feedbax.contracts.project.SetDocumentValue": {},
+  "feedbax.contracts.project.Step": {
+    "deltas": [],
+    "sweep": null,
+    "set_fields": {},
+    "inputs": {},
+    "requires": [],
+    "note": null,
+    "group": null
+  },
+  "feedbax.contracts.project.StepBase": {
+    "row": null,
+    "unresolved": null
+  },
+  "feedbax.contracts.project.StepNote": {
+    "issue": null,
+    "reason": null,
+    "replaces": null
+  },
+  "feedbax.contracts.project_inputs.BarrierCheckpoint": {},
+  "feedbax.contracts.project_inputs.BatchCheckpoint": {},
+  "feedbax.contracts.project_inputs.BestCheckpoint": {},
+  "feedbax.contracts.project_inputs.BoundRank": {},
+  "feedbax.contracts.project_inputs.DocumentReference": {
+    "pointer": null,
+    "unresolved": null
+  },
+  "feedbax.contracts.project_inputs.InitialModelReference[DocumentReference]": {
+    "seed": 0
+  },
+  "feedbax.contracts.project_inputs.LoadedModelReference": {},
+  "feedbax.contracts.project_inputs.NamedSubset": {
+    "unresolved": null
+  },
+  "feedbax.contracts.project_inputs.ObjectiveDocumentReference[DocumentReference]": {},
+  "feedbax.contracts.project_inputs.OmittedReference": {},
+  "feedbax.contracts.project_inputs.RunReference": {},
+  "feedbax.contracts.project_inputs.SelectedAxisValue": {},
+  "feedbax.contracts.project_inputs.StepReference": {
+    "where": null,
+    "variants": null,
+    "checkpoint": null,
+    "element": null,
+    "product": null,
+    "unresolved": null
+  },
+  "feedbax.contracts.project_inputs.StoreSubset": {
+    "rule": "",
+    "bound_ranks": null,
+    "clauses": []
+  },
+  "feedbax.contracts.project_inputs.SubsetTerms": {
+    "rule": "",
+    "bound_ranks": null,
+    "clauses": []
+  },
+  "feedbax.contracts.project_inputs.SweepExceptionTerms": {
+    "rule": "",
+    "rows": null
+  },
+  "feedbax.contracts.project_inputs.TaskDocumentReference[DocumentReference]": {},
+  "feedbax.contracts.project_io.StudioProjectFile": {},
+  "feedbax.contracts.project_io.TextProjectManifest": {
+    "settings": {},
+    "sweep": null,
+    "variants": []
+  },
+  "feedbax.contracts.project_sweep.AxisCondition": {
+    "rule": "",
+    "rows": null
+  },
+  "feedbax.contracts.project_sweep.AxisGroup": {},
+  "feedbax.contracts.project_sweep.AxisValue": {
+    "task_variables": [],
+    "task_links": [],
+    "patches": {},
+    "label": null,
+    "value": null
+  },
+  "feedbax.contracts.project_sweep.CheckpointRuleAxis": {
+    "label": null,
+    "path": "{\"field\":\"checkpoint\",\"input\":\"subject\"}"
+  },
+  "feedbax.contracts.project_sweep.CooccurringSetTrials": {
+    "weights": {}
+  },
+  "feedbax.contracts.project_sweep.GroupCombination": {},
+  "feedbax.contracts.project_sweep.InputAxis": {
+    "label": null
+  },
+  "feedbax.contracts.project_sweep.ListedAxis": {
+    "label": null,
+    "where": null
+  },
+  "feedbax.contracts.project_sweep.ListedSetTrials": {},
+  "feedbax.contracts.project_sweep.ManualCombination": {},
+  "feedbax.contracts.project_sweep.NamedAxis": {
+    "label": null,
+    "where": null,
+    "optional": false
+  },
+  "feedbax.contracts.project_sweep.RangeAxis": {
+    "label": null,
+    "where": null
+  },
+  "feedbax.contracts.project_sweep.RangeValues": {
+    "scale": "linear"
+  },
+  "feedbax.contracts.project_sweep.RemoveValue": {},
+  "feedbax.contracts.project_sweep.Row": {
+    "task_variables": [],
+    "task_links": [],
+    "patches": {},
+    "label": null,
+    "value": null,
+    "from": null
+  },
+  "feedbax.contracts.project_sweep.SampleValues": {},
+  "feedbax.contracts.project_sweep.SampledAxis": {
+    "label": null,
+    "where": null,
+    "draws": null
+  },
+  "feedbax.contracts.project_sweep.SetAxis": {
+    "label": null,
+    "where": null,
+    "optional": false
+  },
+  "feedbax.contracts.project_sweep.SetEntryParts": {
+    "on": 1.0,
+    "off": 1.0
+  },
+  "feedbax.contracts.project_sweep.SetValue": {
+    "op": "replace"
+  },
+  "feedbax.contracts.project_sweep.Sweep": {
+    "axes": {},
+    "rows": {},
+    "exceptions": {},
+    "combination": null,
+    "inherit_rows": true
+  },
+  "feedbax.contracts.project_sweep.SweepException": {
+    "patches": {},
+    "where": null,
+    "exclude": false
+  },
+  "feedbax.contracts.project_sweep.TrialSetField": {
+    "condition": null
+  },
+  "feedbax.contracts.project_sweep.WeightedSetTrials": {
+    "weights": {},
+    "none": 1.0
+  },
+  "feedbax.contracts.report_document.ReportDocument": {
+    "schema_version": "feedbax.report_document.v1",
+    "completeness": "complete"
+  },
+  "feedbax.contracts.report_document.ReportFigure": {
+    "caption": null
+  },
+  "feedbax.contracts.report_document.ReportText": {},
+  "feedbax.contracts.request_refs.CheckpointBatches": {},
+  "feedbax.contracts.request_refs.CheckpointCadence": {},
+  "feedbax.contracts.request_refs.UpdateCadence": {
+    "from": null,
+    "through": null
+  },
+  "feedbax.contracts.request_refs.UpdateCheckpoint": {},
+  "feedbax.contracts.request_specs.DocumentTrainingConfig": {
+    "n_batches": 2000,
+    "batch_size": 128,
+    "snapshot_interval": 100,
+    "replicates": 1
+  },
+  "feedbax.contracts.run_matrix.MatrixCompositionDelta": {
+    "patches": [],
+    "acknowledges_ancestor_paths": [],
+    "schema_id": null,
+    "schema_version": null
+  },
+  "feedbax.contracts.selection.ManifestPredicate": {
+    "manifest_kind": "TrainingRunManifest",
+    "run_ids": [],
+    "source_set_ids": [],
+    "statuses": [],
+    "has_checkpoint": null,
+    "tags": [],
+    "metadata_equals": {},
+    "params_equals": {},
+    "path_equals": {},
+    "expression": null,
+    "top_k_by_metric_per_group": null
+  },
+  "feedbax.contracts.selection.TopKByMetricPerGroup": {
+    "k": 1,
+    "order": "asc"
+  },
+  "feedbax.contracts.set_document.SetDocument": {},
+  "feedbax.contracts.set_document.SetEntry": {
+    "task_variables": [],
+    "task_links": [],
+    "label": null,
+    "differences": {}
+  },
+  "feedbax.contracts.studio_project.DocumentPresentation": {
+    "positions": {},
+    "camera": null,
+    "flipped": {},
+    "collapsed": {},
+    "waypoints": {}
+  },
+  "feedbax.contracts.studio_project.PresentationCamera": {},
+  "feedbax.contracts.studio_project.PresentationDocument": {
+    "documents": {},
+    "steps": {},
+    "visible_groups": []
+  },
+  "feedbax.contracts.studio_project.PresentationPosition": {},
+  "feedbax.contracts.studio_project.StepPresentation": {
+    "sweep_order": [],
+    "model_positions": {}
+  },
+  "feedbax.contracts.task_document.Cell": {},
+  "feedbax.contracts.task_document.Epoch": {},
+  "feedbax.contracts.task_document.Length": {
+    "max_steps": null
+  },
+  "feedbax.contracts.task_document.Link": {},
+  "feedbax.contracts.task_document.Marker": {},
+  "feedbax.contracts.task_document.PythonTaskSelection": {
+    "params": {}
+  },
+  "feedbax.contracts.task_document.Repeat": {},
+  "feedbax.contracts.task_document.Rest": {},
+  "feedbax.contracts.task_document.SetVariableChoices": {},
+  "feedbax.contracts.task_document.Signal": {
+    "absent": null,
+    "window": null,
+    "intervention": null
+  },
+  "feedbax.contracts.task_document.TaskDocument": {
+    "repeats": [],
+    "links": [],
+    "fixed_steps": null,
+    "validation_trials": [
+      {
+        "variables": {},
+        "epoch_steps": {}
+      }
+    ]
+  },
+  "feedbax.contracts.task_document.Until": {},
+  "feedbax.contracts.task_document.ValidationTrial": {
+    "variables": {},
+    "epoch_steps": {}
+  },
+  "feedbax.contracts.task_document.Variable": {
+    "count": null,
+    "set_choices": null,
+    "marker": null
+  },
+  "feedbax.contracts.time_units.TimeValue": {},
+  "feedbax.contracts.training_document.TrainingDocument": {},
+  "feedbax.contracts.window.Window": {},
+  "feedbax.contracts.window.WindowEpoch": {
+    "occurrence": null
+  },
+  "feedbax.contracts.window.WindowEpochAnchor": {
+    "occurrence": null
+  },
+  "feedbax.contracts.window.WindowInterval": {},
+  "feedbax.contracts.window.WindowMoment": {},
+  "feedbax.contracts.window.WindowPosition": {
+    "offset": null
+  },
+  "feedbax.contracts.window.WindowRelativePosition": {},
+  "feedbax.contracts.window.WindowTrialAnchor": {}
+}

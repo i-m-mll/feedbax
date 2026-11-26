@@ -238,7 +238,7 @@ def apply_differences(base: Payload, differences: Differences) -> Payload:
 
 
 def same_json(left: Any, right: Any) -> bool:
-    """JSON equality: unlike ``==``, ``1``, ``1.0`` and ``true`` differ."""
+    """Authored edit equality, including the legacy distinction between integer and real literals."""
     if isinstance(left, dict):
         return isinstance(right, dict) and left.keys() == right.keys() and all(
             same_json(value, right[key]) for key, value in left.items()

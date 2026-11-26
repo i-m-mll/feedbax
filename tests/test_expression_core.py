@@ -26,6 +26,7 @@ from feedbax.contracts.expression_registry import Function, FunctionClass, Funct
 from feedbax.contracts.expression_site import FieldKind, field_kind, project_site, read_field
 from feedbax.contracts.expression_text import ParsedField, parse, print_field
 from feedbax.contracts.task_document import VALUE_TYPES
+from feedbax.studio.value_structure import value_structure
 
 
 @pytest.fixture
@@ -171,6 +172,52 @@ def test_text_is_shown_back_as_written_with_operators_infix(written, shown):
     """Catches text stored as written ``a + b`` and shown back as ``add(a, b)``, or with parentheses it never needed."""
     names = site(names=_OPERANDS)
     assert print_field(parsed(written, names), names) == shown
+
+
+@pytest.mark.parametrize(
+    ("written", "shown"),
+    [
+        ("1.0", "1"),
+        ("-0.0", "-0.0"),
+        ("1.0 st", "1 st"),
+        ("45.0°", "45°"),
+        ("1.0E-07", "1e-7"),
+        ("1.0E+20", "1e+20"),
+        ("1.0E+21", "1e+21"),
+        ("0.15000000596046448", "0.15000000596046448"),
+        ("(-2.0)**(1.0 + 0.1)", "(-2.0) ** (1.0 + 0.1)"),
+        ("true and not false", "true and not false"),
+    ],
+)
+def test_editor_prints_canonical_numbers_without_rewriting_the_tree(written, shown):
+    expected = site()
+    tree = parsed(written, expected)
+    assert print_field(tree, expected) == shown
+    assert parsed(shown, expected) == tree
+
+
+def test_editor_keeps_a_float_list_index_and_its_type_problem(functions):
+    names = (ScopedValue(id="items", name="items", type=ValueType(base=ValueBase.REAL), level=Level.RUN, list_count=2),)
+    expected = site(names=names)
+    tree = parsed("items[1.0]", expected)
+    shown = print_field(tree, expected)
+    assert shown == "items[1.0]"
+    assert value_structure(tree, expected, functions).arguments == ["items", "1.0"]
+    (problem,) = check(parsed(shown, expected), expected, functions)
+    assert (problem.code, problem.path) == (ProblemCode.TYPE_MISMATCH, ("args", 1))
+
+
+def test_editor_types_an_integer_spelling_from_its_real_root_site(functions):
+    expected = site()
+    original = parsed("1.0", expected)
+    shown = print_field(original, expected)
+    assert shown == "1"
+    for tree in (original, parsed(shown, expected)):
+        typed = check(tree, expected, functions)
+        assert isinstance(typed, Checked)
+        assert typed.root.type.base == ValueBase.REAL
+    expected_boolean = site(ValueBase.BOOLEAN)
+    assert print_field(original, expected_boolean) == "1.0"
 
 
 def test_scope_ids_survive_rename_and_duplicate_names_report_second():

@@ -631,7 +631,7 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         assert after["project"]["documents"] == before["project"]["documents"]
         assert after["project"]["steps"] == before["project"]["steps"]
         sweep = before["project"]["sweep"]
-        sweep["rows"]["compare"]["patches"][target] = {"op": "replace", "value": 3}
+        sweep["rows"]["compare"]["patches"][target] = {"value": 3}
         assert after["project"]["sweep"] == sweep
         stale = review(**change)
         assert stale.status_code == 409, stale.text
