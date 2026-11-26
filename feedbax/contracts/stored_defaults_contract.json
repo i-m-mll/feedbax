@@ -18,14 +18,6 @@
     "params": {}
   },
   "feedbax.contracts.analysis_document.StepInput": {},
-  "feedbax.contracts.artifact_custody.ContentObjectRef": {
-    "schema_id": "feedbax.spec.content_object_ref",
-    "schema_version": "feedbax.spec.content_object_ref.v1"
-  },
-  "feedbax.contracts.artifact_custody.ContentTreeRef": {
-    "schema_id": "feedbax.spec.content_tree_ref",
-    "schema_version": "feedbax.spec.content_tree_ref.v1"
-  },
   "feedbax.contracts.expression_values.CallValue": {
     "args": [],
     "kwargs": {}
@@ -63,7 +55,7 @@
     },
     "space": null
   },
-  "feedbax.contracts.loaded_model.ImportedModelSource": {},
+  "feedbax.contracts.loaded_model.LoadedModelAsset": {},
   "feedbax.contracts.manifest.OverridePatch": {
     "value": null
   },
@@ -71,7 +63,6 @@
   "feedbax.contracts.model_address.InputBoundaryEnd": {},
   "feedbax.contracts.model_address.OutputBoundaryEnd": {},
   "feedbax.contracts.model_address.PhysicalBoundaryEnd": {},
-  "feedbax.contracts.model_checkpoint.SemanticModelEncoding": {},
   "feedbax.contracts.model_document.DelayInitialTask": {},
   "feedbax.contracts.model_document.DelayInitialValue": {},
   "feedbax.contracts.model_document.DelayInitialWire": {
