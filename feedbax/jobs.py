@@ -54,6 +54,7 @@ from feedbax.contracts.jobs import (
     StudioSubmissionActor,
     StudioSubmissionItem,
     StudioTrainCheckpointSource,
+    StudioTrainMetricHistory,
     StudioVenueStream,
 )
 from feedbax.contracts.loaded_model import ImportedModelProvenance
@@ -1014,6 +1015,36 @@ class JobService(PlanJobReader):
                 data=data | {"manifest_root": str(root), "runtime": launch.argv[0]},
             ),
         )
+
+    def read_train_metric_history(self, *, project: str, job_id: str) -> StudioTrainMetricHistory:
+        """Read the retained metric product of one successful Train attempt."""
+        from feedbax.persistence.effective_success import SuccessView
+        from feedbax.persistence.train_metrics import read_train_metric_updates
+
+        rows = self.host.jobs_snapshot(job_id=job_id, project=project, start_host=False)["jobs"]
+        if not rows:
+            raise JobNotFound(job_id)
+        (job,) = rows
+        if job["project"] != project or job["state"] != "succeeded" or not job["request"].startswith("train:"):
+            raise JobNotFound(job_id)
+        try:
+            store = ImmutableArtifactBlobProvider(Path(job["data"]["manifest_root"]))
+            view = SuccessView(store)
+            accepted = ContentObjectRef.model_validate(job["outcome"]["store_success"])
+            if view.attempt_ref(job_id) != accepted:
+                raise ValueError("Train metrics belong to a different attempt.")
+            receipt = view.read_receipt(accepted)
+            if (
+                receipt.attempt != job_id or receipt.request.id != job["request"]
+                or receipt.target != attempt_target(job["data"].get("target"))
+            ):
+                raise ValueError("Train metrics differ from the accepted result.")
+            if not receipt.products.get("metrics"):
+                raise JobNotFound(job_id)
+            updates = read_train_metric_updates(store, receipt)
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise JobConflict("The completed Train metric history is unreadable.") from exc
+        return StudioTrainMetricHistory(job_id=job_id, start_exclusive=updates[0].update - 1, updates=updates)
 
     def read_evaluation_result(self, *, project: str, store: Path, job_id: str) -> EvaluationResult:
         """Locate an authenticated Evaluate result by exact project and attempt."""
