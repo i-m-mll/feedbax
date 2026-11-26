@@ -68,7 +68,7 @@ def test_evaluate_selects_a_validation_family_after_crossing_a_listed_set_family
     raw = document_project(authored_documents(), evaluation=True)
     task = raw["documents"]["task"]["payload"]
     original = deepcopy(next(iter(task["validation_trials"].values())))
-    task["validation_trials"] = {"reach": original | {"over": {"k": "0..2"}}}
+    task["validation_trials"] = {"reach": original | {"label": "Reach {k}", "over": {"k": "0..2"}}}
     raw["documents"]["bank"] = {
         "label": "Loads", "schema": SET_DOCUMENT_SCHEMA_ID,
         "payload": {"entries": {"shift": _shift_entry(1)}},

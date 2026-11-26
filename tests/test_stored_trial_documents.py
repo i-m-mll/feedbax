@@ -48,8 +48,8 @@ def _task():
         },
         "links": {start: "z"},
         "validation_trials": {
-            "right": {"variables": {"z": 3}},
-            "left": {"variables": {"z": 2}},
+            "right": {"label": "Right", "variables": {"z": 3}},
+            "left": {"label": "Left", "variables": {"z": 2}},
         },
     }
 
@@ -77,7 +77,8 @@ def test_task_lowers_member_order_and_explicit_trial_keys():
 
     assert lowered.condition_ids == ("right", "left")
     assert lowered.validation_trials[0].variables == {"z": LiteralValue(value=3)}
-    assert StoredTaskDocument.from_lowered(lowered).model_dump(mode="json", exclude_unset=True) == payload
+    restored = StoredTaskDocument.from_lowered(lowered, validation_trials=task.validation_trials)
+    assert restored.model_dump(mode="json", exclude_unset=True) == payload
 
 
 def test_sampled_task_uses_the_empty_storage_default():

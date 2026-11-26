@@ -125,7 +125,7 @@ def _conditioning_task():
             "memory": _vector_signal("memory", [zero] * 4),
         },
         "validation_trials": {
-            f"trial-{index}": {"variables": {"conditioning": level}}
+            f"trial-{index}": {"label": f"Conditioning {index}", "variables": {"conditioning": level}}
             for index, level in enumerate((0.0, 0.5, 1.0), start=1)
         },
     }
