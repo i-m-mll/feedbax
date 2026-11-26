@@ -32,10 +32,11 @@ from feedbax.contracts.figure_document import (
     layer_encodings,
     validate_figure_bindings,
 )
-from feedbax.contracts.dataset import FieldDescriptor
+from feedbax.contracts.dataset import REPLICATE_DIM, FieldDescriptor, replica_coordinate
 from feedbax.contracts.member_stack import MEMBER, labelled_members, stack_layout
 from feedbax.contracts.operation import (
-    DatasetInputPort, DatasetOutputPort, DatasetPort, WholeDimensions, require_dataset_fields, require_dataset_port,
+    DatasetInputPort, DatasetOutputPort, DatasetPort, ModelPort, OperationDefinition, WholeDimensions,
+    operation_input_port, require_dataset_fields, require_dataset_port,
 )
 from feedbax.contracts.project import Document, Payload, json_pointer_parts
 from feedbax.planner.project_plan import (
@@ -572,6 +573,37 @@ class _Lowerer:
             raise _ElementIssue(path, "Mapped inputs do not pair one to one by their shared labels.")
         return combinations
 
+    def _operation_ports(
+        self, definition: OperationDefinition, inputs: Mapping[str, tuple[PlannedInput, ...]],
+        schemas: Mapping[str, DatasetPort],
+    ) -> dict[str, DatasetPort]:
+        replica = next((
+            replica_coordinate(inputs[role][0].model_replicas)
+            for role, expected in definition.inputs.items() if isinstance(expected, ModelPort)
+        ), None)
+        dimensions = set()
+        for role, actual in schemas.items():
+            expected = definition.inputs[role]
+            assert isinstance(expected, DatasetPort)
+            dimensions.update(operation_input_port(actual, expected).dimensions)
+            if expected.uses_replicate_axis or REPLICATE_DIM not in actual.dimensions:
+                continue
+            coordinate = actual.coordinates.get(REPLICATE_DIM)
+            if coordinate is None or coordinate.dims != (REPLICATE_DIM,):
+                raise _ElementIssue(f"inputs.{role}", "Replicated data requires a one-dimensional replicate coordinate.")
+            if replica is None:
+                replica = coordinate
+            elif replica.inline_values is not None and coordinate.inline_values is not None and (
+                set(replica.inline_values) != set(coordinate.inline_values)
+            ):
+                raise _ElementIssue(f"inputs.{role}", "Replicate IDs differ from the other operation inputs.")
+
+        outputs = {}
+        for role, port in definition.outputs.items():
+            fitted = port.for_dimensions(dimensions) if schemas or replica is not None else port
+            outputs[role] = fitted.with_replicate_axis(replica) if replica is not None else fitted
+        return outputs
+
     def operation(self, name: str, element: OperationElement) -> None:
         path = f"payload.operations.{name}"
         try:
@@ -593,7 +625,7 @@ class _Lowerer:
             self._check_roles(element.inputs, set(definition.inputs))
             inputs = {}
             entries: dict[str, _Entries] = {}
-            dataset_dimensions: set[str] = set()
+            schemas = {}
             for role, expected in definition.inputs.items():
                 source = element.inputs[role]
                 wire_path = f"inputs.{role}"
@@ -601,21 +633,16 @@ class _Lowerer:
                     inputs[role] = self._step_input(source, expected.kind, wire_path)
                     continue
                 inputs[role], actual, entries[role] = self._input(source, wire_path)
-                dataset_dimensions.update(actual.dimensions)
+                schemas[role] = actual
                 operation_output = any(binding.producer_element is not None for binding in inputs[role])
                 try:
-                    require_dataset_port(actual, expected, fields=operation_output)
+                    fitted = require_dataset_port(actual, expected, fields=operation_output)
                     if operation_output:
-                        for parameter, requirement in expected.for_dimensions(actual.dimensions).selected_variables.items():
-                            require_dataset_fields(
-                                actual.variables, {getattr(params, parameter): requirement}
-                            )
+                        for parameter, requirement in expected.for_dimensions(fitted.dimensions).selected_variables.items():
+                            require_dataset_fields(fitted.variables, {getattr(params, parameter): requirement})
                 except ValueError as error:
                     raise _ElementIssue(wire_path, str(error)) from error
-            outputs = {
-                role: port.for_dimensions(dataset_dimensions) if dataset_dimensions else port
-                for role, port in definition.outputs.items()
-            }
+            outputs = self._operation_ports(definition, inputs, schemas)
             ports = {role: port for role, port in definition.inputs.items() if isinstance(port, DatasetInputPort)}
             groups = {
                 role: grouped for role, port in ports.items()

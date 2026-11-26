@@ -232,6 +232,12 @@ class LoadedModelRead:
 
 
 @dataclass(frozen=True)
+class ResolvedImportedModel:
+    model: ModelDocument
+    replica_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class BaseReaders:
     """Read exact historical payloads and external bytes from caller-owned sources.
 
@@ -248,7 +254,7 @@ class BaseReaders:
     row: Callable[[ResolvedStep, str], SelectedRow | None] | None = None
     figure_external: Callable[[str], bytes | None] | None = None
     terminal_train: Callable[[str], TerminalTrainSource | None] | None = None
-    imported_model: Callable[[LoadedModelRead], ModelDocument] | None = None
+    imported_model: Callable[[LoadedModelRead], ResolvedImportedModel] | None = None
 
 
 def _at_sweep_origin(problem: ProjectDiagnostic, source: ValueSource) -> ProjectDiagnostic:

@@ -22,6 +22,7 @@ from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.dataset import replica_coordinate
 from feedbax.contracts.expression_values import Level, Problem, ScopedValue, TextSpan, UnresolvedValue, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
@@ -79,7 +80,7 @@ from feedbax.contracts.project_resolution import (
     RunKey,
     StepComposition,
     StepTemplate,
-    TerminalTrainSource,
+    ResolvedImportedModel, TerminalTrainSource,
     _TrialResolution,
     compose_document,
     compose_step,
@@ -298,6 +299,8 @@ class PlannedInput:
     """The authored selection that chose this member."""
     named: Mapping[str, LabelName] = field(default_factory=dict)
     """What the member's step-valued labels name. The request identifies each by content (`_identified`)."""
+    model_replicas: tuple[str, ...] | None = None
+    """Replica IDs of a document-bound Model available before executing the operation."""
     best_path: str = field(default="inputs.subject.where.rule", compare=False)
     """Where a ranked member's Best is authored: its role's, or its list item's."""
 
@@ -2987,6 +2990,7 @@ class _Compiler:
         document_ids = resolved.document_ids
         document_uses = resolved.document_uses | frozenset(field.axis.set for field in fields.values())
         followed = frozenset()
+        replica_ids = ()
         try:
             if resolved.payload.get("evaluation_type") != ROLLOUT_TYPE:
                 raise ValueError("An initial Model subject requires a rollout Evaluate")
@@ -2996,7 +3000,8 @@ class _Compiler:
             if isinstance(subject_ref, LoadedModelReference):
                 source = authored_document_input(subject_ref, subject_document)
                 assert isinstance(source, ImportedModelSource)
-                model = self.read_imported_model(key.variant, subject_ref, subject_document)
+                imported = self.read_imported_model(key.variant, subject_ref, subject_document)
+                model, replica_ids = imported.model, imported.replica_ids
                 navigation = LoadedModelDocument.model_validate(subject_document.payload).model
                 if (
                     EVALUATION_MODEL not in document_ids and not navigation.unresolved and navigation.pointer is None
@@ -3120,6 +3125,7 @@ class _Compiler:
                     rollout_dataset_port(
                         paired.task.interface.signals, settings.states_schema, None,
                         model_states=paired.model.retained_state_fields,
+                        replicate=replica_coordinate(replica_ids) if len(replica_ids) > 1 else None,
                     ) if not isinstance(paired, tuple) and not paired.problems else None
                 ),
             ), inputs
@@ -3147,7 +3153,7 @@ class _Compiler:
 
     def read_imported_model(
         self, variant: str, reference: LoadedModelReference, document: RootDocument,
-    ) -> ModelDocument:
+    ) -> ResolvedImportedModel:
         if self.readers.imported_model is None:
             raise ValueError("A Loaded Model must resolve from the project Store.")
         loaded = LoadedModelDocument.model_validate(document.payload)
@@ -3229,9 +3235,10 @@ class _Compiler:
             or model_source is None or model_source.evaluation_graph is None
         ):
             return payload
-        source_documents = self.evaluation_source_documents(reference)
-        if source_documents is None:
+        source = self.evaluation_source_spec(reference)
+        if source is None:
             return payload
+        source_documents = source.trial_documents
         raw = payload.get("params")
         if not isinstance(raw, dict):
             return payload
@@ -3304,10 +3311,16 @@ class _Compiler:
                 else:
                     params.pop("input_bindings", None)
             lowered = payload | {"params": params}
+            replicate = (
+                replica_coordinate()
+                if isinstance(source, DocumentTrainingRequestSpec) and source.training_config.replicates > 1 else None
+            )
             return _EvaluatePayload(
                 lowered, refusals,
-                rollout_dataset_port(signals, settings.states_schema, rollout_update_axis(reference), model_states=state_fields)
-                if not refusals else None,
+                rollout_dataset_port(
+                    signals, settings.states_schema, rollout_update_axis(reference),
+                    model_states=state_fields, replicate=replicate,
+                ) if not refusals else None,
             )
         except ValueError as error:
             return ProjectDiagnostic(
@@ -3318,12 +3331,16 @@ class _Compiler:
             )
 
     def evaluation_source_documents(self, reference: ProductRef) -> TrialDocuments | None:
+        source = self.evaluation_source_spec(reference)
+        return source.trial_documents if source is not None else None
+
+    def evaluation_source_spec(self, reference: ProductRef) -> DocumentTrainingRequestSpec | SynthesisRequestSpec | None:
         if (terminal := self.terminal_sources.get(reference.request_id)) is not None:
-            return terminal.train.trial_documents
+            return terminal.train
         if (source := self.requests.get(reference.request_id)) is None:
             return None
         producer = request_identity.decode_request(source, self.documents.__getitem__).spec
-        return producer.trial_documents if isinstance(producer, (DocumentTrainingRequestSpec, SynthesisRequestSpec)) else None
+        return producer if isinstance(producer, (DocumentTrainingRequestSpec, SynthesisRequestSpec)) else None
 
     def evaluate_model_variation(
         self, key: RunKey, payload: Payload, source: ModelDocument, evaluated: ModelDocument,
@@ -4020,9 +4037,12 @@ class _Compiler:
                     source = authored_document_input(
                         reference, resolved.input_documents[role], python_tasks=self.python_tasks,
                     )
+                    ids = None
                     if isinstance(reference, LoadedModelReference):
-                        self.read_imported_model(variant, reference, resolved.input_documents[role])
-                    binding = _plan_document_content(source, self.documents)
+                        ids = self.read_imported_model(variant, reference, resolved.input_documents[role]).replica_ids
+                    elif isinstance(reference, InitialModelReference):
+                        ids = ("0",)
+                    binding = replace(_plan_document_content(source, self.documents), model_replicas=ids)
                 except (OSError, ValueError) as error:
                     problem(f"inputs.{role}", str(error), row.id)
                     continue
