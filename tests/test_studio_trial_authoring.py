@@ -307,9 +307,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         assert {choice.document for choice in initial.tasks} == {"probe-task", "task", "test-task", "unbound-task"}
         assert any(field.path == "/python_task/params/n_steps" for field in initial.fields)
         edited = author(revision, {"kind": "task", "edits": [
-            {"op": "ensure", "path": "/params", "collection": "object"},
-            {"op": "add", "path": "/params/x", "value": 0.22},
-            {"op": "add", "path": "/params/n_steps", "value": 12},
+            {"op": "add", "path": "/params", "value": {"x": 0.22, "n_steps": 12}},
         ]})
         old = revision
         revision = save(edited)
@@ -350,10 +348,10 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
                 ).model_dump(mode="json"),
                 "measure_type": {"base": "real", "dimensions": LENGTH.raised(2).model_dump(mode="json")},
             }
-        revised = author(revision, {"kind": "objective", "edits": [
-            {"op": "add", "path": "/terms/-", "value": value}
-            for value in (term, windowed, squared_target("target-variable", "target"), squared_target("target-signal", "reach_target"))
-        ]})
+        revised = author(revision, {"kind": "objective", "edits": [{
+            "op": "add", "path": "/terms",
+            "value": [term, windowed, squared_target("target-variable", "target"), squared_target("target-signal", "reach_target")],
+        }]})
         revision = save(revised)
         view = author(revision)
         assert view.n_steps == 12
@@ -755,9 +753,10 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
             shared = body | {
                 "run": {"variant": other.variant, "step": other.step, "row": other.row},
                 "revision": saved.json()["revision"], "scope": {"kind": "step", "chosen_steps": ["other", "train"]},
-                "change": {"kind": "objective", "edits": [
-                    {"op": "replace", "path": "/terms/0/weight/value", "value": 3},
-                ]},
+                "change": {
+                    "kind": "expression", "path": "/objective/terms/base/weight",
+                    "edit": {"kind": "text", "text": "3"},
+                },
             }
             prepared = client.post(f"{route}/authoring/trials", json=shared)
             assert prepared.status_code == 200, prepared.text

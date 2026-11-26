@@ -16,14 +16,17 @@ from pydantic_core import to_jsonable_python
 from feedbax.contracts.canonical_json import validate_canonical_json_v2
 from feedbax.contracts.expression_values import LiteralValue
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.objective_document import ObjectiveTerm
-from feedbax.contracts.project import RootDocument
-from feedbax.contracts.project_sweep import AxisValue, NamedAxis, Sweep, SweepException
+from feedbax.contracts.project import InlineBase, RootDocument, SetDocumentValue, Step
+from feedbax.contracts.project_sweep import AxisValue, NamedAxis, SetValue, Sweep, SweepException
+from feedbax.contracts.rollout import ROLLOUT_TYPE
 
 
 type StoredPath = tuple[str, ...]
 
 _REFINEMENTS = (Sweep, NamedAxis, AxisValue, SweepException)
+_REAL_TOKEN_VALUES = (SetDocumentValue, OverridePatch, SetValue, SetField, LiteralValue)
 _WIDTH = 100
 
 
@@ -177,9 +180,27 @@ def _same_stored_value(left: JsonValue, right: JsonValue, *, real_site: bool) ->
 def _projected_file(
     model: BaseModel, exclude: set[str] | None, protected: Iterable[StoredPath],
 ) -> tuple[JsonValue, set[StoredPath]]:
-    real_literals: set[StoredPath] = set()
+    real_tokens: set[StoredPath] = set()
     prefixes = {path[:end] for path in protected for end in range(1, len(path) + 1)}
     _, tags = _schema_inventory()
+
+    def remember_reals(value: JsonValue, path: StoredPath) -> None:
+        if type(value) is float:
+            real_tokens.add(path)
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                remember_reals(child, (*path, key))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                remember_reals(child, (*path, str(index)))
+
+    def remember_variation(value: JsonValue, path: StoredPath) -> None:
+        params = value.get("params") if isinstance(value, dict) else None
+        edits = params.get("variation") if isinstance(params, dict) else None
+        entries = edits.items() if isinstance(edits, dict) else enumerate(edits) if isinstance(edits, list) else ()
+        for key, edit in entries:
+            if isinstance(edit, dict) and isinstance(edit.get("path"), str) and "value" in edit:
+                remember_reals(edit["value"], (*path, "params", "variation", str(key), "value"))
 
     def project(value: Any, encoded: JsonValue, path: StoredPath) -> JsonValue:
         if isinstance(value, BaseModel) and isinstance(encoded, dict):
@@ -211,12 +232,16 @@ def _projected_file(
                 ):
                     continue
                 if isinstance(value, RootDocument) and name == "payload":
+                    if isinstance(child, dict) and child.get("evaluation_type") == ROLLOUT_TYPE:
+                        remember_variation(child, child_path)
                     typed = _payload_model(value)
                     if typed is not None:
                         raw = typed
                         child = typed.model_dump(mode="json", by_alias=True)
-                if isinstance(value, LiteralValue) and name == "value" and type(child) is float:
-                    real_literals.add(child_path)
+                if isinstance(value, _REAL_TOKEN_VALUES) and name == "value":
+                    remember_reals(child, child_path)
+                elif isinstance(value, Step) and value.kind == "evaluate" and name == "base" and isinstance(raw, InlineBase):
+                    remember_variation(raw.inline, (*child_path, "inline"))
                 result[key] = project(raw, child, child_path)
             return result
         if isinstance(value, (tuple, list)) and isinstance(encoded, list):
@@ -225,7 +250,7 @@ def _projected_file(
             return {key: project(value.get(key), child, (*path, key)) for key, child in encoded.items()}
         return encoded
 
-    return project(model, model.model_dump(mode="json", by_alias=True), ()), real_literals
+    return project(model, model.model_dump(mode="json", by_alias=True), ()), real_tokens
 
 
 def stored_project_value(
@@ -246,11 +271,11 @@ def _scalar(value: JsonValue, *, keep_real: bool = False) -> str:
 
 
 class _Layout:
-    def __init__(self, real_literals: set[StoredPath]):
-        self.real_literals = real_literals
+    def __init__(self, real_tokens: set[StoredPath]):
+        self.real_tokens = real_tokens
 
     def scalar(self, value: JsonValue, path: StoredPath) -> str:
-        return _scalar(value, keep_real=path in self.real_literals)
+        return _scalar(value, keep_real=path in self.real_tokens)
 
     def tokens(self, value: JsonValue, path: StoredPath) -> Iterator[str]:
         if isinstance(value, dict):
@@ -325,6 +350,6 @@ def write_project_file(
     model: BaseModel, *, exclude: set[str] | None = None, protected: Iterable[StoredPath] = (),
 ) -> bytes:
     """Encode one typed authored file with canonical numbers and 100-column layout."""
-    value, real_literals = _projected_file(model, exclude, protected)
+    value, real_tokens = _projected_file(model, exclude, protected)
     validate_canonical_json_v2(value)
-    return ("\n".join(_Layout(real_literals).lines(value, 0, "", "", ())) + "\n").encode("utf-8")
+    return ("\n".join(_Layout(real_tokens).lines(value, 0, "", "", ())) + "\n").encode("utf-8")
