@@ -426,6 +426,25 @@ def _three_methods() -> TrainingMethodRegistry:
     return registry
 
 
+def test_an_inherited_train_reads_based_defaults_from_its_supplied_method_registry():
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    parent = raw["steps"]["train"]["base"]["inline"]
+    training = {**{key: parent[key] for key in TRAINING_DOCUMENT_KEYS}, "method": "probe.penalized", "settings": {}}
+    raw["documents"].update({
+        "training": {"label": "Training", "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": training},
+        "adapted": {"label": "Adapted", "schema": TRAINING_DOCUMENT_SCHEMA_ID, "base": {"document": "training"},
+                    "differences": {"/settings/optimizer/type": {"value": "adabelief"}}},
+    })
+    parent.update({key: {"document": "adapted", "pointer": f"/{key}"} for key in TRAINING_DOCUMENT_KEYS})
+    raw["steps"]["continue"] = {"kind": "train", "label": "Continue", "base": {"step": "train"}}
+
+    project = Project.model_validate(raw)
+    projection = project_train_fields(project, "continue", _three_methods(), None, _WHOLE_STEP)
+    assert projection.settings["optimizer"]["type"] == "adabelief"
+    assert projection.settings["penalty"] == 0.1
+    assert "/settings/optimizer/type" in projection.changed
+
+
 def test_a_method_change_keeps_shared_settings_and_stores_a_method_without_a_swept_parameter():
     registry = _three_methods()
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)

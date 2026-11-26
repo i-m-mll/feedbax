@@ -427,7 +427,10 @@ class _StepFields:
             and checkpoint.checkpoint == "last"
         )
         self.registry = registry
-        template = compose_step(project, step_id, track_sources=True)
+        template = compose_step(
+            project, step_id, readers=BaseReaders(stored_regions=StoredRegionRegistries(training_methods=registry)),
+            track_sources=True, training_methods=registry,
+        )
         resolved = (
             template.resolve(include_sources=True) if isinstance(template, StepTemplate) else None
         )
