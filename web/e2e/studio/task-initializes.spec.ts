@@ -5,9 +5,8 @@ import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-const position = JSON.stringify({ composites: [], element: {
-  kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['state', 'effector/position'],
-} });
+/** The stored link key of the plant's effector position: the Service's compact address text. */
+const position = 'component.plant.state."effector/position"';
 
 // Catches a Model start the Model needs that no row shows or marks, a row for a start nothing needs, a row whose choice
 // of variable does not write the link, and an Initializes choice that does not bring the row back when it is undone.
@@ -97,9 +96,7 @@ test('Initializes opens on the Model\'s components and descends to the states a 
 // whole instead of the cell of the variable whose link it is.
 test('a link to a field the Model lacks is named and revealed at its variable\'s Initializes', async ({ page, request }) => {
   const files = await fixture('ordinary-files', '2') as { kind: string; id: string; document?: { payload: Record<string, any> } }[];
-  const nowhere = JSON.stringify({ composites: [], element: {
-    kind: 'field', parent: { id: 'nowhere', kind: 'component' }, path: ['state', 'effector/position'],
-  } });
+  const nowhere = 'component.nowhere.state."effector/position"';
   for (const file of files) {
     const payload = file.document?.payload;
     if (payload?.variables) payload.links = { [nowhere]: 'start' };
