@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from copy import deepcopy
@@ -2441,20 +2440,27 @@ class _Compiler:
                     resolved = resolved_definition()
                     if isinstance(resolved, ProjectDiagnostic):
                         return resolved, {}
+                    read = read_document or self.variants[variant].documents.get
                     model = model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
                     if model is None and kind == "evaluate":
-                        model = document_subject_model(resolved, read_document or self.variants[variant].documents.get)
+                        model = document_subject_model(resolved, read)
                     if model is None and kind == "evaluate":
-                        read = {(source.document, to_json(source.model.model_dump(mode="json"))) for source in subjects
-                                if source is not None and source.document is not None}
-                        if len(read) > 1:
+                        source_models = {
+                            (source.document, to_json(source.model.model_dump(mode="json"))) for source in subjects
+                            if source is not None and source.document is not None
+                        }
+                        if len(source_models) > 1:
                             raise SweepExpansionError(
                                 SweepExpansionCode.INVALID_SET, "inputs.subject", "the subject runs read different Models",
                             )
-                        model = next(((name, json.loads(content)) for name, content in read), None)
-                    sets = resolve_set_axes(
-                        composition.sweep, read_document or self.variants[variant].documents.get, model,
-                    )
+                        if source_models:
+                            (document, _), = source_models
+                            # The row patches the composed document. Its stored key
+                            # presence selects each strict Add or Replace.
+                            composed = compose_document(read, document)
+                            if not isinstance(composed, ProjectDiagnostic) and isinstance(composed.payload, dict):
+                                model = document, composed.payload
+                    sets = resolve_set_axes(composition.sweep, read, model)
                 for axis_name, axis in (composition.sweep.axes if composition.sweep is not None else {}).items():
                     if axis_name in RESERVED_LABELS and not isinstance(axis, InputAxis):
                         raise SweepExpansionError(
