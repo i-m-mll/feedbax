@@ -181,10 +181,24 @@ class _Lower:
 
     def parameters(self, component, scope, name: str):
         owner = {"kind": "component", "id": name}
-        return {
+        params = {
             field: self.numeric_field(value, scope, owner, ("fields", field))
             for field, value in component.fields.items()
         }
+        return self.with_model_precision(component.type, params)
+
+    def with_model_precision(self, type_id: str, params: dict) -> dict:
+        """Use the Model's real precision for declared float configuration and payloads."""
+        definition = self.components.get(type_id)
+        if definition is None:
+            return params
+        fields = definition.params.model.model_fields
+        for name in ("dtype", "input_dtype", "payload_dtype"):
+            if declaration := fields.get(name):
+                dtype = params.get(name, declaration.default)
+                if dtype in ("float32", "float64") and dtype != (resolved := _model_float_dtype(dtype)):
+                    params[name] = resolved
+        return params
 
     def remember(self, path, derived, element):
         tokens = tuple(token for parent in path for token in ("subgraphs", parent))
@@ -452,7 +466,8 @@ class _Lower:
             if key in interior.components or key in nodes:
                 raise self.problem(path, "component", "component ID collides with a generated occurrence", id=key)
             nodes[key] = ComponentSpec(
-                type=type_id, params=params, input_ports=list(inputs), output_ports=["output"],
+                type=type_id, params=self.with_model_precision(type_id, params),
+                input_ports=list(inputs), output_ports=["output"],
             )
             self.remember(path, ("nodes", key), origin)
 
@@ -505,11 +520,6 @@ class _Lower:
                 for period in ("dt", "control_dt"):
                     if period in definition.params.model.model_fields:
                         params[period] = self.period
-                for field_name in ("dtype", "input_dtype"):
-                    if declaration := definition.params.model.model_fields.get(field_name):
-                        dtype = params.get(field_name, declaration.default)
-                        if dtype in ("float32", "float64") and dtype != (resolved_dtype := _model_float_dtype(dtype)):
-                            params[field_name] = resolved_dtype
                 if component.type == "feedbax.VanillaRNN":
                     tau = params.get("tau", definition.params.model.model_fields["tau"].default)
                     try:
