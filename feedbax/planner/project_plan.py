@@ -86,7 +86,6 @@ from feedbax.contracts.project_resolution import (
     _TrialResolution,
     compose_document,
     compose_step,
-    composed_loaded_model_projection,
     reference_write_target,
     _select,
 )
@@ -3258,7 +3257,7 @@ class _Compiler:
             if isinstance(subject_ref, LoadedModelReference):
                 source = authored_document_input(subject_ref, subject_document)
                 assert isinstance(source, ImportedModelSource)
-                imported = self.read_imported_model(key.variant, subject_ref, subject_document)
+                imported = self.read_imported_model(subject_ref, subject_document, source)
                 model, replica_ids = imported.model, imported.replica_ids
                 navigation = LoadedModelDocument.model_validate(subject_document.payload).model
                 if (
@@ -3416,18 +3415,13 @@ class _Compiler:
             ),), document_ids=document_ids, document_uses=document_uses), {}
 
     def read_imported_model(
-        self, variant: str, reference: LoadedModelReference, document: RootDocument,
+        self, reference: LoadedModelReference, document: RootDocument, source: ImportedModelSource,
     ) -> ResolvedImportedModel:
         if self.readers.imported_model is None:
             raise ValueError("A Loaded Model must resolve from the project Store.")
         loaded = LoadedModelDocument.model_validate(document.payload)
-        legacy_model = (
-            composed_loaded_model_projection(loaded, self.variants[variant].documents.get)
-            if loaded.archive is None else None
-        )
-        return self.readers.imported_model(LoadedModelRead(
-            reference.source.document, loaded.model_dump_json().encode(), legacy_model,
-        ))
+        key = reference.source.document
+        return self.readers.imported_model(LoadedModelRead(key, loaded.archive_path(key), source))
 
     def lower_best_evaluate(
         self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
@@ -4318,7 +4312,8 @@ class _Compiler:
                     )
                     ids = None
                     if isinstance(reference, LoadedModelReference):
-                        ids = self.read_imported_model(variant, reference, resolved.input_documents[role]).replica_ids
+                        assert isinstance(source, ImportedModelSource)
+                        ids = self.read_imported_model(reference, resolved.input_documents[role], source).replica_ids
                     elif isinstance(reference, InitialModelReference):
                         ids = ("0",)
                     binding = replace(_plan_document_content(source, self.documents), model_replicas=ids)
@@ -4716,7 +4711,7 @@ class _Compiler:
             try:
                 source = authored_document_input(reference, document)
                 assert isinstance(source, ImportedModelSource)
-                self.read_imported_model(variant, reference, document)
+                self.read_imported_model(reference, document, source)
             except (OSError, ValueError) as error:
                 return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
             return ((_plan_document_content(source, self.documents), None),), {}, None

@@ -18,7 +18,7 @@ from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
-from feedbax.contracts.loaded_model import encode_imported_model_document
+from feedbax.contracts.loaded_model import ImportedModelSource, encode_imported_model_document
 from feedbax.contracts.matrix_core import (
     apply_stored_patch_copy, apply_stored_patch_in_place, replay_stored_patch_copy, resolve_segment,
     validate_stored_patch_path,
@@ -238,11 +238,16 @@ class TerminalTrainSource:
 
 @dataclass(frozen=True)
 class LoadedModelRead:
-    """The compiled document address and payload, with its legacy Model candidate if available."""
+    """The immutable source and the project's location for recovering its portable assets."""
 
     document: str
-    authored: bytes
-    legacy_model: bytes | None = None
+    archive: str
+    source: ImportedModelSource
+
+    def __hash__(self) -> int:
+        source = self.source
+        return hash((self.document, self.archive, source.model.sha256, source.weights.descriptor.sha256,
+                     source.encoding.descriptor_sha256))
 
 
 @dataclass(frozen=True)

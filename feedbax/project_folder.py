@@ -79,13 +79,13 @@ from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, mod
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, analysis_elements, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.project_model_assets import (
-    ModelAssetError, model_archive_path, portable_model_reader, publish_project_model, write_model_assets,
+    ModelAssetError, portable_model_reader, publish_project_model, write_model_assets,
 )
 from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
     change_member_key, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
     allocate_member_name, label_member, merge_cards, new_document_name, new_step_name,
-    preserve_dangling_member, regroup_refused, split_card,
+    preserve_dangling_member, preserve_loaded_archive_paths, regroup_refused, split_card,
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.examples import ShippedExample
@@ -1367,10 +1367,11 @@ class ProjectFolder:
                 if isinstance(document, ProjectDiagnostic) or document.schema_id != LOADED_MODEL_SCHEMA_ID:
                     raise ProjectFileExists(f"documents/{name}.json")
                 saved = LoadedModelDocument.model_validate(document.payload)
-                if saved.source != model.source or saved.model != model.model:
+                if saved.lower() != model.lower() or saved.model != model.model:
                     raise ProjectFileExists(f"documents/{name}.json")
                 model = saved
-            archive = model_archive_path(name, model)
+            archive = model.archive_path(name)
+            source = model.lower()
 
             def check() -> None:
                 folder.check()
@@ -1379,10 +1380,10 @@ class ProjectFolder:
             def publish() -> None:
                 try:
                     write_model_assets(
-                        folder.path, folder.location.identity, archive, raw_archive, model.source,
-                        staging.get_object(model.source.model), check=check,
+                        folder.path, folder.location.identity, archive, raw_archive, source,
+                        staging.get_object(source.model), check=check,
                     )
-                    publish_project_model(text.store_path, staging, model.source)
+                    publish_project_model(text.store_path, staging, source)
                 except FileExistsError as error:
                     raise ProjectFileExists(*error.args) from error
                 except (ModelAssetError, ArtifactBlobCustodyError) as error:
@@ -1607,6 +1608,8 @@ class ProjectFolder:
                     raise ProjectFileExists(f"{family}/{name}.json")
                 if command.kind == "change_key":
                     project, shown = change_member_key(source, shown, family, member, name)
+                    if family == "documents" and members[member].schema_id == LOADED_MODEL_SCHEMA_ID:
+                        preserve_loaded_archive_paths(text.project.documents, project["documents"], member, name)
                 else:
                     source = preserve_dangling_member(source, family, name)
                     if family == "steps":
@@ -1617,6 +1620,9 @@ class ProjectFolder:
                         copy["label"] = copy_label
                         if copy["schema"] == ANALYSIS_SCHEMA:
                             copy["payload"] = fresh_element_keys(copy["payload"], element_keys())
+                        elif copy["schema"] == LOADED_MODEL_SCHEMA_ID:
+                            loaded = LoadedModelDocument.model_validate(copy["payload"])
+                            copy["payload"]["archive"] = loaded.archive_path(member)
                         project = {**source, "documents": {**source["documents"], name: copy}}
                         if member in shown.get("documents", {}):
                             shown["documents"] = {**shown["documents"], name: shown["documents"][member]}

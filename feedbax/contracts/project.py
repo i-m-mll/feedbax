@@ -132,6 +132,9 @@ class LoadedModelDocument(StrictModel):
     archive: ProjectModelArchive | None = Field(default=None, exclude_if=lambda value: value is None)
     """A portable archive at a path other than the one implied by the document key."""
 
+    def archive_path(self, document: str) -> str:
+        return self.archive or f"models/{document}.feedbax-model"
+
     def lower(self) -> ImportedModelSource:
         descriptor = self.weights.lower()
         return ImportedModelSource(

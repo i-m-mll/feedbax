@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from io import BytesIO
+import json
 from shutil import copytree, ignore_patterns, rmtree
 from zipfile import ZipFile
 
@@ -40,8 +41,8 @@ def _seed(folders, name):
     payload["training_config"] = {"n_batches": 1, "batch_size": 2, "replicates": 2}
     task = raw["documents"]["simple-reaches-task"]["payload"]
     task["fixed_steps"] = 8
-    task["epochs"][0]["end"]["length"]["value"] = 8
-    task["validation_trials"] = task["validation_trials"][:1]
+    task["epochs"]["move"]["end"]["length"]["value"] = 8
+    task["validation_trials"] = dict(list(task["validation_trials"].items())[:1])
     evaluate = managed_evaluation_step("unused")
     evaluate["inputs"] = {
         "subject": subject,
@@ -83,7 +84,7 @@ def _check_plan(folders, name):
 
 
 def _root_id(loaded):
-    source = loaded.source
+    source = loaded.lower()
     return f"loaded-model-import:{source.model.sha256}:{source.weights.descriptor.sha256}"
 
 
@@ -110,11 +111,18 @@ def test_copied_project_runs_loaded_evaluate_and_train_from_exact_portable_asset
         folders = client.app.state.project_folders
         _seed(folders, "original")
         loaded = _loaded(_expect(_load(client, "original", archive), 201))
-        assert loaded.archive == "models/portable.feedbax-model"
-        assert loaded.source.weights == checkpoint.tree and loaded.source.encoding == checkpoint.encoding
-        projection = f"models/{loaded.source.model.sha256}.model.json"
+        source = loaded.lower()
+        assert loaded.archive is None
+        assert source.weights == checkpoint.tree and source.encoding == checkpoint.encoding
+        asset = loaded.archive_path("portable")
+        projection = f"models/{source.model.sha256}.model.json"
         original = tmp_path / "original"
-        assert (original / loaded.archive).read_bytes() == archive
+        assert (original / asset).read_bytes() == archive
+        authored = (original / "documents/portable.json").read_bytes()
+        assert len(authored) <= 600
+        assert set(json.loads(authored)["payload"]) == {"model", "model_revision", "weights", "encoding_sha256"}
+        for pin in (source.model.sha256, source.weights.descriptor.sha256, source.encoding.descriptor_sha256):
+            assert authored.count(pin.encode()) == 1
         assert (original / projection).read_bytes() == encode_imported_model_document(model)
         warm = _check_plan(folders, "original")
 
@@ -124,8 +132,8 @@ def test_copied_project_runs_loaded_evaluate_and_train_from_exact_portable_asset
         rebuilt = _check_plan(folders, "clone")
         assert warm.plan.requests == rebuilt.plan.requests and warm.plan.documents == rebuilt.plan.documents
         store = ImmutableArtifactBlobProvider(rebuilt.store_path)
-        assert store.get_object(loaded.source.model) == (cold / projection).read_bytes()
-        assert export_model_archive(store, loaded.source.weights, loaded.source.encoding) == archive
+        assert store.get_object(loaded.lower().model) == (cold / projection).read_bytes()
+        assert export_model_archive(store, source.weights, source.encoding) == archive
         assert len(read_active_roots(store, (_root_id(loaded),))) == 1
 
         decoded = {row.key.step: decode_request(rebuilt.plan.requests[row.request_id], rebuilt.plan.documents.__getitem__)
@@ -147,7 +155,7 @@ def test_copied_project_runs_loaded_evaluate_and_train_from_exact_portable_asset
             outcome = ContentObjectRef.model_validate(job["outcome"]["store_success"])
             receipt = SuccessView(store).read_success(outcome).receipt
             assert receipt.request.id in rebuilt.plan.requests
-        (cold / loaded.archive).unlink()
+        (cold / asset).unlink()
         (cold / projection).unlink()
         assert _check_plan(folders, "clone").plan.requests == warm.plan.requests
 
@@ -162,7 +170,8 @@ def test_same_name_load_reuses_pins_and_repairs_missing_assets_at_the_checked_re
         revision = imported["snapshot"]["revision"]
         assert _load(client, "original", archive, revision=revision).json() == imported
         other = _loaded(_expect(_load(client, "original", archive, name="equal"), 201), "equal")
-        assert other.source == loaded.source and other.archive != loaded.archive
+        assert other.lower() == loaded.lower()
+        assert other.archive is None and other.archive_path("equal") != loaded.archive_path("portable")
         root = tmp_path / "original"
         assert len(list((root / "models").glob("*.model.json"))) == 1
         assert _load(client, "original", archive, revision=revision).status_code == 409
@@ -181,7 +190,7 @@ def test_same_name_load_reuses_pins_and_repairs_missing_assets_at_the_checked_re
         changed = _different_archive(tmp_path / "other", archive, first, components)
         assert _load(client, "original", changed, revision=latest).status_code == 409
 
-        asset = root / loaded.archive
+        asset = root / loaded.archive_path("portable")
         asset.write_bytes(b"different user bytes")
         assert _load(client, "original", archive, revision=latest).status_code == 409
         assert asset.read_bytes() == b"different user bytes"
@@ -190,7 +199,7 @@ def test_same_name_load_reuses_pins_and_repairs_missing_assets_at_the_checked_re
         repaired = _expect(_load(client, "original", archive, revision=latest), 201)
         assert repaired["snapshot"]["revision"] == latest
         assert _loaded(repaired) == loaded and asset.read_bytes() == archive
-        assert store.get_object(loaded.source.model) == encode_imported_model_document(model)
+        assert store.get_object(loaded.lower().model) == encode_imported_model_document(model)
         assert len(read_active_roots(store, (_root_id(loaded),))) == 1
 
 
@@ -201,7 +210,8 @@ def test_cold_plan_checks_assets_before_publishing_any_store_bytes(tmp_path, arc
         _seed(folders, "original")
         loaded = _loaded(_expect(_load(client, "original", archive), 201))
         warm = _check_plan(folders, "original")
-        projection = f"models/{loaded.source.model.sha256}.model.json"
+        asset = loaded.archive_path("portable")
+        projection = f"models/{loaded.model_revision.sha256}.model.json"
         with pytest.raises(ValidationError):
             LoadedModelDocument.model_validate(loaded.model_dump(mode="json") | {"archive": "models/../portable.feedbax-model"})
 
@@ -213,9 +223,9 @@ def test_cold_plan_checks_assets_before_publishing_any_store_bytes(tmp_path, arc
             assert not (tmp_path / name / "results").exists()
 
         swapped = _clone(tmp_path, "swapped")
-        (swapped / loaded.archive).write_bytes(_different_archive(tmp_path / "other", archive, first, components))
+        (swapped / asset).write_bytes(_different_archive(tmp_path / "other", archive, first, components))
         refused("swapped", "pinned weights or encoding")
-        (swapped / loaded.archive).write_bytes(archive)
+        (swapped / asset).write_bytes(archive)
         assert _check_plan(folders, "swapped").plan.requests == warm.plan.requests
 
         edited = _clone(tmp_path, "edited")
@@ -223,8 +233,8 @@ def test_cold_plan_checks_assets_before_publishing_any_store_bytes(tmp_path, arc
         refused("edited", "pinned Model revision")
 
         linked = _clone(tmp_path, "linked")
-        (linked / loaded.archive).unlink()
-        (linked / loaded.archive).symlink_to(tmp_path / "original" / loaded.archive)
+        (linked / asset).unlink()
+        (linked / asset).symlink_to(tmp_path / "original" / asset)
         refused("linked", "symlink")
 
         linked_dir = _clone(tmp_path, "linked-dir")
@@ -233,38 +243,44 @@ def test_cold_plan_checks_assets_before_publishing_any_store_bytes(tmp_path, arc
         refused("linked-dir", "symlink")
 
 
-def test_locator_survives_rename_and_legacy_reads_only_matching_navigation(tmp_path, archive_bundle):
+def test_loaded_model_locator_and_request_identity_survive_rekey_and_respell(tmp_path, archive_bundle):
     _, _, _, _, archive, _ = archive_bundle
     with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
         folders = client.app.state.project_folders
         _seed(folders, "original")
         imported = _expect(_load(client, "original", archive), 201)
         loaded = _loaded(imported)
+        asset = loaded.archive_path("portable")
         requests = _check_plan(folders, "original").plan.requests
-        authored = deepcopy(folders.read("original").project)
-        _clone(tmp_path, "renamed")
-        renamed = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
-        renamed["documents"]["different-name"] = renamed["documents"].pop("portable")
-        for role, step in (("subject", "evaluate"), ("checkpoint", "train")):
-            renamed["steps"][step]["inputs"][role]["source"]["document"] = "different-name"
-        (tmp_path / "renamed" / "documents" / "portable.json").unlink()
-        # Keep the declaration's name while writing the edited project.
-        (tmp_path / "renamed" / "original.feedbax").unlink()
-        _save_project(folders, "renamed", Project.model_validate(renamed))
+
+        renamed = _clone(tmp_path, "renamed")
+        based = {
+            "label": "Other fit", "schema": imported["snapshot"]["project"]["documents"]["portable"]["schema"],
+            "base": {"document": "portable"},
+        }
+        (renamed / "documents/based-fit.json").write_text(json.dumps(based))
+        (renamed / "models/based-fit.feedbax-model").write_bytes(archive)
+        current = _expect(client.get("/api/projects/renamed"))
+        changed = _expect(client.post("/api/projects/renamed/members/command", json={
+            "revision": current["revision"], "presentation_revision": current["presentation_revision"],
+            "command": {"kind": "change_key", "family": "documents", "member": "portable", "key": "different-name"},
+        }))
+        documents = changed["snapshot"]["project"]["documents"]
+        assert documents["different-name"]["payload"]["archive"] == asset
+        assert documents["based-fit"]["differences"] == {"/archive": {"value": "models/based-fit.feedbax-model"}}
         assert _check_plan(folders, "renamed").plan.requests == requests
-        assert (tmp_path / "renamed" / loaded.archive).is_file()
+        assert (renamed / asset).read_bytes() == archive
 
-        legacy = _clone(tmp_path, "legacy")
-        (legacy / f"models/{loaded.source.model.sha256}.model.json").unlink()
-        (legacy / "original.feedbax").unlink()
-        legacy_raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
-        legacy_raw["documents"]["portable"]["payload"].pop("archive")
-        _save_project(folders, "legacy", Project.model_validate(legacy_raw))
-        assert _check_plan(folders, "legacy").plan.requests == requests
+        respelled = _clone(tmp_path, "respelled")
+        file = respelled / "documents/portable.json"
+        document = json.loads(file.read_bytes())
+        document["payload"]["archive"] = asset
+        document["payload"]["model"]["pointer"] = None
+        file.write_text(json.dumps(document, sort_keys=True))
+        assert _check_plan(folders, "respelled").plan.requests == requests
 
-        legacy_raw["documents"]["point-mass"]["payload"]["step_seconds"] = 0.02
-        _save_project(folders, "legacy", Project.model_validate(legacy_raw))
-        rmtree(legacy / "results")
-        plan = folders.read_plan("legacy", revision=None).plan
-        assert not plan.runs and any("pinned Model revision" in item.detail for item in plan.diagnostics)
-        assert not (legacy / "results").exists()
+        missing = _clone(tmp_path, "missing-projection")
+        (missing / f"models/{loaded.model_revision.sha256}.model.json").unlink()
+        failed = folders.read_plan("missing-projection", revision=None).plan
+        assert not failed.runs and all("needs its project assets" in item.detail for item in failed.diagnostics)
+        assert not (missing / "results").exists()
