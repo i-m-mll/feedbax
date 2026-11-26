@@ -142,3 +142,24 @@ def test_set_variables_carry_the_label_of_their_authored_entry(campaign, step, r
                 key = (origin["axis"], origin["entry"], origin["variable"])
                 assert variables[key] == named["id"]
                 assert named["name"] == authored[origin["entry"]]["task_variables"][origin["variable"]]["label"]
+
+
+def test_editing_an_inherited_set_variable_writes_the_set_entry(campaign):
+    view = _post("authoring/trials", "kick-check", campaign)
+    inherited = next(variable for variable in view["variables"] if (
+        (origin := variable.get("set_entry")) is not None
+        and origin["step"] == "train" and origin["entry"] == "pulse"
+    ))
+    edited = _post("authoring/trials", "kick-check", campaign, change={
+        "kind": "expression", "path": f"/task/variables/{inherited['id']}/value",
+        "edit": {"kind": "text", "text": "0.7 * sign * axis"},
+    })
+    (file,) = edited["files"]
+    assert file["address"] == {"kind": "document", "id": "command-kicks"}
+    client, revision, *_rest, entries = campaign
+    response = client.patch("/api/projects/hold-campaign", json={"revision": revision, "files": edited["files"]})
+    assert response.status_code == 200, response.text
+    saved = client.app.state.project_folders.read("hold-campaign").project.documents["command-kicks"].payload
+    expected = deepcopy(entries)
+    expected["pulse"]["task_variables"]["kick"]["value"] = "0.7 * sign * axis"
+    assert saved["entries"] == expected

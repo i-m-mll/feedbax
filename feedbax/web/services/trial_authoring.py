@@ -103,7 +103,7 @@ from feedbax.web.services.trial_fields import (
 )
 from feedbax.web.services.trial_scope import (
     authored_payload, base_value_edits, changed_from_base, content_edits, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, scoped_file,
-    selected_runs, source_value_file, variant_view,
+    selected_runs, set_readers, source_value_file, variant_view,
 )
 
 
@@ -1472,13 +1472,20 @@ def _prepare_edits(
         change = _expression_edit(expression, documents, stored_task, stored_objective, projected, bundle)
         if not isinstance(change, StudioTrialDocumentEdit):
             return StoredEdit([]), change, None
-        entry = _set_variable_edit(project, plan, key, path, change, site)
+        owner = key
+        if path[:2] == ("task", "variables") and len(path) == 4:
+            item = projected.set_variables.get(path[2])
+            if item is not None and item.origin.step != key.step and (subject := evaluate_subject(definition)) is not None:
+                owner = subject[0]
+        entry = _set_variable_edit(plan.variant_projects[owner.variant], plan, owner, path, change, site)
         if entry is not None:
             item, command = entry
             name = item.origin.set
-            if scope is None and item.source.over is not None and not item.scoped:
+            if owner != key and scope is not None:
+                selected = selected_runs(plan, key, scope)
+            elif scope is None and item.source.over is not None and not item.scoped:
                 selected = {
-                    row.key for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)
+                    row.key for row in plan.rows if (row.key.variant, row.key.step) == (owner.variant, owner.step)
                     and row.set_entries.get(command.axis) == command.entry
                 }
             else:
@@ -1486,12 +1493,16 @@ def _prepare_edits(
                     StudioTrialStepScope(kind="step") if item.scoped
                     else AxisValueRuns(kind="axis_value", axis=command.axis, value=item.generated)
                 )
-                selected = selected_runs(plan, key, selection)
+                selected = selected_runs(plan, owner, selection)
+            if owner != key and scope is None:
+                selected = selected | {key}
             stored = prepare_set_entry_task(project, name, command)
-            narrowed = prepare_set_entry_task(project, name, command, {run.step for run in selected})
             candidates = [("set_entry", "Set Entry", name, stored)]
-            if narrowed != stored:
-                candidates.append(("selected_readers", "Selected Readers", name, narrowed))
+            chosen = {run.step for run in selected} & set_readers(project, name)
+            if chosen:
+                narrowed = prepare_set_entry_task(project, name, command, chosen)
+                if narrowed != stored:
+                    candidates.append(("selected_readers", "Selected Readers", name, narrowed))
             return _validate_files(body, project, settled, key, selected, folders, bundle, candidates)
     renames = ()
     structural = isinstance(change, StudioTrialStructureEdit)
