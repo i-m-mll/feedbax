@@ -327,9 +327,9 @@ def test_analyze_reads_a_declared_synthesis_dataset(tmp_path, monkeypatch):
         "base": {"inline": {
             "inputs": {"diagnostic": {"kind": "dataset"}},
             "views": {"result": {"label": "Result", "inputs": {"data": {"input": "diagnostic"}}, "figure": {
-                "data": ["data"], "layout": [{"name": "values", "row": 1, "col": 1}],
-                "layers": [{"name": "values", "role": "data", "panel": "values", "mark": "line",
-                            "encode": {"x": "sample", "y": "value"}}],
+                "data": ["data"], "layout": {"values": {"row": 1, "col": 1}},
+                "layers": {"values": {"role": "data", "panel": "values", "mark": "line",
+                                      "encode": {"x": "sample", "y": "value"}}},
             }}},
         }},
     }

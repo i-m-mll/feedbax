@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Any, Annotated, TYPE_CHECKING
 
-from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import to_jsonable_python
 
-from feedbax.contracts.analysis_document import AnalysisPayload, OperationElement
+from feedbax.contracts.analysis_document import OperationElement, StoredAnalysisPayload
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.objective_document import StoredObjectiveDocument
 from feedbax.contracts.project_inputs import DocumentReference
@@ -54,7 +54,7 @@ _STEP_MODELS = {
     "train": StoredTrainInline,
     "synthesize": SynthesisStepPayload,
     "evaluate": StoredEvaluateInline,
-    "analyze": AnalysisPayload[JsonValue],
+    "analyze": StoredAnalysisPayload,
     "report": ReportDocument,
 }
 
@@ -224,4 +224,3 @@ def typed_region(
         field = model.model_fields[name]
         encoded[field.serialization_alias or field.alias or name] = to_jsonable_python(parsed, by_alias=True)
     return model.model_construct(_fields_set=set(values), **values), encoded
-

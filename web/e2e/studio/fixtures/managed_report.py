@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.project import RootDocument, Step
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
@@ -43,7 +44,7 @@ def seed_labels(home: str, project_id: str):
     project = _project()
     analysis = project.documents["velocity-analysis"].payload
     project.documents["other-analysis"] = RootDocument.model_validate({
-        "schema": "feedbax.analysis_document.v1",
+        "schema": ANALYSIS_SCHEMA,
         "label": "Other analysis",
         "payload": {**analysis, "operations": {"held": {**analysis["operations"]["align"], "label": "Held"}}, "views": {}},
     })

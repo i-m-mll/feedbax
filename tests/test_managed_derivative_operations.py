@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ElementKey, RunKey
@@ -175,8 +176,8 @@ def _project():
                 ("feedback-model", STORED_MODEL_DOCUMENT_SCHEMA_ID, _feedback_model()),
                 ("fixed-task", STORED_TASK_DOCUMENT_SCHEMA_ID, _conditioning_task()),
                 ("feedback-task", PYTHON_TASK_SCHEMA_ID, feedback_task),
-                ("fixed-analysis", "feedbax.analysis_document.v1", fixed_analysis),
-                ("gain-analysis", "feedbax.analysis_document.v1", gain_analysis),
+                ("fixed-analysis", ANALYSIS_SCHEMA, fixed_analysis),
+                ("gain-analysis", ANALYSIS_SCHEMA, gain_analysis),
             )
         },
         "steps": {

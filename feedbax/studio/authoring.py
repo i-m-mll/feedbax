@@ -21,9 +21,9 @@ from feedbax.contracts.task_document import BLANK_STORED_TASK, STORED_TASK_DOCUM
 from feedbax.studio.library import installed_library_sources
 from feedbax.contracts.objective_document import STORED_OBJECTIVE_DOCUMENT_SCHEMA_ID, StoredObjectiveDocument
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
-from feedbax.contracts.analysis_document import AnalysisDocument
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA, AnalysisDocument
 from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
-from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureSource
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, StoredFigureSource
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.contracts.project import (
@@ -170,10 +170,10 @@ def authoring_surface(
         name: StudioAuthoredDocumentFamily(schema_id=schema_id, payload_schema=payload)
         for name, (schema_id, payload) in train_documents.items()
     } | {
-        "analysis": _family(AnalysisDocument, AnalysisDocument.model_fields["schema_version"].default),
+        "analysis": _family(AnalysisDocument, ANALYSIS_SCHEMA),
         "figure": StudioAuthoredDocumentFamily(
-            schema_id=FIGURE_DOCUMENT_SCHEMA,
-            payload_schema=TypeAdapter(FigureSource | ExternalBase).json_schema(),
+            schema_id=STORED_FIGURE_DOCUMENT_SCHEMA_ID,
+            payload_schema=TypeAdapter(StoredFigureSource | ExternalBase).json_schema(),
         ),
         "report": _family(ReportDocument, ReportDocument.model_fields["schema_version"].default),
         "subset": _family(SubsetTerms, "subset"),

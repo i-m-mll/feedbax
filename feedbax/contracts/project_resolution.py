@@ -15,7 +15,7 @@ from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import TextSpan
-from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, is_figure_document_pin
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.stored_model import STORED_MODEL_DOCUMENT_SCHEMA_ID, StoredModelDocument
 from feedbax.contracts.loaded_model import ImportedModelSource, encode_imported_model_document
@@ -669,7 +669,7 @@ class _Documents:
                 self.edited[reference.document] = draft
             payload = self.edited[reference.document]
         if (
-            document.schema_id == FIGURE_DOCUMENT_SCHEMA
+            document.schema_id == STORED_FIGURE_DOCUMENT_SCHEMA_ID
             and is_figure_document_pin(payload)
             and (self.step is None or _figure_slot(path) is not None)
         ):

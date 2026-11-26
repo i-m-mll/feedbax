@@ -33,7 +33,7 @@ from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.synthesis.methods import SynthesisMethodRegistry
 from feedbax.contracts.authored_arrays import AuthoredArrayBudgetError, check_authored_array_budget
 from feedbax.contracts.base import StrictModel, sha256_bytes
-from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
+from feedbax.contracts.figure_document import STORED_FIGURE_DOCUMENT_SCHEMA_ID, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
@@ -576,7 +576,7 @@ def compile_saved_project(
 def _may_read_figure_pin(project: Project) -> bool:
     figures = {
         name: compose_document(project.documents.get, name) for name, document in project.documents.items()
-        if document.schema_id == FIGURE_DOCUMENT_SCHEMA
+        if document.schema_id == STORED_FIGURE_DOCUMENT_SCHEMA_ID
     }
     if any(
         not isinstance(document, ProjectDiagnostic) and is_figure_document_pin(document.payload)

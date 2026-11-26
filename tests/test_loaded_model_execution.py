@@ -161,7 +161,7 @@ def test_loaded_model_evaluates_and_initializes_train_in_a_new_project(host, tmp
             "state": "preserve", "rng": "carry", "schedule": "continue",
         }
         raw["steps"]["analyze"]["inputs"]["states"] = {"step": "baseline"}
-        for layer in raw["documents"]["velocity-figure"]["payload"]["layers"]:
+        for layer in raw["documents"]["velocity-figure"]["payload"]["layers"].values():
             layer.get("select", {}).pop("checkpoint", None)
         raw["steps"] = {
             "train": next_train, "baseline": loaded_baseline, "shorter": shorter,

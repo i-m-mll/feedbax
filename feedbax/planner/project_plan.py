@@ -152,6 +152,7 @@ from feedbax.contracts.request_specs import (
     DocumentTrainingConfig,
     DocumentTrainingRequestSpec,
     EvaluationRequestSpec,
+    RenderRequestSpec,
     SynthesisRequestSpec,
     TrainContinuation,
     ReportRequestSpec,
@@ -5301,6 +5302,16 @@ def _authored_request_change(
         relative = ("operation",)
     elif new.kind == "render" and relative[:1] == ("document",):
         relative = ("figure", *relative[1:])
+        if len(relative) > 2 and relative[1] in {"layout", "layers"} and relative[2].isdigit():
+            assert isinstance(old.spec, RenderRequestSpec) and isinstance(new.spec, RenderRequestSpec)
+            index = int(relative[2])
+            names = {
+                members[index].name
+                for spec in (old.spec, new.spec)
+                if index < len(members := getattr(spec.document, relative[1]))
+            }
+            # Two different names at one index are a change to the collection's order or membership.
+            relative = (*relative[:2], names.pop(), *relative[3:]) if len(names) == 1 else relative[:2]
     elif new.kind == "report" and relative[:1] == ("document",):
         relative = relative[1:]
     parts = prefix + relative

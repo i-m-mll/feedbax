@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.contracts.analysis_document import ANALYSIS_SCHEMA
 from feedbax.contracts.project import Project
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.examples import load_shipped_projects
@@ -59,16 +60,16 @@ def _dynamics_project():
                         "inputs": {"trajectory": {"element": "pca", "product": "pca"}},
                         "figure": {
                             "data": ["trajectory"],
-                            "layout": [{"name": "pc", "row": 1, "col": 1}],
-                            "layers": [{
-                                "name": "pc-plane", "role": "trajectory", "panel": "pc", "mark": "line",
+                            "layout": {"pc": {"row": 1, "col": 1}},
+                            "layers": {"pc-plane": {
+                                "role": "trajectory", "panel": "pc", "mark": "line",
                                 "group": ["trial"],
                                 "select": {"checkpoint": {"index": 0}, "condition": {"index": 0}},
                                 "encode": {
                                     "x": {"variable": "scores", "select": {"component": 1}},
                                     "y": {"variable": "scores", "select": {"component": 2}},
                                 },
-                            }],
+                            }},
                         },
                     },
                 },
@@ -79,7 +80,7 @@ def _dynamics_project():
     train_config = project["steps"]["train"]["base"]["inline"]["training_config"]
     train_config.update(batch_size=1, replicates=1)
     analysis = project["steps"]["analyze"]["base"]["inline"]
-    project["documents"]["dynamics-analysis"] = {"label": "Dynamics analysis", "schema": "feedbax.analysis_document.v1", "payload": analysis}
+    project["documents"]["dynamics-analysis"] = {"label": "Dynamics analysis", "schema": ANALYSIS_SCHEMA, "payload": analysis}
     project["steps"]["analyze"]["base"] = {"document": "dynamics-analysis"}
     return project
 
@@ -89,7 +90,7 @@ def test_pca_authoring_offers_only_the_bound_rollout_clock(host, tmp_path, monke
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     project = _dynamics_project()
     project["steps"]["rollout"]["inputs"]["subject"]["checkpoint"] = checkpoint
-    layer, = project["documents"]["dynamics-analysis"]["payload"]["views"]["pc-plane"]["figure"]["layers"]
+    layer = project["documents"]["dynamics-analysis"]["payload"]["views"]["pc-plane"]["figure"]["layers"]["pc-plane"]
     layer["select"] = {axis: {"index": 0}, "condition": {"index": 0}}
     folders = ProjectFolderService(tmp_path / "projects")
     _save_project(folders, "dynamics", Project.model_validate(project))
