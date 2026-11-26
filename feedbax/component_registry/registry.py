@@ -301,6 +301,11 @@ class ComponentRegistry:
         meta = self._component(type_id)
         return meta.params.model if meta is not None and revision in (None, meta.revision) else None
 
+    def owner_class(self, type_id: str, revision: int | None) -> type[ComponentOwner] | None:
+        """Read the registered owner class for this declaration revision."""
+        meta = self._component(type_id)
+        return meta.owner_class if meta is not None and revision in (None, meta.revision) else None
+
     def dynamic_port_layout(
         self,
         name: str,
