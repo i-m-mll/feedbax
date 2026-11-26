@@ -1003,7 +1003,7 @@ def test_a_model_field_swept_for_some_runs_reads_as_the_selected_runs_have_it(tm
         assert sorted(member["value"] for member in whole["members"]) == [1.0, 2, 3]
         assert [value["value"] for value in mass(first, {"seed": ["seed-1"]})["sweep"]["values"]] == [2, 3]
         other = mass([second], {"seed": ["seed-2"]})
-        assert other["sweep"] is None and not other["mixed"] and other["text"] == "1.0"
+        assert other["sweep"] is None and not other["mixed"] and other["text"] == "1"
 
 
 def test_a_class_without_a_swept_parameter_keeps_the_authored_axis(tmp_path):
