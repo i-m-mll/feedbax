@@ -127,8 +127,9 @@ class JobActivity:
             except HostError as error:
                 self._fail(error)
                 return
-            if page.cursor >= page.head:
-                return
+            with self._changed:
+                if self._cursor >= page.head:
+                    return
 
     def put(self, job: StudioActivityJob) -> None:
         with self._changed:
