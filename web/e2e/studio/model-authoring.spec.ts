@@ -2,12 +2,13 @@ import { expect, test, jobTimeout } from './fixtures/studio';
 import { type Locator, type Page } from '@playwright/test';
 import {
   type StoredModelDocument as ModelDocument, type StudioJobSubmission, type StudioSavedTrainRuns,
-  type TaskDocument,
+  type StoredTaskDocument,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep } from './fixtures/canonicalTrain';
 import { post, readSaved, startProject } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 import { keyLabelled } from './fixtures/members';
+import { stateLinkKey } from './fixtures/trialFields';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -150,14 +151,11 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   await expect(outputs.getByRole('img', { name: 'Objective', exact: true })).toHaveCount(1);
 
   // Simple reaches starts nothing until `start` is chosen to initialize this Model's point mass.
-  const plantLink = JSON.stringify({ composites: [], element: {
-    kind: 'field', parent: { id: plant, kind: 'component' }, path: ['state', 'effector/position'],
-  } });
   const links = async () => {
     const { project } = await saved();
     const { document } = (project.steps?.train?.base as { inline: { trial_documents: { task: { document: string } } } })
       .inline.trial_documents.task;
-    return (rootPayload(project.documents?.[document]) as unknown as TaskDocument).links;
+    return (rootPayload(project.documents?.[document]) as unknown as StoredTaskDocument).links ?? {};
   };
   await tab('Task').click();
   const initializes = task.getByRole('combobox', { name: 'Initializes start', exact: true });
@@ -165,7 +163,7 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   await page.keyboard.type('effector position');
   await page.getByRole('option', { name: 'PointMass · effector · position', exact: true }).click();
   await page.keyboard.press('Escape');
-  await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
+  await expect.poll(links).toEqual({ [await stateLinkKey(request, snapshot.project_id, plant, 'effector/position')]: 'start' });
 
   await tab('Runs').click();
   await enter(inspector.getByRole('textbox', { name: 'Batches', exact: true }), '2');

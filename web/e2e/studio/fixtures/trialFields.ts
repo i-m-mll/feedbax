@@ -20,3 +20,15 @@ export async function trialField(request: APIRequestContext, projectId: string, 
   const pointer = '/' + path.map((part) => part.replace(/~/g, '~0').replace(/\//g, '~1')).join('/');
   return (await trialView(request, projectId, run)).fields.find((field) => field.path === pointer);
 }
+
+/**
+ * The Service's key, in a stored Task's links, for the state `state` of the top-level component `component`, from the
+ * Model values the view offers to initialize.
+ */
+export async function stateLinkKey(request: APIRequestContext, projectId: string, component: string, state: string, run = defaultRun) {
+  const reset = (await trialView(request, projectId, run)).resets.find(({ address: { composites, element } }) =>
+    !composites.length && element.kind === 'field' && element.parent.kind === 'component' && element.parent.id === component &&
+    element.path.length === 2 && element.path[0] === 'state' && element.path[1] === state);
+  if (!reset) throw new Error(`The Trial view offers no state ${state} of ${component} to initialize`);
+  return reset.address_text;
+}

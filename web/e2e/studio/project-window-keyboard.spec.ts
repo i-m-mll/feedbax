@@ -1,6 +1,6 @@
 import { expect, jobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { modelDocumentSchemaId, objectiveDocumentSchemaId, firstTrainTask, type StoredModelDocument as ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioActivityJob, type StudioJobSubmission, type StudioProjectDocument, type StudioProjectSnapshot, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StudioTrialReplayResponse } from '../../src/generated/studioContracts';
+import { modelDocumentSchemaId, objectiveDocumentSchemaId, firstTrainTask, type StoredModelDocument as ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioActivityJob, type StudioJobSubmission, type StudioProjectDocument, type StudioProjectSnapshot, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StudioTrialReplayResponse, type StoredTaskDocument } from '../../src/generated/studioContracts';
 import { drawnRunLabel, enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject, sweepLabel, mapCard } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
@@ -62,7 +62,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
     'simple-reaches': { ...firstTrainTask, payload: unlinked(rootPayload(firstTrainTask)) },
     objective: { schema: objectiveDocumentSchemaId },
   });
-  expect((rootPayload(saved.project.documents!['simple-reaches']) as { links?: unknown[] }).links ?? []).toEqual([]);
+  expect((rootPayload(saved.project.documents!['simple-reaches']) as StoredTaskDocument).links ?? {}).toEqual({});
 
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await expect(chooser).toBeHidden();

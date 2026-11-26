@@ -8,6 +8,7 @@ import { pick } from './controls';
 import { activate, activateMenuItem, number, palette, post, readSaved, startProject } from './studioKeyboard';
 import { rootPayload } from './rootPayload';
 import { keyLabelled } from './members';
+import { stateLinkKey, trialView } from './trialFields';
 
 /** The Task document a first Train creates: simple reaches, named by its label. */
 const taskDocument = 'simple-reaches';
@@ -146,19 +147,10 @@ export async function authorFirstTrain(
 
   // Simple reaches starts nothing until `start` is chosen to initialize this Model's point mass.
   const shipped = rootPayload(firstTrainTask) as unknown as StoredTaskDocument;
-  const plantLink = JSON.stringify({ composites: [], element: {
-    kind: 'field', parent: { id: plantId, kind: 'component' }, path: ['state', 'effector/position'],
-  } });
-  const problems = async () => {
-    const { revision } = await savedProject();
-    const response = await request.post(projectPath + '/authoring/trials', {
-      data: { revision, run: { variant: 'default', step: 'train', row: 'default' }, change: null },
-    });
-    expect(response.ok(), await response.text()).toBe(true);
-    return (await response.json() as StudioTrialAuthoring).problems;
-  };
-  const links = async () => (rootPayload((await savedProject()).project.documents?.[taskDocument]) as unknown as TaskDocument).links;
-  expect((await links()) ?? []).toEqual([]);
+  const problems = async () => (await trialView(request, snapshot.project_id)).problems;
+  const plantLink = await stateLinkKey(request, snapshot.project_id, plantId!, 'effector/position');
+  const links = async () => (rootPayload((await savedProject()).project.documents?.[taskDocument]) as unknown as StoredTaskDocument).links ?? {};
+  expect(await links()).toEqual({});
   await page.keyboard.press('Meta+3');
   const initializes = task.getByRole('combobox', { name: 'Initializes start', exact: true });
   const toggle = async (component: string) => {
@@ -168,7 +160,7 @@ export async function authorFirstTrain(
     await page.keyboard.press('Escape');
   };
   await toggle('PointMass');
-  await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
+  await expect.poll(links).toEqual({ [plantLink]: 'start' });
   expect(await problems()).toEqual([]);
   await page.keyboard.press('Meta+1');
   // A comparison of forces reads one reach: simple reaches' others point every way, and their mean along the reach is
@@ -220,7 +212,7 @@ export async function authorFirstTrain(
     expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort } }),
   ]));
   expect(rootPayload(saved.project.documents?.[taskDocument])).toEqual({
-    ...shipped, links: [{ model_field: plantLink, variable: 'start' }],
+    ...shipped, links: { [plantLink]: 'start' },
     ...(forceComparison && { validation_trials: { [reachKey]: reach } }),
   });
   const [term] = terms(saved.project);
